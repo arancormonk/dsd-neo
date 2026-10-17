@@ -56,7 +56,9 @@ class DecoderService : Service() {
                 startDecoding(args)
             }
             ACTION_STOP -> {
-                stopDecoding()
+                // Both senders say who asked: the app's Stop listening and the notification's
+                // Stop action are the user (#718 D4). Anything else drains.
+                stopDecoding(StopCause.fromWire(intent.getStringExtra(EXTRA_STOP_CAUSE)))
                 // A stop aimed at a service that is not running still promoted us
                 // above; drop back out of the foreground rather than sitting there
                 // with no decoder behind the notification.
@@ -93,7 +95,7 @@ class DecoderService : Service() {
         // returned here, no pending tick can still fire and post a notification behind a
         // service that is on its way out.
         stopStatusPolling()
-        stopDecoding()
+        stopDecoding(StopCause.LIFECYCLE)
         val stopped = joinEngineThread()
         if (stopped && initialized) {
             // Only a successful teardown frees the native side. nativeDestroy refuses
@@ -230,7 +232,7 @@ class DecoderService : Service() {
         stopSelfLatest()
     }
 
-    private fun stopDecoding() {
+    private fun stopDecoding(cause: StopCause) {
         val shouldStop = synchronized(lock) {
             if (state != State.RUNNING) {
                 false
@@ -248,7 +250,7 @@ class DecoderService : Service() {
         // chronometer still counting up.
         stopStatusPolling()
         updateNotification(getString(R.string.decoder_stopping))
-        DsdNative.nativeStop()
+        EngineStop.request(cause, DsdNative::nativeStop)
     }
 
     /** @return true when no engine thread is left running. */
@@ -308,7 +310,9 @@ class DecoderService : Service() {
      * keep a destroyed service alive for the life of the process.
      */
     private val stopPendingIntent: PendingIntent by lazy {
-        val stopIntent = Intent(this, DecoderService::class.java).setAction(ACTION_STOP)
+        val stopIntent = Intent(this, DecoderService::class.java)
+            .setAction(ACTION_STOP)
+            .putExtra(EXTRA_STOP_CAUSE, StopCause.USER.wire)
         PendingIntent.getService(
             this, REQUEST_STOP, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -764,6 +768,8 @@ class DecoderService : Service() {
         const val ACTION_START = "io.github.arancormonk.dsdneo.action.START"
         const val ACTION_STOP = "io.github.arancormonk.dsdneo.action.STOP"
         const val EXTRA_ARGS = "io.github.arancormonk.dsdneo.extra.ARGS"
+        /** A [StopCause.wire] value: who asked for an [ACTION_STOP]. */
+        const val EXTRA_STOP_CAUSE = "io.github.arancormonk.dsdneo.extra.STOP_CAUSE"
 
         private val lock = Any()
         private var state = State.IDLE
@@ -829,10 +835,17 @@ class DecoderService : Service() {
             context.startForegroundService(intent)
         }
 
-        /** Called from the Qt host to request a graceful stop. */
+        /**
+         * Called from the Qt host for every stop or restart the user starts: Stop listening,
+         * switching systems, retrying after a failure, leaving Signal search or its Stop, Back or
+         * closing the window with background listening off, and "Dismiss failure and choose a
+         * site". A user's stop does not wait for pending rdio uploads (#718 D4).
+         */
         @JvmStatic
         fun stopDecoder(context: Context) {
-            val intent = Intent(context, DecoderService::class.java).setAction(ACTION_STOP)
+            val intent = Intent(context, DecoderService::class.java)
+                .setAction(ACTION_STOP)
+                .putExtra(EXTRA_STOP_CAUSE, StopCause.USER.wire)
             context.startService(intent)
         }
 

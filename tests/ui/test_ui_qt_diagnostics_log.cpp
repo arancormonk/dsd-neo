@@ -325,6 +325,63 @@ clearWithConcurrentSubmit() {
     check(model.data(model.index(0), Qt::DisplayRole).toString().contains("during clear"));
 }
 
+/* Issue #718: the diagnostics model is a global context object, ticked every 250 ms whether or not the
+ * screen is open. A full reset of up to 2000 rows per tick with new lines was ~70% of the UI tick's work
+ * while the list was hidden. Hidden, it takes no rows; opened, it resets once. Set through the property
+ * system so the test reads the same on a model without the property. */
+static void
+inactiveModelDefersResets() {
+    QTemporaryDir dir;
+    DiagnosticsLog log(dir.path());
+    DiagnosticsLogModel model(&log);
+    log.submit("host", "info", "first");
+    model.refresh();
+    check(model.rowCount() == 1, "an active model takes new lines at once");
+    int resets = 0;
+    QObject::connect(&model, &QAbstractItemModel::modelReset, &model, [&resets] { ++resets; });
+
+    model.setProperty("active", false);
+    for (int i = 0; i < 20; ++i) {
+        log.submit("host", "info", QStringLiteral("hidden %1").arg(i));
+        model.refresh();
+    }
+    check(resets == 0, "an inactive model performs no resets across ticks with new lines");
+    check(model.pendingCount() == 0, "an inactive, unpaused model counts nothing pending");
+    model.setProperty("active", true);
+    check(resets == 1, "becoming active resets once");
+    check(model.rowCount() == 21 && model.data(model.index(20), Qt::DisplayRole).toString().contains("hidden 19"),
+          "becoming active shows every line");
+    model.setProperty("active", false);
+    model.setProperty("active", true);
+    check(resets == 1, "becoming active with nothing new does not reset");
+
+    // Paused while hidden: the view shows the lines as they were at the pause, and counts the rest.
+    model.setProperty("active", false);
+    log.submit("host", "info", "before pause");
+    model.refresh();
+    model.setPaused(true);
+    log.submit("host", "info", "paused one");
+    log.submit("host", "info", "paused two");
+    model.refresh();
+    check(resets == 1 && model.pendingCount() == 2, "a paused, inactive model only counts new lines");
+    model.setProperty("active", true);
+    check(resets == 2 && model.rowCount() == 22 && model.pendingCount() == 2,
+          "becoming active while paused shows the lines as they were at the pause");
+    model.setPaused(false);
+    check(model.rowCount() == 24 && model.pendingCount() == 0, "resuming shows the held lines");
+
+    // A clear while hidden: only what came after it shows.
+    model.setProperty("active", false);
+    log.submit("host", "info", "cleared");
+    model.refresh();
+    model.clear();
+    log.submit("host", "info", "after clear");
+    model.refresh();
+    model.setProperty("active", true);
+    check(model.rowCount() == 1 && model.data(model.index(0), Qt::DisplayRole).toString().contains("after clear"),
+          "a clear while inactive keeps only later lines");
+}
+
 static void
 clearAndReopen() {
     for (const bool flushBeforeClear : {false, true}) {
@@ -475,6 +532,7 @@ main(int argc, char** argv) {
     DiagnosticsLog::installTap();
     earlyHostCaptureAndBridge();
     clearWithConcurrentSubmit();
+    inactiveModelDefersResets();
     clearAndReopen();
     test_live_formatted_keys();
     realKeySources();

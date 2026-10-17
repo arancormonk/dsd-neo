@@ -3914,7 +3914,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_call_history_model
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(
         dsd-neo_test_ui_qt_call_history_model
@@ -4170,6 +4170,35 @@ if(DSD_ENABLE_QT_UI)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     )
 
+    # Issue #718: the composing-text commit Save, Cancel, Back and sheet
+    # dismissal run before reading a field. A real TextInput gets preedit text
+    # the way an Android keyboard sends it mid-word; offscreen has no input
+    # method, so this runs the helper's own fallback commit.
+    add_executable(
+        dsd-neo_test_ui_qt_input_commit
+        ui/test_ui_qt_input_commit.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_input_commit
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_input_commit
+        PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_input_commit
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_input_commit PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_INPUT_COMMIT COMMAND dsd-neo_test_ui_qt_input_commit)
+    set_tests_properties(
+        UI_QT_INPUT_COMMIT
+        PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    )
+
     # What the spectrum model does with the frames a producer hands it, and what
     # the waterfall does with the model: the frame-identity check that keeps a
     # re-read of an unreplaced frame from scrolling a duplicate row, the history
@@ -4289,6 +4318,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
@@ -4405,6 +4435,8 @@ if(DSD_ENABLE_QT_UI)
                 signal_search
                 signal_search_handoff
                 receiver_choice
+                modal_sheet_outside_tap
+                input_commit
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
@@ -17001,12 +17033,20 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             usb_receiver
     )
+    add_test(
+        NAME ANDROID_ENGINE_STOP_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            engine_stop
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
         ANDROID_USB_RECEIVER_JVM
+        ANDROID_ENGINE_STOP_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

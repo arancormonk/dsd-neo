@@ -15,9 +15,11 @@
 #include <QLocale>
 #include <QPair>
 #include <QRegularExpression>
+#include <QThread>
 #include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
+#include <atomic>
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
@@ -59,6 +61,20 @@ constexpr int kSaveDelayMs = 3000;
 /* How far down the log a live fragment looks for the call it continues: fragments arrive while
  * their call is among the newest rows. */
 constexpr int kMergeScanRows = 32;
+
+#ifdef DSD_NEO_TEST_HOOKS
+std::atomic<void (*)(const QThread*)> g_store_build_observer{nullptr};
+
+void
+note_store_build() {
+    if (auto* observer = g_store_build_observer.load()) {
+        observer(QThread::currentThread());
+    }
+}
+#else
+void
+note_store_build() {}
+#endif
 
 /** @brief End of a logged row on the shared timeline; unknown durations count as 0. */
 qint64
@@ -263,6 +279,24 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
         return QVariant();
     }
     return row_role_value(m_rows.at(index.row()), role);
+}
+
+QList<uint32_t>
+CallHistoryModel::heardTalkgroups(qint64 forSession) const {
+    QList<uint32_t> heard;
+    QSet<uint32_t> seen;
+    for (const Row& row : m_rows) {
+        if (row.kind != KindVoice || (forSession > 0 && row.session != forSession) || row.tg == 0U
+            || row.tg > UINT32_MAX) {
+            continue;
+        }
+        const auto tg = static_cast<uint32_t>(row.tg);
+        if (!seen.contains(tg)) {
+            seen.insert(tg);
+            heard.append(tg);
+        }
+    }
+    return heard;
 }
 
 QHash<int, QByteArray>
@@ -1265,10 +1299,18 @@ CallHistoryModel::scheduleSave() {
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+CallHistoryModel::setStoreBuildObserverForTest(void (*observer)(const QThread* thread)) {
+    g_store_build_observer.store(observer);
+}
+#endif
+
 QJsonArray
-CallHistoryModel::rowsToJson() const {
+CallHistoryModel::rowsToJson(const QList<Row>& rows) {
+    note_store_build();
     QJsonArray array;
-    for (const Row& row : m_rows) {
+    for (const Row& row : rows) {
         QJsonObject obj;
         obj.insert(QLatin1String("when"), row.when);
         obj.insert(QLatin1String("name"), row.name);
@@ -1302,13 +1344,14 @@ CallHistoryModel::rowsToJson() const {
 }
 
 QJsonArray
-CallHistoryModel::seenToJson() const {
+CallHistoryModel::seenToJson(const QHash<QString, SeenState>& seen) {
     // Newest first and capped: the seen map only has to outlive what the ring can
     // still resurrect, not the whole persisted log. Newest in retention order, so the
     // running session's entries, which are all the ring can resurrect, are the ones kept.
+    note_store_build();
     QList<QPair<QString, SeenState>> entries;
-    entries.reserve(m_seen.size());
-    for (auto it = m_seen.cbegin(); it != m_seen.cend(); ++it) {
+    entries.reserve(seen.size());
+    for (auto it = seen.cbegin(); it != seen.cend(); ++it) {
         entries.append(qMakePair(it.key(), it.value()));
     }
     std::sort(entries.begin(), entries.end(),
@@ -1347,8 +1390,8 @@ CallHistoryModel::seenToJson() const {
 
 void
 CallHistoryModel::saveNow() const {
-    json_store_save_array(QLatin1String(kStoreFileName), rowsToJson());
-    json_store_save_array(QLatin1String(kSeenStoreFileName), seenToJson());
+    json_store_save_array(QLatin1String(kStoreFileName), rowsToJson(m_rows));
+    json_store_save_array(QLatin1String(kSeenStoreFileName), seenToJson(m_seen));
 }
 
 void
@@ -1361,11 +1404,18 @@ CallHistoryModel::startAsyncSave() {
     }
     m_saveInFlight = true;
     m_saveDirty = false;
-    const QJsonArray rows = rowsToJson();
-    const QJsonArray seen = seenToJson();
-    m_savePool.start([this, rows, seen]() {
-        json_store_save_array(QLatin1String(kStoreFileName), rows);
-        json_store_save_array(QLatin1String(kSeenStoreFileName), seen);
+    // Snapshots the worker owns outright. Detached here, on the GUI thread, so the GUI thread's later
+    // edits of m_rows and m_seen and the worker's reads never touch one container block: an implicitly
+    // shared copy would leave the GUI thread deciding whether to detach from a relaxed reference count
+    // the worker drops. Copying the containers costs a fraction of a millisecond at a full log; building
+    // their JSON costs tens. The rows' strings stay shared, and nothing edits a string in place.
+    QList<Row> rows = m_rows;
+    rows.detach();
+    QHash<QString, SeenState> seen = m_seen;
+    seen.detach();
+    m_savePool.start([this, rows = std::move(rows), seen = std::move(seen)]() {
+        json_store_save_array(QLatin1String(kStoreFileName), rowsToJson(rows));
+        json_store_save_array(QLatin1String(kSeenStoreFileName), seenToJson(seen));
         // Back to the GUI thread; the destructor's waitForDone() keeps `this`
         // alive for the worker's whole run.
         QMetaObject::invokeMethod(this, &CallHistoryModel::onSaveFinished, Qt::QueuedConnection);

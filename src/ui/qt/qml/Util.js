@@ -591,3 +591,31 @@ function notIncludedText(items) {
 function restorePartWayText() {
     return qsTr("This restore is part-way through and can't be cancelled. Close and reopen DSD-neo to finish it.")
 }
+
+// The monitor's "Signal & site" summary (issue #718) names the site in one
+// token: the "SITE n" part of the site line where it has one, else the protocol
+// and its first identity ("DMR · CC 1").
+function siteShortForm(line) {
+    if (!line)
+        return ""
+    var parts = String(line).split(" · ")
+    for (var i = 0; i < parts.length; ++i) {
+        if (parts[i].indexOf("SITE ") === 0)
+            return parts[i]
+    }
+    return parts.slice(0, 2).join(" · ")
+}
+
+// Join summary tokens ({text, color}, color empty for the row's own colour)
+// with " · ", as StyledText for the row and as plain text for accessibility.
+function summaryMarkup(tokens) {
+    var markup = []
+    var plain = []
+    for (var i = 0; i < tokens.length; ++i) {
+        var text = String(tokens[i].text)
+        var escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        markup.push(tokens[i].color ? "<font color=\"" + tokens[i].color + "\">" + escaped + "</font>" : escaped)
+        plain.push(text)
+    }
+    return {markup: markup.join(" · "), plain: plain.join(" · ")}
+}

@@ -337,6 +337,7 @@ test_app_prefs(void) {
         AppPrefs prefs;
         expect("default appearance follows the system", prefs.appearance() == AppPrefs::FollowSystem);
         expect("onboarding starts not-done", !prefs.onboardingDone());
+        expect("the monitor's Signal & site readings start closed", !prefs.monitorDetailsExpanded());
         expect("background listening defaults on", prefs.backgroundListening());
         expect("skip-encrypted defaults on", prefs.skipEncrypted());
         expect("quick lockouts default to saving", prefs.persistTgLockouts());
@@ -866,6 +867,7 @@ test_prefs_key_table(void) {
         {"searchSourceType", QStringLiteral("airspy"), "search/sourceType"},
         {"searchHost", QStringLiteral("host"), "search/host"},
         {"searchPort", 4321, "search/port"},
+        {"monitorDetailsExpanded", true, "monitor/detailsExpanded"},
     };
     QStringList covered;
     int writable = 0;
@@ -944,9 +946,10 @@ test_prefs_key_table(void) {
     }
     local.sort();
     const QStringList wantLocal = {
-        QStringLiteral("location/lastAccuracyM"),   QStringLiteral("location/lastFixAt"),
-        QStringLiteral("location/lastLat"),         QStringLiteral("location/lastLon"),
-        QStringLiteral("ui/notificationExplained"), QStringLiteral("ui/onboardingDone"),
+        QStringLiteral("location/lastAccuracyM"),  QStringLiteral("location/lastFixAt"),
+        QStringLiteral("location/lastLat"),        QStringLiteral("location/lastLon"),
+        QStringLiteral("monitor/detailsExpanded"), QStringLiteral("ui/notificationExplained"),
+        QStringLiteral("ui/onboardingDone"),
     };
     expect("device-local set is exactly the pinned one", local == wantLocal);
     const QStringList portable = AppPrefs::portableKeys();
@@ -960,9 +963,10 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("search/host")) && portable.contains(QStringLiteral("search/port")));
 
     const QVariantMap before = AppPrefs::readPortable();
-    expect("readPortable returns only portable keys", !before.isEmpty()
-                                                          && !before.contains(QStringLiteral("location/lastLat"))
-                                                          && !before.contains(QStringLiteral("ui/onboardingDone")));
+    expect("readPortable returns only portable keys",
+           !before.isEmpty() && !before.contains(QStringLiteral("location/lastLat"))
+               && !before.contains(QStringLiteral("ui/onboardingDone"))
+               && !before.contains(QStringLiteral("monitor/detailsExpanded")));
     for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
         expect("readPortable key is portable", portable.contains(it.key()));
     }
@@ -977,6 +981,7 @@ test_prefs_key_table(void) {
 
     file.setValue(QStringLiteral("ui/onboardingDone"), true);
     file.setValue(QStringLiteral("location/lastLat"), 9.0);
+    file.setValue(QStringLiteral("monitor/detailsExpanded"), true);
     file.sync();
 
     QVariantMap incoming;
@@ -984,6 +989,7 @@ test_prefs_key_table(void) {
     incoming.insert(QStringLiteral("rr/username"), QStringLiteral("restored"));
     incoming.insert(QStringLiteral("listen/keepAwake"), true);
     incoming.insert(QStringLiteral("ui/onboardingDone"), false);
+    incoming.insert(QStringLiteral("monitor/detailsExpanded"), false);
     incoming.insert(QStringLiteral("not/a/key"), 1);
     incoming.insert(QStringLiteral("search/sourceType"), QStringLiteral("airspy"));
     incoming.insert(QStringLiteral("search/port"), 5555);
@@ -996,6 +1002,7 @@ test_prefs_key_table(void) {
     expect("absent portable keys are removed",
            !after.contains(QStringLiteral("tuner/ppm")) && !after.contains(QStringLiteral("explore/host")));
     expect("device-local keys are untouched", after.value(QStringLiteral("ui/onboardingDone")).toBool()
+                                                  && after.value(QStringLiteral("monitor/detailsExpanded")).toBool()
                                                   && after.value(QStringLiteral("location/lastLat")).toInt() == 9);
     expect("unknown keys are ignored", !after.contains(QStringLiteral("not/a/key")));
     {

@@ -58,6 +58,11 @@ platform() {
 
 static bool running;
 static int serviceStops;
+// The published phase when the stop intent was dispatched, and the host's real-time clock (#718).
+static int phaseAtStopDispatch = -1;
+static uint64_t nowMs;
+static int hostDiagnostics;
+static QString lastHostDiagnostic;
 // Every host refresh reads the lifecycle record and refreshes presentation and the local device.
 static int lifecycleReads;
 static int hostRefreshes;
@@ -78,6 +83,11 @@ DecoderHostAndroid::readEngineRunning() {
     return running;
 }
 
+uint64_t
+DecoderHostAndroid::readRealtimeMs() {
+    return nowMs;
+}
+
 QByteArray
 DecoderHostAndroid::readServiceState() {
     return service_state();
@@ -91,6 +101,7 @@ DecoderHostAndroid::serviceFailureText() const {
 void
 DecoderHostAndroid::requestServiceStop() {
     ++serviceStops;
+    phaseAtStopDispatch = static_cast<int>(sessionState());
 }
 
 void
@@ -127,7 +138,10 @@ void
 DecoderHostAndroid::cancelLocationRequest(qint64) {}
 
 void
-DecoderHostAndroid::hostDiagnostic(const QString&) {}
+DecoderHostAndroid::hostDiagnostic(const QString& line) {
+    ++hostDiagnostics;
+    lastHostDiagnostic = line;
+}
 
 void
 DecoderHostAndroid::shareDiagnostics(const QString&, const QString&) {}
@@ -363,12 +377,89 @@ check_document_dispatch() {
           "after an abort the base host's copies fail too");
 }
 
+/* #718: Stop listening shows Stopping the moment it is tapped, before the service has seen the intent, and holds it
+ * through the RUNNING polls that arrive until the service reports STOPPING. */
+static void
+check_stop_publishes_stopping() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    int changes = 0;
+    QObject::connect(&host, &DecoderHost::sessionStateChanged, [&changes]() { ++changes; });
+    serviceStops = 0;
+    hostDiagnostics = 0;
+    nowMs = 10000;
+    retained_record() = {{"sessionId", 60}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    retained_record() = {{"sessionId", 61}, {"state", "RUNNING"}, {"reason", dsd_android::kRunPending}};
+    running = true;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "the session runs before the stop");
+
+    changes = 0;
+    phaseAtStopDispatch = -1;
+    host.stop();
+    check(serviceStops == 1, "the stop intent is dispatched");
+    check(phaseAtStopDispatch == DecoderHost::Stopping, "Stopping is published before the intent is dispatched");
+    check(host.sessionState() == DecoderHost::Stopping && host.transitioning() && changes == 1,
+          "the stop publishes Stopping at once");
+    check(host.statusText() == QStringLiteral("Stopping…"), "the status reads Stopping");
+    for (int poll = 1; poll <= 4; ++poll) {
+        nowMs = 10000 + 250 * poll;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Stopping, "RUNNING polls before the service sees the stop hold");
+    }
+    retained_record() = {{"sessionId", 61}, {"state", "STOPPING"}, {"reason", dsd_android::kRunPending}};
+    nowMs += 250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Stopping, "service STOPPING holds");
+    retained_record() = {{"sessionId", 61}, {"state", "IDLE"}, {"reason", dsd_android::kRunCancelled}};
+    running = false;
+    nowMs += 250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && !host.transitioning(), "the terminal record publishes Idle");
+    check(hostDiagnostics == 0, "a delivered stop logs nothing");
+
+    /* A stop the service never saw: two seconds of RUNNING give the user a working Stop button back. */
+    retained_record() = {{"sessionId", 62}, {"state", "RUNNING"}, {"reason", dsd_android::kRunPending}};
+    running = true;
+    nowMs = 20000;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "the next session runs");
+    host.stop();
+    check(host.sessionState() == DecoderHost::Stopping, "the second stop publishes Stopping");
+    nowMs = 21999;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Stopping && hostDiagnostics == 0, "the grace holds Stopping");
+    nowMs = 22000;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running && host.statusText() == QStringLiteral("Decoding"),
+          "a stop unanswered for 2 s republishes Running");
+    check(hostDiagnostics == 1 && !lastHostDiagnostic.isEmpty(), "the lost stop is logged once");
+    nowMs = 22250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running && hostDiagnostics == 1, "Running stays without more logging");
+    check(serviceStops == 2, "each stop dispatched one intent");
+
+    /* Nothing to stop: Idle publishes nothing new. */
+    retained_record() = {{"sessionId", 62}, {"state", "IDLE"}, {"reason", dsd_android::kRunCancelled}};
+    running = false;
+    host.refresh();
+    changes = 0;
+    host.stop();
+    check(host.sessionState() == DecoderHost::Idle && changes == 0, "a stop from Idle publishes no phase");
+    retained_record() = QJsonObject();
+    serviceStops = 0;
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     using namespace dsd_android;
     check_engine_busy();
     check_document_dispatch();
+    check_stop_publishes_stopping();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

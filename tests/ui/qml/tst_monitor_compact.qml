@@ -54,27 +54,33 @@ Item {
             testContext.setMetric("leadSlot", 0);
             testContext.setHostRunning(false);
         }
+        // The call actions are one row of four on a 360 dp phone (#718): the
+        // talkgroup list left the row for the session menu, and the toggles keep
+        // short labels, so the longest word is "Avoid" and it fits its cell.
         function test_quick_row_at_360_dp() {
             root.width = 360;
             root.height = 800;
             Ui.Theme.fontScale = 1;
-            var button = findChild(monitor, "talkgroupsButton");
-            verify(button.visible);
-            compare(button.accessibleName, "Talkgroups");
-            var label = null;
-            for (var child of button.children) {
-                if (child instanceof Text && child.text === button.text)
-                    label = child;
+            compare(findChild(monitor, "talkgroupsButton"), null);
+            var actions = findChild(monitor, "monitorLiveActions");
+            compare(actions.columns, 4);
+            for (var name of ["muteButton", "holdTalkgroupButton", "skipButton", "avoidButton"]) {
+                var button = findChild(monitor, name);
+                verify(button.visible, name);
+                var label = null;
+                for (var child of button.children) {
+                    if (child instanceof Text && child.text === button.text)
+                        label = child;
+                }
+                verify(label !== null, name);
+                compare(label.wrapMode, Text.WordWrap);
+                // Broken at a space, never inside a word.
+                verify(label.lineCount <= actions.labelLines, name);
+                verify(!label.truncated && label.contentWidth <= label.width + 0.5, name + " fits its cell");
+                verify(button.mapToItem(monitor, button.width, 0).x <= 360);
             }
-            verify(label !== null);
-            // The short label is kept: the grid measures its cells by every label they can show.
-            compare(button.text, "TG list");
-            compare(label.lineCount, 1);
-            verify(label.implicitWidth <= label.width, "TG list fits its cell on one line");
-            compare(label.wrapMode, Text.WordWrap);
-            verify(button.mapToItem(monitor, button.width, 0).x <= 360);
             root.height = 360;
-            verify(!button.visible, "compact hiding stays intact");
+            compare(findChild(monitor, "talkgroupsButton"), null, "no size brings the talkgroup list back");
         }
 
         function test_explore_subtitle_scales_data() {
@@ -115,40 +121,48 @@ Item {
             browse.visible = false;
             rr.visible = false;
         }
+        // The recent calls are always reachable by scrolling the one list (#718).
+        // Where a fixed hero fits, it holds still while they scroll; on a
+        // landscape phone nothing fixed fits but Stop, so the hero scrolls away
+        // with the rest.
         function test_scrolls_rows_below_fixed_hero_data() {
             return [
-                {
-                    tag: "normal",
-                    scale: 1
-                },
-                {
-                    tag: "large fonts",
-                    scale: 1.6
-                }
+                {tag: "landscape", width: 640, height: 360, scale: 1, fixed: false},
+                {tag: "landscape large fonts", width: 640, height: 360, scale: 1.6, fixed: false},
+                {tag: "portrait", width: 411, height: 780, scale: 1, fixed: true},
+                {tag: "portrait large fonts", width: 411, height: 780, scale: 1.6, fixed: true}
             ];
         }
         function test_scrolls_rows_below_fixed_hero(data) {
+            root.width = data.width;
+            root.height = data.height;
             Ui.Theme.fontScale = data.scale;
-            var body = findChild(monitor, "monitorBody");
+            callHistory.clearAll();
+            callHistory.pushMany(12, "TODAY");
+            var list = findChild(monitor, "recentCallsList");
             var hero = findChild(monitor, "monitorHero");
             var other = findChild(monitor, "otherSlotPanel");
             var recent = findChild(monitor, "recentCallsPanel");
-            verify(body !== null && hero !== null && other !== null && recent !== null);
+            verify(list !== null && hero !== null && other !== null && recent !== null);
             tryVerify(function () {
-                return body.height > 0 && body.contentHeight > body.height;
+                return list.height > 0 && list.contentHeight > list.height;
             });
             verify(other.visible);
-            verify(recent.height >= 120);
+            compare(monitor.tier === 5, !data.fixed);
             waitForRendering(monitor);
             var heroY = hero.mapToItem(monitor, 0, 0).y;
-            body.contentY = body.contentHeight - body.height;
+            list.contentY = list.originY + list.contentHeight - list.height;
             wait(20);
-            compare(hero.mapToItem(monitor, 0, 0).y, heroY);
-            verify(body.contentY > 0);
+            if (data.fixed)
+                compare(hero.mapToItem(monitor, 0, 0).y, heroY);
+            else
+                verify(hero.mapToItem(monitor, 0, 0).y < heroY, "the hero scrolls with the calls");
+            verify(list.contentY > list.originY);
             tryVerify(function () {
-                body.contentY = body.contentHeight - body.height;
-                return recent.mapToItem(body, 0, recent.height).y <= body.height + 1;
+                list.contentY = list.originY + list.contentHeight - list.height;
+                return recent.mapToItem(list, 0, recent.height).y <= list.height + 1;
             }, 1000, "recent calls remain reachable by scrolling");
+            callHistory.clearAll();
         }
         function test_keyboard_visible_sheet_scrolls() {
             Ui.Theme.fontScale = 1.6;

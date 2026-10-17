@@ -279,6 +279,39 @@ DiagnosticsLogModel::markSessionStarting() {
 }
 
 void
+DiagnosticsLogModel::setActive(bool value) {
+    if (value == m_active) {
+        return;
+    }
+    m_active = value;
+    Q_EMIT activeChanged();
+    if (!m_active) {
+        return;
+    }
+    if (m_stale) {
+        // One reset for everything consumed while hidden. Paused, that is the lines as they were at the
+        // pause (the pending count covers the rest); otherwise the newest lines.
+        QStringList rows = m_held;
+        if (!m_paused) {
+            quint64 generation = 0;
+            rows = m_log->snapshot(&generation);
+            m_seen = generation;
+        }
+        showRows(rows);
+    }
+    refresh();
+}
+
+void
+DiagnosticsLogModel::showRows(const QStringList& rows) {
+    m_held.clear();
+    m_stale = false;
+    beginResetModel();
+    m_rows = rows;
+    endResetModel();
+}
+
+void
 DiagnosticsLogModel::refresh() {
     quint64 generation = 0;
     const auto rows = m_log->snapshot(&generation);
@@ -290,10 +323,14 @@ DiagnosticsLogModel::refresh() {
     if (m_paused || generation == m_seen) {
         return;
     }
-    beginResetModel();
-    m_rows = rows;
     m_seen = generation;
-    endResetModel();
+    if (!m_active) {
+        // Consumed as an active model would (a pause counts from here), shown when a view opens.
+        m_held = rows;
+        m_stale = true;
+        return;
+    }
+    showRows(rows);
 }
 
 QString
@@ -311,6 +348,8 @@ DiagnosticsLogModel::copyAll() const {
 void
 DiagnosticsLogModel::clear() {
     const quint64 clearedGeneration = m_log->clear();
+    m_held.clear();
+    m_stale = false;
     beginResetModel();
     m_rows.clear();
     m_seen = clearedGeneration;

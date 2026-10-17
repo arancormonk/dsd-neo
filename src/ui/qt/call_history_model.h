@@ -51,11 +51,17 @@
 #include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
+
+#include "heard_talkgroup_source.h"
+
+class QThread;
 
 namespace dsd_qt {
 
-class CallHistoryModel : public QAbstractListModel {
+class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource {
     Q_OBJECT
+    Q_INTERFACES(dsd_qt::HeardTalkgroupSource)
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
@@ -152,6 +158,9 @@ class CallHistoryModel : public QAbstractListModel {
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
 
+    /** @brief HeardTalkgroupSource: read straight from the rows, no QVariant per row (issue #718). */
+    QList<uint32_t> heardTalkgroups(qint64 forSession) const override;
+
     /**
      * @brief Ingest newly committed voice rows from the snapshot ring.
      *
@@ -180,6 +189,24 @@ class CallHistoryModel : public QAbstractListModel {
      * ring; its clear covers what the first read finds, or nothing if a start comes first.
      */
     Q_INVOKABLE void clearAll();
+
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief Call @p observer with the thread each store's JSON is built on (nullptr stops). */
+    static void setStoreBuildObserverForTest(void (*observer)(const QThread* thread));
+
+    /** @brief Start the debounced save now, as its timer would. */
+    void
+    startSaveForTest() {
+        m_saveTimer.stop();
+        startAsyncSave();
+    }
+
+    /** @brief Wait for the save worker to finish its write. */
+    void
+    waitForSaveForTest() {
+        m_savePool.waitForDone();
+    }
+#endif
 
   Q_SIGNALS:
     void countChanged();
@@ -360,15 +387,19 @@ class CallHistoryModel : public QAbstractListModel {
     /**
      * @brief Hand the current stores to the save worker.
      *
-     * The arrays are built here on the GUI thread (cheap); the serialization and
-     * the two file writes — the part that can stall a frame for tens of
-     * milliseconds on phone flash — run on m_savePool. One save in flight at a
-     * time; a request that lands mid-write re-arms the debounce timer instead.
+     * The GUI thread copies the rows and the seen map and detaches both copies eagerly, so the
+     * worker owns its containers outright and never shares a block with later GUI edits. Building
+     * the JSON — tens of milliseconds at a full log (issue #718) — and the two file writes run on
+     * m_savePool, which reads nothing but those copies. One save in flight at a time; a request
+     * that lands mid-write marks the stores dirty, and the save re-arms the debounce timer when
+     * it finishes.
      */
     void startAsyncSave();
     void onSaveFinished();
-    QJsonArray rowsToJson() const;
-    QJsonArray seenToJson() const;
+    /** @brief The rows store; reads only its argument, so the save worker may call it. */
+    static QJsonArray rowsToJson(const QList<Row>& rows);
+    /** @brief The seen store, newest first and capped; reads only its argument, so the save worker may call it. */
+    static QJsonArray seenToJson(const QHash<QString, SeenState>& seen);
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
         Returns whether either slot moved. */
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);

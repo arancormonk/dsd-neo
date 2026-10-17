@@ -74,6 +74,33 @@ int dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_stru
  */
 void dsd_rdio_upload_shutdown(void);
 
+/**
+ * Abandon the rdio API uploads still pending, for a stop the user asked for.
+ *
+ * This is the user-stop path only (the Android app's stops and restarts the user starts), which is why the shutdown's
+ * log line reads "stopped by the user". Callers must not use it for any other kind of stop.
+ *
+ * Nonblocking and callable from any thread at any time, including while dsd_rdio_upload_shutdown() is already
+ * draining on another thread. The worker takes no further jobs, stops between retry attempts and aborts a transfer
+ * in flight; dsd_rdio_upload_shutdown() still owns the join, and logs once how many uploads were not sent. Their WAV
+ * and sidecar files stay on disk, since deletion only ever follows a successful upload. Uploads queued after this
+ * call, such as the final call closed during cleanup, are not sent either.
+ *
+ * Normal ends (end of a replay, input closed, device detached) and the CLI do not call this: their shutdown drains.
+ * The request lasts until dsd_rdio_upload_shutdown() returns or dsd_rdio_upload_cancel_reset() is called. A no-op in
+ * builds without libcurl.
+ */
+void dsd_rdio_upload_cancel(void);
+
+/**
+ * Clear a dsd_rdio_upload_cancel() request before a new session starts.
+ *
+ * dsd_rdio_upload_shutdown() clears it on return already; an embedding host that runs several sessions calls this
+ * when it configures the next one, so a cancel that arrived after the last session's shutdown cannot leak into it.
+ * Call only between sessions, never while a session is running. A no-op in builds without libcurl.
+ */
+void dsd_rdio_upload_cancel_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -117,6 +117,43 @@ def document_copy_codes_match():
     return None
 
 
+def stop_callers_carry_their_cause():
+    """Each production nativeStop caller names its own StopCause; only the user's Stop may abandon rdio uploads."""
+    app = REPO / APP_SOURCES
+    try:
+        texts = {path.name: path.read_text(encoding="utf-8") for path in sorted(app.glob("*.kt"))}
+    except OSError as error:
+        return f"cannot read the Android sources: {error}"
+    for name, text in texts.items():
+        if name == "DsdNative.kt":
+            continue
+        for match in re.finditer(r"DsdNative(?:\.|::)nativeStop\b", text):
+            line = text[: match.start()].count("\n") + 1
+            head = text[max(0, match.start() - 160) : match.start()]
+            if not re.search(r"EngineStop\.request\(\s*[\w.]+,\s*$", head):
+                return f"{APP_SOURCES / name}:{line}: call nativeStop only through EngineStop.request(cause, ...)"
+    # The expected cause at each caller, as (file, pattern, what it pins).
+    expected = (
+        ("UsbSourceManager.kt", r"EngineStop\.request\(StopCause\.DEVICE_DETACHED,", "a USB detach drains"),
+        ("DsdNeoActivity.kt", r"EngineStop\.request\(StopCause\.LIFECYCLE,", "the Activity's teardown drains"),
+        ("DecoderService.kt", r"stopDecoding\(StopCause\.LIFECYCLE\)", "the service's onDestroy drains"),
+        (
+            "DecoderService.kt",
+            r"ACTION_STOP -> \{(?:\s*//[^\n]*)*\s*stopDecoding\(StopCause\.fromWire\(intent\.getStringExtra\(EXTRA_STOP_CAUSE\)\)\)",
+            "a stop intent's cause comes from its sender",
+        ),
+    )
+    for name, pattern, what in expected:
+        if not re.search(pattern, texts.get(name, "")):
+            return f"{APP_SOURCES / name}: {what}; expected /{pattern}/"
+    # Every stop intent the app sends is the user's: the Qt host's Stop listening and the notification's Stop action.
+    service = texts.get("DecoderService.kt", "")
+    senders = re.findall(r"\.setAction\(ACTION_STOP\)(\s*\.putExtra\(EXTRA_STOP_CAUSE, StopCause\.USER\.wire\))?", service)
+    if len(senders) != 2 or not all(senders):
+        return f"{APP_SOURCES / 'DecoderService.kt'}: both ACTION_STOP senders must put EXTRA_STOP_CAUSE = StopCause.USER.wire"
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -169,6 +206,12 @@ SUITES = {
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
     "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
+    # Why the engine stops (#718 D4): only the user's Stop abandons pending rdio uploads. Plain Kotlin with no Android
+    # imports, so no stubs; the source check pins the cause each production caller passes.
+    "engine_stop": Suite(
+        builds=(Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),),
+        checks=(stop_callers_carry_their_cause,),
+    ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure
     # ScreenWake it answers with, against a PowerManager stub that models reference counting.

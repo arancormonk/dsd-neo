@@ -41,7 +41,12 @@ object DsdNative {
 
     external fun nativeRun(): Int
 
-    external fun nativeStop(): Int
+    /**
+     * Raises the engine's stop flag. [userRequested] is true only for the user's own Stop, which
+     * also abandons the rdio uploads still pending instead of waiting for them (#718 D4). Call it
+     * through [EngineStop.request], which takes the reason from the caller.
+     */
+    external fun nativeStop(userRequested: Boolean): Int
 
     external fun nativeDestroy(): Int
 

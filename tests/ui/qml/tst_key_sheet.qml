@@ -78,7 +78,7 @@ Item {
             button.activate();
             var modal = findChild(monitor, "keySheet");
             verify(modal.visible);
-            verify(!findChild(monitor, "monitorBody").enabled);
+            verify(!findChild(monitor, "recentCallsList").enabled);
             monitor.visible = false;
             verify(!modal.visible);
         }
@@ -159,16 +159,16 @@ Item {
             }
             return null;
         }
-        // Beside test_cancel_and_force_only: Close, a tap beside the panel or Back
-        // with an unapplied change asks first; discarding applies nothing and
-        // resets the draft.
+        // Beside test_cancel_and_force_only: Close, Back or Escape with an
+        // unapplied change asks first; discarding applies nothing and resets the
+        // draft. A tap beside the panel is not a way out (issue #718).
         function test_close_with_a_change_asks_data() {
             return [
                 {tag: "key by Close", change: "key", method: "close"},
-                {tag: "key by scrim", change: "key", method: "scrim"},
+                {tag: "key by Escape", change: "key", method: "escape"},
                 {tag: "key by Back", change: "key", method: "back"},
-                {tag: "identifier policy by scrim", change: "force", method: "scrim"},
-                {tag: "profile and key by scrim", change: "profile+key", method: "scrim"}
+                {tag: "identifier policy by Escape", change: "force", method: "escape"},
+                {tag: "profile and key by Back", change: "profile+key", method: "back"}
             ];
         }
         function test_close_with_a_change_asks(data) {
@@ -179,8 +179,10 @@ Item {
                     findChild(sheet, "keySheetClose").activate();
                 else if (data.method === "back")
                     verify(Ui.Navigation.back(sheet.Window.window));
-                else
-                    tapBeside(sheet);
+                else {
+                    sheet.forceActiveFocus();
+                    keyClick(Qt.Key_Escape);
+                }
             };
             dismiss();
             verify(!sheet.visible, "an untouched sheet closes without asking");
@@ -220,7 +222,7 @@ Item {
         function test_unapplied_profile_asks_about_applying_data() {
             return [
                 {tag: "picked, Close", how: "pick", method: "close", scope: 0},
-                {tag: "picked, scrim", how: "pick", method: "scrim", scope: 0},
+                {tag: "picked, Back", how: "pick", method: "back", scope: 0},
                 {tag: "saved by the matching editor", how: "saved", method: "close", scope: 0},
                 {tag: "apply refused", how: "failed", method: "close", scope: 0},
                 {tag: "target scope", how: "scope", method: "close", scope: 1}
@@ -253,7 +255,7 @@ Item {
                 if (data.method === "close")
                     findChild(sheet, "keySheetClose").activate();
                 else
-                    tapBeside(sheet);
+                    verify(Ui.Navigation.back(sheet.Window.window));
                 verify(sheet.visible, "an unapplied profile is asked about");
                 var discard = shownDiscard(sheet);
                 verify(discard !== null);
@@ -283,6 +285,24 @@ Item {
             } finally {
                 verify(decryptionProfiles.removeProfile(uid).ok);
             }
+        }
+        // Issue #718: a form sheet. A tap beside the panel keeps it, with or
+        // without a change, and asks nothing.
+        function test_outside_tap_keeps_the_sheet() {
+            waitForRendering(sheet);
+            tapBeside(sheet);
+            wait(50);
+            verify(sheet.visible, "an untouched sheet stays open");
+            editor().keyType = "basic";
+            editor().keyValue = String(17 * 3);
+            tapBeside(sheet);
+            wait(50);
+            verify(sheet.visible, "a typed draft stays open");
+            verify(!shownDiscard(sheet), "and nothing is asked");
+            compare(editor().keyValue, String(17 * 3));
+            findChild(sheet, "keySheetClose").activate();
+            findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+            verify(!sheet.visible);
         }
         function named(item, name) {
             if (!item)

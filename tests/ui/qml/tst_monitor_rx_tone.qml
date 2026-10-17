@@ -10,7 +10,8 @@ Item {
     id: root
     width: 411
     height: 700
-    Ui.MonitorScreen { id: monitor; anchors.fill: parent }
+    // The readings under test live in the Monitor's "Signal & site" disclosure (#718), open here.
+    Ui.MonitorScreen { id: monitor; anchors.fill: parent; detailsExpanded: true }
     TestCase {
         name: "MonitorRxTone"
         when: windowShown
@@ -64,7 +65,7 @@ Item {
         // Whether a reading lies wholly inside the monitor's body, which clips what runs
         // past its sides and does not scroll sideways.
         function insideBody(reading) {
-            var body = item("monitorBody");
+            var body = item("recentCallsList");
             var left = reading.mapToItem(body, 0, 0).x;
             var right = reading.mapToItem(body, reading.width, 0).x;
             return left >= -0.5 && right <= body.width + 0.5;

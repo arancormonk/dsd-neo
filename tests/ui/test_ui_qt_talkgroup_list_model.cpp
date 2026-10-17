@@ -385,6 +385,73 @@ test_temporary_avoid_status() {
            model.data(exact, TalkgroupListModel::TemporaryAvoidCountRole).toULongLong() == 0);
 }
 
+/* Counts the history reads that go through the item-model interface. */
+class CountingHistory : public CallHistoryModel {
+  public:
+    mutable int dataCalls = 0;
+
+    QVariant
+    data(const QModelIndex& index, int role) const override {
+        ++dataCalls;
+        return CallHistoryModel::data(index, role);
+    }
+};
+
+/* Issue #718: the heard set is rebuilt on every history change. With a full 1000-row log, three QVariant
+ * data() lookups per row cost the UI thread ~14 ms per call commit, so the call history's own rows are
+ * read directly. */
+void
+test_heard_rows_read_history_storage_directly() {
+    Fixture fixture;
+    CountingHistory history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    for (int i = 0; i < 200; ++i) {
+        fixture.commit(5000 + static_cast<uint32_t>(i % 50), now + 120 * i);
+    }
+    history.refresh(fixture.state);
+    expect("the history logged the calls", history.count() >= 50);
+    history.dataCalls = 0;
+    model.refresh(fixture.opts, fixture.state);
+    expect("every distinct heard talkgroup is listed", model.count() == 50);
+    expect("the heard walk reads the history without data() lookups", history.dataCalls == 0);
+}
+
+/* Coverage by overlapping listed ranges: a range that starts early and ends late covers a talkgroup past
+ * the later, shorter rows that start before it. */
+void
+test_overlapping_ranges_cover_heard_talkgroups() {
+    Fixture fixture;
+    fixture.append(100, 500, "A", "Wide", "");
+    fixture.append(200, 210, "A", "Narrow", "");
+    fixture.append(300, 300, "A", "Exact", "");
+    fixture.append(600, 700, "A", "Second wide", "");
+    fixture.append(650, 650, "A", "Second exact", "");
+    fixture.append(800, 900, "D", "Deleted range", "");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    const uint32_t heard[] = {50, 150, 400, 505, 650, 699, 701, 300, 850, 100, 500, 600, 700};
+    int offset = 0;
+    for (uint32_t tg : heard) {
+        fixture.commit(tg, now + 120 * offset++);
+    }
+    history.refresh(fixture.state);
+    model.refresh(fixture.opts, fixture.state);
+    expect("five listed rows plus the uncovered heard talkgroups", model.count() == 9);
+    for (uint32_t tg : {50U, 505U, 701U, 850U}) {
+        expect("an uncovered talkgroup is listed as heard",
+               find(model, tg).isValid() && !model.data(find(model, tg), TalkgroupListModel::ListedRole).toBool());
+    }
+    for (uint32_t tg : {150U, 400U, 699U, 500U, 700U}) {
+        expect("a covered talkgroup adds no heard row", !find(model, tg).isValid());
+    }
+}
+
 } // namespace
 
 int
@@ -407,6 +474,8 @@ main(int argc, char** argv) {
     test_policy_and_heard_rows();
     test_history_role_names_and_mutations();
     test_replay_heard_again_lists_its_talkgroups();
+    test_heard_rows_read_history_storage_directly();
+    test_overlapping_ranges_cover_heard_talkgroups();
     QDir(dataDir).removeRecursively();
     if (failures != 0) {
         return 1;

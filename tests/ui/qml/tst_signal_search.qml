@@ -104,6 +104,16 @@ Item {
             verify(!sheet.hitsPanel(x, y), "the side margin lies outside the panel");
             mouseClick(sheet, x, y);
         }
+        // Scroll the editor's panel until a control is on screen, as a finger
+        // would, leaving the focused field where it is.
+        function scrollTo(editor, control) {
+            var scroll = findChild(editor, "modalSheetScroll");
+            wait(0); // let the sheet's own focus reveal settle first
+            scroll.contentY = Math.max(0, Math.min(scroll.contentHeight - scroll.height, control.mapToItem(scroll.contentItem, 0, 0).y));
+            waitForRendering(editor);
+            var y = control.mapToItem(scroll, 0, 0).y;
+            verify(y >= 0 && y + control.height <= scroll.height, "the control is on screen");
+        }
         function shownDiscard(item) {
             if (!item || !item.visible)
                 return null;
@@ -117,19 +127,115 @@ Item {
             return null;
         }
         function dismissEditor(editor, method) {
-            if (method === "scrim")
-                tapBeside(editor);
-            else if (method === "back")
+            if (method === "back")
                 verify(Ui.Navigation.back(editor.Window.window));
             else if (method === "escape")
                 keyClick(Qt.Key_Escape);
             else
                 findChild(editor, "searchRangeCancel").activate();
         }
-        // A range edited, then dismissed by the side margin, Back, Escape or
-        // Cancel, asks before the edit goes; an untouched range just closes.
+        // A range edited, then dismissed by Back, Escape or Cancel, asks before
+        // the edit goes; an untouched range just closes.
         function test_range_editor_asks_before_dropping_edits_data() {
-            return [{tag: "scrim", method: "scrim"}, {tag: "back", method: "back"}, {tag: "escape", method: "escape"}, {tag: "cancel", method: "cancel"}];
+            return [{tag: "back", method: "back"}, {tag: "escape", method: "escape"}, {tag: "cancel", method: "cancel"}];
+        }
+        // Issue #718: the range editor is a form. A tap on the side margin keeps
+        // it open, adding or editing, changed or not, and asks nothing.
+        function test_range_editor_keeps_on_a_side_tap_data() {
+            return [{tag: "add", row: -1}, {tag: "edit", row: 0}];
+        }
+        function test_range_editor_keeps_on_a_side_tap(data) {
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(data.row, model.defaultRange());
+            waitForRendering(editor);
+            tapBeside(editor);
+            wait(50);
+            verify(editor.visible, "an untouched editor stays open");
+            var name = findChild(editor, "searchRangeName");
+            name.text = "Weekend";
+            tapBeside(editor);
+            wait(50);
+            verify(editor.visible, "an edited editor stays open");
+            verify(!shownDiscard(editor), "and asks nothing");
+            compare(name.text, "Weekend");
+            verify(Ui.Navigation.back(editor.Window.window));
+            verify(shownDiscard(editor) !== null, "Back after the change asks");
+            findChild(shownDiscard(editor), "discardDialogDiscard").activate();
+            tryCompare(editor, "visible", false);
+        }
+        // The emulator report: the whole name still composing on the keyboard.
+        // Save by tap, keyboard or accessibility action keeps it.
+        function test_range_editor_saves_a_composing_name_data() {
+            return [{tag: "tap", how: "tap"}, {tag: "keyboard or accessibility", how: "activate"}];
+        }
+        function test_range_editor_saves_a_composing_name(data) {
+            loader.item.sessionActive = false;
+            var original = model.ranges;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var name = findChild(editor, "searchRangeName");
+            name.text = "";
+            name.input.forceActiveFocus();
+            verify(testContext.composeText("UHFwe"));
+            compare(name.text, "", "the keyboard still holds the name");
+            var save = findChild(editor, "searchRangeSave");
+            if (data.how === "tap") {
+                scrollTo(editor, save);
+                mouseClick(save, save.width / 2, save.height / 2);
+            } else {
+                save.activate();
+            }
+            tryCompare(editor, "visible", false);
+            compare(model.ranges[0].name, "UHFwe", "Save keeps the composing name");
+            model.ranges = original;
+        }
+        // A change that exists only as composing text still counts: Cancel (tap
+        // or accessibility action), Back and Escape ask instead of closing.
+        function test_range_editor_counts_a_composing_edit_data() {
+            return [{tag: "cancel tap", method: "cancel tap"}, {tag: "cancel action", method: "cancel"}, {tag: "back", method: "back"}, {tag: "escape", method: "escape"}];
+        }
+        function test_range_editor_counts_a_composing_edit(data) {
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var name = findChild(editor, "searchRangeName");
+            name.input.forceActiveFocus();
+            name.input.cursorPosition = name.text.length;
+            verify(testContext.composeText("We"));
+            compare(name.text, "Local UHF");
+            if (data.method === "cancel tap") {
+                var cancel = findChild(editor, "searchRangeCancel");
+                scrollTo(editor, cancel);
+                mouseClick(cancel, cancel.width / 2, cancel.height / 2);
+            } else {
+                dismissEditor(editor, data.method);
+            }
+            verify(editor.visible, "the composing edit survives");
+            verify(shownDiscard(editor) !== null, "the editor asks before discarding it");
+            compare(name.text, "Local UHFWe");
+            findChild(shownDiscard(editor), "discardDialogDiscard").activate();
+            tryCompare(editor, "visible", false);
+            compare(model.ranges[0].name, "Local UHF", "a discarded edit is never saved");
+        }
+        // A tap inside the field being typed in is the keyboard's: it does not
+        // finish the word (cursor and suggestion handling stay with the IME).
+        function test_range_editor_tap_in_field_keeps_composing() {
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var name = findChild(editor, "searchRangeName");
+            name.text = "";
+            name.input.forceActiveFocus();
+            verify(testContext.composeText("We"));
+            mouseClick(name.input, 4, name.input.height / 2);
+            compare(name.input.preeditText, "We");
+            compare(name.text, "");
+            verify(name.input.activeFocus);
+            verify(testContext.composeText(""));
         }
         function test_range_editor_asks_before_dropping_edits(data) {
             loader.item.sessionActive = false;
@@ -165,7 +271,7 @@ Item {
         // Save keeps a valid one.
         function test_range_editor_counts_a_pending_airspy_gain_data() {
             var rows = [];
-            for (var method of ["scrim", "back", "escape", "cancel"]) {
+            for (var method of ["back", "escape", "cancel"]) {
                 rows.push({tag: method + ", valid", method: method, text: "15"});
                 rows.push({tag: method + ", not yet valid", method: method, text: ""});
             }
@@ -220,14 +326,14 @@ Item {
             editor.openFor(0, model.defaultRange());
             waitForRendering(editor);
             findChild(editor, "searchRangeName").text = "Renamed";
-            tapBeside(editor);
+            dismissEditor(editor, "back");
             verify(shownDiscard(editor) !== null);
             findChild(shownDiscard(editor), "discardDialogDiscard").activate();
             tryCompare(editor, "visible", false);
             editor.openFor(0, model.defaultRange());
             waitForRendering(editor);
             findChild(editor, "searchRangeSquelch").currentIndex = 0;
-            tapBeside(editor);
+            dismissEditor(editor, "back");
             verify(shownDiscard(editor) !== null);
             findChild(shownDiscard(editor), "discardDialogDiscard").activate();
             tryCompare(editor, "visible", false);

@@ -28,6 +28,7 @@
 
 #ifdef USE_CURL
 #include <curl/curl.h>
+#include <curl/system.h>
 #endif
 
 #define DSD_RDIO_PATH_MAX         2048
@@ -60,6 +61,14 @@ static size_t g_rdio_upload_depth = 0;
 static int g_rdio_upload_stop_requested = 0;
 static atomic_int g_rdio_upload_state = 0; // 0=uninitialized, 1=initializing, 2=ready, 3=failed, 4=stopping
 static atomic_int g_rdio_delete_after_upload_dirwatch_warned = 0;
+/* #718 D4: the user's Stop abandons the pending uploads instead of draining them. Atomic and lock-free, because the
+ * request may come from any thread at any time, including while shutdown is joining the worker or before the worker's
+ * mutex exists. The worker loop, the retry loop and the transfer's progress callback poll it. */
+static atomic_int g_rdio_upload_cancel = 0;
+/* Uploads the cancel cut off mid-attempt. Written by the worker, read by shutdown after the join. */
+static size_t g_rdio_upload_aborted = 0;
+
+#define DSD_RDIO_UPLOAD_CANCELLED (-2)
 
 static int dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path);
 
@@ -86,7 +95,10 @@ static DSD_THREAD_RETURN_TYPE
             dsd_cond_wait(&g_rdio_upload_cond, &g_rdio_upload_mutex);
         }
 
-        if (g_rdio_upload_head == NULL && g_rdio_upload_stop_requested) {
+        /* A cancelled worker takes no further jobs; shutdown counts and frees what is left after the join. The cancel
+         * needs no wakeup of its own: with jobs queued the worker is not waiting, and with none there is nothing to
+         * abandon and shutdown's broadcast ends the wait. */
+        if (atomic_load(&g_rdio_upload_cancel) != 0 || (g_rdio_upload_head == NULL && g_rdio_upload_stop_requested)) {
             dsd_mutex_unlock(&g_rdio_upload_mutex);
             break;
         }
@@ -101,18 +113,17 @@ static DSD_THREAD_RETURN_TYPE
         }
         dsd_mutex_unlock(&g_rdio_upload_mutex);
 
-#ifdef USE_CURL
-        if (dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path) == 0) {
+        const int upload_rc = dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path);
+        if (upload_rc == 0) {
             if (job->remove_meta_on_success) {
                 dsd_rdio_remove_after_upload(job->meta_path, "metadata");
             }
             if (job->remove_wav_on_success) {
                 dsd_rdio_remove_after_upload(job->wav_path, "audio");
             }
+        } else if (upload_rc == DSD_RDIO_UPLOAD_CANCELLED) {
+            g_rdio_upload_aborted++;
         }
-#else
-        (void)dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path);
-#endif
         free(job);
     }
 
@@ -145,6 +156,7 @@ dsd_rdio_upload_worker_init(void) {
         g_rdio_upload_tail = NULL;
         g_rdio_upload_depth = 0;
         g_rdio_upload_stop_requested = 0;
+        g_rdio_upload_aborted = 0;
 
         if (dsd_thread_create(&g_rdio_upload_worker, dsd_rdio_upload_worker_thread, NULL) != 0) {
             (void)dsd_cond_destroy(&g_rdio_upload_cond);
@@ -184,10 +196,22 @@ dsd_rdio_clear_upload_queue_locked(void) {
 }
 
 void
+dsd_rdio_upload_cancel(void) {
+    atomic_store(&g_rdio_upload_cancel, 1);
+}
+
+void
+dsd_rdio_upload_cancel_reset(void) {
+    atomic_store(&g_rdio_upload_cancel, 0);
+}
+
+void
 dsd_rdio_upload_shutdown(void) {
     for (;;) {
         int state = atomic_load(&g_rdio_upload_state);
         if (state == 0 || state == 3) {
+            /* No worker to stop: the session that a cancel was meant for is over all the same. */
+            atomic_store(&g_rdio_upload_cancel, 0);
             return;
         }
         if (state == 1 || state == 4) {
@@ -209,13 +233,22 @@ dsd_rdio_upload_shutdown(void) {
     if (dsd_thread_join(g_rdio_upload_worker) != 0) {
         LOG_ERROR("Rdio export: failed to join upload worker during shutdown\n");
         atomic_store(&g_rdio_upload_state, 3);
+        atomic_store(&g_rdio_upload_cancel, 0);
         return;
     }
 
     dsd_mutex_lock(&g_rdio_upload_mutex);
+    /* After a drain the queue is empty; anything left was abandoned by a cancel. */
+    const size_t not_sent = g_rdio_upload_depth + g_rdio_upload_aborted;
     dsd_rdio_clear_upload_queue_locked();
     g_rdio_upload_stop_requested = 0;
+    g_rdio_upload_aborted = 0;
     dsd_mutex_unlock(&g_rdio_upload_mutex);
+    if (not_sent > 0U) {
+        LOG_WARN("Rdio API upload: stopped by the user; %lu pending upload(s) not sent, their files kept\n",
+                 (unsigned long)not_sent);
+    }
+    atomic_store(&g_rdio_upload_cancel, 0);
 
     (void)dsd_cond_destroy(&g_rdio_upload_cond);
     (void)dsd_mutex_destroy(&g_rdio_upload_mutex);
@@ -363,6 +396,12 @@ dsd_rdio_enqueue_api_upload(const dsd_opts* opts, const char* wav_path, const ch
 #else
 void
 dsd_rdio_upload_shutdown(void) {}
+
+void
+dsd_rdio_upload_cancel(void) {}
+
+void
+dsd_rdio_upload_cancel_reset(void) {}
 #endif
 
 static int
@@ -779,6 +818,18 @@ dsd_rdio_normalize_upload_options(const dsd_rdio_api_config* api, int* timeout_m
     return 0;
 }
 
+/* Aborts the transfer in flight once the user's Stop cancels the uploads. libcurl calls this at least about once a
+ * second even while nothing moves, as against a stalled endpoint, so the abort lands well inside one attempt. */
+static int
+dsd_rdio_xferinfo_cb(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+    (void)userdata;
+    (void)dltotal;
+    (void)dlnow;
+    (void)ultotal;
+    (void)ulnow;
+    return atomic_load(&g_rdio_upload_cancel) != 0 ? 1 : 0;
+}
+
 static void
 dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoint, int timeout_ms) {
     curl_easy_setopt(curl, CURLOPT_URL, endpoint);
@@ -786,6 +837,9 @@ dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoin
     /* Both timeouts take the same value here, which is what this call has always done. */
     dsd_curl_apply_hardening(curl, timeout_ms, timeout_ms, "dsd-neo/rdio-export");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dsd_rdio_discard_write_cb);
+    /* CURLOPT_NOPROGRESS defaults to 1, and while it is set libcurl never calls the xferinfo callback. */
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, dsd_rdio_xferinfo_cb);
 }
 
 static void
@@ -845,6 +899,18 @@ dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoin
     return 0;
 }
 
+/* 0 = delivered, DSD_RDIO_UPLOAD_CANCELLED = aborted, 1 = failed (retry). */
+static int
+dsd_rdio_upload_attempt_outcome(CURLcode res, long http_code) {
+    if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
+        return 0;
+    }
+    if (res == CURLE_ABORTED_BY_CALLBACK) {
+        return DSD_RDIO_UPLOAD_CANCELLED;
+    }
+    return 1;
+}
+
 static int
 dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
     if (!api || !wav_path || !meta_path) {
@@ -875,6 +941,9 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
     DSD_SNPRINTF(system_str, sizeof(system_str), "%d", api->system_id);
 
     for (int attempt = 1; attempt <= attempts; attempt++) {
+        if (atomic_load(&g_rdio_upload_cancel) != 0) {
+            return DSD_RDIO_UPLOAD_CANCELLED;
+        }
         CURLcode res = CURLE_FAILED_INIT;
         long http_code = 0;
         if (dsd_rdio_upload_attempt_once(api, endpoint, wav_path, meta_path, timeout_ms, system_str, &res, &http_code)
@@ -882,8 +951,9 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
             return -1;
         }
 
-        if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
-            return 0;
+        int outcome = dsd_rdio_upload_attempt_outcome(res, http_code);
+        if (outcome != 1) {
+            return outcome;
         }
 
         LOG_WARN("Rdio API upload attempt %d/%d failed (curl=%d, http=%ld)\n", attempt, attempts, (int)res, http_code);

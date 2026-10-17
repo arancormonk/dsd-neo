@@ -96,6 +96,8 @@ Item {
             sheet.item.network = p25Network;
         }
         function openSiteSheet() {
+            // The site row is the first reading in the "Signal & site" disclosure (#718).
+            monitor.item.detailsExpanded = true;
             var row = findChild(monitor.item, "siteRow");
             verify(row !== null);
             tryCompare(row, "visible", true);

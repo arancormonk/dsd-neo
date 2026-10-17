@@ -45,21 +45,28 @@ Item {
             while (importedFiles.count)
                 importedFiles.remove(0);
         }
+        // The sheet's own DiscardDialog.
+        function question(sheet) {
+            for (var child of sheet.children) {
+                if (child.accessibleName === "Discard changes?")
+                    return child;
+            }
+            verify(false, "the companion sheet has a discard question");
+            return null;
+        }
         function openSheet() {
             flow.begin(source, "Map.csv", "chan");
             tryCompare(item("csvCompanionSheet"), "visible", true);
             compare(completion.count, 0);
         }
         function test_cancel_data() {
-            return [{tag: "button"}, {tag: "back"}, {tag: "escape"}, {tag: "scrim"}];
+            return [{tag: "button"}, {tag: "back"}, {tag: "escape"}];
         }
         function test_cancel(data) {
             openSheet();
             var sheet = item("csvCompanionSheet");
             if (data.tag === "button")
                 mouseClick(item("csvCancel"));
-            else if (data.tag === "scrim")
-                mouseClick(sheet, 2, 2);
             else {
                 sheet.forceActiveFocus();
                 keyClick(data.tag === "back" ? Qt.Key_Back : Qt.Key_Escape);
@@ -68,8 +75,54 @@ Item {
             compare(completion.signalArguments[0][0].error, "cancelled");
             compare(importedFiles.count, 0);
             flow.cancel();
-            sheet.dismissed();
             compare(completion.count, 1);
+        }
+        // Issue #718: the companion sheet is a form; a tap beside it keeps it.
+        function test_outside_tap_keeps_the_sheet() {
+            openSheet();
+            var sheet = item("csvCompanionSheet");
+            verify(!sheet.hitsPanel(2, sheet.height / 2));
+            mouseClick(sheet, 2, sheet.height / 2);
+            wait(50);
+            verify(sheet.visible, "an outside tap keeps the companion sheet");
+            verify(flow.active);
+            compare(completion.count, 0);
+            verify(!question(sheet).visible, "with nothing chosen there is nothing to ask about");
+        }
+        // Once a companion was chosen, Cancel, Back and Escape ask first; Keep
+        // editing keeps the choice and Discard cancels the import.
+        function test_cancel_after_a_choice_asks_data() {
+            return [{tag: "button"}, {tag: "back"}, {tag: "escape"}];
+        }
+        function test_cancel_after_a_choice_asks(data) {
+            var stored = addKeys("other.csv", "keysDec");
+            openSheet();
+            var sheet = item("csvCompanionSheet");
+            verify(!flow.companions[flow.requiredFiles[0]], "nothing preselected: the choice below is the user's");
+            item("csvLibraryChoice_0_0").clicked();
+            compare(flow.companions[flow.requiredFiles[0]], stored);
+            function dismiss() {
+                if (data.tag === "button")
+                    mouseClick(item("csvCancel"));
+                else {
+                    sheet.forceActiveFocus();
+                    keyClick(data.tag === "back" ? Qt.Key_Back : Qt.Key_Escape);
+                }
+            }
+            dismiss();
+            var asked = question(sheet);
+            verify(asked.visible, "the sheet asks before the choice goes");
+            compare(completion.count, 0);
+            visualChild(asked, "discardDialogKeep").activate();
+            verify(!asked.visible);
+            verify(sheet.visible);
+            compare(flow.companions[flow.requiredFiles[0]], stored, "keep editing keeps the choice");
+            dismiss();
+            verify(asked.visible);
+            visualChild(asked, "discardDialogDiscard").activate();
+            tryCompare(completion, "count", 1);
+            compare(completion.signalArguments[0][0].error, "cancelled");
+            verify(!sheet.visible);
         }
         function test_primary_picker_success_and_reuse() {
             var path = testContext.writeFixtureCsv("standalone-map.csv", "channel,frequency\n1,851012500\n");
@@ -149,10 +202,13 @@ Item {
             verify(choice.Accessible.checked);
             verify(choice.checked);
             compare(flow.companions[flow.requiredFiles[0]], stored);
+            // Issue #718: "Choose a file…" keeps the current companion until the
+            // picker hands back a replacement; a rejected picker leaves it.
             item("csvChooseFile_0").clicked();
+            compare(flow.companions[flow.requiredFiles[0]], stored, "opening the picker keeps the choice");
             item("csvCompanionPicker").reject();
-            verify(!flow.companions[flow.requiredFiles[0]]);
-            verify(!choice.Accessible.checked);
+            compare(flow.companions[flow.requiredFiles[0]], stored, "a rejected picker keeps the choice");
+            verify(choice.Accessible.checked);
             verify(!/[●○]/.test(choice.Accessible.name));
             choice.clicked();
             verify(choice.Accessible.checked);

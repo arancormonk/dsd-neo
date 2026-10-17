@@ -48,19 +48,35 @@ QtObject {
         }
         return true;
     }
+    // Issue #718: an Android keyboard holds the word being typed as composing
+    // text, which a field's `text` leaves out. Every action that reads a form
+    // (a button, a sheet dismissal, Back) finishes that word first, as native
+    // Android's EditText.getText() would include it. finishEditing also takes
+    // focus off the field so fields that publish on editingFinished update their
+    // drafts first. Missing only where no frontend context is loaded.
+    readonly property bool composing: typeof inputCommit !== "undefined" && inputCommit !== null && inputCommit.composing
+    function commitComposing(finishEditing) {
+        if (typeof inputCommit !== "undefined" && inputCommit !== null)
+            inputCommit.commitComposing(finishEditing === true);
+    }
     function clearInput(window) {
         if (window && window.activeFocusItem)
             window.activeFocusItem.focus = false;
         Qt.inputMethod.hide();
     }
     function back(window) {
+        commitComposing(false);
         if (Qt.inputMethod.visible) {
             clearInput(window);
             return true;
         }
+        // Read before clearing input: taking focus off an open selector closes
+        // its popup, and Back must then stop there rather than reach the sheet
+        // under it.
+        var modal = topModal;
         clearInput(window);
-        if (topModal) {
-            topModal.requestDismiss();
+        if (modal) {
+            modal.requestDismiss();
             return true;
         }
         if (layers.length) {

@@ -47,6 +47,85 @@ Item {
             verify(!("args" in result));
             verify(testContext.retainedKeyMatches(uid, expected), "Private saved key round trip");
         }
+        // Issue #718: the keys picker's Decimal/Hex choice is pending until a
+        // file is chosen, so the picker is a form: a tap beside it keeps the
+        // choice, and Cancel is the visible way out.
+        function test_csv_picker_keeps_a_hex_choice_on_a_side_tap() {
+            wizard.step = 1;
+            var row = findChild(wizard, "wizardKeysCsvRow");
+            verify(row !== null);
+            row.activate();
+            var picker = findChild(wizard, "wizardCsvSheet");
+            tryCompare(picker, "visible", true);
+            waitForRendering(picker);
+            compare(wizard.pickerKeyHex, false);
+            var format = findChild(picker, "wizardKeyFormat");
+            mouseClick(format, format.width * 0.75, format.height / 2);
+            compare(wizard.pickerKeyHex, true);
+            verify(!picker.hitsPanel(4, picker.height / 2));
+            mouseClick(picker, 4, picker.height / 2);
+            wait(50);
+            verify(picker.visible, "a tap beside the picker keeps it");
+            compare(wizard.pickerKeyHex, true, "and keeps the Hex choice");
+            var cancel = findChild(picker, "wizardCsvCancel");
+            verify(cancel.visible && cancel.height >= 48);
+            cancel.activate();
+            verify(picker.visible, "Cancel does not drop the pending Hex choice unasked");
+            var asked = findChild(picker, "wizardCsvDiscard");
+            verify(asked !== null && asked.visible, "it asks first");
+            findChild(asked, "discardDialogDiscard").activate();
+            verify(!picker.visible);
+        }
+        function openKeysPicker() {
+            wizard.step = 1;
+            var row = findChild(wizard, "wizardKeysCsvRow");
+            verify(row !== null);
+            row.activate();
+            var picker = findChild(wizard, "wizardCsvSheet");
+            tryCompare(picker, "visible", true);
+            waitForRendering(picker);
+            return picker;
+        }
+        // Issue #718: Cancel, Back and Escape on the keys picker go through one
+        // discard check. A changed Decimal/Hex choice with no file to apply it
+        // to asks first: Keep editing keeps it, Discard closes. An unchanged
+        // choice closes at once.
+        function test_csv_picker_asks_before_dropping_a_pending_format_data() {
+            return [{tag: "button"}, {tag: "back"}, {tag: "escape"}];
+        }
+        function test_csv_picker_asks_before_dropping_a_pending_format(data) {
+            compare(wizard.keyCsvPath, "");
+            var picker = openKeysPicker();
+            function dismiss() {
+                if (data.tag === "button") {
+                    findChild(picker, "wizardCsvCancel").activate();
+                } else {
+                    picker.forceActiveFocus();
+                    keyClick(data.tag === "back" ? Qt.Key_Back : Qt.Key_Escape);
+                }
+            }
+            // Unchanged: closes without asking.
+            dismiss();
+            verify(!picker.visible, "an unchanged choice closes at once");
+            picker = openKeysPicker();
+            var format = findChild(picker, "wizardKeyFormat");
+            mouseClick(format, format.width * 0.75, format.height / 2);
+            compare(wizard.pickerKeyHex, true);
+            dismiss();
+            verify(picker.visible, "a pending Hex choice is not dropped unasked");
+            var asked = findChild(picker, "wizardCsvDiscard");
+            verify(asked !== null && asked.visible, "it asks first");
+            findChild(asked, "discardDialogKeep").activate();
+            verify(!asked.visible);
+            verify(picker.visible, "keep editing keeps the picker");
+            compare(wizard.pickerKeyHex, true, "and the Hex choice");
+            dismiss();
+            verify(asked.visible);
+            findChild(asked, "discardDialogDiscard").activate();
+            verify(!asked.visible);
+            verify(!picker.visible);
+            compare(wizard.keyCsvHex, false, "nothing was applied");
+        }
         function test_roundtrip_and_reset() {
             wizard.encKeyType = "basic";
             wizard.encKeyValue = String(17 * 3);

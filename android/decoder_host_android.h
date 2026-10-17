@@ -209,6 +209,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     QJsonObject readLifecycleStatus() const;
     static bool readEngineRunning();
+    /** @brief Real monotonic milliseconds (dsd_realtime_mono_ms()) for the stop request's grace. */
+    static uint64_t readRealtimeMs();
     /** @brief DecoderService.stateName(); empty when the call failed. */
     static QByteArray readServiceState();
     /** @brief Whether the application's ContentResolver is held, without which no platform transfer can run. */

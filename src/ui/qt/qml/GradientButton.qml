@@ -12,7 +12,14 @@ Item {
     signal clicked
 
     property string accessibleName: text
-    activeFocusOnTab: enabled && visible && Navigation.allows(control)
+    // Issue #718: the part of the gate that depends on typed input, kept apart
+    // from `enabled` (busy, permission and other real guards). While a field
+    // holds the keyboard's composing word the button stays live, so a tap can
+    // commit that word and then recheck this before acting; otherwise the
+    // button is disabled exactly as before.
+    property bool inputValid: true
+    enabled: inputValid || Navigation.composing
+    activeFocusOnTab: enabled && inputValid && visible && Navigation.allows(control)
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.focusable: true
@@ -20,7 +27,12 @@ Item {
     Accessible.ignored: !visible || !navigationAllowed
     Accessible.onPressAction: activate()
     function activate() {
-        if (enabled && Navigation.allows(control))
+        if (!enabled || !Navigation.allows(control))
+            return;
+        // Finish the keyboard's word and the field's editing before the action
+        // reads the form; the validity bindings re-evaluate on the spot.
+        Navigation.commitComposing(true);
+        if (inputValid)
             clicked();
     }
     Keys.onSpacePressed: activate()
@@ -35,7 +47,7 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: Theme.radiusButton
-        opacity: control.enabled ? 1.0 : 0.35
+        opacity: control.enabled && control.inputValid ? 1.0 : 0.35
         gradient: Gradient {
             orientation: Gradient.Horizontal
             GradientStop {
@@ -58,7 +70,7 @@ Item {
         Rectangle {
             anchors.fill: parent
             radius: parent.radius
-            color: Qt.alpha(Theme.cyan, tap.pressed && control.enabled ? 0.10 : 0.0)
+            color: Qt.alpha(Theme.cyan, tap.pressed && control.enabled && control.inputValid ? 0.10 : 0.0)
 
             Behavior on color {
                 ColorAnimation {
@@ -78,7 +90,7 @@ Item {
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(15)
         font.weight: Font.Bold
-        opacity: control.enabled ? 1.0 : 0.45
+        opacity: control.enabled && control.inputValid ? 1.0 : 0.45
         color: Theme.textPrimary
     }
 

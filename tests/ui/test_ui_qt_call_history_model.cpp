@@ -40,8 +40,10 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QVariant>
 #include <QtGlobal>
+#include <atomic>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -1820,6 +1822,59 @@ test_repeated_notice_gains_carrier(void) {
     }
 }
 
+std::atomic<int> g_storeBuildsOnGui{0};
+std::atomic<int> g_storeBuildsElsewhere{0};
+
+void
+count_store_build(const QThread* thread) {
+    if (thread == QCoreApplication::instance()->thread()) {
+        g_storeBuildsOnGui++;
+    } else {
+        g_storeBuildsElsewhere++;
+    }
+}
+
+/* Issue #718: at a full log, building the two stores' JSON cost the UI thread ~62 ms per debounced save.
+ * The UI thread now hands the worker copies of the rows and the seen map, and the worker builds and writes
+ * both. The log moving on under an in-flight save changes nothing that save writes, and what it missed is
+ * still saved: by the next debounced save, or synchronously on destruction. */
+void
+test_stores_serialise_off_the_gui_thread(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754512000;
+    {
+        CallHistoryModel model;
+        for (int i = 0; i < 40; i++) {
+            ring.commit(i % 2, 13000U + static_cast<uint32_t>(i), 700U + static_cast<uint32_t>(i), when + 60 * i,
+                        when + 60 * i + 4);
+        }
+        model.refresh(ring.state);
+        expect("forty calls land before the save", model.count() == 40);
+        g_storeBuildsOnGui = 0;
+        g_storeBuildsElsewhere = 0;
+        CallHistoryModel::setStoreBuildObserverForTest(count_store_build);
+        model.startSaveForTest();
+        ring.commit(0, 13999U, 799U, when + 9000, when + 9004);
+        model.refresh(ring.state);
+        expect("the log moves on while the save is in flight", model.count() == 41);
+        model.waitForSaveForTest();
+        CallHistoryModel::setStoreBuildObserverForTest(nullptr);
+        expect("the UI thread builds no store JSON", g_storeBuildsOnGui == 0);
+        expect("the save worker builds both stores", g_storeBuildsElsewhere == 2);
+        expect("the in-flight save writes the log as it was handed over",
+               dsd_qt::json_store_load_array("call_history.json").size() == 40
+                   && dsd_qt::json_store_load_array("call_history_seen.json").size() == 40
+                   && stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), 13999).isEmpty());
+    } // the destructor flushes the save the last ingest owed
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    expect("the owed save lands on destruction",
+           rows.size() == 41 && !stored_row_with_tg(rows, 13999).isEmpty()
+               && dsd_qt::json_store_load_array("call_history_seen.json").size() == 41);
+    CallHistoryModel restored;
+    expect("the saved log reloads", restored.count() == 41);
+}
+
 } // namespace
 
 int
@@ -1885,6 +1940,7 @@ main(int argc, char** argv) {
     test_carrier_filled_in_place_reingests();
     test_fragments_on_different_frequencies_merge();
     test_repeated_notice_gains_carrier();
+    test_stores_serialise_off_the_gui_thread();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

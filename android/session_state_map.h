@@ -20,6 +20,7 @@
 #ifndef DSD_NEO_ANDROID_SESSION_STATE_MAP_H_
 #define DSD_NEO_ANDROID_SESSION_STATE_MAP_H_
 
+#include <stdint.h>
 #include <string.h>
 #include "run_status.h"
 
@@ -66,6 +67,16 @@ engine_busy(const char* service_state, bool engine_running) {
 constexpr int kStartGraceTicks = 8;
 
 /**
+ * @brief How long a stop request may meet nothing but RUNNING records before it is presumed lost (#718).
+ *
+ * DecoderService handles its intents in order on the Android main thread, and startDecoding() runs a whole start
+ * there, so a delivered stop always finds the service RUNNING and turns it STOPPING. Polls run on the Qt thread and the
+ * intent on the main thread, so two seconds of RUNNING after the request means the main thread has not handled the
+ * intent yet (it is busy), and the UI gives the user a working Stop button back instead of holding Stopping forever.
+ */
+constexpr uint64_t kStopGraceMs = 2000;
+
+/**
  * @brief Sticky-failure state machine over successive polls.
  *
  * Not thread-safe: like everything else the UI touches, it belongs to the Qt main
@@ -89,6 +100,7 @@ class SessionPhaseTracker {
         m_saw_running = false;
         m_grace = kStartGraceTicks;
         m_phase = kSessionStarting;
+        clear_stop_request();
     }
 
     /** Ignore the previous session's retained result while an intent is in flight. */
@@ -112,8 +124,102 @@ class SessionPhaseTracker {
         return true;
     }
 
+    /**
+     * @brief Fold one lifecycle record into the phase.
+     * @param now_ms Real monotonic milliseconds (dsd_realtime_mono_ms()), read only while a stop request stands.
+     *        The default 0 means no clock: a stop request never expires.
+     */
     SessionPhase
-    update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason) {
+    update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason, uint64_t now_ms = 0) {
+        return hold_stop(service_state, fold_record(service_state, engine_running, session_id, reason), now_ms);
+    }
+
+    /**
+     * @brief Fold one poll that carried no lifecycle record into the phase.
+     * @param service_state DecoderService.stateName(), or null when the call failed.
+     * @param engine_running The native g_running atomic.
+     * @param now_ms As for the record overload (default 0 = no clock: a stop request never expires).
+     */
+    SessionPhase
+    update(const char* service_state, bool engine_running, uint64_t now_ms = 0) {
+        return hold_stop(service_state, fold_state(service_state, engine_running), now_ms);
+    }
+
+    /**
+     * @brief Note that the user asked the attempt this tracker follows to stop (#718).
+     *
+     * Publishes Stopping at once, before the service has even seen the intent. The request belongs to the start
+     * attempt, not to a session id, because a start may still be reporting the previous session's IDLE record or a
+     * provisional STARTING before its own id exists. While it stands every record of the attempt publishes Stopping.
+     * It ends at the attempt's terminal record (Idle, or a failure, published as without a request), when a later
+     * start attempt begins, or after kStopGraceMs of RUNNING with no STOPPING (take_stop_expired()).
+     *
+     * @param now_ms Real monotonic milliseconds.
+     * @return true when a request was taken: only from Starting or Running, and only once per attempt.
+     */
+    bool
+    note_stop_requested(uint64_t now_ms) {
+        if (m_stop_requested || (m_phase != kSessionStarting && m_phase != kSessionRunning)) {
+            return false;
+        }
+        m_stop_requested = true;
+        m_stop_delivered = false;
+        // From Running the RUNNING run is already under way; from Starting it begins at the first RUNNING record.
+        m_stop_running = m_phase == kSessionRunning;
+        m_stop_running_since_ms = now_ms;
+        m_phase = kSessionStopping;
+        return true;
+    }
+
+    /** @brief Whether a stop request was just dropped by the grace (true once per drop), for one diagnostics line. */
+    bool
+    take_stop_expired() {
+        const bool expired = m_stop_expired;
+        m_stop_expired = false;
+        return expired;
+    }
+
+    /**
+     * @brief Note that the start could not even be handed to the service.
+     *
+     * The host calls this when it has no Android context or cannot marshal the
+     * arguments — failures that never reach DecoderService at all.
+     */
+    void
+    note_start_failed() {
+        m_failed = true;
+        m_attempting = false;
+        m_saw_running = false;
+        m_grace = 0;
+        m_phase = kSessionFailed;
+        clear_stop_request();
+    }
+
+    /** Explicit dismissal adopts only a confirmed inactive service's retained result. */
+    bool
+    acknowledge_failure(uint64_t session, const char* service_state) {
+        if (m_phase != kSessionFailed || !service_state || strcmp(service_state, "IDLE") != 0) {
+            return false;
+        }
+        *this = SessionPhaseTracker();
+        (void)update(service_state, false, session, kRunPending);
+        return true;
+    }
+
+    SessionPhase
+    phase() const {
+        return m_phase;
+    }
+
+    /** @brief Whether the current session has a latched failure, including during teardown. */
+    bool
+    failed() const {
+        return m_failed;
+    }
+
+  private:
+    SessionPhase
+    fold_record(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason) {
         if (!m_observed) {
             m_observed = true;
             m_last_session = session_id;
@@ -123,7 +229,7 @@ class SessionPhaseTracker {
             }
         }
         if (m_ignore_retained && session_id == m_ignored_session) {
-            return update(service_state, engine_running);
+            return fold_state(service_state, engine_running);
         }
         if (m_waiting_for_session && session_id <= m_last_session) {
             m_phase = idle_phase();
@@ -144,31 +250,11 @@ class SessionPhaseTracker {
         if (reason == kRunFailed || reason == kRunCompleted || reason == kRunCancelled) {
             return terminal_phase(service_state, reason);
         }
-        return update(service_state, engine_running);
+        return fold_state(service_state, engine_running);
     }
 
-    /**
-     * @brief Note that the start could not even be handed to the service.
-     *
-     * The host calls this when it has no Android context or cannot marshal the
-     * arguments — failures that never reach DecoderService at all.
-     */
-    void
-    note_start_failed() {
-        m_failed = true;
-        m_attempting = false;
-        m_saw_running = false;
-        m_grace = 0;
-        m_phase = kSessionFailed;
-    }
-
-    /**
-     * @brief Fold one poll into the phase.
-     * @param service_state DecoderService.stateName(), or null when the call failed.
-     * @param engine_running The native g_running atomic.
-     */
     SessionPhase
-    update(const char* service_state, bool engine_running) {
+    fold_state(const char* service_state, bool engine_running) {
         const char* name = (service_state != nullptr) ? service_state : "IDLE";
 
         if (strcmp(name, "STARTING") == 0) {
@@ -195,29 +281,49 @@ class SessionPhaseTracker {
         return m_phase;
     }
 
-    /** Explicit dismissal adopts only a confirmed inactive service's retained result. */
-    bool
-    acknowledge_failure(uint64_t session, const char* service_state) {
-        if (m_phase != kSessionFailed || !service_state || strcmp(service_state, "IDLE") != 0) {
-            return false;
-        }
-        *this = SessionPhaseTracker();
-        (void)update(service_state, false, session, kRunPending);
-        return true;
-    }
-
+    /**
+     * @brief Hold Stopping over @p folded while a stop request stands.
+     *
+     * Idle and Failed are the attempt's terminal records and end the request. STOPPING proves the intent arrived,
+     * after which nothing but the terminal record can end it. RUNNING records are timed against kStopGraceMs.
+     */
     SessionPhase
-    phase() const {
+    hold_stop(const char* service_state, SessionPhase folded, uint64_t now_ms) {
+        if (!m_stop_requested) {
+            return folded;
+        }
+        if (folded == kSessionIdle || folded == kSessionFailed) {
+            clear_stop_request();
+            return folded;
+        }
+        const bool running = service_state != nullptr && strcmp(service_state, "RUNNING") == 0;
+        if (service_state != nullptr && strcmp(service_state, "STOPPING") == 0) {
+            m_stop_delivered = true;
+        }
+        if (!running) {
+            m_stop_running = false;
+        } else if (!m_stop_delivered) {
+            if (!m_stop_running) {
+                m_stop_running = true;
+                m_stop_running_since_ms = now_ms;
+            } else if (now_ms >= m_stop_running_since_ms && now_ms - m_stop_running_since_ms >= kStopGraceMs) {
+                clear_stop_request();
+                m_stop_expired = true;
+                return folded;
+            }
+        }
+        m_phase = kSessionStopping;
         return m_phase;
     }
 
-    /** @brief Whether the current session has a latched failure, including during teardown. */
-    bool
-    failed() const {
-        return m_failed;
+    void
+    clear_stop_request() {
+        m_stop_requested = false;
+        m_stop_delivered = false;
+        m_stop_running = false;
+        m_stop_running_since_ms = 0;
     }
 
-  private:
     SessionPhase
     terminal_phase(const char* service_state, RunReason reason) {
         if (reason == kRunFailed) {
@@ -273,6 +379,13 @@ class SessionPhaseTracker {
     bool m_attempting = false;
     bool m_saw_running = false;
     int m_grace = 0;
+    bool m_stop_requested = false;
+    // A STOPPING record of the attempt was seen since the request.
+    bool m_stop_delivered = false;
+    // RUNNING records have arrived without a break since m_stop_running_since_ms.
+    bool m_stop_running = false;
+    uint64_t m_stop_running_since_ms = 0;
+    bool m_stop_expired = false;
 };
 
 } // namespace dsd_android

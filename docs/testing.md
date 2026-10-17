@@ -142,6 +142,11 @@ that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty.
+`ANDROID_ENGINE_STOP_JVM` (the `engine_stop` suite) runs `EngineStop.kt` with no stubs: only `StopCause.USER` hands
+`nativeStop` `userRequested = true` (abandoning pending rdio uploads), and a stop intent with a missing or unknown cause
+drains. Its source check first pins the cause every production caller passes: each `nativeStop` call goes through
+`EngineStop.request`, a USB detach and the Activity and service teardowns drain, and both `ACTION_STOP` senders (the Qt
+host's Stop listening and the notification's Stop action) say `USER`.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the

@@ -136,8 +136,9 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
             m_adopted_idle_session = session;
         }
     }
-    const SessionPhase phase = status.isEmpty() ? m_phase.update(name.constData(), running)
-                                                : m_phase.update(name.constData(), running, session, reason);
+    const uint64_t now_ms = readRealtimeMs();
+    const SessionPhase phase = status.isEmpty() ? m_phase.update(name.constData(), running, now_ms)
+                                                : m_phase.update(name.constData(), running, session, reason, now_ms);
     const bool adopted_idle = session != 0 && session == m_adopted_idle_session;
     m_device_error_session = session;
     const int device_error =
@@ -153,6 +154,10 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
     setSessionPhase(phase,
                     first_poll || adopted_idle ? QString() : status.value(QStringLiteral("lastError")).toString());
     setStatus(phase_text(phase));
+    if (m_phase.take_stop_expired()) {
+        hostDiagnostic(QStringLiteral("Stop was not acknowledged by the decoder service within 2 s; showing the "
+                                      "session as running again"));
+    }
 
     // Attachment delivery can synchronously call start() through QML.
     m_primed = true;
@@ -175,6 +180,13 @@ void
 DecoderHostAndroid::stop() {
     if (m_phase.phase() == kSessionFailed && acknowledgeFailure(readLifecycleStatus())) {
         return;
+    }
+    /* #718: answer the tap now. The service reports STOPPING only after it has handled the intent and a later poll
+     * has read it, and until then the button would sit enabled and unchanged. The tracker holds Stopping over the
+     * attempt's records until its terminal one, so a poll in between cannot flip it back. */
+    if (m_phase.note_stop_requested(readRealtimeMs())) {
+        setSessionPhase(m_phase.phase());
+        setStatus(phase_text(m_phase.phase()));
     }
     requestServiceStop();
 }

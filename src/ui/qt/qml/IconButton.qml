@@ -15,8 +15,12 @@ Item {
     Accessible.ignored: !visible || !navigationAllowed
     Accessible.onPressAction: activate()
     function activate() {
-        if (enabled && Navigation.allows(control))
-            clicked();
+        if (!enabled || !Navigation.allows(control))
+            return;
+        // Issue #718: finish the keyboard's word and the field's editing before
+        // the action reads the form.
+        Navigation.commitComposing(true);
+        clicked();
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()

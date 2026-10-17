@@ -27,22 +27,35 @@ Item {
     property bool expandable: false
     property bool expanded: false
     property string accessibleName: title
+    // A row whose helper line is a reading rather than a hint (the monitor's
+    // "Signal & site" summary, issue #718): one elided line in the mono face
+    // the readings use, optionally styled per token. The description stays
+    // plain text for accessibility.
+    property bool subtitleReading: false
+    property int subtitleTextFormat: Text.PlainText
+    property string accessibleDescription: subtitle
+    // Space above and below the labels, together. A summary row on a crowded
+    // screen asks for less than a row that goes somewhere.
+    property int verticalPadding: 24
     signal tapped
 
     width: parent ? parent.width : 0
-    height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + 24)
+    height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + verticalPadding)
     activeFocusOnTab: tapEnabled && Navigation.allows(row)
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
-    Accessible.description: subtitle
+    Accessible.description: accessibleDescription
     Accessible.checkable: expandable
     Accessible.checked: expandable && expanded
     readonly property bool navigationAllowed: Navigation.allows(row)
     Accessible.ignored: !visible || !navigationAllowed
     Accessible.onPressAction: activate()
     function activate() {
-        if (enabled && tapEnabled && Navigation.allows(row))
-            tapped();
+        if (!enabled || !tapEnabled || !Navigation.allows(row))
+            return;
+        // Issue #718: a row opened mid-word keeps the word; focus stays put.
+        Navigation.commitComposing(false);
+        tapped();
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
@@ -69,13 +82,17 @@ Item {
 
         Text {
             width: parent.width
-            // An expandable row may carry its whole label in the title.
-            visible: text.length > 0 || !row.expandable
+            // An expandable row may carry its whole label in the title. A reading
+            // keeps its line while empty, so the row's height never follows it.
+            visible: text.length > 0 || !row.expandable || row.subtitleReading
             text: row.subtitle
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(12)
+            textFormat: row.subtitleTextFormat
+            font.family: row.subtitleReading ? Theme.mono : Theme.sans
+            font.pixelSize: Theme.fontSize(row.subtitleReading ? 11 : 12)
             color: row.subtitleColor
-            wrapMode: Text.Wrap
+            wrapMode: row.subtitleReading ? Text.NoWrap : Text.Wrap
+            elide: row.subtitleReading ? Text.ElideRight : Text.ElideNone
+            maximumLineCount: row.subtitleReading ? 1 : 1000
         }
     }
 

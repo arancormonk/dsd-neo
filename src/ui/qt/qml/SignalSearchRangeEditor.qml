@@ -16,6 +16,8 @@ ModalSheet {
     // The form as openFor() filled it: a dismissal asks only once it differs.
     property string openedForm: ""
     accessibleName: row < 0 ? qsTr("Add search range") : qsTr("Edit search range")
+    // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
+    closesOnOutsideTap: false
 
     function matchingStep(numerator, denominator) {
         var n = Number(numerator), d = Number(denominator);

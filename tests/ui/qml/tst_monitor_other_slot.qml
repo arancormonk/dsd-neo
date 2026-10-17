@@ -181,8 +181,10 @@ Item {
             compare(testContext.lockoutSlotCalls(), 0);
             compare(testContext.skipSlotCalls(), 0);
         }
+        // What sits directly under the strip (#718): the list, headed by the
+        // "Signal & site" disclosure.
         function belowStripY() {
-            var below = item("signalStrip");
+            var below = item("monitorDetailsCard");
             verify(below.visible);
             return below.mapToItem(monitor, 0, 0).y;
         }

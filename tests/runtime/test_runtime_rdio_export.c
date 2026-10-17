@@ -9,6 +9,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
@@ -383,6 +384,9 @@ typedef struct {
     int no_request_expected;
     int saw_request;
     unsigned int accept_timeout_ms;
+    // Requests to answer before the server closes; 0 means one. rc is 0 only when every one arrived complete.
+    int requests_expected;
+    int requests_done;
     char response[512];
     // The upload's "meta" part (the sidecar JSON), or "" when the request carried none.
     char meta[4096];
@@ -450,50 +454,16 @@ rdio_test_content_length(const char* headers) {
     return (int)v;
 }
 
-static DSD_THREAD_RETURN_TYPE
-rdio_test_http_server_thread(void* arg) {
-    rdio_test_http_server* server = (rdio_test_http_server*)arg;
-    server->rc = 1;
-
-    if (server->no_request_expected) {
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(server->listen_sock, &readfds);
-        struct timeval tv;
-        tv.tv_sec = (time_t)(server->accept_timeout_ms / 1000U);
-        tv.tv_usec = (suseconds_t)((server->accept_timeout_ms % 1000U) * 1000U);
-        int ready = select(server->listen_sock + 1, &readfds, NULL, NULL, &tv);
-        if (ready <= 0) {
-            server->rc = 0;
-            (void)dsd_socket_close(server->listen_sock);
-            DSD_THREAD_RETURN;
-        }
-    }
-
-    dsd_socket_t client = dsd_socket_accept(server->listen_sock, NULL, NULL);
-    if (client == DSD_INVALID_SOCKET) {
-        if (server->no_request_expected) {
-            server->rc = 0;
-        }
-        (void)dsd_socket_close(server->listen_sock);
-        DSD_THREAD_RETURN;
-    }
-    server->saw_request = 1;
-
-    if (server->no_request_expected) {
-        (void)dsd_socket_close(client);
-        (void)dsd_socket_close(server->listen_sock);
-        DSD_THREAD_RETURN;
-    }
-
+// Read one upload request from @p client and answer it. Returns 0 when the request arrived complete.
+static int
+rdio_test_http_serve_one(rdio_test_http_server* server, dsd_socket_t client) {
+    int rc = 1;
     (void)dsd_socket_set_recv_timeout(client, 5000);
 
     const size_t request_capacity = 65536U;
     char* request = (char*)malloc(request_capacity);
     if (!request) {
-        (void)dsd_socket_close(client);
-        (void)dsd_socket_close(server->listen_sock);
-        DSD_THREAD_RETURN;
+        return 1;
     }
 
     size_t used = 0;
@@ -516,7 +486,7 @@ rdio_test_http_server_thread(void* arg) {
         }
 
         if (header_len > 0 && content_length >= 0 && used >= header_len + (size_t)content_length) {
-            server->rc = 0;
+            rc = 0;
             break;
         }
     }
@@ -526,14 +496,70 @@ rdio_test_http_server_thread(void* arg) {
     const char* response = server->response[0] ? server->response : default_response;
     (void)dsd_socket_send(client, response, strlen(response), 0);
     free(request);
-    (void)dsd_socket_close(client);
+    return rc;
+}
+
+// Wait up to @p timeout_ms for a connection on @p listen_sock. Returns select()'s result: > 0 when one is pending.
+static int
+rdio_test_wait_for_connection(dsd_socket_t listen_sock, unsigned int timeout_ms) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(listen_sock, &readfds);
+    struct timeval tv;
+    tv.tv_sec = (time_t)(timeout_ms / 1000U);
+    tv.tv_usec = (suseconds_t)((timeout_ms % 1000U) * 1000U);
+    return select(listen_sock + 1, &readfds, NULL, NULL, &tv);
+}
+
+static DSD_THREAD_RETURN_TYPE
+rdio_test_http_server_thread(void* arg) {
+    rdio_test_http_server* server = (rdio_test_http_server*)arg;
+    server->rc = 1;
+
+    if (server->no_request_expected) {
+        if (rdio_test_wait_for_connection(server->listen_sock, server->accept_timeout_ms) <= 0) {
+            server->rc = 0;
+            (void)dsd_socket_close(server->listen_sock);
+            DSD_THREAD_RETURN;
+        }
+        dsd_socket_t client = dsd_socket_accept(server->listen_sock, NULL, NULL);
+        if (client == DSD_INVALID_SOCKET) {
+            server->rc = 0;
+        } else {
+            server->saw_request = 1;
+            (void)dsd_socket_close(client);
+        }
+        (void)dsd_socket_close(server->listen_sock);
+        DSD_THREAD_RETURN;
+    }
+
+    const int expected = server->requests_expected > 0 ? server->requests_expected : 1;
+    for (int i = 0; i < expected; i++) {
+        // Bounded, so an upload that never comes fails the test after accept_timeout_ms instead of at CTest's timeout.
+        if (rdio_test_wait_for_connection(server->listen_sock, server->accept_timeout_ms) <= 0) {
+            break;
+        }
+        dsd_socket_t client = dsd_socket_accept(server->listen_sock, NULL, NULL);
+        if (client == DSD_INVALID_SOCKET) {
+            break;
+        }
+        server->saw_request = 1;
+        if (rdio_test_http_serve_one(server, client) == 0) {
+            server->requests_done++;
+        }
+        (void)dsd_socket_close(client);
+    }
+    if (server->requests_done == expected) {
+        server->rc = 0;
+    }
     (void)dsd_socket_close(server->listen_sock);
     DSD_THREAD_RETURN;
 }
 
 static int
-rdio_test_http_server_start_ex(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
-                               const char* response, int no_request_expected, unsigned int accept_timeout_ms) {
+rdio_test_http_server_start_n(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
+                              const char* response, int no_request_expected, unsigned int accept_timeout_ms,
+                              int requests_expected) {
     if (!server || !out_api_url || out_api_url_size == 0) {
         return 1;
     }
@@ -542,6 +568,7 @@ rdio_test_http_server_start_ex(rdio_test_http_server* server, char* out_api_url,
     server->listen_sock = DSD_INVALID_SOCKET;
     server->rc = 1;
     server->no_request_expected = no_request_expected;
+    server->requests_expected = requests_expected;
     server->accept_timeout_ms = accept_timeout_ms ? accept_timeout_ms : 5000U;
     if (response) {
         DSD_SNPRINTF(server->response, sizeof(server->response), "%s", response);
@@ -601,6 +628,13 @@ rdio_test_http_server_start_ex(rdio_test_http_server* server, char* out_api_url,
     }
 
     return 0;
+}
+
+static int
+rdio_test_http_server_start_ex(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
+                               const char* response, int no_request_expected, unsigned int accept_timeout_ms) {
+    return rdio_test_http_server_start_n(server, out_api_url, out_api_url_size, response, no_request_expected,
+                                         accept_timeout_ms, 1);
 }
 
 static int
@@ -1949,6 +1983,302 @@ test_api_upload_does_not_follow_redirect(void) {
 #endif
 }
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#define RDIO_CANCEL_JOBS_MAX 4
+
+// The jobs one cancel test queues: a WAV and its sidecar per call, in one temporary directory.
+typedef struct {
+    char dir[DSD_TEST_PATH_MAX];
+    int count;
+    char wav[RDIO_CANCEL_JOBS_MAX][DSD_TEST_PATH_MAX];
+    char json[RDIO_CANCEL_JOBS_MAX][DSD_TEST_PATH_MAX];
+} rdio_cancel_jobs;
+
+// An endpoint that accepts connections and never answers: the kernel completes the handshake from the listen backlog
+// and buffers the request, and nothing ever reads it, so every attempt runs to its timeout.
+static int
+rdio_test_stalled_server_start(dsd_socket_t* out_sock, char* out_api_url, size_t out_api_url_size) {
+    *out_sock = DSD_INVALID_SOCKET;
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "socket init failed\n");
+        return 1;
+    }
+    dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (sock == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "socket create failed\n");
+        return 1;
+    }
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    socklen_t addr_len = (socklen_t)sizeof(addr);
+    if (dsd_socket_bind(sock, (const struct sockaddr*)&addr, (int)sizeof(addr)) != 0 || dsd_socket_listen(sock, 16) != 0
+        || getsockname(sock, (struct sockaddr*)&addr, &addr_len) != 0) {
+        DSD_FPRINTF(stderr, "stalled server setup failed\n");
+        (void)dsd_socket_close(sock);
+        return 1;
+    }
+    int n = DSD_SNPRINTF(out_api_url, out_api_url_size, "http://127.0.0.1:%u", (unsigned int)ntohs(addr.sin_port));
+    if (n < 0 || (size_t)n >= out_api_url_size) {
+        (void)dsd_socket_close(sock);
+        return 1;
+    }
+    *out_sock = sock;
+    return 0;
+}
+
+static void
+rdio_cancel_opts(dsd_opts* opts, const char* api_url, int timeout_ms, int retries) {
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_system_id = 48;
+    opts->rdio_upload_timeout_ms = timeout_ms;
+    opts->rdio_upload_retries = retries;
+    opts->rdio_api_delete_after_upload = 1;
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", api_url);
+    opts->rdio_api_url[sizeof(opts->rdio_api_url) - 1] = '\0';
+    DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
+    opts->rdio_api_key[sizeof(opts->rdio_api_key) - 1] = '\0';
+}
+
+// Write @p count one-second calls and hand each to the exporter, which queues its API upload.
+static int
+rdio_cancel_jobs_queue(rdio_cancel_jobs* jobs, const char* prefix, int count, const dsd_opts* opts) {
+    DSD_MEMSET(jobs, 0, sizeof(*jobs));
+    if (count > RDIO_CANCEL_JOBS_MAX || !dsd_test_mkdtemp(jobs->dir, sizeof(jobs->dir), prefix)) {
+        DSD_FPRINTF(stderr, "cancel jobs: mkdtemp failed\n");
+        return 1;
+    }
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!hist) {
+        return 1;
+    }
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+    int rc = 0;
+    for (int i = 0; i < count && rc == 0; i++) {
+        char leaf[64];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "call_cancel_%d.wav", i);
+        char json_leaf[64];
+        DSD_SNPRINTF(json_leaf, sizeof(json_leaf), "call_cancel_%d.json", i);
+        if (dsd_test_path_join(jobs->wav[i], sizeof(jobs->wav[i]), jobs->dir, leaf) != 0
+            || dsd_test_path_join(jobs->json[i], sizeof(jobs->json[i]), jobs->dir, json_leaf) != 0
+            || write_pcm16_mono_wav(jobs->wav[i], 8000, 1) != 0) {
+            rc = 1;
+            break;
+        }
+        jobs->count = i + 1;
+        if (dsd_rdio_export_call(opts, hist, jobs->wav[i], 0) != 0) {
+            DSD_FPRINTF(stderr, "cancel jobs: enqueue %d failed\n", i);
+            rc = 1;
+        }
+    }
+    free(hist);
+    return rc;
+}
+
+// Every queued call's WAV and sidecar must still be there (want_present) or must all be gone.
+static int
+rdio_cancel_jobs_expect_files(const rdio_cancel_jobs* jobs, int want_present, const char* label) {
+    int rc = 0;
+    for (int i = 0; i < jobs->count; i++) {
+        if (file_exists(jobs->wav[i]) != want_present || file_exists(jobs->json[i]) != want_present) {
+            DSD_FPRINTF(stderr, "%s: call %d files %s\n", label, i, want_present ? "were deleted" : "were kept");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+static void
+rdio_cancel_jobs_remove(rdio_cancel_jobs* jobs) {
+    for (int i = 0; i < jobs->count; i++) {
+        (void)remove(jobs->wav[i]);
+        (void)remove(jobs->json[i]);
+    }
+    if (jobs->dir[0] != '\0') {
+        remove_empty_dir(jobs->dir);
+    }
+}
+
+static DSD_THREAD_RETURN_TYPE
+rdio_test_cancel_later_thread(void* arg) {
+    const unsigned int* delay_ms = (const unsigned int*)arg;
+    dsd_sleep_ms(*delay_ms);
+    dsd_rdio_upload_cancel();
+    DSD_THREAD_RETURN;
+}
+#endif
+
+// The user's Stop against a stalled endpoint: cancel, then the cleanup's shutdown. Without the cancel the drain would
+// run 4 jobs x 3 attempts x 3 s; with it the attempt in flight is aborted and the rest are never tried, well inside one
+// attempt's timeout, and nothing is deleted.
+static int
+test_api_cancel_before_shutdown_skips_backlog(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 3000, 3);
+
+    rdio_cancel_jobs jobs;
+    int rc = rdio_cancel_jobs_queue(&jobs, "dsdneo_rdio_cancel_before", 4, opts);
+    // Let the worker get into its first transfer, so the cancel has one to abort.
+    dsd_sleep_ms(300U);
+
+    const uint64_t t0 = dsd_realtime_mono_ms();
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    const uint64_t elapsed = dsd_realtime_mono_ms() - t0;
+    if (elapsed >= 2000U) {
+        DSD_FPRINTF(stderr, "cancel before shutdown: shutdown took %llu ms\n", (unsigned long long)elapsed);
+        rc = 1;
+    }
+    rc |= rdio_cancel_jobs_expect_files(&jobs, 1, "cancel before shutdown");
+
+    rdio_cancel_jobs_remove(&jobs);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(opts);
+    return rc;
+#endif
+}
+
+// Stop pressed while a normal end's drain is already running: the cancel from another thread cuts the drain short.
+static int
+test_api_cancel_during_drain_returns_promptly(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 3000, 2);
+
+    rdio_cancel_jobs jobs;
+    int rc = rdio_cancel_jobs_queue(&jobs, "dsdneo_rdio_cancel_drain", 3, opts);
+
+    static unsigned int delay_ms = 400U;
+    dsd_thread_t canceller;
+    const int canceller_started = dsd_thread_create(&canceller, rdio_test_cancel_later_thread, &delay_ms) == 0;
+    if (!canceller_started) {
+        DSD_FPRINTF(stderr, "cancel during drain: thread create failed\n");
+        rc = 1;
+        dsd_rdio_upload_cancel();
+    }
+    const uint64_t t0 = dsd_realtime_mono_ms();
+    dsd_rdio_upload_shutdown();
+    const uint64_t elapsed = dsd_realtime_mono_ms() - t0;
+    if (canceller_started && dsd_thread_join(canceller) != 0) {
+        rc = 1;
+    }
+    if (elapsed >= 2400U) {
+        DSD_FPRINTF(stderr, "cancel during drain: shutdown took %llu ms\n", (unsigned long long)elapsed);
+        rc = 1;
+    }
+    rc |= rdio_cancel_jobs_expect_files(&jobs, 1, "cancel during drain");
+
+    rdio_cancel_jobs_remove(&jobs);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(opts);
+    return rc;
+#endif
+}
+
+// A cancel with no worker running yet still covers the uploads queued after it, such as the final call that cleanup
+// closes: the worker starts for it and sends nothing.
+static int
+test_api_cancel_covers_uploads_queued_after_it(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 3000, 3);
+
+    dsd_rdio_upload_cancel();
+    rdio_cancel_jobs jobs;
+    int rc = rdio_cancel_jobs_queue(&jobs, "dsdneo_rdio_cancel_after", 2, opts);
+    const uint64_t t0 = dsd_realtime_mono_ms();
+    dsd_rdio_upload_shutdown();
+    const uint64_t elapsed = dsd_realtime_mono_ms() - t0;
+    if (elapsed >= 2000U) {
+        DSD_FPRINTF(stderr, "uploads queued after cancel: shutdown took %llu ms\n", (unsigned long long)elapsed);
+        rc = 1;
+    }
+    rc |= rdio_cancel_jobs_expect_files(&jobs, 1, "uploads queued after cancel");
+
+    rdio_cancel_jobs_remove(&jobs);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(opts);
+    return rc;
+#endif
+}
+
+// A normal end drains against a healthy server: every job is uploaded and deleted as configured. Run after the cancel
+// tests, it also shows their shutdowns cleared the cancel; a cancel cleared by dsd_rdio_upload_cancel_reset() before
+// the session starts does not hold back its uploads either.
+static int
+test_api_drain_uploads_every_job_after_cancel_clears(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_cancel_reset();
+    return 0;
+#else
+    int rc = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        rdio_test_http_server server;
+        char api_url[128] = {0};
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        if (!opts || rdio_test_http_server_start_n(&server, api_url, sizeof(api_url), NULL, 0, 5000U, 3) != 0) {
+            free(opts);
+            return 1;
+        }
+        rdio_cancel_opts(opts, api_url, 5000, 1);
+        if (pass == 1) {
+            // The leak an embedding host guards against: a cancel that landed after the last session's shutdown.
+            dsd_rdio_upload_cancel();
+            dsd_rdio_upload_cancel_reset();
+        }
+
+        rdio_cancel_jobs jobs;
+        rc |= rdio_cancel_jobs_queue(&jobs, "dsdneo_rdio_drain_all", 3, opts);
+        dsd_rdio_upload_shutdown();
+        if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+            DSD_FPRINTF(stderr, "drain pass %d: server saw %d of 3 uploads\n", pass, server.requests_done);
+            rc = 1;
+        }
+        rc |= rdio_cancel_jobs_expect_files(
+            &jobs, 0, pass == 0 ? "drain after shutdown cleared cancel" : "drain after cancel reset");
+        rdio_cancel_jobs_remove(&jobs);
+        dsd_socket_cleanup();
+        free(opts);
+    }
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1970,5 +2300,9 @@ main(void) {
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_meta_part_matches_dirwatch_sidecar();
     rc |= test_api_upload_does_not_follow_redirect();
+    rc |= test_api_cancel_before_shutdown_skips_backlog();
+    rc |= test_api_cancel_during_drain_returns_promptly();
+    rc |= test_api_cancel_covers_uploads_queued_after_it();
+    rc |= test_api_drain_uploads_every_job_after_cancel_clears();
     return rc;
 }

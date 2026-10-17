@@ -30,6 +30,7 @@
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
+#include "input_commit.h"
 #include "known_frequency_index.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
@@ -171,6 +172,19 @@ apply_confirmed_restore(const DecoderHost* host) {
     return backup::apply_pending_restore(env);
 }
 
+static void
+prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* systems, ScanListsModel* scanLists) {
+    // The library drops rows whose stored copy vanished behind the app's back;
+    // saved systems that still point at one would build a `-G <missing>` argv and
+    // fail to start with a parse error naming the input settings, not the file.
+    // Reconciled here because the library cannot: it loads in its constructor,
+    // and it has no business knowing what references it.
+    for (const QString& gone : importedFiles->takePrunedPaths()) {
+        systems->clearCsvPath(gone);
+        scanLists->clearCsvPath(gone);
+    }
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
@@ -214,15 +228,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     controller->setP25Network(network); // WP-F2
     wire_attachment(host, controller, prefs, systems, scanLists);
 
-    // The library drops rows whose stored copy vanished behind the app's back;
-    // saved systems that still point at one would build a `-G <missing>` argv and
-    // fail to start with a parse error naming the input settings, not the file.
-    // Reconciled here because the library cannot: it loads in its constructor,
-    // and it has no business knowing what references it.
-    for (const QString& gone : importedFiles->takePrunedPaths()) {
-        systems->clearCsvPath(gone);
-        scanLists->clearCsvPath(gone);
-    }
+    prune_missing_csv_paths(importedFiles, systems, scanLists);
 
     wire_screen_policy(host, prefs);
 
@@ -262,6 +268,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
+    // Issue #718: forms finish the keyboard's composing word before reading their fields.
+    context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(&engine));
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

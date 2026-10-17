@@ -4,10 +4,20 @@
 import QtQuick
 import QtQuick.Window
 
-// A centred panel over a dimmed screen, dismissed by tapping outside it.
+// A centred panel over a dimmed screen.
 //
-// The barrier stops delivery to controls behind every sheet. Panel controls
-// appear above it; clicks on otherwise empty panel space do not dismiss it.
+// Only a real tap outside the panel dismisses it: press and release both off
+// the panel, with no more movement than a drag threshold. A press that starts
+// on the panel and ends beside it, or a drag in the gutter, is not a tap.
+// Form sheets (typed input or an in-progress choice) set closesOnOutsideTap to
+// false and leave only through their own Cancel/close control, Back or Escape,
+// each of which goes through their discard check (issue #718). Menus,
+// confirmations, choice sheets, read-only and live-apply sheets keep the
+// outside tap.
+//
+// The barrier accepts every press, so nothing behind the sheet receives
+// presses, drags or releases. Panel controls appear above it; taps on
+// otherwise empty panel space do not dismiss it.
 Rectangle {
     id: sheet
 
@@ -20,6 +30,8 @@ Rectangle {
     property string accessibleName: qsTr("Dialog")
     property var previousFocus: null
     property var dismissHandler: null
+    /** Whether a tap outside the panel asks to dismiss; false for form sheets. */
+    property bool closesOnOutsideTap: true
     property bool adjustingFocus: false
     readonly property bool isTopModal: Navigation.topModal === sheet
     Accessible.role: Accessible.Dialog
@@ -38,7 +50,10 @@ Rectangle {
         visible = true;
         previousFocus = opener;
     }
+    // Escape, Back and an outside tap. The composing word is committed first,
+    // so a discard check sees what was typed.
     function requestDismiss() {
+        Navigation.commitComposing(false);
         if (dismissHandler) {
             dismissHandler();
             return;
@@ -77,6 +92,11 @@ Rectangle {
         function onVisibleChanged() {
             var window = sheet.Window.window;
             if (sheet.visible) {
+                // A reused sheet opens at its top, not where its last visit was
+                // scrolled to (issue #718). Before the focus moves below, so the
+                // focus reveal that follows still scrolls to a focused field.
+                scroll.contentX = 0;
+                scroll.contentY = 0;
                 sheet.previousFocus = window ? window.activeFocusItem : null;
                 Navigation.clearInput(window);
                 Navigation.addModal(sheet);
@@ -117,7 +137,7 @@ Rectangle {
         }
     }
 
-    /** Emitted after a tap on the scrim has hidden the sheet. */
+    /** Emitted after an outside tap, Escape or Back has hidden a sheet without a dismissHandler. */
     signal dismissed
 
     /** Whether a point in this sheet's coordinates lies on the panel. */
@@ -131,8 +151,28 @@ Rectangle {
     color: Qt.alpha("#000000", 0.5)
 
     PointerBarrier {
-        onClicked: function (mouse) {
-            if (sheet.hitsPanel(mouse.x, mouse.y))
+        // A tap, not a click: MouseArea.clicked fires for any press and release
+        // inside the area however far the pointer travelled, so a press on the
+        // panel's padding that slid off, or a drag in the gutter, would close it.
+        property real pressX: 0
+        property real pressY: 0
+        property bool pressedOutside: false
+        property bool moved: false
+        onPressed: function (mouse) {
+            pressX = mouse.x;
+            pressY = mouse.y;
+            pressedOutside = !sheet.hitsPanel(mouse.x, mouse.y);
+            moved = false;
+        }
+        onPositionChanged: function (mouse) {
+            if (Math.abs(mouse.x - pressX) > Qt.styleHints.startDragDistance || Math.abs(mouse.y - pressY) > Qt.styleHints.startDragDistance)
+                moved = true;
+        }
+        onCanceled: pressedOutside = false
+        onReleased: function (mouse) {
+            var tapped = pressedOutside && !moved && !sheet.hitsPanel(mouse.x, mouse.y);
+            pressedOutside = false;
+            if (!tapped || !sheet.closesOnOutsideTap)
                 return;
             sheet.requestDismiss();
             // A sheet dismissed with a field still focused leaves the soft

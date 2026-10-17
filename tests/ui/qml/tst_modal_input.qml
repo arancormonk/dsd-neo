@@ -239,6 +239,13 @@ Item {
             var point = target.mapToItem(sheet, target.width / 2, target.height / 2);
             verify(!sheet.hitsPanel(point.x, point.y));
             mouseClick(target, target.width / 2, target.height / 2);
+            // Issue #718: the edit sheet is a form, so the tap beside it keeps it
+            // open; either way nothing reaches the control under the scrim.
+            wait(50);
+            verify(sheet.visible, "an outside tap keeps the talkgroup editor open");
+            compare(testContext.talkgroupListenCalls(), 0);
+            compare(testContext.allTalkgroupsListenCalls(), 0);
+            findChild(sheet, "talkgroupEditClose").activate();
             tryCompare(sheet, "visible", false);
             compare(testContext.talkgroupListenCalls(), 0);
             compare(testContext.allTalkgroupsListenCalls(), 0);

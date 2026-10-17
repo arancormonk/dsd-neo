@@ -21,8 +21,11 @@ Item {
     Accessible.ignored: !visible || !navigationAllowed
     Accessible.onPressAction: activate()
     function activate() {
-        if (enabled && Navigation.allows(control))
-            clicked();
+        if (!enabled || !Navigation.allows(control))
+            return;
+        // Issue #718: a choice made mid-word keeps the word; focus stays put.
+        Navigation.commitComposing(false);
+        clicked();
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()

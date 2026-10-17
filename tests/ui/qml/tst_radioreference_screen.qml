@@ -37,6 +37,12 @@ Item {
         source: uiDir + "/RadioReferenceScreen.qml"
     }
 
+    SignalSpy {
+        id: closedSpy
+        target: screenLoader.item
+        signalName: "closed"
+    }
+
     // The refresh entry point lives in the imports library, not on the screen
     // above, so it needs the library loaded to be reachable at all.
     Loader {
@@ -91,6 +97,108 @@ Item {
             var button = findChild(tc.screen, "radioReferenceNearby")
             verify(button !== null)
             verify(!button.visible)
+        }
+
+        function loadTwoSiteSystem() {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 6673,
+                                              "name": "Test System",
+                                              "typeDescr": "Project 25",
+                                              "flavorDescr": "Phase II"
+                                          })
+            testContext.setRadioReference("sites", [
+                                              { "siteNumber": 1, "descr": "Alpha", "freqCount": 11,
+                                                "controlFreqMhz": "851.0125", "simulcast": false,
+                                                "freqMhz": "851.0125", "colorCode": "" },
+                                              { "siteNumber": 2, "descr": "Bravo", "freqCount": 13,
+                                                "controlFreqMhz": "852.5", "simulcast": false,
+                                                "freqMhz": "852.5", "colorCode": "" }
+                                          ])
+            tryVerify(function () { return tc.screen.systemLoaded })
+        }
+        function leaveQuestion() {
+            return findChild(tc.screen, "radioReferenceLeaveDiscard")
+        }
+
+        // Issue #718: the site selection and import options live on this screen
+        // and start over when the system is opened again, so leaving with a
+        // selection asks first. Untouched, every exit is immediate.
+        function test_15_leaving_a_selection_asks_data() {
+            return [
+                { tag: "header back", exit: "header" },
+                { tag: "All systems row", exit: "results" },
+                { tag: "import option", exit: "header", option: true }
+            ]
+        }
+        function test_15_leaving_a_selection_asks(data) {
+            loadTwoSiteSystem()
+            closedSpy.clear()
+            var question = leaveQuestion()
+            verify(question !== null)
+            var leave = function () {
+                if (data.exit === "header")
+                    findChild(tc.screen, "radioReferenceBack").activate()
+                else
+                    findChild(tc.screen, "radioReferenceBackToResults").goBack()
+            }
+            leave()
+            verify(!question.visible, "an untouched system leaves without asking")
+            if (data.exit === "header")
+                compare(closedSpy.count, 1)
+            closedSpy.clear()
+            loadTwoSiteSystem()
+            if (data.option)
+                tc.screen.encryptionPolicy = 2
+            else
+                tc.screen.toggleSite(1)
+            leave()
+            verify(question.visible, "a selection is asked about before it goes")
+            compare(closedSpy.count, 0)
+            findChild(question, "discardDialogKeep").activate()
+            verify(!question.visible)
+            if (data.option)
+                compare(tc.screen.encryptionPolicy, 2)
+            else
+                compare(tc.screen.selectedSites, [1])
+            leave()
+            verify(question.visible)
+            findChild(question, "discardDialogDiscard").activate()
+            verify(!question.visible)
+            if (data.exit === "header")
+                compare(closedSpy.count, 1, "Discard closes the screen")
+        }
+        // A single trunked site picks itself: that is not the user's selection.
+        function test_16_a_site_picked_by_the_screen_is_not_an_edit() {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("systemDetails", { "sid": 6673, "name": "One", "typeDescr": "Project 25" })
+            testContext.setRadioReference("sites", [
+                                              { "siteNumber": 1, "descr": "Alpha", "freqCount": 11,
+                                                "controlFreqMhz": "851.0125", "simulcast": false,
+                                                "freqMhz": "851.0125", "colorCode": "" }
+                                          ])
+            tryVerify(function () { return tc.screen.systemLoaded })
+            compare(tc.screen.selectedSites, [0])
+            closedSpy.clear()
+            findChild(tc.screen, "radioReferenceBack").activate()
+            verify(!leaveQuestion().visible)
+            compare(closedSpy.count, 1)
+        }
+
+        // The review step is the last of an import: a tap beside it keeps it.
+        function test_17_the_review_sheet_keeps_on_a_side_tap() {
+            loadTwoSiteSystem()
+            var review = findChild(tc.screen, "radioReferenceReviewSheet")
+            verify(review !== null)
+            screenLoader.z = 1
+            review.visible = true
+            waitForRendering(review)
+            verify(!review.hitsPanel(4, review.height / 2))
+            mouseClick(review, 4, review.height / 2)
+            wait(50)
+            verify(review.visible, "a tap beside the review keeps it")
+            review.visible = false
+            screenLoader.z = 0
         }
 
         function initTestCase() {

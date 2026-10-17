@@ -51,6 +51,9 @@ class DiagnosticsLogModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(bool paused READ paused WRITE setPaused NOTIFY pausedChanged)
     Q_PROPERTY(int pendingCount READ pendingCount NOTIFY pendingCountChanged)
+    // Whether a view shows the rows (Main.qml binds the diagnostics screen's visibility). While
+    // inactive, ticks reset nothing; becoming active resets once (issue #718).
+    Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
   public:
     explicit DiagnosticsLogModel(DiagnosticsLog* log = nullptr, QObject* parent = nullptr);
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -69,6 +72,13 @@ class DiagnosticsLogModel : public QAbstractListModel {
         return m_pending;
     }
 
+    bool
+    active() const {
+        return m_active;
+    }
+
+    void setActive(bool value);
+
     void markSessionStarting();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE QString allText() const;
@@ -77,13 +87,20 @@ class DiagnosticsLogModel : public QAbstractListModel {
   Q_SIGNALS:
     void pausedChanged();
     void pendingCountChanged();
+    void activeChanged();
 
   private:
+    void showRows(const QStringList& rows);
+
     DiagnosticsLog* m_log;
     QStringList m_rows;
     quint64 m_seen = 0;
     bool m_paused = false;
     int m_pending = 0;
+    bool m_active = true;
+    // While inactive: the rows consumed (m_seen) but not shown yet, and whether there are any.
+    QStringList m_held;
+    bool m_stale = false;
 };
 } // namespace dsd_qt
 #endif

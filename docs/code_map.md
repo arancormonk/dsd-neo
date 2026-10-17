@@ -1753,6 +1753,20 @@ suite runs under this compiler.
     (`src/io/radio/rtl_sdr_fm.cpp`) and the mode-change toast for a rate that cannot work, with the fix for what sets
     the rate. Tests: `RUNTIME_DECODE_MODE`, `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE`, `UI_MENU_ACTIONS`,
     `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
+  - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
+    with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
+    `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
+    a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
+    still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
+    D4): every QML `decoderHost.stop()` caller (Stop listening, switching systems, retry after a failure, leaving
+    Signal search or its Stop, Back or closing the window with background listening off, "Dismiss failure and choose a
+    site") and the notification's Stop action, as `StopCause.USER` through `nativeStop(userRequested)`: a lock-free flag the worker loop (no further jobs), the retry
+    loop (between attempts) and the transfer's xferinfo callback (aborts the transfer in flight) poll. Shutdown still
+    owns the join, logs once how many uploads were not sent, and clears the flag; uploads queued after the cancel (the
+    final call cleanup closes) are not sent either. Files are deleted only after a successful upload, so abandoned
+    calls keep theirs. An embedding host clears a cancel that landed after the last shutdown with
+    `dsd_rdio_upload_cancel_reset()` when it configures the next run. Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint,
+    cancel before and during the drain), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -5838,6 +5852,12 @@ Qt Quick frontend (`src/ui/qt`):
     merged call whose seen entries were evicted or lost is logged again as new rows, one per fragment. A state an
     embedding host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
     session's.
+  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order),
+    saved 3 s after the last change. The UI thread hands the single save worker (`m_savePool`, one thread) copies of
+    `m_rows` and `m_seen`; the worker builds the JSON and writes both files, reading nothing live (issue #718: the
+    build alone cost ~62 ms per save at a full log). One save in flight at a time (`m_saveInFlight`); a change during
+    it marks the stores dirty and re-arms the debounce when it finishes. `clearAll()` saves at once through the same
+    path. The destructor waits for the worker, then writes any owed save synchronously (`saveNow()`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
     (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
@@ -5944,32 +5964,107 @@ Qt Quick frontend (`src/ui/qt`):
   `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).
-- Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): the same deterministic grid as the Signal
-  search Now panel. The widest label any cell can show (Mute, Unmute, Hold TG, Release, Skip, TG list, Avoid TG, Lock
-  out) is measured at the font scale in force; four columns only where a quarter of the row fits it with
-  `Theme.cardPadding` either side, else two (a 360 px phone takes two at every scale); one label line count and one
-  height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces (`OutlineButton.wrapMode`
-  `Text.WordWrap`). The Avoid row spans two cells, the full width in two columns; at compact height the Avoid cell takes
-  TG list's place. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`), `tst_monitor_compact.qml`.
-- Typed input and sheet dismissal: `qml/ModalSheet.qml` hides on a tap outside its panel (on a phone the 18 px margins
-  beside it), Back and Escape through `requestDismiss()`; menus, confirmations and read-only sheets keep that. A sheet
-  that holds typed input sets `dismissHandler` to a `requestClose()` that compares the live field text (never state
-  committed on `editingFinished`, which the scrim beats) with a baseline captured when its editing scope opened or was
-  replaced, and asks through `qml/DiscardDialog.qml` (parented to the sheet) when they differ: the Signal search range
-  editor (`openedForm`, with its own Cancel), the idle Signal search screen (`openedSource`, set by `seed()` from Main's
-  `seedSignalSearch()` and when a session stops), `BackupFlow.qml`'s passphrase and unlock sheets (only while editable
-  and typed; their Cancel and the busy steps cancel at once), `DecryptionProfileEditor.qml` and its key and mapping
-  dialogs (`openedForm`, re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback
-  algorithm), `KeySheet.qml` (an unapplied direct-key draft asks the discard question; another saved profile or scope
-  than at open, not applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`),
-  `ToneFilterSheet.qml` (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml`
-  (`fingerprint()` includes the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. A
+- Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
+  (`monitorLiveStrip`: the second-slot strip, then the scan controls, each only when the session has them), one
+  `ListView` (`recentCallsList`), the call actions and Stop. The list is the only scrolling surface: its header
+  (`monitorListHeader`, declared outside the view and parented into `headerItem` so the screen reaches its rows by id)
+  holds the "Signal & site" disclosure (`monitorDetailsRow`, a `DisclosureRow` in `monitorDetailsCard`), the readings it
+  folds away (`monitorDetails`: site, decryption, signal strip, quality, TETRA, ENC LOCKOUT, received tone, tone filter,
+  squelch, passband and scan avoids, in that order with their own objectNames) and the `RECENT CALLS` label; the rows
+  are `CallRow`s over one `recentCallsPanel` card in the view's `contentItem`. The engine's last answer (`uiMessage`) is
+  the line under the disclosure. The disclosure is closed by default and remembered in the device-local
+  `AppPrefs::monitorDetailsExpanded` (`monitor/detailsExpanded`, kept out of backups and kept on restore); its summary
+  is built only from readings the rows show (SNR on radio input, the quality row's lead reading with a TETRA codec fault
+  ahead of it in `Theme.alert`, the decryption state, an ENC LOCKOUT count in `Theme.magenta`, `Util.siteShortForm()`),
+  one elided StyledText line; a fault never opens the rows. `tier` is chosen from measured geometry, never call
+  content: the first of 0 (stacked header, full hero, live strip fixed), 1 (header actions on the title line, Sites and
+  Spectrum left to the session menu, which carries both on the same conditions; at 500 dp and wider they stay), 2
+  (compact hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label)
+  whose `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
+  leaves a row, else 5, where only Stop stays put and header, hero, strip and actions move into slots at the top of the
+  list header. Parts move by `parent` bindings between fixed hosts (`topHost`, `stripHost`, `actionsHost`) and those
+  slots; slots and hosts size from the budget's own numbers (`stripHeight`), since an Item hides its children. The hero's
+  height is reserved from its fixed lines (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
+  one box. The list has no current item (`currentIndex: -1`): a ListView is a focus scope that would hand focus to it
+  as rows land. Keyboard focus inside the list is revealed through `Theme.revealFocus(list, list.contentItem, item)`,
+  whose bounds follow `originY` when passed a view's `contentItem` (plain Flickables keep 0). `FollowLatest` measures
+  against the header's end (`latestY`): with any header in view a landing call moves nothing (ListView puts it under the
+  header), within a row of the calls' top the newest row is kept there, below that the reading position is kept; and on
+  a header resize while the header is in view it moves `contentY` so `headerAnchor` (the disclosure card) keeps its
+  place on screen, keeping the list's start at the start, deferring to the release under a held finger, and measuring
+  from the offset noted between resizes because ListView may clamp `contentY` before the header announces its height.
+  The header's end is read off the first row; the footer stands in only for an empty list, and with the first row
+  recycled far down a long list the header's own geometry is used while it is in view, else the view is left alone.
+  Tests: `tst_monitor_layout_budget.qml` (tiers at 360x690, 411x780, 411x914, 640x360 by scale and live strip,
+  disclosure, summary, follow and focus), `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`,
+  `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE` (`test_prefs_key_table`).
+- Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
+  (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as
+  checked (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does
+  the scan controls' Hold scan. Four columns where a quarter of the row, less the 12 px either side of a label, fits the
+  longest word of any label (Mute, Hold TG, Skip, Avoid TG, Lock out) at the font scale in force, else two (a 360 px
+  phone takes four at 1.0, two at 1.6); one label line count and one height for every cell, at least
+  `Theme.minimumTouchSize`; labels wrap only at spaces (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's
+  border is never lost to the list's clip in tier 5. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`,
+  `test_toggles_show_checked`), `tst_monitor_compact.qml`.
+- Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
+  Escape and a real tap outside its panel: press and release both off the panel with no more movement than
+  `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
+  gutter, is not a tap). Its `PointerBarrier` accepts every press, so nothing behind a sheet receives presses, drags
+  or releases. Every open scrolls the panel back to its top before focus moves, so a reused sheet never reopens where
+  its last visit was scrolled to and the focus reveal still runs. Sheets fall in two classes by what they hold:
+  - Form sheets (typed input or an in-progress choice) set `closesOnOutsideTap: false`, keep a visible Cancel/close
+    control, and leave only through it, Back or Escape, every one of which goes through the sheet's discard check:
+    `BackupFlow.qml`'s passphrase and unlock sheets (Cancel runs `dismissExport()`/`dismissUnlock()`, as dismissal
+    does; the busy steps still cancel at once), `SignalSearchRangeEditor.qml`, `CsvImportFlow.qml`'s companion sheet
+    (asks once a companion was chosen; "Choose a file…" keeps the current companion until a replacement is
+    accepted), `TalkgroupEditSheet.qml`, `KeySheet.qml`, `ToneFilterSheet.qml`, `DecryptionProfileEditor.qml` with its
+    key and mapping dialogs, Spectrum's Go to, the wizard's CSV picker (its pending Decimal/Hex choice resets on the
+    next open, so it asks when the choice changed since opening with no key file assigned to apply it to) and RadioReference's review-import sheet.
+  - Menus (`ActionMenu`), `ConfirmDialog`, `ChoiceSheet`, `DiscardDialog` (outside tap = keep editing), read-only
+    sheets (history details, network, site, failure and notification sheets, replay details), the live-apply
+    `RadioSheet`/`SquelchSheet`/`PassbandSheet` (their values are in-flight engine requests) and the Imports, scan
+    list and site-chooser sheets keep tap-outside-to-close. Busy/saving/closing sheets stay non-dismissable through
+    an empty `dismissHandler`.
+  A form's `requestClose()` compares the live field text (never state committed on `editingFinished`, which Back
+  beats) with a baseline captured when its editing scope opened or was replaced, and asks through
+  `qml/DiscardDialog.qml` (parented to the sheet) when they differ: the Signal search range editor (`openedForm`),
+  the idle Signal search screen (`openedSource`, set by `seed()` from Main's `seedSignalSearch()` and when a session
+  stops), the backup sheets (only while editable and typed), the profile editor and its dialogs (`openedForm`,
+  re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback algorithm), `KeySheet.qml`
+  (an unapplied direct-key draft asks the discard question; another saved profile or scope than at open, not
+  applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`), `ToneFilterSheet.qml`
+  (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml` (`fingerprint()` includes
+  the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. `RadioReferenceScreen.qml`
+  holds its site selection and import options on the screen: the header's back button, Android Back (its
+  `NavigationLayer` calls `requestClose()`) and the "All systems"/"Search" row ask once `selectionState()` differs
+  from `openedSelection` (captured when a system's sites land, so a single site the screen picked is not an edit). A
   `DiscardDialog` closes with the surface under it, so it never returns when that reopens.
   `RadioReferenceScreen.reset()` keeps the typed zip code and system ID (and their tab) across visits instead;
-  `doImport()` clears them. Tests: `UI_QT_QML_CALL_LISTS` (`tst_signal_search.qml`, `tst_settings_backup.qml`,
-  `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`,
-  `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
-  `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
+  `doImport()` clears them.
+- Composing (preedit) text (issue #718): an Android keyboard holds the word being typed as preedit, which
+  `TextInput.text` leaves out, so forms would save a name without its last word, judge an edit unchanged or reject a
+  field as empty. `input_commit.{h,cpp}` (`InputCommit`, the `inputCommit` context object, wrapped by
+  `Navigation.commitComposing()`/`Navigation.composing`) commits it at action boundaries rather than from a
+  window-wide press filter, which would fire before Qt routes a tap inside the composing text to the keyboard and
+  break cursor taps, selection handles and drags. It calls `QInputMethod::commit()` (Android finishes composing and
+  delivers the word); when the focus item still reports `inputMethodComposing` (offscreen/test platforms) it sends
+  the item its `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`,
+  `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
+  text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
+  reads them) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
+  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button gated on a field's committed
+  text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid
+  || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls `clicked()`
+  only if `inputValid` then holds; otherwise it is disabled as before (accessibility and keyboard included), and a
+  real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this key" and "Use override",
+  `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter
+  Apply and Explore's Start.
+  Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
+  `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
+  `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
+  `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
+  `tst_back_modals.qml`, `tst_wizard_encryption.qml`, `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
@@ -5995,8 +6090,13 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
+  Every history change rescans the whole history (a merge can move a row to another session, so contributions are
+  not tracked incrementally). `CallHistoryModel` hands the heard ids over from its row storage through the
+  `HeardTalkgroupSource` Qt interface (`heard_talkgroup_source.h`), not one QVariant `data()` lookup per role and row;
+  any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
+  with a running maximum end, so overlapping ranges cover correctly (issue #718).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
-  monitor's **TG list** action.
+  monitor session menu's **Talkgroups** entry.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session
@@ -6017,6 +6117,11 @@ Qt Quick frontend (`src/ui/qt`):
   and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
   the redraw consume in `UiController::tick`; it persists across decoder session
   transitions. `qml/DiagnosticsScreen.qml` provides pause, copy, clear and host share.
+  The model's `active` property is bound by `Main.qml` to the diagnostics screen's
+  visibility (issue #718): while inactive a tick consumes new lines (the pause and
+  pending-count rules are unchanged) without resetting the model, and becoming active
+  performs one reset, from a fresh snapshot or, while paused, from the lines held at
+  the pause.
   Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
   platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
@@ -6501,6 +6606,19 @@ supply focused wiring patches for serial application in orchestrator order. New
 live models join `clearLiveModels()` for lifecycle and trunk-scan target edges.
 Context registration placeholders in `qt_ui.cpp` keep those ownership decisions
 in one place. Every new UI_QT target also belongs in Android CI's explicit build list.
+
+Stop feedback (issue #718): `DecoderHostAndroid::stop()` (`decoder_host_android_lifecycle.cpp`) publishes Stopping
+through `setSessionPhase()` before it dispatches the stop intent, when the tracker's phase is Starting or Running, so
+`sessionState`, `transitioning` and Monitor's Stop button ("Stopping…") change on the tap instead of a later poll.
+`SessionPhaseTracker::note_stop_requested()` (`session_state_map.h`) binds the request to the start attempt being
+followed, not to a session id: the previous session's IDLE record, the new id's STARTING, RUNNING and STOPPING all
+publish Stopping until the attempt's terminal record (Idle, or a failure, published as without a request) or a later
+start attempt. `DecoderService` handles intents in order and runs a whole start inside one `onStartCommand`, so a
+delivered stop always turns RUNNING into STOPPING; RUNNING records for `kStopGraceMs` (2 s) after the request, with no
+STOPPING, drop it, republish Running and log one host diagnostics line. Times are `dsd_realtime_mono_ms()` read through
+`DecoderHostAndroid::readRealtimeMs()`, which `UI_QT_ANDROID_HOST` replaces. The request lives in the host; a recreated
+Activity maps the service state as before. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`,
+`tst_monitor_call_actions.qml`.
 
 Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker

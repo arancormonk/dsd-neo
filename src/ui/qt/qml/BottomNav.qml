@@ -46,8 +46,12 @@ Rectangle {
                 Accessible.ignored: !visible || !navigationAllowed
                 Accessible.onPressAction: choose()
                 function choose() {
-                    if (enabled && Navigation.allows(nav))
-                        nav.selected(index);
+                    if (!enabled || !Navigation.allows(nav))
+                        return;
+                    // Issue #718: leaving a screen finishes the word being typed
+                    // there, and its field's editing, first.
+                    Navigation.commitComposing(true);
+                    nav.selected(index);
                 }
                 Keys.onSpacePressed: choose()
                 Keys.onReturnPressed: choose()

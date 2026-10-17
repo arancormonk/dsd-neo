@@ -6,6 +6,8 @@ import "Util.js" as Util
 ModalSheet {
     id: sheet
     property var bridge: commands
+    // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
+    closesOnOutsideTap: false
     property string backendMessage: metrics.uiMessage
     property string localMessage: ""
     property var idStart: 0
@@ -229,7 +231,10 @@ ModalSheet {
         wrapMode: Text.Wrap
         textFormat: Text.PlainText
     }
+    // The way out a form sheet keeps visible, now that a tap beside it stays
+    // (issue #718); it asks before an edit goes.
     OutlineButton {
+        objectName: "talkgroupEditClose"
         width: parent.width
         height: Math.max(48, implicitHeight)
         text: qsTr("Close")

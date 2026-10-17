@@ -228,8 +228,10 @@ Item {
         backup.prepareExport(first);
     }
 
-    // A tap beside the panel, Back or Escape: a passphrase already typed is
-    // asked about first. Cancel itself, and the encrypting step, cancel at once.
+    // Cancel, Back or Escape: a passphrase already typed is asked about first.
+    // The encrypting step cancels at once. Callers commit composing text first
+    // (Cancel's activation, or the sheet's dismissal), so a word still being
+    // typed counts as typed.
     function dismissExport() {
         if (step === "exportPassphrase" && (passphraseField.text.length || confirmField.text.length))
             passphraseDiscard.ask(cancelExport);
@@ -518,6 +520,9 @@ Item {
         id: passphraseSheet
         objectName: "backupPassphraseSheet"
         accessibleName: qsTr("Encrypt backup")
+        // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and
+        // Escape all go through dismissExport().
+        closesOnOutsideTap: false
         dismissHandler: function () {
             flow.dismissExport();
         }
@@ -609,7 +614,7 @@ Item {
             objectName: "backupExportCancel"
             width: parent.width
             text: qsTr("Cancel")
-            onClicked: flow.cancelExport()
+            onClicked: flow.dismissExport()
         }
     }
 
@@ -643,6 +648,8 @@ Item {
         id: unlockSheet
         objectName: "backupUnlockSheet"
         accessibleName: qsTr("Unlock backup")
+        // As the passphrase sheet: every exit goes through dismissUnlock().
+        closesOnOutsideTap: false
         dismissHandler: function () {
             flow.dismissUnlock();
         }
@@ -725,7 +732,7 @@ Item {
             objectName: "backupUnlockCancel"
             width: parent.width
             text: qsTr("Cancel")
-            onClicked: flow.cancelUnlock()
+            onClicked: flow.dismissUnlock()
         }
     }
 

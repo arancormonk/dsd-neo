@@ -14,6 +14,8 @@ ModalSheet {
     id: sheet
     objectName: "toneFilterSheet"
     accessibleName: qsTr("Tone filter")
+    // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
+    closesOnOutsideTap: false
 
     property var bridge: commands
     // 0 off, 1 allow, 2 block (dsd_tone_filter_mode), as the segments are ordered.
@@ -193,7 +195,7 @@ ModalSheet {
         objectName: "toneFilterApply"
         width: parent.width
         text: qsTr("Apply")
-        enabled: sheet.listError.length === 0
+        inputValid: sheet.listError.length === 0
         onClicked: sheet.apply()
     }
     Text {

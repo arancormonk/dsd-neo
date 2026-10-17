@@ -838,7 +838,8 @@ surface. Recency and `lastStartedKind=scan`/`lastStartedUid` are written only on
 `sessionInitialized`, never merely because a start was queued.
 
 Monitor displays `SCANNING · <id> (n/m)` and `HOLD`. Existing Hold/Avoid/Next/Clear
-controls operate on these targets. Target identity clears with the other live
+controls operate on these targets: Hold scan, Avoid and Next sit in the live strip under the hero (Hold scan
+shows a hold as checked), and the avoided count with its Clear is in the "Signal & site" readings. Target identity clears with the other live
 metrics on lifecycle transitions.
 
 Generated CSVs can contain direct keys and are owner-readable/writable only. They

@@ -1133,12 +1133,14 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     forged = parts;
     prefs = forged.manifest.value("prefs").toObject();
     prefs.insert("ui/onboardingDone", true);
+    prefs.insert("monitor/detailsExpanded", true);
     prefs.insert("evil/key", QJsonArray{1});
     forged.manifest.insert("prefs", prefs);
     const auto parsed = dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root());
     expect("unknown and device-local settings are dropped",
            parsed.error == BackupError::None && !parsed.prefs.contains("ui/onboardingDone")
-               && !parsed.prefs.contains("evil/key") && parsed.prefs.value("rr/username") == "scanner");
+               && !parsed.prefs.contains("monitor/detailsExpanded") && !parsed.prefs.contains("evil/key")
+               && parsed.prefs.value("rr/username") == "scanner");
 
     for (const auto& value : {QJsonValue(0), QJsonValue(-1), QJsonValue(4294967296.0), QJsonValue(1.5),
                               QJsonValue("156800000"), QJsonValue(QJsonArray())}) {

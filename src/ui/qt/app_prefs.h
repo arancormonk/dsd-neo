@@ -78,6 +78,10 @@ class AppPrefs : public QObject {
     Q_PROPERTY(QString searchSourceType READ searchSourceType WRITE setSearchSourceType NOTIFY searchChanged)
     Q_PROPERTY(QString searchHost READ searchHost WRITE setSearchHost NOTIFY searchChanged)
     Q_PROPERTY(int searchPort READ searchPort WRITE setSearchPort NOTIFY searchChanged)
+    /* Whether the Monitor's "Signal & site" readings were left open (#718). How this
+     * phone's screen was arranged, so it stays on the device and out of backups. */
+    Q_PROPERTY(bool monitorDetailsExpanded READ monitorDetailsExpanded WRITE setMonitorDetailsExpanded NOTIFY
+                   monitorDetailsExpandedChanged)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -223,6 +227,10 @@ class AppPrefs : public QObject {
     int searchPort() const;
     void setSearchPort(int port);
 
+    /** @brief The Monitor's "Signal & site" disclosure is open; closed by default. Device-local. */
+    bool monitorDetailsExpanded() const;
+    void setMonitorDetailsExpanded(bool on);
+
   Q_SIGNALS:
     void autoStartOnAttachChanged();
     void lastStartedKindChanged();
@@ -248,6 +256,7 @@ class AppPrefs : public QObject {
     void rrAppKeyChanged();
     void exploreChanged();
     void searchChanged();
+    void monitorDetailsExpandedChanged();
 
   private:
     void expireLocation() const;

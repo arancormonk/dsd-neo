@@ -14,7 +14,8 @@ Item {
     id: root
     width: 411
     height: 700
-    Ui.MonitorScreen { id: monitor; anchors.fill: parent }
+    // The readings under test live in the Monitor's "Signal & site" disclosure (#718), open here.
+    Ui.MonitorScreen { id: monitor; anchors.fill: parent; detailsExpanded: true }
     TestCase {
         name: "ToneFilterSheet"
         when: windowShown
@@ -51,10 +52,10 @@ Item {
             waitForItemPolished(item("monitorToneFilter"));
             // Scrolled into the body's view, as a user would: the call actions below it can
             // take more of a short screen than one row.
-            var body = item("monitorBody");
+            var body = item("recentCallsList");
             var bottom = edit.mapToItem(body.contentItem, 0, edit.height).y;
             if (bottom > body.contentY + body.height)
-                body.contentY = Math.min(bottom - body.height, Math.max(0, body.contentHeight - body.height));
+                body.contentY = Math.min(bottom - body.height, Math.max(body.originY, body.originY + body.contentHeight - body.height));
             waitForRendering(monitor);
             mouseClick(edit);
             var sheet = item("toneFilterSheet");
@@ -62,7 +63,7 @@ Item {
             return sheet;
         }
         function insideBody(reading) {
-            var body = item("monitorBody");
+            var body = item("recentCallsList");
             var left = reading.mapToItem(body, 0, 0).x;
             var right = reading.mapToItem(body, reading.width, 0).x;
             return left >= -0.5 && right <= body.width + 0.5;
@@ -195,10 +196,10 @@ Item {
             }
             return null;
         }
-        // A list being typed survives a tap beside the panel and Back: the sheet
-        // asks, Keep editing keeps the text, Discard sends nothing.
+        // A list being typed survives Close and Back: the sheet asks, Keep
+        // editing keeps the text, Discard sends nothing.
         function test_dismissal_asks_before_dropping_the_list_data() {
-            return [{tag: "scrim", method: "scrim"}, {tag: "back", method: "back"}, {tag: "mode only", method: "scrim", modeOnly: true}];
+            return [{tag: "close", method: "close"}, {tag: "back", method: "back"}, {tag: "mode only", method: "close", modeOnly: true}];
         }
         function test_dismissal_asks_before_dropping_the_list(data) {
             showEditable();
@@ -206,8 +207,14 @@ Item {
             testContext.setMetric("toneFilterConfiguredList", "100.0");
             var sheet = openEditor();
             waitForRendering(sheet);
+            var dismiss = function () {
+                if (data.method === "back")
+                    verify(Ui.Navigation.back(sheet.Window.window));
+                else
+                    item("toneFilterClose").activate();
+            };
             // The configured policy it opened on is not an edit.
-            tapBeside(sheet);
+            dismiss();
             tryCompare(sheet, "visible", false);
             verify(!shownDiscard(monitor));
             sheet = openEditor();
@@ -216,10 +223,7 @@ Item {
                 item("toneFilterMode").selected(2);
             else
                 item("toneFilterList").text = "100.0/D023";
-            if (data.method === "back")
-                verify(Ui.Navigation.back(sheet.Window.window));
-            else
-                tapBeside(sheet);
+            dismiss();
             verify(sheet.visible);
             var discard = shownDiscard(sheet);
             verify(discard !== null);
@@ -227,7 +231,29 @@ Item {
             verify(sheet.visible);
             if (!data.modeOnly)
                 compare(item("toneFilterList").text, "100.0/D023");
+            dismiss();
+            findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+            tryCompare(sheet, "visible", false);
+            compare(testContext.toneFilterCalls(), 0);
+        }
+        // Issue #718: a form sheet. A tap beside the panel keeps it, edited or
+        // not, and asks nothing.
+        function test_side_tap_keeps_the_editor() {
+            showEditable();
+            testContext.setMetric("toneFilterConfiguredMode", 1);
+            testContext.setMetric("toneFilterConfiguredList", "100.0");
+            var sheet = openEditor();
+            waitForRendering(sheet);
             tapBeside(sheet);
+            wait(50);
+            verify(sheet.visible, "an untouched editor stays open");
+            item("toneFilterList").text = "100.0/D023";
+            tapBeside(sheet);
+            wait(50);
+            verify(sheet.visible, "an edited editor stays open");
+            verify(!shownDiscard(sheet), "and asks nothing");
+            compare(item("toneFilterList").text, "100.0/D023");
+            item("toneFilterClose").activate();
             findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
             tryCompare(sheet, "visible", false);
             compare(testContext.toneFilterCalls(), 0);

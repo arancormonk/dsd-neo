@@ -292,7 +292,7 @@ Item {
         anchors.margins: Theme.screenPadding
         anchors.bottomMargin: Math.max(22, screen.height - Theme.keyboardTop(screen) + 8)
         text: qsTr("Start exploring")
-        enabled: screen.ready()
+        inputValid: screen.ready()
         onClicked: screen.submit()
     }
 }
