@@ -349,8 +349,10 @@ Rdio API uploads do not follow HTTP redirects; use the final trusted HTTP/HTTPS 
 DirWatch modes keep the WAV and JSON files because the watcher needs stable files to ingest.
 At shutdown the CLI waits for queued API uploads to finish, whether the input ended or you stopped it (Ctrl+C, `q` in
 the terminal UI, the control API's `quit`); each upload can take up to `--rdio-upload-retries` times
-`--rdio-upload-timeout-ms`. The Android app's Stop listening does not wait: the upload in flight is abandoned and the
-uploads still queued are not sent, one log line gives the count, and their WAV and JSON files stay on disk. A session
+`--rdio-upload-timeout-ms`. In the Android app, any stop or restart the user starts does not wait: Stop listening (in the app or the
+notification), switching systems, retrying after a failure, leaving Signal search or its Stop, Back or closing the
+window with background listening off, and "Dismiss failure and choose a site". The upload in flight is abandoned and
+the uploads still queued are not sent, one log line gives the count, and their WAV and JSON files stay on disk. A session
 that ends on its own there (end of a replay, input closed, receiver unplugged) still waits as the CLI does.
 - `-L <file>` Append LRRP (location) data. Rows are gated by the dispatch CRC verdict for DMR data
   PDUs (LRRP, LOCN, LIP, UDT NMEA), DMR voice-LC embedded GPS, and P25 Phase 1 data PDUs reaching

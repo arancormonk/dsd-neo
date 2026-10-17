@@ -77,6 +77,9 @@ void dsd_rdio_upload_shutdown(void);
 /**
  * Abandon the rdio API uploads still pending, for a stop the user asked for.
  *
+ * This is the user-stop path only (the Android app's stops and restarts the user starts), which is why the shutdown's
+ * log line reads "stopped by the user". Callers must not use it for any other kind of stop.
+ *
  * Nonblocking and callable from any thread at any time, including while dsd_rdio_upload_shutdown() is already
  * draining on another thread. The worker takes no further jobs, stops between retry attempts and aborts a transfer
  * in flight; dsd_rdio_upload_shutdown() still owns the join, and logs once how many uploads were not sent. Their WAV

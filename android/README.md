@@ -134,10 +134,12 @@ disabled) at once, before the service has handled the intent; the RUNNING polls
 that arrive before its STOPPING keep it. If the service still reports RUNNING
 two seconds after the tap, the stop is taken as lost: Running comes back with the
 button enabled, and the diagnostics log records it.
-Stop listening, in the app or the notification, does not wait for rdio-scanner
-uploads still pending: the transfer in flight is abandoned, queued uploads are not
-sent (one log line gives the count), and their recordings and sidecars stay on
-disk. A session that ends on its own, or whose receiver is unplugged, still waits
+Any stop or restart you start from the app does not wait for rdio-scanner uploads
+still pending: Stop listening (in the app or the notification), switching
+systems, retrying after a failure, leaving Signal search or its Stop, Back or
+closing the window with background listening off, and "Dismiss failure and choose
+a site". The transfer in flight is abandoned, queued uploads are not sent (one log
+line gives the count), and their recordings and sidecars stay on disk. A session that ends on its own, or whose receiver is unplugged, still waits
 for its uploads, as does an Activity or service teardown.
 Restart remains disabled until the service releases its wake lock and publishes
 IDLE; the host also checks a fresh service record before accepting a retry.

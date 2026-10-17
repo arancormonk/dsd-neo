@@ -836,8 +836,10 @@ class DecoderService : Service() {
         }
 
         /**
-         * Called from the Qt host when the user taps Stop listening. The user's stop does not
-         * wait for pending rdio uploads (#718 D4).
+         * Called from the Qt host for every stop or restart the user starts: Stop listening,
+         * switching systems, retrying after a failure, leaving Signal search or its Stop, Back or
+         * closing the window with background listening off, and "Dismiss failure and choose a
+         * site". A user's stop does not wait for pending rdio uploads (#718 D4).
          */
         @JvmStatic
         fun stopDecoder(context: Context) {

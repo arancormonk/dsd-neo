@@ -499,20 +499,25 @@ rdio_test_http_serve_one(rdio_test_http_server* server, dsd_socket_t client) {
     return rc;
 }
 
+// Wait up to @p timeout_ms for a connection on @p listen_sock. Returns select()'s result: > 0 when one is pending.
+static int
+rdio_test_wait_for_connection(dsd_socket_t listen_sock, unsigned int timeout_ms) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(listen_sock, &readfds);
+    struct timeval tv;
+    tv.tv_sec = (time_t)(timeout_ms / 1000U);
+    tv.tv_usec = (suseconds_t)((timeout_ms % 1000U) * 1000U);
+    return select(listen_sock + 1, &readfds, NULL, NULL, &tv);
+}
+
 static DSD_THREAD_RETURN_TYPE
 rdio_test_http_server_thread(void* arg) {
     rdio_test_http_server* server = (rdio_test_http_server*)arg;
     server->rc = 1;
 
     if (server->no_request_expected) {
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(server->listen_sock, &readfds);
-        struct timeval tv;
-        tv.tv_sec = (time_t)(server->accept_timeout_ms / 1000U);
-        tv.tv_usec = (suseconds_t)((server->accept_timeout_ms % 1000U) * 1000U);
-        int ready = select(server->listen_sock + 1, &readfds, NULL, NULL, &tv);
-        if (ready <= 0) {
+        if (rdio_test_wait_for_connection(server->listen_sock, server->accept_timeout_ms) <= 0) {
             server->rc = 0;
             (void)dsd_socket_close(server->listen_sock);
             DSD_THREAD_RETURN;
@@ -530,6 +535,10 @@ rdio_test_http_server_thread(void* arg) {
 
     const int expected = server->requests_expected > 0 ? server->requests_expected : 1;
     for (int i = 0; i < expected; i++) {
+        // Bounded, so an upload that never comes fails the test after accept_timeout_ms instead of at CTest's timeout.
+        if (rdio_test_wait_for_connection(server->listen_sock, server->accept_timeout_ms) <= 0) {
+            break;
+        }
         dsd_socket_t client = dsd_socket_accept(server->listen_sock, NULL, NULL);
         if (client == DSD_INVALID_SOCKET) {
             break;
@@ -2165,7 +2174,8 @@ test_api_cancel_during_drain_returns_promptly(void) {
 
     static unsigned int delay_ms = 400U;
     dsd_thread_t canceller;
-    if (dsd_thread_create(&canceller, rdio_test_cancel_later_thread, &delay_ms) != 0) {
+    const int canceller_started = dsd_thread_create(&canceller, rdio_test_cancel_later_thread, &delay_ms) == 0;
+    if (!canceller_started) {
         DSD_FPRINTF(stderr, "cancel during drain: thread create failed\n");
         rc = 1;
         dsd_rdio_upload_cancel();
@@ -2173,7 +2183,7 @@ test_api_cancel_during_drain_returns_promptly(void) {
     const uint64_t t0 = dsd_realtime_mono_ms();
     dsd_rdio_upload_shutdown();
     const uint64_t elapsed = dsd_realtime_mono_ms() - t0;
-    if (rc == 0 && dsd_thread_join(canceller) != 0) {
+    if (canceller_started && dsd_thread_join(canceller) != 0) {
         rc = 1;
     }
     if (elapsed >= 2400U) {

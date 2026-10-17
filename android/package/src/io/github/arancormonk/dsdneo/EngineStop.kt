@@ -8,15 +8,19 @@ package io.github.arancormonk.dsdneo
 /**
  * Why the engine is being asked to stop, carried from the caller that asked.
  *
- * Only the user's own Stop gives up the rdio uploads still pending (#718 D4): someone who taps
- * Stop listening is done and should not wait minutes for a slow or dead endpoint to work
+ * Only a stop the user starts gives up the rdio uploads still pending (#718 D4): someone who taps
+ * Stop listening, or switches away, is done and should not wait minutes for a slow or dead endpoint to work
  * through the backlog. Every other stop drains as before, so a session that ends on its own
  * still uploads its last calls. The abandoned calls' files stay on disk either way.
  *
  * Plain Kotlin with no Android imports, so the JVM tests build it without stubs.
  */
 enum class StopCause(val wire: String) {
-    /** Stop listening in the app, or the notification's Stop action. */
+    /**
+     * A stop or restart the user started from the app (every Qt host stop: Stop listening,
+     * switching systems, retry, leaving Signal search, Back or close with background listening
+     * off, dismissing a failure) or the notification's Stop action.
+     */
     USER("user"),
 
     /** The SDR the session reads from was unplugged. A normal end: drain. */
@@ -34,7 +38,7 @@ enum class StopCause(val wire: String) {
          * The cause a stop intent carries. A missing or unknown value drains: abandoning work
          * is only ever done for a caller that said it was the user.
          */
-        fun fromWire(value: String?): StopCause = values().firstOrNull { it.wire == value } ?: LIFECYCLE
+        fun fromWire(value: String?): StopCause = entries.firstOrNull { it.wire == value } ?: LIFECYCLE
     }
 }
 

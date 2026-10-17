@@ -29,7 +29,7 @@ private fun theReturnCodeIsPassedThrough() {
 }
 
 private fun theIntentCauseRoundTripsAndDefaultsToDrain() {
-    for (cause in StopCause.values()) {
+    for (cause in StopCause.entries) {
         check(StopCause.fromWire(cause.wire) == cause) { "$cause must survive the intent extra" }
     }
     // An ACTION_STOP that does not say who sent it must never abandon work.

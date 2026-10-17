@@ -1757,8 +1757,10 @@ suite runs under this compiler.
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
     `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
     a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
-    still upload the last calls. Only the user's Stop in the app calls `dsd_rdio_upload_cancel()` (issue #718 D4,
-    `StopCause.USER` through `nativeStop(userRequested)`): a lock-free flag the worker loop (no further jobs), the retry
+    still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
+    D4): every QML `decoderHost.stop()` caller (Stop listening, switching systems, retry after a failure, leaving
+    Signal search or its Stop, Back or closing the window with background listening off, "Dismiss failure and choose a
+    site") and the notification's Stop action, as `StopCause.USER` through `nativeStop(userRequested)`: a lock-free flag the worker loop (no further jobs), the retry
     loop (between attempts) and the transfer's xferinfo callback (aborts the transfer in flight) poll. Shutdown still
     owns the join, logs once how many uploads were not sent, and clears the flag; uploads queued after the cancel (the
     final call cleanup closes) are not sent either. Files are deleted only after a successful upload, so abandoned
