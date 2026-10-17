@@ -387,11 +387,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /**
      * @brief Hand the current stores to the save worker.
      *
-     * The GUI thread only copies the rows and the seen map (implicitly shared, so the copy is a
-     * reference until the next edit detaches it). Building the JSON — tens of milliseconds at a
-     * full log (issue #718) — and the two file writes run on m_savePool, which reads nothing but
-     * those copies. One save in flight at a time; a request that lands mid-write marks the
-     * stores dirty, and the save re-arms the debounce timer when it finishes.
+     * The GUI thread copies the rows and the seen map and detaches both copies eagerly, so the
+     * worker owns its containers outright and never shares a block with later GUI edits. Building
+     * the JSON — tens of milliseconds at a full log (issue #718) — and the two file writes run on
+     * m_savePool, which reads nothing but those copies. One save in flight at a time; a request
+     * that lands mid-write marks the stores dirty, and the save re-arms the debounce timer when
+     * it finishes.
      */
     void startAsyncSave();
     void onSaveFinished();

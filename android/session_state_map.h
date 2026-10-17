@@ -70,9 +70,9 @@ constexpr int kStartGraceTicks = 8;
  * @brief How long a stop request may meet nothing but RUNNING records before it is presumed lost (#718).
  *
  * DecoderService handles its intents in order on the Android main thread, and startDecoding() runs a whole start
- * there, so a delivered stop always finds the service RUNNING and turns it STOPPING. Two seconds of RUNNING after the
- * request therefore means the intent never arrived (no Android context, a dropped intent), and the UI gives the user
- * a working Stop button back instead of holding Stopping forever.
+ * there, so a delivered stop always finds the service RUNNING and turns it STOPPING. Polls run on the Qt thread and the
+ * intent on the main thread, so two seconds of RUNNING after the request means the main thread has not handled the
+ * intent yet (it is busy), and the UI gives the user a working Stop button back instead of holding Stopping forever.
  */
 constexpr uint64_t kStopGraceMs = 2000;
 
@@ -127,6 +127,7 @@ class SessionPhaseTracker {
     /**
      * @brief Fold one lifecycle record into the phase.
      * @param now_ms Real monotonic milliseconds (dsd_realtime_mono_ms()), read only while a stop request stands.
+     *        The default 0 means no clock: a stop request never expires.
      */
     SessionPhase
     update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason, uint64_t now_ms = 0) {
@@ -137,7 +138,7 @@ class SessionPhaseTracker {
      * @brief Fold one poll that carried no lifecycle record into the phase.
      * @param service_state DecoderService.stateName(), or null when the call failed.
      * @param engine_running The native g_running atomic.
-     * @param now_ms As for the record overload.
+     * @param now_ms As for the record overload (default 0 = no clock: a stop request never expires).
      */
     SessionPhase
     update(const char* service_state, bool engine_running, uint64_t now_ms = 0) {
