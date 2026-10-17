@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(dsd-neo VERSION 2.11.0 LANGUAGES C CXX)
+project(dsd-neo VERSION 2.11.1 LANGUAGES C CXX)
 if(POLICY CMP0083)
     cmake_policy(SET CMP0083 NEW)
 endif()
@@ -602,15 +602,16 @@ endif()
 find_package(LibSndFile REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED)
 
-# Require mbelib-neo 2.5+. Its ABI provides the
+# Require mbelib-neo 2.6+. Its ABI provides the
 # soft-decision frame decode and result-based processing APIs used by dsd-neo,
 # and 2.2 follows TIA-102.BABA-1 for AMBE 2450 erasures and repeats with
 # deterministic mute noise. 2.3 synthesizes speech at the reference level, so
 # float PCM is int16 / 7 as documented; the vocoder scales it to the int16
 # scale of the voice buffers, which would clip with 2.2's 17 dB hotter speech.
 # 2.5 adds the TETRA full-rate speech decoder (mbe_tetraDecodeFrame) that
-# plays TETRA voice.
-set(_DSD_MBE_REQUIRED_VERSION 2.5)
+# plays TETRA voice. 2.6 replaces disputed implementation portions and installs
+# the component notices and unresolved licensing disclosures shipped with DSD.
+set(_DSD_MBE_REQUIRED_VERSION 2.6)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
 if(ANDROID AND TARGET mbe_neo::mbe_static)
     # Every shared library an Android app uses has to be bundled into the APK
@@ -727,7 +728,7 @@ unset(_DSD_SAVED_CMAKE_REQUIRED_FLAGS)
 if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     message(
         FATAL_ERROR
-        "mbe-neo 2.5+ with the soft-decision/result and TETRA decoder APIs is required; update mbelib-neo"
+        "mbe-neo 2.6+ with the soft-decision/result and TETRA decoder APIs is required; update mbelib-neo"
     )
 endif()
 if(ANDROID AND (DSD_ANDROID_VENDORED_RTLSDR OR DSD_ENABLE_AIRSPY))
@@ -1340,32 +1341,53 @@ add_custom_target(
 
 include(cmake/Pffft.cmake)
 include(cmake/TetraCrypto.cmake)
+include(cmake/MbelibNotices.cmake)
 
 # Install license/notice files with binaries
 install(
     FILES LICENSE COPYRIGHT THIRD_PARTY.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    COMPONENT legal
+)
+install(
+    DIRECTORY LICENSES/
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+    COMPONENT legal
+)
+install(
+    DIRECTORY legal/
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/legal
+    COMPONENT legal
+)
+install(
+    DIRECTORY "${DSD_MBELIB_NOTICE_DIR}/"
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
+    COMPONENT legal
 )
 install(
     FILES src/third_party/ezpwd/lesser.txt
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     RENAME ezpwd-LGPL-2.1-or-later.txt
+    COMPONENT legal
 )
 install(
     FILES
         "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
         "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+    COMPONENT legal
 )
 install(
     FILES "${DSD_TETRA_CRYPTO_LICENSE_DIR}/tetra_crypto-LICENSE.txt"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+    COMPONENT legal
 )
 if(DSD_HAS_AIRSPY)
     install(
         FILES android/third_party/libairspy/LICENSE
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
         RENAME libairspy-LICENSE.txt
+        COMPONENT legal
     )
 endif()
 # The Qt frontend compiles the IBM Plex faces into its resource bundle, so the
@@ -1376,6 +1398,7 @@ if(DSD_ENABLE_QT_UI)
         FILES src/ui/qt/fonts/IBMPlex-LICENSE.txt
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
         RENAME ibm-plex-OFL-1.1.txt
+        COMPONENT legal
     )
 endif()
 

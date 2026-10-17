@@ -5326,7 +5326,7 @@ single "current call".
   transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
   mode from trunked mode; downlink or uplink is the session's (`--tetra-uplink`). A D-INFO or D-CALL RESTORE renaming the call keeps
   its speech (`tetra_voice_call_renamed()`).
-- Speech decoding. mbelib-neo's TETRA decoder (`mbe_tetraDecodeFrame()`, mbe-neo 2.5+) turns each 137-bit speech frame
+- Speech decoding. mbelib-neo's TETRA decoder (`mbe_tetraDecodeFrame()`, mbe-neo 2.6+) turns each 137-bit speech frame
   into 240 samples at 8 kHz; a CRC-failed or stolen frame goes to it as a bad frame, which it conceals. `tetra_voice.c`
   makes one decoder (`tetra_voice_t::codec`) at the first frame that plays, resets it (`mbe_tetraDecoderReset()`) when
   the speech in progress starts over and frees it with the TETRA state. A decoder that cannot be made or a decode that
@@ -5648,6 +5648,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
   (option `DSD_ENABLE_QT_UI`, default OFF)
+- Legal resources: `DecoderHost::licenseNotices()` reads the retained project and
+  dependency notices, including `legal/status.md` and the selected mbelib installation's
+  unresolved disclosures. `cmake/MbelibNotices.cmake` requires those dependency records;
+  the root CMake `legal` install component and `cmake/stage_android_package.cmake` carry
+  them into portable packages and Android assets. `tools/legal_inventory.py` checks
+  retained notice hashes and supplements release SBOMs without asserting legal clearance.
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
@@ -6356,7 +6362,7 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 External dependencies (resolved via CMake):
 
 - Required: OpenSSL 3.x libcrypto; LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE
-  vocoder (`mbe-neo` 2.5+).
+  vocoder (`mbe-neo` 2.6+).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.
 

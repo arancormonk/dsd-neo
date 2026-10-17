@@ -13,7 +13,7 @@ on:
     branches: [main, master]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -157,12 +157,14 @@ jobs:
             -DestinationDir $binDir `
             -SearchDirs $searchDirs
 
-          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction SilentlyContinue
+          cmake --install build/win-msvc-release --prefix $stage --component legal
+          if ($LASTEXITCODE -ne 0) { throw "Legal notice installation failed" }
+          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction Stop
           Copy-Item -Force 'src/third_party/ezpwd/lesser.txt' (Join-Path $licenseDir 'ezpwd-LGPL-2.1-or-later.txt') -ErrorAction SilentlyContinue
           Copy-Item -Force 'build/win-msvc-release/pffft-licenses/pffft-LICENSE.txt','build/win-msvc-release/pffft-licenses/pffft-NOTICES.txt' $licenseDir -ErrorAction Stop
           Copy-Item -Force 'build/win-msvc-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt' $licenseDir -ErrorAction Stop
           Copy-Item -Force 'android/third_party/libairspy/LICENSE' (Join-Path $licenseDir 'libairspy-LICENSE.txt') -ErrorAction Stop
-          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt')
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md')
           foreach ($f in $required) {
             $p = Join-Path $docDir $f
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
@@ -255,9 +257,11 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python tools/legal_inventory.py --spdx "$SBOM_PATH" --platform windows
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/legal_inventory.py --spdx "$SBOM_PATH" --platform windows
           fi
 
       - name: Upload enriched SBOM

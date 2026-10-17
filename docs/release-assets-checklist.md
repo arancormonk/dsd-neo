@@ -5,6 +5,12 @@ Required license/notice files in every shipped asset:
 - `LICENSE`
 - `COPYRIGHT`
 - `THIRD_PARTY.md`
+- `legal/` (component inventory, current findings, review history and source-delivery status)
+- `licenses/ISC.txt`, `licenses/Unlicense.txt`, `licenses/gqrx-scanner-MIT.txt`,
+  `licenses/LicenseRef-Simon-Rockliff.txt` and
+  `licenses/LicenseRef-BCH3-Noncommercial.txt`
+- `licenses/mbelib-neo/` (the complete notice directory from the selected mbelib
+  installation, including ISC/PFFFT/ETSI texts and `legal/status.md`/`patents.md`)
 - `licenses/ezpwd-LGPL-2.1-or-later.txt` (from `src/third_party/ezpwd/lesser.txt`)
 - `licenses/pffft-LICENSE.txt` and `licenses/pffft-NOTICES.txt` (from the configured build tree's `pffft-licenses/`, including the pinned revision and backend copyright notices)
 - `licenses/tetra_crypto-LICENSE.txt` (the Apache-2.0 text of the pinned TETRA_crypto revision, from the configured build tree's `tetra_crypto-licenses/`)
@@ -70,6 +76,12 @@ resource bundle, so they travel with the binary rather than as a separate file.
         permanently (see `android/README.md`, Google Play section).
 
 ## CI-side sanity
+
+- [ ] Resolve the applicable open findings in `legal/status.md` before asserting
+      legal clearance or complete corresponding-source compliance. A passing
+      notice checklist and signed SBOM establish neither.
+- [ ] Review the actual bundled runtime closure for additional notices and
+      source obligations; this common file list is not an exhaustive dependency audit.
 
 - [ ] Release tags use `vX.Y.Z`, match `project(dsd-neo VERSION X.Y.Z ...)` in `CMakeLists.txt`, and verify with `git tag -v` against one of the trusted keys in `release-keys/` (`arancormonk-desktop-2026.pgp` or `arancormonk-laptop-2026.pgp`).
 - [ ] For each workflow run, verify the staging steps did not emit “missing required license file” errors.

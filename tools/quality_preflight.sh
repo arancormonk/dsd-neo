@@ -43,6 +43,8 @@ lane_gitleaks() {
 
 # shellcheck disable=SC2329 # Started through runner_spawn.
 lane_lint() {
+  run_check "legal inventory and retained notices" python3 tools/legal_inventory.py
+  run_check "legal packaging regressions" python3 tests/tools/test_legal_inventory.py
   run_check "CMake format (full tree)" tools/cmake_format_check.sh
   run_check "shell lint (full tree)" tools/shell_lint.sh
   run_check "workflow lint (full tree)" tools/workflow_lint.sh

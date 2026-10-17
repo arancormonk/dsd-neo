@@ -4,7 +4,19 @@ This file summarizes third-party, vendored, and upstream-derived material known
 in the source tree. Per-file headers and embedded notices remain authoritative
 for file-specific license/provenance details.
 
+The [2.11.1 licensing review](legal/status.md) records unresolved permission,
+compatibility, patent and source-delivery findings. This list is attribution,
+not a finding that every component is cleared for redistribution.
+
 ## Vendored Libraries
+
+- **mbelib-neo** (linked vocoder; pinned release 2.6.0, GPL-2.0-or-later project
+  contributions with ISC/PFFFT components and unresolved ETSI table terms) —
+  <https://github.com/arancormonk/mbelib-neo>. Its full installed notices and
+  legal records accompany packages in `licenses/mbelib-neo/`. TETRA table
+  permission/GPL compatibility and patent questions remain open; do not label
+  the entire dependency as cleared GPL code. See its pinned
+  [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.0/legal/status.md).
 
 - **ezpwd Reed-Solomon** (`src/third_party/ezpwd`, target `dsd-neo_ezpwd`; Hard Consulting Corporation; vendored from https://github.com/arancormonk/ezpwd-reed-solomon) - GPL-3.0-or-later; `rs_base` is LGPL-2.1-or-later (per upstream notice). LGPL text: `src/third_party/ezpwd/lesser.txt` (installed as `share/doc/dsd-neo/licenses/ezpwd-LGPL-2.1-or-later.txt`).
 - **PFFFT** (target `dsd-neo_pffft`; Julien Pommier and contributors, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) — downloaded from <https://github.com/arancormonk/pffft> at the immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. The BSD-like license and compiled backend notices are installed as `share/doc/dsd-neo/licenses/pffft-LICENSE.txt` and `pffft-NOTICES.txt`. See `docs/dependencies.md` for offline builds and updates.
@@ -35,7 +47,10 @@ for file-specific license/provenance details.
   XTAL Labs, Robert Morelos-Zaragoza, LWVMOBILE, and ilyacodes.
 - **Binary BCH v3.1** (`src/protocol/edacs/edacs-bch3.c`) - source comments credit Robert Morelos-Zaragoza and note
   portions from Simon Rockliff's Reed-Solomon code. The file also contains a non-commercial/commercial-permission notice
-  that should be reviewed before changing its license characterization.
+  incompatible with an unrestricted ISC characterization. Its identifier now
+  includes `LicenseRef-BCH3-Noncommercial`; the full notice is retained in
+  `LICENSES/LicenseRef-BCH3-Noncommercial.txt`. Permission/GPL compatibility
+  remains unresolved (BCH-NONCOMMERCIAL in the review).
 - **NXDN OP25-derived tables and helpers** (`include/dsd-neo/protocol/nxdn/nxdn_const.h`,
   `src/protocol/nxdn/nxdn_frame.c`, `src/protocol/nxdn/nxdn_deperm.c`) - source comments credit Osmocom OP25, Max H.
   Parke, and Mathias Weyland under GPL notices.
@@ -43,13 +58,18 @@ for file-specific license/provenance details.
   Edouard Griffiths, and Louis HERVE under a GPL-2.0-or-later notice.
 - **FEC helpers outside `src/third_party`** (`include/dsd-neo/fec/ReedSolomon.hpp`,
   `include/dsd-neo/fec/Golay24.hpp`, `src/fec/fec.c`) - source comments credit Simon Rockliff, Hank Wallace, and
-  Edouard Griffiths respectively.
+  Edouard Griffiths respectively. Rockliff's custom permission notice is retained
+  as `LICENSES/LicenseRef-Simon-Rockliff.txt`, and the RS identifier includes it.
+  Redistribution permission for Wallace's Golay implementation is unresolved;
+  its ISC header alone does not establish that permission.
 - **OP25/GNU Radio/Yair Linn-derived DSP and protocol snippets** (`src/dsp/costas.cpp`, `src/dsp/ted.cpp`,
   `src/protocol/p25/phase2/p25p2_frame.c`, `src/protocol/p25/p25_crc.c`) - source comments identify OP25, GNU Radio,
   KA1RBI, Free Software Foundation, and Yair Linn provenance for selected algorithms/tables.
 - **Miscellaneous embedded provenance** (`src/core/util/dsd_misc.c`, `src/io/control/dsd_rigctl.c`,
   `src/protocol/ysf/ysf.c`) - source comments identify OP25, libM17, NedSimao/FilteringLibrary, gqrx-scanner, DSDcc,
   gr-ysf, and Munaut-derived code or ideas.
+  The rigctl portions credited to neural75's gqrx-scanner retain its MIT license
+  in `LICENSES/gqrx-scanner-MIT.txt`; the rigctl identifier includes both ISC and MIT.
 
 ## Test Fixtures
 
@@ -61,24 +81,26 @@ for file-specific license/provenance details.
     of off-air radio transmissions redistributed for testing with attribution to Signal Identification Wiki
     contributors, with per-fixture upstream URLs recorded in `tools/build_iq_fixtures.py`. If upstream licensing is
     clarified, update this entry.
+    **Review finding:** these facts do not establish permission to redistribute
+    the recordings. Permission remains unknown; see `legal/source-delivery.md`.
   - The `provoice` fixture is the wiki's `Provoice.mp3` receiver-audio recording of one ProVoice transmission,
-    redistributed on the same terms. `tools/build_iq_fixtures.py` records its URL and pinned SHA-256, and undoes the
+    with the same unresolved permission finding. `tools/build_iq_fixtures.py` records its URL and pinned SHA-256, and undoes the
     receiver's de-emphasis before converting it to baseband.
   - The analog fixtures `am_airband_real`, `nfm_ctcss_real`, `nfm_squelch_real_a` and `nfm_squelch_real_b` are short
     excerpts of the wiki's `AM_IQ.zip`, `IQ_CTCSS_example_482768kHz_IQ.zip` and `Unknown_NFM_squelch_IQ.zip` I/Q
-    recordings, redistributed on the same terms as the other wiki-derived fixtures. `tools/build_iq_fixtures.py`
+    recordings, with the same unresolved permission finding as the other wiki-derived fixtures. `tools/build_iq_fixtures.py`
     records their URLs and pinned SHA-256 hashes. `nfm_tone_synth` and `nfm_adjacent_synth` are generated by that
     script from a seeded tone and noise and contain no recorded material.
   - The `tetra_call_real_air_72k` fixture is a 6.5-second excerpt of the wiki's `TETRA_IQ.zip` I/Q recording of a
-    TETRA downlink carrier, resampled to 72 kHz and redistributed on the same terms as the other wiki-derived
+    TETRA downlink carrier, resampled to 72 kHz and subject to the same unresolved permission finding as the other wiki-derived
     fixtures. `tools/build_iq_fixtures.py` records its URL and pinned SHA-256 hash.
   - The `nxdn48_after_retune` fixture is the `nxdn48` excerpt of the wiki's `NXDN_IQ.zip`, preceded by a lead-in cut
     from the seeded `noise_floor` fixture (no recorded material) and joined byte for byte by
-    `tools/build_iq_fixtures.py`. It is redistributed on the same terms as `nxdn48`.
+    `tools/build_iq_fixtures.py`. Its recorded portion has the same unresolved permission finding as `nxdn48`.
   - The `ysf_gap` fixture is a sidecar alone, written by `tools/build_iq_fixtures.py`, that replays the `ysf` data
     file with a capture gap added. It carries no recorded material of its own.
   - The M17 fixture derives from `samples/m17_clear_voice_wav.wav` in [lwvmobile/m17-fme](https://github.com/lwvmobile/m17-fme),
-    licensed GPL.
+    whose project license is GPL; recording-specific permission still needs confirmation.
   - The `dmr_t3_ras_cc` fixture derives from a DSDPlus raw discriminator capture of a DMR Tier III control
     channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
     for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source
@@ -94,8 +116,9 @@ for file-specific license/provenance details.
     command are recorded in `tests/fixtures/iq/tetra_scbs_real_air.PROVENANCE.md`; the upstream license text is
     `tests/fixtures/iq/tetra_scbs_real_air.APACHE-2.0.txt`.
   - `tests/fixtures/tetra/acelp/hello_tetra.acelp` and its decoder-input reference
-    `hello_tetra.codec` come from the GPL-3.0 `sq5bpf/telive` test sample. Exact source,
-    decoder, license, and hashes are recorded in the adjacent `PROVENANCE.md`.
+    `hello_tetra.codec` come from the `sq5bpf/telive` test sample. Exact source,
+    decoder, upstream GPL-3.0 project license, and hashes are recorded in the adjacent `PROVENANCE.md`;
+    recording-specific permission still needs confirmation.
   - The frozen `Ahoj` SDS-TRANSFER vector in `tests/protocol/tetra/test_mle_cmce.c` derives its 64-bit SDS user
     field and expected decoded values from the example output published by
     [itds-consulting/tetra-multiframe-sds](https://github.com/itds-consulting/tetra-multiframe-sds), GPL-3.0.
@@ -110,5 +133,10 @@ The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with bina
 license texts currently include the ezpwd, pinned PFFFT and pinned TETRA_crypto notices under
 `share/doc/dsd-neo/licenses/`, plus the IBM Plex font notice for builds that bundle the Qt frontend and the
 librtlsdr/libusb notices for the Android package.
+
+Packages also carry `legal/`, the full notices in `LICENSES/` under `licenses/`,
+and the selected mbelib installation's documentation under `licenses/mbelib-neo/`.
+This does not close the separate complete-runtime-notice or corresponding-source
+findings in `legal/status.md`.
 
 Native Airspy support links libairspy (BSD-3-Clause for `airspy.c`, `airspy.h`, and `airspy_commands.h`; MIT for `filters.h` and `iqconverter_*`), from https://github.com/airspy/airspyone_host. Android library sources, Windows overlay builds, and AppImage builds are pinned to `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`; the upstream notice, prefixed with the copyright lines from the source headers, is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-LICENSE.txt`.

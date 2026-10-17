@@ -11,7 +11,7 @@ on:
     branches: [main, master]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -1041,6 +1041,8 @@ jobs:
       cancel-in-progress: false
       queue: max
     if: >-
+      !cancelled() &&
+      needs.build-linux.result == 'success' &&
       github.repository == 'arancormonk/dsd-neo' &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
@@ -1091,7 +1093,7 @@ jobs:
     # Run on upstream non-PR refs. For version tags, only proceed after release validation succeeds.
     if: >-
       ${{
-        always() &&
+        !cancelled() &&
         github.repository == 'arancormonk/dsd-neo' &&
         github.event_name != 'pull_request' &&
         needs.build-linux.result == 'success' &&
@@ -1304,6 +1306,7 @@ jobs:
         shell: bash
     if: >-
       ${{
+        !cancelled() &&
         github.repository == 'arancormonk/dsd-neo' &&
         github.event_name != 'pull_request' &&
         startsWith(github.ref, 'refs/tags/v') &&
@@ -1412,7 +1415,7 @@ jobs:
           url="https://github.com/arancormonk/dsd-neo"
           license=('GPL-3.0-or-later')
           depends=(
-              'mbelib-neo>=2.5'
+              'mbelib-neo>=2.6'
               'mbelib-neo<3'
               'libsndfile'
               'openssl'

@@ -1,0 +1,521 @@
+{
+  "SPDX-License-Identifier": "GPL-3.0-or-later",
+  "schema_version": 1,
+  "release": "2.11.1",
+  "review_date": "2026-10-17",
+  "baseline": "de4212ad1",
+  "aggregate_license_concluded": "NOASSERTION",
+  "coverage": "Reviewed embedded components and pinned dependencies; source paths are scope hints. Not exhaustive runtime dependency or file-level clearance.",
+  "components": [
+    {
+      "id": "project",
+      "name": "DSD-neo project contributions",
+      "paths": [
+        "apps/",
+        "src/",
+        "include/",
+        "tools/",
+        "tests/"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "GPL-3.0-or-later",
+      "license_concluded": "GPL-3.0-or-later",
+      "notices": [
+        "LICENSE"
+      ],
+      "assessment": "Project grant only; paths are scope hints, not a claim that every file is exclusively project-authored.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "LICENSE": "f817886ee6bb65ed3098a7987b1e9781653d15c71f85589ce0d2af663c66d373"
+      }
+    },
+    {
+      "id": "legacy-isc",
+      "name": "Original DSD ISC portions",
+      "paths": [
+        "src/core/",
+        "src/protocol/",
+        "include/"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "ISC",
+      "license_concluded": "ISC",
+      "notices": [
+        "LICENSES/ISC.txt"
+      ],
+      "assessment": "Preserve DSD Author attribution. Mixed-origin files have separate findings.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
+      }
+    },
+    {
+      "id": "bch3",
+      "name": "Binary BCH v3.1",
+      "paths": [
+        "src/protocol/edacs/edacs-bch3.c"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "ISC AND LicenseRef-BCH3-Noncommercial",
+      "license_concluded": "NOASSERTION",
+      "notices": [
+        "LICENSES/LicenseRef-BCH3-Noncommercial.txt",
+        "LICENSES/ISC.txt"
+      ],
+      "assessment": "Express noncommercial restriction; no separate commercial permission established.",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "LICENSES/LicenseRef-BCH3-Noncommercial.txt": "94d2519fb091cf0062d17827e93066d5d5ce96ab0ecbcd86506c1cc28fafb568",
+        "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
+      },
+      "finding": "BCH-NONCOMMERCIAL"
+    },
+    {
+      "id": "rockliff-rs",
+      "name": "Simon Rockliff Reed-Solomon",
+      "paths": [
+        "include/dsd-neo/fec/ReedSolomon.hpp"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "ISC AND LicenseRef-Simon-Rockliff",
+      "license_concluded": "ISC AND LicenseRef-Simon-Rockliff",
+      "notices": [
+        "LICENSES/LicenseRef-Simon-Rockliff.txt",
+        "LICENSES/ISC.txt"
+      ],
+      "assessment": "Custom modification/distribution permission retains author name and disclaimer; not the ISC text.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "LICENSES/LicenseRef-Simon-Rockliff.txt": "4b7da1f90d745422950fc042deae8c102cbc1c4820f3d3697ad151e3468ab85e",
+        "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
+      }
+    },
+    {
+      "id": "wallace-golay",
+      "name": "Hank Wallace Golay implementation",
+      "paths": [
+        "include/dsd-neo/fec/Golay24.hpp"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "ISC",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "Repository-declared ISC; upstream article copyright with no grant established. Do not infer permission.",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {},
+      "finding": "GOLAY-PERMISSION"
+    },
+    {
+      "id": "mixed-origins",
+      "name": "Mixed-origin legacy helpers",
+      "paths": [
+        "src/core/util/dsd_misc.c",
+        "src/fec/ez.cpp",
+        "src/protocol/p25/p25_crc.c",
+        "src/protocol/p25/phase2/p25p2_frame.c",
+        "src/protocol/ysf/ysf.c"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "ISC AND GPL-3.0-or-later",
+      "license_concluded": "NOASSERTION",
+      "notices": [
+        "LICENSE",
+        "LICENSES/ISC.txt"
+      ],
+      "assessment": "Explicit OP25 GPLv3 notice in dsd_misc reconciled; remaining embedded fragments need exact-revision provenance and license reconciliation.",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "LICENSE": "f817886ee6bb65ed3098a7987b1e9781653d15c71f85589ce0d2af663c66d373",
+        "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
+      },
+      "finding": "MIXED-PROVENANCE"
+    },
+    {
+      "id": "ezpwd",
+      "name": "ezpwd Reed-Solomon",
+      "paths": [
+        "src/third_party/ezpwd/"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "GPL-3.0-or-later AND LGPL-2.1-or-later",
+      "license_concluded": "GPL-3.0-or-later AND LGPL-2.1-or-later",
+      "notices": [
+        "LICENSE",
+        "src/third_party/ezpwd/lesser.txt"
+      ],
+      "assessment": "Preserve upstream per-file GPL/LGPL notices; rs_base uses LGPL terms.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "LICENSE": "f817886ee6bb65ed3098a7987b1e9781653d15c71f85589ce0d2af663c66d373",
+        "src/third_party/ezpwd/lesser.txt": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+      }
+    },
+    {
+      "id": "tiny-aes",
+      "name": "Tiny AES",
+      "paths": [
+        "src/crypto/crypt-aes.c"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "Unlicense",
+      "license_concluded": "Unlicense",
+      "notices": [
+        "LICENSES/Unlicense.txt"
+      ],
+      "assessment": "Retained upstream dedication and fallback permission.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "LICENSES/Unlicense.txt": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+      }
+    },
+    {
+      "id": "pffft",
+      "name": "PFFFT",
+      "paths": [
+        "cmake/Pffft.cmake"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "NOASSERTION",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "Compiled backend-specific permission texts are generated from the pinned source and shipped as pffft-LICENSE.txt and pffft-NOTICES.txt.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {},
+      "pin": "PFFFT_SHA"
+    },
+    {
+      "id": "tetra-crypto",
+      "name": "TETRA_crypto",
+      "paths": [
+        "cmake/TetraCrypto.cmake",
+        "src/crypto/tetra_tea.c"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "notices": [],
+      "assessment": "Downloaded pinned TEA1/2/3 source; Apache text generated from that source and installed.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {},
+      "pin": "TETRA_CRYPTO_SHA"
+    },
+    {
+      "id": "mbelib",
+      "name": "mbelib-neo",
+      "paths": [],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "NOASSERTION",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "2.6.0 project contributions GPL-2.0-or-later, ISC and PFFFT notices, and unresolved ETSI data terms. Full dependency legal records are packaged.",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {},
+      "finding": "MBELIB-ETSI",
+      "pin": "MBELIB_NEO_SHA"
+    },
+    {
+      "id": "android-libusb",
+      "name": "libusb Android snapshot",
+      "paths": [
+        "android/third_party/libusb/"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "android"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "LGPL-2.1-or-later",
+      "notices": [
+        "android/third_party/libusb/COPYING"
+      ],
+      "assessment": "Library-only Linux USBFS/POSIX snapshot; see retained per-file notices.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a"
+      }
+    },
+    {
+      "id": "android-rtl",
+      "name": "librtlsdr Android snapshot",
+      "paths": [
+        "android/third_party/librtlsdr/",
+        "android/third_party/patches/"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "android"
+      ],
+      "license_declared": "GPL-2.0-or-later",
+      "license_concluded": "GPL-2.0-or-later",
+      "notices": [
+        "android/third_party/librtlsdr/COPYING"
+      ],
+      "assessment": "Vendored 2.0.3 with retained USB file-descriptor injection patch.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "android/third_party/librtlsdr/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6"
+      }
+    },
+    {
+      "id": "airspy",
+      "name": "libairspy",
+      "paths": [
+        "android/third_party/libairspy/",
+        "vcpkg-ports/airspy/"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "android",
+        "linux",
+        "windows"
+      ],
+      "license_declared": "BSD-3-Clause AND MIT",
+      "license_concluded": "BSD-3-Clause AND MIT",
+      "notices": [
+        "android/third_party/libairspy/LICENSE"
+      ],
+      "assessment": "Pinned library with complete source-header copyrights and both upstream licenses.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "android/third_party/libairspy/LICENSE": "08489d02edaf8efbdd30ae84480f74b7668e874306a9732f1478407fc79b7262"
+      },
+      "pin": "AIRSPY_SHA"
+    },
+    {
+      "id": "ibm-plex",
+      "name": "IBM Plex fonts",
+      "paths": [
+        "src/ui/qt/fonts/"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "android"
+      ],
+      "license_declared": "OFL-1.1",
+      "license_concluded": "OFL-1.1",
+      "notices": [
+        "src/ui/qt/fonts/IBMPlex-LICENSE.txt"
+      ],
+      "assessment": "Compiled into Qt resource bundle; all Qt builds must retain the notice. Official Qt artifact is Android.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {
+        "src/ui/qt/fonts/IBMPlex-LICENSE.txt": "37784b44044a4ffd9256702b7c0982c37e5c8887ba90c6dca0479aea93dc898d"
+      }
+    },
+    {
+      "id": "recordings",
+      "name": "Recorded regression fixtures",
+      "paths": [
+        "tests/fixtures/iq/",
+        "tests/fixtures/tetra/acelp/"
+      ],
+      "distribution": [
+        "source"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "NOASSERTION",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "Includes unknown-permission recordings and specifically attributed assets; assess each asset. Source-only, not binary payload.",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "notice_sha256": {},
+      "finding": "FIXTURE-PERMISSION"
+    },
+    {
+      "id": "gqrx-scanner",
+      "name": "gqrx-scanner rig control portions",
+      "paths": [
+        "src/io/control/dsd_rigctl.c"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows",
+        "android"
+      ],
+      "license_declared": "ISC AND MIT",
+      "license_concluded": "ISC AND MIT",
+      "notices": [
+        "LICENSES/ISC.txt",
+        "LICENSES/gqrx-scanner-MIT.txt"
+      ],
+      "notice_sha256": {
+        "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf",
+        "LICENSES/gqrx-scanner-MIT.txt": "60f5949b4ea72345d07bf91d2c8923f1bb1ec5c0cfc8078694ac32ea520e8258"
+      },
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-10-17",
+      "assessment": "Retained neural75 MIT grant from initial commit 88c8999d5559211dc655d580940b0e917488c334; LICENSE history is unchanged since 2017."
+    }
+  ]
+}

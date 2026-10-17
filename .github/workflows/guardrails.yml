@@ -10,7 +10,7 @@ on:
     - cron: "19 6 * * 2"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -43,6 +43,8 @@ jobs:
           tools/check_workflow_git_pins.sh
           tools/check_workflow_download_pins.sh
           tools/check_vcpkg_overlay_pins.sh
+          python3 tools/legal_inventory.py
+          python3 tests/tools/test_legal_inventory.py
 
       - name: Check architecture rules
         run: tools/check_arch_rules.sh

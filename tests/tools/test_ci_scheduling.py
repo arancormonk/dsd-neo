@@ -149,6 +149,45 @@ class BudgetTests(unittest.TestCase):
 
 
 class ClassifierDependenciesTests(unittest.TestCase):
+    def test_dispatch_does_not_cancel_push_validation(self):
+        for path in (ROOT / ".github/workflows").glob("*.y*ml"):
+            source = path.read_text()
+            if "  workflow_dispatch:" not in source or "  push:" not in source:
+                continue
+            with self.subTest(workflow=path.name):
+                concurrency = budget.block(source, "concurrency", 0)
+                self.assertIn("${{ github.event_name }}", concurrency)
+
+    def test_publishing_survives_skipped_classifier_but_requires_successful_builds(self):
+        cases = {
+            "linux-ci.yaml": {
+                "update-nightly-tag": ("build-linux",),
+                "update-aur-git": ("build-linux", "validate-release-tag"),
+                "update-aur-release": ("build-linux", "validate-release-tag"),
+            },
+            "android-ci.yaml": {
+                "aab-status": ("build-apk",),
+                "publish-apk": ("build-apk", "qt-ui-tests"),
+            },
+        }
+        # These predicates need a status function to override GitHub's implicit
+        # success() across the skipped PR-only classifier. Removing that alone
+        # must fail even when all explicit result comparisons remain present.
+        for workflow, jobs in cases.items():
+            source = (ROOT / ".github/workflows" / workflow).read_text()
+            for name, dependencies in jobs.items():
+                job = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)", source)[1]
+                predicate = re.search(r"(?m)^    if: (.*(?:\n {6,}.*)*)", job)[1]
+                with self.subTest(workflow=workflow, job=name):
+                    self.assertIn("!cancelled()", predicate)
+                    self.assertNotIn("always()", predicate)
+                    for dependency in dependencies:
+                        self.assertIn(f"needs.{dependency}.result == 'success'", predicate)
+                    if name == "publish-apk":
+                        self.assertIn("needs.build-apk.outputs.signed == 'true'", predicate)
+                    if name == "update-aur-release":
+                        self.assertIn("startsWith(github.ref, 'refs/tags/v')", predicate)
+
     @unittest.skipUnless(
         os.name == "posix" and shutil.which("bash"), "requires a POSIX Bash runner"
     )

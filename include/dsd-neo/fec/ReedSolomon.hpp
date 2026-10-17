@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: ISC AND LicenseRef-Simon-Rockliff
 #ifndef REEDSOLOMON_HPP_b1405fdab6374ba2a4e65e8d45ec3d80
 #define REEDSOLOMON_HPP_b1405fdab6374ba2a4e65e8d45ec3d80
 

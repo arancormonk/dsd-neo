@@ -8,6 +8,7 @@
 #   cmake -DREPO_DIR=<repo> -DSOURCE_DIR=<android/package> -DSTAGE_DIR=<out> \
 #         -DPFFFT_LICENSE_DIR=<build>/pffft-licenses \
 #         -DTETRA_CRYPTO_LICENSE_DIR=<build>/tetra_crypto-licenses \
+#         -DMBELIB_NOTICE_DIR=<prefix>/share/doc/mbelib-neo \
 #         -P cmake/stage_android_package.cmake
 #
 # Run as a build step rather than at configure time so edits to android/package/ reach the
@@ -23,6 +24,7 @@ foreach(
         STAGE_DIR
         PFFFT_LICENSE_DIR
         TETRA_CRYPTO_LICENSE_DIR
+        MBELIB_NOTICE_DIR
 )
     if(NOT DEFINED ${_required})
         message(
@@ -33,8 +35,13 @@ foreach(
 endforeach()
 
 set(_doc_dir "${STAGE_DIR}/assets/doc/dsd-neo")
+set(DSD_MBELIB_NOTICE_DIR "${MBELIB_NOTICE_DIR}")
+include("${REPO_DIR}/cmake/MbelibNotices.cmake")
 
 file(COPY "${SOURCE_DIR}/" DESTINATION "${STAGE_DIR}")
+file(COPY "${REPO_DIR}/legal" DESTINATION "${_doc_dir}")
+file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_doc_dir}/licenses")
+file(COPY "${MBELIB_NOTICE_DIR}/" DESTINATION "${_doc_dir}/licenses/mbelib-neo")
 
 file(
     COPY

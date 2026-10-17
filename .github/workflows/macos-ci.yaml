@@ -13,7 +13,7 @@ on:
     branches: [main, master]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -597,13 +597,14 @@ jobs:
           fi
 
           # Bundle license/notice files
+          cmake --install build/dev-release --prefix dist/dsd-neo-macos --component legal
           DOCDIR="$STAGE/share/doc/dsd-neo"
           mkdir -p "$DOCDIR/licenses"
           cp -f LICENSE COPYRIGHT THIRD_PARTY.md "$DOCDIR/"
           cp -f src/third_party/ezpwd/lesser.txt "$DOCDIR/licenses/ezpwd-LGPL-2.1-or-later.txt"
           cp -f build/dev-release/pffft-licenses/pffft-{LICENSE,NOTICES}.txt "$DOCDIR/licenses/"
           cp -f build/dev-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt "$DOCDIR/licenses/"
-          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt; do
+          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md; do
             if [ ! -f "$DOCDIR/$f" ]; then
               echo "ERROR: missing required license file $f in $DOCDIR" >&2
               exit 1
@@ -891,9 +892,11 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python tools/legal_inventory.py --spdx "$SBOM_PATH" --platform macos
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
+            python3 tools/legal_inventory.py --spdx "$SBOM_PATH" --platform macos
           fi
 
       - name: Upload enriched SBOM

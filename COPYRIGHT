@@ -1,6 +1,6 @@
-DSD-neo is distributed under the terms of the GNU General Public License v3.0 or later. See LICENSE for the full text.
+DSD-neo project contributions are licensed under the GNU General Public License v3.0 or later. See LICENSE for the full text. This does not establish permission for every incorporated component; unresolved findings are recorded in legal/status.md.
 
-Legacy ISC-licensed portions from the original DSD author remain identified via SPDX headers in the source tree. These files are GPL-compatible and ship alongside GPL-3.0-or-later code.
+Legacy ISC-licensed portions from the original DSD author retain their notices; the full permission text is also in LICENSES/ISC.txt. An ISC identifier on a mixed-origin file is not evidence of permission for every incorporated fragment.
 
 The D-STAR radio-header processing path (scrambler, interleaver, Viterbi decode, CRC) was rewritten in 2025 under GPL-3.0-or-later to replace prior GPL-2.0-only contributions.
 

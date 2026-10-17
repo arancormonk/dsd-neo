@@ -118,6 +118,8 @@ Additional focused checks:
 - CMake changes: `tools/cmake_format_check.sh`
 - Workflow changes: `tools/workflow_lint.sh` and `tools/zizmor.sh`
 - Dependency input changes: `tools/osv_scan.sh`
+- License, provenance or packaging changes: `python3 tools/legal_inventory.py`
+  and `python3 tests/tools/test_legal_inventory.py`; review `legal/status.md`.
 - Security-sensitive workflow/release changes: `tools/check_secret_redaction.sh`,
   `tools/check_workflow_git_pins.sh`, and
   `tools/check_workflow_download_pins.sh`

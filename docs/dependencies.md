@@ -11,7 +11,7 @@ Required dependencies are:
 - C++ compiler with C++14 support
 - CMake 3.20 or newer
 - OpenSSL 3.x libcrypto
-- `mbe-neo` 2.5+ CMake package from mbelib-neo
+- `mbe-neo` 2.6+ CMake package from mbelib-neo
 - libsndfile
 - curses backend: ncursesw/PDCurses. macOS ships no `libncursesw` — its unified
   `libncurses` carries the wide entry points behind `_XOPEN_SOURCE_EXTENDED` —
@@ -201,11 +201,21 @@ stale pins for migrated sources. It also accepts older releases that still carry
 their FFT. Both AUR CI jobs use it; recipe-only updates increment `pkgrel`.
 Neither DSD nor mbelib needs a separate PFFFT dependency package.
 
-The mbelib vcpkg overlay pins release 2.5.1. It acquires
+The mbelib vcpkg overlay pins release 2.6.0. It acquires
 mbelib's FFT through vcpkg's verified download/cache mechanism and passes an
 offline override. Its independent `MBELIB_PFFFT_*` pins are mirrored in
 `vcpkg-ports/mbe-neo/pffft.cmake` by `tools/check_vcpkg_overlay_pins.sh --fix`.
 When changing the mbelib revision, align these with that revision's PFFFT pin.
+
+DSD now requires mbelib-neo 2.6+ for its implementation-provenance remediation
+and installed component records. Keep the library's `share/doc/mbelib-neo/`
+directory when installing it. CMake locates that directory relative to the
+selected `mbe-neo` config; for a relocated documentation layout, set
+`-DDSD_MBELIB_NOTICE_DIR=/absolute/path/to/share/doc/mbelib-neo` from the same
+installation. Packaging fails if required dependency notices are absent.
+The overlay deliberately uses a null aggregate license and supplies the
+complete copyright file, as supported by vcpkg; mbelib's unresolved ETSI terms
+must not be represented as an unqualified GPL grant. See `legal/status.md`.
 
 ## Pinned TETRA_crypto source
 
