@@ -71,12 +71,12 @@ Item {
             compare(recorder.last[4].name, "Dispatch North");
             verify(!sheet.visible);
         }
-        // A form sheet: a tap beside it keeps it, and a visible Cancel asks
+        // A form sheet: a tap beside it keeps it, and the visible Close asks
         // before an edit goes (including one that is only composing text).
         function test_cancel_is_visible_and_asks() {
             var sheet = loader.item;
-            var cancel = findChild(sheet, "cancelTalkgroupEdit");
-            verify(cancel !== null && cancel.visible, "the editor offers a visible Cancel");
+            var cancel = findChild(sheet, "talkgroupEditClose");
+            verify(cancel !== null && cancel.visible, "the editor offers a visible Close");
             verify(cancel.height >= 48);
             mouseClick(sheet, 4, sheet.height / 2);
             wait(50);

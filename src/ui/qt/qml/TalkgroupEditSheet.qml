@@ -209,13 +209,6 @@ ModalSheet {
             }
         }
     }
-    // The way out a form sheet keeps visible, now that a tap beside it stays.
-    OutlineButton {
-        objectName: "cancelTalkgroupEdit"
-        width: parent.width
-        text: qsTr("Cancel")
-        onClicked: sheet.requestClose()
-    }
     OutlineButton {
         width: parent.width
         height: Math.max(48, implicitHeight)
@@ -238,7 +231,10 @@ ModalSheet {
         wrapMode: Text.Wrap
         textFormat: Text.PlainText
     }
+    // The way out a form sheet keeps visible, now that a tap beside it stays
+    // (issue #718); it asks before an edit goes.
     OutlineButton {
+        objectName: "talkgroupEditClose"
         width: parent.width
         height: Math.max(48, implicitHeight)
         text: qsTr("Close")

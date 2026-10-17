@@ -70,6 +70,23 @@ Item {
         }
     }
 
+    // Taller than the window: its panel scrolls.
+    Ui.ModalSheet {
+        id: tallSheet
+        objectName: "tallSheet"
+        Rectangle {
+            width: parent.width
+            height: 2000
+            color: "transparent"
+        }
+        Ui.PlexTextField {
+            id: tallField
+            objectName: "tallField"
+            width: parent.width
+            label: "Bottom field"
+        }
+    }
+
     TestCase {
         name: "ModalSheetOutsideTap"
         when: windowShown
@@ -87,6 +104,7 @@ Item {
             formCombo.popup.close();
             plainSheet.visible = false;
             formSheet.visible = false;
+            tallSheet.visible = false;
         }
         function panel(sheet) {
             return findChild(sheet, "modalSheetScroll").parent;
@@ -103,6 +121,29 @@ Item {
             verify(sheet.visible);
         }
 
+        // Issue #718 (emulator): a reused sheet reopened where its last visit
+        // was scrolled to, with its top fields off screen.
+        function test_reopened_sheet_starts_at_the_top() {
+            show(tallSheet);
+            var scroll = findChild(tallSheet, "modalSheetScroll");
+            verify(scroll.contentHeight > scroll.height, "the sheet scrolls");
+            scroll.contentY = scroll.contentHeight - scroll.height;
+            verify(scroll.contentY > 0);
+            tallSheet.visible = false;
+            show(tallSheet);
+            compare(scroll.contentY, 0, "a reopened sheet starts at its top");
+        }
+        // The reset does not undo the focus reveal that follows an open.
+        function test_open_still_reveals_a_focused_field() {
+            show(tallSheet);
+            var scroll = findChild(tallSheet, "modalSheetScroll");
+            tallField.input.forceActiveFocus();
+            tryVerify(function () {
+                var y = tallField.mapToItem(scroll, 0, 0).y;
+                return y >= 0 && y + tallField.height <= scroll.height;
+            }, 2000, "the focused field is scrolled into view");
+            verify(scroll.contentY > 0);
+        }
         function test_gutter_tap_dismisses_a_default_sheet() {
             show(plainSheet);
             mouseClick(plainSheet, gutterX(plainSheet), plainSheet.height / 2);

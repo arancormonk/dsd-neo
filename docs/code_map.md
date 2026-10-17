@@ -5955,7 +5955,8 @@ Qt Quick frontend (`src/ui/qt`):
   Escape and a real tap outside its panel: press and release both off the panel with no more movement than
   `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
   gutter, is not a tap). Its `PointerBarrier` accepts every press, so nothing behind a sheet receives presses, drags
-  or releases. Sheets fall in two classes by what they hold:
+  or releases. Every open scrolls the panel back to its top before focus moves, so a reused sheet never reopens where
+  its last visit was scrolled to and the focus reveal still runs. Sheets fall in two classes by what they hold:
   - Form sheets (typed input or an in-progress choice) set `closesOnOutsideTap: false`, keep a visible Cancel/close
     control, and leave only through it, Back or Escape, every one of which goes through the sheet's discard check:
     `BackupFlow.qml`'s passphrase and unlock sheets (Cancel runs `dismissExport()`/`dismissUnlock()`, as dismissal

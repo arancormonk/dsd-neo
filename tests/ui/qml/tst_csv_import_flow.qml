@@ -75,7 +75,6 @@ Item {
             compare(completion.signalArguments[0][0].error, "cancelled");
             compare(importedFiles.count, 0);
             flow.cancel();
-            sheet.dismissed();
             compare(completion.count, 1);
         }
         // Issue #718: the companion sheet is a form; a tap beside it keeps it.

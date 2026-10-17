@@ -151,7 +151,6 @@ Item {
         dismissHandler: function () {
             flow.requestCancel();
         }
-        onDismissed: flow.cancel()
         DiscardDialog {
             id: discard
             parent: sheet

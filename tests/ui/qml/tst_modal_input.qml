@@ -245,7 +245,7 @@ Item {
             verify(sheet.visible, "an outside tap keeps the talkgroup editor open");
             compare(testContext.talkgroupListenCalls(), 0);
             compare(testContext.allTalkgroupsListenCalls(), 0);
-            findChild(sheet, "cancelTalkgroupEdit").activate();
+            findChild(sheet, "talkgroupEditClose").activate();
             tryCompare(sheet, "visible", false);
             compare(testContext.talkgroupListenCalls(), 0);
             compare(testContext.allTalkgroupsListenCalls(), 0);

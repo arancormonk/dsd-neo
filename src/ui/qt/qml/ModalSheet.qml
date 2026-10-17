@@ -92,6 +92,11 @@ Rectangle {
         function onVisibleChanged() {
             var window = sheet.Window.window;
             if (sheet.visible) {
+                // A reused sheet opens at its top, not where its last visit was
+                // scrolled to (issue #718). Before the focus moves below, so the
+                // focus reveal that follows still scrolls to a focused field.
+                scroll.contentX = 0;
+                scroll.contentY = 0;
                 sheet.previousFocus = window ? window.activeFocusItem : null;
                 Navigation.clearInput(window);
                 Navigation.addModal(sheet);
