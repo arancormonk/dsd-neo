@@ -6048,6 +6048,11 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
+  Every history change rescans the whole history (a merge can move a row to another session, so contributions are
+  not tracked incrementally). `CallHistoryModel` hands the heard ids over from its row storage through the
+  `HeardTalkgroupSource` Qt interface (`heard_talkgroup_source.h`), not one QVariant `data()` lookup per role and row;
+  any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
+  with a running maximum end, so overlapping ranges cover correctly (issue #718).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
   monitor's **TG list** action.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates

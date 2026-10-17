@@ -4,6 +4,7 @@
  */
 
 #include "talkgroup_list_model.h"
+#include "heard_talkgroup_source.h"
 
 #include <QByteArray>
 #include <QDebug>
@@ -19,6 +20,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <iterator>
 #include <limits>
 #include <string.h>
 #include <utility>
@@ -34,6 +36,7 @@ TalkgroupListModel::TalkgroupListModel(QAbstractItemModel* history, QObject* par
     m_tgRole = roles.key("tg", -1);
     m_sessionRole = roles.key("session", -1);
     m_kindRole = roles.key("kind", -1);
+    m_heardSource = qobject_cast<HeardTalkgroupSource*>(history);
     const auto dirty = [this]() { m_heardDirty = true; };
     connect(history, &QAbstractItemModel::rowsInserted, this, dirty);
     connect(history, &QAbstractItemModel::rowsRemoved, this, dirty);
@@ -197,13 +200,13 @@ TalkgroupListModel::listedRows(const dsd_state* snapshot, QSet<QString>& categor
     return rows;
 }
 
-void
-TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) const {
-    if (m_history == nullptr || m_tgRole < 0 || m_sessionRole < 0 || m_kindRole < 0) {
-        return;
+QList<uint32_t>
+TalkgroupListModel::heardFromRoles() const {
+    QList<uint32_t> heard;
+    if (m_tgRole < 0 || m_sessionRole < 0 || m_kindRole < 0) {
+        return heard;
     }
-    const qsizetype listedCount = rows.size();
-    QSet<uint32_t> heard;
+    QSet<uint32_t> seen;
     for (int i = 0; i < m_history->rowCount(); ++i) {
         const QModelIndex idx = m_history->index(i, 0);
         if (m_history->data(idx, m_kindRole).toInt() != 0
@@ -215,12 +218,46 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
             continue;
         }
         const auto tg = static_cast<uint32_t>(target);
-        if (heard.contains(tg)) {
-            continue;
+        if (!seen.contains(tg)) {
+            seen.insert(tg);
+            heard.append(tg);
         }
-        heard.insert(tg);
-        const bool covered = std::any_of(rows.cbegin(), rows.cbegin() + listedCount,
-                                         [tg](const Row& row) { return tg >= row.idStart && tg <= row.idEnd; });
+    }
+    return heard;
+}
+
+void
+TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) const {
+    if (m_history == nullptr) {
+        return;
+    }
+    const QList<uint32_t> heard =
+        m_heardSource != nullptr ? m_heardSource->heardTalkgroups(m_historySession) : heardFromRoles();
+    if (heard.isEmpty()) {
+        return;
+    }
+
+    /* Coverage by the listed rows, which may overlap: sorted by start, each carrying the largest end
+     * of every row up to it. A talkgroup is covered when the last row starting at or below it reaches
+     * it, a binary search per heard talkgroup instead of a pass over every listed row. */
+    struct Span {
+        uint32_t start;
+        uint32_t reach;
+    };
+
+    QVector<Span> spans;
+    spans.reserve(rows.size());
+    for (const Row& row : rows) {
+        spans.push_back({row.idStart, row.idEnd});
+    }
+    std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) { return a.start < b.start; });
+    for (qsizetype i = 1; i < spans.size(); ++i) {
+        spans[i].reach = std::max(spans[i].reach, spans[i - 1].reach);
+    }
+    for (const uint32_t tg : heard) {
+        const auto after = std::upper_bound(spans.cbegin(), spans.cend(), tg,
+                                            [](uint32_t id, const Span& span) { return id < span.start; });
+        const bool covered = after != spans.cbegin() && std::prev(after)->reach >= tg;
         if (!covered) {
             rows.push_back({tg, tg, {}, {}, !allowListedOnly, false});
         }

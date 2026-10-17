@@ -51,11 +51,15 @@
 #include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
+
+#include "heard_talkgroup_source.h"
 
 namespace dsd_qt {
 
-class CallHistoryModel : public QAbstractListModel {
+class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource {
     Q_OBJECT
+    Q_INTERFACES(dsd_qt::HeardTalkgroupSource)
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
@@ -151,6 +155,9 @@ class CallHistoryModel : public QAbstractListModel {
 
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
+
+    /** @brief HeardTalkgroupSource: read straight from the rows, no QVariant per row (issue #718). */
+    QList<uint32_t> heardTalkgroups(qint64 session) const override;
 
     /**
      * @brief Ingest newly committed voice rows from the snapshot ring.

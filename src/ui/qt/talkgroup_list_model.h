@@ -37,6 +37,8 @@ class QSet;
 
 namespace dsd_qt {
 
+class HeardTalkgroupSource;
+
 class TalkgroupListModel : public QAbstractListModel {
     Q_OBJECT
     // WP-D1: keep 64-bit context lossless across JavaScript's number boundary.
@@ -165,10 +167,14 @@ class TalkgroupListModel : public QAbstractListModel {
 
     static QVector<Row> listedRows(const dsd_state* snapshot, QSet<QString>& categoryTags);
     void appendHeardRows(QVector<Row>& rows, bool allowListedOnly) const;
+    /** @brief The heard set read through the history's role names, for a history without HeardTalkgroupSource. */
+    QList<uint32_t> heardFromRoles() const;
     void replaceRows(QVector<Row> rows);
     void updateCategories(const QSet<QString>& categoryTags);
 
     QPointer<QAbstractItemModel> m_history;
+    /* m_history's typed read, when it has one; only used while m_history is alive. */
+    HeardTalkgroupSource* m_heardSource = nullptr;
     int m_tgRole = -1;
     int m_sessionRole = -1;
     int m_kindRole = -1;
