@@ -28,6 +28,7 @@
 
 #ifdef USE_CURL
 #include <curl/curl.h>
+#include <curl/system.h>
 #endif
 
 #define DSD_RDIO_PATH_MAX         2048
