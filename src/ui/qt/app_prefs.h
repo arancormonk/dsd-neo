@@ -36,6 +36,7 @@ class AppPrefs : public QObject {
     Q_PROPERTY(double lastLat READ lastLat NOTIFY locationChanged)
     Q_PROPERTY(double lastLon READ lastLon NOTIFY locationChanged)
     Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
+    Q_PROPERTY(double lastAccuracyM READ lastAccuracyM NOTIFY locationChanged)
 
     Q_PROPERTY(int appearance READ appearance WRITE setAppearance NOTIFY appearanceChanged)
     Q_PROPERTY(bool metricUnits READ metricUnits WRITE setMetricUnits NOTIFY metricUnitsChanged)

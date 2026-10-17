@@ -193,6 +193,107 @@ private fun permissionAndTeardown() {
     check(Handler.timeouts.isEmpty())
 }
 
+private fun siteFixIsFreshAndDoesNotGeocode() {
+    val original = Geocoder.lookup
+    Geocoder.lookup = { _, _ -> error("site selection must not reverse geocode") }
+    try {
+        for (sdk in listOf(29, 30, 31)) {
+            Build.VERSION.SDK_INT = sdk
+            val activity = Activity()
+            activity.manager.lastKnown[LocationManager.NETWORK_PROVIDER] = Location().apply {
+                elapsedRealtimeNanos -= 2 * 60 * 1_000_000_000L
+                latitude = 40.0
+            }
+            LocationSupport.requestSiteLocation(activity, 100L + sdk)
+            Handler.drain()
+            check(activity.manager.callbacks.isNotEmpty()) { "site lookup must refresh a minutes-old cache" }
+            activity.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location())
+            Handler.drain()
+            val result = JSONObject(LocationSupport.pollResult())
+            check(result.optBoolean("fixOk") && !result.optBoolean("geocodeOk"))
+            check(result.optDouble("lat") == 41.0 && Handler.timeouts.isEmpty())
+        }
+    } finally { Build.VERSION.SDK_INT = 30; Geocoder.lookup = original }
+}
+
+private fun siteFixPrefersAccuracyAndHonorsCoarsePermission() {
+    Build.VERSION.SDK_INT = 31
+    try {
+        val activity = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(activity, 140)
+        Handler.drain()
+        check(LocationManager.GPS_PROVIDER in activity.manager.callbacks)
+        activity.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location().apply {
+            latitude = 40.0; accuracy = 3_000f
+        })
+        check(LocationSupport.pollResult().isEmpty()) { "a coarse callback must not beat a pending precise fix" }
+        activity.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { accuracy = 10f })
+        val result = JSONObject(LocationSupport.pollResult())
+        check(result.optDouble("lat") == 41.0 && result.optDouble("accuracyM") == 10.0)
+        check(activity.manager.signals.values.all { it.cancelled })
+
+        val cached = Activity().apply { finePermission = 0 }
+        cached.manager.lastKnown[LocationManager.NETWORK_PROVIDER] = Location().apply { accuracy = 3_000f }
+        cached.manager.lastKnown[LocationManager.GPS_PROVIDER] = Location().apply {
+            accuracy = 15f; elapsedRealtimeNanos -= 5_000_000_000L
+        }
+        LocationSupport.requestSiteLocation(cached, 142)
+        Handler.drain()
+        check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 15.0)
+        check(cached.manager.callbacks.isEmpty()) { "a recent precise cache outranks a newer coarse cache" }
+
+        val rough = Activity()
+        LocationSupport.requestSiteLocation(rough, 143)
+        Handler.drain()
+        rough.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { accuracy = 500f })
+        rough.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location().apply { accuracy = 4_000f })
+        check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 500.0)
+        check(Handler.timeouts.isEmpty()) { "all providers answered, so no deadline wait is necessary" }
+
+        val coarse = Activity()
+        LocationSupport.requestSiteLocation(coarse, 141)
+        Handler.drain()
+        check(coarse.permissionRequests == 0 && LocationManager.GPS_PROVIDER !in coarse.manager.callbacks)
+        coarse.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location().apply { accuracy = 2_000f })
+        Handler.advanceBy(20_000)
+        val fallback = JSONObject(LocationSupport.pollResult())
+        check(fallback.optBoolean("fixOk") && fallback.optDouble("accuracyM") == 2_000.0)
+        check(Handler.timeouts.isEmpty() && coarse.manager.signals.values.all { it.cancelled })
+    } finally { Build.VERSION.SDK_INT = 30 }
+}
+
+private fun siteCacheAndPermissionBoundaries() {
+    val activity = Activity().apply { permission = -1 }
+    LocationSupport.requestSiteLocation(activity, 150)
+    Handler.drain()
+    check(activity.requestedPermissions == listOf(android.Manifest.permission.ACCESS_COARSE_LOCATION,
+        android.Manifest.permission.ACCESS_FINE_LOCATION))
+    activity.permission = 0
+    check(LocationSupport.onRequestPermissionsResult(activity, 4303, intArrayOf(0, -1)))
+    activity.manager.callback!!.accept(Location().apply { accuracy = 2_000f })
+    check(JSONObject(LocationSupport.pollResult()).optBoolean("fixOk")) { "approximate-only grants remain usable" }
+
+    val cached = Activity()
+    cached.manager.lastKnown[LocationManager.NETWORK_PROVIDER] = Location().apply { elapsedRealtimeNanos -= 30_000_000_000L }
+    LocationSupport.requestSiteLocation(cached, 151)
+    Handler.drain()
+    check(JSONObject(LocationSupport.pollResult()).optBoolean("fixOk") && cached.manager.callbacks.isEmpty())
+    cached.manager.lastKnown[LocationManager.NETWORK_PROVIDER]!!.elapsedRealtimeNanos--
+    LocationSupport.requestSiteLocation(cached, 152)
+    Handler.drain()
+    check(cached.manager.callback != null && LocationSupport.pollResult().isEmpty())
+    cached.manager.callback!!.accept(cached.manager.lastKnown[LocationManager.NETWORK_PROVIDER])
+    check(!JSONObject(LocationSupport.pollResult()).optBoolean("fixOk")) { "stale live results cannot rank sites either" }
+
+    val cancelled = Activity()
+    LocationSupport.requestSiteLocation(cancelled, 153)
+    Handler.drain()
+    LocationSupport.cancelLocationRequest(153)
+    Handler.drain()
+    cancelled.manager.callback!!.accept(Location())
+    check(LocationSupport.pollResult().isEmpty() && cancelled.manager.signal!!.cancelled)
+}
+
 private fun timeoutWithFixAndLateReplacement() {
     val activity = Activity()
     val started = CountDownLatch(1)
@@ -245,6 +346,9 @@ fun main() {
         invalidCacheFallsBackToFreshFix()
         alternateProviderAndRetiredCallbacks()
         legacyLiveFixAndCancellation()
+        siteFixIsFreshAndDoesNotGeocode()
+        siteFixPrefersAccuracyAndHonorsCoarsePermission()
+        siteCacheAndPermissionBoundaries()
         timeoutWithFixAndLateReplacement()
         println("PASS: location permission, cache freshness, provider fallback, legacy callbacks, deadlines and cancellation")
     } finally {

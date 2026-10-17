@@ -87,6 +87,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     }
 
     void requestCurrentLocation(qint64 requestId) override;
+    void requestSiteLocation(qint64 requestId) override;
     void cancelLocationRequest(qint64 requestId) override;
 
     bool isRunning() const override;

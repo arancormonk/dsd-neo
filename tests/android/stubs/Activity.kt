@@ -6,9 +6,11 @@ import java.util.concurrent.Executor
 class Activity : Context() {
     val manager = LocationManager()
     var permission = 0
+    var finePermission = -1
     var permissionRequests = 0
+    var requestedPermissions = emptyList<String>()
     val mainExecutor = Executor { it.run() }
     override fun getSystemService(name: String): Any = manager
-    fun checkSelfPermission(name: String) = permission
-    fun requestPermissions(names: Array<String>, code: Int) { permissionRequests++ }
+    fun checkSelfPermission(name: String) = if (name == android.Manifest.permission.ACCESS_FINE_LOCATION) finePermission else permission
+    fun requestPermissions(names: Array<String>, code: Int) { permissionRequests++; requestedPermissions = names.toList() }
 }

@@ -27,6 +27,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -34,8 +35,6 @@
 #include <QList>
 #include <QMap>
 #include <QMetaMethod>
-#include <QMetaObject>
-#include <QMetaProperty>
 #include <QObject>
 #include <QRegularExpression>
 #include <QStandardPaths>

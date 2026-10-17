@@ -1,3 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package android
-object Manifest { object permission { const val ACCESS_COARSE_LOCATION = "coarse" } }
+object Manifest { object permission {
+    const val ACCESS_COARSE_LOCATION = "coarse"
+    const val ACCESS_FINE_LOCATION = "fine"
+} }

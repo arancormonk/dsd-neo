@@ -19,10 +19,10 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaProperty>
-#include <QMetaType>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>

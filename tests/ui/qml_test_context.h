@@ -2381,6 +2381,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("lastLat")] = 0.0;
         prefs[QStringLiteral("lastLon")] = 0.0;
         prefs[QStringLiteral("lastFixAt")] = 0;
+        prefs[QStringLiteral("lastAccuracyM")] = 0.0;
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 

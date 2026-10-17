@@ -580,16 +580,19 @@ test_site_position_decimals(void) {
     } cases[] = {
         {"<lat>+90.0</lat><lon>-180</lon><range>0</range>", 1},
         {"<lat>-90</lat><lon>+180.0</lon><range>20.5</range>", 1},
-        {"<lat>0</lat><lon>0</lon><range>1</range>", 1},
+        {"<lat>0</lat><lon>0</lon><range>1</range>", 0},
         {"<lat>0</lat><lon>-91</lon><range>0</range>", 1},
         {"<lon>-91</lon><range>20</range>", 0},
         {"<lat>41</lat><range>20</range>", 0},
-        {"<lat>41</lat><lon>-91</lon>", 0},
+        {"<lat>41</lat><lon>-91</lon>", 1},
+        {"<lat>41</lat><lon>-91</lon><range xsi:nil=\"true\"/>", 1},
+        {"<lat>0</lat><lon>-91</lon>", 1},
+        {"<lat>41</lat><lon>0</lon>", 1},
         {"<lat>90.01</lat><lon>-91</lon><range>20</range>", 0},
         {"<lat>-90.01</lat><lon>-91</lon><range>20</range>", 0},
         {"<lat>41</lat><lon>180.01</lon><range>20</range>", 0},
         {"<lat>41</lat><lon>-180.01</lon><range>20</range>", 0},
-        {"<lat>41</lat><lon>-91</lon><range>-1</range>", 0},
+        {"<lat>41</lat><lon>-91</lon><range>-1</range>", 1},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -621,7 +624,12 @@ test_site_position_decimals(void) {
                    rr_soap_parse(body, strlen(body), RR_SHAPE_SITE_LIST, &sites, &err, NULL) == 0);
             expect("invalid decimal case count", sites.count == 1);
             if (sites.count == 1) {
-                expect("invalid decimal has no position", sites.items[0].has_position == 0);
+                expect("only invalid coordinates clear position", sites.items[0].has_position == (f == 2));
+                if (f == 2) {
+                    expect("invalid coverage becomes zero", fabs(sites.items[0].range_mi) < 1e-10);
+                    expect("invalid coverage retains coordinates",
+                           fabs(sites.items[0].lat - 41) < 1e-10 && fabs(sites.items[0].lon + 91) < 1e-10);
+                }
                 expect("public coordinates finite", isfinite(sites.items[0].lat) && isfinite(sites.items[0].lon)
                                                         && isfinite(sites.items[0].range_mi));
             }

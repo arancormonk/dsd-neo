@@ -668,7 +668,8 @@ rr_finish_site_position(dsd_rr_site* site) {
     const int lat_ok = isfinite(site->lat) && site->lat >= -90 && site->lat <= 90;
     const int lon_ok = isfinite(site->lon) && site->lon >= -180 && site->lon <= 180;
     const int range_ok = isfinite(site->range_mi) && site->range_mi >= 0;
-    site->has_position = lat_ok && lon_ok && range_ok && (site->lat != 0 || site->lon != 0 || site->range_mi != 0);
+    /* Coverage is optional; a missing radius must not discard usable coordinates. */
+    site->has_position = lat_ok && lon_ok && (site->lat != 0 || site->lon != 0);
     if (!lat_ok) {
         site->lat = 0;
     }
