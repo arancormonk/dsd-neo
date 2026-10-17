@@ -29,18 +29,23 @@ static struct {
 } observer;
 
 /* The access code of a confirmed hit, formatted here as the frontends show it. The call tuple (IDs, texts, slot,
-   crypt) is the coordinator's, from one checked call record; this reads only the service options of the call the
-   tuple names (its slot), under the same record checks. */
+   crypt) is the coordinator's, from one checked call record; this reads only service options (M17's CAN), under the
+   same record checks: from the call the tuple names (its slot), or with no slot named, from whichever slot holds
+   one, as before the tuple existed. */
 static void
 format_confirmed_access(dsd_signal_search_hit* hit) {
     dsd_call_snapshot call;
     uint16_t service = 0;
     uint8_t metadata = 0;
-    const uint8_t slot = hit->slot > 0 ? (uint8_t)(hit->slot - 1) : 0U;
-    if (dsd_call_state_get(observer.state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && call.protocol == observer.state->synctype && !call.crc_invalid) {
-        service = call.service_options;
-        metadata = call.has_service_metadata;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
+        if (hit->slot > 0 && slot != hit->slot - 1) {
+            continue;
+        }
+        if (dsd_call_state_get(observer.state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && call.protocol == observer.state->synctype && !call.crc_invalid) {
+            service = call.service_options;
+            metadata = call.has_service_metadata;
+        }
     }
     uint8_t kind = 0;
     uint16_t value = 0;

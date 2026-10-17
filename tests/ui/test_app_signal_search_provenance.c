@@ -249,6 +249,23 @@ main(void) {
     observer(&status, &status.hit, observer_user);
     assert(published.hit.access[0] == '\0' && published.hit.source_text[0] == '\0');
 
+    // An access code read from service options (M17's CAN) comes from the call record when no tuple names a slot yet,
+    // as before the tuple existed.
+    status.hit.hit_id = 3;
+    status.hit.confirmed = 1;
+    status.hit.slot = 0;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "M17");
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    call.protocol = state->synctype;
+    call.phase = DSD_CALL_PHASE_ACTIVE;
+    call.epoch = 1;
+    call.service_options = 7U;
+    call.has_service_metadata = 1U;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 7") == 0);
+    status.hit.hit_id = 2;
+
     // Controls mirror the session's own avoid list for the frontends; a permanent avoid goes to the store as well.
     struct dsd_app_command* control = calloc(1, sizeof(*control));
     assert(control);
