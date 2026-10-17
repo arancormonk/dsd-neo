@@ -1641,16 +1641,48 @@ Item {
             objectName: "monitorLiveActions"
             width: parent.width
             spacing: 10
-            readonly property real cell: (width - 30) / 4
+            // A deterministic grid, as on the Signal search Now panel: four equal
+            // columns when every cell fits the widest label any of them can show
+            // at this font scale, else two; one label line, or two (broken only
+            // at a space) when that widest label needs them, and one height for
+            // every cell, so no row is ragged and no word splits.
+            readonly property var labels: [qsTr("Mute"), qsTr("Unmute"), qsTr("Hold TG"), qsTr("Release"), qsTr("Skip"), qsTr("TG list"), qsTr("Avoid TG"), qsTr("Lock out")]
+            readonly property real widest: {
+                // advanceWidth() is a call, which a binding does not track:
+                // reading the font re-measures on a scale change.
+                var font = actionMetrics.font;
+                var widest = 0;
+                for (var label of labels)
+                    widest = Math.max(widest, actionMetrics.advanceWidth(label));
+                return Math.ceil(widest);
+            }
+            readonly property int columns: (width - 3 * spacing) / 4 >= widest + 2 * Theme.cardPadding ? 4 : 2
+            readonly property real cell: (width - (columns - 1) * spacing) / columns
+            // OutlineButton keeps 12 px either side of its label.
+            readonly property int labelLines: widest <= cell - 24 ? 1 : 2
+            readonly property real cellHeight: Math.max(Theme.minimumTouchSize, Math.ceil(labelLines * actionMetrics.lineSpacing) + 24)
 
-            Row {
+            FontMetrics {
+                id: actionMetrics
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(15)
+                font.weight: Font.DemiBold
+            }
+
+            Item {
                 objectName: "monitorCallActions"
+                readonly property int rows: Math.ceil(4 / liveActions.columns)
                 width: parent.width
-                spacing: 10
+                height: rows * liveActions.cellHeight + (rows - 1) * liveActions.spacing
 
                 OutlineButton {
                     objectName: "muteButton"
+                    x: (0 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(0 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                     text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
                     enabled: decoderHost.running
                     // The label follows the engine snapshot after the command applies.
@@ -1659,7 +1691,12 @@ Item {
 
                 OutlineButton {
                     objectName: "holdTalkgroupButton"
+                    x: (1 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(1 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                     text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
                     // Callsigns and dial strings have no numeric talkgroup to hold.
                     enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
@@ -1669,7 +1706,12 @@ Item {
 
                 OutlineButton {
                     objectName: "skipButton"
+                    x: (2 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(2 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                     text: qsTr("Skip")
                     accessibleName: qsTr("Skip this call")
                     enabled: decoderHost.running && screen.heroSlot !== 0
@@ -1678,8 +1720,13 @@ Item {
 
                 OutlineButton {
                     objectName: "talkgroupsButton"
-                    visible: !screen.compactHeight
+                    x: (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
+                    visible: !screen.compactHeight
                     text: qsTr("TG list")
                     accessibleName: qsTr("Talkgroups")
                     enabled: decoderHost.running
@@ -1691,21 +1738,30 @@ Item {
                     heroSlot: screen.heroSlot
                     running: decoderHost.running
                     visible: screen.compactHeight
+                    x: (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                    y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                     width: liveActions.cell
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                 }
             }
 
-            Row {
+            Item {
                 objectName: "monitorAvoidActions"
                 visible: !screen.compactHeight
                 width: parent.width
-                spacing: 10
+                height: liveActions.cellHeight
 
+                // Two cells wide in four columns, the full width in two.
                 AvoidAction {
                     objectName: "avoidButton"
                     heroSlot: screen.heroSlot
                     running: decoderHost.running
-                    width: 2 * liveActions.cell + 10
+                    width: 2 * liveActions.cell + liveActions.spacing
+                    height: liveActions.cellHeight
+                    maximumLineCount: liveActions.labelLines
+                    wrapMode: Text.WordWrap
                 }
             }
         }
