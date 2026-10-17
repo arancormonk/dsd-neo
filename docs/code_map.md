@@ -5484,7 +5484,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   while a search owns the tuner (`SignalSearchModel::avoidFrequency()`), and Avoid
   permanently or Remove permanent avoid (`avoidPermanently()`: through the decoder thread
   while a search runs, the store directly when none does). The verdicts arrive as the
-  status message or the model's error. Leaving for another session is one Main operation,
+  status message or the model's error. That message (`searchMessage`, an `AlertMessage`) is
+  reparented by `sessionActive`: under the Now panel while a session runs, so it never moves
+  the panel, and above the setup while idle (`test_message_never_moves_the_now_panel`).
+  Leaving for another session is one Main operation,
   `leaveSearchFor(request)` (`{kind: "explore", system, remember: false}` or `{kind:
   "saved", uid}`): it abandons the search's start and runs the request through
   `pendingRestart` (marked `leaveSearch`) once the host is Idle, stopping it from

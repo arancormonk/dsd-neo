@@ -396,19 +396,15 @@ Item {
             x: (parent.width - width) / 2
             width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
-            Text {
-                objectName: "searchMessage"
+            // The message sits above the setup while idle; while a session runs
+            // it moves under the Now panel, so a refusal that appears or clears
+            // as a detection arrives never moves the panel.
+            Item {
+                id: idleMessageSlot
+                objectName: "searchIdleMessageSlot"
                 width: parent.width
-                visible: text.length > 0
-                // This screen's own refusal comes first and never hides what
-                // the search says now: the host's failure, else the search's
-                // message or the model's error.
-                text: [screen.localFailure, screen.failure || screen.status.message || (searchModel ? searchModel.error : "")].filter(function (s) { return s.length > 0; }).join("\n")
-                color: Theme.textPrimary
-                wrapMode: Text.Wrap
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                Accessible.role: Accessible.AlertMessage
+                height: searchMessage.height
+                visible: !screen.sessionActive && searchMessage.text.length > 0
             }
             Column {
                 width: parent.width
@@ -667,6 +663,28 @@ Item {
                             }
                         }
                     }
+                }
+            }
+            Item {
+                id: sessionMessageSlot
+                objectName: "searchSessionMessageSlot"
+                width: parent.width
+                height: searchMessage.height
+                visible: screen.sessionActive && searchMessage.text.length > 0
+                Text {
+                    id: searchMessage
+                    objectName: "searchMessage"
+                    parent: screen.sessionActive ? sessionMessageSlot : idleMessageSlot
+                    width: parent.width
+                    // This screen's own refusal comes first and never hides what
+                    // the search says now: the host's failure, else the search's
+                    // message or the model's error.
+                    text: [screen.localFailure, screen.failure || screen.status.message || (searchModel ? searchModel.error : "")].filter(function (s) { return s.length > 0; }).join("\n")
+                    color: Theme.textPrimary
+                    wrapMode: Text.Wrap
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(14)
+                    Accessible.role: Accessible.AlertMessage
                 }
             }
             Loader {

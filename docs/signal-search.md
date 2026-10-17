@@ -109,6 +109,9 @@ While a search runs, the screen is laid out for what is on the air now:
   permanently**, **Save as system** and **More**) sit in two columns, or three
   where every label fits. **More** offers **Explore here** and **Start** for
   each saved system the detection matched.
+- A refusal or error (**The avoid list is full**, a radio failure) shows under
+  the **Now** panel, so it never moves the panel as it appears or clears; with
+  no search running it shows above the setup instead.
 - **Recent detections** shows the five newest; **Show more** adds 25. Under its
   verdict a row shows the checked site and encryption the detection last had
   (**TIII Small · Net 12 · Site 3 · SYS 1183 · Encrypted**). Each row's

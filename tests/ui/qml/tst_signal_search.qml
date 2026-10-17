@@ -1004,6 +1004,43 @@ Item {
             compare(message.text, "The permanent avoid list is full");
             model.error = "";
         }
+        // While a session runs the message sits under the Now panel: a refusal
+        // that clears at the next visit tune, as a detection arrives, never
+        // moves the panel. Idle, it leads the setup.
+        function test_message_never_moves_the_now_panel() {
+            var screen = loader.item;
+            var hit = model.status.hit;
+            var scroll = findChild(screen, "searchScroll");
+            var panel = findChild(screen, "searchNowPanel");
+            var message = findChild(screen, "searchMessage");
+            model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
+            waitForRendering(screen);
+            verify(!message.visible);
+            var panelY = panel.mapToItem(scroll, 0, 0).y;
+            model.status = Object.assign({}, model.status, {message: "The avoid list is full"});
+            waitForRendering(screen);
+            verify(message.visible);
+            compare(message.text, "The avoid list is full");
+            compare(panel.mapToItem(scroll, 0, 0).y, panelY);
+            verify(message.mapToItem(scroll, 0, 0).y >= panelY + panel.height, "the message must sit under the Now panel");
+            root.hostFailure = "rtl_tcp: the connection to the server was refused, so the radio input stopped";
+            waitForRendering(screen);
+            compare(message.text, root.hostFailure);
+            compare(panel.mapToItem(scroll, 0, 0).y, panelY);
+            // The refusal clears at the next visit tune as a detection arrives.
+            root.hostFailure = "";
+            model.status = Object.assign({}, model.status, {phase: 4, message: "", hit: hit});
+            waitForRendering(screen);
+            verify(!message.visible);
+            compare(panel.mapToItem(scroll, 0, 0).y, panelY);
+            screen.sessionActive = false;
+            model.status = {phase: 0, session: "17"};
+            model.error = "The permanent avoid list is full";
+            waitForRendering(screen);
+            verify(message.visible);
+            compare(message.mapToItem(scroll, 0, 0).y, panelY);
+            model.error = "";
+        }
         function test_capture_menu() {
             model.history = [historyHit({matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})];
             wait(0);
