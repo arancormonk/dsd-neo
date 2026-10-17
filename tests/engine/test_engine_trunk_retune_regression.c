@@ -189,6 +189,8 @@ dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
     state->dmr_pi_precall_algid[idx] = 0U;
     state->dmr_pi_precall_kid[idx] = 0U;
     state->dmr_pi_precall_m[idx] = 0.0;
+    state->dmr_pi_live_m[idx] = 0.0;
+    state->dmr_sb_live_m[idx] = 0.0;
 }
 
 void

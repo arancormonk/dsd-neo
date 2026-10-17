@@ -1255,6 +1255,12 @@ struct dsd_state {
     uint16_t dmr_pi_precall_kid[2];
     /* Decode-clock instant each held PI was decoded; it transfers only within DMR_PI_PRECALL_HOLD_S. */
     double dmr_pi_precall_m[2];
+    /* Decode-clock instants of the last PI header that set the slot's live ALG ID, key id and MI (checked or not), and
+     * of the last late-entry SB identifier that replaced another transmission's live ALG ID and key id. A call that
+     * replaces one whose terminator was missed keeps the live crypto only when one of them belongs to it
+     * (dmr_live_crypto_is_next_call()). Cleared with the held PI (dmr_pi_precall_reset()). */
+    double dmr_pi_live_m[2];
+    double dmr_sb_live_m[2];
 
     char slot1light[8];
     char slot2light[8];

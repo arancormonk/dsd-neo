@@ -106,12 +106,36 @@ dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
 }
 
 void
-dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
+dmr_pi_precall_drop_hold(dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
     state->dmr_pi_precall_rx[idx] = 0U;
     state->dmr_pi_precall_algid[idx] = 0U;
     state->dmr_pi_precall_kid[idx] = 0U;
     state->dmr_pi_precall_m[idx] = 0.0;
+}
+
+void
+dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    dmr_pi_precall_drop_hold(state, slot);
+    state->dmr_pi_live_m[idx] = 0.0;
+    state->dmr_sb_live_m[idx] = 0.0;
+}
+
+static int
+dmr_live_mark_fresh(double mark_m, double now_m) {
+    return mark_m > 0.0 && now_m >= mark_m && (now_m - mark_m) <= DMR_PI_PRECALL_HOLD_S;
+}
+
+int
+dmr_live_crypto_is_next_call(const dsd_state* state, uint8_t slot, double previous_m, double now_m) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    const double pi_m = state->dmr_pi_live_m[idx];
+    const double sb_m = state->dmr_sb_live_m[idx];
+    // A PI leads its transmission, so one strictly after the previous call's last voice is the next call's. An SB rides the
+    // voice itself, so it cannot be placed against it; it counts only when it replaced the previous call's live crypto
+    // (dmr_le.c), which the previous call's own repeats never do.
+    return (dmr_live_mark_fresh(pi_m, now_m) && pi_m > previous_m) || dmr_live_mark_fresh(sb_m, now_m);
 }
 
 int

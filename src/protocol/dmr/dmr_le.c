@@ -509,6 +509,17 @@ dmr_sbrc_print_alg_name(uint8_t alg) {
     }
 }
 
+// An identifier that replaced the slot's other, non-zero live ALG ID or key id is not the active call's own repeat:
+// it is the next transmission's, its terminator and header missed (dmr_live_crypto_is_next_call()).
+static void
+dmr_sbrc_note_live_change(dsd_state* state, uint8_t slot, int prior_algid, int prior_keyid) {
+    const int algid = slot == 0U ? state->payload_algid : state->payload_algidR;
+    const int keyid = slot == 0U ? state->payload_keyid : state->payload_keyidR;
+    if ((prior_algid != 0 || prior_keyid != 0) && (prior_algid != algid || prior_keyid != keyid)) {
+        state->dmr_sb_live_m[slot] = dsd_decode_now_mono_s();
+    }
+}
+
 static void
 dmr_sbrc_apply_enc_identifier_slot0(const dsd_opts* opts, dsd_state* state, uint8_t alg, uint8_t key) {
     if (!(state->dmr_so & 0x40) || key == 0U || alg == 0U || state->M != 0) {
@@ -525,10 +536,13 @@ dmr_sbrc_apply_enc_identifier_slot0(const dsd_opts* opts, dsd_state* state, uint
         DSD_FPRINTF(stderr, "\n");
     }
 
+    const int prior_algid = state->payload_algid;
+    const int prior_keyid = state->payload_keyid;
     state->payload_keyid = key;
     if (state->payload_algid != alg) {
         state->payload_algid = alg + 0x20; // assuming DMRA approved alg values (moto patent)
     }
+    dmr_sbrc_note_live_change(state, 0U, prior_algid, prior_keyid);
 }
 
 static void
@@ -546,10 +560,13 @@ dmr_sbrc_apply_enc_identifier_slot1(const dsd_opts* opts, dsd_state* state, uint
         DSD_FPRINTF(stderr, "\n");
     }
 
+    const int prior_algid = state->payload_algidR;
+    const int prior_keyid = state->payload_keyidR;
     state->payload_keyidR = key;
     if (state->payload_algidR != alg) {
         state->payload_algidR = alg + 0x20; // assuming DMRA approved alg values (moto patent)
     }
+    dmr_sbrc_note_live_change(state, 1U, prior_algid, prior_keyid);
 }
 
 static void

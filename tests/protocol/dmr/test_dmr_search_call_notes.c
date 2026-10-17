@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -32,6 +33,9 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/* The Hytera Enhanced PI checksum (src/protocol/dmr/dmr_hytera.h, private to the module). */
+uint8_t dmr_hytera_checksum(const uint8_t* bytes, size_t length);
 
 /* Call notes, per slot, and the record each one found. */
 static int notes[2];
@@ -91,6 +95,21 @@ static int
 received_is(const dsd_call_snapshot* call, uint8_t bits, uint8_t algid, uint16_t kid) {
     return call->crypto_received == bits && ((bits & DSD_CALL_CRYPTO_RX_ALG) == 0U || call->received_algid == algid)
            && ((bits & DSD_CALL_CRYPTO_RX_KID) == 0U || call->received_kid == kid);
+}
+
+/* The single-burst codeword dmr_sbrc() reads as DMRA ALG 5 (0x25), KEY 0x44. */
+static void
+load_single_burst(dsd_state* state, uint8_t slot) {
+    static const uint8_t k_225[16] = {0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1};
+    uint8_t data_matrix[32];
+    for (int i = 0; i < 16; i++) {
+        data_matrix[i] = k_225[i];
+        data_matrix[16 + i] = k_225[i];
+    }
+    for (int i = 0; i < 32; i++) {
+        state->dmr_embedded_signalling[slot][5][i + 8] =
+            data_matrix[DeInterleaveReverseChannelBptcPlacement[DeInterleaveReverseChannelBptc[i]]];
+    }
 }
 
 static dsd_state*
@@ -245,6 +264,7 @@ test_later_call_does_not_inherit(dsd_opts* opts) {
     run_pi(opts, state, 0U, 0x21U, 0x05U);
     call = call_on(state, 0U);
     assert(received_is(&call, RX_BOTH, 0x21U, 0x05U));
+    assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0); // the call's voice, after its PI
     run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
     call = call_on(state, 0U);
     // Nor does it publish the previous call's live ALG ID and key id as its own: they went with that call.
@@ -368,6 +388,95 @@ test_held_pi_expires(dsd_opts* opts) {
     free_state(state);
 }
 
+/* The next transmission's own PI sets the slot's live crypto before its LC forks the call whose terminator was missed:
+   the fork keeps those decryption inputs whether or not the PI counted as received -- (a) a PI whose burst failed its
+   CRC or passed only as RAS, (b) a PI that landed on a previous call that never carried voice -- and only a received
+   PI marks the new call's crypto as received. */
+static void
+test_fork_keeps_the_new_transmissions_own_pi(dsd_opts* opts) {
+    for (int unchecked = 0; unchecked < 2; ++unchecked) {
+        dsd_state* state = fresh_state();
+        dsd_decode_clock_use_test(50000000000ULL);
+        run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+        run_pi(opts, state, 0U, 0x21U, 0x05U);
+        assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+        dsd_decode_clock_test_set_ns(50500000000ULL);
+        // (a) the next transmission's PI, unverified: a Hytera Enhanced PI whose checksum passed but whose CRC failed,
+        // or a DMRA PI let through as RAS.
+        if (unchecked == 0) {
+            uint8_t hytera[10] = {0x02, 0x68, 0x07, 0x11, 0x22, 0x33, 0x44, 0x55, 0x00, 0x00};
+            hytera[9] = dmr_hytera_checksum(hytera, 9U);
+            state->event_crc_invalid[0] = DSD_CRC_FAILED;
+            state->currentslot = 0;
+            dmr_pi(opts, state, hytera, 0U, 0U);
+        } else {
+            state->event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+            run_pi(opts, state, 0U, 0x24U, 0x07U);
+        }
+        state->event_crc_invalid[0] = 0U;
+        const int live_alg = state->payload_algid;
+        const int live_kid = state->payload_keyid;
+        const unsigned long long live_mi = state->payload_mi;
+        assert(live_alg != 0 && live_alg != 0x21 && live_mi != 0ULL);
+        dsd_decode_clock_test_set_ns(50800000000ULL);
+        run_lc(opts, state, 0U, 3U, 0x40U, 3333U, 4444U);
+        dsd_call_snapshot call = call_on(state, 0U);
+        assert(call.ota_target_id == 3333U);
+        assert(state->payload_algid == live_alg && state->payload_keyid == live_kid);
+        assert(call.algid == (uint8_t)live_alg && call.crypto_received == 0U);
+        dsd_decode_clock_use_system();
+        free_state(state);
+    }
+    // (b) The previous call never carried voice; the next transmission's PI, ahead of its own voice LC header, lands on
+    // that call's record (the documented limit), and its LC header keeps the live crypto it set.
+    dsd_state* state = fresh_state();
+    dsd_decode_clock_use_test(60000000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+    dsd_decode_clock_test_set_ns(61000000000ULL);
+    run_pi(opts, state, 0U, 0x21U, 0x05U);
+    const unsigned long long live_mi = state->payload_mi;
+    dsd_decode_clock_test_set_ns(61100000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 3333U, 4444U);
+    dsd_call_snapshot call = call_on(state, 0U);
+    assert(call.ota_target_id == 3333U && call.algid == 0x21U && call.kid == 0x05U);
+    assert(state->payload_mi == live_mi && live_mi != 0ULL && call.crypto_received == 0U);
+    dsd_decode_clock_use_system();
+    free_state(state);
+}
+
+/* A late-entry SB identifier of the next transmission, decoded in its first superframe before its LC forks the call
+   whose terminator was missed, replaced that call's live crypto: the fork keeps it. The previous call's own SB repeat
+   (the same identifier) is not the next call's, and the fork clears it. */
+static void
+test_fork_keeps_the_new_transmissions_own_sb(dsd_opts* opts) {
+    for (int changed = 0; changed < 2; ++changed) {
+        dsd_state* state = fresh_state();
+        opts->dmr_le = 1;
+        dsd_decode_clock_use_test(70000000000ULL);
+        run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+        run_pi(opts, state, 0U, changed ? 0x21U : 0x25U, changed ? 0x05U : 0x44U);
+        assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+        dsd_decode_clock_test_set_ns(70400000000ULL);
+        load_single_burst(state, 0U);
+        state->currentslot = 0;
+        dmr_sbrc(opts, state, 0);
+        assert(state->payload_algid == 0x25 && state->payload_keyid == 0x44);
+        assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+        dsd_decode_clock_test_set_ns(70700000000ULL);
+        run_lc(opts, state, 0U, 3U, 0x40U, 3333U, 4444U);
+        dsd_call_snapshot call = call_on(state, 0U);
+        assert(call.ota_target_id == 3333U && call.crypto_received == 0U);
+        if (changed) {
+            assert(state->payload_algid == 0x25 && state->payload_keyid == 0x44 && call.algid == 0x25U);
+        } else {
+            assert(state->payload_algid == 0 && state->payload_keyid == 0 && call.algid == 0U);
+        }
+        opts->dmr_le = 0;
+        dsd_decode_clock_use_system();
+        free_state(state);
+    }
+}
+
 /* What the search's evidence hook and the scan hold each heard from the last report. */
 static int evidence_reports;
 static uint32_t evidence_target, evidence_source;
@@ -437,6 +546,8 @@ main(void) {
     test_missed_terminator_publishes_no_stale_crypto(opts);
     test_pi_after_voice_opens_the_next_call(opts);
     test_held_pi_expires(opts);
+    test_fork_keeps_the_new_transmissions_own_pi(opts);
+    test_fork_keeps_the_new_transmissions_own_sb(opts);
     dsd_signal_search_call_set(NULL);
     free(opts);
     return 0;

@@ -734,7 +734,7 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     if ((precall & DSD_CALL_CRYPTO_RX_KID) != 0U && ctx->state->dmr_pi_precall_kid[ctx->slot] == kid) {
         received |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
     }
-    dmr_pi_precall_reset(ctx->state, ctx->slot);
+    dmr_pi_precall_drop_hold(ctx->state, ctx->slot);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
@@ -831,8 +831,10 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         dmr_le_vendor_reset(ctx->state, ctx->slot);
         // So were the slot's live ALG ID, key id and MI, which the missed terminator would have cleared: the new call
         // publishes none of them until its own PI (or the voice path's forced or inferred fallback) supplies them.
-        // A PI held for this transmission (its header lost too) did set them, and stays.
-        if (!dmr_pi_precall_fresh(ctx->state, ctx->slot, dsd_decode_now_mono_s())) {
+        // When this transmission's own PI (checked or not, its header lost too) or late-entry SB already set them,
+        // they stay: they are its decryption inputs.
+        const double previous_m = before.media_updated_m > 0.0 ? before.media_updated_m : before.started_m;
+        if (!dmr_live_crypto_is_next_call(ctx->state, ctx->slot, previous_m, dsd_decode_now_mono_s())) {
             const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->slot);
             *live.algid = 0;
             *live.keyid = 0;

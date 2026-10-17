@@ -266,6 +266,8 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
 
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
                                     : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
+    // The handler just set the slot's live crypto, for the voice path, whether or not it counts as received.
+    state->dmr_pi_live_m[slot] = dsd_decode_now_mono_s();
     if (state->event_crc_invalid[slot] != 0U || algid == 0U) {
         received = 0U;
     }
@@ -285,12 +287,12 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
         .received = received,
     };
     if (!opens_next && dsd_call_state_update_crypto(state, slot, &update) > 0) {
-        dmr_pi_precall_reset(state, slot);
+        dmr_pi_precall_drop_hold(state, slot);
         dsd_event_sync_slot(opts, state, slot);
         dsd_signal_search_note_call(state, slot);
         return;
     }
-    dmr_pi_precall_reset(state, slot);
+    dmr_pi_precall_drop_hold(state, slot);
     if (received != 0U) {
         state->dmr_pi_precall_rx[slot] = received;
         state->dmr_pi_precall_algid[slot] = algid;

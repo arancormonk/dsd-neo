@@ -64,8 +64,18 @@ enum {
 
 void dmr_le_vendor_set(dsd_state* state, uint8_t slot, uint8_t mode);
 void dmr_le_vendor_reset(dsd_state* state, uint8_t slot);
-/** Forget the slot's held pre-call PI crypto (dsd_state::dmr_pi_precall_rx): the call it was for is over or gone. */
+/** Forget the slot's held pre-call PI crypto (dsd_state::dmr_pi_precall_rx) and its live-crypto source marks
+ * (dmr_pi_live_m, dmr_sb_live_m): the transmission they were for is over or gone. */
 void dmr_pi_precall_reset(dsd_state* state, uint8_t slot);
+/** Forget only the held pre-call PI: it transferred, or a newer PI replaced it. */
+void dmr_pi_precall_drop_hold(dsd_state* state, uint8_t slot);
+/**
+ * Whether the slot's live ALG ID, key id and MI belong to the call that is replacing the slot's previous call, whose
+ * terminator was missed: a PI header decoded after that call's last voice (or, with none, after it began), or a
+ * late-entry SB identifier that replaced its crypto, within DMR_PI_PRECALL_HOLD_S of @p now_m. @p previous_m is the
+ * previous call's last voice instant, or its start.
+ */
+int dmr_live_crypto_is_next_call(const dsd_state* state, uint8_t slot, double previous_m, double now_m);
 /** Seconds a held pre-call PI waits for the checked LC of its transmission: the voice LC header repeat window, which
  * covers the first superframe's embedded LC when the header itself was lost. */
 #define DMR_PI_PRECALL_HOLD_S 2.0
