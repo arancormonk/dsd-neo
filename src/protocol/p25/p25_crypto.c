@@ -251,6 +251,16 @@ p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
     return began;
 }
 
+// What a received ALG ID says about encryption (dsd_call_crypto_update::enc_observed): 0x80 is clear, any other
+// non-zero value encrypted. An ALG ID not received says nothing.
+static uint8_t
+p25_crypto_enc_observed(uint8_t algid, uint8_t received) {
+    if ((received & DSD_CALL_CRYPTO_RX_ALG) == 0U || algid == 0U) {
+        return DSD_CALL_ENC_OBSERVED_NONE;
+    }
+    return algid == 0x80U ? DSD_CALL_ENC_OBSERVED_CLEAR : DSD_CALL_ENC_OBSERVED_ENCRYPTED;
+}
+
 // @p received: the DSD_CALL_CRYPTO_RX_* fields of the slot's stored ALG ID and key id that this publication received
 // over the air -- only a resolution of an FEC/CRC-accepted HDU, LDU2, ESS or MAC_PTT tuple that no quarantine deferred.
 //
@@ -275,10 +285,7 @@ p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot, u
         .received = carried ? 0U : received,
         .carried = (uint8_t)carried,
     };
-    // A checked ALG ID says whether the call is encrypted: 0x80 is clear.
-    if (!carried && (received & DSD_CALL_CRYPTO_RX_ALG) != 0U && update.algid != 0U) {
-        update.enc_observed = update.algid == 0x80U ? DSD_CALL_ENC_OBSERVED_CLEAR : DSD_CALL_ENC_OBSERVED_ENCRYPTED;
-    }
+    update.enc_observed = p25_crypto_enc_observed(update.algid, update.received);
     (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0) {
