@@ -606,6 +606,9 @@ jobs:
       - name: Test the app's pure Kotlin on the JVM
         run: python3 tests/android/run_jvm_tests.py --require-tools
 
+      - name: Test the R8 artifact checker
+        run: python3 tests/android/test_r8.py
+
       - name: Locate the APK
         id: apk
         shell: bash
@@ -626,6 +629,15 @@ jobs:
             exit 1
           fi
           echo "APK_PATH=${apks[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release R8 and the packaged JNI entry points
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.apk.outputs.APK_PATH }}
+        run: |
+          python3 tools/check_android_r8.py "$APK_PATH" \
+            --dexdump "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/dexdump" \
+            --mapping build/android-app/android/android-build/build/outputs/mapping/release/mapping.txt
 
       - name: Prepare artifact naming and the publish gate
         id: names
@@ -814,7 +826,7 @@ jobs:
           done
           echo "All required license files are packaged."
 
-      - name: Verify the APK's launcher name and icon
+      - name: Verify the APK's launcher and Qt loader resources
         shell: bash
         env:
           APK_PATH: ${{ steps.names.outputs.APK_PATH }}
@@ -855,6 +867,13 @@ jobs:
             drawable/ic_stat_dsdneo
             drawable/splash
             style/Theme.DsdNeo
+            array/qt_libs
+            array/bundled_libs
+            array/load_local_libs
+            string/use_local_qt_libs
+            string/bundle_local_qt_libs
+            string/system_libs_prefix
+            string/fatal_error_msg
           )
           for res in "${required[@]}"; do
             if ! printf '%s\n' "$names" | grep -qxF "$res"; then
@@ -862,7 +881,7 @@ jobs:
               exit 1
             fi
           done
-          echo "Launcher identity OK: DSD-neo with the adaptive icon."
+          echo "Launcher identity and Qt loader resources OK."
 
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -870,6 +889,16 @@ jobs:
           name: ${{ steps.names.outputs.ART_NAME }}
           path: ${{ steps.names.outputs.APK_PATH }}
           retention-days: 7
+
+      # Capture these before the AAB invocation re-runs Gradle. Retracing a
+      # sideload crash requires the mapping from the exact APK that shipped.
+      - name: Upload APK R8 reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}.r8
+          path: build/android-app/android/android-build/build/outputs/mapping/release/
+          if-no-files-found: error
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 90 || 30 }}
 
       - name: Generate APK SBOM
         if: github.event_name != 'pull_request'
@@ -1048,7 +1077,9 @@ jobs:
             echo "ERROR: the AAB base manifest does not set extractNativeLibs=false; Play updates would ship near-full downloads" >&2
             exit 1
           fi
-          echo "AAB OK: signed, arm64-v8a only, extractNativeLibs=false."
+          python3 tools/check_android_r8.py "$AAB_PATH" \
+            --dexdump "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/dexdump"
+          echo "AAB OK: signed, arm64-v8a only, extractNativeLibs=false, R8 metadata and JNI verified."
 
       - name: Upload AAB
         id: aab_upload
