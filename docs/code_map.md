@@ -6020,7 +6020,7 @@ Qt Quick frontend (`src/ui/qt`):
     (asks once a companion was chosen; "Choose a file…" keeps the current companion until a replacement is
     accepted), `TalkgroupEditSheet.qml`, `KeySheet.qml`, `ToneFilterSheet.qml`, `DecryptionProfileEditor.qml` with its
     key and mapping dialogs, Spectrum's Go to, the wizard's CSV picker (its pending Decimal/Hex choice resets on the
-    next open, so only Cancel, Back or Escape close it) and RadioReference's review-import sheet.
+    next open, so it asks when the choice changed since opening with no key file assigned to apply it to) and RadioReference's review-import sheet.
   - Menus (`ActionMenu`), `ConfirmDialog`, `ChoiceSheet`, `DiscardDialog` (outside tap = keep editing), read-only
     sheets (history details, network, site, failure and notification sheets, replay details), the live-apply
     `RadioSheet`/`SquelchSheet`/`PassbandSheet` (their values are in-flight engine requests) and the Imports, scan

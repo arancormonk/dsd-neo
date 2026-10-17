@@ -518,6 +518,7 @@ Item {
         onTapped: {
             wizard.pickerTarget = pickerRow.target;
             wizard.pickerKeyHex = wizard.pickerTarget === "keys" ? wizard.keyCsvHex : false;
+            csvSheet.openedKeyHex = wizard.pickerKeyHex;
             csvSheet.visible = true;
         }
     }
@@ -1509,12 +1510,38 @@ Item {
     // The keys picker's Decimal/Hex choice is pending until a file is chosen,
     // and reopening the picker starts it from the assigned file's format. So
     // the picker ignores an outside tap (issue #718), which would have reset a
-    // choice the user just made, and leaves through Cancel, Back or Escape:
-    // explicit exits after which starting over is expected.
+    // choice the user just made, and leaves through Cancel, Back or Escape,
+    // which share one discard check: a choice changed since the picker opened,
+    // with no assigned file it already applies to, is asked about before it
+    // goes. An unchanged choice closes at once.
     ModalSheet {
         id: csvSheet
         objectName: "wizardCsvSheet"
         closesOnOutsideTap: false
+        dismissHandler: function () {
+            csvSheet.requestCancel();
+        }
+
+        // The Decimal/Hex choice when the picker opened.
+        property bool openedKeyHex: false
+
+        function hasPendingChoice() {
+            return wizard.pickerTarget === "keys" && wizard.keyCsvPath.length === 0 && wizard.pickerKeyHex !== csvSheet.openedKeyHex;
+        }
+        function requestCancel() {
+            if (csvSheet.hasPendingChoice())
+                csvDiscard.ask(function () {
+                    csvSheet.visible = false;
+                });
+            else
+                csvSheet.visible = false;
+        }
+
+        DiscardDialog {
+            id: csvDiscard
+            objectName: "wizardCsvDiscard"
+            parent: csvSheet
+        }
 
         readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath : wizard.pickerTarget === "group" ? wizard.groupCsvPath : wizard.pickerTarget === "p25Bandplan" ? wizard.p25BandplanCsvPath : wizard.pickerTarget === "src" ? wizard.srcCsvPath : wizard.keyCsvPath
         readonly property var entries: {
@@ -1655,7 +1682,7 @@ Item {
             objectName: "wizardCsvCancel"
             width: parent.width
             text: qsTr("Cancel")
-            onClicked: csvSheet.visible = false
+            onClicked: csvSheet.requestCancel()
         }
     }
 }
