@@ -307,6 +307,7 @@ hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, ui
     // Set this before resolution because an encrypted-call lockout can
     // synchronously release the carrier and clear all Phase 1 crypto state.
     state->p25_p1_hdu_crypto_fresh = algid != 0;
+    state->p25_p1_hdu_m = dsd_decode_now_mono_s();
     dsd_call_snapshot call;
     const int target =
         dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;

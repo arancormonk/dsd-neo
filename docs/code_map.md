@@ -808,12 +808,22 @@ suite runs under this compiler.
   specializes the identity-less voice epoch it opened in keeps them, and a reacquired epoch carries the ending one's
   (`call_state_seed_reacquired_snapshot()`); a trunk-scan context restore copies them with the snapshot. The writers
   that set them: P25 `p25_crypto_resolve()` (HDU, LDU2, ESS, MAC_PTT; not a tuple a clear-conflict quarantine
-  deferred), DMR `dmr_pi()` (Kirisun's key id is a hash, so ALG only; no RAS or failed-CRC burst, no undefined DMRA
-  algorithm) directly or through `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens, NXDN
+  deferred, and not an ESS whose RS decode leaned on soft erasures: the ESS paths and a staged rekey pass that verdict
+  through `p25_crypto_resolve_checked()`, `dsd_p25_p2_rekey_state::parity_checked`), DMR `dmr_pi()` (Kirisun's key id
+  is a hash, so ALG only; no RAS or failed-CRC burst, no undefined DMRA algorithm) directly or through
+  `dsd_state::dmr_pi_precall_*` into the call the next checked LC opens within `DMR_PI_PRECALL_HOLD_S`; a PI decoding
+  while the slot's active call has already carried voice opens the next transmission and is held the same way, NXDN
   `nxdn_vcall_publish()` once `nxdn_cipher_established_enc()`, and M17 `m17_publish_lsf()` (encryption type only).
   Nothing else does: dPMR's scrambling flag, TETRA, X2-TDMA, EDACS, SCCH and file playback set none. History, events,
-  the terminal and Monitor keep reading `algid`/`kid` as before; only Signal search reads the received ones
-  (`CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`, `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
+  the terminal and Monitor keep reading `algid`/`kid` as before; only Signal search reads the received ones. A
+  transmission that replaces a call whose terminator was missed publishes none of that call's live crypto: DMR
+  `dmr_flco_publish_voice()` zeroes the slot's live ALG ID, key id and MI at the fork unless a held PI of the new
+  transmission set them (forced and inferred values are re-applied by the voice path as for any call), and the
+  conventional P25 Phase 1 publish (`p25_sm_publish_conventional_voice()`) begins the new call's classification
+  (`p25_crypto_begin_voice_call()`, as a trunked grant does) unless an HDU decoded after the previous call's last voice
+  (`dsd_state::p25_p1_hdu_m`) resolved it. Limit: a PI on a slot whose previous call never carried voice is taken as
+  that call's (`CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `P25_CRYPTO_STATE`, `P25_P2_RELIABILITY`,
+  `NXDN_ENC_CLASS`, `M17_STATE_DISPATCH`).
 - API note (CRC provenance, discussion #602): `<dsd-neo/core/crc_provenance.h>` defines the bits that
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:
@@ -4813,7 +4823,10 @@ Private per-protocol modules worth knowing about:
   `p25_crypto_resolve()` of a checked tuple (HDU, LDU2, ESS, MAC_PTT after its identity). NXDN, dPMR, M17, YSF and
   D-STAR: beside each search evidence report of their confirm points, after the frame published what its
   confirmation unlocked (`NXDN_CONFIRM`, `DPMR_CONFIRM`, `M17_STATE_DISPATCH`, `YSF_DCH_DECODE`,
-  `DSTAR_HEADER_UTILS`, `P25_P2_ACTIVE_PTT_EPOCH`, `DMR_SEARCH_CALL_NOTES`).
+  `DSTAR_HEADER_UTILS`, `P25_P2_ACTIVE_PTT_EPOCH`, `DMR_SEARCH_CALL_NOTES`). Evidence IDs: the runtime
+  `dsd_trunk_scan_hook_*_conventional_activity()` wrappers report every confirmation to the search but pass its target
+  and source only while the reporting slot's `event_crc_invalid` is clear, so the RAS acceptance the scan hold
+  deliberately honours names no detection (`DMR_SEARCH_CALL_NOTES`).
 
 - `src/protocol/tetra/tetra_confirm.{c,h}` — the same module for TETRA, whose 22-bit normal-burst training sequence
   receiver noise matches under the frame sync's eight hypotheses. A burst proves itself with a block whose CRC passed:

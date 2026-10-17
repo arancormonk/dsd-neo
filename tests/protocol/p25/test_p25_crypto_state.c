@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1037,6 +1038,54 @@ test_resolution_publishes_received_crypto(void) {
     return rc;
 }
 
+/* Conventional Phase 1: a call whose TDU was missed is replaced by the next transmission's link control. The new call
+   must not inherit the previous call's ALG ID and key id, unless an HDU decoded after the previous call's voice
+   carried them for the new transmission. */
+static int
+test_conventional_p1_replacement_does_not_inherit_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int with_hdu = 0; with_hdu < 2; with_hdu++) {
+        reset_fixture(&opts, &state);
+        dsd_decode_clock_use_test(1000000000ULL);
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.lastsynctype = DSD_SYNC_P25P1_POS;
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+        (void)p25_sm_emit_active_call(&opts, &state, 0, 1001, 0, 101, 1, 0x40);
+        (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x1234, UINT64_C(0x0102030405060708),
+                                 1001);
+        dsd_call_snapshot call;
+        rc |= expect_int("first call active", dsd_call_state_get(&state, 0U, &call), 1);
+        const uint64_t first_epoch = call.epoch;
+        rc |= expect_int("first call ALGID", call.algid, 0x84);
+        dsd_decode_clock_test_set_ns(1100000000ULL);
+        rc |= expect_int("first call voice", dsd_call_state_update_media(&state, 0U, 1, 0.0), 1);
+        dsd_decode_clock_test_set_ns(1200000000ULL);
+        if (with_hdu) {
+            // The next transmission's HDU: it decodes onto the still-active previous call, and names this crypto.
+            state.p25_p1_hdu_m = dsd_decode_now_mono_s();
+            (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xAA, 0x0042,
+                                     UINT64_C(0x1111111111111111), 1001);
+        }
+        dsd_decode_clock_test_set_ns(1300000000ULL);
+        (void)p25_sm_emit_active_call(&opts, &state, 0, 2002, 0, 202, 1, with_hdu ? 0x40 : 0x00);
+        rc |= expect_int("replacement call active", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_int("replacement is a new epoch", call.epoch != first_epoch, 1);
+        rc |= expect_int("replacement names its talkgroup", (int)call.ota_target_id, 2002);
+        rc |= expect_int(with_hdu ? "replacement keeps its own HDU's ALGID" : "replacement inherits no ALGID",
+                         call.algid, with_hdu ? 0xAA : 0);
+        rc |= expect_int(with_hdu ? "replacement keeps its own HDU's KID" : "replacement inherits no KID", call.kid,
+                         with_hdu ? 0x0042 : 0);
+        if (!with_hdu) {
+            rc |= expect_int("clear replacement is clear", call.crypto, DSD_CALL_CRYPTO_CLEAR);
+        }
+        dsd_decode_clock_use_system();
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1055,5 +1104,6 @@ main(void) {
     rc |= test_slot_local_transition_purge_and_mi_refresh();
     rc |= test_phase1_resolution_stamps_only_this_carriers_frequency();
     rc |= test_resolution_publishes_received_crypto();
+    rc |= test_conventional_p1_replacement_does_not_inherit_crypto();
     return rc;
 }

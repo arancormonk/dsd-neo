@@ -6745,6 +6745,16 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
                                                   call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
 }
 
+/* A conventional Phase 1 transmission whose terminator was missed is replaced by the next one's link control, which
+   forks the epoch while the slot's live crypto is still the previous call's. Whether it belongs to the new
+   transmission: only when an HDU decoded after the previous call's last voice (or, with no voice, after it began)
+   resolved it -- the HDU leads its own transmission. */
+static int
+p25_sm_p1_crypto_belongs_to_replacement(const dsd_state* state, const dsd_call_snapshot* previous) {
+    const double previous_m = previous->media_updated_m > 0.0 ? previous->media_updated_m : previous->started_m;
+    return state->p25_p1_hdu_m > 0.0 && state->p25_p1_hdu_m >= previous_m;
+}
+
 static int
 p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, int ptt_retransmit) {
     if (!state || !ev) {
@@ -6774,7 +6784,17 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     if (ev->identity_valid && ev->type == P25_SM_EV_PTT && !ptt_retransmit) {
         boundary = DSD_CALL_BOUNDARY_BEGIN;
     }
+    dsd_call_snapshot previous;
+    const int replaces_active = dsd_call_state_get(state, (uint8_t)slot, &previous) > 0
+                                && previous.phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25P1(previous.protocol);
     (void)dsd_call_state_observe(state, &observation, boundary);
+    dsd_call_snapshot current;
+    if (replaces_active && DSD_SYNC_IS_P25P1(call.protocol) && dsd_call_state_get(state, (uint8_t)slot, &current) > 0
+        && current.epoch != previous.epoch && !p25_sm_p1_crypto_belongs_to_replacement(state, &previous)) {
+        // The new transmission starts its own classification, as a trunked one does at its grant: its service
+        // options say clear or pending, and its own HDU/LDU2 resolves the tuple.
+        p25_crypto_begin_voice_call(state, DSD_P25_CRYPTO_PHASE1, 0, has_service_metadata ? service_options : -1, 0);
+    }
     p25_call_publish_crypto(opts, state, slot, 0.0);
     dsd_signal_search_note_call(state, (uint8_t)slot);
     /* Raw MAC_PTT still has to resolve its ALGID/KID after publishing identity.
