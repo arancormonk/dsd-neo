@@ -312,6 +312,50 @@ test_scrambler_secret_is_not_published_as_key_id(void) {
     return rc;
 }
 
+/* What the call record keeps as the call's own checked encryption indication (enc_received, which a detection's
+   "Encrypted" needs) comes only from halves whose CCH CRC passed in the frame being published, never from scrambling
+   the transmission learned earlier: a later call whose first frame verifies nothing says nothing, and one that verifies
+   clear clears it. */
+static int
+test_enc_indication_is_the_frames_own(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+    dsd_call_snapshot call;
+
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_confirmed = 1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state.dPMRVoiceFS2Frame.Version[0] = 3U;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+    dpmr_resolve_half_scrambling(&state);
+    dpmr_publish_call(&opts, &state);
+    rc |=
+        expect_int("verified scrambled call", dsd_call_state_get(&state, 0U, &call) > 0 && call.enc_received == 1U, 1);
+    const uint64_t first = call.epoch;
+
+    // The call ends; the next one's first frame verifies neither half, so the learned scrambling still plays it.
+    (void)dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
+    state.dPMRVoiceFS2Frame.Version[0] = 0U;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 0U;
+    dpmr_resolve_half_scrambling(&state);
+    rc |= expect_int("learned scrambling plays it", (int)state.dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_SCRAMBLED);
+    dpmr_publish_call(&opts, &state);
+    rc |= expect_int("next call opens", dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != first, 1);
+    rc |= expect_int("nothing of its own says encrypted", call.enc_received, 0);
+
+    // A verified clear half: clear.
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1U;
+    state.dPMRVoiceFS2Frame.Version[1] = 0U;
+    dpmr_resolve_half_scrambling(&state);
+    dpmr_publish_call(&opts, &state);
+    rc |= expect_int("verified clear", dsd_call_state_get(&state, 0U, &call) > 0 && call.enc_received == 0U, 1);
+    return rc;
+}
+
 static int
 test_deinterleave_transposes_6x12_blocks(void) {
     uint8_t input[72];
@@ -766,6 +810,7 @@ main(void) {
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
     rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_scrambling_is_per_half_and_crc_verified();
+    rc |= test_enc_indication_is_the_frames_own();
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_superframe_part_updates_called_and_calling_ids();

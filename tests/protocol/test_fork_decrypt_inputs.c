@@ -167,6 +167,13 @@ dmr_scenarios(dsd_opts* opts) {
     expect_dmr("dmr second heal restores", state, 0x21, 0x05, 0x11223344ULL, 0x40U);
     free_state(state);
 
+    // An encrypted call's terminator and the next call's header both missed: the next call's first embedded LC says
+    // clear. The established classification holds the encryption, as it always has.
+    state = dmr_call_with_pi(opts);
+    dmr_lc(opts, state, 3U, 0x00U, 7777U, 8888U);
+    expect_dmr("dmr clear embedded LC of the next call", state, 0x21, 0x05, 0x11223344ULL, 0x40U);
+    free_state(state);
+
     // A PI with no call active, then the call's header.
     state = (dsd_state*)calloc(1U, sizeof(*state));
     assert(state != NULL);

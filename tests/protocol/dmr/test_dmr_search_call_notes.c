@@ -355,6 +355,29 @@ test_heal_keeps_the_inherited_mark(dsd_opts* opts) {
     }
 }
 
+/* What a call record keeps as its own checked encryption indication (enc_received, which a detection's "Encrypted"
+   needs) is its own LC's privacy bit, not the slot's classification hysteresis: an encrypted call's terminator and the
+   next call's voice header both missed, the next call's first checked embedded LC says clear. The hysteresis still
+   holds the encryption for decryption (FORK_DECRYPT_INPUTS), but the new call is not shown encrypted. */
+static void
+test_new_call_enc_indication_is_its_own_lc(dsd_opts* opts) {
+    dsd_state* state = fresh_state();
+    dsd_decode_clock_use_test(30000000000ULL);
+    run_lc(opts, state, 0U, 1U, 0x40U, 1001U, 2002U);
+    dsd_call_snapshot call = call_on(state, 0U);
+    assert(call.enc_received == 1U);
+    assert(dsd_call_state_update_media(state, 0U, 1, 0.0) > 0);
+    dsd_decode_clock_test_set_ns(30300000000ULL);
+    run_lc(opts, state, 0U, 3U, 0x00U, 3333U, 4444U);
+    call = call_on(state, 0U);
+    assert(call.ota_target_id == 3333U);
+    assert((state->dmr_so & 0x40U) != 0U); // the hysteresis holds the established encryption, as before
+    assert(call.enc_received == 0U);
+    assert(noted_valid[0] && noted[0].enc_received == 0U);
+    dsd_decode_clock_use_system();
+    free_state(state);
+}
+
 static int
 event_row_names_alg(const Event_History_I* history) {
     return strstr(history->Event_History_Items[0].event_string, "ALG:") != NULL;
@@ -680,6 +703,7 @@ main(void) {
     test_sb_after_the_fork_is_the_calls_own(opts);
     test_specialized_epoch_drops_the_replaced_crypto(opts);
     test_heal_keeps_the_inherited_mark(opts);
+    test_new_call_enc_indication_is_its_own_lc(opts);
     dsd_signal_search_call_set(NULL);
     free(opts);
     return 0;

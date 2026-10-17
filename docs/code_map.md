@@ -110,7 +110,9 @@ Generated (do not edit/commit):
     decryptable with none received and the call's own checked signalling says encrypted
     (`dsd_call_snapshot::enc_received`, set from `dsd_call_crypto_update::enc_observed` by
     the DMR LC, P25 checked ALG ID and service options, NXDN VCALL/SACCH-2, dPMR and M17
-    writers, never by a forced or inferred classification), and empty otherwise. Like the site it
+    writers from the checked content itself -- the DMR LC's own privacy bit before the
+    classification hysteresis, a dPMR frame's CRC-verified halves, never scrambling learned
+    from an earlier frame or a forced or inferred classification), and empty otherwise. Like the site it
     shows once the hit's protocol matches, clears at each landing and on a change to another
     protocol, and stays on the ended hit; evidence IDs fill `target`/`source` only while no
     tuple belongs to the hit. `site`, `slot` and `crypt` are persisted with the rest of the hit

@@ -81,6 +81,9 @@ typedef struct {
     uint8_t flco;
     uint8_t fid;
     uint8_t so;
+    /* This LC's own service options, before the classification hysteresis filters the privacy bit into `so`: what the
+       call record keeps as the call's checked encryption indication (dsd_call_crypto_update::enc_observed). */
+    uint8_t lc_so;
     uint32_t target;
     uint32_t source;
 
@@ -185,6 +188,7 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->flco = (uint8_t)convert_bits_into_output(&lc_bits[2], 6);
     ctx->fid = (uint8_t)convert_bits_into_output(&lc_bits[8], 8);
     ctx->so = (uint8_t)convert_bits_into_output(&lc_bits[16], 8);
+    ctx->lc_so = ctx->so;
     ctx->target = (uint32_t)convert_bits_into_output(&lc_bits[24], 24);
     ctx->source = (uint32_t)convert_bits_into_output(&lc_bits[48], 24);
 }
@@ -637,6 +641,7 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // passes a miscorrected payload roughly one time in 32, and on RAS systems under the
     // aggressive default the masked CRC never verifies, so those observations must repeat
     // before they can flip an established classification.
+    ctx->lc_so = ctx->so;
     if (dmr_slot_is_known(ctx->state)) {
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
         ctx->so = (uint8_t)dmr_enc_class_observe(ctx->state, (uint8_t)(ctx->state->currentslot & 1), ctx->so, strong);
@@ -792,8 +797,9 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
         .audio_permitted = (uint8_t)(!encrypted || has_key),
         .received = carried ? 0U : received,
         .carried = (uint8_t)carried,
-        /* The checked LC's own privacy bit (through the classification hysteresis, which only over-the-air LCs feed). */
-        .enc_observed = encrypted ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
+        /* This checked LC's own privacy bit, not the hysteresis-filtered one decryption acts on: an encrypted call's
+           established classification must not make the next call, whose LC says clear, encrypted. */
+        .enc_observed = (ctx->lc_so & 0x40U) != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
     };
     if (dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto) > 0) {
         dmr_note_published_live_crypto(ctx->state, ctx->slot, algid, kid);
