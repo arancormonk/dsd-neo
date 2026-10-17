@@ -1154,6 +1154,9 @@ Item {
         id: goToSheet
 
         objectName: "spectrumGoToSheet"
+        // A form sheet (issue #718): an outside tap keeps a typed frequency;
+        // Cancel, Back and Escape ask first.
+        closesOnOutsideTap: false
 
         // The frequency the sheet opened on: a dismissal asks only once it differs.
         property string openedText: ""
@@ -1239,6 +1242,13 @@ Item {
             objectName: "spectrumGoToConfirm"
             text: qsTr("Tune")
             onClicked: goToSheet.submit()
+        }
+
+        OutlineButton {
+            width: parent.width
+            objectName: "spectrumGoToCancel"
+            text: qsTr("Cancel")
+            onClicked: goToSheet.requestClose()
         }
     }
 

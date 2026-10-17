@@ -195,10 +195,10 @@ Item {
             }
             return null;
         }
-        // A list being typed survives a tap beside the panel and Back: the sheet
-        // asks, Keep editing keeps the text, Discard sends nothing.
+        // A list being typed survives Close and Back: the sheet asks, Keep
+        // editing keeps the text, Discard sends nothing.
         function test_dismissal_asks_before_dropping_the_list_data() {
-            return [{tag: "scrim", method: "scrim"}, {tag: "back", method: "back"}, {tag: "mode only", method: "scrim", modeOnly: true}];
+            return [{tag: "close", method: "close"}, {tag: "back", method: "back"}, {tag: "mode only", method: "close", modeOnly: true}];
         }
         function test_dismissal_asks_before_dropping_the_list(data) {
             showEditable();
@@ -206,8 +206,14 @@ Item {
             testContext.setMetric("toneFilterConfiguredList", "100.0");
             var sheet = openEditor();
             waitForRendering(sheet);
+            var dismiss = function () {
+                if (data.method === "back")
+                    verify(Ui.Navigation.back(sheet.Window.window));
+                else
+                    item("toneFilterClose").activate();
+            };
             // The configured policy it opened on is not an edit.
-            tapBeside(sheet);
+            dismiss();
             tryCompare(sheet, "visible", false);
             verify(!shownDiscard(monitor));
             sheet = openEditor();
@@ -216,10 +222,7 @@ Item {
                 item("toneFilterMode").selected(2);
             else
                 item("toneFilterList").text = "100.0/D023";
-            if (data.method === "back")
-                verify(Ui.Navigation.back(sheet.Window.window));
-            else
-                tapBeside(sheet);
+            dismiss();
             verify(sheet.visible);
             var discard = shownDiscard(sheet);
             verify(discard !== null);
@@ -227,7 +230,29 @@ Item {
             verify(sheet.visible);
             if (!data.modeOnly)
                 compare(item("toneFilterList").text, "100.0/D023");
+            dismiss();
+            findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+            tryCompare(sheet, "visible", false);
+            compare(testContext.toneFilterCalls(), 0);
+        }
+        // Issue #718: a form sheet. A tap beside the panel keeps it, edited or
+        // not, and asks nothing.
+        function test_side_tap_keeps_the_editor() {
+            showEditable();
+            testContext.setMetric("toneFilterConfiguredMode", 1);
+            testContext.setMetric("toneFilterConfiguredList", "100.0");
+            var sheet = openEditor();
+            waitForRendering(sheet);
             tapBeside(sheet);
+            wait(50);
+            verify(sheet.visible, "an untouched editor stays open");
+            item("toneFilterList").text = "100.0/D023";
+            tapBeside(sheet);
+            wait(50);
+            verify(sheet.visible, "an edited editor stays open");
+            verify(!shownDiscard(sheet), "and asks nothing");
+            compare(item("toneFilterList").text, "100.0/D023");
+            item("toneFilterClose").activate();
             findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
             tryCompare(sheet, "visible", false);
             compare(testContext.toneFilterCalls(), 0);

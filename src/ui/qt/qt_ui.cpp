@@ -30,6 +30,7 @@
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
+#include "input_commit.h"
 #include "known_frequency_index.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
@@ -262,6 +263,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
+    // Issue #718: forms finish the keyboard's composing word before reading their fields.
+    context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(&engine));
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

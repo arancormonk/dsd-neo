@@ -5951,25 +5951,63 @@ Qt Quick frontend (`src/ui/qt`):
   height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces (`OutlineButton.wrapMode`
   `Text.WordWrap`). The Avoid row spans two cells, the full width in two columns; at compact height the Avoid cell takes
   TG list's place. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`), `tst_monitor_compact.qml`.
-- Typed input and sheet dismissal: `qml/ModalSheet.qml` hides on a tap outside its panel (on a phone the 18 px margins
-  beside it), Back and Escape through `requestDismiss()`; menus, confirmations and read-only sheets keep that. A sheet
-  that holds typed input sets `dismissHandler` to a `requestClose()` that compares the live field text (never state
-  committed on `editingFinished`, which the scrim beats) with a baseline captured when its editing scope opened or was
-  replaced, and asks through `qml/DiscardDialog.qml` (parented to the sheet) when they differ: the Signal search range
-  editor (`openedForm`, with its own Cancel), the idle Signal search screen (`openedSource`, set by `seed()` from Main's
-  `seedSignalSearch()` and when a session stops), `BackupFlow.qml`'s passphrase and unlock sheets (only while editable
-  and typed; their Cancel and the busy steps cancel at once), `DecryptionProfileEditor.qml` and its key and mapping
-  dialogs (`openedForm`, re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback
-  algorithm), `KeySheet.qml` (an unapplied direct-key draft asks the discard question; another saved profile or scope
-  than at open, not applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`),
-  `ToneFilterSheet.qml` (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml`
-  (`fingerprint()` includes the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. A
+- Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
+  Escape and a real tap outside its panel: press and release both off the panel with no more movement than
+  `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
+  gutter, is not a tap). Its `PointerBarrier` accepts every press, so nothing behind a sheet receives presses, drags
+  or releases. Sheets fall in two classes by what they hold:
+  - Form sheets (typed input or an in-progress choice) set `closesOnOutsideTap: false`, keep a visible Cancel/close
+    control, and leave only through it, Back or Escape, every one of which goes through the sheet's discard check:
+    `BackupFlow.qml`'s passphrase and unlock sheets (Cancel runs `dismissExport()`/`dismissUnlock()`, as dismissal
+    does; the busy steps still cancel at once), `SignalSearchRangeEditor.qml`, `CsvImportFlow.qml`'s companion sheet
+    (asks once a companion was chosen; "Choose a file…" keeps the current companion until a replacement is
+    accepted), `TalkgroupEditSheet.qml`, `KeySheet.qml`, `ToneFilterSheet.qml`, `DecryptionProfileEditor.qml` with its
+    key and mapping dialogs, Spectrum's Go to, the wizard's CSV picker (its pending Decimal/Hex choice resets on the
+    next open, so only Cancel, Back or Escape close it) and RadioReference's review-import sheet.
+  - Menus (`ActionMenu`), `ConfirmDialog`, `ChoiceSheet`, `DiscardDialog` (outside tap = keep editing), read-only
+    sheets (history details, network, site, failure and notification sheets, replay details), the live-apply
+    `RadioSheet`/`SquelchSheet`/`PassbandSheet` (their values are in-flight engine requests) and the Imports, scan
+    list and site-chooser sheets keep tap-outside-to-close. Busy/saving/closing sheets stay non-dismissable through
+    an empty `dismissHandler`.
+  A form's `requestClose()` compares the live field text (never state committed on `editingFinished`, which Back
+  beats) with a baseline captured when its editing scope opened or was replaced, and asks through
+  `qml/DiscardDialog.qml` (parented to the sheet) when they differ: the Signal search range editor (`openedForm`),
+  the idle Signal search screen (`openedSource`, set by `seed()` from Main's `seedSignalSearch()` and when a session
+  stops), the backup sheets (only while editable and typed), the profile editor and its dialogs (`openedForm`,
+  re-captured after `openMatching()`/`openTalkgroup()` prefill, plus the pending fallback algorithm), `KeySheet.qml`
+  (an unapplied direct-key draft asks the discard question; another saved profile or scope than at open, not
+  applied yet, asks "Close without applying the profile …?" through `DiscardDialog.askWith()`), `ToneFilterSheet.qml`
+  (`openedPolicy`, re-captured by `chooseScope()`), Spectrum's Go to, `ScanListScreen.qml` (`fingerprint()` includes
+  the unadded frequency fields), plus the wizard, Explore setup and talkgroup sheets. `RadioReferenceScreen.qml`
+  holds its site selection and import options on the screen: the header's back button, Android Back (its
+  `NavigationLayer` calls `requestClose()`) and the "All systems"/"Search" row ask once `selectionState()` differs
+  from `openedSelection` (captured when a system's sites land, so a single site the screen picked is not an edit). A
   `DiscardDialog` closes with the surface under it, so it never returns when that reopens.
   `RadioReferenceScreen.reset()` keeps the typed zip code and system ID (and their tab) across visits instead;
-  `doImport()` clears them. Tests: `UI_QT_QML_CALL_LISTS` (`tst_signal_search.qml`, `tst_settings_backup.qml`,
-  `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`,
-  `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
-  `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
+  `doImport()` clears them.
+- Composing (preedit) text (issue #718): an Android keyboard holds the word being typed as preedit, which
+  `TextInput.text` leaves out, so forms would save a name without its last word, judge an edit unchanged or reject a
+  field as empty. `input_commit.{h,cpp}` (`InputCommit`, the `inputCommit` context object, wrapped by
+  `Navigation.commitComposing()`/`Navigation.composing`) commits it at action boundaries rather than from a
+  window-wide press filter, which would fire before Qt routes a tap inside the composing text to the keyboard and
+  break cursor taps, selection handles and drags. It calls `QInputMethod::commit()` (Android finishes composing and
+  delivers the word); when the focus item still reports `inputMethodComposing` (offscreen/test platforms) it sends
+  the item its `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`,
+  `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
+  text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
+  reads them) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
+  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button gated on a field's committed
+  text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid
+  || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls `clicked()`
+  only if `inputValid` then holds; otherwise it is disabled as before (accessibility and keyboard included), and a
+  real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this key" and "Use override",
+  `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter
+  Apply and Explore's Start.
+  Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
+  `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
+  `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
+  `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
+  `tst_back_modals.qml`, `tst_wizard_encryption.qml`, `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies

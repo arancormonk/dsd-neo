@@ -369,24 +369,77 @@ Item {
             return null;
         }
         function dismissTyped(sheet, method) {
-            if (method === "scrim")
-                tapBeside(sheet);
+            if (method === "cancel")
+                part(sheet.objectName === "backupPassphraseSheet" ? "backupExportCancel" : "backupUnlockCancel").activate();
             else
                 dismissBy(sheet, method);
         }
-        // A typed passphrase is not thrown away by a stray tap beside the panel,
-        // Back or Escape: the sheet asks first. Cancel itself still cancels.
+        // A typed passphrase is not thrown away by Cancel, Back or Escape: the
+        // sheet asks first (issue #718: Cancel used to skip the question).
         function test_typed_passphrase_asks_before_cancel_data() {
             return [
-                {tag: "export by scrim", step: "export", method: "scrim", field: "backupPassphraseField"},
-                {tag: "export confirm only by scrim", step: "export", method: "scrim", field: "backupConfirmField"},
+                {tag: "export by Cancel", step: "export", method: "cancel", field: "backupPassphraseField"},
+                {tag: "export confirm only by Cancel", step: "export", method: "cancel", field: "backupConfirmField"},
                 {tag: "export by Back", step: "export", method: "back", field: "backupPassphraseField"},
                 {tag: "export by Escape", step: "export", method: "escape", field: "backupConfirmField"},
                 {tag: "export by host Back", step: "export", method: "host", field: "backupPassphraseField"},
-                {tag: "unlock by scrim", step: "unlock", method: "scrim", field: "backupUnlockField"},
+                {tag: "unlock by Cancel", step: "unlock", method: "cancel", field: "backupUnlockField"},
                 {tag: "unlock by Back", step: "unlock", method: "back", field: "backupUnlockField"},
                 {tag: "unlock by Escape", step: "unlock", method: "escape", field: "backupUnlockField"}
             ];
+        }
+        // Issue #718: both passphrase sheets are forms. A tap beside the panel
+        // keeps them open and asks nothing, typed or not.
+        function test_tap_beside_keeps_the_passphrase_sheets_data() {
+            return [
+                {tag: "export, empty", step: "export", field: "", text: ""},
+                {tag: "export, typed", step: "export", field: "backupPassphraseField", text: "half typed"},
+                {tag: "unlock, empty", step: "unlock", field: "", text: ""},
+                {tag: "unlock, typed", step: "unlock", field: "backupUnlockField", text: "half typed"}
+            ];
+        }
+        function test_tap_beside_keeps_the_passphrase_sheets(data) {
+            var exporting = data.step === "export";
+            if (exporting)
+                openExport();
+            else
+                toUnlock();
+            var sheet = part(exporting ? "backupPassphraseSheet" : "backupUnlockSheet");
+            waitForRendering(sheet);
+            if (data.field.length)
+                part(data.field).text = data.text;
+            tapBeside(sheet);
+            wait(50);
+            verify(sheet.visible, "a tap beside the panel keeps the sheet");
+            verify(!shownDiscard(sheet), "and asks nothing");
+            compare(flow.step, exporting ? "exportPassphrase" : "unlock");
+            if (data.field.length)
+                compare(part(data.field).text, data.text);
+            dismissTyped(sheet, "cancel");
+            if (data.field.length)
+                findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+            tryCompare(sheet, "visible", false);
+            compare(lastFlowActive(), false);
+        }
+        // A passphrase still composing on the keyboard counts as typed: Cancel
+        // asks instead of dropping it unseen.
+        function test_composing_passphrase_asks_before_cancel() {
+            toUnlock();
+            var sheet = part("backupUnlockSheet");
+            waitForRendering(sheet);
+            var field = part("backupUnlockField");
+            field.input.forceActiveFocus();
+            verify(testContext.composeText("secret"));
+            compare(field.text, "");
+            var cancel = part("backupUnlockCancel");
+            mouseClick(cancel, cancel.width / 2, cancel.height / 2);
+            verify(sheet.visible, "the composing passphrase survives Cancel");
+            compare(field.text, "secret");
+            var discard = shownDiscard(sheet);
+            verify(discard !== null, "Cancel asks first");
+            findChild(discard, "discardDialogDiscard").activate();
+            tryCompare(sheet, "visible", false);
+            compare(lastFlowActive(), false);
         }
         function test_typed_passphrase_asks_before_cancel(data) {
             var exporting = data.step === "export";
@@ -437,27 +490,32 @@ Item {
             tryCompare(row, "activeFocus", true);
             compare(lastFlowActive(), false);
         }
-        // Cancel is an answer already; the empty sheet and the file-problem sheet
-        // (no passphrase can open that file) close without asking.
+        // The empty sheets and the file-problem sheet (no passphrase can open
+        // that file) close on Cancel without asking. Issue #718: Cancel with a
+        // typed passphrase asks, as Back and Escape do.
         function test_cancel_and_untyped_sheets_close_without_asking() {
             openExport();
             typePassphrases(pass, "");
             part("backupExportCancel").activate();
+            verify(part("backupPassphraseSheet").visible, "a typed passphrase survives Cancel");
+            findChild(shownDiscard(flow), "discardDialogDiscard").activate();
             tryCompare(part("backupPassphraseSheet"), "visible", false);
             verify(!shownDiscard(flow));
             openExport();
-            tapBeside(part("backupPassphraseSheet"));
+            part("backupExportCancel").activate();
             tryCompare(part("backupPassphraseSheet"), "visible", false);
             verify(!shownDiscard(flow));
             toUnlock();
             part("backupUnlockField").text = pass;
             part("backupUnlockCancel").activate();
+            verify(part("backupUnlockSheet").visible, "a typed passphrase survives Cancel");
+            findChild(shownDiscard(flow), "discardDialogDiscard").activate();
             tryCompare(part("backupUnlockSheet"), "visible", false);
             verify(!shownDiscard(flow));
             unlock();
             verify(testContext.emitBackup("inspectFinished", {ok: false, error: "Damaged", summary: {}}));
             verify(flow.fileProblem);
-            tapBeside(part("backupUnlockSheet"));
+            part("backupUnlockCancel").activate();
             tryCompare(part("backupUnlockSheet"), "visible", false);
             verify(!shownDiscard(flow));
             compare(lastFlowActive(), false);
@@ -466,6 +524,7 @@ Item {
             openExport();
             typePassphrases(pass, pass);
             part("backupExportCancel").activate();
+            findChild(shownDiscard(flow), "discardDialogDiscard").activate();
             tryCompare(part("backupPassphraseSheet"), "visible", false);
             compare(calls("cancel").length, 0);
             compare(calls("prepareExport").length, 0);
@@ -559,10 +618,10 @@ Item {
             return [
                 {tag: "encrypting by button", step: "encrypt", method: "button"},
                 {tag: "encrypting by Back", step: "encrypt", method: "back"},
-                {tag: "encrypting by scrim", step: "encrypt", method: "scrim"},
+                {tag: "encrypting by Escape", step: "encrypt", method: "escape"},
                 {tag: "checking by button", step: "inspect", method: "button"},
                 {tag: "checking by host Back", step: "inspect", method: "host"},
-                {tag: "checking by scrim", step: "inspect", method: "scrim"}
+                {tag: "checking by Escape", step: "inspect", method: "escape"}
             ];
         }
 
@@ -575,8 +634,11 @@ Item {
             var sheet = part(exporting ? "backupPassphraseSheet" : "backupUnlockSheet");
             if (data.method === "button")
                 part(exporting ? "backupExportCancel" : "backupUnlockCancel").activate();
-            else
+            else {
+                if (data.method === "escape")
+                    sheet.forceActiveFocus();
                 dismissBy(sheet, data.method);
+            }
             tryCompare(sheet, "visible", false);
             compare(calls("cancel").length, 1);
             compare(lastFlowActive(), false);
@@ -768,8 +830,13 @@ Item {
                 tryCompare(field.input, "activeFocus", true);
             }
             verify(backup.flowActive);
-            // Nothing was staged, so leaving discards nothing.
+            // Nothing was staged, so leaving discards nothing. A passphrase still
+            // in the field is asked about first (issue #718).
             part("backupUnlockCancel").activate();
+            if (field.visible && field.text.length)
+                findChild(shownDiscard(sheet), "discardDialogDiscard").activate();
+            else
+                verify(!shownDiscard(sheet));
             tryCompare(sheet, "visible", false);
             compare(calls("discardRestore").length, 0);
             compare(lastFlowActive(), false);
@@ -1100,8 +1167,13 @@ Item {
             var point = sheet.mapToItem(app.contentItem, 10, sheet.height - 10);
             compare(app.contentItem.childAt(point.x, point.y), flow);
             mouseClick(app.contentItem, point.x, point.y);
-            tryCompare(sheet, "visible", false);
+            // Issue #718: the passphrase sheet is a form, so the tap keeps it.
+            wait(50);
+            verify(sheet.visible, "the tap beside the form keeps it");
             compare(app.scanWarnings, "Target 2 skipped: no channel map", "the tap landed on the scrim, not the warning");
+            part("backupExportCancel").activate();
+            tryCompare(sheet, "visible", false);
+            compare(app.scanWarnings, "Target 2 skipped: no channel map");
             compare(lastFlowActive(), false);
             app.scanWarnings = "";
             app.scanListOpen = false;

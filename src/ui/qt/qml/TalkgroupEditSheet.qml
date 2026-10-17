@@ -6,6 +6,8 @@ import "Util.js" as Util
 ModalSheet {
     id: sheet
     property var bridge: commands
+    // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
+    closesOnOutsideTap: false
     property string backendMessage: metrics.uiMessage
     property string localMessage: ""
     property var idStart: 0
@@ -206,6 +208,13 @@ ModalSheet {
                 Qt.inputMethod.hide();
             }
         }
+    }
+    // The way out a form sheet keeps visible, now that a tap beside it stays.
+    OutlineButton {
+        objectName: "cancelTalkgroupEdit"
+        width: parent.width
+        text: qsTr("Cancel")
+        onClicked: sheet.requestClose()
     }
     OutlineButton {
         width: parent.width

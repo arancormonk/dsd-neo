@@ -47,6 +47,31 @@ Item {
             verify(!("args" in result));
             verify(testContext.retainedKeyMatches(uid, expected), "Private saved key round trip");
         }
+        // Issue #718: the keys picker's Decimal/Hex choice is pending until a
+        // file is chosen, so the picker is a form: a tap beside it keeps the
+        // choice, and Cancel is the visible way out.
+        function test_csv_picker_keeps_a_hex_choice_on_a_side_tap() {
+            wizard.step = 1;
+            var row = findChild(wizard, "wizardKeysCsvRow");
+            verify(row !== null);
+            row.activate();
+            var picker = findChild(wizard, "wizardCsvSheet");
+            tryCompare(picker, "visible", true);
+            waitForRendering(picker);
+            compare(wizard.pickerKeyHex, false);
+            var format = findChild(picker, "wizardKeyFormat");
+            mouseClick(format, format.width * 0.75, format.height / 2);
+            compare(wizard.pickerKeyHex, true);
+            verify(!picker.hitsPanel(4, picker.height / 2));
+            mouseClick(picker, 4, picker.height / 2);
+            wait(50);
+            verify(picker.visible, "a tap beside the picker keeps it");
+            compare(wizard.pickerKeyHex, true, "and keeps the Hex choice");
+            var cancel = findChild(picker, "wizardCsvCancel");
+            verify(cancel.visible && cancel.height >= 48);
+            cancel.activate();
+            verify(!picker.visible);
+        }
         function test_roundtrip_and_reset() {
             wizard.encKeyType = "basic";
             wizard.encKeyValue = String(17 * 3);

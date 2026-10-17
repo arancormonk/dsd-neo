@@ -6,6 +6,8 @@ ModalSheet {
     objectName: "keySheet"
     panelObjectName: "keySheetPanel"
     accessibleName: qsTr("Decryption keys")
+    // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
+    closesOnOutsideTap: false
     property string notice: ""
     property string protocol: "mixed"
     property string targetName: ""
@@ -233,7 +235,8 @@ ModalSheet {
         objectName: "applySessionKeyButton"
         width: parent.width
         text: qsTr("Apply changed defaults")
-        enabled: sheet.sessionRunning && editor.valid && !applyFlow.pending
+        inputValid: editor.valid
+        enabled: sheet.sessionRunning && !applyFlow.pending && (inputValid || Navigation.composing)
         onClicked: sheet.apply()
     }
     OutlineButton {

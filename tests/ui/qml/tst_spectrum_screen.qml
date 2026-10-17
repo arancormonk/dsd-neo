@@ -579,22 +579,44 @@ Item {
             return null
         }
 
-        // A frequency being typed is not lost to a tap beside the panel or Back:
-        // Go to asks first. The frequency it opened on is not an edit, and a
-        // question left open goes with the sheet when a replay closes it.
+        // A frequency being typed is not lost to Cancel or Back: Go to asks
+        // first. The frequency it opened on is not an edit, and a question left
+        // open goes with the sheet when a replay closes it. A tap beside the
+        // panel is not a way out at all (issue #718): Go to is a form.
         function test_14b_go_to_asks_before_dropping_a_typed_frequency_data() {
-            return [{tag: "scrim", method: "scrim"}, {tag: "back", method: "back"}]
+            return [{tag: "cancel", method: "cancel"}, {tag: "back", method: "back"}]
+        }
+        function test_14c_go_to_keeps_on_a_side_tap() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            try {
+                sheet.open(spectrum.centerFreqHz)
+                waitForRendering(sheet)
+                verify(!sheet.hitsPanel(4, sheet.height / 2), "the side margin lies outside the panel")
+                mouseClick(sheet, 4, sheet.height / 2)
+                wait(50)
+                verify(sheet.visible, "an untouched Go to stays open")
+                findChild(screen, "spectrumGoToField").text = "154.0000"
+                mouseClick(sheet, 4, sheet.height / 2)
+                wait(50)
+                verify(sheet.visible, "a typed Go to stays open")
+                verify(!shownDiscard(sheet), "and asks nothing")
+                var cancel = findChild(screen, "spectrumGoToCancel")
+                verify(cancel !== null && cancel.visible, "Go to offers a visible Cancel")
+                verify(cancel.height >= Ui.Theme.minimumTouchSize)
+                compare(testContext.manualTuneCalls(), 0)
+            } finally {
+                sheet.visible = false
+            }
         }
         function test_14b_go_to_asks_before_dropping_a_typed_frequency(data) {
             var screen = screenLoader.item
             var sheet = findChild(screen, "spectrumGoToSheet")
             var dismiss = function () {
-                if (data.method === "back") {
+                if (data.method === "back")
                     verify(Ui.Navigation.back(sheet.Window.window))
-                } else {
-                    verify(!sheet.hitsPanel(4, sheet.height / 2), "the side margin lies outside the panel")
-                    mouseClick(sheet, 4, sheet.height / 2)
-                }
+                else
+                    findChild(screen, "spectrumGoToCancel").activate()
             }
             try {
                 sheet.open(spectrum.centerFreqHz)

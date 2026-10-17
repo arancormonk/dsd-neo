@@ -119,6 +119,38 @@ Item {
         // selectedSites runs refreshPlan(), and that builds both CSVs.
         screen.selectedSites = (radioReference.trunked && screen.siteList.length === 1) ? [0] : [];
         screen.refreshPlan();
+        screen.openedSelection = screen.selectionState();
+    }
+
+    // Issue #718: the site selection and import options live on this screen,
+    // and opening the system again starts them over. Leaving the system (the
+    // header's back button, Android Back, or the "All systems"/"Search" row)
+    // asks first once they differ from what the system opened with. That
+    // baseline is taken after the screen's own pick of a lone trunked site, so
+    // that pick is not counted as an edit.
+    property string openedSelection: ""
+    function selectionState() {
+        return JSON.stringify([screen.selectedSites, screen.eachSite, screen.encryptionPolicy, screen.simulcastOverride, screen.eskOverride]);
+    }
+    function selectionEdited() {
+        return screen.systemLoaded && screen.selectionState() !== screen.openedSelection;
+    }
+    function leaveSystem(action) {
+        if (screen.selectionEdited())
+            leaveDiscard.ask(action);
+        else
+            action();
+    }
+    /** Close the screen: the header's back button and Android Back. */
+    function requestClose() {
+        screen.leaveSystem(function () {
+            screen.closed();
+        });
+    }
+    DiscardDialog {
+        id: leaveDiscard
+        objectName: "radioReferenceLeaveDiscard"
+        parent: screen
     }
 
     // What the RadioReference record itself says, which is where the toggles
@@ -559,7 +591,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             objectName: "radioReferenceBack"
-            onClicked: screen.closed()
+            onClicked: screen.requestClose()
         }
 
         Text {
@@ -811,7 +843,8 @@ Item {
                             objectName: "radioReferenceZipGo"
 
                             width: 96
-                            enabled: !radioReference.busy && zipField.text.length > 0
+                            inputValid: zipField.text.length > 0
+                            enabled: !radioReference.busy && (inputValid || Navigation.composing)
                             text: qsTr("Find")
                             onClicked: screen.findByZip()
                         }
@@ -886,7 +919,8 @@ Item {
                             id: sidGo
 
                             width: 96
-                            enabled: !radioReference.busy && sidField.text.length > 0
+                            inputValid: sidField.text.length > 0
+                            enabled: !radioReference.busy && (inputValid || Navigation.composing)
                             text: qsTr("Open")
                             onClicked: screen.findBySid()
                         }
@@ -962,9 +996,12 @@ Item {
                 function goBack() {
                     if (radioReference.busy || !Navigation.allows(backToResults))
                         return;
-                    screen.clearNotice();
-                    if (screen.rrLive())
-                        radioReference.closeSystem();
+                    Navigation.commitComposing(false);
+                    screen.leaveSystem(function () {
+                        screen.clearNotice();
+                        if (screen.rrLive())
+                            radioReference.closeSystem();
+                    });
                 }
 
                 width: parent.width
@@ -1450,7 +1487,11 @@ Item {
 
     ModalSheet {
         id: reviewSheet
+        objectName: "radioReferenceReviewSheet"
         accessibleName: qsTr("Review import")
+        // The last step of an import (issue #718): only "Back to selection",
+        // Back or Escape leaves it, never a stray tap beside it.
+        closesOnOutsideTap: false
         Text {
             width: parent.width
             text: screen.systemName() + "\n" + screen.typeDescr + "\n" + screen.selectedSites.map(function (index) {

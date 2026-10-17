@@ -65,8 +65,12 @@ ComboBox {
         id: popupLayer
         visible: false
         readonly property var navigationSurface: control.popup.contentItem
+        // Back closes the list and hands focus back to the selector, so the
+        // next Back reaches the sheet the selector sits in.
         function requestDismiss() {
             control.popup.close();
+            if (control.visible && control.enabled)
+                control.forceActiveFocus();
         }
         Component.onDestruction: Navigation.removeModal(popupLayer)
     }

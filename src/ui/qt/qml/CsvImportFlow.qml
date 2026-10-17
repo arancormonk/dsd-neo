@@ -15,6 +15,9 @@ Item {
     property var requiredDetails: ({})
     property string choosing: ""
     property bool active: false
+    // Whether the user has chosen a companion on the sheet (a library file or a
+    // picked one). Preselected matches are the app's guess, not a choice.
+    property bool choiceMade: false
     signal finished(var result)
 
     // One completion per pick()/begin(). A companion rejection only abandons
@@ -29,6 +32,7 @@ Item {
         requiredFiles = [];
         requiredLabels = ({});
         requiredDetails = ({});
+        choiceMade = false;
         active = true;
     }
     function pick(kind, row) {
@@ -55,19 +59,30 @@ Item {
         requiredFiles = [];
         requiredLabels = ({});
         requiredDetails = ({});
+        choiceMade = false;
         finished(result);
     }
     function cancel() {
         complete({ok: false, error: "cancelled"});
     }
+    // The sheet's Cancel, Back and Escape (issue #718): once a companion was
+    // chosen, ask before the choices go.
+    function requestCancel() {
+        if (active && choiceMade)
+            discard.ask(cancel);
+        else
+            cancel();
+    }
     function selectCompanion(key, path) {
         var next = Object.assign({}, companions);
         next[key] = path;
         companions = next;
+        choiceMade = true;
     }
+    // The current companion stays until the picker hands back a replacement:
+    // a rejected picker leaves the earlier choice in place.
     function chooseFile(key) {
         choosing = key;
-        selectCompanion(key, "");
         picker.open();
     }
     function showRequirements(result) {
@@ -131,7 +146,16 @@ Item {
         objectName: "csvCompanionSheet"
         parent: flow.overlayParent
         accessibleName: flow.type === "trunkTargets" ? qsTr("Target CSV companion files") : qsTr("Channel-map companion files")
+        // A form sheet (issue #718): an outside tap keeps the choices made here.
+        closesOnOutsideTap: false
+        dismissHandler: function () {
+            flow.requestCancel();
+        }
         onDismissed: flow.cancel()
+        DiscardDialog {
+            id: discard
+            parent: sheet
+        }
         Text {
             width: parent.width
             text: qsTr("This CSV references additional files. Choose an imported file or a file from your device for each companion to store a complete, private copy.")
@@ -210,7 +234,7 @@ Item {
             objectName: "csvCancel"
             width: parent.width
             text: qsTr("Cancel")
-            onClicked: flow.cancel()
+            onClicked: flow.requestCancel()
         }
     }
 }

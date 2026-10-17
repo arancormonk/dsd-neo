@@ -53,8 +53,11 @@ Rectangle {
                 Accessible.ignored: !visible || !navigationAllowed
                 Accessible.onPressAction: choose()
                 function choose() {
-                    if (enabled && Navigation.allows(control))
-                        control.selected(index);
+                    if (!enabled || !Navigation.allows(control))
+                        return;
+                    // Issue #718: a choice made mid-word keeps the word.
+                    Navigation.commitComposing(false);
+                    control.selected(index);
                 }
                 Keys.onSpacePressed: choose()
                 Keys.onReturnPressed: choose()

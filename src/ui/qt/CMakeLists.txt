@@ -38,6 +38,7 @@ target_sources(
         decryption_profiles_model.cpp
         diagnostics_log.cpp
         imported_files_model.cpp
+        input_commit.cpp
         csv_bundle_import.cpp
         json_store.cpp
         p25_network_model.cpp # WP-F2

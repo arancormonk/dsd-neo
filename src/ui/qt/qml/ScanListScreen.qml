@@ -591,7 +591,7 @@ Rectangle {
                     objectName: "scanAddFrequencyButton"
                     width: parent.width
                     text: qsTr("Add frequency")
-                    enabled: screen.frequencyValid(frequency.text)
+                    inputValid: screen.frequencyValid(frequency.text)
                     onClicked: {
                         screen.addFrequency(freqName.text, screen.protocolIds[protocol.currentIndex], frequency.text);
                         freqName.text = "";

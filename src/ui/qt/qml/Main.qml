@@ -446,7 +446,8 @@ Window {
     NavigationLayer {
         surface: radioReferenceScreen
         active: mainRoot.radioReferenceOpen
-        onLeave: mainRoot.radioReferenceOpen = false
+        // Through the screen, which asks before a site selection goes (issue #718).
+        onLeave: radioReferenceScreen.requestClose()
     }
     property bool wizardOpen: false
     property bool exploreSetupOpen: false

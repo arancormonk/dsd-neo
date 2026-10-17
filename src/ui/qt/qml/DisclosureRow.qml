@@ -41,8 +41,11 @@ Item {
     Accessible.ignored: !visible || !navigationAllowed
     Accessible.onPressAction: activate()
     function activate() {
-        if (enabled && tapEnabled && Navigation.allows(row))
-            tapped();
+        if (!enabled || !tapEnabled || !Navigation.allows(row))
+            return;
+        // Issue #718: a row opened mid-word keeps the word; focus stays put.
+        Navigation.commitComposing(false);
+        tapped();
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()

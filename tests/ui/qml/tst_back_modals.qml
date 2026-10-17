@@ -194,6 +194,44 @@ Item {
             compare(decoderHost.backgroundCalls(), backgrounds);
             tryCompare(opened.opener, "activeFocus", true);
         }
+        // Issue #718: Android Back on the RadioReference screen goes through the
+        // screen, which asks before a site selection goes; untouched, it closes.
+        function test_radioreference_back_asks_about_a_selection() {
+            var screen = item("radioReferenceScreen");
+            screen.reset();
+            app.radioReferenceOpen = true;
+            tryCompare(screen, "opacity", 1);
+            testContext.setRadioReference("systemDetails", {"sid": 6673, "name": "Test System", "typeDescr": "Project 25"});
+            testContext.setRadioReference("sites", [
+                {"siteNumber": 1, "descr": "Alpha", "freqCount": 1, "controlFreqMhz": "851.0125", "simulcast": false, "freqMhz": "851.0125", "colorCode": ""},
+                {"siteNumber": 2, "descr": "Bravo", "freqCount": 1, "controlFreqMhz": "852.5", "simulcast": false, "freqMhz": "852.5", "colorCode": ""}
+            ]);
+            try {
+                tryVerify(function () { return screen.systemLoaded; });
+                screen.toggleSite(0);
+                verify(Ui.Navigation.back(app));
+                var question = findChild(screen, "radioReferenceLeaveDiscard");
+                verify(question.visible, "Back asks before the selection goes");
+                verify(app.radioReferenceOpen);
+                findChild(question, "discardDialogDiscard").activate();
+                tryCompare(app, "radioReferenceOpen", false);
+                screen.reset();
+                testContext.setRadioReference("sites", []);
+                testContext.setRadioReference("sites", [
+                    {"siteNumber": 1, "descr": "Alpha", "freqCount": 1, "controlFreqMhz": "851.0125", "simulcast": false, "freqMhz": "851.0125", "colorCode": ""},
+                    {"siteNumber": 2, "descr": "Bravo", "freqCount": 1, "controlFreqMhz": "852.5", "simulcast": false, "freqMhz": "852.5", "colorCode": ""}
+                ]);
+                app.radioReferenceOpen = true;
+                tryCompare(screen, "opacity", 1);
+                verify(Ui.Navigation.back(app));
+                verify(!question.visible);
+                tryCompare(app, "radioReferenceOpen", false);
+            } finally {
+                app.radioReferenceOpen = false;
+                testContext.setRadioReference("systemDetails", {});
+                testContext.setRadioReference("sites", []);
+            }
+        }
         function test_home_back_data() {
             return [{tag: "Navigation.back", method: "navigation"},
                 {tag: "Android host Back", method: "host"},

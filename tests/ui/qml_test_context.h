@@ -45,6 +45,7 @@
 #include <QGuiApplication>
 #include <QHash>
 #include <QIODevice>
+#include <QInputMethodEvent>
 #include <QList>
 #include <QMetaObject>
 #include <QMetaProperty>
@@ -79,6 +80,7 @@
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
+#include "input_commit.h"
 #include "p25_network_model.h" // WP-F2
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -2234,6 +2236,25 @@ class Setup : public QObject {
         QGuiApplication::setFont(font);
     }
 
+    /**
+     * @brief Give the focused field composing text, as an Android keyboard does mid-word.
+     *
+     * The event carries only a preedit string and no commit, which is exactly
+     * what the platform input method sends while a word is being typed: the
+     * field shows it underlined and leaves it out of `text`. Returns whether the
+     * focused item now holds it as its preedit.
+     */
+    Q_INVOKABLE bool
+    composeText(const QString& preedit) {
+        QObject* focus = QGuiApplication::focusObject();
+        if (focus == nullptr) {
+            return false;
+        }
+        QInputMethodEvent event(preedit, {});
+        QCoreApplication::sendEvent(focus, &event);
+        return focus->property("preeditText").toString() == preedit;
+    }
+
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
         /* `backup` is a QObject, whose properties answer an unknown name with `undefined` just as a map does; its
@@ -2790,6 +2811,8 @@ class Setup : public QObject {
         m_backup = new BackupRecorder(engine);
         m_backup->setHost(m_lifecycle_host);
         ctx->setContextProperty(QStringLiteral("backup"), m_backup);
+        // Issue #718: the production composing-text commit, on its fallback path here.
+        ctx->setContextProperty(QStringLiteral("inputCommit"), new dsd_qt::InputCommit(engine));
     }
 
   private:

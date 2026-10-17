@@ -50,6 +50,58 @@ Item {
             loader.item.visible = false;
             testContext.resetCommands();
         }
+        // Issue #718: the last word of a name still composing on the keyboard
+        // is part of the name Apply saves, whether tapped or activated.
+        function test_apply_keeps_the_composing_word_data() {
+            return [{tag: "tap", tap: true}, {tag: "keyboard or accessibility", tap: false}];
+        }
+        function test_apply_keeps_the_composing_word(data) {
+            var sheet = loader.item;
+            var name = findChild(sheet, "talkgroupName");
+            name.input.forceActiveFocus();
+            name.input.cursorPosition = name.text.length;
+            verify(testContext.composeText(" North"));
+            compare(name.text, "Dispatch", "the word is still the keyboard's");
+            var apply = findChild(sheet, "saveTalkgroup");
+            if (data.tap)
+                mouseClick(apply, apply.width / 2, apply.height / 2);
+            else
+                apply.activate();
+            compare(recorder.edits, 1);
+            compare(recorder.last[4].name, "Dispatch North");
+            verify(!sheet.visible);
+        }
+        // A form sheet: a tap beside it keeps it, and a visible Cancel asks
+        // before an edit goes (including one that is only composing text).
+        function test_cancel_is_visible_and_asks() {
+            var sheet = loader.item;
+            var cancel = findChild(sheet, "cancelTalkgroupEdit");
+            verify(cancel !== null && cancel.visible, "the editor offers a visible Cancel");
+            verify(cancel.height >= 48);
+            mouseClick(sheet, 4, sheet.height / 2);
+            wait(50);
+            verify(sheet.visible, "a tap beside the editor keeps it");
+            var name = findChild(sheet, "talkgroupName");
+            name.input.forceActiveFocus();
+            name.input.cursorPosition = name.text.length;
+            verify(testContext.composeText("X"));
+            cancel.activate();
+            verify(sheet.visible, "the composing edit is asked about");
+            compare(name.text, "DispatchX");
+            var question = null;
+            for (var child of sheet.children) {
+                if (child.accessibleName === "Discard changes?" && child.visible)
+                    question = child;
+            }
+            verify(question !== null, "Cancel asks before the edit goes");
+            findChild(question, "discardDialogDiscard").activate();
+            verify(!sheet.visible);
+            compare(recorder.edits, 0);
+            // Untouched, Cancel just closes.
+            sheet.openRow(42, 49, "Dispatch", true, true, 25, false, "18446744073709551614", 9);
+            cancel.activate();
+            verify(!sheet.visible);
+        }
         function test_seven_digit_heading_data() {
             return [
                 {tag: "exact", end: 1234567, text: "Talkgroup 1234567"},

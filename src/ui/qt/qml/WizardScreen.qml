@@ -1142,6 +1142,7 @@ Item {
                         }
 
                         CsvPickerRow {
+                            objectName: "wizardKeysCsvRow"
                             title: qsTr("Encryption keys")
                             target: "keys"
                             path: wizard.keyCsvPath
@@ -1492,7 +1493,7 @@ Item {
         anchors.margins: Theme.screenPadding
         anchors.bottomMargin: Math.max(22, wizard.height - Theme.keyboardTop(wizard) + 8)
         text: wizard.step < 2 ? qsTr("Continue") : qsTr("Save system")
-        enabled: wizard.stepValid()
+        inputValid: wizard.stepValid()
         onClicked: {
             if (wizard.step < 2) {
                 wizard.step++;
@@ -1504,8 +1505,16 @@ Item {
 
     // Picker for one trunking-data field: the library's files of that kind,
     // "None", and a fresh import.
+    //
+    // The keys picker's Decimal/Hex choice is pending until a file is chosen,
+    // and reopening the picker starts it from the assigned file's format. So
+    // the picker ignores an outside tap (issue #718), which would have reset a
+    // choice the user just made, and leaves through Cancel, Back or Escape:
+    // explicit exits after which starting over is expected.
     ModalSheet {
         id: csvSheet
+        objectName: "wizardCsvSheet"
+        closesOnOutsideTap: false
 
         readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath : wizard.pickerTarget === "group" ? wizard.groupCsvPath : wizard.pickerTarget === "p25Bandplan" ? wizard.p25BandplanCsvPath : wizard.pickerTarget === "src" ? wizard.srcCsvPath : wizard.keyCsvPath
         readonly property var entries: {
@@ -1617,6 +1626,7 @@ Item {
         }
 
         SegmentedControl {
+            objectName: "wizardKeyFormat"
             width: parent.width
             visible: wizard.pickerTarget === "keys"
             model: [qsTr("Decimal keys"), qsTr("Hex keys")]
@@ -1639,6 +1649,13 @@ Item {
                 var type = wizard.pickerTarget === "keys" ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget;
                 csvImport.pick(type);
             }
+        }
+
+        OutlineButton {
+            objectName: "wizardCsvCancel"
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: csvSheet.visible = false
         }
     }
 }

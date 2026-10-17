@@ -5,6 +5,8 @@ import "Util.js" as Util
 ModalSheet {
     id: sheet
     accessibleName: qsTr("Decryption profile")
+    // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
+    closesOnOutsideTap: false
     property var draft: ({})
     property var keyRows: []
     property var mapRows: []
@@ -108,8 +110,8 @@ ModalSheet {
         visible = false;
         saved(result.uid);
     }
-    // The fallback algorithm commits to the draft on editingFinished, which a
-    // tap beside the panel beats: read what the field holds now.
+    // The fallback algorithm commits to the draft on editingFinished, which Back
+    // or Escape beats: read what the field holds now.
     function fallbackPending() {
         return fallbackField.visible && fallbackField.text.toUpperCase() !== Number(draft.force).toString(16).toUpperCase();
     }
@@ -374,12 +376,14 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(14)
     }
     GradientButton {
+        objectName: "profileSave"
         width: parent.width
         text: qsTr("Save profile")
         enabled: sheet.modes.indexOf(sheet.draft.mode) >= 0
         onClicked: sheet.save()
     }
     OutlineButton {
+        objectName: "profileCancel"
         width: parent.width
         text: qsTr("Cancel")
         onClicked: sheet.requestClose()
@@ -389,6 +393,7 @@ ModalSheet {
         id: keyDialog
         parent: sheet
         accessibleName: qsTr("Key details")
+        closesOnOutsideTap: false
         // The fields as the dialog opened: a dismissal asks only once they differ.
         property string openedForm: ""
         function fingerprint() {
@@ -466,9 +471,10 @@ ModalSheet {
             inputMethodHints: Qt.ImhHiddenText | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
         }
         OutlineButton {
+            objectName: "profileUseKey"
             width: parent.width
             text: qsTr("Use this key")
-            enabled: keyKind.currentIndex >= 0 && (keyLookup.currentIndex ? /^[0-9]+$/.test(keyId.text) : /^[0-9a-f]+$/i.test(keyId.text))
+            inputValid: keyKind.currentIndex >= 0 && (keyLookup.currentIndex ? /^[0-9]+$/.test(keyId.text) : /^[0-9a-f]+$/i.test(keyId.text))
             onClicked: {
                 var value = Object.assign({}, sheet.originalKey, {
                     label: keyName.text,
@@ -512,6 +518,7 @@ ModalSheet {
         id: mappingDialog
         parent: sheet
         accessibleName: qsTr("Talkgroup key selection")
+        closesOnOutsideTap: false
         property string openedForm: ""
         function fingerprint() {
             return JSON.stringify([mapTg.text, mapKid.text]);
@@ -553,9 +560,10 @@ ModalSheet {
             placeholderText: qsTr("Key ID (hex, 00–FF)")
         }
         OutlineButton {
+            objectName: "profileUseOverride"
             width: parent.width
             text: qsTr("Use override")
-            enabled: /^[0-9]+$/.test(mapTg.text) && /^[0-9a-f]{1,2}$/i.test(mapKid.text)
+            inputValid: /^[0-9]+$/.test(mapTg.text) && /^[0-9a-f]{1,2}$/i.test(mapKid.text)
             onClicked: {
                 var kid = parseInt(mapKid.text, 16);
                 var reference = sheet.keyRows.find(function (key) {
