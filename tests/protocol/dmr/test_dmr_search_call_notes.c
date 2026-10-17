@@ -25,7 +25,6 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

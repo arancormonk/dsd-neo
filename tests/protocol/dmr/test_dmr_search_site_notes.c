@@ -16,9 +16,8 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dmr_bptc_test_encoder.h"

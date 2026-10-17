@@ -15,6 +15,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 

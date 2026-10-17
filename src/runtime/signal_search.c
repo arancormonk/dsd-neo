@@ -9,6 +9,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <string.h>
 

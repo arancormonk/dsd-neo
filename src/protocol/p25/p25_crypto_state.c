@@ -6,6 +6,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
+#include <stdint.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

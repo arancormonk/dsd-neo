@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
