@@ -111,6 +111,15 @@ dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
     state->dmr_pi_precall_rx[idx] = 0U;
     state->dmr_pi_precall_algid[idx] = 0U;
     state->dmr_pi_precall_kid[idx] = 0U;
+    state->dmr_pi_precall_m[idx] = 0.0;
+}
+
+int
+dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    const double held_m = state->dmr_pi_precall_m[idx];
+    return state->dmr_pi_precall_rx[idx] != 0U && held_m > 0.0 && now_m >= held_m
+           && (now_m - held_m) <= DMR_PI_PRECALL_HOLD_S;
 }
 
 int

@@ -725,7 +725,9 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     // opens, for the fields the live values still hold -- a forced or inferred value written since is not what the PI
     // carried. Once in the call they stay with it; a later LC adds nothing.
     uint8_t received = 0U;
-    const uint8_t precall = ctx->state->dmr_pi_precall_rx[ctx->slot];
+    const uint8_t precall = dmr_pi_precall_fresh(ctx->state, ctx->slot, dsd_decode_now_mono_s())
+                                ? ctx->state->dmr_pi_precall_rx[ctx->slot]
+                                : 0U;
     if ((precall & DSD_CALL_CRYPTO_RX_ALG) != 0U && ctx->state->dmr_pi_precall_algid[ctx->slot] == algid) {
         received |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
     }
@@ -827,6 +829,15 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         && (boundary == DSD_CALL_BOUNDARY_BEGIN
             || (dsd_call_state_get(ctx->state, ctx->slot, &after) > 0 && after.epoch != before.epoch))) {
         dmr_le_vendor_reset(ctx->state, ctx->slot);
+        // So were the slot's live ALG ID, key id and MI, which the missed terminator would have cleared: the new call
+        // publishes none of them until its own PI (or the voice path's forced or inferred fallback) supplies them.
+        // A PI held for this transmission (its header lost too) did set them, and stays.
+        if (!dmr_pi_precall_fresh(ctx->state, ctx->slot, dsd_decode_now_mono_s())) {
+            const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->slot);
+            *live.algid = 0;
+            *live.keyid = 0;
+            *live.mi = 0;
+        }
     }
     dmr_flco_publish_crypto(ctx);
     dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);

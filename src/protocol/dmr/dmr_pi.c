@@ -269,6 +269,13 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
     if (state->event_crc_invalid[slot] != 0U || algid == 0U) {
         received = 0U;
     }
+    // A PI header leads its transmission, ahead of any voice. One decoding while the slot's active call has already
+    // carried voice opens the next transmission, whose voice LC header was lost and whose terminator before it was
+    // missed: it is not that call's crypto, so it is held for the call the next checked LC opens, like a PI with no
+    // call at all. The live values it set stay, for the voice path.
+    dsd_call_snapshot current;
+    const int opens_next = dsd_call_state_get(state, slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE
+                           && current.media_started_m > 0.0;
     const dsd_call_crypto_update update = {
         .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
         .algid = algid,
@@ -277,7 +284,7 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
         .audio_permitted = (uint8_t)has_key,
         .received = received,
     };
-    if (dsd_call_state_update_crypto(state, slot, &update) > 0) {
+    if (!opens_next && dsd_call_state_update_crypto(state, slot, &update) > 0) {
         dmr_pi_precall_reset(state, slot);
         dsd_event_sync_slot(opts, state, slot);
         dsd_signal_search_note_call(state, slot);
@@ -288,6 +295,7 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
         state->dmr_pi_precall_rx[slot] = received;
         state->dmr_pi_precall_algid[slot] = algid;
         state->dmr_pi_precall_kid[slot] = kid;
+        state->dmr_pi_precall_m[slot] = dsd_decode_now_mono_s();
     }
 }
 

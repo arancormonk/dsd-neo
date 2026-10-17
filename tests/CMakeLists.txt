@@ -10430,7 +10430,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_search_call_notes
-    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
 )
 add_test(NAME DMR_SEARCH_CALL_NOTES COMMAND dsd-neo_test_dmr_search_call_notes)
 

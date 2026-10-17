@@ -1253,6 +1253,8 @@ struct dsd_state {
     uint8_t dmr_pi_precall_rx[2];
     uint8_t dmr_pi_precall_algid[2];
     uint16_t dmr_pi_precall_kid[2];
+    /* Decode-clock instant each held PI was decoded; it transfers only within DMR_PI_PRECALL_HOLD_S. */
+    double dmr_pi_precall_m[2];
 
     char slot1light[8];
     char slot2light[8];
