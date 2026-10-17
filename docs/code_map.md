@@ -5480,7 +5480,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   save-found-system wizard. The range editor's discard fingerprint and Save read the
   Airspy gain fields' typing before it commits (`AirspyControls.pendingText()`,
   `pendingSettings()`; the fields commit on `editingFinished`), and opening it resets them
-  (`resetText()`). While a session runs the screen reads status line, Now panel,
+  (`resetText()`). The system wizard and the scan-list editor do the same: their discard
+  fingerprints include the Airspy fields' pending text, every load resets them, and the
+  wizard saves the pending settings. While a session runs the screen reads status line, Now panel,
   five recent detections (Show more adds 25), then the ranges behind an expandable
   `DisclosureRow` (`expandable`/`expanded`; forced open while paused or idle; a manual
   expansion and the history limit reset on close and on a new session). The Now panel's

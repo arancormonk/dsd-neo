@@ -127,6 +127,34 @@ Item {
             compare(saved.gainDb, data.gainDb, "the saved system must start with the detection's gain")
         }
 
+        // An Airspy gain index commits only when its field loses focus, and an
+        // emptied one never does. Typing still counts as a change, so leaving
+        // asks before it goes, and reopening the wizard shows the settings, not
+        // the typing a dismissed draft left behind.
+        function test_pending_airspy_gain_counts_and_is_reset_on_reopen() {
+            var found = detection("airspy", {"airspy": {"gain_mode": "sensitivity", "sensitivity_gain": 9}})
+            tc.wizard.openForFound(found, "463.552100", found)
+            var gain = findChild(tc.wizard, "airspy_sensitivity_gain")
+            verify(gain !== null)
+            compare(gain.text, "9")
+            compare(tc.wizard.draftFingerprint(), tc.wizard.initialDraft, "the draft opens clean")
+            gain.text = ""
+            verify(tc.wizard.draftFingerprint() !== tc.wizard.initialDraft, "an emptied gain is a change")
+            gain.text = "12"
+            verify(tc.wizard.draftFingerprint() !== tc.wizard.initialDraft, "a typed gain is a change")
+            tc.wizard.openForFound(found, "463.552100", found)
+            compare(gain.text, "9", "reopening shows the setting, not the dropped typing")
+            compare(tc.wizard.draftFingerprint(), tc.wizard.initialDraft)
+            // Saved with a valid gain typed and not yet committed, the typed gain is kept.
+            gain.text = "12"
+            tc.wizard.nameText = "Found"
+            var before = savedSystems.count
+            tc.wizard.commit()
+            compare(savedSystems.count, before + 1)
+            tc.savedRow = before
+            compare(String(savedSystems.get(before).airspy.sensitivity_gain), "12")
+        }
+
         function test_the_draft_opens_clean() {
             tc.wizard.openForFound(detection("usb", {"ppm": "-3", "biasTee": 1}), "463.552100",
                                    detection("usb", {"ppm": "-3", "biasTee": 1}))

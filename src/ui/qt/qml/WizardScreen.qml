@@ -34,7 +34,9 @@ Item {
         }
     }
     function draftFingerprint() {
-        return JSON.stringify([sourceType, airspySettings, hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
+        // The Airspy fields' typing counts before it commits (they commit on
+        // editingFinished, and an emptied gain index never does).
+        return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
     function requestBack() {
         Navigation.clearInput(wizard.Window.window);
@@ -196,6 +198,7 @@ Item {
         srcCsvPath = "";
         csvNotice = "";
         csvNoticeIsProblem = false;
+        wizardAirspy.resetText();
         initialDraft = draftFingerprint();
     }
 
@@ -262,6 +265,7 @@ Item {
             extraField.text = detection.extraArgs || "";
             csvNotice = detection.searchUnresolved ? qsTr("Digital identification is unresolved. NFM monitoring does not confirm an analog transmission.") : "";
         }
+        wizardAirspy.resetText();
         initialDraft = draftFingerprint();
     }
 
@@ -303,6 +307,7 @@ Item {
         srcCsvPath = sys.srcCsvPath;
         csvNotice = "";
         csvNoticeIsProblem = false;
+        wizardAirspy.resetText();
         initialDraft = draftFingerprint();
     }
 
@@ -433,7 +438,7 @@ Item {
             freqMhz: freqText,
             decodeFlag: decodeFlag,
             trunking: trunking,
-            airspy: airspySettings,
+            airspy: wizardAirspy.pendingSettings(),
             gainDb: gainText.length > 0 ? intOr(gainText, -1) : -1,
             ppm: ppmText,
             hangtime: hangtimeText,
@@ -1267,6 +1272,7 @@ Item {
                         visible: wizard.advancedOpen
 
                         AirspyControls {
+                            id: wizardAirspy
                             width: parent.width
                             visible: wizard.sourceType === "airspy"
                             settings: wizard.airspySettings

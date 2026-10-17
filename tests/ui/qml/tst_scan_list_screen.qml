@@ -431,6 +431,35 @@ Item {
             compare(screen.entries.length, 0);
         }
 
+        // An Airspy gain index commits only when its field loses focus, and an
+        // emptied one never does. Typing still counts as a change, so leaving
+        // asks before it goes, and reopening the list shows its settings, not
+        // the typing a dismissed edit left behind.
+        function test_pending_airspy_gain_counts_and_is_reset_on_reopen() {
+            screen.draft = Object.assign({}, screen.draft, {sourceType: "airspy", airspy: {gain_mode: "sensitivity", sensitivity_gain: 9}});
+            screen.initialDraft = screen.fingerprint();
+            var controls = findChild(screen, "scanAirspyControls");
+            var gain = findChild(controls, "airspy_sensitivity_gain");
+            verify(gain !== null);
+            compare(gain.text, "9");
+            gain.text = "";
+            verify(screen.fingerprint() !== screen.initialDraft, "an emptied gain is a change");
+            control("scanListBack").Accessible.pressAction();
+            compare(closedSpy.count, 0, "the emptied gain survives Back");
+            var dialog = findChild(screen, "scanListDiscardDialog");
+            verify(dialog.visible);
+            var discard = visualChild(dialog, function(item) { return item.text === "Discard changes" && item.activate; });
+            discard.Accessible.pressAction();
+            compare(closedSpy.count, 1);
+            screen.draft.name = "Airspy list";
+            screen.draft = Object.assign({}, screen.draft, {name: "Airspy list", sourceType: "airspy", airspy: {gain_mode: "sensitivity", sensitivity_gain: 9}, isDraft: true});
+            verify(screen.persist());
+            gain.text = "14";
+            screen.openFor(0);
+            compare(gain.text, "9", "reopening shows the setting, not the dropped typing");
+            compare(screen.fingerprint(), screen.initialDraft);
+        }
+
         function test_advanced_hidden_by_default_and_keyboard_accessible() {
             verify(!control("scanAdvancedBody").visible);
             var toggle = control("scanAdvancedToggle");
