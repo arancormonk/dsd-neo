@@ -58,7 +58,11 @@ QtObject {
             next = point.y;
         else if (point.y + target.height > next + scroll.height)
             next = point.y + target.height - scroll.height;
-        scroll.contentY = Math.max(0, Math.min(next, scroll.contentHeight - scroll.height));
+        // A ListView passes its contentItem (issue #718): its content does not
+        // start at 0. A header sits at negative y and a prepend moves the start
+        // further up, so the bounds are the view's own origin, not 0.
+        var start = content === scroll.contentItem ? scroll.originY : 0;
+        scroll.contentY = Math.max(start, Math.min(next, start + scroll.contentHeight - scroll.height));
     }
     function resetFontScale() {
         fontScale = Qt.binding(function () {

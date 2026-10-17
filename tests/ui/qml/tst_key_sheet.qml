@@ -78,7 +78,7 @@ Item {
             button.activate();
             var modal = findChild(monitor, "keySheet");
             verify(modal.visible);
-            verify(!findChild(monitor, "monitorBody").enabled);
+            verify(!findChild(monitor, "recentCallsList").enabled);
             monitor.visible = false;
             verify(!modal.visible);
         }

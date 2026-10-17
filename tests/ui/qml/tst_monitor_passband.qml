@@ -13,7 +13,8 @@ Item {
     id: root
     width: 411
     height: 900
-    Ui.MonitorScreen { id: monitor; anchors.fill: parent }
+    // The readings under test live in the Monitor's "Signal & site" disclosure (#718), open here.
+    Ui.MonitorScreen { id: monitor; anchors.fill: parent; detailsExpanded: true }
     TestCase {
         name: "MonitorPassband"
         when: windowShown

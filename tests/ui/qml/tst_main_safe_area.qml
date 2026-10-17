@@ -82,14 +82,22 @@ Item {
             tc.app.SafeArea.additionalMargins.bottom = 32;
             testContext.setHostRunning(true);
             var monitor = findChild(tc.app, "monitorScreen");
-            var body = findChild(monitor, "monitorBody");
+            var body = findChild(monitor, "recentCallsList");
             var recent = findChild(monitor, "recentCallsPanel");
             tryCompare(monitor, "height", 320);
-            verify(monitor.compactHeight);
+            // Too short for any fixed layout (#718): only Stop stays put, and the
+            // header, hero and call actions scroll in the one list with the calls.
+            tryCompare(monitor, "tier", 5);
+            for (var name of ["monitorHero", "muteButton", "monitorDetailsRow"]) {
+                var node = findChild(monitor, name);
+                while (node && node !== body.contentItem)
+                    node = node.parent;
+                verify(node === body.contentItem, name + " scrolls with the calls");
+            }
             tryVerify(function() { return body.height > 0 && body.contentHeight > body.height; });
-            body.contentY = body.contentHeight - body.height;
+            body.contentY = body.originY + body.contentHeight - body.height;
             tryVerify(function() {
-                body.contentY = body.contentHeight - body.height;
+                body.contentY = body.originY + body.contentHeight - body.height;
                 return recent.mapToItem(body, 0, recent.height).y <= body.height + 1;
             });
             tc.app.height = 900;

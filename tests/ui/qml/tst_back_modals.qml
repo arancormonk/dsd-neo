@@ -577,7 +577,8 @@ Item {
             app.height = data.height;
             var monitor = item("monitorScreen");
             if (data.height < 500) {
-                tryCompare(monitor, "compactHeight", true);
+                // A short phone moves Sites and Spectrum into this menu (#718).
+                tryVerify(function () { return monitor.tier >= 1; });
                 tryCompare(item("runningSiteChooserButton"), "visible", false);
                 tryCompare(item("openSpectrumButton"), "visible", false);
             }

@@ -8,10 +8,12 @@ Item {
     width: 420
     height: 900
 
+    // The FREQ reading lives in the "Signal & site" disclosure (#718), open here.
     Ui.MonitorScreen {
         id: screen
 
         anchors.fill: parent
+        detailsExpanded: true
     }
 
     TestCase {
@@ -205,18 +207,23 @@ Item {
             testContext.setMetric("scanTimingVisible", true);
             waitForRendering(screen);
             var names = ["runningSiteChooserButton", "openSpectrumButton", "monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow"];
-            for (var i = 0; i < names.length; ++i) {
-                var a = findChild(screen, names[i]);
+            // Past tier 0 on a phone, Sites and Spectrum are in the session menu (#718)
+            // rather than squeezed beside the title; whatever the header shows fits.
+            var shown = names.filter(function (name) { return findChild(screen, name).visible; });
+            verify(shown.length >= 3);
+            var hero = findChild(screen, "monitorHero");
+            var heroY = hero.mapToItem(screen, 0, 0).y;
+            for (var i = 0; i < shown.length; ++i) {
+                var a = findChild(screen, shown[i]);
                 var ap = a.mapToItem(screen, 0, 0);
-                verify(ap.x >= 0 && ap.x + a.width <= screen.width + 1, names[i] + " fits width");
-                var hero = findChild(screen, "monitorHero");
-                verify(ap.y + a.height <= hero.y, names[i] + " stays above hero");
-                for (var j = i + 1; j < names.length; ++j) {
-                    var b = findChild(screen, names[j]);
+                verify(ap.x >= 0 && ap.x + a.width <= screen.width + 1, shown[i] + " fits width");
+                verify(ap.y + a.height <= heroY, shown[i] + " stays above hero");
+                for (var j = i + 1; j < shown.length; ++j) {
+                    var b = findChild(screen, shown[j]);
                     var bp = b.mapToItem(screen, 0, 0);
                     verify(ap.x + a.width <= bp.x || bp.x + b.width <= ap.x
                            || ap.y + a.height <= bp.y || bp.y + b.height <= ap.y,
-                           names[i] + " overlaps " + names[j]);
+                           shown[i] + " overlaps " + shown[j]);
                 }
             }
         }

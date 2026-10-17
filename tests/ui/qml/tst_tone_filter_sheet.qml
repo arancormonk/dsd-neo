@@ -14,7 +14,8 @@ Item {
     id: root
     width: 411
     height: 700
-    Ui.MonitorScreen { id: monitor; anchors.fill: parent }
+    // The readings under test live in the Monitor's "Signal & site" disclosure (#718), open here.
+    Ui.MonitorScreen { id: monitor; anchors.fill: parent; detailsExpanded: true }
     TestCase {
         name: "ToneFilterSheet"
         when: windowShown
@@ -51,10 +52,10 @@ Item {
             waitForItemPolished(item("monitorToneFilter"));
             // Scrolled into the body's view, as a user would: the call actions below it can
             // take more of a short screen than one row.
-            var body = item("monitorBody");
+            var body = item("recentCallsList");
             var bottom = edit.mapToItem(body.contentItem, 0, edit.height).y;
             if (bottom > body.contentY + body.height)
-                body.contentY = Math.min(bottom - body.height, Math.max(0, body.contentHeight - body.height));
+                body.contentY = Math.min(bottom - body.height, Math.max(body.originY, body.originY + body.contentHeight - body.height));
             waitForRendering(monitor);
             mouseClick(edit);
             var sheet = item("toneFilterSheet");
@@ -62,7 +63,7 @@ Item {
             return sheet;
         }
         function insideBody(reading) {
-            var body = item("monitorBody");
+            var body = item("recentCallsList");
             var left = reading.mapToItem(body, 0, 0).x;
             var right = reading.mapToItem(body, reading.width, 0).x;
             return left >= -0.5 && right <= body.width + 0.5;

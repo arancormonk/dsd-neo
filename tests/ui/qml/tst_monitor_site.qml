@@ -7,7 +7,8 @@ Item {
     id: root
     width: 411
     height: 700
-    Ui.MonitorScreen { id: monitor; anchors.fill: parent }
+    // The readings under test live in the Monitor's "Signal & site" disclosure (#718), open here.
+    Ui.MonitorScreen { id: monitor; anchors.fill: parent; detailsExpanded: true }
     TestCase {
         name: "MonitorSite"
         when: windowShown
@@ -106,12 +107,20 @@ Item {
             Ui.Theme.fontScale = 1.6;
             testContext.setMetric("siteLine", "P25 · WACN BEE00 · SYS 123 · NAC 293 · RFSS 2 · SITE 3");
             var row = item("siteRow");
-            var body = item("monitorBody");
+            var body = item("recentCallsList");
             tryCompare(row, "visible", true);
-            compare(row.parent.parent, body.contentItem);
+            // The first of the readings, inside the one list that scrolls (#718): the
+            // short screen scrolls it into reach, and it takes the tap there.
+            var ancestor = row;
+            while (ancestor && ancestor !== body.contentItem)
+                ancestor = ancestor.parent;
+            compare(ancestor, body.contentItem);
             compare(row.y, 0);
             verify(row.height >= 44);
+            waitForRendering(monitor);
+            body.contentY = Math.min(row.mapToItem(body.contentItem, 0, 0).y, body.originY + body.contentHeight - body.height);
             waitForRendering(row);
+            verify(row.mapToItem(body, 0, 0).y >= -0.5 && row.mapToItem(body, 0, 20).y <= body.height);
             mouseClick(row, row.width / 2, Math.min(20, row.height / 2));
             tryCompare(item("siteSheet"), "visible", true);
             item("siteSheet").visible = false;

@@ -2389,6 +2389,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("searchSourceType")] = QString();
         prefs[QStringLiteral("searchHost")] = QString();
         prefs[QStringLiteral("searchPort")] = 1234;
+        /* Closed, as on a fresh install (#718). */
+        prefs[QStringLiteral("monitorDetailsExpanded")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML

@@ -5964,13 +5964,47 @@ Qt Quick frontend (`src/ui/qt`):
   `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).
-- Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): the same deterministic grid as the Signal
-  search Now panel. The widest label any cell can show (Mute, Unmute, Hold TG, Release, Skip, TG list, Avoid TG, Lock
-  out) is measured at the font scale in force; four columns only where a quarter of the row fits it with
-  `Theme.cardPadding` either side, else two (a 360 px phone takes two at every scale); one label line count and one
-  height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces (`OutlineButton.wrapMode`
-  `Text.WordWrap`). The Avoid row spans two cells, the full width in two columns; at compact height the Avoid cell takes
-  TG list's place. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`), `tst_monitor_compact.qml`.
+- Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
+  (`monitorLiveStrip`: the second-slot strip, then the scan controls, each only when the session has them), one
+  `ListView` (`recentCallsList`), the call actions and Stop. The list is the only scrolling surface: its header
+  (`monitorListHeader`, declared outside the view and parented into `headerItem` so the screen reaches its rows by id)
+  holds the "Signal & site" disclosure (`monitorDetailsRow`, a `DisclosureRow` in `monitorDetailsCard`), the readings it
+  folds away (`monitorDetails`: site, decryption, signal strip, quality, TETRA, ENC LOCKOUT, received tone, tone filter,
+  squelch, passband and scan avoids, in that order with their own objectNames) and the `RECENT CALLS` label; the rows
+  are `CallRow`s over one `recentCallsPanel` card in the view's `contentItem`. The engine's last answer (`uiMessage`) is
+  the line under the disclosure. The disclosure is closed by default and remembered in the device-local
+  `AppPrefs::monitorDetailsExpanded` (`monitor/detailsExpanded`, kept out of backups and kept on restore); its summary
+  is built only from readings the rows show (SNR on radio input, the quality row's lead reading with a TETRA codec fault
+  ahead of it in `Theme.alert`, the decryption state, an ENC LOCKOUT count in `Theme.magenta`, `Util.siteShortForm()`),
+  one elided StyledText line; a fault never opens the rows. `tier` is chosen from measured geometry, never call
+  content: the first of 0 (stacked header, full hero, live strip fixed), 1 (header actions on the title line, Sites and
+  Spectrum left to the session menu, which carries both on the same conditions; at 500 dp and wider they stay), 2
+  (compact hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label)
+  whose `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
+  leaves a row, else 5, where only Stop stays put and header, hero, strip and actions move into slots at the top of the
+  list header. Parts move by `parent` bindings between fixed hosts (`topHost`, `stripHost`, `actionsHost`) and those
+  slots; slots and hosts size from the budget's own numbers (`stripHeight`), since an Item hides its children. The hero's
+  height is reserved from its fixed lines (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
+  one box. The list has no current item (`currentIndex: -1`): a ListView is a focus scope that would hand focus to it
+  as rows land. Keyboard focus inside the list is revealed through `Theme.revealFocus(list, list.contentItem, item)`,
+  whose bounds follow `originY` when passed a view's `contentItem` (plain Flickables keep 0). `FollowLatest` measures
+  against the header's end (`latestY`): with any header in view a landing call moves nothing (ListView puts it under the
+  header), within a row of the calls' top the newest row is kept there, below that the reading position is kept; and on
+  a header resize while the header is in view it moves `contentY` so `headerAnchor` (the disclosure card) keeps its
+  place on screen, keeping the list's start at the start, deferring to the release under a held finger, and measuring
+  from the offset noted between resizes because ListView may clamp `contentY` before the header announces its height.
+  Tests: `tst_monitor_layout_budget.qml` (tiers at 360x690, 411x780, 411x914, 640x360 by scale and live strip,
+  disclosure, summary, follow and focus), `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`,
+  `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE` (`test_prefs_key_table`).
+- Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
+  (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as
+  checked (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does
+  the scan controls' Hold scan. Four columns where a quarter of the row, less the 12 px either side of a label, fits the
+  longest word of any label (Mute, Hold TG, Skip, Avoid TG, Lock out) at the font scale in force, else two (a 360 px
+  phone takes four at 1.0, two at 1.6); one label line count and one height for every cell, at least
+  `Theme.minimumTouchSize`; labels wrap only at spaces (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's
+  border is never lost to the list's clip in tier 5. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`,
+  `test_toggles_show_checked`), `tst_monitor_compact.qml`.
 - Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
   Escape and a real tap outside its panel: press and release both off the panel with no more movement than
   `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
@@ -6060,7 +6094,7 @@ Qt Quick frontend (`src/ui/qt`):
   any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
   with a running maximum end, so overlapping ranges cover correctly (issue #718).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
-  monitor's **TG list** action.
+  monitor session menu's **Talkgroups** entry.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session

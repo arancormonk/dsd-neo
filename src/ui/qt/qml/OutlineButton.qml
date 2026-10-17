@@ -25,10 +25,17 @@ Rectangle {
     // Text.Wrap by default, which breaks a word that does not fit; a caller
     // that sizes its cells for whole words passes Text.WordWrap.
     property alias wrapMode: label.wrapMode
+    // A toggle keeps one label and shows its on state as checked (issue #718):
+    // the cyan border and the pressed tint, the same in light and dark. Off by
+    // default, so a plain button looks and reports as before.
+    property bool checkable: false
+    property bool checked: false
     activeFocusOnTab: enabled && inputValid && visible && Navigation.allows(control)
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.focusable: true
+    Accessible.checkable: checkable
+    Accessible.checked: checkable && checked
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !visible || !navigationAllowed
     Accessible.onPressAction: activate()
@@ -49,9 +56,9 @@ Rectangle {
     implicitWidth: Math.max(Theme.minimumTouchSize, label.implicitWidth + 2 * Theme.cardPadding)
     implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)
     radius: Theme.radiusButton
-    color: tap.pressed && control.enabled && control.inputValid ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
+    color: control.checked || (tap.pressed && control.enabled && control.inputValid) ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
     border.width: 1
-    border.color: Theme.controlBorder
+    border.color: control.checked ? Theme.cyan : Theme.controlBorder
     opacity: enabled && inputValid ? 1.0 : 0.5
 
     Behavior on color {

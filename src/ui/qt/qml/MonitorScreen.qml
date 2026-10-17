@@ -22,8 +22,6 @@ Item {
         }
     }
 
-    readonly property bool compactHeight: height < 500
-
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
     property string scanTargetName: ""
@@ -109,444 +107,1074 @@ Item {
     readonly property bool scanHeld: metrics ? metrics.scanHold : false
 
     onHeroHeadlineChanged: heroText.requestPaint()
+    onHeroCompactChanged: heroText.requestPaint()
+
+    // ---- Layout (issue #718): calls first ----
+    //
+    // Top to bottom: the header, the hero, the live strip (the other slot, then
+    // the scan controls), one list, the call actions and Stop. The list is the
+    // one thing that scrolls. Its header holds the "Signal & site" disclosure,
+    // the readings it folds away and the RECENT CALLS label; its rows are the
+    // recent calls.
+    //
+    // The tier is the first of these that leaves at least two whole call rows on
+    // screen below the list header, with the list at its top and the disclosure
+    // closed, measured at the current size and fonts:
+    //   0  stacked header, full hero, live strip fixed;
+    //   1  header actions on the title line (Sites and Spectrum are in the
+    //      session menu);
+    //   2  compact hero;
+    //   3  live strip in the list header, above the disclosure;
+    //   4  no RECENT CALLS label;
+    //   5  even 4 leaves less than one row: only Stop stays put and everything
+    //      else scrolls with the calls, so every control stays reachable.
+    // Only the size, the fonts and which live-strip parts the session shows feed
+    // it, never call content, so traffic never moves the screen.
+    readonly property int tier: {
+        var two = 2 * callRowHeight;
+        for (var t = 0; t <= 4; ++t) {
+            if (callSpaceFor(t) >= two)
+                return t;
+        }
+        return callSpaceFor(4) < callRowHeight ? 5 : 4;
+    }
+    // Wide screens fit every header action beside the title in any tier.
+    readonly property bool headerStacked: tier === 0 && width < 500
+    readonly property bool wideHeaderActions: tier === 0 || width >= 500
+    readonly property bool heroCompact: tier >= 2
+    readonly property bool stripInList: tier >= 3
+    readonly property bool labelShown: tier < 4
+    readonly property bool scrollAll: tier >= 5
+
+    // The measured parts of the budget. Each is the height the layout below
+    // gives that part, so the budget and the screen cannot disagree.
+    readonly property real pillHeight: Math.max(48, 30 * Theme.fontScale)
+    readonly property real callRowHeight: Math.max(Theme.rowHeight, Math.ceil(rowNameProbe.implicitHeight + 3 + rowMetaProbe.implicitHeight) + 24)
+    readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
+    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight))
+    readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))
+    readonly property real heroCompactHeight: 2 * 12 + heroMicroHeight + 4 + Math.ceil(Theme.fontSize(30)) + 4 + heroSublineHeight
+    readonly property real stripHeight: {
+        var parts = [];
+        if (stripVisible)
+            parts.push(otherSlotPanel.height);
+        if (metrics.scanRotationActive)
+            parts.push(scanControls.height);
+        return columnHeight(parts);
+    }
+
+    function columnHeight(parts) {
+        var total = 0;
+        for (var i = 0; i < parts.length; ++i)
+            total += parts[i];
+        return parts.length > 0 ? total + (parts.length - 1) * Theme.gap : 0;
+    }
+    function headerBarHeight(t) {
+        var stacked = t === 0 && width < 500;
+        return stacked ? heading.implicitHeight + 8 + pillHeight : Math.max(heading.implicitHeight, pillHeight);
+    }
+    function heroHeight(t) {
+        return t >= 2 ? heroCompactHeight : heroFullHeight;
+    }
+    // The list's viewport in tier t, less its header with the disclosure closed.
+    function callSpaceFor(t) {
+        var fixedTop = Theme.screenPadding + headerBarHeight(t) + 12 + heroHeight(t);
+        var fixedStrip = t < 3 && stripHeight > 0 ? Theme.gap + stripHeight : 0;
+        var fixedBottom = 14 + liveActions.height + 8 + stopButton.height + stopButton.anchors.bottomMargin;
+        var viewport = height - fixedTop - fixedStrip - Theme.gap - fixedBottom;
+        var header = [];
+        if (t >= 3 && stripHeight > 0)
+            header.push(stripHeight);
+        header.push(detailsCard.height);
+        header.push(t < 4 ? labelBlock.height : labelSpacer.height);
+        return viewport - columnHeight(header);
+    }
+
+    // Probes for the budget: never shown, only measured.
+    Text {
+        id: rowNameProbe
+        visible: false
+        text: "Ag"
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(16)
+        font.weight: Font.DemiBold
+    }
+    Text {
+        id: rowMetaProbe
+        visible: false
+        text: "Ag"
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(12)
+    }
+    FontMetrics {
+        id: heroMicroMetrics
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(11)
+    }
+    FontMetrics {
+        id: heroSublineMetrics
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(13)
+    }
+    FontMetrics {
+        id: heroDurationMetrics
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(24)
+        font.weight: Font.Medium
+    }
+
+    // The disclosure starts closed and remembers how it was left, on this
+    // device only (AppPrefs monitor/detailsExpanded).
+    property bool detailsExpanded: typeof prefs !== "undefined" && prefs ? prefs.monitorDetailsExpanded === true : false
+    function setDetailsExpanded(on) {
+        detailsExpanded = on;
+        if (typeof prefs !== "undefined" && prefs)
+            prefs.monitorDetailsExpanded = on;
+    }
+
+    // The disclosure's one-line summary, most important first: the radio's SNR,
+    // decode quality (a codec fault in the alert colour ahead of it), the
+    // decryption state, an ENC LOCKOUT count in magenta, then the site. Only
+    // readings the rows below already show; a fault is said here, never by
+    // opening the rows.
+    readonly property var detailsSummary: {
+        var tokens = [];
+        if (metrics.radioInput && metrics.snrValid)
+            tokens.push({text: qsTr("SNR %1 dB").arg(metrics.snrDb.toFixed(1)), color: ""});
+        if (metrics.tetraVisible && metrics.tetraCodecFault && metrics.tetraCodecText.length > 0)
+            tokens.push({text: qsTr("CODEC") + " " + metrics.tetraCodecText, color: String(Theme.alert)});
+        if (metrics.qualityValid) {
+            if (metrics.ccFecValid)
+                tokens.push({text: qsTr("CC FEC") + " " + metrics.ccFecOkPct.toFixed(0) + "%", color: ""});
+            else if (metrics.voiceErrsValid)
+                tokens.push({text: qsTr("VOICE") + " " + metrics.voiceErrsPerFrame.toFixed(1) + " err/fr", color: ""});
+            else if (metrics.rsValid)
+                tokens.push({text: qsTr("RS") + " " + metrics.rsOkPct.toFixed(0) + "%", color: ""});
+            else if (metrics.lastFrameErrsValid)
+                tokens.push({text: qsTr("ERR") + " " + metrics.lastFrameErrs + "/" + metrics.lastFrameErrs2, color: ""});
+        }
+        // "Not yet known" says nothing a closed summary needs.
+        if (keySheet.effectiveState !== qsTr("Not yet known"))
+            tokens.push({text: keySheet.effectiveState, color: ""});
+        if (metrics.encLockoutCount > 0)
+            tokens.push({text: qsTr("ENC LOCKOUT %1").arg(metrics.encLockoutCount), color: String(Theme.magenta)});
+        var site = Util.siteShortForm(metrics.siteLine);
+        if (site.length > 0)
+            tokens.push({text: site, color: ""});
+        return Util.summaryMarkup(tokens);
+    }
 
     Rectangle {
         anchors.fill: parent
         color: Theme.bg
     }
 
-    // Header
-    Item {
-        id: header
-        objectName: "monitorHeader"
-        enabled: !keySheet.visible
+    // Header and hero: fixed at the top, or the first thing in the list in tier 5.
+    Column {
+        id: topGroup
+        parent: screen.scrollAll ? topSlot : topHost
+        width: parent ? parent.width : 0
+        spacing: 12
 
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.margins: Theme.screenPadding
-        readonly property bool stacked: width < 500 && !screen.compactHeight
-        height: stacked ? heading.implicitHeight + 8 + headerActions.height : Math.max(heading.implicitHeight, headerActions.height)
+        // Header
+        Item {
+            id: header
+            objectName: "monitorHeader"
+            enabled: !keySheet.visible
 
-        Column {
-            id: heading
-            anchors.left: parent.left
-            anchors.right: header.stacked ? parent.right : headerActions.left
-            anchors.rightMargin: 12
-            anchors.top: parent.top
-            spacing: 3
+            width: parent.width
+            // Stacked only in tier 0 on a phone; otherwise the actions share the
+            // title line and the heading elides to what is left of it.
+            readonly property bool stacked: screen.headerStacked
+            height: screen.headerBarHeight(screen.tier)
+
+            Column {
+                id: heading
+                anchors.left: parent.left
+                anchors.right: header.stacked ? parent.right : headerActions.left
+                anchors.rightMargin: 12
+                anchors.top: parent.top
+                spacing: 3
+
+                Text {
+                    width: parent.width
+                    objectName: "monitorHeaderTitle"
+                    text: screen.systemName
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(20)
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                    elide: Text.ElideRight
+                }
+
+                Text {
+                    width: parent.width
+                    objectName: "scanTargetHeader"
+                    text: metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    font.letterSpacing: 0.8
+                    color: Theme.textSubdued
+                    elide: Text.ElideRight
+                }
+
+                // Why the rotation is staying on the row above and how long is left
+                // (#508). The same grammar as the terminal's `| Scan Timing:` row --
+                // one space before the countdown, two between groups, seconds to one
+                // decimal place -- so a reader moving between the two surfaces reads
+                // the same line. Which budgets appear at all was decided in
+                // app-control; a zero here means "the view withheld it".
+                Text {
+                    width: parent.width
+                    objectName: "scanTimingRow"
+                    visible: metrics.scanTimingVisible
+                    text: {
+                        var out = metrics.scanStayPhrase;
+                        if (metrics.scanTimerLive) {
+                            out += " " + qsTr("%1s/%2s").arg((metrics.scanTimerRemainingDs / 10).toFixed(1)).arg((metrics.scanTimerSpanMs / 1000).toFixed(1));
+                        }
+                        if (metrics.scanDwellMs > 0) {
+                            out += "  " + qsTr("dwell %1s").arg((metrics.scanDwellMs / 1000).toFixed(1));
+                            // DSD_APP_SCAN_DWELL_SUSPENDED / _PAUSED: disarmed while
+                            // something else holds the row, versus stopped by the
+                            // operator. Neither is a dwell that expired.
+                            if (metrics.scanDwellState === 2) {
+                                out += " " + qsTr("(suspended)");
+                            } else if (metrics.scanDwellState === 3) {
+                                out += " " + qsTr("(paused)");
+                            }
+                        }
+                        if (metrics.scanHoldMs > 0) {
+                            out += "  " + qsTr("hold %1s").arg((metrics.scanHoldMs / 1000).toFixed(1));
+                        }
+                        if (metrics.scanHangMs > 0) {
+                            out += "  " + qsTr("hang %1s").arg((metrics.scanHangMs / 1000).toFixed(1));
+                        }
+                        // Last, the ceiling on the whole visit (#507). A word rather than
+                        // 0.0s while a hold suspends it: a zero countdown would read as a
+                        // visit that just ran out.
+                        if (metrics.scanVisitMs > 0) {
+                            out += "  " + (metrics.scanVisitLive
+                                ? qsTr("Visit: %1s/%2s").arg((metrics.scanVisitRemainingDs / 10).toFixed(1)).arg((metrics.scanVisitMs / 1000).toFixed(1))
+                                : qsTr("Visit: paused"));
+                        }
+                        return out;
+                    }
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    font.letterSpacing: 0.8
+                    color: Theme.textSubdued
+                    // On a narrow phone screen, elide long budgets to leave room for controls.
+                    elide: Text.ElideRight
+                }
+            }
+
+            Row {
+                id: headerActions
+                anchors.right: parent.right
+                anchors.top: header.stacked ? heading.bottom : parent.top
+                anchors.topMargin: header.stacked ? 8 : 0
+                spacing: 8
+
+                // On a phone past tier 0, Sites and Spectrum are in the session menu,
+                // which carries both on the same conditions.
+                OutlineButton {
+                    objectName: "runningSiteChooserButton"
+                    visible: screen.sitesAvailable && screen.wideHeaderActions
+                    // One height for the whole row, which the budget measures.
+                    height: screen.pillHeight
+                    text: qsTr("Sites ›")
+                    onClicked: screen.openSites()
+                }
+
+                IconButton {
+                    objectName: "sessionOptionsButton"
+                    icon: "more"
+                    accessibleName: qsTr("Session options")
+                    onClicked: screen.openSessionMenu()
+                }
+
+                // Only an RTL front end has a band around the tuned frequency to show;
+                // a PCM feed or a file has nothing to draw.
+                Rectangle {
+                    id: spectrumPill
+
+                    objectName: "openSpectrumButton"
+                    activeFocusOnTab: enabled && Navigation.allows(spectrumPill)
+                    Accessible.role: Accessible.Button
+                    Accessible.name: qsTr("Spectrum")
+                    readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
+                    Accessible.ignored: !navigationAllowed
+                    Accessible.onPressAction: {
+                        if (Navigation.allows(spectrumPill))
+                            screen.openSpectrum();
+                    }
+                    Keys.onReturnPressed: screen.openSpectrum()
+                    Keys.onSpacePressed: screen.openSpectrum()
+                    FocusFrame {}
+                    visible: metrics.radioInput && screen.wideHeaderActions
+                    width: spectrumLabel.implicitWidth + 22
+                    height: screen.pillHeight
+                    radius: Theme.radiusButton
+                    color: spectrumTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
+                    border.width: 1
+                    border.color: Theme.panelBorder
+
+                    Behavior on color {
+                        ColorAnimation {
+                            duration: 120
+                        }
+                    }
+
+                    Text {
+                        id: spectrumLabel
+
+                        anchors.centerIn: parent
+                        text: qsTr("SPECTRUM")
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        font.letterSpacing: 1.4
+                        color: Theme.textSecondary
+                    }
+
+                    TapHandler {
+                        id: spectrumTap
+                        onTapped: screen.openSpectrum()
+                    }
+                }
+
+                Rectangle {
+                    id: livePill
+
+                    objectName: "monitorLiveStatus"
+                    width: liveRow.implicitWidth + 24
+                    height: screen.pillHeight
+                    radius: Theme.radiusButton
+                    color: Theme.panel
+                    border.width: 1
+                    border.color: Theme.panelBorder
+
+                    Row {
+                        id: liveRow
+                        anchors.centerIn: parent
+                        spacing: 7
+
+                        Item {
+                            width: 8
+                            height: 8
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                radius: 9
+                                visible: Theme.dark && decoderHost.running
+                                color: Qt.alpha(Theme.cyan, 0.25)
+                            }
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: decoderHost.running ? Theme.cyan : Theme.textSubdued
+                            }
+                        }
+
+                        Text {
+                            text: decoderHost.running ? (screen.system && screen.system.sourceType === "file" ? qsTr("PLAYING") : qsTr("LIVE")) : decoderHost.statusText.toUpperCase()
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(11)
+                            font.letterSpacing: 1.4
+                            color: Theme.textPrimary
+                        }
+                    }
+                }
+            }
+        }
+
+        // Hero: now hearing. Its height is reserved from its fixed lines and never
+        // follows content: the label, one name line, the subline and, in the full
+        // form, the meter and duration. Waiting, a call and its end share the same
+        // box, so the list below never moves between them.
+        UiPanel {
+            id: hero
+            objectName: "monitorHero"
+            width: parent.width
+            height: screen.heroCompact ? screen.heroCompactHeight : screen.heroFullHeight
+            readonly property int padding: screen.heroCompact ? 12 : 14
+
+            // Faint diagonal cyan→magenta wash over the panel.
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: 1
+                radius: Theme.radiusPanel - 1
+                rotation: 0
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop {
+                        position: 0.0
+                        color: Qt.alpha(Theme.cyan, 0.07)
+                    }
+                    GradientStop {
+                        position: 1.0
+                        color: Qt.alpha(Theme.magenta, 0.06)
+                    }
+                }
+            }
+
+            Column {
+                x: Theme.cardPadding
+                y: hero.padding
+                width: parent.width - 2 * Theme.cardPadding
+                spacing: screen.heroCompact ? 4 : 6
+
+                MicroLabel {
+                    height: screen.heroMicroHeight
+                    text: qsTr("Now hearing")
+                }
+
+                // The name line. In the compact form the duration ends it, as the
+                // meter row is gone.
+                Item {
+                    id: heroNameLine
+                    objectName: "heroNameLine"
+                    width: parent.width
+                    height: Math.ceil(Theme.fontSize(screen.heroCompact ? 30 : 40))
+
+                    // Gradient-filled talkgroup name, drawn so the fill can follow the
+                    // cyan→magenta ramp per glyph run.
+                    Canvas {
+                        id: heroText
+
+                        width: parent.width - (heroCompactDuration.visible ? heroCompactDuration.width + 12 : 0)
+                        height: parent.height
+                        visible: screen.heroSlot !== 0
+
+                        onPaint: {
+                            var ctx = getContext("2d");
+                            ctx.reset();
+                            var label = screen.heroHeadline;
+                            ctx.font = "bold " + Theme.fontSize(screen.heroCompact ? 25 : 31) + "px \"" + Theme.sans + "\"";
+                            ctx.textBaseline = "middle";
+                            var gradient = ctx.createLinearGradient(0, 0, Math.max(ctx.measureText(label).width, 1), 0);
+                            gradient.addColorStop(0, String(Theme.cyan));
+                            gradient.addColorStop(1, String(Theme.magenta));
+                            ctx.fillStyle = gradient;
+                            ctx.fillText(label, 0, height / 2, width);
+                        }
+
+                        Connections {
+                            target: Theme
+                            function onDarkChanged() {
+                                heroText.requestPaint();
+                            }
+                        }
+                    }
+
+                    Text {
+                        objectName: "heroWaiting"
+                        visible: screen.heroSlot === 0
+                        width: parent.width
+                        height: parent.height
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                        // A locked carrier means the site is there and quiet; only the
+                        // absence of one is "no signal".
+                        text: metrics.carrierLock ? qsTr("waiting for a call…") : qsTr("waiting for signal…")
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(20)
+                        color: Theme.textSubdued
+                    }
+
+                    Text {
+                        id: heroCompactDuration
+                        objectName: "heroCompactDuration"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: screen.heroCompact && screen.heroSlot !== 0
+                        text: Util.fmtDuration(screen.heroSeconds)
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(14)
+                        font.weight: Font.Medium
+                        color: Theme.textPrimary
+                    }
+                }
+
+                Item {
+                    width: parent.width
+                    height: screen.heroSublineHeight
+
+                    Row {
+                        id: heroSubline
+
+                        // Give encryption indicators priority, then fit the identity
+                        // and trailing channel into the remaining space.
+                        width: parent.width
+                        visible: screen.heroSlot !== 0
+                        spacing: 8
+
+                        // A zero id is "none decoded", not an identity: an encrypted
+                        // call on a conventional channel reports no talkgroup, and
+                        // "TG 0" under a headline that already names the channel would
+                        // only say the decoder saw nothing.
+                        Text {
+                            objectName: "heroIds"
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: text.length > 0
+                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
+                            elide: Text.ElideRight
+                            text: {
+                                var parts = [];
+                                if (!screen.heroDuplicate && screen.heroTg.length > 0 && screen.heroTg !== "0")
+                                    parts.push("TG " + screen.heroTg);
+                                if (screen.heroSrc.length > 0 && screen.heroSrc !== "0")
+                                    parts.push("SRC " + screen.heroSrc);
+                                return parts.join(" · ");
+                            }
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(13)
+                            color: Theme.textSecondary
+                        }
+
+                        // The hero must say when the call it is captioning is
+                        // encrypted — hearing silence over a normal-looking talkgroup
+                        // otherwise reads as the decoder failing.
+                        EmergencyTag {
+                            id: heroEmergencyTag
+                            objectName: "heroEmergencyTag"
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: screen.heroEmergency
+                        }
+
+                        EncTag {
+                            id: heroEncTag
+                            objectName: "heroEncTag"
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: screen.heroEnc
+                        }
+
+                        // The decoded algorithm and key id, when the header said:
+                        // AES and RC4 traffic should read differently at a glance.
+                        Text {
+                            id: heroAlgorithm
+                            objectName: "heroAlgorithm"
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: screen.heroEnc && screen.heroEncText.length > 0
+                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
+                            elide: Text.ElideRight
+                            text: screen.heroEncText
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(11)
+                            color: Theme.textSubdued
+                        }
+
+                        // Where the call was heard, when that is not already the name
+                        // above: a listed talkgroup still says which scan channel it
+                        // came from. Last in the row and elided to what is left of it,
+                        // so an operator-length name never pushes the ENC tag off the
+                        // panel; x is laid out from the siblings before it, so the
+                        // width binding cannot loop.
+                        Text {
+                            objectName: "heroChannel"
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
+                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - x))
+                            elide: Text.ElideRight
+                            text: "· " + screen.heroChannel
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(13)
+                            color: Theme.textSecondary
+                        }
+                    }
+                }
+            }
+
+            LevelMeter {
+                visible: !screen.heroCompact
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: Theme.cardPadding
+                anchors.bottomMargin: hero.padding
+                active: screen.heroActive
+            }
 
             Text {
-                width: parent.width
-                objectName: "monitorHeaderTitle"
-                text: screen.systemName
+                objectName: "heroDuration"
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.rightMargin: Theme.cardPadding
+                anchors.bottomMargin: hero.padding
+                text: Util.fmtDuration(screen.heroSeconds)
+                visible: !screen.heroCompact && screen.heroSlot !== 0
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(24)
+                font.weight: Font.Medium
+                color: Theme.textPrimary
+            }
+        }
+    }
+
+
+    // The live strip: the other TDMA slot, then the scan controls, each only when
+    // the session has them. Fixed under the hero in tiers 0-2; in the list header,
+    // above the disclosure, from tier 3.
+    Column {
+        id: stripGroup
+        objectName: "monitorLiveStrip"
+        parent: screen.stripInList ? stripSlot : stripHost
+        width: parent ? parent.width : 0
+        spacing: Theme.gap
+        enabled: !keySheet.visible
+
+        // The concurrent TDMA call on the non-hero slot: identity plus its own
+        // call controls, so a second conversation is never invisible or untouchable.
+        // On a two-slot carrier the strip holds its place while that slot is idle.
+        UiPanel {
+            id: otherSlotPanel
+            width: parent.width
+            objectName: "otherSlotPanel"
+            visible: screen.stripVisible
+            height: 56
+
+            MicroLabel {
+                id: otherSlotLabel
+                objectName: "otherSlotLabel"
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.cardPadding
+                anchors.verticalCenter: parent.verticalCenter
+                text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
+            }
+
+            Text {
+                objectName: "otherSlotIdentity"
+                visible: !screen.stripIdle
+                anchors.left: otherSlotLabel.right
+                anchors.leftMargin: 10
+                anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                text: screen.otherTgId > 0 && screen.otherName === screen.otherTg ? Util.talkgroupHeadline(screen.otherName, screen.otherTg, screen.otherTgId) : screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
                 font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(20)
+                font.pixelSize: Theme.fontSize(14)
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
                 elide: Text.ElideRight
             }
 
-            Text {
-                width: parent.width
-                objectName: "scanTargetHeader"
-                text: metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
-                font.family: Theme.mono
-                font.pixelSize: Theme.fontSize(11)
-                font.letterSpacing: 0.8
-                color: Theme.textSubdued
-                elide: Text.ElideRight
+            EmergencyTag {
+                id: otherEmergencyTag
+                objectName: "otherEmergencyTag"
+                visible: !screen.stripIdle && screen.otherEmergency
+                anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
             }
 
-            // Why the rotation is staying on the row above and how long is left
-            // (#508). The same grammar as the terminal's `| Scan Timing:` row --
-            // one space before the countdown, two between groups, seconds to one
-            // decimal place -- so a reader moving between the two surfaces reads
-            // the same line. Which budgets appear at all was decided in
-            // app-control; a zero here means "the view withheld it".
-            Text {
-                width: parent.width
-                objectName: "scanTimingRow"
-                visible: metrics.scanTimingVisible
-                text: {
-                    var out = metrics.scanStayPhrase;
-                    if (metrics.scanTimerLive) {
-                        out += " " + qsTr("%1s/%2s").arg((metrics.scanTimerRemainingDs / 10).toFixed(1)).arg((metrics.scanTimerSpanMs / 1000).toFixed(1));
-                    }
-                    if (metrics.scanDwellMs > 0) {
-                        out += "  " + qsTr("dwell %1s").arg((metrics.scanDwellMs / 1000).toFixed(1));
-                        // DSD_APP_SCAN_DWELL_SUSPENDED / _PAUSED: disarmed while
-                        // something else holds the row, versus stopped by the
-                        // operator. Neither is a dwell that expired.
-                        if (metrics.scanDwellState === 2) {
-                            out += " " + qsTr("(suspended)");
-                        } else if (metrics.scanDwellState === 3) {
-                            out += " " + qsTr("(paused)");
-                        }
-                    }
-                    if (metrics.scanHoldMs > 0) {
-                        out += "  " + qsTr("hold %1s").arg((metrics.scanHoldMs / 1000).toFixed(1));
-                    }
-                    if (metrics.scanHangMs > 0) {
-                        out += "  " + qsTr("hang %1s").arg((metrics.scanHangMs / 1000).toFixed(1));
-                    }
-                    // Last, the ceiling on the whole visit (#507). A word rather than
-                    // 0.0s while a hold suspends it: a zero countdown would read as a
-                    // visit that just ran out.
-                    if (metrics.scanVisitMs > 0) {
-                        out += "  " + (metrics.scanVisitLive
-                            ? qsTr("Visit: %1s/%2s").arg((metrics.scanVisitRemainingDs / 10).toFixed(1)).arg((metrics.scanVisitMs / 1000).toFixed(1))
-                            : qsTr("Visit: paused"));
-                    }
-                    return out;
-                }
-                font.family: Theme.mono
-                font.pixelSize: Theme.fontSize(11)
-                font.letterSpacing: 0.8
-                color: Theme.textSubdued
-                // On a narrow phone screen, elide long budgets to leave room for controls.
-                elide: Text.ElideRight
+            EncTag {
+                id: otherEncTag
+                visible: !screen.stripIdle && screen.otherEnc
+                anchors.right: otherSkip.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
             }
-        }
 
-        Row {
-            id: headerActions
-            anchors.right: parent.right
-            anchors.top: header.stacked ? heading.bottom : parent.top
-            anchors.topMargin: header.stacked ? 8 : 0
-            spacing: 8
+            TextMetrics {
+                id: otherSkipMetrics
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(15)
+                font.weight: Font.DemiBold
+                text: otherSkip.text
+            }
 
             OutlineButton {
-                objectName: "runningSiteChooserButton"
-                visible: screen.sitesAvailable && (!screen.compactHeight || screen.width >= 450)
-                text: qsTr("Sites ›")
-                onClicked: screen.openSites()
+                id: otherSkip
+                objectName: "otherSlotSkip"
+                anchors.right: otherMore.left
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
+                width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
+                maximumLineCount: 1
+                implicitHeight: 48
+                height: 48
+                text: qsTr("Skip")
+                accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
+                // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
+                visible: !screen.stripIdle
+                enabled: decoderHost.running
+                onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
             }
 
             IconButton {
-                objectName: "sessionOptionsButton"
+                id: otherMore
+                objectName: "otherSlotMore"
+                anchors.right: parent.right
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                width: 48
+                height: 48
                 icon: "more"
-                accessibleName: qsTr("Session options")
-                onClicked: screen.openSessionMenu()
-            }
-
-            // Only an RTL front end has a band around the tuned frequency to show;
-            // a PCM feed or a file has nothing to draw.
-            Rectangle {
-                id: spectrumPill
-
-                objectName: "openSpectrumButton"
-                activeFocusOnTab: enabled && Navigation.allows(spectrumPill)
-                Accessible.role: Accessible.Button
-                Accessible.name: qsTr("Spectrum")
-                readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
-                Accessible.ignored: !navigationAllowed
-                Accessible.onPressAction: {
-                    if (Navigation.allows(spectrumPill))
-                        screen.openSpectrum();
-                }
-                Keys.onReturnPressed: screen.openSpectrum()
-                Keys.onSpacePressed: screen.openSpectrum()
-                FocusFrame {}
-                visible: metrics.radioInput && (!screen.compactHeight || screen.width >= 450)
-                width: spectrumLabel.implicitWidth + 22
-                height: Math.max(48, 30 * Theme.fontScale)
-                radius: Theme.radiusButton
-                color: spectrumTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
-                border.width: 1
-                border.color: Theme.panelBorder
-
-                Behavior on color {
-                    ColorAnimation {
-                        duration: 120
-                    }
-                }
-
-                Text {
-                    id: spectrumLabel
-
-                    anchors.centerIn: parent
-                    text: qsTr("SPECTRUM")
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(11)
-                    font.letterSpacing: 1.4
-                    color: Theme.textSecondary
-                }
-
-                TapHandler {
-                    id: spectrumTap
-                    onTapped: screen.openSpectrum()
-                }
-            }
-
-            Rectangle {
-                id: livePill
-
-                objectName: "monitorLiveStatus"
-                width: liveRow.implicitWidth + 24
-                height: Math.max(48, 30 * Theme.fontScale)
-                radius: Theme.radiusButton
-                color: Theme.panel
-                border.width: 1
-                border.color: Theme.panelBorder
-
-                Row {
-                    id: liveRow
-                    anchors.centerIn: parent
-                    spacing: 7
-
-                    Item {
-                        width: 8
-                        height: 8
-                        anchors.verticalCenter: parent.verticalCenter
-
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: 18
-                            height: 18
-                            radius: 9
-                            visible: Theme.dark && decoderHost.running
-                            color: Qt.alpha(Theme.cyan, 0.25)
-                        }
-
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: 8
-                            height: 8
-                            radius: 4
-                            color: decoderHost.running ? Theme.cyan : Theme.textSubdued
-                        }
-                    }
-
-                    Text {
-                        text: decoderHost.running ? (screen.system && screen.system.sourceType === "file" ? qsTr("PLAYING") : qsTr("LIVE")) : decoderHost.statusText.toUpperCase()
-                        font.family: Theme.mono
-                        font.pixelSize: Theme.fontSize(11)
-                        font.letterSpacing: 1.4
-                        color: Theme.textPrimary
-                    }
-                }
-            }
-        }
-    }
-
-    // Hero: now hearing.
-    UiPanel {
-        id: hero
-        objectName: "monitorHero"
-        anchors.top: header.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.margins: Theme.screenPadding
-        anchors.topMargin: 12
-
-        // Reserve space for scrolling even in landscape. The meter stands down
-        // and duration moves to the title line so neither covers call identity.
-        visible: !(screen.compactHeight && !screen.heroActive)
-        height: !visible ? 0 : screen.compactHeight ? Math.min(110 + 40 * (Theme.fontScale - 1), screen.height * 0.25) : 170 * Theme.fontScale
-
-        // Faint diagonal cyan→magenta wash over the panel.
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: 1
-            radius: Theme.radiusPanel - 1
-            rotation: 0
-            gradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop {
-                    position: 0.0
-                    color: Qt.alpha(Theme.cyan, 0.07)
-                }
-                GradientStop {
-                    position: 1.0
-                    color: Qt.alpha(Theme.magenta, 0.06)
-                }
+                accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                visible: !screen.stripIdle
+                enabled: decoderHost.running
+                onClicked: otherSlotMenu.openForOtherSlot()
             }
         }
 
-        Column {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: Theme.cardPadding
-            spacing: screen.compactHeight ? 4 : 8
+        // Actions on the scan rotation (#380): the -Y list or the trunk-scan
+        // targets, whichever is running. Gated on the rotation, not on the
+        // tuner gate: plain trunking owns the tuner too and has nothing to hold
+        // or avoid at channel scope. Hold reads the engine back like Hold TG
+        // does, and the engine's refusals ("Cannot avoid the last usable scan
+        // channel") arrive through uiMessage below.
+        Row {
+            id: scanControls
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "scanControlsRow"
 
-            MicroLabel {
-                text: qsTr("Now hearing")
+            width: parent.width
+            spacing: 10
+            visible: metrics.scanRotationActive
+            // Whole pixels: a cell ending on a fraction loses its right border to
+            // the list's clip when the strip is in the list.
+            readonly property real cell: Math.floor((width - 20) / 3)
+            leftPadding: Math.floor((width - 3 * cell - 20) / 2)
+            // One height for the three, from the widest label: a label that needs
+            // two lines on a narrow phone takes them in every cell.
+            readonly property real cellHeight: {
+                var font = scanMetrics.font;
+                var widest = 0;
+                for (var label of [qsTr("Hold scan"), qsTr("Avoid"), qsTr("Next")])
+                    widest = Math.max(widest, scanMetrics.advanceWidth(label));
+                var lines = widest <= cell - 24 ? 1 : 2;
+                return Math.max(Theme.minimumTouchSize, Math.ceil(lines * scanMetrics.lineSpacing) + 24);
             }
+            height: cellHeight
 
-            // Gradient-filled talkgroup name, drawn so the fill can follow the
-            // cyan→magenta ramp per glyph run.
-            Canvas {
-                id: heroText
-
-                width: parent.width
-                height: Theme.fontSize(screen.compactHeight ? 30 : 40)
-                visible: screen.heroSlot !== 0
-
-                onPaint: {
-                    var ctx = getContext("2d");
-                    ctx.reset();
-                    var label = screen.heroHeadline;
-                    ctx.font = "bold " + Theme.fontSize(screen.compactHeight ? 25 : 31) + "px \"" + Theme.sans + "\"";
-                    ctx.textBaseline = "middle";
-                    var gradient = ctx.createLinearGradient(0, 0, Math.max(ctx.measureText(label).width, 1), 0);
-                    gradient.addColorStop(0, String(Theme.cyan));
-                    gradient.addColorStop(1, String(Theme.magenta));
-                    ctx.fillStyle = gradient;
-                    ctx.fillText(label, 0, height / 2, width);
-                }
-
-                Connections {
-                    target: Theme
-                    function onDarkChanged() {
-                        heroText.requestPaint();
-                    }
-                }
-            }
-
-            Text {
-                visible: screen.heroSlot === 0
-                height: Theme.fontSize(screen.compactHeight ? 30 : 40)
-                verticalAlignment: Text.AlignVCenter
-                // A locked carrier means the site is there and quiet; only the
-                // absence of one is "no signal".
-                text: metrics.carrierLock ? qsTr("waiting for a call…") : qsTr("waiting for signal…")
+            FontMetrics {
+                id: scanMetrics
                 font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(20)
-                color: Theme.textSubdued
+                font.pixelSize: Theme.fontSize(15)
+                font.weight: Font.DemiBold
             }
 
-            Row {
-                id: heroSubline
+            OutlineButton {
+                objectName: "scanHoldButton"
 
-                // Give encryption indicators priority, then fit the identity
-                // and trailing channel into the remaining space.
-                width: parent.width
-                visible: screen.heroSlot !== 0
-                spacing: 8
-
-                // A zero id is "none decoded", not an identity: an encrypted
-                // call on a conventional channel reports no talkgroup, and
-                // "TG 0" under a headline that already names the channel would
-                // only say the decoder saw nothing.
-                Text {
-                    objectName: "heroIds"
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: text.length > 0
-                    width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
-                    elide: Text.ElideRight
-                    text: {
-                        var parts = [];
-                        if (!screen.heroDuplicate && screen.heroTg.length > 0 && screen.heroTg !== "0")
-                            parts.push("TG " + screen.heroTg);
-                        if (screen.heroSrc.length > 0 && screen.heroSrc !== "0")
-                            parts.push("SRC " + screen.heroSrc);
-                        return parts.join(" · ");
-                    }
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(13)
-                    color: Theme.textSecondary
-                }
-
-                // The hero must say when the call it is captioning is
-                // encrypted — hearing silence over a normal-looking talkgroup
-                // otherwise reads as the decoder failing.
-                EmergencyTag {
-                    id: heroEmergencyTag
-                    objectName: "heroEmergencyTag"
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: screen.heroEmergency
-                }
-
-                EncTag {
-                    id: heroEncTag
-                    objectName: "heroEncTag"
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: screen.heroEnc
-                }
-
-                // The decoded algorithm and key id, when the header said:
-                // AES and RC4 traffic should read differently at a glance.
-                Text {
-                    id: heroAlgorithm
-                    objectName: "heroAlgorithm"
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: screen.heroEnc && screen.heroEncText.length > 0
-                    width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
-                    elide: Text.ElideRight
-                    text: screen.heroEncText
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(11)
-                    color: Theme.textSubdued
-                }
-
-                // Where the call was heard, when that is not already the name
-                // above: a listed talkgroup still says which scan channel it
-                // came from. Last in the row and elided to what is left of it,
-                // so an operator-length name never pushes the ENC tag off the
-                // panel; x is laid out from the siblings before it, so the
-                // width binding cannot loop.
-                Text {
-                    objectName: "heroChannel"
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
-                    width: Math.max(0, Math.min(implicitWidth, heroSubline.width - x))
-                    elide: Text.ElideRight
-                    text: "· " + screen.heroChannel
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(13)
-                    color: Theme.textSecondary
-                }
+                width: scanControls.cell
+                height: scanControls.cellHeight
+                // A toggle with one label, its hold shown as checked like Hold TG's
+                // (#718): "Release scan" took two lines on a phone.
+                text: qsTr("Hold scan")
+                accessibleName: qsTr("Hold the scan here")
+                checkable: true
+                checked: screen.scanHeld
+                enabled: decoderHost.running
+                onClicked: commands.toggleScanHold()
             }
-        }
 
-        LevelMeter {
-            visible: !screen.compactHeight
-            anchors.left: parent.left
-            anchors.bottom: parent.bottom
-            anchors.margins: Theme.cardPadding
-            active: screen.heroActive
-        }
+            OutlineButton {
+                objectName: "scanAvoidButton"
 
-        Text {
-            anchors.right: parent.right
-            anchors.top: screen.compactHeight ? parent.top : undefined
-            anchors.bottom: screen.compactHeight ? undefined : parent.bottom
-            anchors.margins: Theme.cardPadding
-            text: Util.fmtDuration(screen.heroSeconds)
-            visible: screen.heroSlot !== 0
-            font.family: Theme.mono
-            font.pixelSize: Theme.fontSize(screen.compactHeight ? 14 : 24)
-            font.weight: Font.Medium
-            color: Theme.textPrimary
+                width: scanControls.cell
+                height: scanControls.cellHeight
+                text: qsTr("Avoid")
+                enabled: decoderHost.running
+                onClicked: commands.avoidCurrentChannel()
+            }
+
+            OutlineButton {
+                objectName: "scanNextButton"
+
+                width: scanControls.cell
+                height: scanControls.cellHeight
+                text: qsTr("Next")
+                enabled: decoderHost.running
+                onClicked: commands.nextChannel()
+            }
         }
     }
 
-    // The hero stays visible while controls and recent calls scroll. A column
-    // anchored at both ends assigned negative space to recent calls in landscape.
-    PlexFlickable {
-        id: bodyScroll
-        enabled: !keySheet.visible
-        objectName: "monitorBody"
-        anchors.top: hero.bottom
+
+    // Hosts for the fixed parts. Each takes its part's height while the part is
+    // fixed and collapses to nothing once the part moves into the list.
+    Item {
+        id: topHost
+        anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: compactActions.top
         anchors.margins: Theme.screenPadding
-        anchors.topMargin: Theme.gap
+        height: screen.scrollAll ? 0 : topGroup.height
+    }
+
+    Item {
+        id: stripHost
+        anchors.top: topHost.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Theme.screenPadding
+        anchors.rightMargin: Theme.screenPadding
+        anchors.topMargin: !screen.stripInList && screen.stripHeight > 0 ? Theme.gap : 0
+        height: screen.stripInList ? 0 : screen.stripHeight
+    }
+
+    Item {
+        id: actionsHost
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: stopButton.top
+        anchors.leftMargin: Theme.screenPadding
+        anchors.rightMargin: Theme.screenPadding
+        anchors.bottomMargin: screen.scrollAll ? 0 : 8
+        height: screen.scrollAll ? 0 : liveActions.height
+    }
+
+    // The one scrolling surface: the list header, then the recent calls.
+    ListView {
+        id: recentList
+
+        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+        objectName: "recentCallsList"
+
+        enabled: !keySheet.visible
+        anchors.top: stripHost.bottom
+        anchors.topMargin: screen.scrollAll ? 0 : Theme.gap
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: actionsHost.top
+        anchors.leftMargin: Theme.screenPadding
+        anchors.rightMargin: Theme.screenPadding
         anchors.bottomMargin: 14
         clip: true
-        contentWidth: width
-        contentHeight: body.height
         boundsBehavior: Flickable.StopAtBounds
+        model: monitorView
+        // No current row. A ListView is a focus scope that hands focus to its
+        // current item as rows land, which would pull keyboard focus off the
+        // disclosure in its header; Tab moves between rows instead.
+        currentIndex: -1
+        keyNavigationEnabled: false
+
+        // Scrollable by assistive technology, as the body it replaced was.
+        Accessible.role: Accessible.Pane
+        Accessible.name: qsTr("Recent calls")
+        Accessible.focusable: false
+        readonly property bool navigationAllowed: Navigation.allows(recentList)
+        Accessible.ignored: !visible || !navigationAllowed
+        function scrollPage(direction) {
+            if (!enabled || !Navigation.allows(recentList))
+                return;
+            contentY = Math.max(originY, Math.min(originY + contentHeight - height, contentY + direction * Math.max(48, height * 0.8)));
+        }
+        Accessible.onScrollDownAction: scrollPage(1)
+        Accessible.onScrollUpAction: scrollPage(-1)
+        Accessible.onNextPageAction: scrollPage(1)
+        Accessible.onPreviousPageAction: scrollPage(-1)
+
+        // The content is listHeader below, declared outside so the rest of the
+        // screen can reach its rows by id.
+        header: Item {
+            width: recentList.width
+            height: listHeader.height
+        }
+
+        // Closes the calls card, or says why it is empty.
+        footer: Item {
+            width: recentList.width
+            height: recentList.count === 0 ? Math.max(screen.callRowHeight, emptyText.implicitHeight + 24) : 6
+
+            Text {
+                id: emptyText
+                anchors.centerIn: parent
+                width: parent.width - 2 * Theme.cardPadding
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                visible: recentList.count === 0
+                text: qsTr("Calls will appear here as they land.")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.textSubdued
+            }
+        }
+
+        // The calls card: from the RECENT CALLS label (or the first row without
+        // it) to the end of the list. In the view's contentItem, so it scrolls
+        // with the rows it sits behind.
+        UiPanel {
+            objectName: "recentCallsPanel"
+            parent: recentList.contentItem
+            z: -1
+            width: recentList.width
+            y: recentList.headerItem ? recentList.headerItem.y + (screen.labelShown ? labelBlock.y : recentList.headerItem.height) : 0
+            height: Math.max(0, recentList.originY + recentList.contentHeight - y)
+        }
+
+        delegate: CallRow {
+            interactive: true
+            onActivated: historyDetail.open({
+                name: model.name,
+                when: model.when,
+                systemName: model.systemName,
+                systemUid: model.systemUid,
+                channel: model.channel,
+                tg: model.tg,
+                src: model.src,
+                sourceName: model.srcName,
+                emergency: model.emergency,
+                enc: model.enc,
+                durationSecs: model.durationSecs,
+                detail: model.detail,
+                freqHz: model.freqHz,
+                accessCode: model.accessCode,
+                accessCodeText: model.accessCodeText
+            })
+            width: ListView.view.width
+            name: model.name
+            metaText: {
+                // A notice keeps its payload first, the pane being too
+                // narrow for its ids, then names what every row names: the
+                // access code, and the frequency last (issue #575).
+                if (model.kind === 1) {
+                    var parts = [model.detail.length > 0 ? model.detail : qsTr("data message")];
+                    if (model.accessCode.length > 0)
+                        parts.push(model.accessCode);
+                    if (model.freqHz > 0)
+                        parts.push(Util.fmtMhz(model.freqHz));
+                    return parts.join(" · ");
+                }
+                // Same meta rules as the history row: a zero talkgroup is
+                // not printed, the access code follows the ids, the channel
+                // follows the duration unless it is already the name, and
+                // the frequency closes the line, the first thing a narrow
+                // phone elides.
+                var meta = [];
+                if (model.tg > 0)
+                    meta.push("TG " + model.tg);
+                if (model.src > 0 || model.srcName)
+                    meta.push("SRC " + Util.sourceText(model.src, model.srcName));
+                if (model.accessCode.length > 0)
+                    meta.push(model.accessCode);
+                if (model.enc)
+                    meta.push(qsTr("encrypted"));
+                if (model.durationSecs >= 0)
+                    meta.push(Util.fmtDuration(model.durationSecs));
+                if (model.channel.length > 0 && model.channel !== model.name)
+                    meta.push(model.channel);
+                if (model.freqHz > 0)
+                    meta.push(Util.fmtMhz(model.freqHz));
+                return meta.join(" · ");
+            }
+            // Aged on the decode clock the row's when is stamped on. ageTick
+            // forces the minute-by-minute refresh while the decoder is quiet.
+            rightText: (screen.ageTick, Util.shortAge(model.when, metrics.decodeNowMs))
+            enc: model.enc
+            emergency: model.emergency
+        }
+    }
+
+    // Same rule as the history log: the list keeps showing the call that just
+    // ended, minus the new-calls pill, which the hero above already covers. Its
+    // newest row is the first call under the header, and the disclosure holds
+    // its place on screen while the readings open and close below it.
+    FollowLatest {
+        objectName: "recentCallsFollow"
+        list: recentList
+        headerAnchor: detailsCard
+    }
+
+    // Keyboard focus moving onto a row, or into the header, scrolls it into view.
+    function revealListFocus() {
+        var window = screen.Window.window;
+        var focus = window ? window.activeFocusItem : null;
+        if (focus && screen.visible && Navigation.contains(recentList.contentItem, focus))
+            Theme.revealFocus(recentList, recentList.contentItem, focus);
+    }
+    Connections {
+        target: screen.Window.window
+        function onActiveFocusItemChanged() {
+            Qt.callLater(screen.revealListFocus);
+        }
+    }
+
+    // The list header. Slots first for the parts that move into the list in the
+    // tiers that need it, then the disclosure, its readings and the label.
+    Column {
+        id: listHeader
+        objectName: "monitorListHeader"
+        parent: recentList.headerItem
+        width: recentList.width
+        spacing: Theme.gap
+
+        Item {
+            id: topSlot
+            width: parent.width
+            visible: screen.scrollAll
+            height: topGroup.height
+        }
+
+        // Sized from the session, not from the strip it holds: an Item hides its
+        // children, and a strip with no visible parts measures nothing.
+        Item {
+            id: stripSlot
+            width: parent.width
+            visible: screen.stripInList && screen.stripHeight > 0
+            height: screen.stripHeight
+        }
+
+        Item {
+            id: actionsSlot
+            width: parent.width
+            visible: screen.scrollAll
+            height: liveActions.height
+        }
+
+        // "Signal & site": the readings the monitor carries beside the calls,
+        // folded into one row whose summary says what matters most.
+        UiPanel {
+            id: detailsCard
+            objectName: "monitorDetailsCard"
+            width: parent.width
+            height: detailsRow.height
+
+            DisclosureRow {
+                id: detailsRow
+                objectName: "monitorDetailsRow"
+                width: parent.width
+                title: qsTr("Signal & site")
+                subtitle: screen.detailsSummary.markup
+                subtitleReading: true
+                subtitleTextFormat: Text.StyledText
+                subtitleColor: Theme.textSecondary
+                accessibleDescription: screen.detailsSummary.plain
+                verticalPadding: 16
+                expandable: true
+                expanded: screen.detailsExpanded
+                onTapped: screen.setDetailsExpanded(!screen.detailsExpanded)
+            }
+        }
+
+        // The engine's answer to the last command ("Output: Muted", "Output:
+        // open failed") — without it a tap that failed inside the engine reads
+        // as a button that did nothing.
+        Text {
+            width: parent.width
+            visible: metrics.uiMessage.length > 0
+            text: metrics.uiMessage
+            font.family: Theme.mono
+            font.pixelSize: Theme.fontSize(12)
+            color: Theme.cyan
+            elide: Text.ElideRight
+        }
 
         Column {
-            id: body
-            width: bodyScroll.width
+            id: detailsColumn
+            objectName: "monitorDetails"
+            width: parent.width
+            visible: screen.detailsExpanded
             spacing: Theme.gap
 
-            // WP-F1: site identity sits between the hero and action row.
+            // WP-F1: site identity, first of the readings.
             UiPanel {
                 id: siteRow
                 objectName: "siteRow"
@@ -577,8 +1205,6 @@ Item {
                     onTapped: siteSheet.visible = true
                 }
             }
-
-            // Actions on the live engine; short windows keep them beside Stop.
 
             UiPanel {
                 id: decryptionRow
@@ -613,156 +1239,6 @@ Item {
                 }
                 TapHandler {
                     onTapped: decryptionRow.activate()
-                }
-            }
-
-            // Actions on the scan rotation (#380): the -Y list or the trunk-scan
-            // targets, whichever is running. Gated on the rotation, not on the
-            // tuner gate: plain trunking owns the tuner too and has nothing to hold
-            // or avoid at channel scope. Hold reads the engine back like Hold TG
-            // does, and the engine's refusals ("Cannot avoid the last usable scan
-            // channel") arrive through uiMessage below.
-            Row {
-                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                objectName: "scanControlsRow"
-
-                width: parent.width
-                spacing: 10
-                visible: metrics.scanRotationActive
-
-                OutlineButton {
-                    objectName: "scanHoldButton"
-
-                    width: (parent.width - 20) / 3
-                    text: screen.scanHeld ? qsTr("Release scan") : qsTr("Hold scan")
-                    enabled: decoderHost.running
-                    border.color: screen.scanHeld ? Theme.cyan : Theme.controlBorder
-                    onClicked: commands.toggleScanHold()
-                }
-
-                OutlineButton {
-                    objectName: "scanAvoidButton"
-
-                    width: (parent.width - 20) / 3
-                    text: qsTr("Avoid")
-                    enabled: decoderHost.running
-                    onClicked: commands.avoidCurrentChannel()
-                }
-
-                OutlineButton {
-                    objectName: "scanNextButton"
-
-                    width: (parent.width - 20) / 3
-                    text: qsTr("Next")
-                    enabled: decoderHost.running
-                    onClicked: commands.nextChannel()
-                }
-            }
-
-            // The engine's answer to the last command ("Output: Muted", "Output:
-            // open failed") — without it a tap that failed inside the engine reads
-            // as a button that did nothing.
-            Text {
-                width: parent.width
-                visible: metrics.uiMessage.length > 0
-                text: metrics.uiMessage
-                font.family: Theme.mono
-                font.pixelSize: Theme.fontSize(12)
-                color: Theme.cyan
-                elide: Text.ElideRight
-            }
-
-            // The concurrent TDMA call on the non-hero slot: identity plus its own
-            // call controls, so a second conversation is never invisible or untouchable.
-            // On a two-slot carrier the strip holds its place while that slot is idle.
-            UiPanel {
-                width: parent.width
-                objectName: "otherSlotPanel"
-                visible: screen.stripVisible
-                height: 56
-
-                MicroLabel {
-                    id: otherSlotLabel
-                    objectName: "otherSlotLabel"
-                    anchors.left: parent.left
-                    anchors.leftMargin: Theme.cardPadding
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
-                }
-
-                Text {
-                    objectName: "otherSlotIdentity"
-                    visible: !screen.stripIdle
-                    anchors.left: otherSlotLabel.right
-                    anchors.leftMargin: 10
-                    anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: screen.otherTgId > 0 && screen.otherName === screen.otherTg ? Util.talkgroupHeadline(screen.otherName, screen.otherTg, screen.otherTgId) : screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(14)
-                    font.weight: Font.DemiBold
-                    color: Theme.textPrimary
-                    elide: Text.ElideRight
-                }
-
-                EmergencyTag {
-                    id: otherEmergencyTag
-                    objectName: "otherEmergencyTag"
-                    visible: !screen.stripIdle && screen.otherEmergency
-                    anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-
-                EncTag {
-                    id: otherEncTag
-                    visible: !screen.stripIdle && screen.otherEnc
-                    anchors.right: otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-
-                TextMetrics {
-                    id: otherSkipMetrics
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(15)
-                    font.weight: Font.DemiBold
-                    text: otherSkip.text
-                }
-
-                OutlineButton {
-                    id: otherSkip
-                    objectName: "otherSlotSkip"
-                    anchors.right: otherMore.left
-                    anchors.rightMargin: 4
-                    anchors.verticalCenter: parent.verticalCenter
-                    // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
-                    width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
-                    maximumLineCount: 1
-                    implicitHeight: 48
-                    height: 48
-                    text: qsTr("Skip")
-                    accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
-                    // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
-                    visible: !screen.stripIdle
-                    enabled: decoderHost.running
-                    onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
-                }
-
-                IconButton {
-                    id: otherMore
-                    objectName: "otherSlotMore"
-                    anchors.right: parent.right
-                    anchors.rightMargin: 4
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 48
-                    height: 48
-                    icon: "more"
-                    accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
-                    visible: !screen.stripIdle
-                    enabled: decoderHost.running
-                    onClicked: otherSlotMenu.openForOtherSlot()
                 }
             }
 
@@ -1426,117 +1902,30 @@ Item {
                     onClicked: commands.clearScanAvoids()
                 }
             }
+        }
 
-            // Recent calls.
-            UiPanel {
-                objectName: "recentCallsPanel"
-                width: parent.width
-                height: Math.max(120 * Theme.fontScale, bodyScroll.height - y)
+        Item {
+            id: labelBlock
+            width: parent.width
+            visible: screen.labelShown
+            height: Theme.cardPadding + recentLabel.implicitHeight + 10
 
-                MicroLabel {
-                    id: recentLabel
-                    x: Theme.cardPadding
-                    y: Theme.cardPadding
-                    text: qsTr("Recent calls")
-                }
-
-                ListView {
-                    id: recentList
-
-                    // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                    objectName: "recentCallsList"
-
-                    anchors.top: recentLabel.bottom
-                    anchors.topMargin: 10
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 6
-                    clip: true
-                    model: monitorView
-
-                    delegate: CallRow {
-                        interactive: true
-                        onActivated: historyDetail.open({
-                            name: model.name,
-                            when: model.when,
-                            systemName: model.systemName,
-                            systemUid: model.systemUid,
-                            channel: model.channel,
-                            tg: model.tg,
-                            src: model.src,
-                            sourceName: model.srcName,
-                            emergency: model.emergency,
-                            enc: model.enc,
-                            durationSecs: model.durationSecs,
-                            detail: model.detail,
-                            freqHz: model.freqHz,
-                            accessCode: model.accessCode,
-                            accessCodeText: model.accessCodeText
-                        })
-                        width: ListView.view.width
-                        name: model.name
-                        metaText: {
-                            // A notice keeps its payload first, the pane being too
-                            // narrow for its ids, then names what every row names: the
-                            // access code, and the frequency last (issue #575).
-                            if (model.kind === 1) {
-                                var parts = [model.detail.length > 0 ? model.detail : qsTr("data message")];
-                                if (model.accessCode.length > 0)
-                                    parts.push(model.accessCode);
-                                if (model.freqHz > 0)
-                                    parts.push(Util.fmtMhz(model.freqHz));
-                                return parts.join(" · ");
-                            }
-                            // Same meta rules as the history row: a zero talkgroup is
-                            // not printed, the access code follows the ids, the channel
-                            // follows the duration unless it is already the name, and
-                            // the frequency closes the line, the first thing a narrow
-                            // phone elides.
-                            var meta = [];
-                            if (model.tg > 0)
-                                meta.push("TG " + model.tg);
-                            if (model.src > 0 || model.srcName)
-                                meta.push("SRC " + Util.sourceText(model.src, model.srcName));
-                            if (model.accessCode.length > 0)
-                                meta.push(model.accessCode);
-                            if (model.enc)
-                                meta.push(qsTr("encrypted"));
-                            if (model.durationSecs >= 0)
-                                meta.push(Util.fmtDuration(model.durationSecs));
-                            if (model.channel.length > 0 && model.channel !== model.name)
-                                meta.push(model.channel);
-                            if (model.freqHz > 0)
-                                meta.push(Util.fmtMhz(model.freqHz));
-                            return meta.join(" · ");
-                        }
-                        // Aged on the decode clock the row's when is stamped on. ageTick
-                        // forces the minute-by-minute refresh while the decoder is quiet.
-                        rightText: (screen.ageTick, Util.shortAge(model.when, metrics.decodeNowMs))
-                        enc: model.enc
-                        emergency: model.emergency
-                    }
-                }
-
-                // Same rule as the history log: the pane keeps showing the call that
-                // just ended, minus the new-calls pill, which four rows have no room
-                // for and which the hero above already covers.
-                FollowLatest {
-                    list: recentList
-                }
-
-                // A sibling of the view, not a child: ListView reparents declared
-                // children into its contentItem, where `parent.count` is undefined and
-                // the placeholder would never show.
-                Text {
-                    anchors.centerIn: recentList
-                    visible: recentList.count === 0
-                    text: qsTr("Calls will appear here as they land.")
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(13)
-                    color: Theme.textSubdued
-                }
+            MicroLabel {
+                id: recentLabel
+                objectName: "recentCallsLabel"
+                x: Theme.cardPadding
+                y: Theme.cardPadding
+                text: qsTr("Recent calls")
             }
+        }
+
+        // Without the label, keeps the calls card a gap below the rows above. One
+        // pixel tall: a Column does not space an item of no height.
+        Item {
+            id: labelSpacer
+            width: parent.width
+            height: 1
+            visible: !screen.labelShown
         }
     }
 
@@ -1625,145 +2014,125 @@ Item {
         z: 10
     }
 
-    Item {
-        id: compactActions
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: stopButton.top
-        anchors.leftMargin: Theme.screenPadding
-        anchors.rightMargin: Theme.screenPadding
-        anchors.bottomMargin: 8
-        height: liveActions.implicitHeight
-        Column {
-            id: liveActions
-            objectName: "monitorLiveActions"
+    // The call actions: Mute · Hold TG · Skip · Avoid, one row when they fit.
+    // Fixed above Stop, or in the list header in tier 5.
+    Column {
+        id: liveActions
+        objectName: "monitorLiveActions"
+        parent: screen.scrollAll ? actionsSlot : actionsHost
+        width: parent ? parent.width : 0
+        spacing: 10
+        enabled: !keySheet.visible
+        // A deterministic grid: four equal columns when the longest word of any
+        // label fits a quarter cell (less the 12 px OutlineButton keeps either
+        // side), else two. Labels break only at a space, into one line or two
+        // for every cell alike, so no row is ragged and no word splits. The
+        // toggles keep one label each and show their state as checked, so the
+        // widest word is "Avoid", which fits four columns on a 360 dp phone.
+        readonly property var labels: [qsTr("Mute"), qsTr("Hold TG"), qsTr("Skip"), qsTr("Avoid TG"), qsTr("Lock out")]
+        readonly property real widest: {
+            // advanceWidth() is a call, which a binding does not track:
+            // reading the font re-measures on a scale change.
+            var font = actionMetrics.font;
+            var widest = 0;
+            for (var label of labels)
+                widest = Math.max(widest, actionMetrics.advanceWidth(label));
+            return Math.ceil(widest);
+        }
+        readonly property real longestWord: {
+            var font = actionMetrics.font;
+            var longest = 0;
+            for (var label of labels) {
+                for (var word of label.split(" "))
+                    longest = Math.max(longest, actionMetrics.advanceWidth(word));
+            }
+            return Math.ceil(longest);
+        }
+        readonly property int columns: (width - 3 * spacing) / 4 - 24 >= longestWord ? 4 : 2
+        // Whole pixels, for the same reason as the scan controls' cells.
+        readonly property real cell: Math.floor((width - (columns - 1) * spacing) / columns)
+        // What the whole pixels leave over, split either side.
+        readonly property real inset: Math.floor((width - columns * cell - (columns - 1) * spacing) / 2)
+        // OutlineButton keeps 12 px either side of its label.
+        readonly property int labelLines: widest <= cell - 24 ? 1 : 2
+        readonly property real cellHeight: Math.max(Theme.minimumTouchSize, Math.ceil(labelLines * actionMetrics.lineSpacing) + 24)
+
+        FontMetrics {
+            id: actionMetrics
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(15)
+            font.weight: Font.DemiBold
+        }
+
+        Item {
+            objectName: "monitorCallActions"
+            readonly property int rows: Math.ceil(4 / liveActions.columns)
             width: parent.width
-            spacing: 10
-            // A deterministic grid, as on the Signal search Now panel: four equal
-            // columns when every cell fits the widest label any of them can show
-            // at this font scale, else two; one label line, or two (broken only
-            // at a space) when that widest label needs them, and one height for
-            // every cell, so no row is ragged and no word splits.
-            readonly property var labels: [qsTr("Mute"), qsTr("Unmute"), qsTr("Hold TG"), qsTr("Release"), qsTr("Skip"), qsTr("TG list"), qsTr("Avoid TG"), qsTr("Lock out")]
-            readonly property real widest: {
-                // advanceWidth() is a call, which a binding does not track:
-                // reading the font re-measures on a scale change.
-                var font = actionMetrics.font;
-                var widest = 0;
-                for (var label of labels)
-                    widest = Math.max(widest, actionMetrics.advanceWidth(label));
-                return Math.ceil(widest);
-            }
-            readonly property int columns: (width - 3 * spacing) / 4 >= widest + 2 * Theme.cardPadding ? 4 : 2
-            readonly property real cell: (width - (columns - 1) * spacing) / columns
-            // OutlineButton keeps 12 px either side of its label.
-            readonly property int labelLines: widest <= cell - 24 ? 1 : 2
-            readonly property real cellHeight: Math.max(Theme.minimumTouchSize, Math.ceil(labelLines * actionMetrics.lineSpacing) + 24)
+            height: rows * liveActions.cellHeight + (rows - 1) * liveActions.spacing
 
-            FontMetrics {
-                id: actionMetrics
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(15)
-                font.weight: Font.DemiBold
-            }
-
-            Item {
-                objectName: "monitorCallActions"
-                readonly property int rows: Math.ceil(4 / liveActions.columns)
-                width: parent.width
-                height: rows * liveActions.cellHeight + (rows - 1) * liveActions.spacing
-
-                OutlineButton {
-                    objectName: "muteButton"
-                    x: (0 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
-                    y: Math.floor(0 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
-                    width: liveActions.cell
-                    height: liveActions.cellHeight
-                    maximumLineCount: liveActions.labelLines
-                    wrapMode: Text.WordWrap
-                    text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
-                    enabled: decoderHost.running
-                    // The label follows the engine snapshot after the command applies.
-                    onClicked: commands.toggleMute()
-                }
-
-                OutlineButton {
-                    objectName: "holdTalkgroupButton"
-                    x: (1 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
-                    y: Math.floor(1 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
-                    width: liveActions.cell
-                    height: liveActions.cellHeight
-                    maximumLineCount: liveActions.labelLines
-                    wrapMode: Text.WordWrap
-                    text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
-                    // Callsigns and dial strings have no numeric talkgroup to hold.
-                    enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
-                    border.color: screen.holding ? Theme.cyan : Theme.controlBorder
-                    onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
-                }
-
-                OutlineButton {
-                    objectName: "skipButton"
-                    x: (2 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
-                    y: Math.floor(2 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
-                    width: liveActions.cell
-                    height: liveActions.cellHeight
-                    maximumLineCount: liveActions.labelLines
-                    wrapMode: Text.WordWrap
-                    text: qsTr("Skip")
-                    accessibleName: qsTr("Skip this call")
-                    enabled: decoderHost.running && screen.heroSlot !== 0
-                    onClicked: commands.skipSlot(screen.heroSlot === 2 ? 1 : 0)
-                }
-
-                OutlineButton {
-                    objectName: "talkgroupsButton"
-                    x: (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
-                    y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
-                    width: liveActions.cell
-                    height: liveActions.cellHeight
-                    maximumLineCount: liveActions.labelLines
-                    wrapMode: Text.WordWrap
-                    visible: !screen.compactHeight
-                    text: qsTr("TG list")
-                    accessibleName: qsTr("Talkgroups")
-                    enabled: decoderHost.running
-                    onClicked: screen.openTalkgroups()
-                }
-
-                AvoidAction {
-                    objectName: "avoidButtonCompact"
-                    heroSlot: screen.heroSlot
-                    running: decoderHost.running
-                    visible: screen.compactHeight
-                    x: (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
-                    y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
-                    width: liveActions.cell
-                    height: liveActions.cellHeight
-                    maximumLineCount: liveActions.labelLines
-                    wrapMode: Text.WordWrap
-                }
-            }
-
-            Item {
-                objectName: "monitorAvoidActions"
-                visible: !screen.compactHeight
-                width: parent.width
+            // Engine truth: checked follows the snapshot after the command applies.
+            OutlineButton {
+                objectName: "muteButton"
+                x: liveActions.inset + (0 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                y: Math.floor(0 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
+                width: liveActions.cell
                 height: liveActions.cellHeight
+                maximumLineCount: liveActions.labelLines
+                wrapMode: Text.WordWrap
+                text: qsTr("Mute")
+                accessibleName: qsTr("Mute audio")
+                checkable: true
+                checked: screen.muted
+                enabled: decoderHost.running
+                onClicked: commands.toggleMute()
+            }
 
-                // Two cells wide in four columns, the full width in two.
-                AvoidAction {
-                    objectName: "avoidButton"
-                    heroSlot: screen.heroSlot
-                    running: decoderHost.running
-                    width: 2 * liveActions.cell + liveActions.spacing
-                    height: liveActions.cellHeight
-                    maximumLineCount: liveActions.labelLines
-                    wrapMode: Text.WordWrap
-                }
+            OutlineButton {
+                objectName: "holdTalkgroupButton"
+                x: liveActions.inset + (1 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                y: Math.floor(1 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
+                width: liveActions.cell
+                height: liveActions.cellHeight
+                maximumLineCount: liveActions.labelLines
+                wrapMode: Text.WordWrap
+                text: qsTr("Hold TG")
+                accessibleName: qsTr("Hold this talkgroup")
+                checkable: true
+                checked: screen.holding
+                // Callsigns and dial strings have no numeric talkgroup to hold.
+                enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
+                onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
+            }
+
+            OutlineButton {
+                objectName: "skipButton"
+                x: liveActions.inset + (2 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                y: Math.floor(2 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
+                width: liveActions.cell
+                height: liveActions.cellHeight
+                maximumLineCount: liveActions.labelLines
+                wrapMode: Text.WordWrap
+                text: qsTr("Skip")
+                accessibleName: qsTr("Skip this call")
+                enabled: decoderHost.running && screen.heroSlot !== 0
+                onClicked: commands.skipSlot(screen.heroSlot === 2 ? 1 : 0)
+            }
+
+            // The talkgroup list is in the session menu on every size.
+            AvoidAction {
+                objectName: "avoidButton"
+                heroSlot: screen.heroSlot
+                running: decoderHost.running
+                x: liveActions.inset + (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
+                y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
+                width: liveActions.cell
+                height: liveActions.cellHeight
+                maximumLineCount: liveActions.labelLines
+                wrapMode: Text.WordWrap
             }
         }
     }
+
     GradientButton {
         id: stopButton
         objectName: "stopListeningButton"
@@ -1779,7 +2148,7 @@ Item {
         enabled: !decoderHost.transitioning && !keySheet.visible
         onClicked: decoderHost.stop()
     }
-    // WP-F1: owned by Monitor, above its scrolling body and stop control.
+    // WP-F1: owned by Monitor, above its scrolling list and stop control.
     SiteSheet {
         id: siteSheet
         z: 10

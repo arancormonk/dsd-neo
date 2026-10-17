@@ -71,6 +71,9 @@ enum Key {
     kLastLon,
     kLastFixAt,
     kLastAccuracyM,
+    // Whether the Monitor's "Signal & site" readings were left open (#718): how
+    // this device's screen was arranged, so it is not carried by a backup.
+    kMonitorDetailsExpanded,
     kKeyCount
 };
 
@@ -108,6 +111,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"location/lastLon", false},
     {"location/lastFixAt", false},
     {"location/lastAccuracyM", false},
+    {"monitor/detailsExpanded", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -687,6 +691,20 @@ AppPrefs::setSearchPort(int port) {
     }
     m_settings.setValue(key_name(kSearchPort), next);
     Q_EMIT searchChanged();
+}
+
+bool
+AppPrefs::monitorDetailsExpanded() const {
+    return m_settings.value(key_name(kMonitorDetailsExpanded), false).toBool();
+}
+
+void
+AppPrefs::setMonitorDetailsExpanded(bool on) {
+    if (on == monitorDetailsExpanded()) {
+        return;
+    }
+    m_settings.setValue(key_name(kMonitorDetailsExpanded), on);
+    Q_EMIT monitorDetailsExpandedChanged();
 }
 
 bool

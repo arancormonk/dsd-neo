@@ -7,9 +7,11 @@ Item {
     id: root
     width: 411
     height: 700
+    // The quality row lives in the Monitor's "Signal & site" disclosure (#718), open here.
     Ui.MonitorScreen {
         id: monitor
         anchors.fill: parent
+        detailsExpanded: true
     }
     TestCase {
         name: "MonitorQuality"
@@ -78,13 +80,14 @@ Item {
             testContext.setMetric("rsValid", true);
             testContext.setMetric("rsOkPct", 100);
             var row = reading("decodeQualityRow");
-            var body = reading("monitorBody");
+            var body = reading("recentCallsList");
             tryVerify(function() { return row.height > reading("ccFecQuality").height; });
             for (var name of ["ccFecQuality", "voiceErrsQuality", "rsQuality"]) {
                 var label = reading(name);
                 verify(label.x + label.width <= row.width + 1);
             }
-            verify(row.parent.parent === body.contentItem);
+            // In the one list that scrolls (#718).
+            verify(Ui.Navigation.contains(body.contentItem, row));
             verify(body.height > 0);
             // A wrapped row can be taller than a landscape viewport. Each whole
             // reading must be reachable, even when they cannot all fit at once.

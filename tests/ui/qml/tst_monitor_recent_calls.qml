@@ -33,10 +33,22 @@ Item {
             return Math.abs(tc.list.contentY - tc.list.originY) < 1
         }
 
+        // The list's header (#718) ends where the calls start: the newest row's top.
+        function callsTop() {
+            return tc.list.headerItem.y + tc.list.headerItem.height
+        }
+
+        function atNewest() {
+            return Math.abs(tc.list.contentY - tc.callsTop()) < 1
+        }
+
         function initTestCase() {
             verify(screenLoader.item !== null, "MonitorScreen.qml failed to load")
             tc.list = findChild(screenLoader.item, "recentCallsList")
             verify(tc.list !== null, "the recent-calls list is missing")
+            // The lockout and scan-avoid readings live in the "Signal & site"
+            // disclosure (#718), open here.
+            screenLoader.item.detailsExpanded = true
         }
 
         function init() {
@@ -217,14 +229,15 @@ Item {
         // device: a drag that leaves the pane a fraction of a row down. ListView
         // holds an exact top by itself, so a test that only ever sits at the top
         // passes with the pin deleted.
+        // Measured from the top of the calls, under the list header (#718).
         function test_02_an_offset_inside_one_row_still_counts_as_the_latest() {
-            tc.list.contentY = tc.list.originY + 20
+            tc.list.contentY = tc.callsTop() + 20
             tc.waitForRendering(tc.list)
-            verify(!tc.atTop())
+            verify(!tc.atNewest())
 
             callHistory.push("TODAY")
 
-            tryVerify(function () { return tc.atTop() })
+            tryVerify(function () { return tc.atNewest() })
         }
 
         // The reading exists so a log that stays empty on an almost entirely
@@ -270,11 +283,14 @@ Item {
 
             testContext.setMetric("scanRotationActive", true)
             tryVerify(function () { return row.visible })
+            // One label; the engine's hold shows as checked (#718).
             compare(hold.text, "Hold scan")
+            verify(hold.checkable && !hold.checked)
             testContext.setMetric("scanHold", true)
-            tryVerify(function () { return hold.text === "Release scan" })
+            tryVerify(function () { return hold.checked })
+            compare(hold.text, "Hold scan")
             testContext.setMetric("scanHold", false)
-            tryVerify(function () { return hold.text === "Hold scan" })
+            tryVerify(function () { return !hold.checked })
 
             testContext.setMetric("scanAvoidCount", 2)
             tryVerify(function () { return badge.visible })
@@ -493,8 +509,9 @@ Item {
         }
 
         function test_04_scrolling_back_holds_the_reader_place() {
-            // The pane is short, so scroll by a couple of rows rather than a screen.
-            tc.list.contentY = tc.list.originY + 150
+            // The pane is short, so scroll by a couple of rows rather than a screen,
+            // past the list header (#718).
+            tc.list.contentY = tc.callsTop() + 150
             tc.waitForRendering(tc.list)
             var anchorName = tc.list.itemAtIndex(tc.list.indexAt(tc.list.width / 2, tc.list.contentY + 20)).name
             // A prepend grows the gap from the start of the content by walking
@@ -504,7 +521,7 @@ Item {
             callHistory.pushMany(2, "TODAY")
 
             tryVerify(function () { return tc.list.contentY - tc.list.originY > wasGap })
-            verify(!tc.atTop())
+            verify(!tc.atTop() && !tc.atNewest())
             compare(tc.list.itemAtIndex(tc.list.indexAt(tc.list.width / 2, tc.list.contentY + 20)).name, anchorName)
         }
 
@@ -513,9 +530,9 @@ Item {
         // the press would leave the reader's next drag snapping back to where the
         // finger went down.
         function test_05_a_call_under_a_held_finger_waits_for_the_release() {
-            tc.list.contentY = tc.list.originY + 20
+            tc.list.contentY = tc.callsTop() + 20
             tc.waitForRendering(tc.list)
-            verify(!tc.atTop())
+            verify(!tc.atNewest())
 
             mousePress(tc.list, tc.list.width / 2, 20)
             callHistory.push("TODAY")
@@ -523,11 +540,11 @@ Item {
             // loop passes it would have needed to run.
             tc.waitForRendering(tc.list)
             tc.wait(50)
-            verify(!tc.atTop(), "the pane was pinned under a held finger")
+            verify(!tc.atNewest(), "the pane was pinned under a held finger")
 
             mouseRelease(tc.list, tc.list.width / 2, 20)
 
-            tryVerify(function () { return tc.atTop() }, 5000,
+            tryVerify(function () { return tc.atNewest() }, 5000,
                       "the deferred pin never ran after the release")
         }
     }

@@ -677,7 +677,7 @@ Important behavior:
 - `record` covers every recording: the per-call WAV (`-P`), the static WAV (`-w`) and MBE capture (`-d`).
 - Rows, `-W` and the Hold match numeric talkgroup IDs. M17 addresses calls by callsign, so M17 traffic is not
   matched by them; use the M17 CAN filter to select M17 traffic.
-- Android: **TG list** on the live monitor lists configured talkgroups/ranges plus voice talkgroups heard this
+- Android: **Talkgroups** in the live monitor's session menu (⋯) lists configured talkgroups/ranges plus voice talkgroups heard this
   session that no listed row covers. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
   waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the
   retained tags (RadioReference imports supply their category names).
@@ -711,7 +711,7 @@ Important behavior:
 - Qt/Android **Settings → Listening → Save avoided talkgroups** and the terminal **Save user TG lockouts**
   menu setting take effect immediately. Explicit **Listening**, **Not tuned**, and bulk list edits still
   modify the canonical list, and temporary avoids continue to override it, including when a talkgroup Hold
-  matches. The TG list shows temporary counts separately from its saved listening controls. **Skip** is unaffected
+  matches. The talkgroup list shows temporary counts separately from its saved listening controls. **Skip** is unaffected
   by the setting: its expiring blocks never change policy rows or appear in saves or exports. See
   [Skip lifetimes](cli.md#trunking--scanning).
 - Temporary avoids also mark the terminal's active-channel lockout indicator. The preference controls quick
