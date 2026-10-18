@@ -17,7 +17,6 @@ simd_stats_iq_abs_avx2(const float* iq, size_t pairs) {
 }
 #else
 
-#include <cmath>
 #include <immintrin.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -28,6 +27,13 @@ static inline __m256i
 nonfinite_mask(__m256 x) {
     const __m256i exponent = _mm256_set1_epi32(0x7f800000);
     return _mm256_cmpeq_epi32(_mm256_and_si256(_mm256_castps_si256(x), exponent), exponent);
+}
+
+/* std::fabs here would be an inline instantiation built with AVX flags, which the linker may keep for the
+   baseline callers too; clearing the sign bit is the same result and stays local. */
+static inline float
+abs_bits(float x) {
+    return _mm_cvtss_f32(_mm_and_ps(_mm_set_ss(x), _mm_castsi128_ps(_mm_set1_epi32(0x7fffffff))));
 }
 
 static inline __m256i
@@ -108,8 +114,8 @@ simd_stats_iq_abs_avx2(const float* iq, size_t pairs) {
         }
     }
     for (; k < pairs; ++k) {
-        const float ai = std::fabs(iq[2 * k]);
-        const float aq = std::fabs(iq[2 * k + 1]);
+        const float ai = abs_bits(iq[2 * k]);
+        const float aq = abs_bits(iq[2 * k + 1]);
         const float value = (ai > aq) ? ai : aq;
         if (value > r.max_abs) {
             r.max_abs = value;

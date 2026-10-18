@@ -59,15 +59,11 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, i
 
 #include <immintrin.h>
 #include <stddef.h>
-#include <vector>
 #include <xmmintrin.h>
 #include "dsd-neo/core/safe_api.h"
 #include "simd_fir_internal.h"
 
 // NOLINTBEGIN(portability-simd-intrinsics)
-
-static thread_local std::vector<float> tls_scratch_iq;
-static thread_local std::vector<float> tls_scratch_real;
 
 namespace {
 
@@ -368,11 +364,7 @@ hb_complex_decim2_scratch(const float* in, int n_in, float* out, int outputs, co
     const int take = pending + center;
     const size_t scratch_len = ((size_t)take + (size_t)n_in) * 2U; /* *2 for complex (I, Q) */
 
-    /* Resize thread-local buffer if needed (amortized O(1)) */
-    if (tls_scratch_iq.size() < scratch_len) {
-        tls_scratch_iq.resize(scratch_len);
-    }
-    float* scratch = tls_scratch_iq.data();
+    float* scratch = simd_fir_tls_scratch_iq(scratch_len);
 
     const int left_len = taps_len - 1;
     copy_iq_history(scratch, hist_i + (left_len - take), hist_q + (left_len - take), take);
@@ -416,11 +408,7 @@ simd_fir_complex_apply_avx2(const float* in, int n_in, float* out, int out_cap, 
         const int take = *pending + center;
         const size_t scratch_len = ((size_t)take + (size_t)n_in) * 2U; /* *2 for complex (I, Q) */
 
-        /* Resize thread-local buffer if needed (amortized O(1)) */
-        if (tls_scratch_iq.size() < scratch_len) {
-            tls_scratch_iq.resize(scratch_len);
-        }
-        float* scratch = tls_scratch_iq.data();
+        float* scratch = simd_fir_tls_scratch_iq(scratch_len);
 
         copy_iq_history(scratch, hist_i + (hist_len - take), hist_q + (hist_len - take), take);
         if (n_in > 0) {
@@ -526,10 +514,7 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, i
     if (out_len > 0) {
         const int take = held + center;
         const size_t scratch_len = (size_t)take + (size_t)in_len;
-        if (tls_scratch_real.size() < scratch_len) {
-            tls_scratch_real.resize(scratch_len);
-        }
-        float* scratch = tls_scratch_real.data();
+        float* scratch = simd_fir_tls_scratch_real(scratch_len);
         DSD_MEMCPY(scratch, hist + (hist_len - take), (size_t)take * sizeof(float));
         DSD_MEMCPY(scratch + take, in, (size_t)in_len * sizeof(float));
 

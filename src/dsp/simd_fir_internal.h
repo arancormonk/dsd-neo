@@ -15,6 +15,14 @@ int simd_hb_decim2_real_scalar(const float* in, int in_len, float* out, float* h
                                int taps_len);
 
 /*
+ * Thread-local scratch of at least len floats for the AVX2 kernels. It lives in the baseline translation unit:
+ * std::vector members instantiated with AVX2 flags are inline, and the linker may keep that copy for every caller,
+ * including ones running on CPUs without AVX.
+ */
+float* simd_fir_tls_scratch_iq(size_t len);
+float* simd_fir_tls_scratch_real(size_t len);
+
+/*
  * The streaming complex FIR's call contract (simd_fir_complex_apply()), shared by every backend: the outputs a call
  * makes, max(0, pending + n_in - c) with c = (taps_len - 1) / 2, or -1 for a call it refuses without touching any
  * state. It refuses even or short taps, a history shorter than taps_len - 1, a negative pending, a pending whose

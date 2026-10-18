@@ -14,8 +14,27 @@
 #include <atomic>
 #include <dsd-neo/dsp/simd_fir.h>
 #include <stddef.h>
+#include <vector>
 #include "simd_fir_internal.h"
 #include "simd_x86_cpu.h"
+
+float*
+simd_fir_tls_scratch_iq(size_t len) {
+    static thread_local std::vector<float> scratch;
+    if (scratch.size() < len) {
+        scratch.resize(len);
+    }
+    return scratch.data();
+}
+
+float*
+simd_fir_tls_scratch_real(size_t len) {
+    static thread_local std::vector<float> scratch;
+    if (scratch.size() < len) {
+        scratch.resize(len);
+    }
+    return scratch.data();
+}
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" int simd_fir_complex_apply_sse2(const float* in, int n_in, float* out, int out_cap, float* hist_i,

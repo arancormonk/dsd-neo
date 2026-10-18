@@ -104,6 +104,7 @@ elseif(MSVC)
         dsp/test_dsp_simd_stats.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
