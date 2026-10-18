@@ -38,6 +38,13 @@ QT_CALLS = (
     ("extras/QtAndroidServiceConnection", "<init>", "(J)V", False),
     ("extras/QtAndroidServiceConnection", "setId", "(J)V", False),
 )
+# Unannotated instance fields read by Qt's native APK file engine. This path is
+# exercised by Play's uncompressed native libraries, unlike the sideload APK.
+QT_FIELDS = (
+    ("QtApkFileEngine$JFileInfo", "relativePath", "Ljava/lang/String;", False),
+    ("QtApkFileEngine$JFileInfo", "size", "J", False),
+    ("QtApkFileEngine$JFileInfo", "isDir", "Z", False),
+)
 
 
 def descriptor(java_type):
@@ -54,11 +61,14 @@ def dex_api(xml):
     """Use SDK dexdump's definitions, not string/method references in the DEX."""
     if "<!DOCTYPE" in xml or "<!ENTITY" in xml:
         raise ValueError("Unexpected DTD/entity declaration in dexdump output")
-    classes, methods = set(), {}
+    classes, methods, fields = set(), {}, {}
     for package in ET.fromstring(xml).findall("package"):
         for cls in package.findall("class"):
             owner = (package.attrib["name"] + "." + cls.attrib["name"]).strip(".").replace(".", "/")
             classes.add(owner)
+            for field in cls.findall("field"):
+                key = (owner, field.attrib["name"], descriptor(field.attrib["type"]))
+                fields[key] = field.attrib
             for method in cls.findall("method") + cls.findall("constructor"):
                 args = "".join(descriptor(p.attrib["type"]) for p in method.findall("parameter"))
                 signature = "(" + args + ")" + descriptor(method.get("return", "void"))
@@ -66,7 +76,7 @@ def dex_api(xml):
                 if method.tag == "constructor":
                     name = "<clinit>" if method.get("static") == "true" else "<init>"
                 methods[(owner, name, signature)] = method.attrib
-    return classes, methods
+    return classes, methods, fields
 
 
 def jni_contract(source_root):
@@ -94,7 +104,8 @@ def jni_contract(source_root):
     return upcalls, downcalls
 
 
-def verify_jni(classes, methods, upcalls, downcalls, qt_classes, qt_calls=QT_CALLS):
+def verify_jni(classes, methods, fields, upcalls, downcalls, qt_classes,
+               qt_calls=QT_CALLS, qt_fields=QT_FIELDS):
     errors = []
     for key in sorted(upcalls):
         if key not in methods or methods[key].get("static") != "true":
@@ -109,6 +120,10 @@ def verify_jni(classes, methods, upcalls, downcalls, qt_classes, qt_calls=QT_CAL
         key = (QT_PACKAGE + owner, name, signature)
         if key not in methods or methods[key].get("static") != str(static).lower():
             errors.append(f"Missing Qt JNI entry point: {key}")
+    for owner, name, signature, static in qt_fields:
+        key = (QT_PACKAGE + owner, name, signature)
+        if key not in fields or fields[key].get("static") != str(static).lower():
+            errors.append(f"Missing Qt JNI field: {key}")
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -133,7 +148,7 @@ def verify_metadata(metadata):
 
 
 def inspect_artifact(artifact, dexdump, source_root, mapping_path=None):
-    classes, methods, qt_classes = set(), {}, set()
+    classes, methods, fields, qt_classes = set(), {}, {}, set()
     dex_bytes = 0
     with zipfile.ZipFile(artifact) as archive, tempfile.TemporaryDirectory(prefix="dsd-r8-") as temp:
         entries = archive.namelist()
@@ -149,9 +164,10 @@ def inspect_artifact(artifact, dexdump, source_root, mapping_path=None):
             path.write_bytes(data)
             result = subprocess.run([str(dexdump), "-l", "xml", str(path)],
                                     check=True, capture_output=True, text=True)
-            found_classes, found_methods = dex_api(result.stdout)
+            found_classes, found_methods, found_fields = dex_api(result.stdout)
             classes.update(found_classes)
             methods.update(found_methods)
+            fields.update(found_fields)
         for name in entries:
             if name.endswith(".so"):
                 qt_classes.update(s.decode("ascii") for s in re.findall(
@@ -168,9 +184,9 @@ def inspect_artifact(artifact, dexdump, source_root, mapping_path=None):
         if mapping_path is not None:
             verify_mapping(mapping_path.read_text())
     upcalls, downcalls = jni_contract(source_root)
-    verify_jni(classes, methods, upcalls, downcalls, qt_classes)
+    verify_jni(classes, methods, fields, upcalls, downcalls, qt_classes)
     print(f"R8 OK: {len(upcalls)} app upcalls, {len(downcalls)} native bindings, "
-          f"{len(QT_CALLS)} Qt upcalls, {len(qt_classes)} Qt JNI classes; "
+          f"{len(QT_CALLS)} Qt upcalls, {len(QT_FIELDS)} Qt JNI fields, {len(qt_classes)} Qt JNI classes; "
           f"{dex_bytes:,} uncompressed DEX bytes "
           f"({dex_bytes / 1048576:.2f} MiB)")
     if metadata is not None:

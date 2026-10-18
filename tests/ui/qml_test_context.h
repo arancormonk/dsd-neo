@@ -753,7 +753,7 @@ class CommandRecorder : public QObject {
     setSquelchDb(double db) {
         m_last_squelch_db = db;
         m_squelch_calls++;
-        return true;
+        return m_radio_accepted;
     }
 
     /* Refuses a margin out of range, as CommandBridge does. */
@@ -764,7 +764,7 @@ class CommandRecorder : public QObject {
         }
         m_last_squelch_margin_db = marginDb;
         m_squelch_auto_calls++;
-        return true;
+        return m_radio_accepted;
     }
 
     /* Refuses a margin out of range, as CommandBridge does. */
@@ -775,13 +775,13 @@ class CommandRecorder : public QObject {
         }
         m_last_squelch_margin_db = marginDb;
         m_squelch_noise_calls++;
-        return true;
+        return m_radio_accepted;
     }
 
     Q_INVOKABLE bool
     restoreSquelchLevel() {
         m_restore_squelch_calls++;
-        return true;
+        return m_radio_accepted;
     }
 
     Q_INVOKABLE bool
@@ -807,7 +807,12 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     setModulation(int modulation) {
         m_last_modulation = modulation;
-        return true;
+        return m_radio_accepted;
+    }
+
+    Q_INVOKABLE void
+    setRadioAccepted(bool accepted) {
+        m_radio_accepted = accepted;
     }
 
     /* The live tone-filter editor (#527): what it sends, and the production validator's answer for its inline check,
@@ -833,7 +838,7 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     setDecodeMode(int mode) {
         m_last_decode_mode = mode;
-        return true;
+        return m_radio_accepted;
     }
 
     /* The production mapping itself, not a stand-in for it. It used to be a
@@ -876,6 +881,7 @@ class CommandRecorder : public QObject {
         m_airspy_calls = 0;
         m_last_gain_db = -1;
         m_last_squelch_db = 0.0;
+        m_radio_accepted = true;
         m_squelch_calls = 0;
         m_last_squelch_margin_db = 0;
         m_squelch_auto_calls = 0;
@@ -1151,6 +1157,7 @@ class CommandRecorder : public QObject {
     int m_next_channel_calls = 0;
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
+    bool m_radio_accepted = true;
     int m_squelch_calls = 0;
     int m_last_squelch_margin_db = 0;
     int m_squelch_noise_calls = 0;
@@ -1723,6 +1730,7 @@ class Setup : public QObject {
             if (key == QStringLiteral("centerFreqHz")) {
                 Q_EMIT m_metric_readings->tunerChanged();
             }
+            Q_EMIT m_metric_readings->controlChanged();
         }
     }
 

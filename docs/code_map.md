@@ -5672,6 +5672,18 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `include/dsd-neo/app_control/frontend.h`. The terminal frontend retains a small set of terminal-private backend
     integrations.
   - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
+  - Qt/Android Radio defaults: `qml/RadioSettingsPersistence.qml` associates explicit squelch, modulation and
+    decoder requests with the active saved-system UID. It saves only matching configured snapshots through
+    `SavedSystemsModel::updateRadioSettings()`. Changing the decoder clears the previous manual modulation override,
+    as the live command does; reselecting a named preset keeps it. Auto resumes modulation hunting instead of locking
+    its initial reading. A later modulation request waits for the pending decoder choice to be confirmed. Pending
+    requests survive closing Radio but end with the session; Explore, signal search, scan-list sessions and
+    per-channel edits do not write a saved system. The typed `radioSettings` map is validated by `radio_settings.h`
+    and appended after advanced arguments in `session_args.cpp`, so a confirmed choice wins on restart.
+    The saved decoder flag also updates wizard/list metadata; a later wizard preset replaces its saved live
+    decoder/modulation override. Manual scan lists inherit saved squelch and modulation (an entry's explicit
+    modulation wins). `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence
+    QML test cover disk reload, restart, validation and temporary scopes.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as
@@ -6583,7 +6595,9 @@ External dependencies (resolved via CMake):
 Release APK/AAB builds enable R8 in `android/package/build.gradle`.
 `proguard-rules.pro` owns the named C++ → Kotlin interface contract and `DsdNative`
 bindings; update it when adding a `QJniObject` upcall. `qt-rules.pro` owns the pinned
-Qt kit's JNI keep rules, including unannotated native registration/teardown paths;
+Qt kit's JNI keep rules, including unannotated native registration/teardown paths and
+`QtApkFileEngine.JFileInfo`'s `relativePath`, `size` and `isDir` fields, which native plugin discovery reads from
+Play's APK splits. The artifact check validates these fields' names, descriptors and instance storage;
 re-audit on a Qt upgrade. `res/raw/dsdneo_keep.xml` preserves Qt's named resource
 lookups. `tools/check_android_r8.py` validates shipped DEX definitions and bundle
 metadata in Android CI; `ANDROID_R8` tests its failure cases. Device testing of

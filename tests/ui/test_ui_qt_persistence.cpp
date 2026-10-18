@@ -1025,6 +1025,56 @@ test_prefs_key_table(void) {
 }
 } // namespace
 
+static void
+test_radio_settings() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    expect("first system", model.add({{"name", "First"}, {"decodeFlag", "-f1"}}));
+    expect(
+        "radio system",
+        model.add(
+            {{"name", "Radio"}, {"decodeFlag", "-f1"}, {"gainDb", 36}, {"ppm", "-2"}, {"extraArgs", "--squelch -80"}}));
+    const auto uid = model.get(1).value("uid").toString();
+    model.remove(0);
+    expect("live settings follow UID after row deletion",
+           model.updateRadioSettings(uid, {{"squelch", "-65"}, {"modulation", 1}}));
+    expect("decoder preset merges with the existing squelch", model.updateRadioSettings(uid, {{"decodeFlag", "-fA"}}));
+    const QVariantMap expected{{"squelch", "-65"}, {"decodeFlag", "-fA"}};
+    {
+        SavedSystemsModel fresh;
+        const auto saved = fresh.getByUid(uid);
+        expect("Radio controls survive model/application reload", saved.value("radioSettings").toMap() == expected);
+        expect("Listening for also updates wizard and list metadata", saved.value("decodeFlag") == "-fA");
+        expect("unrelated saved controls and advanced options survive",
+               saved.value("gainDb") == 36 && saved.value("ppm") == "-2"
+                   && saved.value("extraArgs") == "--squelch -80");
+    }
+    for (const auto& invalid : QList<QVariantMap>{{{"squelch", "noise+31"}},
+                                                  {{"modulation", 4}},
+                                                  {{"modulation", 1.5}},
+                                                  {{"decodeFlag", "-fA --show-keys"}},
+                                                  {{"squelch", "-65,--show-keys"}},
+                                                  {{"unknown", true}}}) {
+        expect("invalid radio update rejected atomically", !model.updateRadioSettings(uid, invalid));
+        expect("invalid update keeps stored controls", model.getByUid(uid).value("radioSettings").toMap() == expected);
+    }
+    const QString path = json_store_path(QStringLiteral("saved_systems.json"));
+    expect("move store aside for failure test", QFile::rename(path, path + ".saved"));
+    expect("block store with a directory", QDir().mkpath(path));
+    expect("disk failure does not report success", !model.updateRadioSettings(uid, {{"squelch", "off"}}));
+    expect("disk failure preserves model", model.getByUid(uid).value("radioSettings").toMap() == expected);
+    expect("unblock store", QDir().rmdir(path) && QFile::rename(path + ".saved", path));
+    expect("ordinary wizard edit", model.update(0, {{"name", "Renamed"}}));
+    expect("ordinary edit preserves live controls", model.get(0).value("radioSettings").toMap() == expected);
+    expect("wizard decoder edit", model.update(0, {{"decodeFlag", "-fs"}}));
+    expect("wizard preset replaces live decoder and modulation, preserves squelch",
+           model.get(0).value("radioSettings").toMap() == QVariantMap{{"squelch", "-65"}});
+    model.remove(0);
+    expect("removed system is never recreated", !model.updateRadioSettings(uid, {{"squelch", "off"}}));
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1072,6 +1122,7 @@ main(int argc, char** argv) {
     test_foundation_key_type_migration();
     test_site_provenance_edits();
     test_add_with_retained_key();
+    test_radio_settings();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -137,6 +137,7 @@ qt_add_resources(
         qml/RadioReferenceScreen.qml
         qml/AirspyControls.qml
         qml/RadioSheet.qml
+        qml/RadioSettingsPersistence.qml
         qml/SiteSheet.qml
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml

@@ -17,6 +17,7 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QInputMethodEvent>
+#include <QList>
 #include <QObject>
 #include <QQmlComponent>
 #include <QQmlEngine>

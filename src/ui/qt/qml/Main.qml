@@ -1529,9 +1529,20 @@ Window {
     }
 
     // Shared by Monitor and Spectrum; opening Radio never allocates the waterfall.
+    RadioSettingsPersistence {
+        id: radioPersistence
+        systemUid: !mainRoot.exploring && !mainRoot.sessionScanList && mainRoot.sessionSystem
+            && !mainRoot.sessionSystem.signalSearch ? (mainRoot.sessionSystem.uid || "") : ""
+        active: decoderHost.running
+        onSaved: mainRoot.sessionSystem = savedSystems.getByUid(systemUid)
+    }
+
     RadioSheet {
         id: sessionRadio
         anchors.fill: safeArea
+        saveError: radioPersistence.error
+        savesToSystem: radioPersistence.systemUid.length > 0
+        onSettingRequested: function (key, value) { radioPersistence.request(key, value); }
     }
 
     // WP-F5 diagnostics overlay.

@@ -15,11 +15,9 @@
 #include <QLocale>
 #include <QPair>
 #include <QRegularExpression>
-#include <QThread>
 #include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
-#include <atomic>
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
@@ -28,6 +26,11 @@
 #include <iterator>
 #include <stdint.h>
 #include <utility>
+
+#ifdef DSD_NEO_TEST_HOOKS
+#include <QThread>
+#include <atomic>
+#endif
 
 #include "call_history_merge.h"
 #include "dsd-neo/core/state_fwd.h"

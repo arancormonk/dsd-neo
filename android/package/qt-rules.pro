@@ -53,6 +53,14 @@
     void setId(long);
 }
 -keep class org.qtproject.qt.android.QtContentFileEngine { *; }
+# The uncompressed-library path used by Play reads these unannotated fields
+# through JNI while discovering plugins inside APK splits. R8 otherwise renames
+# relativePath and removes size/isDir, so Qt cannot find its Android platform plugin.
+-keep class org.qtproject.qt.android.QtApkFileEngine$JFileInfo {
+    java.lang.String relativePath;
+    long size;
+    boolean isDir;
+}
 -keep class org.qtproject.qt.android.QtExtractedText { *; }
 -keep class org.qtproject.qt.android.QtAbstractItemModel { *; }
 -keep class org.qtproject.qt.android.QtAndroidItemModelProxy { *; }

@@ -108,6 +108,9 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief Replace one system's fields. Unknown keys are ignored. */
     Q_INVOKABLE bool update(int row, const QVariantMap& system);
 
+    /** Persist confirmed Radio controls by stable identity, preserving unrelated wizard fields. */
+    Q_INVOKABLE bool updateRadioSettings(const QString& uid, const QVariantMap& changes);
+
     Q_INVOKABLE void remove(int row);
 
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
@@ -159,6 +162,7 @@ class SavedSystemsModel : public QAbstractListModel {
   private:
     struct Row {
         QVariantMap airspy;
+        QVariantMap radioSettings;
 
         // UUIDs survive row deletion/reordering; a pending start must never touch
         // whichever unrelated row moved into its old index.

@@ -27,6 +27,9 @@ ModalSheet {
     objectName: "radioSheet"
     panelObjectName: "radioSheetPanel"
     spacing: 14
+    property bool savesToSystem: false
+    property string saveError: ""
+    signal settingRequested(string key, var value)
     readonly property bool sessionRunning: decoderHost.running
     onSessionRunningChanged: {
         if (!sessionRunning) {
@@ -516,8 +519,8 @@ ModalSheet {
         if (rowSquelch)
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
                 {"squelchDb": Math.round(db), "squelchMarginDb": margin});
-        else
-            commands.setSquelchDb(db);
+        else if (commands.setSquelchDb(db))
+            settingRequested("squelch", {mode: "level", db: db, off: db >= 0});
     }
 
     /**
@@ -532,10 +535,12 @@ ModalSheet {
         if (rowSquelch)
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
                 {"squelchMode": mode, "squelchMarginDb": margin});
-        else if (mode === commands.squelchModeNoise)
-            commands.setSquelchNoise(margin);
-        else
-            commands.setSquelchAuto(margin);
+        else if (mode === commands.squelchModeNoise) {
+            if (commands.setSquelchNoise(margin))
+                settingRequested("squelch", {mode: "noise", margin: margin});
+        } else if (commands.setSquelchAuto(margin)) {
+            settingRequested("squelch", {mode: "auto", margin: margin});
+        }
     }
 
     /**
@@ -585,7 +590,8 @@ ModalSheet {
         pendingSquelchMargin = NaN;
         pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
         squelchTtl.restart();
-        commands.restoreSquelchLevel();
+        if (commands.restoreSquelchLevel())
+            settingRequested("squelch", {mode: "level", db: db, off: levelOff});
     }
 
     Timer {
@@ -940,6 +946,17 @@ ModalSheet {
     }
 
     // ---- Modulation ----
+    Text {
+        width: parent.width
+        visible: sheet.savesToSystem || sheet.saveError.length > 0
+        text: sheet.saveError.length > 0 ? sheet.saveError
+            : qsTr("Squelch defaults, modulation and Listening for are saved to this system.")
+        wrapMode: Text.WordWrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(12)
+        color: Theme.textSecondary
+    }
+
     // Its own control rather than a decode chip, because it answers a
     // different question: not what to look for, but how the site sends
     // it. A simulcast P25 system reads as noise on C4FM and never locks,
@@ -962,7 +979,8 @@ ModalSheet {
         model: [qsTr("C4FM"), qsTr("QPSK / simulcast"), qsTr("GFSK")]
         currentIndex: metrics.modulation
         onSelected: function (index) {
-            commands.setModulation(index);
+            if (commands.setModulation(index))
+                sheet.settingRequested("modulation", index);
         }
     }
 
@@ -998,8 +1016,8 @@ ModalSheet {
                 enabled: modelData.iqOnly !== true || metrics.radioInput === true
                 selected: mode >= 0 && mode === metrics.decodeMode
                 onClicked: {
-                    if (mode >= 0)
-                        commands.setDecodeMode(mode);
+                    if (mode >= 0 && commands.setDecodeMode(mode))
+                        sheet.settingRequested("decodeFlag", modelData.flag);
                 }
             }
         }

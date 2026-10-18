@@ -24,9 +24,9 @@
 #ifndef DSD_NEO_SRC_UI_QT_INPUT_COMMIT_H_
 #define DSD_NEO_SRC_UI_QT_INPUT_COMMIT_H_
 
-#include <QMetaObject>
 #include <QObject>
 #include <QPointer>
+#include <type_traits> // IWYU pragma: keep -- QPointer conversion traits instantiate in followFocusObject().
 
 namespace dsd_qt {
 

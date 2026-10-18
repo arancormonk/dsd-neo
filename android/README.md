@@ -371,12 +371,16 @@ name from `decoder_host_android.cpp` and the `DsdNative` JNI bindings. Add a mat
 rule whenever adding a native upcall. `qt-rules.pro` preserves Qt's native method
 registration, `UsedFromNativeCode` annotations and the unannotated bridge types and
 methods in Qt 6.11.2. Re-audit it on a Qt upgrade: annotations alone are incomplete.
+This includes the `relativePath`, `size` and `isDir` fields of
+`QtApkFileEngine.JFileInfo`: native plugin discovery reads them when libraries stay
+inside Play's APK splits. Removing or renaming them prevents the Android platform
+plugin from loading even when the standalone APK launches successfully.
 `res/raw/dsdneo_keep.xml` protects the resources Qt loads by name, including the
 library arrays androiddeployqt generates. QML and `.rcc` assets are separate from
 Android resource shrinking.
 
 CI checks the actual release DEX definitions against the app's C++ JNI calls,
-selected Qt upcalls and Qt class names referenced by the packaged native libraries.
+selected Qt upcalls and instance fields, and Qt class names referenced by the packaged native libraries.
 It requires R8 compiler markers, a nonempty mapping, and, for an AAB, the embedded
 `BUNDLE-METADATA/com.android.tools/r8.json` with optimization and shrinking enabled.
 The check prints total uncompressed DEX bytes and the bundle's R8 statistics:

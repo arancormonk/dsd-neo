@@ -8,7 +8,7 @@ The `release` workflow owns release metadata for version tags and creates the
 generated release notes exactly once. Platform packaging workflows wait for that
 release to exist, then upload their assets without rewriting the release body.
 
-The [2.11.1 licensing review](../legal/status.md) records unresolved component,
+The [licensing review](../legal/status.md) records unresolved component,
 fixture and corresponding-source findings. Artifact attestations authenticate
 build provenance; they do not certify legal clearance. Current automatic Git
 source archives do not include all fetched or bundled dependency sources.

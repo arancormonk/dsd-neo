@@ -9,6 +9,7 @@
 #include <cmath>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <utility>
+#include "radio_settings.h"
 #include "scan_list_targets.h"
 #include "session_args.h"
 
@@ -88,6 +89,9 @@ validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>
     if (!sys.value("extraArgs").toString().trimmed().isEmpty()) {
         return QStringLiteral("This saved system has standalone Extra arguments. Remove them to use it in a manual "
                               "list, or import a target CSV with supported switches in its options column.");
+    }
+    if (!radio_settings_valid(sys.value("radioSettings"))) {
+        return QStringLiteral("This saved system has invalid Radio settings.");
     }
     target.analog = analogKindForFlag(target.decode) >= 0;
     target.trunk = sys.value("trunking").toBool();
@@ -242,6 +246,10 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
     /* An analog channel has no digital modulation: the editor hides the choice, so one left from another protocol is
        not the entry's. */
     target.modulation = target.analog ? QString() : entry.value("modulation").toString();
+    const auto radio = sys.value("radioSettings").toMap();
+    if (!target.analog && target.modulation.isEmpty() && radio.contains("modulation")) {
+        target.modulation = QStringList{"c4fm", "cqpsk", "gfsk"}.at(radio.value("modulation").toInt());
+    }
     if (target.modulation.isEmpty() && target.decode.split(QLatin1Char(' ')).contains(QStringLiteral("-mq"))) {
         target.modulation = QStringLiteral("cqpsk");
     }
@@ -305,6 +313,10 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
     }
     if (!error.isEmpty()) {
         return sys.value("name").toString() + QStringLiteral(": ") + error;
+    }
+    const auto radio = sys.value("radioSettings").toMap();
+    if (radio.contains("squelch")) {
+        options << QStringLiteral("--squelch") << radio.value("squelch").toString();
     }
     const QString src = sys.value("srcCsvPath").toString();
     if (!src.isEmpty() && src != list.value("srcCsvPath").toString()) {

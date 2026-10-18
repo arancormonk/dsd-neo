@@ -800,6 +800,41 @@ test_every_error_has_text() {
 
 } // namespace
 
+static void
+test_radio_settings_args() {
+    auto system = usb_system();
+    system["sourceType"] = "rtltcp";
+    system["host"] = "127.0.0.1";
+    system["port"] = 1234;
+    system["decodeFlag"] = "-fA";
+    system["extraArgs"] = "-f1 -mg --squelch=-80";
+    SessionArgPrefs prefs;
+    prefs.extraArgs = "-mq --squelch off";
+    const auto legacy = session_args_build(system, prefs, nullptr);
+    expect("advanced-option baseline is valid", !legacy.isEmpty());
+    system["radioSettings"] = QVariantMap{};
+    expect("legacy systems keep their argument order", session_args_build(system, prefs, nullptr) == legacy);
+    for (const auto& sql : QStringList{"-65", "off", "auto+12", "noise+8", "1"}) {
+        system["radioSettings"] = QVariantMap{{"decodeFlag", "-fA"}, {"modulation", 0}, {"squelch", sql}};
+        const auto args = session_args_build(system, prefs, nullptr);
+        expect("confirmed controls override old system and global extras in decoder/modulation/squelch order",
+               args == legacy + QStringList{"-ma", "-fA", "-mc", "--squelch", sql});
+    }
+    system["decodeFlag"] = "";
+    system["radioSettings"] = QVariantMap{{"decodeFlag", ""}};
+    const auto automatic = session_args_build(system, prefs, nullptr);
+    expect("Auto clears any old manual modulation lock and explicitly resets the decoder",
+           automatic.mid(automatic.size() - 2) == QStringList{"-ma", "-fa"});
+    system["decodeFlag"] = "-fA";
+    for (const auto& bad : QList<QVariant>{QStringLiteral("--show-keys"), QVariantMap{{"modulation", -1}},
+                                           QVariantMap{{"squelch", "noise+99"}}, QVariantMap{{"decodeFlag", "-fM"}}}) {
+        system["radioSettings"] = bad;
+        SessionArgsError error = SessionArgsError::None;
+        expect("malformed or inconsistent saved controls cannot bypass start validation",
+               session_args_build(system, prefs, &error).isEmpty() && error == SessionArgsError::UnsafeOption);
+    }
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -832,6 +867,7 @@ main(int argc, char** argv) {
     test_bias_tee_tristate();
     test_network_and_file_sources();
     test_explore_system();
+    test_radio_settings_args();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;
