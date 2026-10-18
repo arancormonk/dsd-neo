@@ -211,15 +211,20 @@ typedef struct {
     int lanes;       /* coded bits per input bit */
     uint8_t taps[4]; /* generator polynomial terms */
     int shift_up;    /* 1: next = (register << 1 | input) & 15 (D1 in bit 0); 0: next = input << 3 | register >> 1 */
+    /* Coded word on the lower predecessor's edge into each destination, lane 0 in bit 0.
+       The other predecessor flips every lane for both codes. */
+    uint32_t incoming[16];
 } tetra_conv_code;
 
 /* EN 300 392-2 clause 8.2.3.1.1, register bit 0 = D: G1 = 1 + D + D^4, G2 = 1 + D^2 + D^3 + D^4,
    G3 = 1 + D + D^2 + D^4, G4 = 1 + D + D^3 + D^4. */
-static const tetra_conv_code k_signalling_code = {4, {0x19, 0x1E, 0x1B, 0x1D}, 1};
+static const tetra_conv_code k_signalling_code = {
+    4, {0x19, 0x1E, 0x1B, 0x1D}, 1, {0, 15, 13, 2, 6, 9, 11, 4, 10, 5, 7, 8, 12, 3, 1, 14}};
 
 /* EN 300 395-2 clause 5.4.3.1, register bit 3 = D: G1 = 1 + D + D^2 + D^3 + D^4, G2 = 1 + D + D^3 + D^4,
    G3 = 1 + D^2 + D^4. */
-static const tetra_conv_code k_speech_code = {3, {0x1F, 0x1B, 0x15, 0x00}, 0};
+static const tetra_conv_code k_speech_code = {
+    3, {0x1F, 0x1B, 0x15, 0x00}, 0, {0, 3, 5, 6, 3, 0, 6, 5, 7, 4, 2, 1, 4, 7, 1, 2}};
 
 static uint8_t
 parity5(uint8_t value) {
@@ -239,37 +244,30 @@ conv_input_of(const tetra_conv_code* code, int next_state) {
     return code->shift_up ? (next_state & 1) : (next_state >> 3);
 }
 
-static uint64_t
-conv_branch_cost(const tetra_conv_code* code, int state, int bit, const uint16_t* costs) {
-    const uint8_t involved = (uint8_t)((bit << 4) | state);
-    uint64_t branch = 0;
-    for (int lane = 0; lane < code->lanes; lane++) {
-        const uint16_t target = parity5((uint8_t)(involved & code->taps[lane])) ? 0xFFFFu : 0x0000u;
-        const uint16_t got = costs[lane];
-        branch += target > got ? (uint64_t)(target - got) : (uint64_t)(got - target);
-    }
-    return branch;
-}
-
 /* One add-compare-select step over the trellis; @p pred records each state's surviving predecessor. */
 static void
-conv_acs_step(const tetra_conv_code* code, const uint64_t* prev, uint64_t* next, const uint16_t* costs, uint8_t* pred) {
-    const uint64_t inf = UINT64_MAX / 4u;
-    for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
-        next[state] = inf;
+conv_acs_step(const tetra_conv_code* code, const uint32_t* prev, uint32_t* next, const uint16_t* costs, uint8_t* pred) {
+    /* Even a maximum-length path costs at most 512 * 4 * 65535 < 2^27.
+       INF plus a branch also fits, so unreachable paths can be clamped after selection. */
+    const uint32_t inf = UINT32_MAX / 4u;
+    uint32_t branch[TETRA_VITERBI_STATES] = {0};
+    for (int lane = 0; lane < code->lanes; lane++) {
+        const uint32_t zero = costs[lane];
+        const uint32_t one = 65535u - zero;
+        for (int to = 0; to < TETRA_VITERBI_STATES; to++) {
+            branch[to] += ((code->incoming[to] >> lane) & 1u) ? one : zero;
+        }
     }
-    for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
-        if (prev[state] == inf) {
-            continue;
-        }
-        for (int bit = 0; bit <= 1; bit++) {
-            const int to = conv_next_state(code, state, bit);
-            const uint64_t metric = prev[state] + conv_branch_cost(code, state, bit, costs);
-            if (metric < next[to]) {
-                next[to] = metric;
-                pred[to] = (uint8_t)state;
-            }
-        }
+    const uint32_t complement = (uint32_t)code->lanes * 65535u;
+    for (int to = 0; to < TETRA_VITERBI_STATES; to++) {
+        const int low = code->shift_up ? (to >> 1) : ((to << 1) & 15);
+        const int high = low + (code->shift_up ? 8 : 1);
+        const uint32_t a = prev[low] + branch[to];
+        const uint32_t b = prev[high] + (complement - branch[to]);
+        /* Strict improvement by the higher predecessor preserves the original tie order. */
+        const uint32_t best = b < a ? b : a;
+        next[to] = best < inf ? best : inf;
+        pred[to] = best < inf ? (uint8_t)(b < a ? high : low) : 0;
     }
 }
 
@@ -277,8 +275,8 @@ conv_acs_step(const tetra_conv_code* code, const uint64_t* prev, uint64_t* next,
    path ending in state 0 is the answer; the best state stands in only when state 0 is unreachable. */
 static void
 conv_viterbi(const tetra_conv_code* code, const uint16_t* costs, int nbits, uint8_t* out_bits) {
-    const uint64_t inf = UINT64_MAX / 4u;
-    uint64_t metric[2][TETRA_VITERBI_STATES];
+    const uint32_t inf = UINT32_MAX / 4u;
+    uint32_t metric[2][TETRA_VITERBI_STATES];
     uint8_t pred[TETRA_VITERBI_MAX_BITS][TETRA_VITERBI_STATES];
     for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
         metric[0][state] = state == 0 ? 0 : inf;
@@ -288,7 +286,7 @@ conv_viterbi(const tetra_conv_code* code, const uint16_t* costs, int nbits, uint
         conv_acs_step(code, metric[pos & 1], metric[(pos + 1) & 1], costs + ((size_t)pos * (size_t)code->lanes),
                       pred[pos]);
     }
-    const uint64_t* last = metric[nbits & 1];
+    const uint32_t* last = metric[nbits & 1];
     int state = 0;
     if (last[0] == inf) {
         for (int candidate = 1; candidate < TETRA_VITERBI_STATES; candidate++) {

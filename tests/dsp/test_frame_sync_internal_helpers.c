@@ -14,6 +14,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -1102,25 +1103,108 @@ test_nxdn_variant_follows_active_profile(void) {
 
 static void
 test_bounded_symbol_history_readiness_and_wrap(void) {
-    static const int window_lengths[] = {8, 10, 12, 16, 20, 24, 32, 48};
-    char symbols[80];
-    char out[49];
+    static const int window_lengths[] = {1, 8, 10, 12, 16, 20, 24, 32, 48, 79, 119, 128};
+    char symbols[384];
+    char out[130];
     for (int i = 0; i < (int)sizeof(symbols); i++) {
-        symbols[i] = (char)('0' + (i & 3));
+        symbols[i] = (char)(1 + ((i * 37 + i / 7) % 126));
     }
-
     for (size_t i = 0; i < sizeof(window_lengths) / sizeof(window_lengths[0]); i++) {
         const int length = window_lengths[i];
         DSD_MEMSET(out, 'x', sizeof(out));
         assert(dsd_frame_sync_test_history_window(symbols, length - 1, length, out, (int)sizeof(out)) == 0);
+        for (int j = 0; j < (int)sizeof(out); j++) {
+            assert(out[j] == 'x');
+        }
         assert(dsd_frame_sync_test_history_window(symbols, length, length, out, (int)sizeof(out)) == 1);
         assert(memcmp(out, symbols, (size_t)length) == 0);
         assert(out[length] == '\0');
-
-        assert(dsd_frame_sync_test_history_window(symbols, (int)sizeof(symbols), length, out, (int)sizeof(out)) == 1);
-        assert(memcmp(out, symbols + sizeof(symbols) - (size_t)length, (size_t)length) == 0);
-        assert(out[length] == '\0');
+        /* All head positions, with the ring already wrapped twice. */
+        for (int count = 256; count < 384; count++) {
+            DSD_MEMSET(out, 'x', sizeof(out));
+            assert(dsd_frame_sync_test_history_window(symbols, count, length, out, length) == 0);
+            assert(out[0] == 'x');
+            assert(dsd_frame_sync_test_history_window(symbols, count, length, out, length + 1) == 1);
+            assert(memcmp(out, symbols + count - length, (size_t)length) == 0);
+            assert(out[length] == '\0');
+            assert(out[length + 1] == 'x');
+        }
     }
+    assert(dsd_frame_sync_test_history_window(symbols, 384, 0, out, (int)sizeof(out)) == 0);
+    assert(dsd_frame_sync_test_history_window(symbols, 384, 129, out, (int)sizeof(out)) == 0);
+}
+
+static int
+training_oracle(const char* obs, const char* pat, const char* inv, int len, int* rotation, int* inverted) {
+    static const int step[] = {1, 3, 0, 2};
+    for (int rot = 0; rot < 4; rot++) {
+        int normal = 1, inverse = inv != NULL;
+        for (int i = 0; i < len; i++) {
+            int d = (unsigned char)obs[i] & 3;
+            for (int r = 0; r < rot; r++) {
+                d = step[d];
+            }
+            normal &= d == pat[i] - '0';
+            if (inv) {
+                inverse &= d == inv[i] - '0';
+            }
+        }
+        if (normal || inverse) {
+            *rotation = rot;
+            *inverted = !normal;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+test_tetra_training_rotation_oracle(void) {
+    static const int step[] = {1, 3, 0, 2};
+    for (int symbol = -20; symbol < 270; symbol++) {
+        for (int rot = -10; rot < 10; rot++) {
+            int want = symbol & 3;
+            for (int r = 0; r < (rot & 3); r++) {
+                want = step[want];
+            }
+            assert(tetra_dibit_derotate(symbol, rot) == want);
+        }
+    }
+    uint32_t random = 0x48a1f37u;
+    for (int trial = 0; trial < 12000; trial++) {
+        char pat[32], inv[32], obs[32];
+        const int len = 1 + trial % 32;
+        for (int i = 0; i < len; i++) {
+            random = random * 1664525u + 1013904223u;
+            int d = (int)(random >> 30);
+            pat[i] = (char)('0' + d);
+            inv[i] = (char)('0' + (trial % 11 == 0 ? d : d ^ 2));
+            if (trial & 1) {
+                d = inv[i] - '0';
+            }
+            for (int r = 0; r < ((trial >> 1) & 3); r++) {
+                d = step[d];
+            }
+            obs[i] = (char)(d + (trial & 8 ? '0' : 0));
+        }
+        if (trial % 3 == 0) {
+            obs[(trial / 3) % len] ^= 1;
+        }
+        if (trial % 17 == 0) {
+            pat[len - 1] = '9';
+        }
+        const char* inverse = trial % 5 == 0 ? NULL : inv;
+        int want_rot = -1, want_inv = -1, got_rot = -1, got_inv = -1;
+        const int want = training_oracle(obs, pat, inverse, len, &want_rot, &want_inv);
+        assert(tetra_training_derotation(obs, pat, inverse, len, &got_rot, &got_inv) == want);
+        assert(got_rot == want_rot && got_inv == want_inv);
+        assert(tetra_training_derotation(obs, pat, inverse, len, NULL, NULL) == want);
+    }
+    int rot = -1, inv = -1;
+    assert(tetra_training_derotation(NULL, "0", NULL, 1, &rot, &inv) == 0);
+    assert(tetra_training_derotation("0", NULL, NULL, 1, &rot, &inv) == 0);
+    assert(tetra_training_derotation("0", "0", NULL, 0, &rot, &inv) == 0);
+    assert(rot == -1 && inv == -1);
 }
 
 static void
@@ -3429,6 +3513,7 @@ main(void) {
     test_four_level_profiles_reset_inherited_modulation();
     test_nxdn_variant_follows_active_profile();
     test_bounded_symbol_history_readiness_and_wrap();
+    test_tetra_training_rotation_oracle();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();
     test_symbol_replay_bypasses_sps_profile_gating();
     test_dmr_rc_sync_matches_and_respects_polarity();

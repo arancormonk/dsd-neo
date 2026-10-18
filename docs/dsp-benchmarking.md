@@ -77,6 +77,10 @@ The benchmark target includes:
 - FLL and Gardner include P25 Phase 1 at both 24 kHz (5 samples/symbol) and 48 kHz (10 samples/symbol);
   the latter cases have the `_p25p1_48k` suffix.
 - Full demod cases for C4FM audio monitor, FSK discriminator output, and CQPSK P25P1/P25P2.
+- Per-protocol matched filters (`matched_*`) at 48 kHz, including P25/DMR at 10 samples per symbol and
+  NXDN/dPMR at 20; histories persist across the 256-sample calls.
+- NFM and PCM noise-squelch processing (`noise_squelch_*_48k`), including window decisions. Plan design and
+  NFM calibration occur outside the timed calls.
 - C4FM and binary FSK SNR estimation on 256- and 2048-sample discriminator blocks (`snr_c4fm_*` and
   `snr_gfsk_*`), including the phase search, clustering and noise reductions.
 - The analog receive core (sub-audible front end, CTCSS and DCS detectors) on a tone on its value, a tone off it,

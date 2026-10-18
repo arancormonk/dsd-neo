@@ -300,10 +300,7 @@ pnsq_flush_sections(double* s) {
 
 static void
 pnsq_flush_state(dsd_pcm_noise_squelch* t) {
-    for (int k = 0; k < t->plan.bands; k++) {
-        pnsq_flush_sections(t->s1[k]);
-        pnsq_flush_sections(t->s2[k]);
-    }
+    dsd_noise_squelch_bank_flush(t->bank, t->plan.bands, k_state_flush);
     pnsq_flush_sections(t->v1);
     pnsq_flush_sections(t->v2);
     for (int j = 0; j < DSD_PCM_NOISE_SQUELCH_VOICE_PARTS; j++) {
@@ -337,8 +334,12 @@ dsd_pcm_noise_squelch_restart(dsd_pcm_noise_squelch* t) {
     if (!t) {
         return;
     }
-    DSD_MEMSET(t->s1, 0, sizeof(t->s1));
-    DSD_MEMSET(t->s2, 0, sizeof(t->s2));
+    DSD_MEMSET(t->bank, 0, sizeof(t->bank));
+    if (t->plan.valid) {
+        for (int k = 0; k < t->plan.bands; k++) {
+            dsd_noise_squelch_bank_prepare_band(t->bank, k, t->plan.section[k]);
+        }
+    }
     DSD_MEMSET(t->v1, 0, sizeof(t->v1));
     DSD_MEMSET(t->v2, 0, sizeof(t->v2));
     DSD_MEMSET(t->vp1, 0, sizeof(t->vp1));
@@ -1166,10 +1167,7 @@ pnsq_close_half(dsd_pcm_noise_squelch* t) {
 /* One sample through the band-passes into the open half-window. */
 static void
 pnsq_sample(dsd_pcm_noise_squelch* t, double x) {
-    for (int k = 0; k < t->plan.bands; k++) {
-        const double y = dsd_noise_squelch_bank_run(t->plan.section[k], t->s1[k], t->s2[k], x);
-        t->half_e[k] += y * y;
-    }
+    dsd_noise_squelch_bank_energy(t->bank, t->plan.bands, x, t->half_e);
     const double vy = dsd_noise_squelch_bank_run(t->plan.voice, t->v1, t->v2, x);
     t->half_v += vy * vy;
     for (int j = 0; j < DSD_PCM_NOISE_SQUELCH_VOICE_PARTS; j++) {

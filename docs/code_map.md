@@ -3034,7 +3034,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
   signal one group delay in the past — 67 samples for NXDN48 at 20 samples per symbol. What the filter module
   promises the symbolizer is small: the delay, stated without disturbing a running filter, and a way to push
-  history into a filter without reading an output. `MATCHED_FILTER_SEAM` pins that promise.
+  history into a filter without reading an output. Each history sample is stored twice, one tap-count apart,
+  so the oldest-to-newest dot product reads contiguous lanes. Apply and prime share the same push; reset and SPS
+  redesign clear both copies. `MATCHED_FILTER_SEAM` pins the timing promise and compares wrapped histories with
+  independent linear convolution.
 - `dsd_symbol.c` pays for every switch so the grid does not move. It keeps the raw samples it has consumed
   (`dsd_state::matched_filter`, see `core/state.h`); a filter switching on is primed from that history and fed its
   delay's worth of samples whose outputs are discarded, one switching off hands back the samples it still had in
@@ -3298,7 +3301,11 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
   Q = max(Q_sum, Q_max - guard) combine (`dsd_noise_squelch_bank_quieting_db()`); the radio squelch's results are
-  bit-identical to before the split.
+  bit-identical to before the split. The runtime bank caches plan coefficients alongside transposed direct-form-II
+  state in groups of four independent bands (`dsd_noise_squelch_band_group`, owned by each squelch's `bank`). Reset
+  clears all lanes and repacks the active plan. Calibration uses the same grouped runner. SIMD spans bands only:
+  each cascade, per-sample recurrence, energy accumulation and half-window decision retains its original order.
+  `DSP_NOISE_SQUELCH_BANK` compares all bank sizes and partial groups with scalar filters.
 - The PCM noise squelch's core (issue #628) is `src/dsp/pcm_noise_squelch.c` (`<dsd-neo/dsp/pcm_noise_squelch.h>`), pure
   (no clock, I/O or allocation) and on audio input's own samples at the monitor rate. Its plan
   (`dsd_pcm_noise_squelch_plan_design()`, from the monitor rate and the input's native rate) takes the band from 3.8 kHz
@@ -4920,7 +4927,18 @@ Private per-protocol modules worth knowing about:
 
 ### TETRA
 
+The signalling and speech Viterbi decoders in `tetra_fec.c` precompute each destination's incoming coded word.
+The higher predecessor complements every coded lane, so one branch cost serves both edges. Independent
+add-compare-select operations use 32-bit metrics (a 512-bit path costs at most 134215680), clamp unreachable paths,
+and prefer the lower predecessor on ties. `TETRA_VITERBI` checks every survivor and traceback against a 64-bit
+polynomial oracle, including maximum-length, erased and tied inputs.
+
 #### Burst sync
+
+Training matching (`<dsd-neo/dsp/tetra_training.h>`) uses the first dibit to select possible rotations before comparing
+the full word; lower rotations still win, with the normal word preferred over its inverse at the same rotation.
+Frame-sync history windows copy at most two contiguous spans of the 128-symbol ring and terminate only complete
+windows. `FRAME_SYNC_INTERNAL_HELPERS` covers every ring head and compares training decisions with a scalar oracle.
 
 The frame sync (`frame_sync_try_tetra()` in `src/dsp/dsd_frame_sync.c`) locks a TETRA burst at the end of its training
 sequence and captures block 1 from its history into `dsd_state::tetra_sync`, on the TMO downlink with AACH half 1, the

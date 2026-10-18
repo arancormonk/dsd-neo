@@ -73,6 +73,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
@@ -9549,6 +9550,20 @@ set_tests_properties(DSP_SQUELCH_FLOOR PROPERTIES TIMEOUT 300)
 # that follows the CNR and not the level, strong tones that never close it, the
 # hysteresis, the flags' timing, and the same flags whatever the block cuts.
 add_executable(
+    dsd-neo_test_dsp_noise_squelch_bank
+    dsp/test_dsp_noise_squelch_bank.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_noise_squelch_bank
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_noise_squelch_bank ${DSD_NEO_TEST_MATH_LIB})
+add_test(
+    NAME DSP_NOISE_SQUELCH_BANK
+    COMMAND dsd-neo_test_dsp_noise_squelch_bank
+)
+
+add_executable(
     dsd-neo_test_dsp_nfm_noise_squelch
     dsp/test_dsp_nfm_noise_squelch.c
 )
@@ -11564,6 +11579,7 @@ set(_dsd_tetra_test_sources
     tetra_publication
     tetra_voice_gate
     tetra_calls
+    viterbi
 )
 
 foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)

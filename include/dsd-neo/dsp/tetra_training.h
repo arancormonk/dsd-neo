@@ -20,19 +20,13 @@ extern "C" {
  * phases, so the training word is compared after 0..3 of these steps. */
 static inline int
 tetra_dibit_rotate90(int dibit) {
-    switch (dibit & 3) {
-        case 0: return 1;
-        case 1: return 3;
-        case 2: return 0;
-        default: return 2;
-    }
+    const int d = dibit & 3;
+    return (((d & 1) << 1) | (d >> 1)) ^ 1;
 }
 
 static inline int
 tetra_dibit_from_symbol(int symbol) {
-    if (symbol >= '0' && symbol <= '3') {
-        return symbol - '0';
-    }
+    /* ASCII '0'..'3' have the same low bits as numeric dibits. */
     return symbol & 3;
 }
 
@@ -41,10 +35,21 @@ tetra_dibit_from_symbol(int symbol) {
 static inline int
 tetra_dibit_derotate(int symbol, int rot) {
     int d = tetra_dibit_from_symbol(symbol);
-    for (int i = 0; i < (rot & 3); i++) {
-        d = tetra_dibit_rotate90(d);
+    rot &= 3;
+    if (rot & 1) {
+        d = ((d & 1) << 1) | (d >> 1);
     }
-    return d;
+    return d ^ (rot ^ (rot >> 1));
+}
+
+/* Compare the remaining dibits after the caller has matched the first one. */
+static inline int
+tetra_training_matches(const char* obs, const char* pat, int len, int rot) {
+    int mismatch = 0;
+    for (int i = 1; i < len; i++) {
+        mismatch |= tetra_dibit_derotate((unsigned char)obs[i], rot) ^ (pat[i] - '0');
+    }
+    return mismatch == 0;
 }
 
 /* Exact match of a training word after a 0/90/180/270 derotation.
@@ -56,23 +61,16 @@ tetra_training_derotation(const char* obs, const char* pat, const char* pat_inv,
         return 0;
     }
     for (int rot = 0; rot < 4; rot++) {
-        int mis = 0;
-        int mis_inv = pat_inv ? 0 : len + 1;
-        for (int i = 0; i < len; i++) {
-            int d = tetra_dibit_derotate((unsigned char)obs[i], rot);
-            if (d != (pat[i] - '0')) {
-                mis++;
-            }
-            if (pat_inv && d != (pat_inv[i] - '0')) {
-                mis_inv++;
-            }
-        }
-        if (mis == 0 || mis_inv == 0) {
+        /* The first dibit identifies at most one rotation for each word. */
+        const int first = tetra_dibit_derotate((unsigned char)obs[0], rot);
+        const int normal = first == pat[0] - '0' && tetra_training_matches(obs, pat, len, rot);
+        const int inverted = pat_inv && first == pat_inv[0] - '0' && tetra_training_matches(obs, pat_inv, len, rot);
+        if (normal || inverted) {
             if (out_rot) {
                 *out_rot = rot;
             }
             if (out_inverted) {
-                *out_inverted = (mis == 0) ? 0 : 1;
+                *out_inverted = normal ? 0 : 1;
             }
             return 1;
         }

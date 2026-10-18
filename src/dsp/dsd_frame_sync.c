@@ -2786,9 +2786,13 @@ frame_sync_history_materialize(const frame_sync_runtime_ctx* rt, int length, cha
     if (index < 0) {
         index += FRAME_SYNC_HISTORY_CAPACITY;
     }
-    for (int i = 0; i < length; i++) {
-        out[i] = rt->symbol_history[index];
-        index = (index + 1) % FRAME_SYNC_HISTORY_CAPACITY;
+    int first = FRAME_SYNC_HISTORY_CAPACITY - index;
+    if (first > length) {
+        first = length;
+    }
+    DSD_MEMCPY(out, rt->symbol_history + index, (size_t)first);
+    if (first < length) {
+        DSD_MEMCPY(out + first, rt->symbol_history, (size_t)(length - first));
     }
     out[length] = '\0';
     return 1;

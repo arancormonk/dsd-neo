@@ -251,11 +251,13 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
     const int fill = src.taps_len + src.hb_len + src.pre_len;
     const int settle = (int)(k_settle_s * (double)plan->rate_hz);
     const int measured = (int)(k_calibration_s * (double)plan->rate_hz);
-    double s1[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
-    double s2[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    dsd_noise_squelch_band_group
+        bank[(DSD_NOISE_SQUELCH_MAX_BANDS + DSD_NOISE_SQUELCH_GROUP_BANDS - 1) / DSD_NOISE_SQUELCH_GROUP_BANDS];
     double energy[DSD_NOISE_SQUELCH_MAX_BANDS];
-    DSD_MEMSET(s1, 0, sizeof(s1));
-    DSD_MEMSET(s2, 0, sizeof(s2));
+    DSD_MEMSET(bank, 0, sizeof(bank));
+    for (int k = 0; k < plan->bands; k++) {
+        dsd_noise_squelch_bank_prepare_band(bank, k, plan->section[k]);
+    }
     DSD_MEMSET(energy, 0, sizeof(energy));
     nsq_cplx prev = nsq_c(0.0, 0.0);
     for (int n = 0; n < fill + settle + measured; n++) {
@@ -266,12 +268,10 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
             continue;
         }
         const double x = atan2(step.im, step.re);
-        for (int k = 0; k < plan->bands; k++) {
-            const double y = dsd_noise_squelch_bank_run(plan->section[k], s1[k], s2[k], x);
-            if (n >= fill + settle) {
-                energy[k] += y * y;
-            }
+        if (n == fill + settle) {
+            DSD_MEMSET(energy, 0, sizeof(energy));
         }
+        dsd_noise_squelch_bank_energy(bank, plan->bands, x, energy);
     }
     plan->p_ref_sum = 0.0;
     for (int k = 0; k < plan->bands; k++) {
@@ -471,8 +471,12 @@ dsd_noise_squelch_reset(dsd_noise_squelch* t) {
     if (!t) {
         return;
     }
-    DSD_MEMSET(t->s1, 0, sizeof(t->s1));
-    DSD_MEMSET(t->s2, 0, sizeof(t->s2));
+    DSD_MEMSET(t->bank, 0, sizeof(t->bank));
+    if (t->plan.valid) {
+        for (int k = 0; k < t->plan.bands; k++) {
+            dsd_noise_squelch_bank_prepare_band(t->bank, k, t->plan.section[k]);
+        }
+    }
     DSD_MEMSET(t->half_e, 0, sizeof(t->half_e));
     DSD_MEMSET(t->prev_e, 0, sizeof(t->prev_e));
     t->half_iq = t->prev_iq = 0.0;
@@ -525,16 +529,7 @@ dsd_noise_squelch_quieting_db(const dsd_noise_squelch_plan* plan, const double* 
 
 static void
 nsq_flush_state(dsd_noise_squelch* t) {
-    for (int k = 0; k < t->plan.bands; k++) {
-        for (int s = 0; s < DSD_NOISE_SQUELCH_SECTIONS; s++) {
-            if (fabs(t->s1[k][s]) < k_state_flush) {
-                t->s1[k][s] = 0.0;
-            }
-            if (fabs(t->s2[k][s]) < k_state_flush) {
-                t->s2[k][s] = 0.0;
-            }
-        }
-    }
+    dsd_noise_squelch_bank_flush(t->bank, t->plan.bands, k_state_flush);
 }
 
 /* A half-window ends: with the one before it, it makes a window whose quieting moves the gate. */
@@ -583,10 +578,7 @@ dsd_noise_squelch_process(dsd_noise_squelch* t, const float* disc, const float* 
             flags[i] = t->gate_open ? 0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
         }
         const double x = (double)disc[i];
-        for (int k = 0; k < t->plan.bands; k++) {
-            const double y = dsd_noise_squelch_bank_run(t->plan.section[k], t->s1[k], t->s2[k], x);
-            t->half_e[k] += y * y;
-        }
+        dsd_noise_squelch_bank_energy(t->bank, t->plan.bands, x, t->half_e);
         const size_t at = (size_t)i * 2U;
         t->half_iq += ((double)iq[at] * (double)iq[at]) + ((double)iq[at + 1U] * (double)iq[at + 1U]);
         t->half_n += 1.0;

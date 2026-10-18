@@ -20,7 +20,8 @@ typedef struct {
     int design_kind; /* SPS_FIR_DESIGN_* */
     float rrc_alpha; /* used when design_kind == SPS_FIR_DESIGN_RRC */
     float taps[FIR_MAX_TAPS];
-    float hist[FIR_MAX_TAPS];
+    /* Two copies of the ring make every oldest-to-newest window contiguous. */
+    float hist[2 * FIR_MAX_TAPS];
     int taps_len;
     int head;
     int last_sps;
@@ -146,8 +147,8 @@ sps_fir_normalize_and_clear(sps_fir* f, int taps_len) {
     float inv_sum = (float)(1.0 / sum);
     for (int n = 0; n < taps_len; n++) {
         f->taps[n] *= inv_sum;
-        f->hist[n] = 0.0f;
     }
+    DSD_MEMSET(f->hist, 0, sizeof(f->hist));
 }
 
 static void
@@ -169,6 +170,17 @@ design_sps_fir(sps_fir* f, int sps) {
     f->ready = 1;
 }
 
+static void
+sps_fir_push(sps_fir* f, float sample) {
+    int head = f->head + 1;
+    if (head >= f->taps_len) {
+        head = 0;
+    }
+    f->hist[head] = sample;
+    f->hist[head + f->taps_len] = sample;
+    f->head = head;
+}
+
 static float
 apply_sps_fir(sps_fir* f, float sample, int sps) {
     if (!f || sps <= 1) {
@@ -181,21 +193,11 @@ apply_sps_fir(sps_fir* f, float sample, int sps) {
         return sample;
     }
 
-    int head = f->head + 1;
-    if (head >= f->taps_len) {
-        head = 0;
-    }
-    f->hist[head] = sample;
-    f->head = head;
-
+    sps_fir_push(f, sample);
+    const float* history = f->hist + f->head + 1;
     float acc = 0.0f;
-    int zeros = f->taps_len - 1;
-    for (int i = 0; i <= zeros; i++) {
-        int idx = head - (zeros - i);
-        if (idx < 0) {
-            idx += f->taps_len;
-        }
-        acc += f->taps[i] * f->hist[idx];
+    for (int i = 0; i < f->taps_len; i++) {
+        acc += f->taps[i] * history[i];
     }
     return acc;
 }
@@ -424,10 +426,5 @@ dsd_sps_filter_prime(dsd_sps_filter_kind kind, float sample, int samples_per_sym
     if (!f->ready || f->taps_len <= 0) {
         return;
     }
-    int head = f->head + 1;
-    if (head >= f->taps_len) {
-        head = 0;
-    }
-    f->hist[head] = sample;
-    f->head = head;
+    sps_fir_push(f, sample);
 }

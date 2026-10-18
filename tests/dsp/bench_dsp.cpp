@@ -28,10 +28,13 @@
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
+#include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/dsp/snr_estimator.h>
+#include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
@@ -1355,6 +1358,69 @@ bench_one_analog_rx(const BenchOptions& opts, const char* name, const AnalogRxSi
 }
 
 static int
+bench_matched_filters(const BenchOptions& opts) {
+    const dsd_sps_filter_kind kinds[] = {DSD_SPS_FILTER_P25, DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_NXDN,
+                                         DSD_SPS_FILTER_DPMR};
+    const char* names[] = {"matched_p25_sps10", "matched_dmr_sps10", "matched_nxdn_sps20", "matched_dpmr_sps20"};
+    const int rates[] = {10, 10, 20, 20};
+    float samples[256];
+    for (int i = 0; i < 256; i++) {
+        samples[i] = std::sin(0.31f * static_cast<float>(i));
+    }
+    int ran = 0;
+    for (int k = 0; k < 4; k++) {
+        init_rrc_filter_memory();
+        ran += run_case(opts, names[k], "sample", 256.0, [&]() -> float {
+            float sum = 0.0f;
+            for (float sample : samples) {
+                sum += dsd_sps_filter_apply(kinds[k], sample, rates[k]);
+            }
+            return sum;
+        });
+    }
+    return ran;
+}
+
+static int
+bench_noise_squelch(const BenchOptions& opts, bool pcm) {
+    const char* name = pcm ? "noise_squelch_pcm_48k" : "noise_squelch_nfm_48k";
+    if (opts.list_cases || (opts.case_filter && std::strcmp(opts.case_filter, name) != 0)) {
+        return run_case(opts, name, "sample", 256.0, []() -> float { return 0.0f; });
+    }
+    std::vector<float> samples(256), iq(512, 0.70710678f);
+    uint32_t random = 0x4837abU;
+    for (float& x : samples) {
+        random = random * 1664525U + 1013904223U;
+        x = (static_cast<float>(random >> 16) - 32768.0f) / 32768.0f;
+    }
+    uint8_t flags[256];
+    if (pcm) {
+        dsd_pcm_noise_squelch squelch{};
+        dsd_pcm_noise_squelch_plan plan{};
+        if (dsd_pcm_noise_squelch_plan_design(&plan, 48000, 48000) != 0) {
+            return 0;
+        }
+        dsd_pcm_noise_squelch_set_plan(&squelch, &plan);
+        dsd_pcm_noise_squelch_set_threshold(&squelch, 12);
+        return run_case(opts, name, "sample", 256.0, [&]() -> float {
+            dsd_pcm_noise_squelch_process(&squelch, samples.data(), 256, flags);
+            return static_cast<float>(squelch.quieting_db) + flags[255];
+        });
+    }
+    dsd_noise_squelch squelch{};
+    dsd_noise_squelch_plan plan{};
+    if (dsd_noise_squelch_plan_design(&plan, NULL, 0, NULL, 0, 48000) != 0) {
+        return 0;
+    }
+    dsd_noise_squelch_set_plan(&squelch, &plan);
+    dsd_noise_squelch_set_threshold(&squelch, 12);
+    return run_case(opts, name, "sample", 256.0, [&]() -> float {
+        dsd_noise_squelch_process(&squelch, samples.data(), iq.data(), 256, flags);
+        return static_cast<float>(squelch.quieting_db) + flags[255];
+    });
+}
+
+static int
 bench_one_snr(const BenchOptions& opts, const char* name, int count, int levels) {
     constexpr int kSps = 10;
     std::vector<float> samples(static_cast<size_t>(count));
@@ -1419,6 +1485,9 @@ main(int argc, char** argv) {
     ran += bench_carrier_loops(opts);
     ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
+    ran += bench_matched_filters(opts);
+    ran += bench_noise_squelch(opts, false);
+    ran += bench_noise_squelch(opts, true);
     ran += bench_snr(opts);
     ran += bench_analog_rx(opts);
 
