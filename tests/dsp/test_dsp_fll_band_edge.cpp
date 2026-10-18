@@ -28,6 +28,8 @@ check_convolution(void) {
         return 1;
     }
     DSD_MEMSET(d, 0, sizeof(*d));
+    d->lowpassed = d->input_cb_buf;
+    d->lp_len = 2;
     const int rates[] = {1, 4, 5, 8, 10, 20, 23, 24};
     const float amplitudes[] = {0.125f, 1.0f, 16.0f};
     uint32_t seed = 0x1234abcdU;
@@ -49,9 +51,8 @@ check_convolution(void) {
                     f->delay_r[i + f->n_taps] = f->delay_r[i];
                     f->delay_i[i + f->n_taps] = f->delay_i[i];
                 }
-                float iq[] = {0.3f * amplitude, -0.2f * amplitude};
-                d->lowpassed = iq;
-                d->lp_len = 2;
+                d->input_cb_buf[0] = 0.3f * amplitude;
+                d->input_cb_buf[1] = -0.2f * amplitude;
                 f->phase = 0.0f;
                 f->freq = 0.0f;
                 f->delay_idx = start;
