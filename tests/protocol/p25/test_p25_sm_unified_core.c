@@ -517,15 +517,17 @@ test_raw_ptt_retransmissions_coalesce_history(void) {
     signature[0] ^= 0x01U;  // Clear-call MI is not an epoch discriminator.
     signature[8] ^= 0x02U;  // The remaining crypto synchronization octet is also non-authoritative.
     signature[10] ^= 0x04U; // Neither is the clear-call KID.
-    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 0);
+    // Binary-exact offsets keep the inclusive one-second boundary exact instead
+    // of rounding a nominal 1.2 - 0.2 interval just outside the window.
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.25, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     signature[7] ^= 0x08U;
     signature[11] ^= 0x10U;
-    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 1.2, 1);
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 1.25, 1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 1U
         || fabs(ctx.slots[0].last_start_m - first_start_m) > 1.0e-9
-        || fabs(ctx.slots[0].ptt_last_seen_m - (first_m + 1.2)) > 1.0e-9
+        || fabs(ctx.slots[0].ptt_last_seen_m - (first_m + 1.25)) > 1.0e-9
         || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || g_state.payload_algid != 0x80
         || strcmp(g_state.generic_talker_alias[0], "RETX-ALIAS") != 0
         || event_history[0].Event_History_Items[1].event_string[0] != '\0') {
@@ -3402,7 +3404,7 @@ main(void) {
     fail += test_authoritative_group_replaces_private_identity();
     fail += test_inband_zero_source_preserves_grant_identity();
     fail += run_on_test_decode_clock(test_same_identity_ptt_starts_new_epoch_after_missed_end);
-    fail += test_raw_ptt_retransmissions_coalesce_history();
+    fail += run_on_test_decode_clock(test_raw_ptt_retransmissions_coalesce_history);
     fail += test_raw_ptt_signature_changes_open_epochs();
     fail += test_raw_ptt_boundary_invalidation();
     fail += test_raw_ptt_markers_are_slot_local();
