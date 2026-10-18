@@ -11,7 +11,6 @@
 #include <QInputMethodEvent>
 #include <QMetaMethod>
 #include <QQuickItem>
-#include <QString>
 #include <QVariant>
 
 namespace dsd_qt {

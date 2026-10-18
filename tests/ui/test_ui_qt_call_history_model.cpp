@@ -40,7 +40,6 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QThread>
 #include <QVariant>
 #include <QtGlobal>
 #include <atomic>
@@ -64,6 +63,8 @@
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
+
+class QThread;
 
 namespace {
 
@@ -1846,8 +1847,8 @@ test_stores_serialise_off_the_gui_thread(void) {
     {
         CallHistoryModel model;
         for (int i = 0; i < 40; i++) {
-            ring.commit(i % 2, 13000U + static_cast<uint32_t>(i), 700U + static_cast<uint32_t>(i), when + 60 * i,
-                        when + 60 * i + 4);
+            ring.commit(i % 2, 13000U + static_cast<uint32_t>(i), 700U + static_cast<uint32_t>(i),
+                        when + static_cast<time_t>(60) * i, when + static_cast<time_t>(60) * i + 4);
         }
         model.refresh(ring.state);
         expect("forty calls land before the save", model.count() == 40);

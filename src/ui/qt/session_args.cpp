@@ -7,6 +7,7 @@
 #include <utility>
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
+#include "radio_settings.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
 
@@ -668,6 +669,14 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     if (!session_args_extra_safe(tokens)) {
         return fail(SessionArgsError::UnsafeOption);
     }
+    if (!radio_settings_valid(system.value(QStringLiteral("radioSettings")))) {
+        return fail(SessionArgsError::UnsafeOption);
+    }
+    const auto radioSettings = system.value(QStringLiteral("radioSettings")).toMap();
+    if (radioSettings.contains(QStringLiteral("decodeFlag"))
+        && radioSettings.value(QStringLiteral("decodeFlag")) != system.value(QStringLiteral("decodeFlag"))) {
+        return fail(SessionArgsError::UnsafeOption);
+    }
 
     const QString sourceType = system.value(QStringLiteral("sourceType")).toString();
     const bool radioSource = is_radio_source(sourceType);
@@ -723,6 +732,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
         args << "--key-profile-ref" << system.value("decryptionProfileRef").toString();
     }
     append_flag_args(args, system, prefs, hangtime);
+    radio_settings_append(args, radioSettings);
     return args;
 }
 

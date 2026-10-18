@@ -6765,6 +6765,27 @@ test_f_fr_restores_single_slot_mono_preset(void) {
 }
 
 static int
+test_saved_radio_preset_clears_previous_modulation_lock(void) {
+    // The Qt session builder appends this sequence after older advanced options.
+    // Auto must keep hunting; a decoder's initial modulation is not a manual lock.
+    const char* presets[] = {"-fa", "-fs"};
+    int test_rc = 0;
+    for (int i = 0; i < 2; ++i) {
+        const char* args[] = {"dsd-neo", "-mq", "-ma", presets[i], NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        if (run.rc != DSD_PARSE_CONTINUE || run.opts->mod_cli_lock != 0 || run.state->rf_mod != (i ? 2 : 0)) {
+            DSD_FPRINTF(stderr, "saved Radio preset failed to replace an old modulation lock\n");
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+static int
 test_f_dmr_preset_selects_gfsk(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -10103,6 +10124,7 @@ main(void) {
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();
+    rc |= test_saved_radio_preset_clears_previous_modulation_lock();
     rc |= test_mg_before_f_dmr_keeps_gfsk_lock();
     rc |= test_mc_before_f_dmr_preserves_c4fm_lock();
     rc |= test_bootstrap_config_file_rate_survives_cli_provoice_preset();

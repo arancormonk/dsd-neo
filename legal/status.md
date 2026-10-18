@@ -1,5 +1,9 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-# Licensing review for DSD-neo 2.11.1
+# Licensing review for DSD-neo 2.11.2
+
+Version 2.11.2 carries forward the 2.11.1 findings below. Its Android startup
+and Radio-settings fixes change no dependency revisions, bundled components
+or license conclusions; the unresolved findings remain open.
 
 Reviewed 2026-10-17 from `de4212ad1` for preparation of 2.11.1, with
 mbelib-neo **2.6.0**, commit `2b69ade768095ea25e94abe1d4f2bb429fcd2f0c`.

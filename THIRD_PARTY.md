@@ -4,7 +4,7 @@ This file summarizes third-party, vendored, and upstream-derived material known
 in the source tree. Per-file headers and embedded notices remain authoritative
 for file-specific license/provenance details.
 
-The [2.11.1 licensing review](legal/status.md) records unresolved permission,
+The [licensing review](legal/status.md) records unresolved permission,
 compatibility, patent and source-delivery findings. This list is attribution,
 not a finding that every component is cleared for redistribution.
 

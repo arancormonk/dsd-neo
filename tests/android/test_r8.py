@@ -25,6 +25,11 @@ DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
 <class name="QtWindow">
   <constructor name="QtWindow" static="false"><parameter type="long"/></constructor>
 </class>
+<class name="QtApkFileEngine$JFileInfo">
+  <field name="relativePath" type="java.lang.String" static="false"/>
+  <field name="size" type="long" static="false"/>
+  <field name="isDir" type="boolean" static="false"/>
+</class>
 </package></api>"""
 START = (r8.APP_PACKAGE + "DecoderService", "startDecoder",
          "(Landroid/content/Context;[Ljava/lang/String;)V")
@@ -33,8 +38,8 @@ NATIVE = (r8.APP_PACKAGE + "DsdNative", "nativeRun")
 
 class R8ArtifactTests(unittest.TestCase):
     def check_api(self, xml=DEX_XML, upcalls=None, downcalls=None, qt_classes=None, qt_calls=()):
-        classes, methods = r8.dex_api(xml)
-        r8.verify_jni(classes, methods, upcalls if upcalls is not None else {START},
+        classes, methods, fields = r8.dex_api(xml)
+        r8.verify_jni(classes, methods, fields, upcalls if upcalls is not None else {START},
                       downcalls if downcalls is not None else {NATIVE},
                       qt_classes or {r8.QT_PACKAGE + "QtWindow"}, qt_calls)
 
@@ -68,6 +73,22 @@ class R8ArtifactTests(unittest.TestCase):
     def test_unannotated_qt_method_cannot_disappear(self):
         with self.assertRaisesRegex(ValueError, "Missing Qt JNI entry point"):
             self.check_api(qt_calls=(("QtWindow", "setParent", "(Lorg/qtproject/qt/android/QtWindow;)V", False),))
+
+    def test_apk_file_info_field_cannot_be_removed_or_renamed(self):
+        for name in ("relativePath", "size", "isDir"):
+            with self.subTest(field=name), self.assertRaisesRegex(ValueError, "Missing Qt JNI field"):
+                self.check_api(DEX_XML.replace(f'name="{name}"', 'name="a"'))
+        for field in ('<field name="size" type="long" static="false"/>',
+                      '<field name="isDir" type="boolean" static="false"/>'):
+            with self.subTest(removed=field), self.assertRaisesRegex(ValueError, "Missing Qt JNI field"):
+                self.check_api(DEX_XML.replace(field, ""))
+
+    def test_apk_file_info_field_descriptor_and_staticness_must_match(self):
+        for old, new in (('type="long"', 'type="int"'),
+                         ('name="size" type="long" static="false"',
+                          'name="size" type="long" static="true"')):
+            with self.subTest(change=new), self.assertRaisesRegex(ValueError, "Missing Qt JNI field"):
+                self.check_api(DEX_XML.replace(old, new))
 
     def test_arrays_and_primitive_descriptors(self):
         self.assertEqual(r8.descriptor("long[][]"), "[[J")

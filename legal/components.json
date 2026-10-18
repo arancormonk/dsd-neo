@@ -1,7 +1,7 @@
 {
   "SPDX-License-Identifier": "GPL-3.0-or-later",
   "schema_version": 1,
-  "release": "2.11.1",
+  "release": "2.11.2",
   "review_date": "2026-10-17",
   "baseline": "de4212ad1",
   "aggregate_license_concluded": "NOASSERTION",

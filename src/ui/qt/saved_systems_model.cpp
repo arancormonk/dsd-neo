@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/log.h>
 #include "decoder_host.h"
 #include "json_store.h"
+#include "radio_settings.h"
 #include "realtime_clock.h"
 
 namespace dsd_qt {
@@ -287,6 +288,13 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_int(map, QStringLiteral("port"), &row.port);
     map_take_string(map, QStringLiteral("freqMhz"), &row.freqMhz);
     map_take_string(map, QStringLiteral("decodeFlag"), &row.decodeFlag);
+    if (map.contains(QStringLiteral("radioSettings"))) {
+        row.radioSettings = map.value(QStringLiteral("radioSettings")).toMap();
+    } else if (row.decodeFlag != base.decodeFlag) {
+        // A new wizard preset supersedes the previous live preset/modulation.
+        row.radioSettings.remove(QStringLiteral("decodeFlag"));
+        row.radioSettings.remove(QStringLiteral("modulation"));
+    }
     map_take_bool(map, QStringLiteral("trunking"), &row.trunking);
     if (map.contains(QStringLiteral("airspy"))) {
         row.airspy = map.value(QStringLiteral("airspy")).toMap();
@@ -341,6 +349,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("port"), row.port);
     map.insert(QStringLiteral("freqMhz"), row.freqMhz);
     map.insert(QStringLiteral("decodeFlag"), row.decodeFlag);
+    map.insert(QStringLiteral("radioSettings"), row.radioSettings);
     map.insert(QStringLiteral("trunking"), row.trunking);
     map.insert(QStringLiteral("airspy"), row.airspy);
     map.insert(QStringLiteral("gainDb"), row.gainDb);
@@ -362,6 +371,9 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
 
 bool
 SavedSystemsModel::add(const QVariantMap& system) {
+    if (!radio_settings_valid(system.value(QStringLiteral("radioSettings")))) {
+        return false;
+    }
     Row row = rowFromMap(system, Row());
     row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     auto next = m_rows;
@@ -401,7 +413,7 @@ SavedSystemsModel::addWithKeyFrom(const QString& sourceUid, const QVariantMap& s
 
 bool
 SavedSystemsModel::update(int row, const QVariantMap& system) {
-    if (row < 0 || row >= m_rows.size()) {
+    if (row < 0 || row >= m_rows.size() || !radio_settings_valid(system.value(QStringLiteral("radioSettings")))) {
         return false;
     }
     // WP-D4: changed tuning/CSV content no longer describes the imported site.
@@ -426,6 +438,26 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     Q_EMIT dataChanged(idx, idx);
     Q_EMIT sitesChanged();
     return true;
+}
+
+bool
+SavedSystemsModel::updateRadioSettings(const QString& uid, const QVariantMap& changes) {
+    const int row = rowForUid(uid);
+    if (row < 0 || changes.isEmpty() || !radio_settings_valid(changes)) {
+        return false;
+    }
+    auto settings = m_rows.at(row).radioSettings;
+    if (changes.contains(QStringLiteral("decodeFlag"))) {
+        settings.remove(QStringLiteral("modulation"));
+    }
+    for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+        settings.insert(it.key(), it.value());
+    }
+    QVariantMap fields{{QStringLiteral("radioSettings"), settings}};
+    if (changes.contains(QStringLiteral("decodeFlag"))) {
+        fields.insert(QStringLiteral("decodeFlag"), changes.value(QStringLiteral("decodeFlag")));
+    }
+    return update(row, fields);
 }
 
 void

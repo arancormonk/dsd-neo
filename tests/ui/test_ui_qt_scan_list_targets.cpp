@@ -32,6 +32,19 @@ main(int argc, char** argv) {
     QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
     QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}};
     auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
+    sys["radioSettings"] = QVariantMap{{"modulation", 1}, {"squelch", "auto+12"}};
+    check(build().ok && build().csv.contains(",cqpsk,,--squelch auto+12"));
+    entry["modulation"] = "c4fm";
+    list["entries"] = QVariantList{entry};
+    check(build().ok && build().csv.contains(",c4fm,,--squelch auto+12"));
+    entry.remove("modulation");
+    list["entries"] = QVariantList{entry};
+    sys["decodeFlag"] = "-fA";
+    check(build().ok && build().csv.contains(",,,--squelch auto+12"));
+    sys["radioSettings"] = QVariantMap{{"modulation", 8}};
+    check(!build().ok);
+    sys.remove("radioSettings");
+    sys["decodeFlag"] = "-ft";
     auto result = build();
     check(result.ok && result.targetCount == 1 && result.csv.contains("p25-conventional,851500000"));
     for (const auto& flag :

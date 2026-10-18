@@ -533,7 +533,7 @@ Quick examples
 ## License
 
 - Project license: GPL‑3.0‑or‑later (see `LICENSE`).
-- The [2.11.1 licensing review](legal/status.md) records unresolved component
+- The [licensing review](legal/status.md) records unresolved component
   permissions, reference-recording rights, source-delivery obligations and
   patent questions. Project licensing and passing tests do not establish legal clearance.
 - Portions remain under ISC per the original DSD author (see `COPYRIGHT`).

@@ -55,7 +55,9 @@
 
 #include "heard_talkgroup_source.h"
 
+#ifdef DSD_NEO_TEST_HOOKS
 class QThread;
+#endif
 
 namespace dsd_qt {
 
