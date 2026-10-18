@@ -20,6 +20,7 @@ simd_kmeans2_avx2(const float* vals, size_t count, const double* centers, bool w
 #include <immintrin.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <xmmintrin.h>
 
 // This translation unit is selected only after the AVX2 CPU/OS probe succeeds.
 // NOLINTBEGIN(portability-simd-intrinsics)

@@ -23,9 +23,11 @@ simd_stats_rank5_avx2(const float* samples, size_t count, float* lmn, float* lmx
 #else
 
 #include <cfloat>
+#include <emmintrin.h>
 #include <immintrin.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <xmmintrin.h>
 
 // This translation unit is selected only after the AVX2 CPU/OS probe succeeds.
 // NOLINTBEGIN(portability-simd-intrinsics)

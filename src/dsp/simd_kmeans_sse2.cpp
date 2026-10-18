@@ -18,6 +18,7 @@ simd_kmeans2_sse2(const float* vals, size_t count, const double* centers, bool w
 #else
 
 #include <emmintrin.h>
+#include <mmintrin.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <xmmintrin.h>

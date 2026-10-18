@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <stdlib.h>
+#include <stddef.h>
 #include "simd_kmeans_internal.h"
 #include "snr_phase_samples.h"
 

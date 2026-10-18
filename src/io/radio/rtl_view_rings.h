@@ -6,7 +6,9 @@
 #ifndef DSD_NEO_IO_RADIO_RTL_VIEW_RINGS_H
 #define DSD_NEO_IO_RADIO_RTL_VIEW_RINGS_H
 
+#ifdef DSD_NEO_TEST_HOOKS
 #include <stdint.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {

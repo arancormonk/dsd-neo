@@ -17,6 +17,8 @@
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #define TETRA_VITERBI_SIMD_SSE2 1
 #include <emmintrin.h>
+#include <mmintrin.h>
+#include <xmmintrin.h>
 #elif defined(__aarch64__) || defined(_M_ARM64)
 #define TETRA_VITERBI_SIMD_NEON 1
 #include <arm_neon.h>
@@ -422,13 +424,14 @@ conv_acs_run_simd(const tetra_conv_code* code, uint32_t* metric, const uint16_t*
     for (int lane = 0; lane < lanes; lane++) {
         const __m128i bit = _mm_set1_epi32(1 << lane);
         for (int k = 0; k < 4; k++) {
-            const __m128i incoming = _mm_loadu_si128((const __m128i*)(const void*)(code->incoming + (4 * k)));
+            const __m128i incoming =
+                _mm_loadu_si128((const __m128i*)(const void*)(code->incoming + ((size_t)4 * (size_t)k)));
             lane_mask[lane][k] = _mm_cmpeq_epi32(_mm_and_si128(incoming, bit), bit);
         }
     }
     __m128i p[4];
     for (int k = 0; k < 4; k++) {
-        p[k] = _mm_loadu_si128((const __m128i*)(const void*)(metric + (4 * k)));
+        p[k] = _mm_loadu_si128((const __m128i*)(const void*)(metric + ((size_t)4 * (size_t)k)));
     }
     int pos = 0;
     /* Clamp until every survivor sits below INF by more than the largest growth the remaining steps allow (one
@@ -446,7 +449,7 @@ conv_acs_run_simd(const tetra_conv_code* code, uint32_t* metric, const uint16_t*
                       pred + ((size_t)pos * TETRA_VITERBI_STATES), lanes, shift_up, 0);
     }
     for (int k = 0; k < 4; k++) {
-        _mm_storeu_si128((__m128i*)(void*)(metric + (4 * k)), p[k]);
+        _mm_storeu_si128((__m128i*)(void*)(metric + ((size_t)4 * (size_t)k)), p[k]);
     }
 }
 
@@ -546,12 +549,12 @@ conv_acs_run_simd(const tetra_conv_code* code, uint32_t* metric, const uint16_t*
     for (int lane = 0; lane < lanes; lane++) {
         const uint32x4_t bit = vdupq_n_u32(1u << lane);
         for (int k = 0; k < 4; k++) {
-            lane_mask[lane][k] = vtstq_u32(vld1q_u32(code->incoming + (4 * k)), bit);
+            lane_mask[lane][k] = vtstq_u32(vld1q_u32(code->incoming + ((size_t)4 * (size_t)k)), bit);
         }
     }
     uint32x4_t p[4];
     for (int k = 0; k < 4; k++) {
-        p[k] = vld1q_u32(metric + (4 * k));
+        p[k] = vld1q_u32(metric + ((size_t)4 * (size_t)k));
     }
     int pos = 0;
     /* See the SSE2 kernel. */
@@ -567,7 +570,7 @@ conv_acs_run_simd(const tetra_conv_code* code, uint32_t* metric, const uint16_t*
                       pred + ((size_t)pos * TETRA_VITERBI_STATES), lanes, shift_up, 0);
     }
     for (int k = 0; k < 4; k++) {
-        vst1q_u32(metric + (4 * k), p[k]);
+        vst1q_u32(metric + ((size_t)4 * (size_t)k), p[k]);
     }
 }
 

@@ -80,6 +80,7 @@
 /* The static analyzer reads the portable paths only, as with the other DSP SIMD kernels. */
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__clang_analyzer__)
 #include <emmintrin.h>
+#include <mmintrin.h>
 #define DSD_SYNC_HAMMING_HAVE_SSE2 1
 #else
 #define DSD_SYNC_HAMMING_HAVE_SSE2 0

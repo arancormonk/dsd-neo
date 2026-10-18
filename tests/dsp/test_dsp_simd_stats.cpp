@@ -236,10 +236,12 @@ test_empty_and_optional_outputs(void) {
     return std::fabs(low - 4) > 1e-7f || std::fabs(high - 3) > 1e-7f ? 1 : 0;
 }
 
+namespace {
 struct rank5_result {
     float lmn[5];
     float lmx[5];
 };
+} // namespace
 
 /* Independent ordered reference: strict comparisons against FLT_MAX / -FLT_MAX
  * seeds, so NaN is never kept and equal values keep their input order. */
