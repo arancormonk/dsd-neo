@@ -1466,6 +1466,45 @@ except where a published vector is the point. Tests that need time run on the de
 | `TETRA_VOICE_PIPELINE`, `TETRA_VOICE_CODEC` | The speech path against a stand-in decoder (`tests/protocol/tetra/tetra_test_codec.c`) installed with `tetra_voice_set_codec_for_test()`, its samples saying which decode made them: speech starts at a CRC-passed burst, bad frames after it are concealed until a run of four ends it, a stolen half slot's frame is concealed ahead of its speech frame, 240-sample frames leave the output whole 160-sample blocks with the rest carried, a carrier-boundary reset drops the carry and resets the decoder, air-encrypted speech is decrypted at the right key stream bits once it is back in speech frame order, a TEA1 reduced key decrypts its own carrier's speech and no other's, speech starts over at another call or another talker, and the channel, timeslot, encryption, talkgroup and record gates hold back what they should. A decoder that cannot be made, and one whose decodes fail, give one log line each and no audio. `TETRA_VOICE_CODEC` also plays good, CRC-failed and stolen frames through mbelib-neo's decoder and requires exactly the samples a fresh decoder makes of the same frames, before and after a carrier-boundary reset. |
 | `TETRA_PUBLICATION`, `APP_CONTROL_TETRA_VIEW`, `TETRA_FMT_HELPERS` | What the decoder publishes for the frontends (nothing before a block decoded, the timeslot bitmap TN1 first, the algorithms signalling named, the cell's security, the carrier being received through tunes in flight, completed and rolled back, which kind of key applies, never a key, cleared with the state), the rows every frontend shows from it, and the encryption-mode and MM status names. |
 
+### Synthetic DMR signals
+
+`ctest --preset dev-debug -L dmr-synth --output-on-failure` runs the `DMR_SYNTH_*` cases (issue #729). Each one runs
+the helper `dsd-neo_test_dmr_synth_gen` (`tests/protocol/dmr/dmr_synth.c`, not itself a test; its options are in the
+comment at the top of the file), decodes the WAV it writes with `dsd-neo -o null -fs -i <wav> --frame-log <log> -Z`
+and the case's key, and compares the result in `tests/protocol/dmr/dmr_synth_check.cmake`. The decoder output stays
+in `build/<preset>/tests/dmr_synth/<case>/`.
+
+What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as raised-cosine 4FSK discriminator audio
+(alpha 0.2) with white Gaussian noise and an optional symbol-clock offset; CACH/TACT, voice superframes (voice sync,
+EMB, embedded LC), voice LC, PI, terminator and idle bursts with their FEC built through the project's decoders, AMBE+2
+voice from mbelib-neo's encoder, DMRA AES-256, AES-128 and RC4 voice with the per-superframe MI advance and late-entry
+MI fragments, and faults placed on a named burst: a lost burst (the redundant-carrier copy that ends the BS frame loop
+exactly there), CACH and sync noise, a wrong colour code, a TACT miscorrected to the other slot, corrupted late-entry
+fragments, and voice superframes lost after the headers. Output is deterministic for a given seed.
+
+The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
+(for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry
+the fragment nibble). The MI/IV LFSRs, the late-entry layout and the RC4 keystream are written independently in the
+generator, so a decoder and generator cannot share a wrong LFSR; only the AES block primitive and the FEC decoders
+used to search parity are the project's. The checker places each decoded frame by the voice burst header printed
+before it and the per-slot burst sequence, re-anchoring by content after an unseen gap, and names every mismatch by
+case, slot, superframe, VC and frame with the expected and decoded value.
+
+What it does not prove: the channel is ideal apart from noise and clock offset (no fading, multipath, frequency
+offset, deviation error or receiver filtering), the signal comes in as discriminator audio rather than I/Q, and only
+the BS path is covered. A pass shows the decoder agrees with an independent model of the standard, not with a real
+radio; `tools/replay_ab.sh` on real captures remains the evidence for decode quality.
+
+| Case | What it pins |
+| --- | --- |
+| `DMR_SYNTH_CLEAR_VOICE` | A clear call decodes exactly, at most the two bursts the voice gate skips at call start missing. |
+| `DMR_SYNTH_AES256_CALL_START`, `DMR_SYNTH_AES128_BOTH_SLOTS` | Every decoded frame of an encrypted call decrypts right from superframe 0 on, on one or both slots. |
+| `DMR_SYNTH_AES256_BURST_LOSS`, `DMR_SYNTH_RC4_BURST_LOSS` | One burst lost at slot 1 superframe 10 VC3: every later frame decrypts right, and every frame from the next superframe's first opened burst on is decoded. |
+| `DMR_SYNTH_AES256_LOSS_NO_LE` | The same with every later late-entry MI undecodable, so the MI chain has to survive on its own. |
+| `DMR_SYNTH_SLOT_FLIP` | A TACT miscorrected to the other slot mid-call costs at most the flipped burst: no frame after it is muted or garbled on either slot. |
+| `DMR_SYNTH_DRIFT_20PPM`, `DMR_SYNTH_DRIFT_M20PPM` | A 20 s dual-slot clear call at +/-20 ppm and 25 dB SNR: at least 95% of each slot's frames decoded, fewer than 100 AMBE corrections in all, and no BS loop drop-out before the end. |
+| `DMR_SYNTH_PI_FIRST_SUPERFRAME_LOST` | PI header decoded, first superframe faded out: frames may be muted until the MI is known again, never decrypted with a wrong one. |
+
 ### MBE capture checks (issue #661)
 
 `DECODE_IQ_MBE_CAPTURE_*` (CTest labels `iq-decode` and `mbe-capture`) replay a voice fixture with

@@ -12087,6 +12087,154 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dmr_resample_on_sync ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DMR_RESAMPLE_ON_SYNC COMMAND dsd-neo_test_dmr_resample_on_sync)
 
+# Synthetic DMR BS signals decoded end to end (issue #729). The generator is a
+# helper, not a test: each DMR_SYNTH_* case runs it, decodes its WAV with the
+# CLI and compares every decoded AMBE frame with the plaintext the generator
+# recorded (dmr_synth_check.cmake; docs/testing.md "Synthetic DMR signals").
+add_executable(
+    dsd-neo_test_dmr_synth_gen
+    protocol/dmr/dmr_synth.c
+    test_support/dmr_bptc_test_encoder.c
+    test_support/dmr_rs_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_synth_gen
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_MBE_TARGET_INCLUDE_DIRS}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_synth_gen
+    PRIVATE
+        dsd-neo_fec
+        dsd-neo_core
+        dsd-neo_crypto
+        dsd-neo_platform
+        ${MBE_LINK_TARGET}
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+
+set(_DSD_SYNTH_K256
+    "0123456789ABCDEF FEDCBA9876543210 0F1E2D3C4B5A6978 8796A5B4C3D2E1F0"
+)
+set(_DSD_SYNTH_K128 "0123456789ABCDEF FEDCBA9876543210")
+
+# dsd_neo_add_dmr_synth_test(<name> GEN <args> [DEC <args>] [<KEY> <value>]...)
+# forwards each remaining KEY/value pair to dmr_synth_check.cmake as -DKEY=value.
+function(dsd_neo_add_dmr_synth_test test_name)
+    cmake_parse_arguments(
+        _ds
+        ""
+        "GEN;DEC;MATCH;MAX_MISSING;MIN_PERCENT;RECOVER;MAX_CORRECTIONS;NO_DROPOUT;REQUIRE_REGEX"
+        ""
+        ${ARGN}
+    )
+    set(_defs)
+    foreach(
+        _k
+        MATCH
+        MAX_MISSING
+        MIN_PERCENT
+        RECOVER
+        MAX_CORRECTIONS
+        NO_DROPOUT
+        REQUIRE_REGEX
+    )
+        if(DEFINED _ds_${_k})
+            list(APPEND _defs "-D${_k}=${_ds_${_k}}")
+        endif()
+    endforeach()
+    if(DEFINED _ds_DEC)
+        list(APPEND _defs "-DDEC_ARGS=${_ds_DEC}")
+    endif()
+    add_test(
+        NAME ${test_name}
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DGEN_BIN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/dmr_synth/${test_name}"
+            "-DCASE=${test_name}" "-DGEN_ARGS=${_ds_GEN}" ${_defs} -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/protocol/dmr/dmr_synth_check.cmake"
+    )
+    set_tests_properties(${test_name} PROPERTIES LABELS "dmr-synth" TIMEOUT 120)
+endfunction()
+
+# Clear single-slot call: every decoded frame is right and at most the two
+# bursts the voice gate skips at call start are missing.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_CLEAR_VOICE
+    GEN "-t 12 --alg none"
+    MAX_MISSING 6
+)
+# AES-256 call start: superframe 0 decrypts at the right keystream positions.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_AES256_CALL_START
+    GEN "-t 12 --alg aes256"
+    DEC "-H '${_DSD_SYNTH_K256}'"
+    MAX_MISSING 6
+)
+# One burst lost mid-superframe: the MI chain and keystream positions survive.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_AES256_BURST_LOSS
+    GEN "-t 12 --alg aes256 --corrupt 1:10:3"
+    DEC "-H '${_DSD_SYNTH_K256}'"
+    MATCH after_fault
+    RECOVER next_superframe
+)
+# The same loss with every later late-entry MI undecodable: no LE repair.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_AES256_LOSS_NO_LE
+    GEN "-t 12 --alg aes256 --corrupt 1:10:3 --le-corrupt 1:10-end:golay"
+    DEC "-H '${_DSD_SYNTH_K256}'"
+    MATCH after_fault
+    RECOVER next_superframe
+)
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_RC4_BURST_LOSS
+    GEN "-t 12 --alg rc4 --corrupt 1:10:3"
+    DEC "-1 0123456789"
+    MATCH after_fault
+    RECOVER next_superframe
+)
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_AES128_BOTH_SLOTS
+    GEN "-t 12 --alg aes128 --s2 voice"
+    DEC "-H '${_DSD_SYNTH_K128}'"
+    MAX_MISSING 6
+)
+# A CACH TACT miscorrected to the other slot costs at most the flipped burst.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_SLOT_FLIP
+    GEN "-t 12 --alg aes256 --s2 voice --corrupt 1:10:3:flip"
+    DEC "-H '${_DSD_SYNTH_K256}'"
+    MATCH after_fault
+    RECOVER immediate
+)
+# Symbol-clock offset: the BS frame loop keeps its timing through a 20 s call.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_DRIFT_20PPM
+    GEN "-t 20 --alg none --s2 voice --ppm 20 --snr 25"
+    MATCH none
+    MIN_PERCENT 95
+    MAX_CORRECTIONS 100
+    NO_DROPOUT 1
+)
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_DRIFT_M20PPM
+    GEN "-t 20 --alg none --s2 voice --ppm -20 --snr 25"
+    MATCH none
+    MIN_PERCENT 95
+    MAX_CORRECTIONS 100
+    NO_DROPOUT 1
+)
+# PI header decoded, first superframe faded out: frames may be muted, never
+# decrypted with the wrong MI.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_PI_FIRST_SUPERFRAME_LOST
+    GEN "-t 12 --alg aes256 --lose-first 1"
+    DEC "-H '${_DSD_SYNTH_K256}'"
+    REQUIRE_REGEX "DMR PI H- ALG ID: 25"
+)
+
 # P25P2 frame reset and soft-decision reliability test
 add_executable(
     dsd-neo_test_p25_p2_reliability
