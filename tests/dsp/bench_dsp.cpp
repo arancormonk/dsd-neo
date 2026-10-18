@@ -31,6 +31,7 @@
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/simd_widen.h>
+#include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
@@ -1088,8 +1089,10 @@ bench_cqpsk_stages(const BenchOptions& opts) {
     constexpr int kInLen = kPairs * 2;
 
     ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p1", 24000, 5);
+    ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p1_48k", 48000, 10);
     ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p2", 48000, 8);
     ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p1", 24000, 5);
+    ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p1_48k", 48000, 10);
     ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p2", 48000, 8);
 
     {
@@ -1352,6 +1355,34 @@ bench_one_analog_rx(const BenchOptions& opts, const char* name, const AnalogRxSi
 }
 
 static int
+bench_one_snr(const BenchOptions& opts, const char* name, int count, int levels) {
+    constexpr int kSps = 10;
+    std::vector<float> samples(static_cast<size_t>(count));
+    uint32_t seed = 0x1234abcdU;
+    for (int i = 0; i < count; i++) {
+        seed = seed * 1664525U + 1013904223U;
+        const int symbol = i / kSps;
+        const int rail = (symbol + symbol / 7) % levels;
+        const float noise = static_cast<float>((seed >> 16) & 0xffffU) / 65536.0f - 0.5f;
+        samples[static_cast<size_t>(i)] = static_cast<float>(2 * rail - levels + 1) + 0.15f * noise;
+    }
+    return run_case(opts, name, "sample", static_cast<double>(count), [&]() -> float {
+        return static_cast<float>(levels == 4 ? dsd_snr_estimate_c4fm_real_db(samples.data(), count, kSps, 1, 0.0)
+                                              : dsd_snr_estimate_gfsk_real_db(samples.data(), count, kSps, 1, 0.0));
+    });
+}
+
+static int
+bench_snr(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_snr(opts, "snr_c4fm_256", 256, 4);
+    ran += bench_one_snr(opts, "snr_c4fm_2048", 2048, 4);
+    ran += bench_one_snr(opts, "snr_gfsk_256", 256, 2);
+    ran += bench_one_snr(opts, "snr_gfsk_2048", 2048, 2);
+    return ran;
+}
+
+static int
 bench_analog_rx(const BenchOptions& opts) {
     int ran = 0;
     ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_on_value", AnalogRxSignal{100.0, 0.0, 20.0});
@@ -1388,6 +1419,7 @@ main(int argc, char** argv) {
     ran += bench_carrier_loops(opts);
     ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
+    ran += bench_snr(opts);
     ran += bench_analog_rx(opts);
 
     if (opts.case_filter && ran == 0) {

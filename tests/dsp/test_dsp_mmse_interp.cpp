@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <stdio.h>
+#include <vector>
 
 #include "dsd-neo/core/safe_api.h"
 
@@ -43,6 +44,33 @@ make_iq(const float* re, const float* im, int n, float* iq) {
     }
 }
 
+int
+check_reference_phases(const float* iq) {
+    /* Golden results from independent real/imaginary dot products, halfway
+     * between every pair of table rows. The channels intentionally differ. */
+    const float expected[16][2] = {
+        {0.149544418f, 0.819211543f},  {0.047893338f, 0.851615608f},  {-0.054453757f, 0.871791959f},
+        {-0.155925363f, 0.879460394f}, {-0.254952580f, 0.874541998f}, {-0.349994630f, 0.857157826f},
+        {-0.439562261f, 0.827622831f}, {-0.522239983f, 0.786439002f}, {-0.600750029f, 0.730346084f},
+        {-0.665816844f, 0.668067813f}, {-0.716379881f, 0.600596845f}, {-0.759613276f, 0.521179020f},
+        {-0.790748358f, 0.434995323f}, {-0.809239924f, 0.343380988f}, {-0.814740062f, 0.247745961f},
+        {-0.807105839f, 0.149551719f},
+    };
+    /* Offset the exact-sized window by one float to exercise unaligned input
+     * and let sanitizers detect a read beyond its final complex sample. */
+    std::vector<float> storage(17);
+    DSD_MEMCPY(storage.data() + 1, iq, 16 * sizeof(float));
+    int rc = 0;
+    for (int row = 0; row < 16; row++) {
+        float real = 0.0f, imag = 0.0f;
+        const float mu = static_cast<float>(2 * row + 1) / 32.0f;
+        dsd_mmse_interp_complex_8tap(storage.data() + 1, mu, &real, &imag);
+        rc |= expect_close("reference real", real, expected[row][0], 1e-6f);
+        rc |= expect_close("reference imag", imag, expected[row][1], 1e-6f);
+    }
+    return rc;
+}
+
 } // namespace
 
 int
@@ -53,6 +81,7 @@ main(void) {
     const float im[9] = {-0.2f, 0.6f, -0.5f, 0.8f, 0.1f, -0.7f, 0.3f, -0.9f, 0.25f};
     float iq[18];
     make_iq(re, im, 9, iq);
+    rc |= check_reference_phases(iq);
 
     float r = 0.0f;
     float j = 0.0f;

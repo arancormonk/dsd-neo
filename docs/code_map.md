@@ -2700,6 +2700,11 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   recovery, CQPSK helpers
   (matched/RRC), and SIMD helpers; exposes runtime-tunable parameters consumed by the UI
 - Build files: `src/dsp/CMakeLists.txt`
+- CQPSK short convolutions: `costas.cpp` computes the FLL's four real dot products once and combines them for
+  both band edges; filter design keeps the lower taps the exact conjugate of the upper taps. The NCO and feedback
+  still advance per sample. `mmse_interp.cpp` applies each interpolated tap directly to both interleaved I/Q
+  components, preserving the reversed-tap convention and sample-window bounds. Tests: `DSP_FLL_BAND_EDGE`
+  (independent complex convolution over every history position), `DSP_MMSE_INTERP`, and `DSP_COSTAS`.
 - Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync)
   waits on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted
   a stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
@@ -4323,6 +4328,12 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
     `dsd-neo_proto_ysf`, `dsd-neo_proto_tetra`
 
 Notes:
+
+- P25 Phase 1 list trellis decoding (`p25_12.c`) merges four sorted predecessor lists for each destination state.
+  Equal metrics retain predecessor-state order, then survivor rank, matching stable insertion; traceback and final
+  candidate deduplication keep that order. Invalid metrics remain `UINT32_MAX` and never participate in addition.
+  `P25_12_LIST` compares complete candidate bytes, metrics and order with an independent full-path reference,
+  including zero and partial metric ties, extreme LLRs and every output limit.
 
 - Optional codec integrations are expressed via feature interface targets:
   - `dsd-neo_feature_codec2` → `USE_CODEC2` (used by M17 when available). M17's decoded Codec2 voice plays through

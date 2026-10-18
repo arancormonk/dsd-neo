@@ -29,27 +29,6 @@ p25_llr_bit_cost(int16_t llr, int expected_bit) {
 enum { P25_12_N_SYMS = 49, P25_12_N_ST = 4 };
 
 static void
-p25_12_insert_survivor(uint32_t metrics[P25_12_MAX_CANDIDATES], uint8_t backptrs[P25_12_MAX_CANDIDATES],
-                       uint32_t candidate_metric, uint8_t candidate_backptr) {
-    int insert_at = -1;
-    for (int i = 0; i < P25_12_MAX_CANDIDATES; i++) {
-        if (candidate_metric < metrics[i]) {
-            insert_at = i;
-            break;
-        }
-    }
-    if (insert_at < 0) {
-        return;
-    }
-    for (int i = P25_12_MAX_CANDIDATES - 1; i > insert_at; i--) {
-        metrics[i] = metrics[i - 1];
-        backptrs[i] = backptrs[i - 1];
-    }
-    metrics[insert_at] = candidate_metric;
-    backptrs[insert_at] = candidate_backptr;
-}
-
-static void
 p25_12_reset_metrics(uint32_t metrics[P25_12_N_ST][P25_12_MAX_CANDIDATES]) {
     for (int state = 0; state < P25_12_N_ST; state++) {
         for (int rank = 0; rank < P25_12_MAX_CANDIDATES; rank++) {
@@ -109,21 +88,37 @@ p25_12_symbol_cost(const int16_t* llr_dei, int base, uint8_t expect) {
 }
 
 static void
-p25_12_expand_survivors_for_symbol(uint32_t curr_metric[P25_12_MAX_CANDIDATES],
-                                   uint8_t curr_backptr[P25_12_MAX_CANDIDATES],
-                                   const uint32_t prev_metric[P25_12_MAX_CANDIDATES], const int16_t* llr_dei,
-                                   int sym_idx, int st_prev, int st_next) {
-    int base = sym_idx * 4;
-    uint8_t expect = p25_dtm[(st_prev << 2) | st_next] & 0xF;
-    uint32_t cost = p25_12_symbol_cost(llr_dei, base, expect);
+p25_12_merge_survivors(uint32_t* curr_metric, uint8_t* curr_backptr,
+                       uint32_t prev_metric[P25_12_N_ST][P25_12_MAX_CANDIDATES], const int16_t* llr_dei, int sym_idx,
+                       int st_next) {
+    uint32_t cost[P25_12_N_ST];
+    uint32_t head[P25_12_N_ST];
+    int rank[P25_12_N_ST] = {0};
+    for (int st = 0; st < P25_12_N_ST; st++) {
+        uint8_t expect = p25_dtm[(st << 2) | st_next] & 0xF;
+        cost[st] = p25_12_symbol_cost(llr_dei, sym_idx * 4, expect);
+        head[st] = (prev_metric[st][0] == UINT32_MAX) ? UINT32_MAX : prev_metric[st][0] + cost[st];
+    }
 
-    for (int rank = 0; rank < P25_12_MAX_CANDIDATES; rank++) {
-        if (prev_metric[rank] == UINT32_MAX) {
-            continue;
+    /* Each predecessor's survivors are sorted, and its branch cost is constant.
+     * Merge the four lists, keeping predecessor then rank order on metric ties,
+     * exactly as the former stable insertion loop did. */
+    for (int out = 0; out < P25_12_MAX_CANDIDATES; out++) {
+        int best = 0;
+        for (int st = 1; st < P25_12_N_ST; st++) {
+            if (head[st] < head[best]) {
+                best = st;
+            }
         }
-        uint32_t candidate_metric = prev_metric[rank] + cost;
-        uint8_t candidate_backptr = (uint8_t)((st_prev << 3) | rank);
-        p25_12_insert_survivor(curr_metric, curr_backptr, candidate_metric, candidate_backptr);
+        if (head[best] == UINT32_MAX) {
+            break;
+        }
+        curr_metric[out] = head[best];
+        curr_backptr[out] = (uint8_t)((best << 3) | rank[best]);
+        rank[best]++;
+        head[best] = (rank[best] < P25_12_MAX_CANDIDATES && prev_metric[best][rank[best]] != UINT32_MAX)
+                         ? prev_metric[best][rank[best]] + cost[best]
+                         : UINT32_MAX;
     }
 }
 
@@ -174,11 +169,8 @@ p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12_can
 
     for (int i = 0; i < P25_12_N_SYMS; i++) {
         p25_12_reset_metrics(curr_metric);
-        for (int st_prev = 0; st_prev < P25_12_N_ST; st_prev++) {
-            for (int st_next = 0; st_next < P25_12_N_ST; st_next++) {
-                p25_12_expand_survivors_for_symbol(curr_metric[st_next], backptr[i][st_next], prev_metric[st_prev],
-                                                   llr_dei, i, st_prev, st_next);
-            }
+        for (int st_next = 0; st_next < P25_12_N_ST; st_next++) {
+            p25_12_merge_survivors(curr_metric[st_next], backptr[i][st_next], prev_metric, llr_dei, i, st_next);
         }
         uint32_t (*swap_metric)[P25_12_MAX_CANDIDATES] = prev_metric;
         prev_metric = curr_metric;

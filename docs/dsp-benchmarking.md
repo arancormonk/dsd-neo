@@ -74,7 +74,11 @@ The benchmark target includes:
 - SIMD FIR kernels, half-band decimators, and generated channel LPF plans.
 - FSK discriminator reset/steady-state cases.
 - CQPSK stage cases for band-edge FLL, Gardner, differential phasor, Costas, and full demod chains.
+- FLL and Gardner include P25 Phase 1 at both 24 kHz (5 samples/symbol) and 48 kHz (10 samples/symbol);
+  the latter cases have the `_p25p1_48k` suffix.
 - Full demod cases for C4FM audio monitor, FSK discriminator output, and CQPSK P25P1/P25P2.
+- C4FM and binary FSK SNR estimation on 256- and 2048-sample discriminator blocks (`snr_c4fm_*` and
+  `snr_gfsk_*`), including the phase search, clustering and noise reductions.
 - The analog receive core (sub-audible front end, CTCSS and DCS detectors) on a tone on its value, a tone off it,
   noise alone, and a tone beside a voice.
 
