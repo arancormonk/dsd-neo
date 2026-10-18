@@ -88,20 +88,30 @@ accumulate_scalar(dsd_input_level_cu8_moments* local, unsigned char sample) {
     }
 }
 
-static inline void
-reduce16_u8_neon(uint8x16_t bytes, dsd_input_level_cu8_moments* local, uint8x16_t* min_bytes, uint8x16_t* max_bytes) {
-    local->sum += vaddlvq_u8(bytes);
-    const uint16x8_t sq_lo = vmull_u8(vget_low_u8(bytes), vget_low_u8(bytes));
-    const uint16x8_t sq_hi = vmull_u8(vget_high_u8(bytes), vget_high_u8(bytes));
-    local->sum_sq += (uint64_t)vaddlvq_u16(sq_lo) + (uint64_t)vaddlvq_u16(sq_hi);
+/* Four byte squares per 32-bit lane per group; 4096 * 4 * 255^2 < 2^30.
+ * Sums and clip counts have smaller bounds. Reduce to the 64-bit totals once per block. */
+struct Cu8VectorMoments {
+    uint32x4_t sum = vdupq_n_u32(0U);
+    uint32x4_t squares = vdupq_n_u32(0U);
+    uint32x4_t clips = vdupq_n_u32(0U);
 
-    uint8x16_t clipped = vorrq_u8(vceqq_u8(bytes, vdupq_n_u8(0U)), vceqq_u8(bytes, vdupq_n_u8(1U)));
-    clipped = vorrq_u8(clipped, vceqq_u8(bytes, vdupq_n_u8(254U)));
-    clipped = vorrq_u8(clipped, vceqq_u8(bytes, vdupq_n_u8(255U)));
-    local->clipped += vaddlvq_u8(vshrq_n_u8(clipped, 7));
-    *min_bytes = vminq_u8(*min_bytes, bytes);
-    *max_bytes = vmaxq_u8(*max_bytes, bytes);
-}
+    inline void
+    accumulate(uint8x16_t bytes) {
+        sum = vpadalq_u16(sum, vpaddlq_u8(bytes));
+        const uint16x8_t sq_lo = vmull_u8(vget_low_u8(bytes), vget_low_u8(bytes));
+        const uint16x8_t sq_hi = vmull_u8(vget_high_u8(bytes), vget_high_u8(bytes));
+        squares = vpadalq_u16(vpadalq_u16(squares, sq_lo), sq_hi);
+        const uint8x16_t clipped = vorrq_u8(vcleq_u8(bytes, vdupq_n_u8(1U)), vcgeq_u8(bytes, vdupq_n_u8(254U)));
+        clips = vpadalq_u16(clips, vpaddlq_u8(vshrq_n_u8(clipped, 7)));
+    }
+
+    inline void
+    merge(dsd_input_level_cu8_moments* local) const {
+        local->sum += vaddlvq_u32(sum);
+        local->sum_sq += vaddlvq_u32(squares);
+        local->clipped += vaddlvq_u32(clips);
+    }
+};
 
 } /* namespace */
 
@@ -118,13 +128,23 @@ widen_u8_to_f32_bias127_moments_neon(const unsigned char* src, float* dst, uint3
     uint8x16_t min_bytes = vdupq_n_u8(255U);
     uint8x16_t max_bytes = vdupq_n_u8(0U);
     uint32_t i = 0U;
-    for (; i + 15U < len; i += 16U) {
-        const uint8x16_t bytes = vld1q_u8(src + i);
-        reduce16_u8_neon(bytes, &local, &min_bytes, &max_bytes);
-        vst1q_f32(dst + i + 0U, widen4_u8_to_f32_bias127_neon(src + i + 0U));
-        vst1q_f32(dst + i + 4U, widen4_u8_to_f32_bias127_neon(src + i + 4U));
-        vst1q_f32(dst + i + 8U, widen4_u8_to_f32_bias127_neon(src + i + 8U));
-        vst1q_f32(dst + i + 12U, widen4_u8_to_f32_bias127_neon(src + i + 12U));
+    const uint32_t vector_end = len - (len % 16U);
+    while (i < vector_end) {
+        const uint32_t remaining = (vector_end - i) / 16U;
+        const uint32_t groups = remaining < 4096U ? remaining : 4096U;
+        const uint32_t end = i + groups * 16U;
+        Cu8VectorMoments vectors;
+        for (; i < end; i += 16U) {
+            const uint8x16_t bytes = vld1q_u8(src + i);
+            vectors.accumulate(bytes);
+            min_bytes = vminq_u8(min_bytes, bytes);
+            max_bytes = vmaxq_u8(max_bytes, bytes);
+            vst1q_f32(dst + i + 0U, widen4_u8_to_f32_bias127_neon(src + i + 0U));
+            vst1q_f32(dst + i + 4U, widen4_u8_to_f32_bias127_neon(src + i + 4U));
+            vst1q_f32(dst + i + 8U, widen4_u8_to_f32_bias127_neon(src + i + 8U));
+            vst1q_f32(dst + i + 12U, widen4_u8_to_f32_bias127_neon(src + i + 12U));
+        }
+        vectors.merge(&local);
     }
     if (i != 0U) {
         local.min_sample = vminvq_u8(min_bytes);
@@ -184,16 +204,26 @@ widen_rotate90_u8_to_f32_bias127_phase_moments_neon(const unsigned char* src, fl
     uint8x16_t min_bytes = vdupq_n_u8(255U);
     uint8x16_t max_bytes = vdupq_n_u8(0U);
     uint32_t n = 0U;
-    for (; n + 7U < pairs; n += 8U) {
-        const uint32_t idx = n << 1;
-        const uint8x16_t bytes = vld1q_u8(src + idx);
-        reduce16_u8_neon(bytes, &local, &min_bytes, &max_bytes);
-        for (uint32_t group = 0U; group < 4U; group++) {
-            const uint32_t off = idx + group * 4U;
-            const float32x4_t vals = widen4_u8_to_f32_bias127_neon(src + off);
-            vst1q_f32(dst + off, apply_phase2_neon(vals, cur_phase));
-            cur_phase = (cur_phase + 2U) & 3U;
+    const uint32_t vector_end = pairs - (pairs % 8U);
+    while (n < vector_end) {
+        const uint32_t remaining = (vector_end - n) / 8U;
+        const uint32_t groups = remaining < 4096U ? remaining : 4096U;
+        const uint32_t end = n + groups * 8U;
+        Cu8VectorMoments vectors;
+        for (; n < end; n += 8U) {
+            const uint32_t idx = n << 1;
+            const uint8x16_t bytes = vld1q_u8(src + idx);
+            vectors.accumulate(bytes);
+            min_bytes = vminq_u8(min_bytes, bytes);
+            max_bytes = vmaxq_u8(max_bytes, bytes);
+            vst1q_f32(dst + idx + 0U, apply_phase2_neon(widen4_u8_to_f32_bias127_neon(src + idx + 0U), cur_phase));
+            vst1q_f32(dst + idx + 4U,
+                      apply_phase2_neon(widen4_u8_to_f32_bias127_neon(src + idx + 4U), (cur_phase + 2U) & 3U));
+            vst1q_f32(dst + idx + 8U, apply_phase2_neon(widen4_u8_to_f32_bias127_neon(src + idx + 8U), cur_phase));
+            vst1q_f32(dst + idx + 12U,
+                      apply_phase2_neon(widen4_u8_to_f32_bias127_neon(src + idx + 12U), (cur_phase + 2U) & 3U));
         }
+        vectors.merge(&local);
     }
     if (n != 0U) {
         local.min_sample = vminvq_u8(min_bytes);

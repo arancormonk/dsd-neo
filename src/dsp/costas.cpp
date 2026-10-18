@@ -800,10 +800,13 @@ fll_prepare_loop_context(dsd_fll_band_edge_state_t* f, fll_loop_context_t* ctx) 
 static inline void
 fll_convolve_band_edges(const dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx, float* lower_r,
                         float* lower_i, float* upper_r, float* upper_i) {
-    *lower_r = 0.0f;
-    *lower_i = 0.0f;
-    *upper_r = 0.0f;
-    *upper_i = 0.0f;
+    /* Accumulate the four real dot products once for both conjugate filters.
+     * Independent sums let the compiler vectorize across taps; combining them
+     * afterward halves the products and coefficient loads in the convolution. */
+    float rr = 0.0f;
+    float ii = 0.0f;
+    float ri = 0.0f;
+    float ir = 0.0f;
 
     const int delay_base = ctx->delay_idx + ctx->n_taps;
     for (int k = 0; k < ctx->n_taps; k++) {
@@ -811,11 +814,16 @@ fll_convolve_band_edges(const dsd_fll_band_edge_state_t* f, const fll_loop_conte
         const float dr = ctx->delay_r[idx];
         const float di = ctx->delay_i[idx];
 
-        *lower_r += dr * f->taps_lower_r[k] - di * f->taps_lower_i[k];
-        *lower_i += dr * f->taps_lower_i[k] + di * f->taps_lower_r[k];
-        *upper_r += dr * f->taps_upper_r[k] - di * f->taps_upper_i[k];
-        *upper_i += dr * f->taps_upper_i[k] + di * f->taps_upper_r[k];
+        rr += dr * f->taps_upper_r[k];
+        ii += di * f->taps_upper_i[k];
+        ri += dr * f->taps_upper_i[k];
+        ir += di * f->taps_upper_r[k];
     }
+    /* The lower filter is the complex conjugate of the upper filter. */
+    *lower_r = rr + ii;
+    *lower_i = ir - ri;
+    *upper_r = rr - ii;
+    *upper_i = ir + ri;
 }
 
 static inline float
@@ -1155,15 +1163,13 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
         float freq = (float)(-N + i) / (2.0f * (float)sps);
         float phase = kTwoPi * (1.0f + rolloff) * freq;
 
-        /* Lower band edge: exp(-j * phase) - store in reverse order.
-         * rev_idx ranges from n_taps-1 down to 0 as i goes 0 to n_taps-1. */
+        /* Store the upper band edge in reverse order, and its exact conjugate
+         * for the lower edge. The convolution shares their real dot products. */
         size_t rev_idx = (size_t)(n_taps - 1 - i);
-        f->taps_lower_r[rev_idx] = bb[i] * cosf(-phase);
-        f->taps_lower_i[rev_idx] = bb[i] * sinf(-phase);
-
-        /* Upper band edge: exp(+j * phase) - store in reverse order */
         f->taps_upper_r[rev_idx] = bb[i] * cosf(phase);
         f->taps_upper_i[rev_idx] = bb[i] * sinf(phase);
+        f->taps_lower_r[rev_idx] = f->taps_upper_r[rev_idx];
+        f->taps_lower_i[rev_idx] = -f->taps_upper_i[rev_idx];
     }
 
     f->initialized = 1;

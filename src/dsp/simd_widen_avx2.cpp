@@ -145,16 +145,6 @@ rotate_pair_scalar(float in_i, float in_q, uint32_t phase, float* out_i, float* 
     }
 }
 
-static inline unsigned int
-popcount_u32(unsigned int value) {
-    unsigned int count = 0U;
-    while (value != 0U) {
-        value &= value - 1U;
-        count++;
-    }
-    return count;
-}
-
 static inline void
 accumulate_scalar(dsd_input_level_cu8_moments* local, unsigned char sample) {
     local->sum += (uint64_t)sample;
@@ -168,41 +158,45 @@ accumulate_scalar(dsd_input_level_cu8_moments* local, unsigned char sample) {
     }
 }
 
-static inline void
-reduce32_u8_avx2(__m256i bytes, dsd_input_level_cu8_moments* local, __m256i* min_bytes, __m256i* max_bytes) {
-    const __m256i zero = _mm256_setzero_si256();
-    const __m256i ones = _mm256_set1_epi8(1);
-    const __m256i high254 = _mm256_set1_epi8(-2);
-    const __m256i high255 = _mm256_set1_epi8(-1);
+/* Reduce once per bounded block, keeping the per-vector loop entirely in SIMD lanes.
+ * Each square lane receives four byte squares per group: 4096 * 4 * 255^2 < 2^30.
+ * The outer loop resets these lanes before that bound; sums and clip counts use 64-bit lanes. */
+struct Cu8VectorMoments {
+    __m256i sum = _mm256_setzero_si256();
+    __m256i squares = _mm256_setzero_si256();
+    __m256i clips = _mm256_setzero_si256();
 
-    const __m256i sums = _mm256_sad_epu8(bytes, zero);
-    alignas(32) uint64_t sum_lanes[4];
-    _mm256_store_si256(reinterpret_cast<__m256i*>(sum_lanes), sums);
-    for (unsigned int lane = 0U; lane < 4U; lane++) {
-        local->sum += sum_lanes[lane];
+    inline void
+    accumulate(__m256i bytes) {
+        const __m256i zero = _mm256_setzero_si256();
+        sum = _mm256_add_epi64(sum, _mm256_sad_epu8(bytes, zero));
+        const __m256i lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(bytes));
+        const __m256i hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(bytes, 1));
+        squares = _mm256_add_epi32(squares, _mm256_add_epi32(_mm256_madd_epi16(lo, lo), _mm256_madd_epi16(hi, hi)));
+        const __m256i ones = _mm256_set1_epi8(1);
+        const __m256i low = _mm256_cmpeq_epi8(_mm256_min_epu8(bytes, ones), bytes);
+        const __m256i high = _mm256_cmpeq_epi8(_mm256_max_epu8(bytes, _mm256_set1_epi8(-2)), bytes);
+        const __m256i clipped = _mm256_and_si256(_mm256_or_si256(low, high), ones);
+        clips = _mm256_add_epi64(clips, _mm256_sad_epu8(clipped, zero));
     }
 
-    const __m128i lo_bytes = _mm256_castsi256_si128(bytes);
-    const __m128i hi_bytes = _mm256_extracti128_si256(bytes, 1);
-    const __m256i lo_words = _mm256_cvtepu8_epi16(lo_bytes);
-    const __m256i hi_words = _mm256_cvtepu8_epi16(hi_bytes);
-    const __m256i sq_lo = _mm256_madd_epi16(lo_words, lo_words);
-    const __m256i sq_hi = _mm256_madd_epi16(hi_words, hi_words);
-    alignas(32) uint32_t sq_lanes[16];
-    _mm256_store_si256(reinterpret_cast<__m256i*>(sq_lanes), sq_lo);
-    _mm256_store_si256(reinterpret_cast<__m256i*>(sq_lanes + 8), sq_hi);
-    for (unsigned int lane = 0U; lane < 16U; lane++) {
-        local->sum_sq += sq_lanes[lane];
+    inline void
+    merge(dsd_input_level_cu8_moments* local) const {
+        alignas(32) uint64_t sums[4];
+        alignas(32) uint64_t counts[4];
+        alignas(32) uint32_t sq[8];
+        _mm256_store_si256(reinterpret_cast<__m256i*>(sums), sum);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(counts), clips);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(sq), squares);
+        for (unsigned int lane = 0U; lane < 4U; lane++) {
+            local->sum += sums[lane];
+            local->clipped += counts[lane];
+        }
+        for (unsigned int lane = 0U; lane < 8U; lane++) {
+            local->sum_sq += sq[lane];
+        }
     }
-
-    __m256i clipped = _mm256_or_si256(_mm256_cmpeq_epi8(bytes, zero), _mm256_cmpeq_epi8(bytes, ones));
-    clipped = _mm256_or_si256(clipped, _mm256_cmpeq_epi8(bytes, high254));
-    clipped = _mm256_or_si256(clipped, _mm256_cmpeq_epi8(bytes, high255));
-    local->clipped += popcount_u32((unsigned int)_mm256_movemask_epi8(clipped));
-
-    *min_bytes = _mm256_min_epu8(*min_bytes, bytes);
-    *max_bytes = _mm256_max_epu8(*max_bytes, bytes);
-}
+};
 
 static inline void
 merge_vector_extrema(__m256i min_bytes, __m256i max_bytes, dsd_input_level_cu8_moments* local) {
@@ -247,13 +241,23 @@ widen_u8_to_f32_bias127_moments_avx2(const unsigned char* src, float* dst, uint3
     __m256i min_bytes = _mm256_set1_epi8(-1);
     __m256i max_bytes = _mm256_setzero_si256();
     uint32_t i = 0U;
-    for (; i + 31U < len; i += 32U) {
-        const __m256i bytes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
-        reduce32_u8_avx2(bytes, &local, &min_bytes, &max_bytes);
-        _mm256_storeu_ps(dst + i + 0U, widen8_u8_to_f32_bias127_avx2(src + i + 0U));
-        _mm256_storeu_ps(dst + i + 8U, widen8_u8_to_f32_bias127_avx2(src + i + 8U));
-        _mm256_storeu_ps(dst + i + 16U, widen8_u8_to_f32_bias127_avx2(src + i + 16U));
-        _mm256_storeu_ps(dst + i + 24U, widen8_u8_to_f32_bias127_avx2(src + i + 24U));
+    const uint32_t vector_end = len - (len % 32U);
+    while (i < vector_end) {
+        const uint32_t remaining = (vector_end - i) / 32U;
+        const uint32_t groups = remaining < 4096U ? remaining : 4096U;
+        const uint32_t end = i + groups * 32U;
+        Cu8VectorMoments vectors;
+        for (; i < end; i += 32U) {
+            const __m256i bytes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+            vectors.accumulate(bytes);
+            min_bytes = _mm256_min_epu8(min_bytes, bytes);
+            max_bytes = _mm256_max_epu8(max_bytes, bytes);
+            _mm256_storeu_ps(dst + i + 0U, widen8_u8_to_f32_bias127_avx2(src + i + 0U));
+            _mm256_storeu_ps(dst + i + 8U, widen8_u8_to_f32_bias127_avx2(src + i + 8U));
+            _mm256_storeu_ps(dst + i + 16U, widen8_u8_to_f32_bias127_avx2(src + i + 16U));
+            _mm256_storeu_ps(dst + i + 24U, widen8_u8_to_f32_bias127_avx2(src + i + 24U));
+        }
+        vectors.merge(&local);
     }
     if (i != 0U) {
         merge_vector_extrema(min_bytes, max_bytes, &local);
@@ -327,13 +331,24 @@ widen_rotate90_u8_to_f32_bias127_phase_moments_avx2(const unsigned char* src, fl
     __m256i min_bytes = _mm256_set1_epi8(-1);
     __m256i max_bytes = _mm256_setzero_si256();
     uint32_t n = 0U;
-    for (; n + 15U < pairs; n += 16U) {
-        const uint32_t idx = n << 1;
-        const __m256i bytes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + idx));
-        reduce32_u8_avx2(bytes, &local, &min_bytes, &max_bytes);
-        for (uint32_t group = 0U; group < 4U; group++) {
-            rotate8_store_avx2(src + idx + group * 8U, dst + idx + group * 8U, cur_phase);
+    const uint32_t vector_end = pairs - (pairs % 16U);
+    while (n < vector_end) {
+        const uint32_t remaining = (vector_end - n) / 16U;
+        const uint32_t groups = remaining < 4096U ? remaining : 4096U;
+        const uint32_t end = n + groups * 16U;
+        Cu8VectorMoments vectors;
+        for (; n < end; n += 16U) {
+            const uint32_t idx = n << 1;
+            const __m256i bytes = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + idx));
+            vectors.accumulate(bytes);
+            min_bytes = _mm256_min_epu8(min_bytes, bytes);
+            max_bytes = _mm256_max_epu8(max_bytes, bytes);
+            rotate8_store_avx2(src + idx + 0U, dst + idx + 0U, cur_phase);
+            rotate8_store_avx2(src + idx + 8U, dst + idx + 8U, cur_phase);
+            rotate8_store_avx2(src + idx + 16U, dst + idx + 16U, cur_phase);
+            rotate8_store_avx2(src + idx + 24U, dst + idx + 24U, cur_phase);
         }
+        vectors.merge(&local);
     }
     if (n != 0U) {
         merge_vector_extrema(min_bytes, max_bytes, &local);

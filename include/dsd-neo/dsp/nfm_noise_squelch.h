@@ -73,6 +73,18 @@ typedef struct {
     double a2;
 } dsd_noise_squelch_biquad;
 
+enum { DSD_NOISE_SQUELCH_GROUP_BANDS = 4 };
+
+/** @brief Four independent band-passes in contiguous lanes. Coefficients are
+ * copied from the plan on reset; each lane retains its own ordered recurrence. */
+typedef struct {
+    double gain[DSD_NOISE_SQUELCH_SECTIONS][DSD_NOISE_SQUELCH_GROUP_BANDS];
+    double a1[DSD_NOISE_SQUELCH_SECTIONS][DSD_NOISE_SQUELCH_GROUP_BANDS];
+    double a2[DSD_NOISE_SQUELCH_SECTIONS][DSD_NOISE_SQUELCH_GROUP_BANDS];
+    double s1[DSD_NOISE_SQUELCH_SECTIONS][DSD_NOISE_SQUELCH_GROUP_BANDS];
+    double s2[DSD_NOISE_SQUELCH_SECTIONS][DSD_NOISE_SQUELCH_GROUP_BANDS];
+} dsd_noise_squelch_band_group;
+
 /**
  * @brief The band, its band-passes' filters and their noise references for one channel plan: the channel taps, the
  * half-band cascade before them and the channel rate. A zeroed plan is not valid; a squelch with no valid plan keeps
@@ -108,9 +120,9 @@ typedef struct {
     int threshold_db;
     double open_db;
     double close_db;
-    /* Biquad state (transposed direct form II). */
-    double s1[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
-    double s2[DSD_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    /* Biquad coefficients and state (transposed direct form II), grouped across bands. */
+    dsd_noise_squelch_band_group
+        bank[(DSD_NOISE_SQUELCH_MAX_BANDS + DSD_NOISE_SQUELCH_GROUP_BANDS - 1) / DSD_NOISE_SQUELCH_GROUP_BANDS];
     /* Sample-exact half-window boundaries since the last reset. */
     uint64_t samples;
     uint64_t half_index;

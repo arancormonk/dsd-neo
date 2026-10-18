@@ -13,6 +13,7 @@
 #define DSD_NEO_SRC_DSP_NOISE_SQUELCH_BANK_H_
 
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
+#include <math.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,6 +54,57 @@ dsd_noise_squelch_bank_run(const dsd_noise_squelch_biquad* sections, double* s1,
         y = dsd_noise_squelch_bank_biquad(&sections[s], &s1[s], &s2[s], y);
     }
     return y;
+}
+
+/* Pack one band's coefficients after clearing the bank on plan/reset. */
+static inline void
+dsd_noise_squelch_bank_prepare_band(dsd_noise_squelch_band_group* bank, int band,
+                                    const dsd_noise_squelch_biquad* sections) {
+    const int width = DSD_NOISE_SQUELCH_GROUP_BANDS;
+    for (int s = 0; s < DSD_NOISE_SQUELCH_SECTIONS; s++) {
+        bank[band / width].gain[s][band % width] = sections[s].gain;
+        bank[band / width].a1[s][band % width] = sections[s].a1;
+        bank[band / width].a2[s][band % width] = sections[s].a2;
+    }
+}
+
+/* SIMD lanes are independent bands, never successive samples or cascade stages.
+ * Keep every band's multiply/add order and sample-by-sample energy accumulation. */
+static inline void
+dsd_noise_squelch_bank_energy(dsd_noise_squelch_band_group* bank, int bands, double x, double* energy) {
+    const int width = DSD_NOISE_SQUELCH_GROUP_BANDS;
+    for (int k = 0; k < bands; k += width) {
+        dsd_noise_squelch_band_group* g = &bank[k / width];
+        double y[DSD_NOISE_SQUELCH_GROUP_BANDS] = {x, x, x, x};
+        for (int s = 0; s < DSD_NOISE_SQUELCH_SECTIONS; s++) {
+            for (int lane = 0; lane < width; lane++) {
+                const double input = y[lane];
+                y[lane] = (g->gain[s][lane] * input) + g->s1[s][lane];
+                g->s1[s][lane] = g->s2[s][lane] - (g->a1[s][lane] * y[lane]);
+                g->s2[s][lane] = (-g->gain[s][lane] * input) - (g->a2[s][lane] * y[lane]);
+            }
+        }
+        for (int lane = 0; lane < width && k + lane < bands; lane++) {
+            energy[k + lane] += y[lane] * y[lane];
+        }
+    }
+}
+
+static inline void
+dsd_noise_squelch_bank_flush(dsd_noise_squelch_band_group* bank, int bands, double threshold) {
+    const int width = DSD_NOISE_SQUELCH_GROUP_BANDS;
+    for (int k = 0; k < bands; k++) {
+        for (int s = 0; s < DSD_NOISE_SQUELCH_SECTIONS; s++) {
+            double* s1 = &bank[k / width].s1[s][k % width];
+            double* s2 = &bank[k / width].s2[s][k % width];
+            if (fabs(*s1) < threshold) {
+                *s1 = 0.0;
+            }
+            if (fabs(*s2) < threshold) {
+                *s2 = 0.0;
+            }
+        }
+    }
 }
 
 #ifdef __cplusplus

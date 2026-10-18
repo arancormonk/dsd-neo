@@ -5,6 +5,7 @@
 
 #include "frame_sync_level.h"
 
+#include <dsd-neo/dsp/simd_stats.h>
 #include <float.h> // IWYU pragma: keep
 #include <stddef.h>
 
@@ -13,6 +14,10 @@
 // Ranks read from the retained endpoints: with lmn ascending and lmx
 // descending, sums are accumulated in the same ascending value order the
 // previous full sort produced, so results are bit-identical.
+
+// Windows this short (only the first symbols after a reset) are cheaper to
+// rank inline than through the dispatched vector reduction.
+#define FRAME_SYNC_LEVEL_INLINE_MAX 6
 
 // Retain the five smallest values seen so far in lmn, ascending.
 static void
@@ -51,10 +56,15 @@ dsd_frame_sync_estimate_window_levels(const float* levels, int count, float* out
 
     float lmn[5] = {FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX};
     float lmx[5] = {-FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX};
-    for (int i = 0; i < count; i++) {
-        const float x = levels[i];
-        frame_sync_level_track_low(lmn, x);
-        frame_sync_level_track_high(lmx, x);
+    if (count <= FRAME_SYNC_LEVEL_INLINE_MAX) {
+        for (int i = 0; i < count; i++) {
+            const float x = levels[i];
+            frame_sync_level_track_low(lmn, x);
+            frame_sync_level_track_high(lmx, x);
+        }
+    } else {
+        // Same ranks, seeds and tie order as the inline insertion above.
+        dsd_simd_extrema_rank5(levels, (size_t)count, lmn, lmx);
     }
 
     if (count < 3) {

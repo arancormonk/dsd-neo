@@ -22,6 +22,7 @@
 #include <assert.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -103,7 +104,9 @@ test_impulse_response_is_symmetric_about_the_delay(void) {
                 const float a = y[delay - i];
                 const float b = y[delay + i];
                 const float scale = fabsf(a) > 1e-6f ? fabsf(a) : 1e-6f;
-                assert(fabsf(a - b) <= 1e-5f * scale);
+                /* Interpolation near a zero crossing can differ by about 1e-8
+                   with fused ARM arithmetic; retain an absolute floor there. */
+                assert(fabsf(a - b) <= 1e-5f * scale + 2e-8f);
             }
             /* Nothing past 2 * delay: the response is exactly 2 * delay + 1 long. */
             for (int n = 2 * delay + 1; n < outputs; n++) {
@@ -228,6 +231,47 @@ test_unprimed_switch_on_is_measurably_wrong(void) {
     assert(!close_enough(got, want));
 }
 
+/* Independent linear convolution catches a wrong history order, wrap, or stale
+ * half of a mirrored ring, including a redesign after a longer filter. */
+static void
+test_convolution_across_wraps_and_rate_changes(void) {
+    static const int rates[] = {160, 20, 2, 48, 5, 10, 3, 8};
+    float impulse[MAX_TAPS], input[3 * MAX_TAPS];
+    uint32_t random = 0x372f19u;
+    for (unsigned k = 0; k < sizeof(kKinds) / sizeof(kKinds[0]); k++) {
+        for (unsigned r = 0; r < sizeof(rates) / sizeof(rates[0]); r++) {
+            const int sps = rates[r];
+            const int taps = 2 * dsd_sps_filter_group_delay(kKinds[k], sps) + 1;
+            init_rrc_filter_memory();
+            for (int i = 0; i < taps; i++) {
+                impulse[i] = dsd_sps_filter_apply(kKinds[k], i == 0 ? 1.0f : 0.0f, sps);
+            }
+            /* A different design with nonzero history must be cleared on the switch. */
+            for (int i = 0; i < 2 * MAX_TAPS; i++) {
+                dsd_sps_filter_prime(kKinds[k], 7.0f, sps == 160 ? 10 : 160);
+            }
+            for (int n = 0; n < 3 * MAX_TAPS; n++) {
+                random = random * 1664525u + 1013904223u;
+                input[n] = ((float)(random >> 16) - 32768.0f) / 32768.0f;
+                if ((n % 7) == 0) {
+                    dsd_sps_filter_prime(kKinds[k], input[n], sps);
+                    continue;
+                }
+                const float got = dsd_sps_filter_apply(kKinds[k], input[n], sps);
+                double want = 0.0;
+                for (int i = 0; i < taps && i <= n; i++) {
+                    want += (double)impulse[i] * (double)input[n - i];
+                }
+                assert(fabs((double)got - want) < 2e-6);
+            }
+            init_rrc_filter_memory();
+            for (int i = 0; i < taps + 1; i++) {
+                assert(fabsf(dsd_sps_filter_apply(kKinds[k], 0.0f, sps)) < 1e-12f);
+            }
+        }
+    }
+}
+
 int
 main(void) {
     test_impulse_response_is_symmetric_about_the_delay();
@@ -235,6 +279,7 @@ main(void) {
     test_group_delay_query_does_not_disturb_a_running_filter();
     test_prime_and_catch_up_aligns_content();
     test_unprimed_switch_on_is_measurably_wrong();
+    test_convolution_across_wraps_and_rate_changes();
     DSD_FPRINTF(stderr, "matched filter seam: OK\n");
     return 0;
 }

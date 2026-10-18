@@ -86,16 +86,6 @@ rotate_pair_scalar(float in_i, float in_q, uint32_t phase, float* out_i, float* 
     }
 }
 
-static inline unsigned int
-popcount_u16(unsigned int value) {
-    unsigned int count = 0U;
-    while (value != 0U) {
-        value &= value - 1U;
-        count++;
-    }
-    return count;
-}
-
 static inline void
 accumulate_scalar(dsd_input_level_cu8_moments* local, unsigned char sample) {
     local->sum += (uint64_t)sample;
@@ -109,37 +99,45 @@ accumulate_scalar(dsd_input_level_cu8_moments* local, unsigned char sample) {
     }
 }
 
-static inline void
-reduce16_u8_sse2(__m128i bytes, dsd_input_level_cu8_moments* local, __m128i* min_bytes, __m128i* max_bytes) {
-    const __m128i zero = _mm_setzero_si128();
-    const __m128i ones = _mm_set1_epi8(1);
-    const __m128i high254 = _mm_set1_epi8(-2);
-    const __m128i high255 = _mm_set1_epi8(-1);
+/* Reduce once per bounded block, keeping the per-vector loop entirely in SIMD lanes.
+ * Each square lane receives four byte squares per group: 4096 * 4 * 255^2 < 2^30.
+ * The outer loop resets these lanes before that bound; sums and clip counts use 64-bit lanes. */
+struct Cu8VectorMoments {
+    __m128i sum = _mm_setzero_si128();
+    __m128i squares = _mm_setzero_si128();
+    __m128i clips = _mm_setzero_si128();
 
-    const __m128i sums = _mm_sad_epu8(bytes, zero);
-    alignas(16) uint64_t sum_lanes[2];
-    _mm_store_si128(reinterpret_cast<__m128i*>(sum_lanes), sums);
-    local->sum += sum_lanes[0] + sum_lanes[1];
-
-    const __m128i lo = _mm_unpacklo_epi8(bytes, zero);
-    const __m128i hi = _mm_unpackhi_epi8(bytes, zero);
-    const __m128i sq_lo = _mm_madd_epi16(lo, lo);
-    const __m128i sq_hi = _mm_madd_epi16(hi, hi);
-    alignas(16) uint32_t sq_lanes[8];
-    _mm_store_si128(reinterpret_cast<__m128i*>(sq_lanes), sq_lo);
-    _mm_store_si128(reinterpret_cast<__m128i*>(sq_lanes + 4), sq_hi);
-    for (unsigned int lane = 0U; lane < 8U; lane++) {
-        local->sum_sq += sq_lanes[lane];
+    inline void
+    accumulate(__m128i bytes) {
+        const __m128i zero = _mm_setzero_si128();
+        sum = _mm_add_epi64(sum, _mm_sad_epu8(bytes, zero));
+        const __m128i lo = _mm_unpacklo_epi8(bytes, zero);
+        const __m128i hi = _mm_unpackhi_epi8(bytes, zero);
+        squares = _mm_add_epi32(squares, _mm_add_epi32(_mm_madd_epi16(lo, lo), _mm_madd_epi16(hi, hi)));
+        const __m128i ones = _mm_set1_epi8(1);
+        const __m128i low = _mm_cmpeq_epi8(_mm_min_epu8(bytes, ones), bytes);
+        const __m128i high = _mm_cmpeq_epi8(_mm_max_epu8(bytes, _mm_set1_epi8(-2)), bytes);
+        const __m128i clipped = _mm_and_si128(_mm_or_si128(low, high), ones);
+        clips = _mm_add_epi64(clips, _mm_sad_epu8(clipped, zero));
     }
 
-    __m128i clipped = _mm_or_si128(_mm_cmpeq_epi8(bytes, zero), _mm_cmpeq_epi8(bytes, ones));
-    clipped = _mm_or_si128(clipped, _mm_cmpeq_epi8(bytes, high254));
-    clipped = _mm_or_si128(clipped, _mm_cmpeq_epi8(bytes, high255));
-    local->clipped += popcount_u16((unsigned int)_mm_movemask_epi8(clipped));
-
-    *min_bytes = _mm_min_epu8(*min_bytes, bytes);
-    *max_bytes = _mm_max_epu8(*max_bytes, bytes);
-}
+    inline void
+    merge(dsd_input_level_cu8_moments* local) const {
+        alignas(16) uint64_t sums[2];
+        alignas(16) uint64_t counts[2];
+        alignas(16) uint32_t sq[4];
+        _mm_store_si128(reinterpret_cast<__m128i*>(sums), sum);
+        _mm_store_si128(reinterpret_cast<__m128i*>(counts), clips);
+        _mm_store_si128(reinterpret_cast<__m128i*>(sq), squares);
+        for (unsigned int lane = 0U; lane < 2U; lane++) {
+            local->sum += sums[lane];
+            local->clipped += counts[lane];
+        }
+        for (unsigned int lane = 0U; lane < 4U; lane++) {
+            local->sum_sq += sq[lane];
+        }
+    }
+};
 
 static inline void
 merge_vector_extrema(__m128i min_bytes, __m128i max_bytes, dsd_input_level_cu8_moments* local) {
@@ -172,13 +170,23 @@ widen_u8_to_f32_bias127_moments_sse2(const unsigned char* src, float* dst, uint3
     __m128i min_bytes = _mm_set1_epi8(-1);
     __m128i max_bytes = _mm_setzero_si128();
     uint32_t i = 0U;
-    for (; i + 15U < len; i += 16U) {
-        const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
-        reduce16_u8_sse2(bytes, &local, &min_bytes, &max_bytes);
-        _mm_storeu_ps(dst + i + 0U, widen4_u8_to_f32_bias127_sse2(src + i + 0U));
-        _mm_storeu_ps(dst + i + 4U, widen4_u8_to_f32_bias127_sse2(src + i + 4U));
-        _mm_storeu_ps(dst + i + 8U, widen4_u8_to_f32_bias127_sse2(src + i + 8U));
-        _mm_storeu_ps(dst + i + 12U, widen4_u8_to_f32_bias127_sse2(src + i + 12U));
+    const uint32_t vector_end = len - (len % 16U);
+    while (i < vector_end) {
+        const uint32_t remaining = (vector_end - i) / 16U;
+        const uint32_t groups = remaining < 4096U ? remaining : 4096U;
+        const uint32_t end = i + groups * 16U;
+        Cu8VectorMoments vectors;
+        for (; i < end; i += 16U) {
+            const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+            vectors.accumulate(bytes);
+            min_bytes = _mm_min_epu8(min_bytes, bytes);
+            max_bytes = _mm_max_epu8(max_bytes, bytes);
+            _mm_storeu_ps(dst + i + 0U, widen4_u8_to_f32_bias127_sse2(src + i + 0U));
+            _mm_storeu_ps(dst + i + 4U, widen4_u8_to_f32_bias127_sse2(src + i + 4U));
+            _mm_storeu_ps(dst + i + 8U, widen4_u8_to_f32_bias127_sse2(src + i + 8U));
+            _mm_storeu_ps(dst + i + 12U, widen4_u8_to_f32_bias127_sse2(src + i + 12U));
+        }
+        vectors.merge(&local);
     }
     if (i != 0U) {
         merge_vector_extrema(min_bytes, max_bytes, &local);
@@ -237,16 +245,26 @@ widen_rotate90_u8_to_f32_bias127_phase_moments_sse2(const unsigned char* src, fl
     __m128i min_bytes = _mm_set1_epi8(-1);
     __m128i max_bytes = _mm_setzero_si128();
     uint32_t n = 0U;
-    for (; n + 7U < pairs; n += 8U) {
-        const uint32_t idx = n << 1;
-        const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + idx));
-        reduce16_u8_sse2(bytes, &local, &min_bytes, &max_bytes);
-        for (uint32_t group = 0U; group < 4U; group++) {
-            const uint32_t off = idx + group * 4U;
-            const __m128 vals = widen4_u8_to_f32_bias127_sse2(src + off);
-            _mm_storeu_ps(dst + off, apply_phase2_sse2(vals, cur_phase));
-            cur_phase = (cur_phase + 2U) & 3U;
+    const uint32_t vector_end = pairs - (pairs % 8U);
+    while (n < vector_end) {
+        const uint32_t remaining = (vector_end - n) / 8U;
+        const uint32_t groups = remaining < 4096U ? remaining : 4096U;
+        const uint32_t end = n + groups * 8U;
+        Cu8VectorMoments vectors;
+        for (; n < end; n += 8U) {
+            const uint32_t idx = n << 1;
+            const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + idx));
+            vectors.accumulate(bytes);
+            min_bytes = _mm_min_epu8(min_bytes, bytes);
+            max_bytes = _mm_max_epu8(max_bytes, bytes);
+            _mm_storeu_ps(dst + idx + 0U, apply_phase2_sse2(widen4_u8_to_f32_bias127_sse2(src + idx + 0U), cur_phase));
+            _mm_storeu_ps(dst + idx + 4U,
+                          apply_phase2_sse2(widen4_u8_to_f32_bias127_sse2(src + idx + 4U), (cur_phase + 2U) & 3U));
+            _mm_storeu_ps(dst + idx + 8U, apply_phase2_sse2(widen4_u8_to_f32_bias127_sse2(src + idx + 8U), cur_phase));
+            _mm_storeu_ps(dst + idx + 12U,
+                          apply_phase2_sse2(widen4_u8_to_f32_bias127_sse2(src + idx + 12U), (cur_phase + 2U) & 3U));
         }
+        vectors.merge(&local);
     }
     if (n != 0U) {
         merge_vector_extrema(min_bytes, max_bytes, &local);

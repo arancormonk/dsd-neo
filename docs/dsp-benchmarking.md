@@ -25,6 +25,12 @@ For the P25 Phase 1 1/2-rate list decoder, build the protocol benchmark:
 cmake --build --preset perf-bench --target dsd-neo_bench_p25_12 -j
 ```
 
+For the TETRA signalling and speech Viterbi decoders:
+
+```sh
+cmake --build --preset perf-bench --target dsd-neo_bench_tetra_viterbi -j
+```
+
 The preset uses `RelWithDebInfo`, fast math, frame pointers, and tests enabled.
 It keeps LTO and native CPU tuning off so results are easier to compare across
 machines.
@@ -74,9 +80,25 @@ The benchmark target includes:
 - SIMD FIR kernels, half-band decimators, and generated channel LPF plans.
 - FSK discriminator reset/steady-state cases.
 - CQPSK stage cases for band-edge FLL, Gardner, differential phasor, Costas, and full demod chains.
+- FLL and Gardner include P25 Phase 1 at both 24 kHz (5 samples/symbol) and 48 kHz (10 samples/symbol);
+  the latter cases have the `_p25p1_48k` suffix.
 - Full demod cases for C4FM audio monitor, FSK discriminator output, and CQPSK P25P1/P25P2.
+- Per-protocol matched filters (`matched_*`) at 48 kHz, including P25/DMR at 10 samples per symbol and
+  NXDN/dPMR at 20; histories persist across the 256-sample calls.
+- NFM and PCM noise-squelch processing (`noise_squelch_*_48k`), including window decisions. Plan design and
+  NFM calibration occur outside the timed calls.
+- Symbol-window extrema (`symbol_extrema_*`) on 24 and 128 samples and float I/Q mean/peak magnitude
+  (`iq_abs_stats_*`) on 256 and 8192 complex samples, cycling through independent windows.
+- Frame-sync window levels (`frame_sync_levels_*`): the five-lowest/five-highest rank estimate on 12, 19, 24 and
+  48 noisy four-level symbols, cycling through independent windows.
+- C4FM and binary FSK SNR estimation on 256- and 2048-sample discriminator blocks (`snr_c4fm_*` and
+  `snr_gfsk_*`), including the phase search, clustering and noise reductions. The default cases use
+  10 samples per symbol; `_sps20` cases use 20. They time the dispatched k-means backend (AVX2 where present).
 - The analog receive core (sub-audible front end, CTCSS and DCS detectors) on a tone on its value, a tone off it,
   noise alone, and a tone beside a voice.
+- Frame-sync Hamming as the hunt calls it, one window per symbol sliding over ASCII dibits: CQPSK remaps against
+  the P25p1 (24) and P25p2 (20) sync pairs (`sync_hamming_qpsk_remaps_*`), the eight M17 8-dibit words
+  (`sync_hamming_distance_m17_8x8`) and one 48-dibit distance (`sync_hamming_distance_48`).
 
 The RTL benchmark target includes:
 
@@ -93,8 +115,17 @@ The P25 list-decoder benchmark includes clean high-confidence, marginal/noisy,
 and equal-metric tie-heavy inputs. It reports each complete 49-symbol decode as
 one call and uses the same CSV timing columns as the DSP and RTL benchmarks.
 
+The TETRA Viterbi benchmark (`dsd-neo_bench_tetra_viterbi`) decodes noisy soft costs through
+`tetra_viterbi_decode_soft()` at the BSCH, SCH/HD, SCH/F and 512-bit lengths (`tetra_viterbi_*`) and through the
+full- and half-slot speech decoders (`tetra_speech_full`, `tetra_speech_half`, including depuncturing and the
+re-encode check). It reports one item per trellis step.
+
 Channel LPF CSV rows include `rate_hz`, `profile`, `tap_count`, and `variant`
-metadata so tap-count and profile changes can be compared directly.
+metadata so tap-count and profile changes can be compared directly. The `_256`
+cases process 256 complex samples per call, matching a 16 KiB RTL transfer after
+five half-band stages. The analog `_64` and `_16` cases also cover blocks shorter
+than the filter, whose windows span the saved history. Unsuffixed cases retain
+4,096 samples per call.
 
 The analog channel filter cases (`channel_lpf_48k_analog_16k`,
 `channel_lpf_78k_analog_16k`, `channel_lpf_96k_analog_25k`) report profile

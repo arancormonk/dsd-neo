@@ -71,8 +71,10 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_firdes.c
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_simd_stats.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
@@ -99,8 +101,10 @@ elseif(MSVC)
         dsp/test_dsp_firdes.c
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
+        dsp/test_dsp_simd_stats.cpp
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_nfm_noise_squelch.c
+        dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
         dsp/test_dsp_symbol_replay.c
         io/test_io_input_level_metrics.c
@@ -9549,6 +9553,20 @@ set_tests_properties(DSP_SQUELCH_FLOOR PROPERTIES TIMEOUT 300)
 # that follows the CNR and not the level, strong tones that never close it, the
 # hysteresis, the flags' timing, and the same flags whatever the block cuts.
 add_executable(
+    dsd-neo_test_dsp_noise_squelch_bank
+    dsp/test_dsp_noise_squelch_bank.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_noise_squelch_bank
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_noise_squelch_bank ${DSD_NEO_TEST_MATH_LIB})
+add_test(
+    NAME DSP_NOISE_SQUELCH_BANK
+    COMMAND dsd-neo_test_dsp_noise_squelch_bank
+)
+
+add_executable(
     dsd-neo_test_dsp_nfm_noise_squelch
     dsp/test_dsp_nfm_noise_squelch.c
 )
@@ -9692,6 +9710,20 @@ if(_dsd_neo_dsp_sources MATCHES "simd_fir_avx2\\.cpp")
 endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_fir)
 add_test(NAME DSP_SIMD_FIR COMMAND dsd-neo_test_dsp_simd_fir)
+
+add_executable(dsd-neo_test_dsp_simd_stats dsp/test_dsp_simd_stats.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_simd_stats
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+)
+if(_dsd_neo_dsp_sources MATCHES "simd_stats_avx2\\.cpp")
+    target_compile_definitions(
+        dsd-neo_test_dsp_simd_stats
+        PRIVATE DSD_NEO_TEST_HAVE_AVX2_IMPL=1
+    )
+endif()
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_stats Threads::Threads)
+add_test(NAME DSP_SIMD_STATS COMMAND dsd-neo_test_dsp_simd_stats)
 
 add_executable(
     dsd-neo_test_dsp_fir_segmentation
@@ -9918,8 +9950,14 @@ add_test(NAME DSP_SNR_BIAS COMMAND dsd-neo_test_dsp_snr_bias)
 add_executable(dsd-neo_test_dsp_snr_estimator dsp/test_dsp_snr_estimator.cpp)
 target_include_directories(
     dsd-neo_test_dsp_snr_estimator
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
+if(_dsd_neo_dsp_sources MATCHES "simd_kmeans_avx2\\.cpp")
+    target_compile_definitions(
+        dsd-neo_test_dsp_snr_estimator
+        PRIVATE DSD_NEO_TEST_HAVE_AVX2_IMPL=1
+    )
+endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_snr_estimator ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SNR_ESTIMATOR COMMAND dsd-neo_test_dsp_snr_estimator)
 
@@ -11564,6 +11602,7 @@ set(_dsd_tetra_test_sources
     tetra_publication
     tetra_voice_gate
     tetra_calls
+    viterbi
 )
 
 foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
@@ -11593,6 +11632,17 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+
+add_executable(
+    dsd-neo_bench_tetra_viterbi
+    EXCLUDE_FROM_ALL
+    protocol/tetra/bench_tetra_viterbi.cpp
+)
+target_include_directories(
+    dsd-neo_bench_tetra_viterbi
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_bench_tetra_viterbi PRIVATE dsd-neo_proto_tetra)
 
 target_compile_definitions(
     dsd-neo_test_tetra_acelp_reference
@@ -11874,11 +11924,40 @@ add_test(
     COMMAND dsd-neo_test_dibit_rtl_fsk_reliability
 )
 
+# These standalone slicer tests supply their own clock/config/radio stubs.
+# Pull only the statistics objects from the DSP archive without adding the
+# full DSP test support or inheriting its radio feature definitions.
+foreach(
+    _dibit_target
+    dsd-neo_test_dibit_symbol_bin_soft
+    dsd-neo_test_dibit_two_level_reliability
+    dsd-neo_test_dibit_rtl_fsk_reliability
+)
+    if(MSVC)
+        target_link_options(
+            ${_dibit_target}
+            PRIVATE "$<TARGET_LINKER_FILE:dsd-neo_dsp>"
+        )
+    else()
+        target_link_libraries(
+            ${_dibit_target}
+            PRIVATE "$<TARGET_LINKER_FILE:dsd-neo_dsp>"
+        )
+    endif()
+    set_property(
+        TARGET ${_dibit_target}
+        APPEND
+        PROPERTY LINK_DEPENDS "$<TARGET_LINKER_FILE:dsd-neo_dsp>"
+    )
+    set_property(TARGET ${_dibit_target} PROPERTY LINKER_LANGUAGE CXX)
+    add_dependencies(${_dibit_target} dsd-neo_dsp)
+endforeach()
+
 # Sync hamming/remap helper unit test
 add_executable(dsd-neo_test_dsp_sync_hamming dsp/test_dsp_sync_hamming.c)
 target_include_directories(
     dsd-neo_test_dsp_sync_hamming
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_sync_hamming ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SYNC_HAMMING COMMAND dsd-neo_test_dsp_sync_hamming)
@@ -12827,6 +12906,28 @@ if(DSD_HAS_RADIO)
         NAME IO_RTL_WIDEBAND_SPECTRUM
         COMMAND dsd-neo_test_io_rtl_wideband_spectrum
     )
+
+    # Eye/constellation SNR fallback cache against fresh estimates; the
+    # sources are pure ring/statistics code, so the test compiles them alone.
+    add_executable(
+        dsd-neo_test_io_rtl_view_rings
+        io/test_io_rtl_view_rings.cpp
+        ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_view_rings.cpp
+        ${PROJECT_SOURCE_DIR}/src/dsp/snr_bias.cpp
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_view_rings
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_view_rings
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_view_rings
+        PRIVATE dsd-neo_platform Threads::Threads
+    )
+    add_test(NAME IO_RTL_VIEW_RINGS COMMAND dsd-neo_test_io_rtl_view_rings)
 
     add_executable(
         dsd-neo_test_io_rtl_ppm_request

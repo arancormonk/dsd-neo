@@ -28,9 +28,15 @@
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
+#include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <dsd-neo/dsp/simd_stats.h>
 #include <dsd-neo/dsp/simd_widen.h>
+#include <dsd-neo/dsp/snr_estimator.h>
+#include <dsd-neo/dsp/sps_filters.h>
+#include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
@@ -43,6 +49,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/core/sync_patterns.h"
+#include "frame_sync_level.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
@@ -545,9 +553,9 @@ design_channel_lpf_taps(int rate_hz, int profile, float* taps, int max_taps) {
 
 static int
 bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMeta& meta, const float* designed,
-                       int taps_len, uint32_t seed) {
-    constexpr int kPairs = 4096;
-    constexpr int kInLen = kPairs * 2;
+                       int taps_len, uint32_t seed, int pairs = 4096) {
+    const int kPairs = pairs;
+    const int kInLen = kPairs * 2;
 
     std::vector<float> in(kInLen);
     std::vector<float> out(kInLen);
@@ -569,7 +577,7 @@ bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMe
 }
 
 static int
-bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile) {
+bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile, int pairs = 4096) {
     constexpr int kMaxTaps = 144;
     std::vector<float> taps(kMaxTaps);
     int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), kMaxTaps);
@@ -584,13 +592,13 @@ bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, i
     meta.tap_count = taps_len;
     meta.variant = "blackman";
     return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len,
-                                  (uint32_t)rate_hz ^ (uint32_t)(profile * 2654435761u));
+                                  (uint32_t)rate_hz ^ (uint32_t)(profile * 2654435761u), pairs);
 }
 
 /* The analog channel filter is designed from its width and may use the full 288-tap capacity, which device-forced
  * rates above ~51.4 kHz need (78125 Hz: 219 taps; 96000 Hz: 269 taps). */
 static int
-bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int width_hz) {
+bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int width_hz, int pairs = 4096) {
     std::vector<float> taps(DSD_CHANNEL_LPF_MAX_TAPS);
     const int taps_len = dsd_channel_lpf_design_analog(rate_hz, width_hz, taps.data(), DSD_CHANNEL_LPF_MAX_TAPS);
     if (taps_len <= 0) {
@@ -603,7 +611,8 @@ bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rat
     meta.profile = "analog";
     meta.tap_count = taps_len;
     meta.variant = "blackman";
-    return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len, (uint32_t)rate_hz ^ (uint32_t)width_hz);
+    return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len, (uint32_t)rate_hz ^ (uint32_t)width_hz,
+                                  pairs);
 }
 
 /* What a digital profile runs at a device-forced rate above ~51.4 kHz, and what the analog path ran there before it
@@ -655,6 +664,12 @@ bench_channel_lpf(const BenchOptions& opts) {
     ran += bench_one_channel_lpf_fallback(opts, "channel_lpf_78k_wide_fallback", 78125, DSD_CH_LPF_PROFILE_WIDE);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_78k_analog_16k", 78125, 16000);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k", 96000, 25000);
+    /* A live 16 KiB RTL transfer leaves 256 pairs after five half-band stages. Also cover shorter history-spanning blocks. */
+    ran += bench_one_channel_lpf(opts, "channel_lpf_24k_12k5_256", 24000, DSD_CH_LPF_PROFILE_12K5, 256);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_48k_12k5_256", 48000, DSD_CH_LPF_PROFILE_12K5, 256);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k_256", 96000, 25000, 256);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k_64", 96000, 25000, 64);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k_16", 96000, 25000, 16);
     return ran;
 }
 
@@ -1081,8 +1096,10 @@ bench_cqpsk_stages(const BenchOptions& opts) {
     constexpr int kInLen = kPairs * 2;
 
     ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p1", 24000, 5);
+    ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p1_48k", 48000, 10);
     ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p2", 48000, 8);
     ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p1", 24000, 5);
+    ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p1_48k", 48000, 10);
     ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p2", 48000, 8);
 
     {
@@ -1345,12 +1362,218 @@ bench_one_analog_rx(const BenchOptions& opts, const char* name, const AnalogRxSi
 }
 
 static int
+bench_matched_filters(const BenchOptions& opts) {
+    const dsd_sps_filter_kind kinds[] = {DSD_SPS_FILTER_P25, DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_NXDN,
+                                         DSD_SPS_FILTER_DPMR};
+    const char* names[] = {"matched_p25_sps10", "matched_dmr_sps10", "matched_nxdn_sps20", "matched_dpmr_sps20"};
+    const int rates[] = {10, 10, 20, 20};
+    float samples[256];
+    for (int i = 0; i < 256; i++) {
+        samples[i] = std::sin(0.31f * static_cast<float>(i));
+    }
+    int ran = 0;
+    for (int k = 0; k < 4; k++) {
+        init_rrc_filter_memory();
+        ran += run_case(opts, names[k], "sample", 256.0, [&]() -> float {
+            float sum = 0.0f;
+            for (float sample : samples) {
+                sum += dsd_sps_filter_apply(kinds[k], sample, rates[k]);
+            }
+            return sum;
+        });
+    }
+    return ran;
+}
+
+static int
+bench_noise_squelch(const BenchOptions& opts, bool pcm) {
+    const char* name = pcm ? "noise_squelch_pcm_48k" : "noise_squelch_nfm_48k";
+    if (opts.list_cases || (opts.case_filter && std::strcmp(opts.case_filter, name) != 0)) {
+        return run_case(opts, name, "sample", 256.0, []() -> float { return 0.0f; });
+    }
+    std::vector<float> samples(256), iq(512, 0.70710678f);
+    uint32_t random = 0x4837abU;
+    for (float& x : samples) {
+        random = random * 1664525U + 1013904223U;
+        x = (static_cast<float>(random >> 16) - 32768.0f) / 32768.0f;
+    }
+    uint8_t flags[256];
+    if (pcm) {
+        dsd_pcm_noise_squelch squelch{};
+        dsd_pcm_noise_squelch_plan plan{};
+        if (dsd_pcm_noise_squelch_plan_design(&plan, 48000, 48000) != 0) {
+            return 0;
+        }
+        dsd_pcm_noise_squelch_set_plan(&squelch, &plan);
+        dsd_pcm_noise_squelch_set_threshold(&squelch, 12);
+        return run_case(opts, name, "sample", 256.0, [&]() -> float {
+            dsd_pcm_noise_squelch_process(&squelch, samples.data(), 256, flags);
+            return static_cast<float>(squelch.quieting_db) + flags[255];
+        });
+    }
+    dsd_noise_squelch squelch{};
+    dsd_noise_squelch_plan plan{};
+    if (dsd_noise_squelch_plan_design(&plan, NULL, 0, NULL, 0, 48000) != 0) {
+        return 0;
+    }
+    dsd_noise_squelch_set_plan(&squelch, &plan);
+    dsd_noise_squelch_set_threshold(&squelch, 12);
+    return run_case(opts, name, "sample", 256.0, [&]() -> float {
+        dsd_noise_squelch_process(&squelch, samples.data(), iq.data(), 256, flags);
+        return static_cast<float>(squelch.quieting_db) + flags[255];
+    });
+}
+
+static int
+bench_sample_stats(const BenchOptions& opts) {
+    int ran = 0;
+    for (int count : {24, 128, 256, 8192}) {
+        const bool iq = count >= 256;
+        const char* name = count == 24    ? "symbol_extrema_24"
+                           : count == 128 ? "symbol_extrema_128"
+                           : count == 256 ? "iq_abs_stats_256"
+                                          : "iq_abs_stats_8192";
+        const size_t stride = static_cast<size_t>(count) * (iq ? 2 : 1);
+        const size_t windows = iq ? 4 : 64;
+        std::vector<float> samples(stride * windows);
+        uint32_t seed = 0x4837abU;
+        for (float& x : samples) {
+            seed = seed * 1664525U + 1013904223U;
+            x = (static_cast<float>(seed >> 16) - 32768.0f) / 32768.0f;
+        }
+        size_t next = 0;
+        ran += run_case(opts, name, iq ? "complex_sample" : "sample", static_cast<double>(count), [&]() -> float {
+            float a = 0.0f, b = 0.0f;
+            const float* input = samples.data() + next * stride;
+            next = (next + 1) % windows;
+            if (iq) {
+                dsd_simd_iq_abs_stats(input, static_cast<size_t>(count), &a, &b);
+            } else {
+                dsd_simd_extrema_avg2(input, static_cast<size_t>(count), &a, &b);
+            }
+            return a + b;
+        });
+    }
+    return ran;
+}
+
+static int
+bench_frame_sync_levels(const BenchOptions& opts) {
+    int ran = 0;
+    for (int count : {12, 19, 24, 48}) {
+        const char* name = count == 12   ? "frame_sync_levels_12"
+                           : count == 19 ? "frame_sync_levels_19"
+                           : count == 24 ? "frame_sync_levels_24"
+                                         : "frame_sync_levels_48";
+        const size_t windows = 64;
+        std::vector<float> levels(static_cast<size_t>(count) * windows);
+        uint32_t seed = 0x2f61d9U;
+        for (float& x : levels) {
+            seed = seed * 1664525U + 1013904223U;
+            const float rail = static_cast<float>(static_cast<int>(seed >> 30) * 2 - 3);
+            x = rail + 0.25f * ((static_cast<float>((seed >> 8) & 0xffffU) / 65536.0f) - 0.5f);
+        }
+        size_t next = 0;
+        ran += run_case(opts, name, "sample", static_cast<double>(count), [&]() -> float {
+            float lmin = 0.0f, lmax = 0.0f;
+            dsd_frame_sync_estimate_window_levels(levels.data() + next * static_cast<size_t>(count), count, &lmin,
+                                                  &lmax);
+            next = (next + 1) % windows;
+            return lmin + lmax;
+        });
+    }
+    return ran;
+}
+
+static int
+bench_one_snr(const BenchOptions& opts, const char* name, int count, int levels, int sps = 10) {
+    std::vector<float> samples(static_cast<size_t>(count));
+    uint32_t seed = 0x1234abcdU;
+    for (int i = 0; i < count; i++) {
+        seed = seed * 1664525U + 1013904223U;
+        const int symbol = i / sps;
+        const int rail = (symbol + symbol / 7) % levels;
+        const float noise = static_cast<float>((seed >> 16) & 0xffffU) / 65536.0f - 0.5f;
+        samples[static_cast<size_t>(i)] = static_cast<float>(2 * rail - levels + 1) + 0.15f * noise;
+    }
+    const int window = std::max(1, sps / 10);
+    return run_case(opts, name, "sample", static_cast<double>(count), [&]() -> float {
+        return static_cast<float>(levels == 4 ? dsd_snr_estimate_c4fm_real_db(samples.data(), count, sps, window, 0.0)
+                                              : dsd_snr_estimate_gfsk_real_db(samples.data(), count, sps, window, 0.0));
+    });
+}
+
+static int
+bench_snr(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_snr(opts, "snr_c4fm_256", 256, 4);
+    ran += bench_one_snr(opts, "snr_c4fm_2048", 2048, 4);
+    ran += bench_one_snr(opts, "snr_gfsk_256", 256, 2);
+    ran += bench_one_snr(opts, "snr_gfsk_2048", 2048, 2);
+    ran += bench_one_snr(opts, "snr_c4fm_256_sps20", 256, 4, 20);
+    ran += bench_one_snr(opts, "snr_c4fm_2048_sps20", 2048, 4, 20);
+    ran += bench_one_snr(opts, "snr_gfsk_256_sps20", 256, 2, 20);
+    ran += bench_one_snr(opts, "snr_gfsk_2048_sps20", 2048, 2, 20);
+    return ran;
+}
+
+static int
 bench_analog_rx(const BenchOptions& opts) {
     int ran = 0;
     ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_on_value", AnalogRxSignal{100.0, 0.0, 20.0});
     ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_off_value", AnalogRxSignal{150.6, 0.0, 20.0});
     ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_noise", AnalogRxSignal{0.0, 0.0, 0.0});
     ran += bench_one_analog_rx(opts, "analog_rx_core_ctcss_voice", AnalogRxSignal{100.0, 0.2, 20.0});
+    return ran;
+}
+
+/* Frame-sync hamming as the hunt calls it: one window per symbol, sliding over sliced ASCII dibits. */
+static int
+bench_sync_hamming(const BenchOptions& opts) {
+    constexpr int kWindows = 256;
+    static const char kP25p1[] = P25P1_SYNC;
+    static const char kP25p1Inv[] = INV_P25P1_SYNC;
+    static const char kP25p2[] = P25P2_SYNC;
+    static const char kP25p2Inv[] = INV_P25P2_SYNC;
+    static const char* const kM17[] = {M17_PRE, M17_PIV, M17_LSF, M17_STR, M17_PKT, M17_BRT, M17_EOT, M17_EOT_INV};
+    std::vector<char> stream(kWindows + 64);
+    uint32_t seed = 0x5eed1234U;
+    for (char& c : stream) {
+        seed = seed * 1664525U + 1013904223U;
+        c = static_cast<char>('0' + ((seed >> 24) & 3U));
+    }
+    DSD_MEMCPY(stream.data() + 100, kP25p1, 24);
+    int ran = 0;
+    ran += run_case(opts, "sync_hamming_qpsk_remaps_24", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            sum += dsd_qpsk_sync_hamming_with_remaps(stream.data() + i, kP25p1, kP25p1Inv, 24);
+        }
+        return static_cast<float>(sum);
+    });
+    ran += run_case(opts, "sync_hamming_qpsk_remaps_20", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            sum += dsd_qpsk_sync_hamming_with_remaps(stream.data() + i, kP25p2, kP25p2Inv, 20);
+        }
+        return static_cast<float>(sum);
+    });
+    ran += run_case(opts, "sync_hamming_distance_m17_8x8", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            for (const char* pattern : kM17) {
+                sum += dsd_sync_hamming_distance(stream.data() + i, pattern, 8);
+            }
+        }
+        return static_cast<float>(sum);
+    });
+    ran += run_case(opts, "sync_hamming_distance_48", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            sum += dsd_sync_hamming_distance(stream.data() + i, stream.data() + 100, 48);
+        }
+        return static_cast<float>(sum);
+    });
     return ran;
 }
 
@@ -1381,7 +1604,14 @@ main(int argc, char** argv) {
     ran += bench_carrier_loops(opts);
     ran += bench_cqpsk_stages(opts);
     ran += bench_full_demod(opts);
+    ran += bench_matched_filters(opts);
+    ran += bench_noise_squelch(opts, false);
+    ran += bench_noise_squelch(opts, true);
+    ran += bench_sample_stats(opts);
+    ran += bench_frame_sync_levels(opts);
+    ran += bench_snr(opts);
     ran += bench_analog_rx(opts);
+    ran += bench_sync_hamming(opts);
 
     if (opts.case_filter && ran == 0) {
         DSD_FPRINTF(stderr, "No benchmark case matched '%s'. Use --list to see available cases.\n", opts.case_filter);

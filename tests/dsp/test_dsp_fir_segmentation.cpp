@@ -112,19 +112,19 @@ fir_backends(void) {
     std::vector<Backend> backends;
     backends.push_back(Backend{"scalar", simd_fir_complex_apply_scalar, 0.0f, 1});
 #if defined(__x86_64__) || defined(_M_X64)
-    backends.push_back(Backend{"sse2", simd_fir_complex_apply_sse2, 1e-5f, 2});
+    backends.push_back(Backend{"sse2", simd_fir_complex_apply_sse2, 1e-5f, 8});
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
     if (dsd_neo_cpu_has_avx2_with_os_support()) {
-        backends.push_back(Backend{"avx2", simd_fir_complex_apply_avx2, 1e-5f, 8});
+        backends.push_back(Backend{"avx2", simd_fir_complex_apply_avx2, 1e-5f, 16});
     } else {
         std::printf("Skipping the AVX2 backend: CPU/OS AVX2+FMA support unavailable\n");
     }
 #endif
 #endif
 #if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
-    backends.push_back(Backend{"neon", simd_fir_complex_apply_neon, 1e-5f, 2});
+    backends.push_back(Backend{"neon", simd_fir_complex_apply_neon, 1e-5f, 8});
 #endif
-    backends.push_back(Backend{"dispatch", simd_fir_complex_apply, 1e-5f, 8});
+    backends.push_back(Backend{"dispatch", simd_fir_complex_apply, 1e-5f, 16});
     return backends;
 }
 
@@ -489,6 +489,7 @@ make_filters(std::vector<Filter>* filters) {
         {"blackman 48k (135 taps)", analog_design(48000), 135U},
         {"blackman 24k (67 taps)", analog_design(24000), 67U},
         {"blackman 78.125k (219 taps)", analog_design(78125), 219U},
+        {"blackman 96k (269 taps)", analog_design(96000), 269U},
         {"fallback (63 taps)", fallback_taps(), 63U},
         {"synthetic (287 taps)", synthetic_taps(287), 287U},
         {"three taps", std::vector<float>{0.25f, 0.5f, 0.25f}, 3U},
@@ -510,7 +511,7 @@ make_filters(std::vector<Filter>* filters) {
 static std::vector<Split>
 make_splits(const Filter& filter, int vector_width) {
     const int len = (int)filter.taps.size();
-    static const int kFixed[] = {0, 1, 2, 3, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 257, 1023, 4096};
+    static const int kFixed[] = {0, 1, 2, 3, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1023, 4096};
     std::vector<Split> splits;
     splits.push_back(Split{"fixed sizes cycled", std::vector<int>(std::begin(kFixed), std::end(kFixed)), 1});
     for (int size : kFixed) {

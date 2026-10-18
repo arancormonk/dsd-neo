@@ -49,8 +49,10 @@ constexpr float kMmseTaps[kMmseInterpSteps + 1][DSD_MMSE_INTERP_TAPS] = {
     {0.00000e+00f, 0.00000e+00f, 0.00000e+00f, 1.00000e+00f, 0.00000e+00f, 0.00000e+00f, 0.00000e+00f, 0.00000e+00f},
 };
 
-float
-interpolate_real_8tap(const float* samples, float mu) {
+} // namespace
+
+void
+dsd_mmse_interp_complex_8tap(const float* samples, float mu, float* out_real, float* out_imag) {
     float table_position = mu * static_cast<float>(kMmseInterpSteps);
     int lower_index = static_cast<int>(table_position);
     float fraction = table_position - static_cast<float>(lower_index);
@@ -73,27 +75,16 @@ interpolate_real_8tap(const float* samples, float mu) {
      * the interpolator runs backward in time (x[4 - mu] instead of x[3 + mu]),
      * which inverts the fractional feedback of the Gardner timing loop and
      * makes it limit-cycle across a whole sample. */
-    float result = 0.0f;
+    /* Apply each interpolated tap to both components directly, avoiding two
+     * deinterleaved windows and a second coefficient interpolation. */
+    float real = 0.0f;
+    float imag = 0.0f;
     for (int i = 0; i < DSD_MMSE_INTERP_TAPS; i++) {
         const float tap = lower_weight * lower_taps[i] + fraction * upper_taps[i];
-        result += tap * samples[DSD_MMSE_INTERP_TAPS - 1 - i];
+        const std::size_t offset = static_cast<std::size_t>(DSD_MMSE_INTERP_TAPS - 1 - i) * 2U;
+        real += tap * samples[offset];
+        imag += tap * samples[offset + 1U];
     }
-    return result;
-}
-
-} // namespace
-
-void
-dsd_mmse_interp_complex_8tap(const float* samples, float mu, float* out_real, float* out_imag) {
-    float real_samples[DSD_MMSE_INTERP_TAPS];
-    float imag_samples[DSD_MMSE_INTERP_TAPS];
-
-    for (int i = 0; i < DSD_MMSE_INTERP_TAPS; i++) {
-        const std::size_t offset = static_cast<std::size_t>(i) * 2U;
-        real_samples[i] = samples[offset];
-        imag_samples[i] = samples[offset + 1U];
-    }
-
-    *out_real = interpolate_real_8tap(real_samples, mu);
-    *out_imag = interpolate_real_8tap(imag_samples, mu);
+    *out_real = real;
+    *out_imag = imag;
 }

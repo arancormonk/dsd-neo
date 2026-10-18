@@ -34,6 +34,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_stream.cpp
             radio/rtl_stream_c.cpp
             radio/rtl_sdr_fm.cpp
+            radio/rtl_view_rings.cpp
             radio/rtl_wideband_spectrum.cpp
             radio/signal_measure.cpp
             radio/soapy_profile.cpp

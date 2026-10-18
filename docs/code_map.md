@@ -2700,6 +2700,42 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   recovery, CQPSK helpers
   (matched/RRC), and SIMD helpers; exposes runtime-tunable parameters consumed by the UI
 - Build files: `src/dsp/CMakeLists.txt`
+- Sample statistics in `<dsd-neo/dsp/simd_stats.h>` dispatch to AVX2, SSE2, NEON or scalar implementations.
+  `dsd_simd_extrema_avg2()` supplies the two-lowest/two-highest averages for the core symbol slicer's window,
+  counting duplicate samples. Non-finite values and signed-zero ties use the original ordered comparisons.
+  `dsd_simd_iq_abs_stats()` supplies the radio demodulator's mean absolute I/Q sum per complex pair and peak
+  component magnitude, with double-precision accumulation. Both accept unaligned windows and exact-sized tails.
+  Tests: `DSP_SIMD_STATS` checks each available backend, dispatch, duplicates and exceptional inputs.
+- `dsd_simd_extrema_rank5()` (same header) keeps the five smallest (ascending) and five largest (descending)
+  samples for `dsd_frame_sync_estimate_window_levels()` (`frame_sync_level.c`), bit-identical to ordered
+  scalar insertion: `FLT_MAX`/`-FLT_MAX` seeds fill missing ranks, NaN is never kept, and windows with NaN,
+  infinities or -0 run the scalar insertion. Vector backends keep sorted per-lane ranks, then merge lanes with
+  a min/max network (high ranks negated so one network serves both). Scalar runs below six samples, AVX2 from
+  32 (SSE2 below); the frame-sync caller ranks windows of six or fewer inline and sums ranks as before.
+  Tests: `DSP_SIMD_STATS`, `FRAME_SYNC_LEVEL_WINDOW` (full-sort reference, counts 1-48).
+- Frame-sync Hamming (`<dsd-neo/dsp/sync_hamming.h>`, `sync_hamming.c`): windows of 8..64 dibits are packed into
+  two bit planes (SSE2 16-byte chunks on x86-64, 8-byte words elsewhere) and compared by XOR and popcount; the
+  five CQPSK remaps are plane identities (invert `d ^ 2`, xor3 `d ^ 3`, swap, rotate `swap ^ 1`). The single-pattern
+  distance uses SSE2 or NEON and otherwise the per-dibit loop, which compilers already vectorize. Other lengths,
+  receive bytes outside 0..3 / '0'..'3' and pattern bytes outside '0'..'3' take the per-dibit loops, so every
+  result matches the old code. `sync_hamming_internal.h` exposes the scalar and portable backends for tests.
+  Tests: `DSP_SYNC_HAMMING` compares each backend with a copy of the old loops on exhaustive and random bytes.
+- SNR phase collection (`snr_phase_samples.h`, private to `snr_estimator.cpp`) visits each phase window as
+  ordered contiguous spans. It preserves input order, finite-value filtering and the finite-sample cap before
+  percentile selection and clustering. IEEE semantics remain enabled for the estimator and its collector tests.
+- SNR clustering: percentiles are selected in ascending order, each `nth_element()` over the range above the
+  previous pick, which yields the same values as full-range selection. Each k-means pass (`simd_kmeans_internal.h`,
+  private to `snr_estimator.cpp`) dispatches to AVX2, SSE2, NEON or scalar double-lane kernels that assign
+  samples exactly as the scalar nearest-center rule (strict less-than, lowest index wins) and fold the final
+  noise sum into the last pass. Counts match the scalar pass exactly; vector lane sums reorder the double
+  additions, so estimates differ from sequential sums by rounding only (~1e-14 dB). The kernels keep IEEE
+  semantics. Tests: `DSP_SNR_ESTIMATOR` checks each backend and compares both estimators with the earlier
+  scalar algorithm.
+- CQPSK short convolutions: `costas.cpp` computes the FLL's four real dot products once and combines them for
+  both band edges; filter design keeps the lower taps the exact conjugate of the upper taps. The NCO and feedback
+  still advance per sample. `mmse_interp.cpp` applies each interpolated tap directly to both interleaved I/Q
+  components, preserving the reversed-tap convention and sample-window bounds. Tests: `DSP_FLL_BAND_EDGE`
+  (independent complex convolution over every history position), `DSP_MMSE_INTERP`, and `DSP_COSTAS`.
 - Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync)
   waits on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted
   a stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
@@ -3029,7 +3065,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
   signal one group delay in the past — 67 samples for NXDN48 at 20 samples per symbol. What the filter module
   promises the symbolizer is small: the delay, stated without disturbing a running filter, and a way to push
-  history into a filter without reading an output. `MATCHED_FILTER_SEAM` pins that promise.
+  history into a filter without reading an output. Each history sample is stored twice, one tap-count apart,
+  so the oldest-to-newest dot product reads contiguous lanes. Apply and prime share the same push; reset and SPS
+  redesign clear both copies. `MATCHED_FILTER_SEAM` pins the timing promise and compares wrapped histories with
+  independent linear convolution.
 - `dsd_symbol.c` pays for every switch so the grid does not move. It keeps the raw samples it has consumed
   (`dsd_state::matched_filter`, see `core/state.h`); a filter switching on is primed from that history and fed its
   delay's worth of samples whose outputs are discarded, one switching off hands back the samples it still had in
@@ -3293,7 +3332,11 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
   Q = max(Q_sum, Q_max - guard) combine (`dsd_noise_squelch_bank_quieting_db()`); the radio squelch's results are
-  bit-identical to before the split.
+  bit-identical to before the split. The runtime bank caches plan coefficients alongside transposed direct-form-II
+  state in groups of four independent bands (`dsd_noise_squelch_band_group`, owned by each squelch's `bank`). Reset
+  clears all lanes and repacks the active plan. Calibration uses the same grouped runner. SIMD spans bands only:
+  each cascade, per-sample recurrence, energy accumulation and half-window decision retains its original order.
+  `DSP_NOISE_SQUELCH_BANK` compares all bank sizes and partial groups with scalar filters.
 - The PCM noise squelch's core (issue #628) is `src/dsp/pcm_noise_squelch.c` (`<dsd-neo/dsp/pcm_noise_squelch.h>`), pure
   (no clock, I/O or allocation) and on audio input's own samples at the monitor rate. Its plan
   (`dsd_pcm_noise_squelch_plan_design()`, from the monitor rate and the input's native rate) takes the band from 3.8 kHz
@@ -3399,8 +3442,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     centred at `hist_len - pending + k` of [history | block], and leaves pending + N - outputs pending with the newest
     `hist_len` inputs in the history. No variant pads the look-ahead past a block's end; an invalid call or a short
     `out_cap` returns -1 with nothing touched. Scalar is bit-exact across splits; the SSE2, AVX2 and NEON kernels (and
-    the dispatcher, which sends blocks shorter than the filter to scalar) agree with their own whole-stream output
-    within 1e-5.
+    the dispatcher, which keeps blocks shorter than both 16 complex samples and the filter on scalar) agree with
+    their own whole-stream output within 1e-5.
   - Channel state: `demod_state::channel_lpf_hist_i/q` hold `DSD_CHANNEL_LPF_HIST_LEN` (287) samples whatever the
     taps, and `channel_lpf_pending` the outputs held back. A tap-count change without a reset reconciles through
     pending (up to N + c_old - c_new outputs), so the work buffers the filter writes (`hb_workbuf`, `timing_buf`) are
@@ -3520,6 +3563,16 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
+- View rings and SNR fallbacks (`radio/rtl_view_rings.{h,cpp}`): the constellation and eye rings (relaxed-atomic
+  samples, demod-thread appends, retune clears) and the fallback estimates over them behind
+  `rtl_stream_estimate_snr_{c4fm_eye,gfsk_eye,qpsk_const}()`. Every append and clear is one write batch (a writer
+  count raised for it, a batch count bumped when it ends). Each estimate caches per thread, keyed by batch count, TED
+  SPS, output rate and channel profile, and returns exactly a fresh estimate's answer; a read a batch raced is answered
+  (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
+  `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
+- Source kind per read: a prepared stream records whether its private `opts` copy names an I/Q replay
+  (`RtlSdrInternals::source_replay`), so `stream_is_replay_active()` (every decoder read and replay clock step) no
+  longer parses `audio_in_dev`.
 - Targets:
   - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
@@ -4324,6 +4377,12 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 
 Notes:
 
+- P25 Phase 1 list trellis decoding (`p25_12.c`) merges four sorted predecessor lists for each destination state.
+  Equal metrics retain predecessor-state order, then survivor rank, matching stable insertion; traceback and final
+  candidate deduplication keep that order. Invalid metrics remain `UINT32_MAX` and never participate in addition.
+  `P25_12_LIST` compares complete candidate bytes, metrics and order with an independent full-path reference,
+  including zero and partial metric ties, extreme LLRs and every output limit.
+
 - Optional codec integrations are expressed via feature interface targets:
   - `dsd-neo_feature_codec2` → `USE_CODEC2` (used by M17 when available). M17's decoded Codec2 voice plays through
     the digital voice output every other mode uses (issue #658): `m17_play_codec2_voice()` in
@@ -4909,7 +4968,23 @@ Private per-protocol modules worth knowing about:
 
 ### TETRA
 
+The signalling and speech Viterbi decoders in `tetra_fec.c` precompute each destination's incoming coded word.
+The higher predecessor complements every coded lane, so one branch cost serves both edges. Independent
+add-compare-select operations use 32-bit metrics (a 512-bit path costs at most 134215680), clamp unreachable paths,
+and prefer the lower predecessor on ties. `conv_acs_step()` is the scalar reference; on SSE2 (x86-64 baseline) and
+NEON targets `conv_acs_run()` keeps the 16 survivors in four 128-bit vectors (predecessor gathers are fixed
+shuffles; metrics stay below 2^31, so SSE2's signed compares are exact) and drops the INF clamp once no survivor can
+reach INF in the remaining steps. Other targets run the scalar steps. `TETRA_VITERBI` checks every survivor and
+traceback against a 64-bit polynomial oracle, including maximum-length, erased and tied inputs, and the vector kernel
+against `conv_acs_step()` bit for bit on arbitrary metrics (near-INF, forced ties, unreachable) and whole runs.
+`dsd-neo_bench_tetra_viterbi` times both decoders.
+
 #### Burst sync
+
+Training matching (`<dsd-neo/dsp/tetra_training.h>`) uses the first dibit to select possible rotations before comparing
+the full word; lower rotations still win, with the normal word preferred over its inverse at the same rotation.
+Frame-sync history windows copy at most two contiguous spans of the 128-symbol ring and terminate only complete
+windows. `FRAME_SYNC_INTERNAL_HELPERS` covers every ring head and compares training decisions with a scalar oracle.
 
 The frame sync (`frame_sync_try_tetra()` in `src/dsp/dsd_frame_sync.c`) locks a TETRA burst at the end of its training
 sequence and captures block 1 from its history into `dsd_state::tetra_sync`, on the TMO downlink with AACH half 1, the

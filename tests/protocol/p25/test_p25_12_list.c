@@ -247,6 +247,14 @@ p25_12_test_exact_equivalence(const int16_t clean_llr[196], const int16_t noisy_
             if (p25_12_compare_reference("seeded", seeded_llr, max_candidates) != 0) {
                 return 1;
             }
+            /* Many equal metrics interleaved across predecessor lists, unlike
+             * the all-zero case where every branch has the same cost. */
+            for (int bit = 0; bit < 196; bit++) {
+                seeded_llr[bit] = (int16_t)(seeded_llr[bit] % 3);
+            }
+            if (p25_12_compare_reference("partial ties", seeded_llr, max_candidates) != 0) {
+                return 1;
+            }
         }
     }
     return 0;

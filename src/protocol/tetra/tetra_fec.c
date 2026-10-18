@@ -12,6 +12,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* 128-bit integer vectors for the Viterbi add-compare-select: SSE2 is the x86-64 baseline, NEON always present on
+   AArch64. Other targets use the scalar reference. */
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define TETRA_VITERBI_SIMD_SSE2 1
+#include <emmintrin.h>
+#include <mmintrin.h>
+#include <xmmintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define TETRA_VITERBI_SIMD_NEON 1
+#include <arm_neon.h>
+#endif
+
 /* ---------------------------------------------------------------------------------------------------------------
  * RCPC puncturing (EN 300 392-2 clause 8.2.3.1.2, EN 300 395-2 clause 5.4.3.2): type-3 bit j carries mother bit
  *   k = Period * ((i - 1) div t) + P(i - t * ((i - 1) div t)),
@@ -211,15 +223,20 @@ typedef struct {
     int lanes;       /* coded bits per input bit */
     uint8_t taps[4]; /* generator polynomial terms */
     int shift_up;    /* 1: next = (register << 1 | input) & 15 (D1 in bit 0); 0: next = input << 3 | register >> 1 */
+    /* Coded word on the lower predecessor's edge into each destination, lane 0 in bit 0.
+       The other predecessor flips every lane for both codes. */
+    uint32_t incoming[16];
 } tetra_conv_code;
 
 /* EN 300 392-2 clause 8.2.3.1.1, register bit 0 = D: G1 = 1 + D + D^4, G2 = 1 + D^2 + D^3 + D^4,
    G3 = 1 + D + D^2 + D^4, G4 = 1 + D + D^3 + D^4. */
-static const tetra_conv_code k_signalling_code = {4, {0x19, 0x1E, 0x1B, 0x1D}, 1};
+static const tetra_conv_code k_signalling_code = {
+    4, {0x19, 0x1E, 0x1B, 0x1D}, 1, {0, 15, 13, 2, 6, 9, 11, 4, 10, 5, 7, 8, 12, 3, 1, 14}};
 
 /* EN 300 395-2 clause 5.4.3.1, register bit 3 = D: G1 = 1 + D + D^2 + D^3 + D^4, G2 = 1 + D + D^3 + D^4,
    G3 = 1 + D^2 + D^4. */
-static const tetra_conv_code k_speech_code = {3, {0x1F, 0x1B, 0x15, 0x00}, 0};
+static const tetra_conv_code k_speech_code = {
+    3, {0x1F, 0x1B, 0x15, 0x00}, 0, {0, 3, 5, 6, 3, 0, 6, 5, 7, 4, 2, 1, 4, 7, 1, 2}};
 
 static uint8_t
 parity5(uint8_t value) {
@@ -239,67 +256,365 @@ conv_input_of(const tetra_conv_code* code, int next_state) {
     return code->shift_up ? (next_state & 1) : (next_state >> 3);
 }
 
-static uint64_t
-conv_branch_cost(const tetra_conv_code* code, int state, int bit, const uint16_t* costs) {
-    const uint8_t involved = (uint8_t)((bit << 4) | state);
-    uint64_t branch = 0;
+/* Survivor metrics never exceed INF plus one branch: a reachable path costs at most 512 * 4 * 65535 < 2^27, so it
+   stays below INF = 2^30 - 1, and the largest branch adds less than 2^18. Every sum therefore stays below 2^31, which
+   lets the vector kernels compare metrics as signed 32-bit values. */
+#define TETRA_VITERBI_INF (UINT32_MAX / 4u)
+
+/* One add-compare-select step over the trellis; @p pred records each state's surviving predecessor. This is the
+   reference the vector kernels below must match bit for bit. */
+static void
+conv_acs_step(const tetra_conv_code* code, const uint32_t* prev, uint32_t* next, const uint16_t* costs, uint8_t* pred) {
+    /* INF plus a branch fits (see TETRA_VITERBI_INF), so unreachable paths can be clamped after selection. */
+    const uint32_t inf = TETRA_VITERBI_INF;
+    uint32_t branch[TETRA_VITERBI_STATES] = {0};
     for (int lane = 0; lane < code->lanes; lane++) {
-        const uint16_t target = parity5((uint8_t)(involved & code->taps[lane])) ? 0xFFFFu : 0x0000u;
-        const uint16_t got = costs[lane];
-        branch += target > got ? (uint64_t)(target - got) : (uint64_t)(got - target);
+        const uint32_t zero = costs[lane];
+        const uint32_t one = 65535u - zero;
+        for (int to = 0; to < TETRA_VITERBI_STATES; to++) {
+            branch[to] += ((code->incoming[to] >> lane) & 1u) ? one : zero;
+        }
     }
-    return branch;
+    const uint32_t complement = (uint32_t)code->lanes * 65535u;
+    for (int to = 0; to < TETRA_VITERBI_STATES; to++) {
+        const int low = code->shift_up ? (to >> 1) : ((to << 1) & 15);
+        const int high = low + (code->shift_up ? 8 : 1);
+        const uint32_t a = prev[low] + branch[to];
+        const uint32_t b = prev[high] + (complement - branch[to]);
+        /* Strict improvement by the higher predecessor preserves the original tie order. */
+        const uint32_t best = b < a ? b : a;
+        next[to] = best < inf ? best : inf;
+        pred[to] = best < inf ? (uint8_t)(b < a ? high : low) : 0;
+    }
 }
 
-/* One add-compare-select step over the trellis; @p pred records each state's surviving predecessor. */
+/* @p nsteps trellis steps from the survivor metrics in @p metric, which receive the final ones; step i reads
+   costs[i * lanes ...] and fills pred[i * 16 ...]. */
 static void
-conv_acs_step(const tetra_conv_code* code, const uint64_t* prev, uint64_t* next, const uint16_t* costs, uint8_t* pred) {
-    const uint64_t inf = UINT64_MAX / 4u;
-    for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
-        next[state] = inf;
+conv_acs_run_scalar(const tetra_conv_code* code, uint32_t* metric, const uint16_t* costs, int nsteps, uint8_t* pred) {
+    uint32_t spare[TETRA_VITERBI_STATES];
+    uint32_t* bufs[2] = {metric, spare};
+    for (int pos = 0; pos < nsteps; pos++) {
+        conv_acs_step(code, bufs[pos & 1], bufs[(pos + 1) & 1], costs + ((size_t)pos * (size_t)code->lanes),
+                      pred + ((size_t)pos * TETRA_VITERBI_STATES));
     }
-    for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
-        if (prev[state] == inf) {
-            continue;
-        }
-        for (int bit = 0; bit <= 1; bit++) {
-            const int to = conv_next_state(code, state, bit);
-            const uint64_t metric = prev[state] + conv_branch_cost(code, state, bit, costs);
-            if (metric < next[to]) {
-                next[to] = metric;
-                pred[to] = (uint8_t)state;
-            }
+    if (nsteps & 1) {
+        DSD_MEMCPY(metric, spare, sizeof(spare));
+    }
+}
+
+/* The vector kernels hold the 16 metrics as four 4-lane vectors (states 4k..4k+3). The branch metric is the sum of
+   the lanes' costs plus, for each lane whose lower-edge coded bit is 1, the difference (65535 - 2 * cost), added
+   modulo 2^32 through a lane mask. The predecessors are fixed shuffles: with shift_up, low = to >> 1 (states 0..7
+   each duplicated) and high = low + 8; otherwise low = 2 * to mod 16 (the even states) and high = low + 1. */
+#if defined(TETRA_VITERBI_SIMD_SSE2) || defined(TETRA_VITERBI_SIMD_NEON)
+/* A bound under which every survivor stays below INF for @p remaining more steps, each adding at most one maximal
+   branch (@p lanes * 65535); 0, which no metric is below, when there is none. */
+static int
+conv_acs_safe_limit(int remaining, int lanes) {
+    const int64_t growth = (int64_t)remaining * (int64_t)lanes * 65535;
+    return growth < (int64_t)TETRA_VITERBI_INF ? (int)((int64_t)TETRA_VITERBI_INF - growth) : 0;
+}
+
+#endif
+
+#if defined(TETRA_VITERBI_SIMD_SSE2)
+static __m128i
+acs_select_sse2(__m128i mask, __m128i when_set, __m128i otherwise) {
+    return _mm_or_si128(_mm_and_si128(mask, when_set), _mm_andnot_si128(mask, otherwise));
+}
+
+/* Even (@p odd 0) or odd 32-bit elements of a then b. */
+static __m128i
+acs_deinterleave_sse2(__m128i a, __m128i b, int odd) {
+    const __m128 fa = _mm_castsi128_ps(a);
+    const __m128 fb = _mm_castsi128_ps(b);
+    return _mm_castps_si128(odd ? _mm_shuffle_ps(fa, fb, _MM_SHUFFLE(3, 1, 3, 1))
+                                : _mm_shuffle_ps(fa, fb, _MM_SHUFFLE(2, 0, 2, 0)));
+}
+
+/* One vector of add-compare-select from the lower and higher predecessors' survivors and the lower edge's branch;
+   @p took_high receives the selection mask. With @p clamp, @p reachable receives the mask of survivors below INF
+   and the rest become INF; without it the caller has shown that every survivor stays below INF. */
+static inline __m128i
+acs_vector_sse2(__m128i low, __m128i high, __m128i branch, __m128i complement, __m128i* took_high, __m128i* reachable,
+                const int clamp) {
+    const __m128i inf = _mm_set1_epi32((int)TETRA_VITERBI_INF);
+    const __m128i a = _mm_add_epi32(low, branch);
+    const __m128i b = _mm_add_epi32(high, _mm_sub_epi32(complement, branch));
+    /* Signed compares are exact: both sums are below 2^31 (see TETRA_VITERBI_INF). */
+    *took_high = _mm_cmpgt_epi32(a, b);
+    const __m128i best = acs_select_sse2(*took_high, b, a);
+    if (!clamp) {
+        return best;
+    }
+    *reachable = _mm_cmpgt_epi32(inf, best);
+    return acs_select_sse2(*reachable, best, inf);
+}
+
+/* All-ones or zero 32-bit masks narrowed to bytes; signed saturation keeps both values. */
+static inline __m128i
+acs_narrow_masks_sse2(__m128i m0, __m128i m1, __m128i m2, __m128i m3) {
+    return _mm_packs_epi16(_mm_packs_epi32(m0, m1), _mm_packs_epi32(m2, m3));
+}
+
+/* One trellis step on the survivors in @p p (four vectors), writing the step's 16 predecessors to @p pred_row. */
+static inline void
+acs_step_sse2(__m128i* p, const __m128i (*lane_mask)[4], const uint16_t* step, uint8_t* pred_row, const int lanes,
+              const int shift_up, const int clamp) {
+    const __m128i complement = _mm_set1_epi32(lanes * 65535);
+    const __m128i delta = _mm_set1_epi8((char)(shift_up ? 8 : 1));
+    const __m128i low_index = shift_up ? _mm_setr_epi8(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7)
+                                       : _mm_setr_epi8(0, 2, 4, 6, 8, 10, 12, 14, 0, 2, 4, 6, 8, 10, 12, 14);
+    int base = 0;
+    for (int lane = 0; lane < lanes; lane++) {
+        base += step[lane];
+    }
+    __m128i b0 = _mm_set1_epi32(base);
+    __m128i b1 = b0, b2 = b0, b3 = b0;
+    for (int lane = 0; lane < lanes; lane++) {
+        const __m128i diff = _mm_set1_epi32(65535 - (2 * (int)step[lane]));
+        b0 = _mm_add_epi32(b0, _mm_and_si128(lane_mask[lane][0], diff));
+        b1 = _mm_add_epi32(b1, _mm_and_si128(lane_mask[lane][1], diff));
+        b2 = _mm_add_epi32(b2, _mm_and_si128(lane_mask[lane][2], diff));
+        b3 = _mm_add_epi32(b3, _mm_and_si128(lane_mask[lane][3], diff));
+    }
+    __m128i l0, l1, l2, l3, h0, h1, h2, h3;
+    if (shift_up) {
+        l0 = _mm_unpacklo_epi32(p[0], p[0]);
+        l1 = _mm_unpackhi_epi32(p[0], p[0]);
+        l2 = _mm_unpacklo_epi32(p[1], p[1]);
+        l3 = _mm_unpackhi_epi32(p[1], p[1]);
+        h0 = _mm_unpacklo_epi32(p[2], p[2]);
+        h1 = _mm_unpackhi_epi32(p[2], p[2]);
+        h2 = _mm_unpacklo_epi32(p[3], p[3]);
+        h3 = _mm_unpackhi_epi32(p[3], p[3]);
+    } else {
+        l0 = l2 = acs_deinterleave_sse2(p[0], p[1], 0);
+        l1 = l3 = acs_deinterleave_sse2(p[2], p[3], 0);
+        h0 = h2 = acs_deinterleave_sse2(p[0], p[1], 1);
+        h1 = h3 = acs_deinterleave_sse2(p[2], p[3], 1);
+    }
+    __m128i t0, t1, t2, t3;
+    __m128i r0 = _mm_setzero_si128(), r1 = r0, r2 = r0, r3 = r0;
+    p[0] = acs_vector_sse2(l0, h0, b0, complement, &t0, &r0, clamp);
+    p[1] = acs_vector_sse2(l1, h1, b1, complement, &t1, &r1, clamp);
+    p[2] = acs_vector_sse2(l2, h2, b2, complement, &t2, &r2, clamp);
+    p[3] = acs_vector_sse2(l3, h3, b3, complement, &t3, &r3, clamp);
+    __m128i chosen = _mm_add_epi8(low_index, _mm_and_si128(acs_narrow_masks_sse2(t0, t1, t2, t3), delta));
+    if (clamp) {
+        chosen = _mm_and_si128(acs_narrow_masks_sse2(r0, r1, r2, r3), chosen);
+    }
+    _mm_storeu_si128((__m128i*)(void*)pred_row, chosen);
+}
+
+/* Whether every survivor is below @p limit. */
+static inline int
+acs_all_below_sse2(const __m128i* p, int limit) {
+    const __m128i bound = _mm_set1_epi32(limit);
+    const __m128i below = _mm_and_si128(_mm_and_si128(_mm_cmpgt_epi32(bound, p[0]), _mm_cmpgt_epi32(bound, p[1])),
+                                        _mm_and_si128(_mm_cmpgt_epi32(bound, p[2]), _mm_cmpgt_epi32(bound, p[3])));
+    return _mm_movemask_epi8(below) == 0xFFFF;
+}
+
+static inline void
+conv_acs_run_simd(const tetra_conv_code* code, uint32_t* metric, const uint16_t* costs, int nsteps, uint8_t* pred,
+                  const int lanes, const int shift_up) {
+    __m128i lane_mask[4][4];
+    for (int lane = 0; lane < lanes; lane++) {
+        const __m128i bit = _mm_set1_epi32(1 << lane);
+        for (int k = 0; k < 4; k++) {
+            const __m128i incoming =
+                _mm_loadu_si128((const __m128i*)(const void*)(code->incoming + ((size_t)4 * (size_t)k)));
+            lane_mask[lane][k] = _mm_cmpeq_epi32(_mm_and_si128(incoming, bit), bit);
         }
     }
+    __m128i p[4];
+    for (int k = 0; k < 4; k++) {
+        p[k] = _mm_loadu_si128((const __m128i*)(const void*)(metric + ((size_t)4 * (size_t)k)));
+    }
+    int pos = 0;
+    /* Clamp until every survivor sits below INF by more than the largest growth the remaining steps allow (one
+       maximal branch each), from which point no survivor can reach INF. From the decoder's start state that takes
+       four steps. */
+    for (; pos < nsteps; pos++) {
+        if (acs_all_below_sse2(p, conv_acs_safe_limit(nsteps - pos, lanes))) {
+            break;
+        }
+        acs_step_sse2(p, (const __m128i(*)[4])lane_mask, costs + ((size_t)pos * (size_t)lanes),
+                      pred + ((size_t)pos * TETRA_VITERBI_STATES), lanes, shift_up, 1);
+    }
+    for (; pos < nsteps; pos++) {
+        acs_step_sse2(p, (const __m128i(*)[4])lane_mask, costs + ((size_t)pos * (size_t)lanes),
+                      pred + ((size_t)pos * TETRA_VITERBI_STATES), lanes, shift_up, 0);
+    }
+    for (int k = 0; k < 4; k++) {
+        _mm_storeu_si128((__m128i*)(void*)(metric + ((size_t)4 * (size_t)k)), p[k]);
+    }
+}
+
+#elif defined(TETRA_VITERBI_SIMD_NEON)
+
+/* The SSE2 kernel's structure, with unsigned compares and minimum. */
+static inline uint32x4_t
+acs_vector_neon(uint32x4_t low, uint32x4_t high, uint32x4_t branch, uint32x4_t complement, uint32x4_t* took_high,
+                uint32x4_t* reachable, const int clamp) {
+    const uint32x4_t inf = vdupq_n_u32(TETRA_VITERBI_INF);
+    const uint32x4_t a = vaddq_u32(low, branch);
+    const uint32x4_t b = vaddq_u32(high, vsubq_u32(complement, branch));
+    *took_high = vcltq_u32(b, a);
+    const uint32x4_t best = vminq_u32(a, b);
+    if (!clamp) {
+        return best;
+    }
+    *reachable = vcltq_u32(best, inf);
+    return vminq_u32(best, inf);
+}
+
+static inline uint8x16_t
+acs_narrow_masks_neon(uint32x4_t m0, uint32x4_t m1, uint32x4_t m2, uint32x4_t m3) {
+    return vcombine_u8(vmovn_u16(vcombine_u16(vmovn_u32(m0), vmovn_u32(m1))),
+                       vmovn_u16(vcombine_u16(vmovn_u32(m2), vmovn_u32(m3))));
+}
+
+static inline void
+acs_step_neon(uint32x4_t* p, const uint32x4_t (*lane_mask)[4], const uint16_t* step, uint8_t* pred_row, const int lanes,
+              const int shift_up, const int clamp) {
+    static const uint8_t k_low_up[16] = {0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7};
+    static const uint8_t k_low_down[16] = {0, 2, 4, 6, 8, 10, 12, 14, 0, 2, 4, 6, 8, 10, 12, 14};
+    const uint32x4_t complement = vdupq_n_u32((uint32_t)lanes * 65535u);
+    const uint8x16_t delta = vdupq_n_u8(shift_up ? 8u : 1u);
+    const uint8x16_t low_index = vld1q_u8(shift_up ? k_low_up : k_low_down);
+    uint32_t base = 0;
+    for (int lane = 0; lane < lanes; lane++) {
+        base += step[lane];
+    }
+    uint32x4_t b0 = vdupq_n_u32(base);
+    uint32x4_t b1 = b0, b2 = b0, b3 = b0;
+    for (int lane = 0; lane < lanes; lane++) {
+        const uint32x4_t diff = vdupq_n_u32(65535u - (2u * (uint32_t)step[lane]));
+        b0 = vaddq_u32(b0, vandq_u32(lane_mask[lane][0], diff));
+        b1 = vaddq_u32(b1, vandq_u32(lane_mask[lane][1], diff));
+        b2 = vaddq_u32(b2, vandq_u32(lane_mask[lane][2], diff));
+        b3 = vaddq_u32(b3, vandq_u32(lane_mask[lane][3], diff));
+    }
+    uint32x4_t l0, l1, l2, l3, h0, h1, h2, h3;
+    if (shift_up) {
+        const uint32x4x2_t l01 = vzipq_u32(p[0], p[0]);
+        const uint32x4x2_t l23 = vzipq_u32(p[1], p[1]);
+        const uint32x4x2_t h01 = vzipq_u32(p[2], p[2]);
+        const uint32x4x2_t h23 = vzipq_u32(p[3], p[3]);
+        l0 = l01.val[0];
+        l1 = l01.val[1];
+        l2 = l23.val[0];
+        l3 = l23.val[1];
+        h0 = h01.val[0];
+        h1 = h01.val[1];
+        h2 = h23.val[0];
+        h3 = h23.val[1];
+    } else {
+        const uint32x4x2_t s01 = vuzpq_u32(p[0], p[1]);
+        const uint32x4x2_t s23 = vuzpq_u32(p[2], p[3]);
+        l0 = l2 = s01.val[0];
+        l1 = l3 = s23.val[0];
+        h0 = h2 = s01.val[1];
+        h1 = h3 = s23.val[1];
+    }
+    uint32x4_t t0, t1, t2, t3;
+    uint32x4_t r0 = vdupq_n_u32(0), r1 = r0, r2 = r0, r3 = r0;
+    p[0] = acs_vector_neon(l0, h0, b0, complement, &t0, &r0, clamp);
+    p[1] = acs_vector_neon(l1, h1, b1, complement, &t1, &r1, clamp);
+    p[2] = acs_vector_neon(l2, h2, b2, complement, &t2, &r2, clamp);
+    p[3] = acs_vector_neon(l3, h3, b3, complement, &t3, &r3, clamp);
+    uint8x16_t chosen = vaddq_u8(low_index, vandq_u8(acs_narrow_masks_neon(t0, t1, t2, t3), delta));
+    if (clamp) {
+        chosen = vandq_u8(acs_narrow_masks_neon(r0, r1, r2, r3), chosen);
+    }
+    vst1q_u8(pred_row, chosen);
+}
+
+static inline int
+acs_all_below_neon(const uint32x4_t* p, int limit) {
+    const uint32x4_t bound = vdupq_n_u32((uint32_t)limit);
+    const uint32x4_t below = vandq_u32(vandq_u32(vcltq_u32(p[0], bound), vcltq_u32(p[1], bound)),
+                                       vandq_u32(vcltq_u32(p[2], bound), vcltq_u32(p[3], bound)));
+    const uint32x2_t folded = vand_u32(vget_low_u32(below), vget_high_u32(below));
+    return (vget_lane_u32(folded, 0) & vget_lane_u32(folded, 1)) == UINT32_MAX;
+}
+
+static inline void
+conv_acs_run_simd(const tetra_conv_code* code, uint32_t* metric, const uint16_t* costs, int nsteps, uint8_t* pred,
+                  const int lanes, const int shift_up) {
+    uint32x4_t lane_mask[4][4];
+    for (int lane = 0; lane < lanes; lane++) {
+        const uint32x4_t bit = vdupq_n_u32(1u << lane);
+        for (int k = 0; k < 4; k++) {
+            lane_mask[lane][k] = vtstq_u32(vld1q_u32(code->incoming + ((size_t)4 * (size_t)k)), bit);
+        }
+    }
+    uint32x4_t p[4];
+    for (int k = 0; k < 4; k++) {
+        p[k] = vld1q_u32(metric + ((size_t)4 * (size_t)k));
+    }
+    int pos = 0;
+    /* See the SSE2 kernel. */
+    for (; pos < nsteps; pos++) {
+        if (acs_all_below_neon(p, conv_acs_safe_limit(nsteps - pos, lanes))) {
+            break;
+        }
+        acs_step_neon(p, (const uint32x4_t(*)[4])lane_mask, costs + ((size_t)pos * (size_t)lanes),
+                      pred + ((size_t)pos * TETRA_VITERBI_STATES), lanes, shift_up, 1);
+    }
+    for (; pos < nsteps; pos++) {
+        acs_step_neon(p, (const uint32x4_t(*)[4])lane_mask, costs + ((size_t)pos * (size_t)lanes),
+                      pred + ((size_t)pos * TETRA_VITERBI_STATES), lanes, shift_up, 0);
+    }
+    for (int k = 0; k < 4; k++) {
+        vst1q_u32(metric + ((size_t)4 * (size_t)k), p[k]);
+    }
+}
+
+#endif
+
+static void
+conv_acs_run(const tetra_conv_code* code, uint32_t* metric, const uint16_t* costs, int nsteps, uint8_t* pred) {
+#if defined(TETRA_VITERBI_SIMD_SSE2) || defined(TETRA_VITERBI_SIMD_NEON)
+    /* One copy per code shape, so the per-lane and per-vector loops unroll into registers. */
+    if (code->lanes == 4 && code->shift_up) {
+        conv_acs_run_simd(code, metric, costs, nsteps, pred, 4, 1);
+        return;
+    }
+    if (code->lanes == 3 && !code->shift_up) {
+        conv_acs_run_simd(code, metric, costs, nsteps, pred, 3, 0);
+        return;
+    }
+#endif
+    conv_acs_run_scalar(code, metric, costs, nsteps, pred);
 }
 
 /* Decode @p nbits input bits from @p costs (code->lanes per bit). The encoders end on four zero tail bits, so the
    path ending in state 0 is the answer; the best state stands in only when state 0 is unreachable. */
 static void
 conv_viterbi(const tetra_conv_code* code, const uint16_t* costs, int nbits, uint8_t* out_bits) {
-    const uint64_t inf = UINT64_MAX / 4u;
-    uint64_t metric[2][TETRA_VITERBI_STATES];
-    uint8_t pred[TETRA_VITERBI_MAX_BITS][TETRA_VITERBI_STATES];
+    const uint32_t inf = TETRA_VITERBI_INF;
+    uint32_t metric[TETRA_VITERBI_STATES];
+    /* Every step writes all 16 predecessors of its row, so the rows need no clearing. */
+    uint8_t pred[TETRA_VITERBI_MAX_BITS * TETRA_VITERBI_STATES];
     for (int state = 0; state < TETRA_VITERBI_STATES; state++) {
-        metric[0][state] = state == 0 ? 0 : inf;
+        metric[state] = state == 0 ? 0 : inf;
     }
-    DSD_MEMSET(pred, 0, sizeof(pred[0]) * (size_t)nbits);
-    for (int pos = 0; pos < nbits; pos++) {
-        conv_acs_step(code, metric[pos & 1], metric[(pos + 1) & 1], costs + ((size_t)pos * (size_t)code->lanes),
-                      pred[pos]);
-    }
-    const uint64_t* last = metric[nbits & 1];
+    conv_acs_run(code, metric, costs, nbits, pred);
     int state = 0;
-    if (last[0] == inf) {
+    if (metric[0] == inf) {
         for (int candidate = 1; candidate < TETRA_VITERBI_STATES; candidate++) {
-            if (last[candidate] < last[state]) {
+            if (metric[candidate] < metric[state]) {
                 state = candidate;
             }
         }
     }
     for (int pos = nbits - 1; pos >= 0; pos--) {
         out_bits[pos] = (uint8_t)conv_input_of(code, state);
-        state = pred[pos][state];
+        state = pred[((size_t)pos * TETRA_VITERBI_STATES) + (size_t)state];
     }
 }
 

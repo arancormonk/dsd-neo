@@ -204,8 +204,8 @@ typedef struct {
     double open_db;
     double close_db;
     /* Filter state (transposed direct form II). */
-    double s1[DSD_PCM_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
-    double s2[DSD_PCM_NOISE_SQUELCH_MAX_BANDS][DSD_NOISE_SQUELCH_SECTIONS];
+    dsd_noise_squelch_band_group
+        bank[(DSD_PCM_NOISE_SQUELCH_MAX_BANDS + DSD_NOISE_SQUELCH_GROUP_BANDS - 1) / DSD_NOISE_SQUELCH_GROUP_BANDS];
     double v1[DSD_NOISE_SQUELCH_SECTIONS];
     double v2[DSD_NOISE_SQUELCH_SECTIONS];
     double vp1[DSD_PCM_NOISE_SQUELCH_VOICE_PARTS][DSD_NOISE_SQUELCH_SECTIONS];
