@@ -3556,6 +3556,16 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
+- View rings and SNR fallbacks (`radio/rtl_view_rings.{h,cpp}`): the constellation and eye rings (relaxed-atomic
+  samples, demod-thread appends, retune clears) and the fallback estimates over them behind
+  `rtl_stream_estimate_snr_{c4fm_eye,gfsk_eye,qpsk_const}()`. Every append and clear is one write batch (a writer
+  count raised for it, a batch count bumped when it ends). Each estimate caches per thread, keyed by batch count, TED
+  SPS, output rate and channel profile, and returns exactly a fresh estimate's answer; a read a batch raced is answered
+  (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
+  `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
+- Source kind per read: a prepared stream records whether its private `opts` copy names an I/Q replay
+  (`RtlSdrInternals::source_replay`), so `stream_is_replay_active()` (every decoder read and replay clock step) no
+  longer parses `audio_in_dev`.
 - Targets:
   - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
   - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides

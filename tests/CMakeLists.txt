@@ -12907,6 +12907,28 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_wideband_spectrum
     )
 
+    # Eye/constellation SNR fallback cache against fresh estimates; the
+    # sources are pure ring/statistics code, so the test compiles them alone.
+    add_executable(
+        dsd-neo_test_io_rtl_view_rings
+        io/test_io_rtl_view_rings.cpp
+        ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_view_rings.cpp
+        ${PROJECT_SOURCE_DIR}/src/dsp/snr_bias.cpp
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_view_rings
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_view_rings
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_view_rings
+        PRIVATE dsd-neo_platform Threads::Threads
+    )
+    add_test(NAME IO_RTL_VIEW_RINGS COMMAND dsd-neo_test_io_rtl_view_rings)
+
     add_executable(
         dsd-neo_test_io_rtl_ppm_request
         io/test_io_rtl_ppm_request.cpp

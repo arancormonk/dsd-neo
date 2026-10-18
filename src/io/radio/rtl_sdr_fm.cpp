@@ -86,6 +86,7 @@
 #include "rtl_replay_device.h"
 #include "rtl_stream_mirrors.hpp"
 #include "rtl_stream_shared.hpp"
+#include "rtl_view_rings.h"
 #include "rtl_wideband_spectrum.h"
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 #include "rtl_stream_test_support.h"
@@ -714,6 +715,10 @@ struct RtlSdrInternals {
     struct input_ring_state* input_ring = nullptr;
     struct udp_control** udp_ctrl_ptr = nullptr;
     const dsd_opts* opts = nullptr; /* snapshot for mode hints (P25p1/2, etc.) */
+    /* Whether `opts` names an I/Q replay, decided once when the stream is prepared: `opts` is the orchestrator's private
+       copy and its input name never changes under a running stream, while every decoder read and replay clock step
+       asks (stream_is_replay_active()). kStreamSourceUnknown on a stream no prepare filled in. */
+    int source_replay = 0;
     /* The receive family a live switch (rtl_stream_request_analog_profile(), a retune profile) moved this stream
        onto, or kRxFamilyFromOptions while it still runs the family `opts` opened it on. `opts` is the orchestrator's
        private copy, taken before the open, so a decode-mode change on the decoder side never reaches it: once the
@@ -883,9 +888,23 @@ static std::mutex g_requested_ppm_state_mutex;
 
 static int radio_source_is_iq_replay(const dsd_opts* opts);
 
+/* RtlSdrInternals::source_replay */
+enum : int {
+    kStreamSourceUnknown = 0,
+    kStreamSourceLive = 1,
+    kStreamSourceReplay = 2,
+};
+
 static inline int
 stream_is_replay_active(void) {
-    return (g_stream && g_stream->opts && radio_source_is_iq_replay(g_stream->opts)) ? 1 : 0;
+    const struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->opts) {
+        return 0;
+    }
+    if (s->source_replay != kStreamSourceUnknown) {
+        return (s->source_replay == kStreamSourceReplay) ? 1 : 0;
+    }
+    return radio_source_is_iq_replay(s->opts) ? 1 : 0;
 }
 
 static inline int
@@ -5990,14 +6009,7 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
-/* ---------------- Constellation capture (simple lock-free ring) ---------------- */
-
-static const int kConstMaxPairs = 8192;
-/* Relaxed atomics: single demod-thread writer, main-thread reader. Tearing
- * across samples is acceptable for display/estimation; atomics keep the
- * unsynchronized access well-defined. Relaxed ops compile to plain moves. */
-static std::atomic<float> g_const_xy[kConstMaxPairs * 2];
-static std::atomic<int> g_const_head{0}; /* pairs written [0..kConstMaxPairs-1], wraps */
+/* ---------------- Constellation / eye views (rtl_view_rings.cpp) ---------------- */
 
 /**
  * @brief Clear the constellation ring buffer.
@@ -6009,58 +6021,19 @@ static std::atomic<int> g_const_head{0}; /* pairs written [0..kConstMaxPairs-1],
  */
 static void
 constellation_ring_clear(void) {
-    for (int k = 0; k < kConstMaxPairs * 2; k++) {
-        g_const_xy[k].store(0.0f, std::memory_order_relaxed);
-    }
-    g_const_head.store(0, std::memory_order_relaxed);
+    rtl_view_constellation_clear();
 }
-
-/* Forward decl for eye-ring append used in demod loop */
-static inline void eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved);
 
 /* Append decimated I/Q samples from lowpassed[] after DSP. */
 static void
 constellation_ring_append(const float* iq, int len, int sps_hint) {
-    if (!iq || len < 2) {
-        return;
-    }
-    int N = len >> 1;                                              /* complex samples */
-    int stride = (sps_hint >= 1 && sps_hint <= 64) ? sps_hint : 4; /* rough decimation */
-    for (int n = 0; n < N; n += stride) {
-        float i = iq[(size_t)(n << 1) + 0];
-        float q = iq[(size_t)(n << 1) + 1];
-        int h = g_const_head.load(std::memory_order_relaxed);
-        g_const_xy[(size_t)(h << 1) + 0].store(i, std::memory_order_relaxed);
-        g_const_xy[(size_t)(h << 1) + 1].store(q, std::memory_order_relaxed);
-        h++;
-        if (h >= kConstMaxPairs) {
-            h = 0;
-        }
-        g_const_head.store(h, std::memory_order_relaxed);
-    }
+    rtl_view_constellation_append(iq, len, sps_hint);
 }
 
 extern "C" int
 rtl_stream_constellation_get(float* out_xy, int max_points) {
-    if (!out_xy || max_points <= 0) {
-        return 0;
-    }
-    int head = g_const_head.load(std::memory_order_relaxed); /* snapshot */
-    int n = (max_points < kConstMaxPairs) ? max_points : kConstMaxPairs;
-    int start = head;
-    for (int k = 0; k < n; k++) {
-        int idx = (start + k) % kConstMaxPairs;
-        out_xy[(size_t)(k << 1) + 0] = g_const_xy[(size_t)(idx << 1) + 0].load(std::memory_order_relaxed);
-        out_xy[(size_t)(k << 1) + 1] = g_const_xy[(size_t)(idx << 1) + 1].load(std::memory_order_relaxed);
-    }
-    return n;
+    return rtl_view_constellation_copy(out_xy, max_points);
 }
-
-/* ---------------- Eye diagram capture (I-channel of complex baseband) ---------------- */
-static const int kEyeMax = 16384;
-/* Relaxed atomics for the same reason as the constellation ring above. */
-static std::atomic<float> g_eye_buf[kEyeMax];
-static std::atomic<int> g_eye_head{0}; /* samples written [0..kEyeMax-1], wraps */
 
 /**
  * @brief Clear the eye diagram ring buffer.
@@ -6070,28 +6043,12 @@ static std::atomic<int> g_eye_head{0}; /* samples written [0..kEyeMax-1], wraps 
  */
 static void
 eye_ring_clear(void) {
-    for (int k = 0; k < kEyeMax; k++) {
-        g_eye_buf[k].store(0.0f, std::memory_order_relaxed);
-    }
-    g_eye_head.store(0, std::memory_order_relaxed);
+    rtl_view_eye_clear();
 }
 
 static inline void
 eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved) {
-    if (!iq_interleaved || len_interleaved < 2) {
-        return;
-    }
-    int N = len_interleaved >> 1; /* complex samples */
-    for (int n = 0; n < N; n++) {
-        float i = iq_interleaved[(size_t)(n << 1) + 0];
-        int h = g_eye_head.load(std::memory_order_relaxed);
-        g_eye_buf[h].store(i, std::memory_order_relaxed);
-        h++;
-        if (h >= kEyeMax) {
-            h = 0;
-        }
-        g_eye_head.store(h, std::memory_order_relaxed);
-    }
+    rtl_view_eye_append_i_chan(iq_interleaved, len_interleaved);
 }
 
 extern "C" int
@@ -6101,363 +6058,38 @@ rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
          * atomic mirror instead of the struct field to avoid a data race. */
         *out_sps = g_pub_ted_sps.load(std::memory_order_relaxed);
     }
-    if (!out || max_samples <= 0) {
-        return 0;
-    }
-    int head = g_eye_head.load(std::memory_order_relaxed);
-    int n = (max_samples < kEyeMax) ? max_samples : kEyeMax;
-    int start = head;
-    for (int k = 0; k < n; k++) {
-        int idx = (start + k) % kEyeMax;
-        out[k] = g_eye_buf[idx].load(std::memory_order_relaxed);
-    }
-    return n;
+    return rtl_view_eye_copy(out, max_samples);
+}
+
+/* The view-ring SNR fallbacks read the eye SPS and the bias inputs from the
+ * published mirrors (one TED SPS load serves both) and recompute only when a
+ * ring batch or one of those inputs changed. */
+static rtl_view_snr_inputs
+rtl_stream_view_snr_inputs(void) {
+    rtl_view_snr_inputs in;
+    rtl_stream_load_snr_bias_inputs(&in.rate_out, &in.ted_sps, &in.channel_profile);
+    return in;
 }
 
 /* ---------------- Eye-based SNR estimation (C4FM fallback) ---------------- */
-static int
-snr_eye_phase_in_window(int phase, int c1, int c2, int win) {
-    return (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
-}
-
-static int
-snr_eye_downsample_for_quantiles(const float* src, int src_count, float* dst, int dst_capacity) {
-    if (!src || !dst || src_count <= 0 || dst_capacity <= 0) {
-        return 0;
-    }
-    int step = (src_count > dst_capacity) ? (src_count / dst_capacity) : 1;
-    int copied = 0;
-    for (int i = 0; i < src_count && copied < dst_capacity; i += step) {
-        dst[copied++] = src[i];
-    }
-    return copied;
-}
-
-static int
-snr_eye_quartiles(float* vals, int count, float* q1, float* q2, float* q3) {
-    if (!vals || count < 8 || !q1 || !q2 || !q3) {
-        return 0;
-    }
-    int idx1 = (int)((size_t)count / 4);
-    int idx2 = (int)((size_t)count / 2);
-    int idx3 = (int)((size_t)(3 * (size_t)count) / 4);
-    std::nth_element(vals, vals + idx2, vals + count);
-    *q2 = vals[idx2];
-    std::nth_element(vals, vals + idx1, vals + idx2);
-    *q1 = vals[idx1];
-    std::nth_element(vals + idx2 + 1, vals + idx3, vals + count);
-    *q3 = vals[idx3];
-    return 1;
-}
-
-static int
-snr_eye_median(float* vals, int count, float* q2) {
-    if (!vals || !q2 || count < 8) {
-        return 0;
-    }
-    int idx2 = (int)((size_t)count / 2);
-    std::nth_element(vals, vals + idx2, vals + count);
-    *q2 = vals[idx2];
-    return 1;
-}
-
-static int
-snr_eye_c4fm_cluster_index(float v, float q1, float q2, float q3) {
-    return (v <= q1) ? 0 : (v <= q2) ? 1 : (v <= q3) ? 2 : 3;
-}
-
-static long long
-snr_eye_c4fm_collect_clusters(const float* eb, int nfb, int two_sps, int c1, int c2, int win, float q1, float q2,
-                              float q3, long long cnt[4], double sum[4]) {
-    for (int b = 0; b < 4; b++) {
-        cnt[b] = 0;
-        sum[b] = 0.0;
-    }
-    for (int i = 0; i < nfb; i++) {
-        int phase = i % two_sps;
-        if (!snr_eye_phase_in_window(phase, c1, c2, win)) {
-            continue;
-        }
-        float v = eb[i];
-        int b = snr_eye_c4fm_cluster_index(v, q1, q2, q3);
-        cnt[b]++;
-        sum[b] += (double)v;
-    }
-    return cnt[0] + cnt[1] + cnt[2] + cnt[3];
-}
-
-static double
-snr_eye_c4fm_noise_variance(const float* eb, int nfb, int two_sps, int c1, int c2, int win, float q1, float q2,
-                            float q3, const double mu[4], long long total) {
-    double nsum = 0.0;
-    for (int i = 0; i < nfb; i++) {
-        int phase = i % two_sps;
-        if (!snr_eye_phase_in_window(phase, c1, c2, win)) {
-            continue;
-        }
-        float v = eb[i];
-        int b = snr_eye_c4fm_cluster_index(v, q1, q2, q3);
-        double e = (double)v - mu[b];
-        nsum += e * e;
-    }
-    return nsum / (double)total;
-}
-
-static double
-snr_eye_signal_variance_from_means(const double* mu, const long long* cnt, long long total) {
-    double mu_all = 0.0;
-    for (int b = 0; b < 4; b++) {
-        mu_all += mu[b] * (double)cnt[b] / (double)total;
-    }
-    double ssum = 0.0;
-    for (int b = 0; b < 4; b++) {
-        double d = mu[b] - mu_all;
-        ssum += (double)cnt[b] * d * d;
-    }
-    return ssum / (double)total;
-}
-
-static int
-snr_qpsk_axis_means(const float* xy, int n, double* aI_out, double* aQ_out) {
-    double sum_abs_i = 0.0;
-    double sum_abs_q = 0.0;
-    for (int i = 0; i < n; i++) {
-        double I = (double)xy[(size_t)(i << 1) + 0];
-        double Q = (double)xy[(size_t)(i << 1) + 1];
-        sum_abs_i += fabs(I);
-        sum_abs_q += fabs(Q);
-    }
-    double aI = sum_abs_i / (double)n;
-    double aQ = sum_abs_q / (double)n;
-    if (!(aI > 1e-9 && aQ > 1e-9)) {
-        return 0;
-    }
-    *aI_out = aI;
-    *aQ_out = aQ;
-    return 1;
-}
-
-static double
-snr_qpsk_error_axis(const float* xy, int n, double aI, double aQ) {
-    double e2 = 0.0;
-    for (int i = 0; i < n; i++) {
-        double I = (double)xy[(size_t)(i << 1) + 0];
-        double Q = (double)xy[(size_t)(i << 1) + 1];
-        double ti = (I >= 0.0) ? aI : -aI;
-        double tq = (Q >= 0.0) ? aQ : -aQ;
-        double ei = I - ti;
-        double eq = Q - tq;
-        e2 += ei * ei + eq * eq;
-    }
-    return e2;
-}
-
-static double
-snr_qpsk_error_diag(const float* xy, int n, double aD) {
-    double e2 = 0.0;
-    for (int i = 0; i < n; i++) {
-        double I = (double)xy[(size_t)(i << 1) + 0];
-        double Q = (double)xy[(size_t)(i << 1) + 1];
-        double ti = (I >= 0.0) ? aD : -aD;
-        double tq = (Q >= 0.0) ? aD : -aD;
-        double ei = I - ti;
-        double eq = Q - tq;
-        e2 += ei * ei + eq * eq;
-    }
-    return e2;
-}
-
-namespace {
-
-struct snr_eye_gfsk_window {
-    int two_sps;
-    int c1;
-    int c2;
-    int win;
-    float q2;
-};
-
-} // namespace
-
-namespace {
-
-struct snr_eye_gfsk_sums {
-    double sumL;
-    double sumH;
-    int cntL;
-    int cntH;
-};
-
-} // namespace
-
-static int
-snr_eye_gfsk_collect_binary(const float* eb, int nfb, const snr_eye_gfsk_window* window, snr_eye_gfsk_sums* sums) {
-    sums->sumL = 0.0;
-    sums->sumH = 0.0;
-    sums->cntL = 0;
-    sums->cntH = 0;
-    for (int i = 0; i < nfb; i++) {
-        int phase = i % window->two_sps;
-        if (!snr_eye_phase_in_window(phase, window->c1, window->c2, window->win)) {
-            continue;
-        }
-        float v = eb[i];
-        if (v <= window->q2) {
-            sums->sumL += v;
-            sums->cntL++;
-        } else {
-            sums->sumH += v;
-            sums->cntH++;
-        }
-    }
-    return (sums->cntL > 0 && sums->cntH > 0) ? 1 : 0;
-}
-
-static double
-snr_eye_gfsk_noise_variance(const float* eb, int nfb, int two_sps, int c1, int c2, int win, float q2, double muL,
-                            double muH, int total) {
-    double nsum = 0.0;
-    for (int i = 0; i < nfb; i++) {
-        int phase = i % two_sps;
-        if (!snr_eye_phase_in_window(phase, c1, c2, win)) {
-            continue;
-        }
-        float v = eb[i];
-        double mu = (v <= q2) ? muL : muH;
-        double e = (double)v - mu;
-        nsum += e * e;
-    }
-    return nsum / (double)total;
-}
-
 extern "C" double
 rtl_stream_estimate_snr_c4fm_eye(void) {
-    enum : uint16_t { MAXS = 4096 };
-
-    static float eb[(size_t)MAXS];
-    int sps_fb = 0;
-    int nfb = rtl_stream_eye_get(eb, MAXS, &sps_fb);
-    if (nfb <= 100 || sps_fb <= 0) {
-        return -100.0;
-    }
-    int two_sps = 2 * sps_fb;
-    int c1 = sps_fb / 2;
-    int c2 = (3 * sps_fb) / 2;
-    int win = sps_fb / 10;
-    if (win < 1) {
-        win = 1;
-    }
-    static float qv[4096];
-    int mct = snr_eye_downsample_for_quantiles(eb, nfb, qv, 4096);
-    float q1 = 0.0f;
-    float q2 = 0.0f;
-    float q3 = 0.0f;
-    if (!snr_eye_quartiles(qv, mct, &q1, &q2, &q3)) {
-        return -100.0;
-    }
-
-    long long cnt[4] = {0, 0, 0, 0};
-    double sum[4] = {0, 0, 0, 0};
-    long long total = snr_eye_c4fm_collect_clusters(eb, nfb, two_sps, c1, c2, win, q1, q2, q3, cnt, sum);
-    if (!(total > 50 && cnt[0] && cnt[1] && cnt[2] && cnt[3])) {
-        return -100.0;
-    }
-    double mu[4];
-    for (int b = 0; b < 4; b++) {
-        mu[b] = sum[b] / (double)cnt[b];
-    }
-    double noise_var = snr_eye_c4fm_noise_variance(eb, nfb, two_sps, c1, c2, win, q1, q2, q3, mu, total);
-    if (noise_var <= 1e-9) {
-        return -100.0;
-    }
-    double sig_var = snr_eye_signal_variance_from_means(mu, cnt, total);
-    if (sig_var <= 1e-9) {
-        return -100.0;
-    }
-    double bias = rtl_stream_get_snr_bias_c4fm();
-    return 10.0 * log10(sig_var / noise_var) - bias;
+    const rtl_view_snr_inputs in = rtl_stream_view_snr_inputs();
+    return rtl_view_snr_c4fm_eye(&in);
 }
 
 /* ---------------- Constellation-based SNR estimation (QPSK fallback) ---------------- */
 extern "C" double
 rtl_stream_estimate_snr_qpsk_const(void) {
-    enum : uint16_t { MAXP = 4096 };
-
-    static float xy[(size_t)MAXP * 2];
-    int n = rtl_stream_constellation_get(xy, MAXP);
-    if (n <= 64) {
-        return -100.0;
-    }
-    double aI = 0.0;
-    double aQ = 0.0;
-    if (!snr_qpsk_axis_means(xy, n, &aI, &aQ)) {
-        return -100.0;
-    }
-    double e2_axis = snr_qpsk_error_axis(xy, n, aI, aQ);
-    double t2_axis = (double)n * (aI * aI + aQ * aQ);
-    double aD = std::max(1e-9, 0.5 * (aI + aQ));
-    double e2_diag = snr_qpsk_error_diag(xy, n, aD);
-    double t2_diag = (double)n * (2.0 * aD * aD);
-    double best_snr = -100.0;
-    if (t2_axis > 1e-9 && e2_axis > 0.0) {
-        double ratio = (e2_axis <= 1e-12) ? 1e12 : (t2_axis / e2_axis);
-        best_snr = 10.0 * log10(ratio);
-    }
-    if (t2_diag > 1e-9 && e2_diag > 0.0) {
-        double ratio_d = (e2_diag <= 1e-12) ? 1e12 : (t2_diag / e2_diag);
-        double snr_d = 10.0 * log10(ratio_d);
-        if (snr_d > best_snr) {
-            best_snr = snr_d;
-        }
-    }
-    double bias = rtl_stream_get_snr_bias_evm();
-    return best_snr - bias;
+    const rtl_view_snr_inputs in = rtl_stream_view_snr_inputs();
+    return rtl_view_snr_qpsk_const(&in);
 }
 
 /* ---------------- Eye-based SNR estimation (GFSK fallback, 2-level) ---------------- */
 extern "C" double
 rtl_stream_estimate_snr_gfsk_eye(void) {
-    enum : uint16_t { MAXS = 4096 };
-
-    static float eb[(size_t)MAXS];
-    int sps_fb = 0;
-    int nfb = rtl_stream_eye_get(eb, MAXS, &sps_fb);
-    if (nfb <= 100 || sps_fb <= 0) {
-        return -100.0;
-    }
-    int two_sps = 2 * sps_fb;
-    int c1 = sps_fb / 2;
-    int c2 = (3 * sps_fb) / 2;
-    int win = sps_fb / 10;
-    if (win < 1) {
-        win = 1;
-    }
-    static float qv[4096];
-    int mct = snr_eye_downsample_for_quantiles(eb, nfb, qv, 4096);
-    float q2 = 0.0f;
-    if (!snr_eye_median(qv, mct, &q2)) {
-        return -100.0;
-    }
-    snr_eye_gfsk_window window = {two_sps, c1, c2, win, q2};
-    snr_eye_gfsk_sums sums;
-    if (!snr_eye_gfsk_collect_binary(eb, nfb, &window, &sums)) {
-        return -100.0;
-    }
-    double muL = sums.sumL / (double)sums.cntL, muH = sums.sumH / (double)sums.cntH;
-    int total = sums.cntL + sums.cntH;
-    double noise_var = snr_eye_gfsk_noise_variance(eb, nfb, two_sps, c1, c2, win, q2, muL, muH, total);
-    if (noise_var <= 1e-9) {
-        return -100.0;
-    }
-    double mu_all = (muL * (double)sums.cntL + muH * (double)sums.cntH) / (double)total;
-    double ssum =
-        (double)sums.cntL * (muL - mu_all) * (muL - mu_all) + (double)sums.cntH * (muH - mu_all) * (muH - mu_all);
-    double sig_var = ssum / (double)total;
-    if (sig_var <= 1e-9) {
-        return -100.0;
-    }
-    double bias = rtl_stream_get_snr_bias_evm();
-    return 10.0 * log10(sig_var / noise_var) - bias;
+    const rtl_view_snr_inputs in = rtl_stream_view_snr_inputs();
+    return rtl_view_snr_gfsk_eye(&in);
 }
 
 /**
@@ -7077,6 +6709,7 @@ stream_prepare_internals(const dsd_opts* opts) {
     g_stream->input_ring = &input_ring;
     g_stream->udp_ctrl_ptr = &g_udp_ctrl;
     g_stream->opts = opts;
+    g_stream->source_replay = radio_source_is_iq_replay(opts) ? kStreamSourceReplay : kStreamSourceLive;
     g_stream->should_exit.store(0, std::memory_order_release);
     g_stream->controller_thread_started.store(0, std::memory_order_release);
     g_stream->demod_thread_started.store(0, std::memory_order_release);
