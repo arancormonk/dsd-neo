@@ -605,9 +605,8 @@ DecoderHostAndroid::serviceFailureText() const {
 void
 DecoderHostAndroid::requestServiceStop() {
     QJniObject context = android_context();
-    if (!context.isValid()) {
-        return;
-    }
+    // The service can cancel a live run without an Activity context; only its deferred
+    // notification bookkeeping needs one. It diagnoses an unavailable dispatch itself.
     QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoder", "(Landroid/content/Context;)V", context.object());
     setStatus(QStringLiteral("Stopping…"));
 }

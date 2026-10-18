@@ -41,7 +41,12 @@ class DecoderService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        synchronized(lock) { lastStartId = startId }
+        // A notification Stop must reach native cancellation before any notification binder
+        // calls. The Qt sender has already signalled it; repeating the request is harmless.
+        val stopping = intent?.action == ACTION_STOP && requestEngineStop(
+            StopCause.fromWire(intent.getStringExtra(EXTRA_STOP_CAUSE)),
+            intent.getLongExtra(EXTRA_STOP_SESSION, 0L).takeIf { it != 0L }
+        )
 
         // Unconditional, and before anything that can return early. startDecoder()
         // uses startForegroundService(), which obliges this service to call
@@ -53,18 +58,20 @@ class DecoderService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val args = intent.getStringArrayExtra(EXTRA_ARGS) ?: emptyArray()
-                startDecoding(args)
+                startDecoding(args, startId)
             }
             ACTION_STOP -> {
+                synchronized(lock) { lastStartId = startId }
                 // Both senders say who asked: the app's Stop listening and the notification's
                 // Stop action are the user (#718 D4). Anything else drains.
-                stopDecoding(StopCause.fromWire(intent.getStringExtra(EXTRA_STOP_CAUSE)))
+                if (stopping) showStopping()
                 // A stop aimed at a service that is not running still promoted us
                 // above; drop back out of the foreground rather than sitting there
                 // with no decoder behind the notification.
                 stopIfIdle()
             }
             else -> {
+                synchronized(lock) { lastStartId = startId }
                 Log.w(TAG, "ignoring intent with action ${intent?.action}")
                 stopIfIdle()
             }
@@ -88,6 +95,14 @@ class DecoderService : Service() {
         // A dead process stays dead until the user relaunches: restarting the engine
         // without its configuration would be worse than not restarting at all.
         return START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Removing the task is an explicit stop, even if Android retains the Activity or Qt's
+        // teardown is delayed. Home/Back with background listening enabled never comes here.
+        stopDecoding(StopCause.USER)
+        stopIfIdle()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
@@ -127,8 +142,12 @@ class DecoderService : Service() {
         super.onDestroy()
     }
 
-    private fun startDecoding(args: Array<String>) {
+    private fun startDecoding(args: Array<String>, startId: Int) {
         synchronized(lock) {
+            // Publish the id with the decision to start or reject. Doing this before
+            // foreground promotion lets an old worker take a new run's id while the
+            // main thread is still in the notification binder call.
+            lastStartId = startId
             if (state != State.IDLE) {
                 lastError = getString(R.string.error_busy)
                 Log.w(TAG, "start rejected in state $state")
@@ -182,7 +201,7 @@ class DecoderService : Service() {
             // a lock is held, so a start that observes IDLE first would find the lock
             // still ours and decode with nothing keeping the CPU awake.
             releaseWakeLock()
-            synchronized(lock) {
+            val completedStartId = synchronized(lock) {
                 val result = DsdNative.nativeLifecycleStatus()
                 if (result != null && result.size >= 5 && result[0] == sessionId) {
                     terminalReason = result[2].toInt()
@@ -199,8 +218,11 @@ class DecoderService : Service() {
                 if (engineThread === Thread.currentThread()) {
                     engineThread = null
                 }
+                // Capture before publishing IDLE to another start. Reading lastStartId later
+                // could stop the new run instead of the one this worker just finished.
+                lastStartId
             }
-            stopSelfLatest()
+            stopSelf(completedStartId)
         }, "dsd-neo-engine")
         synchronized(lock) {
             engineThread = thread
@@ -233,24 +255,19 @@ class DecoderService : Service() {
     }
 
     private fun stopDecoding(cause: StopCause) {
-        val shouldStop = synchronized(lock) {
-            if (state != State.RUNNING) {
-                false
-            } else {
-                state = State.STOPPING
-                true
-            }
-        }
-        if (!shouldStop) {
+        if (!requestEngineStop(cause)) {
             return
         }
+        showStopping()
+    }
+
+    private fun showStopping() {
         // Drops the cached record with it, which is what makes the update below visible:
         // the phase text is only rendered when no status is cached, so leaving the last
         // polled call in place would answer the user's stop with a call line and a
         // chronometer still counting up.
         stopStatusPolling()
         updateNotification(getString(R.string.decoder_stopping))
-        EngineStop.request(cause, DsdNative::nativeStop)
     }
 
     /** @return true when no engine thread is left running. */
@@ -715,11 +732,9 @@ class DecoderService : Service() {
     /**
      * Stops the service against the start it was last handed.
      *
-     * Bare stopSelf() stops regardless of how many starts have landed since. A run that
-     * ends just as the user begins another one would tear the new session down from
-     * onDestroy, because the destroy is delivered after the new start has already
-     * installed its engine thread. Handing AMS the newest id makes the stop a no-op
-     * once a newer start has arrived.
+     * Only main-thread callers use this helper, where another onStartCommand cannot
+     * interleave. The engine worker captures the id under the lock that publishes IDLE
+     * and calls stopSelf(id) directly, so a subsequent start cannot lend it a newer id.
      */
     private fun stopSelfLatest() {
         stopSelf(synchronized(lock) { lastStartId })
@@ -770,6 +785,8 @@ class DecoderService : Service() {
         const val EXTRA_ARGS = "io.github.arancormonk.dsdneo.extra.ARGS"
         /** A [StopCause.wire] value: who asked for an [ACTION_STOP]. */
         const val EXTRA_STOP_CAUSE = "io.github.arancormonk.dsdneo.extra.STOP_CAUSE"
+        /** A delivered stop must not cancel a session started after the request. Zero means an ordered pending start. */
+        const val EXTRA_STOP_SESSION = "io.github.arancormonk.dsdneo.extra.STOP_SESSION"
 
         private val lock = Any()
         private var state = State.IDLE
@@ -789,8 +806,40 @@ class DecoderService : Service() {
         private var terminalReason = DsdNative.RUN_PENDING
         private var deviceError = 0
 
-        /** Newest start id handed to onStartCommand; see [stopSelfLatest]. */
+        /** Newest start id handed to onStartCommand; the worker captures it before releasing IDLE. */
         private var lastStartId = 0
+
+        /**
+         * Cancel a configured run synchronously, also when called from the Qt thread. nativeStop
+         * only raises atomic flags: no device, notification, UI or configure lock is acquired.
+         * Holding the service lock through that call prevents a new run from taking the stop.
+         * STARTING still uses the ordered intent: nativeConfigure resets the flags, so cancelling
+         * it here could be lost. RUNNING is published only after configure has returned; the JNI
+         * startup latch covers the interval before nativeRun reaches the decode loop.
+         */
+        private fun requestEngineStop(cause: StopCause, expectedSession: Long? = null): Boolean = synchronized(lock) {
+            if (expectedSession != null && expectedSession != sessionId) {
+                stopDiagnostic("Ignoring stale stop for session $expectedSession; current session $sessionId")
+                return false
+            }
+            if (state != State.RUNNING && state != State.STOPPING) {
+                return false
+            }
+            // Repeated stops are deliberate: a user's Stop while a lifecycle stop is draining
+            // must still cancel uploads, and a previously refused native stop can be retried.
+            val rc = EngineStop.request(cause, DsdNative::nativeStop)
+            stopDiagnostic("Stop session $sessionId cause=${cause.wire} state=$state nativeStop=$rc")
+            if (rc != DsdNative.STATUS_OK) {
+                return false
+            }
+            state = State.STOPPING
+            true
+        }
+
+        private fun stopDiagnostic(message: String) {
+            Log.i(TAG, message)
+            DsdNative.nativeHostDiagnostic(message)
+        }
 
         /**
          * The wake lock, held for as long as a run is in flight.
@@ -842,11 +891,32 @@ class DecoderService : Service() {
          * site". A user's stop does not wait for pending rdio uploads (#718 D4).
          */
         @JvmStatic
-        fun stopDecoder(context: Context) {
+        fun stopDecoder(context: Context?) {
+            val requestedSession = synchronized(lock) {
+                val current = sessionId.takeIf { state != State.IDLE }
+                requestEngineStop(StopCause.USER, current)
+                current
+            }
+            // The engine has already been signalled when it is running. The intent is for
+            // main-thread notification/screen bookkeeping, or an ordered stop of a pending
+            // start. A delayed callback must not be the only path to native cancellation.
+            if (context == null) {
+                stopDiagnostic("Stop session ${requestedSession ?: 0}: no Android context for service dispatch")
+                return
+            }
             val intent = Intent(context, DecoderService::class.java)
                 .setAction(ACTION_STOP)
                 .putExtra(EXTRA_STOP_CAUSE, StopCause.USER.wire)
-            context.startService(intent)
+            requestedSession?.let { intent.putExtra(EXTRA_STOP_SESSION, it) }
+            try {
+                if (context.startService(intent) == null) {
+                    stopDiagnostic("Stop session ${requestedSession ?: 0}: service dispatch returned no component")
+                }
+            } catch (e: IllegalStateException) {
+                stopDiagnostic("Stop session ${requestedSession ?: 0}: service dispatch failed (${e.javaClass.simpleName})")
+            } catch (e: SecurityException) {
+                stopDiagnostic("Stop session ${requestedSession ?: 0}: service dispatch failed (${e.javaClass.simpleName})")
+            }
         }
 
         /** One coherent lifecycle record for the UI's existing tick. Reading the

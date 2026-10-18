@@ -147,6 +147,14 @@ RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known r
 drains. Its source check first pins the cause every production caller passes: each `nativeStop` call goes through
 `EngineStop.request`, a USB detach and the Activity and service teardowns drain, and both `ACTION_STOP` senders (the Qt
 host's Stop listening and the notification's Stop action) say `USER`.
+The same suite also runs `DecoderService.kt` itself with controlled native-run and intent-delivery boundaries:
+cancellation before callbacks, rejected dispatch and missing Activity context, notification cancellation before
+notification work, task removal without Activity destruction, a user Stop during a lifecycle drain, a refused native
+stop remaining retryable, a delayed stop after a subsequent start, and ordered cancellation during configure or before
+start delivery. Worker completion cases hold `stopSelf(id)` while the next run starts, and finish the old run while
+an arriving START is promoting its notification; both check the old id stays attached to the completed run.
+These tests exercise the service path the desktop host fixture replaces; they do not
+model vendor scheduling, Binder latency or an attached SDR.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
 injected clock: sleeping in front with either callback order, split screen, an own wake whose screen goes off on time or
 late, an own wake followed by use in front (after an unlock, or with no lock screen) whose next sleep arms afresh, the

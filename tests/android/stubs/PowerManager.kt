@@ -7,6 +7,7 @@ package android.os
 // are deprecated here too, so an unsuppressed use outside ScreenLocks' factory shows as a warning.
 class PowerManager {
     companion object {
+        const val PARTIAL_WAKE_LOCK = 1
         @Deprecated("Deprecated on the platform since API 17")
         const val SCREEN_BRIGHT_WAKE_LOCK = 0x0000000a
 
@@ -44,7 +45,7 @@ class PowerManager {
             referenceCounted = value
         }
 
-        fun acquire(timeout: Long) {
+        fun acquire(timeout: Long = 0L) {
             acquireTimeouts += timeout
             count = if (referenceCounted) count + 1 else 1
             if (levelAndFlags and WAKEUP_FLAG != 0 && !owner.wakeupRefused) {

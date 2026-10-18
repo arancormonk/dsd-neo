@@ -19,7 +19,8 @@ enum class StopCause(val wire: String) {
     /**
      * A stop or restart the user started from the app (every Qt host stop: Stop listening,
      * switching systems, retry, leaving Signal search, Back or close with background listening
-     * off, dismissing a failure) or the notification's Stop action.
+     * off, dismissing a failure), the notification's Stop action, or removal of the app's task
+     * from Recents (handled by the service even without Activity destruction).
      */
     USER("user"),
 
