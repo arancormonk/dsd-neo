@@ -36,6 +36,7 @@
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/sps_filters.h>
+#include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
@@ -48,6 +49,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/core/sync_patterns.h"
 #include "frame_sync_level.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -1525,6 +1527,56 @@ bench_analog_rx(const BenchOptions& opts) {
     return ran;
 }
 
+/* Frame-sync hamming as the hunt calls it: one window per symbol, sliding over sliced ASCII dibits. */
+static int
+bench_sync_hamming(const BenchOptions& opts) {
+    constexpr int kWindows = 256;
+    static const char kP25p1[] = P25P1_SYNC;
+    static const char kP25p1Inv[] = INV_P25P1_SYNC;
+    static const char kP25p2[] = P25P2_SYNC;
+    static const char kP25p2Inv[] = INV_P25P2_SYNC;
+    static const char* const kM17[] = {M17_PRE, M17_PIV, M17_LSF, M17_STR, M17_PKT, M17_BRT, M17_EOT, M17_EOT_INV};
+    std::vector<char> stream(kWindows + 64);
+    uint32_t seed = 0x5eed1234U;
+    for (char& c : stream) {
+        seed = seed * 1664525U + 1013904223U;
+        c = static_cast<char>('0' + ((seed >> 24) & 3U));
+    }
+    DSD_MEMCPY(stream.data() + 100, kP25p1, 24);
+    int ran = 0;
+    ran += run_case(opts, "sync_hamming_qpsk_remaps_24", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            sum += dsd_qpsk_sync_hamming_with_remaps(stream.data() + i, kP25p1, kP25p1Inv, 24);
+        }
+        return static_cast<float>(sum);
+    });
+    ran += run_case(opts, "sync_hamming_qpsk_remaps_20", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            sum += dsd_qpsk_sync_hamming_with_remaps(stream.data() + i, kP25p2, kP25p2Inv, 20);
+        }
+        return static_cast<float>(sum);
+    });
+    ran += run_case(opts, "sync_hamming_distance_m17_8x8", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            for (const char* pattern : kM17) {
+                sum += dsd_sync_hamming_distance(stream.data() + i, pattern, 8);
+            }
+        }
+        return static_cast<float>(sum);
+    });
+    ran += run_case(opts, "sync_hamming_distance_48", "window", (double)kWindows, [&]() -> float {
+        int sum = 0;
+        for (int i = 0; i < kWindows; i++) {
+            sum += dsd_sync_hamming_distance(stream.data() + i, stream.data() + 100, 48);
+        }
+        return static_cast<float>(sum);
+    });
+    return ran;
+}
+
 } /* namespace */
 
 int
@@ -1559,6 +1611,7 @@ main(int argc, char** argv) {
     ran += bench_frame_sync_levels(opts);
     ran += bench_snr(opts);
     ran += bench_analog_rx(opts);
+    ran += bench_sync_hamming(opts);
 
     if (opts.case_filter && ran == 0) {
         DSD_FPRINTF(stderr, "No benchmark case matched '%s'. Use --list to see available cases.\n", opts.case_filter);

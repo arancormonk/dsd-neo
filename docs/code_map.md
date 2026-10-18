@@ -2713,6 +2713,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   a min/max network (high ranks negated so one network serves both). Scalar runs below six samples, AVX2 from
   32 (SSE2 below); the frame-sync caller ranks windows of six or fewer inline and sums ranks as before.
   Tests: `DSP_SIMD_STATS`, `FRAME_SYNC_LEVEL_WINDOW` (full-sort reference, counts 1-48).
+- Frame-sync Hamming (`<dsd-neo/dsp/sync_hamming.h>`, `sync_hamming.c`): windows of 8..64 dibits are packed into
+  two bit planes (SSE2 16-byte chunks on x86-64, 8-byte words elsewhere) and compared by XOR and popcount; the
+  five CQPSK remaps are plane identities (invert `d ^ 2`, xor3 `d ^ 3`, swap, rotate `swap ^ 1`). The single-pattern
+  distance uses SSE2 or NEON and otherwise the per-dibit loop, which compilers already vectorize. Other lengths,
+  receive bytes outside 0..3 / '0'..'3' and pattern bytes outside '0'..'3' take the per-dibit loops, so every
+  result matches the old code. `sync_hamming_internal.h` exposes the scalar and portable backends for tests.
+  Tests: `DSP_SYNC_HAMMING` compares each backend with a copy of the old loops on exhaustive and random bytes.
 - SNR phase collection (`snr_phase_samples.h`, private to `snr_estimator.cpp`) visits each phase window as
   ordered contiguous spans. It preserves input order, finite-value filtering and the finite-sample cap before
   percentile selection and clustering. IEEE semantics remain enabled for the estimator and its collector tests.

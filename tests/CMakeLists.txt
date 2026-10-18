@@ -11957,7 +11957,7 @@ endforeach()
 add_executable(dsd-neo_test_dsp_sync_hamming dsp/test_dsp_sync_hamming.c)
 target_include_directories(
     dsd-neo_test_dsp_sync_hamming
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_sync_hamming ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SYNC_HAMMING COMMAND dsd-neo_test_dsp_sync_hamming)

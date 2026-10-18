@@ -96,6 +96,9 @@ The benchmark target includes:
   10 samples per symbol; `_sps20` cases use 20. They time the dispatched k-means backend (AVX2 where present).
 - The analog receive core (sub-audible front end, CTCSS and DCS detectors) on a tone on its value, a tone off it,
   noise alone, and a tone beside a voice.
+- Frame-sync Hamming as the hunt calls it, one window per symbol sliding over ASCII dibits: CQPSK remaps against
+  the P25p1 (24) and P25p2 (20) sync pairs (`sync_hamming_qpsk_remaps_*`), the eight M17 8-dibit words
+  (`sync_hamming_distance_m17_8x8`) and one 48-dibit distance (`sync_hamming_distance_48`).
 
 The RTL benchmark target includes:
 
