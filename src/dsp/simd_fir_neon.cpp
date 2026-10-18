@@ -275,11 +275,40 @@ hb_complex_decim2_scratch(const float* in, int n_in, float* out, int outputs, co
     }
 }
 
+/* Four independent accumulation chains share coefficient broadcasts without changing the order within a sample. */
+static inline void
+fir_complex_store8(const float* scratch, const float* taps, int center, int n, float* out) {
+    const float* base = scratch + (((size_t)center + (size_t)n) << 1);
+    const float32x4_t tc = vdupq_n_f32(taps[center]);
+    float32x4_t acc0 = vfmaq_f32(vdupq_n_f32(0.0f), tc, vld1q_f32(base + 0));
+    float32x4_t acc1 = vfmaq_f32(vdupq_n_f32(0.0f), tc, vld1q_f32(base + 4));
+    float32x4_t acc2 = vfmaq_f32(vdupq_n_f32(0.0f), tc, vld1q_f32(base + 8));
+    float32x4_t acc3 = vfmaq_f32(vdupq_n_f32(0.0f), tc, vld1q_f32(base + 12));
+    for (int k = 0; k < center; k++) {
+        const float ce = taps[k];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const int distance = (center - k) * 2;
+        const float* minus = base - distance;
+        const float* plus = base + distance;
+        const float32x4_t tap = vdupq_n_f32(ce);
+        acc0 = vfmaq_f32(acc0, tap, vaddq_f32(vld1q_f32(minus + 0), vld1q_f32(plus + 0)));
+        acc1 = vfmaq_f32(acc1, tap, vaddq_f32(vld1q_f32(minus + 4), vld1q_f32(plus + 4)));
+        acc2 = vfmaq_f32(acc2, tap, vaddq_f32(vld1q_f32(minus + 8), vld1q_f32(plus + 8)));
+        acc3 = vfmaq_f32(acc3, tap, vaddq_f32(vld1q_f32(minus + 12), vld1q_f32(plus + 12)));
+    }
+    vst1q_f32(out + ((n + 0) << 1), acc0);
+    vst1q_f32(out + ((n + 2) << 1), acc1);
+    vst1q_f32(out + ((n + 4) << 1), acc2);
+    vst1q_f32(out + ((n + 6) << 1), acc3);
+}
+
 } /* namespace */
 
 /**
  * NEON complex symmetric FIR filter (no decimation), streaming (simd_fir_complex_apply()).
- * Processes 2 complex samples (4 floats) at a time.
+ * Processes 8 complex samples with four independent vector accumulators.
  */
 extern "C" int
 simd_fir_complex_apply_neon(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q,
@@ -302,8 +331,11 @@ simd_fir_complex_apply_neon(const float* in, int n_in, float* out, int out_cap, 
             xq = scratch[2 * ii + 1];
         };
 
-        /* Process 2 complex samples at a time (4 floats) */
         int n = 0;
+        /* Reuse each coefficient across four vectors, retaining the tap order of every output. */
+        for (; n + 7 < outputs; n += 8) {
+            fir_complex_store8(scratch, taps, center, n, out);
+        }
         for (; n + 1 < outputs; n += 2) {
             float32x4_t acc = vdupq_n_f32(0.0f);
 

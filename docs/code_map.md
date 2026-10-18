@@ -3399,8 +3399,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     centred at `hist_len - pending + k` of [history | block], and leaves pending + N - outputs pending with the newest
     `hist_len` inputs in the history. No variant pads the look-ahead past a block's end; an invalid call or a short
     `out_cap` returns -1 with nothing touched. Scalar is bit-exact across splits; the SSE2, AVX2 and NEON kernels (and
-    the dispatcher, which sends blocks shorter than the filter to scalar) agree with their own whole-stream output
-    within 1e-5.
+    the dispatcher, which keeps blocks shorter than both 16 complex samples and the filter on scalar) agree with
+    their own whole-stream output within 1e-5.
   - Channel state: `demod_state::channel_lpf_hist_i/q` hold `DSD_CHANNEL_LPF_HIST_LEN` (287) samples whatever the
     taps, and `channel_lpf_pending` the outputs held back. A tap-count change without a reset reconciles through
     pending (up to N + c_old - c_new outputs), so the work buffers the filter writes (`hb_workbuf`, `timing_buf`) are

@@ -237,6 +237,15 @@ load_iq_stride2_4(const float* base) {
     return _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(selected), 0xD8));
 }
 
+/* Add contiguous vectors first so each symmetric sum needs only one decimation shuffle. */
+static inline __m256
+sum_iq_stride2_4(const float* minus, const float* plus) {
+    const __m256 lo = _mm256_add_ps(_mm256_loadu_ps(minus), _mm256_loadu_ps(plus));
+    const __m256 hi = _mm256_add_ps(_mm256_loadu_ps(minus + 8), _mm256_loadu_ps(plus + 8));
+    const __m256 selected = _mm256_shuffle_ps(lo, hi, _MM_SHUFFLE(1, 0, 1, 0));
+    return _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(selected), 0xD8));
+}
+
 static inline ComplexIq
 load_hb_complex_boundary(const HbComplexBoundary& source, int rel) {
     if (rel < 0) {
@@ -292,8 +301,8 @@ struct HbComplexFixedVectorSide {
         if (coefficient != 0.0f) {
             const float* minus = center_base - distance_floats;
             const float* plus = center_base + distance_floats;
-            const __m256 sum0 = _mm256_add_ps(load_iq_stride2_4(minus), load_iq_stride2_4(plus));
-            const __m256 sum1 = _mm256_add_ps(load_iq_stride2_4(minus + 16), load_iq_stride2_4(plus + 16));
+            const __m256 sum0 = sum_iq_stride2_4(minus, plus);
+            const __m256 sum1 = sum_iq_stride2_4(minus + 16, plus + 16);
             const __m256 tap = _mm256_set1_ps(coefficient);
             acc0 = _mm256_fmadd_ps(tap, sum0, acc0);
             acc1 = _mm256_fmadd_ps(tap, sum1, acc1);
@@ -388,7 +397,7 @@ hb_complex_decim2_scratch(const float* in, int n_in, float* out, int outputs, co
 
 /**
  * AVX2+FMA complex symmetric FIR filter (no decimation), streaming (simd_fir_complex_apply()).
- * Processes 4 complex samples (8 floats) at a time.
+ * Processes 16 complex samples with four independent vector accumulators.
  * Uses pre-concatenated scratch buffer to eliminate branching in hot loop.
  */
 extern "C" int
@@ -418,13 +427,35 @@ simd_fir_complex_apply_avx2(const float* in, int n_in, float* out, int out_cap, 
             copy_iq_input(scratch, take, in, n_in);
         }
 
-        /* Process 8 complex samples at a time (16 floats). */
+        /* Reuse each coefficient across four vectors, retaining the tap order of every output. */
         int n = 0;
-        for (; n + 7 < outputs; n += 8) {
-            const __m256 acc0 = fir_complex_accumulate4(scratch, taps, center, center, n);
-            const __m256 acc1 = fir_complex_accumulate4(scratch, taps, center, center, n + 4);
+        for (; n + 15 < outputs; n += 16) {
+            const float* base = scratch + (((size_t)center + (size_t)n) << 1);
+            const __m256 tc = _mm256_set1_ps(taps[center]);
+            __m256 acc0 = _mm256_fmadd_ps(tc, _mm256_loadu_ps(base), _mm256_setzero_ps());
+            __m256 acc1 = _mm256_fmadd_ps(tc, _mm256_loadu_ps(base + 8), _mm256_setzero_ps());
+            __m256 acc2 = _mm256_fmadd_ps(tc, _mm256_loadu_ps(base + 16), _mm256_setzero_ps());
+            __m256 acc3 = _mm256_fmadd_ps(tc, _mm256_loadu_ps(base + 24), _mm256_setzero_ps());
+            for (int k = 0; k < center; k++) {
+                const float ce = taps[k];
+                if (ce == 0.0f) {
+                    continue;
+                }
+                const int distance = (center - k) * 2;
+                const float* minus = base - distance;
+                const float* plus = base + distance;
+                const __m256 tap = _mm256_set1_ps(ce);
+                acc0 = _mm256_fmadd_ps(tap, _mm256_add_ps(_mm256_loadu_ps(minus), _mm256_loadu_ps(plus)), acc0);
+                acc1 = _mm256_fmadd_ps(tap, _mm256_add_ps(_mm256_loadu_ps(minus + 8), _mm256_loadu_ps(plus + 8)), acc1);
+                acc2 =
+                    _mm256_fmadd_ps(tap, _mm256_add_ps(_mm256_loadu_ps(minus + 16), _mm256_loadu_ps(plus + 16)), acc2);
+                acc3 =
+                    _mm256_fmadd_ps(tap, _mm256_add_ps(_mm256_loadu_ps(minus + 24), _mm256_loadu_ps(plus + 24)), acc3);
+            }
             _mm256_storeu_ps(out + (n << 1), acc0);
             _mm256_storeu_ps(out + ((n + 4) << 1), acc1);
+            _mm256_storeu_ps(out + ((n + 8) << 1), acc2);
+            _mm256_storeu_ps(out + ((n + 12) << 1), acc3);
         }
 
         /* Process 4 complex samples at a time (8 floats) */

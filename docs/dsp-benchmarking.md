@@ -94,7 +94,11 @@ and equal-metric tie-heavy inputs. It reports each complete 49-symbol decode as
 one call and uses the same CSV timing columns as the DSP and RTL benchmarks.
 
 Channel LPF CSV rows include `rate_hz`, `profile`, `tap_count`, and `variant`
-metadata so tap-count and profile changes can be compared directly.
+metadata so tap-count and profile changes can be compared directly. The `_256`
+cases process 256 complex samples per call, matching a 16 KiB RTL transfer after
+five half-band stages. The analog `_64` and `_16` cases also cover blocks shorter
+than the filter, whose windows span the saved history. Unsuffixed cases retain
+4,096 samples per call.
 
 The analog channel filter cases (`channel_lpf_48k_analog_16k`,
 `channel_lpf_78k_analog_16k`, `channel_lpf_96k_analog_25k`) report profile

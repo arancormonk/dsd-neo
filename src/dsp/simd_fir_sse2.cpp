@@ -275,11 +275,40 @@ hb_complex_decim2_scratch(const float* in, int n_in, float* out, int outputs, co
     }
 }
 
+/* Four independent accumulation chains share coefficient broadcasts without changing the order within a sample. */
+static inline void
+fir_complex_store8(const float* scratch, const float* taps, int center, int n, float* out) {
+    const float* base = scratch + (((size_t)center + (size_t)n) << 1);
+    const __m128 tc = _mm_set1_ps(taps[center]);
+    __m128 acc0 = _mm_add_ps(_mm_setzero_ps(), _mm_mul_ps(tc, _mm_loadu_ps(base + 0)));
+    __m128 acc1 = _mm_add_ps(_mm_setzero_ps(), _mm_mul_ps(tc, _mm_loadu_ps(base + 4)));
+    __m128 acc2 = _mm_add_ps(_mm_setzero_ps(), _mm_mul_ps(tc, _mm_loadu_ps(base + 8)));
+    __m128 acc3 = _mm_add_ps(_mm_setzero_ps(), _mm_mul_ps(tc, _mm_loadu_ps(base + 12)));
+    for (int k = 0; k < center; k++) {
+        const float ce = taps[k];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const int distance = (center - k) * 2;
+        const float* minus = base - distance;
+        const float* plus = base + distance;
+        const __m128 tap = _mm_set1_ps(ce);
+        acc0 = _mm_add_ps(acc0, _mm_mul_ps(tap, _mm_add_ps(_mm_loadu_ps(minus + 0), _mm_loadu_ps(plus + 0))));
+        acc1 = _mm_add_ps(acc1, _mm_mul_ps(tap, _mm_add_ps(_mm_loadu_ps(minus + 4), _mm_loadu_ps(plus + 4))));
+        acc2 = _mm_add_ps(acc2, _mm_mul_ps(tap, _mm_add_ps(_mm_loadu_ps(minus + 8), _mm_loadu_ps(plus + 8))));
+        acc3 = _mm_add_ps(acc3, _mm_mul_ps(tap, _mm_add_ps(_mm_loadu_ps(minus + 12), _mm_loadu_ps(plus + 12))));
+    }
+    _mm_storeu_ps(out + ((n + 0) << 1), acc0);
+    _mm_storeu_ps(out + ((n + 2) << 1), acc1);
+    _mm_storeu_ps(out + ((n + 4) << 1), acc2);
+    _mm_storeu_ps(out + ((n + 6) << 1), acc3);
+}
+
 } /* namespace */
 
 /**
  * SSE2 complex symmetric FIR filter (no decimation), streaming (simd_fir_complex_apply()).
- * Processes 2 complex samples (4 floats) at a time.
+ * Processes 8 complex samples with four independent vector accumulators.
  */
 extern "C" int
 simd_fir_complex_apply_sse2(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q,
@@ -302,8 +331,11 @@ simd_fir_complex_apply_sse2(const float* in, int n_in, float* out, int out_cap, 
             xq = scratch[2 * ii + 1];
         };
 
-        /* Process 2 complex samples at a time (4 floats) */
         int n = 0;
+        /* Reuse each coefficient across four vectors, retaining the tap order of every output. */
+        for (; n + 7 < outputs; n += 8) {
+            fir_complex_store8(scratch, taps, center, n, out);
+        }
         for (; n + 1 < outputs; n += 2) {
             __m128 acc = _mm_setzero_ps(); /* [I0, Q0, I1, Q1] */
 

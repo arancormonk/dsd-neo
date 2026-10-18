@@ -545,9 +545,9 @@ design_channel_lpf_taps(int rate_hz, int profile, float* taps, int max_taps) {
 
 static int
 bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMeta& meta, const float* designed,
-                       int taps_len, uint32_t seed) {
-    constexpr int kPairs = 4096;
-    constexpr int kInLen = kPairs * 2;
+                       int taps_len, uint32_t seed, int pairs = 4096) {
+    const int kPairs = pairs;
+    const int kInLen = kPairs * 2;
 
     std::vector<float> in(kInLen);
     std::vector<float> out(kInLen);
@@ -569,7 +569,7 @@ bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMe
 }
 
 static int
-bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile) {
+bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile, int pairs = 4096) {
     constexpr int kMaxTaps = 144;
     std::vector<float> taps(kMaxTaps);
     int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), kMaxTaps);
@@ -584,13 +584,13 @@ bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, i
     meta.tap_count = taps_len;
     meta.variant = "blackman";
     return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len,
-                                  (uint32_t)rate_hz ^ (uint32_t)(profile * 2654435761u));
+                                  (uint32_t)rate_hz ^ (uint32_t)(profile * 2654435761u), pairs);
 }
 
 /* The analog channel filter is designed from its width and may use the full 288-tap capacity, which device-forced
  * rates above ~51.4 kHz need (78125 Hz: 219 taps; 96000 Hz: 269 taps). */
 static int
-bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int width_hz) {
+bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int width_hz, int pairs = 4096) {
     std::vector<float> taps(DSD_CHANNEL_LPF_MAX_TAPS);
     const int taps_len = dsd_channel_lpf_design_analog(rate_hz, width_hz, taps.data(), DSD_CHANNEL_LPF_MAX_TAPS);
     if (taps_len <= 0) {
@@ -603,7 +603,8 @@ bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rat
     meta.profile = "analog";
     meta.tap_count = taps_len;
     meta.variant = "blackman";
-    return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len, (uint32_t)rate_hz ^ (uint32_t)width_hz);
+    return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len, (uint32_t)rate_hz ^ (uint32_t)width_hz,
+                                  pairs);
 }
 
 /* What a digital profile runs at a device-forced rate above ~51.4 kHz, and what the analog path ran there before it
@@ -655,6 +656,12 @@ bench_channel_lpf(const BenchOptions& opts) {
     ran += bench_one_channel_lpf_fallback(opts, "channel_lpf_78k_wide_fallback", 78125, DSD_CH_LPF_PROFILE_WIDE);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_78k_analog_16k", 78125, 16000);
     ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k", 96000, 25000);
+    /* A live 16 KiB RTL transfer leaves 256 pairs after five half-band stages. Also cover shorter history-spanning blocks. */
+    ran += bench_one_channel_lpf(opts, "channel_lpf_24k_12k5_256", 24000, DSD_CH_LPF_PROFILE_12K5, 256);
+    ran += bench_one_channel_lpf(opts, "channel_lpf_48k_12k5_256", 48000, DSD_CH_LPF_PROFILE_12K5, 256);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k_256", 96000, 25000, 256);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k_64", 96000, 25000, 64);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k_16", 96000, 25000, 16);
     return ran;
 }
 

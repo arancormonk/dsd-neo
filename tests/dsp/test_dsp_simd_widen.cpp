@@ -9,6 +9,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <vector>
 #include "dsd-neo/core/input_level.h"
 #include "dsd-neo/core/safe_api.h"
 #include "io/radio/rtl_capture_phase.h"
@@ -146,6 +147,74 @@ seed_moments(dsd_input_level_cu8_moments* moments) {
     (void)dsd_input_level_cu8_moments_accumulate(moments, seed, sizeof(seed));
 }
 
+/* Exact integer totals and float conversion across vector and bounded-reduction boundaries. The input ends
+ * at its allocation boundary and starts unaligned; output sentinels also cover an ignored odd rotation byte. */
+static int
+test_moments_block(const char* name, widen_moments_backend_fn plain, widen_rot_moments_backend_fn rotated,
+                   unsigned int len, unsigned int pattern, unsigned int phase) {
+    std::vector<unsigned char> storage((size_t)len + 3U);
+    unsigned char* src = storage.data() + 3U;
+    for (unsigned int i = 0; i < len; i++) {
+        const unsigned char values[] = {0U, 255U, (unsigned char)((i & 1U) ? 254U : 1U),
+                                        (unsigned char)((i * 73U + i / 251U) & 255U)};
+        src[i] = values[pattern];
+    }
+    constexpr float kGuard = 123.0f;
+    std::vector<float> full((size_t)len + 2U, kGuard);
+    std::vector<float> split((size_t)len + 2U, kGuard);
+    std::vector<float> ref((size_t)len + 2U, kGuard);
+    dsd_input_level_cu8_moments expected, whole, pieces;
+    seed_moments(&expected);
+    seed_moments(&whole);
+    seed_moments(&pieces);
+    unsigned int want_phase = phase;
+    unsigned int got_phase = phase;
+    if (rotated) {
+        want_phase =
+            dsd_test_widen_rotate90_u8_to_f32_bias127_phase_moments_scalar(src, ref.data() + 1U, len, phase, &expected);
+        got_phase = rotated(src, full.data() + 1U, len, phase, &whole);
+    } else {
+        dsd_test_widen_u8_to_f32_bias127_moments_scalar(src, ref.data() + 1U, len, &expected);
+        plain(src, full.data() + 1U, len, &whole);
+    }
+    unsigned int split_phase = phase;
+    const unsigned int count = rotated ? (len & ~1U) : len;
+    const unsigned int chunk = rotated ? 4094U : 4093U;
+    for (unsigned int offset = 0U; offset < count;) {
+        const unsigned int part = count - offset < chunk ? count - offset : chunk;
+        if (rotated) {
+            split_phase = rotated(src + offset, split.data() + 1U + offset, part, split_phase, &pieces);
+        } else {
+            plain(src + offset, split.data() + 1U + offset, part, &pieces);
+        }
+        offset += part;
+    }
+    if (got_phase != want_phase || split_phase != want_phase || !moments_equal(&whole, &expected)
+        || !moments_equal(&pieces, &expected) || !arrays_close(full.data(), ref.data(), (int)len + 2, 1e-6f)
+        || !arrays_close(split.data(), ref.data(), (int)len + 2, 1e-6f)) {
+        DSD_FPRINTF(stderr, "%s: length %u pattern %u phase %u reduction boundary mismatch\n", name, len, pattern,
+                    phase);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_moments_blocks(const char* name, widen_moments_backend_fn plain, widen_rot_moments_backend_fn rotated) {
+    const unsigned int lengths[] = {0U,     1U,     2U,     15U,     16U,     17U,     31U,     32U,     33U,
+                                    65535U, 65536U, 65537U, 131071U, 131072U, 131073U, 262144U, 1048577U};
+    for (unsigned int len : lengths) {
+        for (unsigned int pattern = 0U; pattern < 4U; pattern++) {
+            for (unsigned int phase = 0U; phase < (rotated ? 4U : 1U); phase++) {
+                if (test_moments_block(name, plain, rotated, len, pattern, phase) != 0) {
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static int
 test_plain_moments_backend(const char* name, widen_moments_backend_fn fn) {
     unsigned char src[256];
@@ -173,7 +242,7 @@ test_plain_moments_backend(const char* name, widen_moments_backend_fn fn) {
         DSD_FPRINTF(stderr, "%s output or moments: mismatch\n", name);
         return 1;
     }
-    return 0;
+    return test_moments_blocks(name, fn, nullptr);
 }
 
 static int
@@ -204,7 +273,7 @@ test_rotated_moments_backend(const char* name, widen_rot_moments_backend_fn fn) 
         DSD_FPRINTF(stderr, "%s output, phase, or moments: mismatch\n", name);
         return 1;
     }
-    return 0;
+    return test_moments_blocks(name, nullptr, fn);
 }
 
 static int

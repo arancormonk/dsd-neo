@@ -291,8 +291,8 @@ simd_fir_init_dispatch() {
 extern "C" int
 simd_fir_complex_apply(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q, int hist_len,
                        int* pending, const float* taps, int taps_len) {
-    /* Blocks shorter than the filter stay scalar, as they did when this counted floats (in_len < 2 * taps_len). */
-    if (n_in > 0 && taps_len > 0 && n_in < taps_len) {
+    /* Avoid scratch preparation for tiny blocks. Longer blocks use SIMD even when the window spans history. */
+    if (n_in > 0 && n_in < 16 && n_in < taps_len) {
         return simd_fir_complex_apply_scalar(in, n_in, out, out_cap, hist_i, hist_q, hist_len, pending, taps, taps_len);
     }
     if (g_fir_init_done.load(std::memory_order_acquire) != 2) {
