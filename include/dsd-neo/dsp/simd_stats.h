@@ -28,6 +28,17 @@ void dsd_simd_extrema_avg2(const float* samples, size_t count, float* out_min, f
  */
 void dsd_simd_iq_abs_stats(const float* iq, size_t pairs, float* mean_abs, float* max_abs);
 
+/**
+ * Retain the five smallest samples in lmn (ascending) and the five largest in
+ * lmx (descending), each an array of five floats, counting duplicate values
+ * separately. Slots without a sample keep the FLT_MAX / -FLT_MAX seeds, as do
+ * null input and zero count. Results equal ordered scalar insertion with strict
+ * comparisons against those seeds: NaN is never retained, +Inf never enters lmn,
+ * -Inf never enters lmx, and equal values keep their input order. Either output
+ * may be null.
+ */
+void dsd_simd_extrema_rank5(const float* samples, size_t count, float* lmn, float* lmx);
+
 #ifdef __cplusplus
 }
 #endif

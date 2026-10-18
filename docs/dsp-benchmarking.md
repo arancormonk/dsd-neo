@@ -89,6 +89,8 @@ The benchmark target includes:
   NFM calibration occur outside the timed calls.
 - Symbol-window extrema (`symbol_extrema_*`) on 24 and 128 samples and float I/Q mean/peak magnitude
   (`iq_abs_stats_*`) on 256 and 8192 complex samples, cycling through independent windows.
+- Frame-sync window levels (`frame_sync_levels_*`): the five-lowest/five-highest rank estimate on 12, 19, 24 and
+  48 noisy four-level symbols, cycling through independent windows.
 - C4FM and binary FSK SNR estimation on 256- and 2048-sample discriminator blocks (`snr_c4fm_*` and
   `snr_gfsk_*`), including the phase search, clustering and noise reductions. The default cases use
   10 samples per symbol; `_sps20` cases use 20. They time the dispatched k-means backend (AVX2 where present).

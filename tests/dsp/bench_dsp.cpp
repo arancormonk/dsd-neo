@@ -48,6 +48,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frame_sync_level.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
@@ -1455,6 +1456,34 @@ bench_sample_stats(const BenchOptions& opts) {
 }
 
 static int
+bench_frame_sync_levels(const BenchOptions& opts) {
+    int ran = 0;
+    for (int count : {12, 19, 24, 48}) {
+        const char* name = count == 12   ? "frame_sync_levels_12"
+                           : count == 19 ? "frame_sync_levels_19"
+                           : count == 24 ? "frame_sync_levels_24"
+                                         : "frame_sync_levels_48";
+        const size_t windows = 64;
+        std::vector<float> levels(static_cast<size_t>(count) * windows);
+        uint32_t seed = 0x2f61d9U;
+        for (float& x : levels) {
+            seed = seed * 1664525U + 1013904223U;
+            const float rail = static_cast<float>(static_cast<int>(seed >> 30) * 2 - 3);
+            x = rail + 0.25f * ((static_cast<float>((seed >> 8) & 0xffffU) / 65536.0f) - 0.5f);
+        }
+        size_t next = 0;
+        ran += run_case(opts, name, "sample", static_cast<double>(count), [&]() -> float {
+            float lmin = 0.0f, lmax = 0.0f;
+            dsd_frame_sync_estimate_window_levels(levels.data() + next * static_cast<size_t>(count), count, &lmin,
+                                                  &lmax);
+            next = (next + 1) % windows;
+            return lmin + lmax;
+        });
+    }
+    return ran;
+}
+
+static int
 bench_one_snr(const BenchOptions& opts, const char* name, int count, int levels, int sps = 10) {
     std::vector<float> samples(static_cast<size_t>(count));
     uint32_t seed = 0x1234abcdU;
@@ -1527,6 +1556,7 @@ main(int argc, char** argv) {
     ran += bench_noise_squelch(opts, false);
     ran += bench_noise_squelch(opts, true);
     ran += bench_sample_stats(opts);
+    ran += bench_frame_sync_levels(opts);
     ran += bench_snr(opts);
     ran += bench_analog_rx(opts);
 

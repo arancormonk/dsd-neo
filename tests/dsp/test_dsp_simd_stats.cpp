@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -24,6 +25,7 @@
 
 using extrema_fn = simd_stats_extrema (*)(const float*, size_t);
 using iq_fn = simd_stats_iq_abs (*)(const float*, size_t);
+using rank5_fn = void (*)(const float*, size_t, float*, float*);
 
 static uint32_t
 bits_of(float x) {
@@ -234,20 +236,170 @@ test_empty_and_optional_outputs(void) {
     return std::fabs(low - 4) > 1e-7f || std::fabs(high - 3) > 1e-7f ? 1 : 0;
 }
 
+struct rank5_result {
+    float lmn[5];
+    float lmx[5];
+};
+
+/* Independent ordered reference: strict comparisons against FLT_MAX / -FLT_MAX
+ * seeds, so NaN is never kept and equal values keep their input order. */
+static rank5_result
+ordered_rank5(const float* x, size_t n) {
+    rank5_result r = {{FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX},
+                      {-FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX}};
+    for (size_t i = 0; i < n; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            if (x[i] < r.lmn[j]) {
+                for (int m = 4; m > j; --m) {
+                    r.lmn[m] = r.lmn[m - 1];
+                }
+                r.lmn[j] = x[i];
+                break;
+            }
+        }
+        for (int j = 0; j < 5; ++j) {
+            if (x[i] > r.lmx[j]) {
+                for (int m = 4; m > j; --m) {
+                    r.lmx[m] = r.lmx[m - 1];
+                }
+                r.lmx[j] = x[i];
+                break;
+            }
+        }
+    }
+    return r;
+}
+
+static int
+check_rank5(const char* name, rank5_fn fn, const float* x, size_t n, bool finite_sorted_oracle) {
+    rank5_result want = ordered_rank5(x, n);
+    if (finite_sorted_oracle) {
+        std::vector<float> sorted(x, x + n);
+        std::sort(sorted.begin(), sorted.end());
+        for (size_t j = 0; j < 5; ++j) {
+            want.lmn[j] = j < n ? sorted[j] : FLT_MAX;
+            want.lmx[j] = j < n ? sorted[n - 1 - j] : -FLT_MAX;
+        }
+    }
+    rank5_result got;
+    fn(x, n, got.lmn, got.lmx);
+    float lmn[5], lmx[5];
+    dsd_simd_extrema_rank5(x, n, lmn, lmx);
+    for (int j = 0; j < 5; ++j) {
+        if (bits_of(want.lmn[j]) != bits_of(got.lmn[j]) || bits_of(want.lmx[j]) != bits_of(got.lmx[j])) {
+            DSD_FPRINTF(stderr, "%s rank5 mismatch, count=%zu slot=%d\n", name, n, j);
+            return 1;
+        }
+        if (bits_of(want.lmn[j]) != bits_of(lmn[j]) || bits_of(want.lmx[j]) != bits_of(lmx[j])) {
+            DSD_FPRINTF(stderr, "dispatched rank5 mismatch, count=%zu slot=%d\n", n, j);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+test_rank5_backend(const char* name, rank5_fn fn) {
+    uint32_t rng = 0x5a17c3U;
+    for (size_t offset = 0; offset < 8; ++offset) {
+        for (size_t count = 1; count <= 80; ++count) {
+            std::unique_ptr<float[]> storage(new float[offset + count]);
+            float* x = storage.get() + offset;
+            for (int shape = 0; shape < 9; ++shape) {
+                for (size_t i = 0; i < count; ++i) {
+                    rng = rng * 1664525U + 1013904223U;
+                    switch (shape) {
+                        case 0: x[i] = (float)((int)(rng >> 16) - 32768) / 32768.0f; break;
+                        case 1: x[i] = (float)i + 1.0f; break;
+                        case 2: x[i] = -(float)i - 1.0f; break;
+                        case 3: x[i] = (float)((int)(rng >> 30) * 2 - 3); break;
+                        case 4: x[i] = 0.0f; break;
+                        case 5: x[i] = (i & 1U) ? 1e30f : -1e-30f; break;
+                        case 6: x[i] = (float)((int)(rng >> 29) - 4) + ((rng >> 8) & 1U ? 0.125f : 0.0f); break;
+                        case 7: x[i] = (rng >> 31) ? FLT_MAX : -FLT_MAX; break;
+                        default: x[i] = (float)((int)(rng >> 16) - 32768) * 1e-38f; break;
+                    }
+                }
+                if (check_rank5(name, fn, x, count, true)) {
+                    return 1;
+                }
+            }
+        }
+    }
+
+    /* Exceptional values at every position keep the ordered comparison semantics,
+     * including -0 beside +0 ties and infinities against the seeds. */
+    const uint32_t exceptional[] = {0x80000000U, 0x7fc12345U, 0xffc00001U, 0x7f800000U, 0xff800000U};
+    for (uint32_t bits : exceptional) {
+        for (size_t count = 1; count <= 49; ++count) {
+            for (size_t position = 0; position < count; ++position) {
+                float x[49];
+                for (size_t i = 0; i < count; ++i) {
+                    x[i] = (i % 3U == 0U) ? 0.0f : (float)((int)(i % 7U) - 3);
+                }
+                x[position] = from_bits(bits);
+                if (check_rank5(name, fn, x, count, false)) {
+                    return 1;
+                }
+            }
+        }
+    }
+    /* Signed-zero-only windows: order of -0 and +0 among the retained ties. */
+    for (size_t count = 1; count <= 24; ++count) {
+        for (uint32_t pattern = 0; pattern < 64; ++pattern) {
+            float x[24];
+            for (size_t i = 0; i < count; ++i) {
+                x[i] = ((pattern >> (i % 6U)) & 1U) ? -0.0f : 0.0f;
+            }
+            if (check_rank5(name, fn, x, count, false)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int
+test_rank5_empty_and_optional_outputs(void) {
+    const float x[3] = {2.0f, -1.0f, 3.0f};
+    float lmn[5] = {0}, lmx[5] = {0};
+    dsd_simd_extrema_rank5(nullptr, 3, lmn, lmx);
+    for (int j = 0; j < 5; ++j) {
+        if (bits_of(lmn[j]) != bits_of(FLT_MAX) || bits_of(lmx[j]) != bits_of(-FLT_MAX)) {
+            return 1;
+        }
+    }
+    DSD_MEMSET(lmn, 0, sizeof lmn);
+    dsd_simd_extrema_rank5(x, 0, lmn, nullptr);
+    dsd_simd_extrema_rank5(x, 3, nullptr, lmx);
+    const float want_max[5] = {3.0f, 2.0f, -1.0f, -FLT_MAX, -FLT_MAX};
+    for (int j = 0; j < 5; ++j) {
+        if (bits_of(lmn[j]) != bits_of(FLT_MAX) || bits_of(lmx[j]) != bits_of(want_max[j])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = test_concurrent_dispatch();
     rc |= test_empty_and_optional_outputs();
     rc |= test_backend("scalar", simd_stats_extrema_scalar, simd_stats_iq_abs_scalar);
+    rc |= test_rank5_empty_and_optional_outputs();
+    rc |= test_rank5_backend("scalar", simd_stats_rank5_scalar);
 #if defined(__x86_64__) || defined(_M_X64)
     rc |= test_backend("SSE2", simd_stats_extrema_sse2, simd_stats_iq_abs_sse2);
+    rc |= test_rank5_backend("SSE2", simd_stats_rank5_sse2);
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL) && DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED
     if (dsd_neo_cpu_has_avx2_with_os_support()) {
         rc |= test_backend("AVX2", simd_stats_extrema_avx2, simd_stats_iq_abs_avx2);
+        rc |= test_rank5_backend("AVX2", simd_stats_rank5_avx2);
     }
 #endif
 #elif defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
     rc |= test_backend("NEON", simd_stats_extrema_neon, simd_stats_iq_abs_neon);
+    rc |= test_rank5_backend("NEON", simd_stats_rank5_neon);
 #endif
     if (rc == 0) {
         std::puts("DSP_SIMD_STATS: OK");

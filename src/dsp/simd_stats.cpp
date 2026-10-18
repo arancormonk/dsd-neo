@@ -6,6 +6,7 @@
 #include <dsd-neo/dsp/simd_stats.h>
 
 #include <atomic>
+#include <cfloat>
 #include <cmath>
 #include <stddef.h>
 #include <stdint.h>
@@ -38,11 +39,41 @@ simd_stats_iq_abs_scalar(const float* iq, size_t pairs) {
     return r;
 }
 
+void
+simd_stats_rank5_scalar(const float* samples, size_t count, float* lmn, float* lmx) {
+    float low[5] = {FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX};
+    float high[5] = {-FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (size_t k = 0; k < count; ++k) {
+        const float x = samples[k];
+        if (x < low[4]) {
+            int j = 4;
+            for (; j > 0 && x < low[j - 1]; j--) {
+                low[j] = low[j - 1];
+            }
+            low[j] = x;
+        }
+        if (x > high[4]) {
+            int j = 4;
+            for (; j > 0 && x > high[j - 1]; j--) {
+                high[j] = high[j - 1];
+            }
+            high[j] = x;
+        }
+    }
+    for (int k = 0; k < 5; ++k) {
+        lmn[k] = low[k];
+        lmx[k] = high[k];
+    }
+}
+
 using extrema_fn = simd_stats_extrema (*)(const float*, size_t);
 using iq_abs_fn = simd_stats_iq_abs (*)(const float*, size_t);
+using rank5_fn = void (*)(const float*, size_t, float*, float*);
 
 static extrema_fn g_extrema = simd_stats_extrema_scalar;
 static iq_abs_fn g_iq_abs = simd_stats_iq_abs_scalar;
+static rank5_fn g_rank5 = simd_stats_rank5_scalar;
+static rank5_fn g_rank5_wide = simd_stats_rank5_scalar;
 static std::atomic<int> g_stats_init{0};
 
 static void
@@ -50,7 +81,7 @@ simd_stats_init(void) {
     int expected = 0;
     if (!g_stats_init.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
         while (g_stats_init.load(std::memory_order_acquire) != 2) {
-            /* The initializing thread publishes both function pointers together. */
+            /* The initializing thread publishes all function pointers together. */
         }
         return;
     }
@@ -59,15 +90,21 @@ simd_stats_init(void) {
     if (dsd_neo_cpu_has_avx2_with_os_support()) {
         g_extrema = simd_stats_extrema_avx2;
         g_iq_abs = simd_stats_iq_abs_avx2;
+        g_rank5 = simd_stats_rank5_sse2;
+        g_rank5_wide = simd_stats_rank5_avx2;
     } else
 #endif
     {
         g_extrema = simd_stats_extrema_sse2;
         g_iq_abs = simd_stats_iq_abs_sse2;
+        g_rank5 = simd_stats_rank5_sse2;
+        g_rank5_wide = simd_stats_rank5_sse2;
     }
 #elif defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
     g_extrema = simd_stats_extrema_neon;
     g_iq_abs = simd_stats_iq_abs_neon;
+    g_rank5 = simd_stats_rank5_neon;
+    g_rank5_wide = simd_stats_rank5_neon;
 #endif
     g_stats_init.store(2, std::memory_order_release);
 }
@@ -110,4 +147,23 @@ dsd_simd_iq_abs_stats(const float* iq, size_t pairs, float* mean_abs, float* max
     if (max_abs) {
         *max_abs = peak;
     }
+}
+
+extern "C" void
+dsd_simd_extrema_rank5(const float* samples, size_t count, float* lmn, float* lmx) {
+    float scratch_low[5];
+    float scratch_high[5];
+    float* low = lmn ? lmn : scratch_low;
+    float* high = lmx ? lmx : scratch_high;
+    if (!samples || count == 0) {
+        for (int k = 0; k < 5; ++k) {
+            low[k] = FLT_MAX;
+            high[k] = -FLT_MAX;
+        }
+        return;
+    }
+    if (g_stats_init.load(std::memory_order_acquire) != 2) {
+        simd_stats_init();
+    }
+    (count < SIMD_STATS_RANK5_AVX2_MIN_COUNT ? g_rank5 : g_rank5_wide)(samples, count, low, high);
 }

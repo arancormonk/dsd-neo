@@ -8,7 +8,9 @@
 #include <dsd-neo/core/safe_api.h>
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static int
 expect_close(const char* label, float expected, float actual) {
@@ -120,6 +122,81 @@ test_unsorted_input_matches_sorted(void) {
     return rc;
 }
 
+static int
+compare_float(const void* a, const void* b) {
+    const float x = *(const float*)a;
+    const float y = *(const float*)b;
+    return (x > y) - (x < y);
+}
+
+// Same ranks, in the same summation order, from a full sort of the window.
+static void
+sorted_reference(const float* levels, int count, float* out_min, float* out_max) {
+    float sorted[64];
+    for (int i = 0; i < count; i++) {
+        sorted[i] = levels[i];
+    }
+    qsort(sorted, (size_t)count, sizeof(sorted[0]), compare_float);
+    if (count < 3) {
+        const float sum = (count == 1) ? sorted[0] : (sorted[0] + sorted[count - 1]);
+        *out_min = sum / (float)count;
+        *out_max = *out_min;
+        return;
+    }
+    const int lo = (count >= 13) ? 2 : 0;
+    const int hi = (count >= 13) ? count - 5 : count - 3;
+    *out_min = (sorted[lo] + sorted[lo + 1] + sorted[lo + 2]) / 3.0f;
+    *out_max = (sorted[hi] + sorted[hi + 1] + sorted[hi + 2]) / 3.0f;
+}
+
+static int
+same_level(float expected, float actual) {
+#if defined(__FAST_MATH__)
+    // Fast-math builds may contract the reference differently from the library.
+    return fabsf(expected - actual) <= 1e-6f * fmaxf(1.0f, fabsf(expected));
+#else
+    uint32_t a = 0;
+    uint32_t b = 0;
+    DSD_MEMCPY(&a, &expected, sizeof a);
+    DSD_MEMCPY(&b, &actual, sizeof b);
+    return a == b;
+#endif
+}
+
+static int
+test_windows_match_sorted_reference(void) {
+    uint32_t rng = 0x61c88647U;
+    float storage[64];
+    for (int offset = 0; offset < 4; offset++) {
+        for (int count = 1; count <= 48; count++) {
+            float* levels = storage + offset;
+            for (int shape = 0; shape < 4; shape++) {
+                for (int i = 0; i < count; i++) {
+                    rng = rng * 1664525U + 1013904223U;
+                    const float rail = (float)((int)(rng >> 30) * 2 - 3);
+                    switch (shape) {
+                        case 0: levels[i] = (float)((int)(rng >> 16) - 32768) / 4096.0f; break;
+                        case 1: levels[i] = rail; break;
+                        case 2: levels[i] = rail + (float)((rng >> 8) & 0xffU) / 1024.0f; break;
+                        default: levels[i] = (float)(count - i) * ((i & 1) ? 1.0f : -1.0f); break;
+                    }
+                }
+                float want_min = 0.0f;
+                float want_max = 0.0f;
+                float lmin = 0.0f;
+                float lmax = 0.0f;
+                sorted_reference(levels, count, &want_min, &want_max);
+                dsd_frame_sync_estimate_window_levels(levels, count, &lmin, &lmax);
+                if (!same_level(want_min, lmin) || !same_level(want_max, lmax)) {
+                    DSD_FPRINTF(stderr, "window mismatch: count=%d offset=%d shape=%d\n", count, offset, shape);
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -129,5 +206,6 @@ main(void) {
     rc |= test_short_window_uses_edges();
     rc |= test_long_window_drops_outer_outliers();
     rc |= test_unsorted_input_matches_sorted();
+    rc |= test_windows_match_sorted_reference();
     return rc;
 }

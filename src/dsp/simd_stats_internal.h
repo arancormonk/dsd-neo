@@ -88,4 +88,15 @@ simd_stats_iq_abs simd_stats_iq_abs_avx2(const float* iq, size_t pairs);
 simd_stats_extrema simd_stats_extrema_neon(const float* samples, size_t count);
 simd_stats_iq_abs simd_stats_iq_abs_neon(const float* iq, size_t pairs);
 
+/* Rank-5 contract: count >= 1; samples, lmn and lmx (five floats each) are
+ * non-null, do not overlap, and may be unaligned. lmn receives the five smallest
+ * ascending and lmx the five largest descending, seeded as in the public API. */
+/* AVX2's extra 256-bit merge round only pays off from four vectors; the
+ * dispatcher sends shorter windows to SSE2. */
+#define SIMD_STATS_RANK5_AVX2_MIN_COUNT 32U
+void simd_stats_rank5_scalar(const float* samples, size_t count, float* lmn, float* lmx);
+void simd_stats_rank5_sse2(const float* samples, size_t count, float* lmn, float* lmx);
+void simd_stats_rank5_avx2(const float* samples, size_t count, float* lmn, float* lmx);
+void simd_stats_rank5_neon(const float* samples, size_t count, float* lmn, float* lmx);
+
 #endif

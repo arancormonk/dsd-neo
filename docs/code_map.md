@@ -2706,6 +2706,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `dsd_simd_iq_abs_stats()` supplies the radio demodulator's mean absolute I/Q sum per complex pair and peak
   component magnitude, with double-precision accumulation. Both accept unaligned windows and exact-sized tails.
   Tests: `DSP_SIMD_STATS` checks each available backend, dispatch, duplicates and exceptional inputs.
+- `dsd_simd_extrema_rank5()` (same header) keeps the five smallest (ascending) and five largest (descending)
+  samples for `dsd_frame_sync_estimate_window_levels()` (`frame_sync_level.c`), bit-identical to ordered
+  scalar insertion: `FLT_MAX`/`-FLT_MAX` seeds fill missing ranks, NaN is never kept, and windows with NaN,
+  infinities or -0 run the scalar insertion. Vector backends keep sorted per-lane ranks, then merge lanes with
+  a min/max network (high ranks negated so one network serves both). Scalar runs below six samples, AVX2 from
+  32 (SSE2 below); the frame-sync caller ranks windows of six or fewer inline and sums ranks as before.
+  Tests: `DSP_SIMD_STATS`, `FRAME_SYNC_LEVEL_WINDOW` (full-sort reference, counts 1-48).
 - SNR phase collection (`snr_phase_samples.h`, private to `snr_estimator.cpp`) visits each phase window as
   ordered contiguous spans. It preserves input order, finite-value filtering and the finite-sample cap before
   percentile selection and clustering. IEEE semantics remain enabled for the estimator and its collector tests.
