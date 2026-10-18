@@ -306,15 +306,11 @@ estimate_values_db(float* vals, int count, double bias_db) {
     if (count <= 32) {
         return kInvalidSnrDb;
     }
+    /* Seed at the centre of each level's share: count/8, 3count/8, ... for four levels, count/4, 3count/4 for two.
+     * A loop rather than a Levels == 4 branch, so the two-level instantiation never indexes mu[2]. */
     double mu[Levels];
-    if (Levels == 4) {
-        mu[0] = percentile_value(vals, count, count / 8);
-        mu[1] = percentile_value(vals, count, (3 * count) / 8);
-        mu[2] = percentile_value(vals, count, (5 * count) / 8);
-        mu[Levels - 1] = percentile_value(vals, count, (7 * count) / 8);
-    } else {
-        mu[0] = percentile_value(vals, count, count / 4);
-        mu[Levels - 1] = percentile_value(vals, count, (3 * count) / 4);
+    for (int b = 0; b < Levels; b++) {
+        mu[b] = percentile_value(vals, count, ((2 * b + 1) * count) / (2 * Levels));
     }
     std::sort(mu, mu + Levels);
     std::vector<int> assignments((size_t)kMaxSnrSamples);
