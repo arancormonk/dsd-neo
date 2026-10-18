@@ -25,6 +25,12 @@ For the P25 Phase 1 1/2-rate list decoder, build the protocol benchmark:
 cmake --build --preset perf-bench --target dsd-neo_bench_p25_12 -j
 ```
 
+For the TETRA signalling and speech Viterbi decoders:
+
+```sh
+cmake --build --preset perf-bench --target dsd-neo_bench_tetra_viterbi -j
+```
+
 The preset uses `RelWithDebInfo`, fast math, frame pointers, and tests enabled.
 It keeps LTO and native CPU tuning off so results are easier to compare across
 machines.
@@ -103,6 +109,11 @@ The RTL benchmark target includes:
 The P25 list-decoder benchmark includes clean high-confidence, marginal/noisy,
 and equal-metric tie-heavy inputs. It reports each complete 49-symbol decode as
 one call and uses the same CSV timing columns as the DSP and RTL benchmarks.
+
+The TETRA Viterbi benchmark (`dsd-neo_bench_tetra_viterbi`) decodes noisy soft costs through
+`tetra_viterbi_decode_soft()` at the BSCH, SCH/HD, SCH/F and 512-bit lengths (`tetra_viterbi_*`) and through the
+full- and half-slot speech decoders (`tetra_speech_full`, `tetra_speech_half`, including depuncturing and the
+re-encode check). It reports one item per trellis step.
 
 Channel LPF CSV rows include `rate_hz`, `profile`, `tap_count`, and `variant`
 metadata so tap-count and profile changes can be compared directly. The `_256`

@@ -11633,6 +11633,17 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
     )
 endforeach()
 
+add_executable(
+    dsd-neo_bench_tetra_viterbi
+    EXCLUDE_FROM_ALL
+    protocol/tetra/bench_tetra_viterbi.cpp
+)
+target_include_directories(
+    dsd-neo_bench_tetra_viterbi
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_bench_tetra_viterbi PRIVATE dsd-neo_proto_tetra)
+
 target_compile_definitions(
     dsd-neo_test_tetra_acelp_reference
     PRIVATE

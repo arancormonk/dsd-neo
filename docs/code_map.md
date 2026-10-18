@@ -4947,8 +4947,13 @@ Private per-protocol modules worth knowing about:
 The signalling and speech Viterbi decoders in `tetra_fec.c` precompute each destination's incoming coded word.
 The higher predecessor complements every coded lane, so one branch cost serves both edges. Independent
 add-compare-select operations use 32-bit metrics (a 512-bit path costs at most 134215680), clamp unreachable paths,
-and prefer the lower predecessor on ties. `TETRA_VITERBI` checks every survivor and traceback against a 64-bit
-polynomial oracle, including maximum-length, erased and tied inputs.
+and prefer the lower predecessor on ties. `conv_acs_step()` is the scalar reference; on SSE2 (x86-64 baseline) and
+NEON targets `conv_acs_run()` keeps the 16 survivors in four 128-bit vectors (predecessor gathers are fixed
+shuffles; metrics stay below 2^31, so SSE2's signed compares are exact) and drops the INF clamp once no survivor can
+reach INF in the remaining steps. Other targets run the scalar steps. `TETRA_VITERBI` checks every survivor and
+traceback against a 64-bit polynomial oracle, including maximum-length, erased and tied inputs, and the vector kernel
+against `conv_acs_step()` bit for bit on arbitrary metrics (near-INF, forced ties, unreachable) and whole runs.
+`dsd-neo_bench_tetra_viterbi` times both decoders.
 
 #### Burst sync
 
