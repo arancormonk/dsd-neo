@@ -9952,6 +9952,12 @@ target_include_directories(
     dsd-neo_test_dsp_snr_estimator
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
+if(_dsd_neo_dsp_sources MATCHES "simd_kmeans_avx2\\.cpp")
+    target_compile_definitions(
+        dsd-neo_test_dsp_snr_estimator
+        PRIVATE DSD_NEO_TEST_HAVE_AVX2_IMPL=1
+    )
+endif()
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_snr_estimator ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SNR_ESTIMATOR COMMAND dsd-neo_test_dsp_snr_estimator)
 

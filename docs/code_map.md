@@ -2709,6 +2709,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - SNR phase collection (`snr_phase_samples.h`, private to `snr_estimator.cpp`) visits each phase window as
   ordered contiguous spans. It preserves input order, finite-value filtering and the finite-sample cap before
   percentile selection and clustering. IEEE semantics remain enabled for the estimator and its collector tests.
+- SNR clustering: percentiles are selected in ascending order, each `nth_element()` over the range above the
+  previous pick, which yields the same values as full-range selection. Each k-means pass (`simd_kmeans_internal.h`,
+  private to `snr_estimator.cpp`) dispatches to AVX2, SSE2, NEON or scalar double-lane kernels that assign
+  samples exactly as the scalar nearest-center rule (strict less-than, lowest index wins) and fold the final
+  noise sum into the last pass. Counts match the scalar pass exactly; vector lane sums reorder the double
+  additions, so estimates differ from sequential sums by rounding only (~1e-14 dB). The kernels keep IEEE
+  semantics. Tests: `DSP_SNR_ESTIMATOR` checks each backend and compares both estimators with the earlier
+  scalar algorithm.
 - CQPSK short convolutions: `costas.cpp` computes the FLL's four real dot products once and combines them for
   both band edges; filter design keeps the lower taps the exact conjugate of the upper taps. The NCO and feedback
   still advance per sample. `mmse_interp.cpp` applies each interpolated tap directly to both interleaved I/Q

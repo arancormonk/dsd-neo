@@ -85,7 +85,7 @@ The benchmark target includes:
   (`iq_abs_stats_*`) on 256 and 8192 complex samples, cycling through independent windows.
 - C4FM and binary FSK SNR estimation on 256- and 2048-sample discriminator blocks (`snr_c4fm_*` and
   `snr_gfsk_*`), including the phase search, clustering and noise reductions. The default cases use
-  10 samples per symbol; `_sps20` cases use 20.
+  10 samples per symbol; `_sps20` cases use 20. They time the dispatched k-means backend (AVX2 where present).
 - The analog receive core (sub-audible front end, CTCSS and DCS detectors) on a tone on its value, a tone off it,
   noise alone, and a tone beside a voice.
 

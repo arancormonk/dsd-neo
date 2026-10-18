@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <stdlib.h>
+#include "simd_kmeans_internal.h"
 #include "snr_phase_samples.h"
 
 namespace {
@@ -38,45 +39,59 @@ normalized_phase_window(int samples_per_symbol, int phase_window) {
     return win;
 }
 
-double
-percentile_value(float* vals, int count, int index) {
+int
+clamped_index(int count, int index) {
     if (index < 0) {
-        index = 0;
-    } else if (index >= count) {
-        index = count - 1;
+        return 0;
     }
-    std::nth_element(vals, vals + index, vals + count);
-    return vals[index];
+    if (index >= count) {
+        return count - 1;
+    }
+    return index;
 }
 
-template <int Levels>
-int
-nearest_center(double sample, const double (&centers)[Levels]) {
-    int best = 0;
-    double best_dist = std::abs(sample - centers[0]);
-    for (int i = 1; i < Levels; i++) {
-        double dist = std::abs(sample - centers[i]);
-        if (dist < best_dist) {
-            best = i;
-            best_dist = dist;
+/* Select the requested order statistics (each index clamped to [0, count)). An ascending index only partitions
+ * the part above the previous selection, which nth_element() has already left holding the larger values, so each
+ * result equals a full-range nth_element() at that index. */
+template <int N>
+void
+percentile_values(float* vals, int count, const int (&indices)[N], double (&out)[N]) {
+    int prev = -1;
+    for (int i = 0; i < N; i++) {
+        int index = clamped_index(count, indices[i]);
+        if (index > prev) {
+            std::nth_element(vals + prev + 1, vals + index, vals + count);
+        } else if (index < prev) {
+            std::nth_element(vals, vals + index, vals + count);
         }
+        out[i] = vals[index];
+        prev = index;
     }
-    return best;
 }
 
+void
+kmeans_pass(const float* vals, int count, const double (&centers)[4], bool with_noise, simd_kmeans_pass* pass) {
+    simd_kmeans4(vals, (size_t)count, centers, with_noise, pass);
+}
+
+void
+kmeans_pass(const float* vals, int count, const double (&centers)[2], bool with_noise, simd_kmeans_pass* pass) {
+    simd_kmeans2(vals, (size_t)count, centers, with_noise, pass);
+}
+
+/* Assign every sample to its nearest center and gather the per-center sums and counts; 0 when a center is empty. */
 template <int Levels>
 int
-kmeans_assign(const float* vals, int count, const double (&centers)[Levels], int* assignments, double (&sum)[Levels],
-              int (&cnt)[Levels]) {
+kmeans_assign(const float* vals, int count, const double (&centers)[Levels], bool with_noise, double (&sum)[Levels],
+              int (&cnt)[Levels], double* noise) {
+    simd_kmeans_pass pass;
+    kmeans_pass(vals, count, centers, with_noise, &pass);
     for (int i = 0; i < Levels; i++) {
-        sum[i] = 0.0;
-        cnt[i] = 0;
+        sum[i] = pass.sum[i];
+        cnt[i] = (int)pass.count[i];
     }
-    for (int i = 0; i < count; i++) {
-        int b = nearest_center((double)vals[i], centers);
-        assignments[i] = b;
-        sum[b] += vals[i];
-        cnt[b]++;
+    if (noise) {
+        *noise = pass.noise;
     }
     for (int i = 0; i < Levels; i++) {
         if (cnt[i] <= 0) {
@@ -86,12 +101,13 @@ kmeans_assign(const float* vals, int count, const double (&centers)[Levels], int
     return 1;
 }
 
+/* Eight center updates, then a final assignment whose noise is the squared distance to the final centers. */
 template <int Levels>
 int
-kmeans_refine(const float* vals, int count, double (&centers)[Levels], int* assignments, int (&cnt)[Levels]) {
+kmeans_refine(const float* vals, int count, double (&centers)[Levels], int (&cnt)[Levels], double* noise) {
     double sum[Levels];
     for (int iter = 0; iter < 8; iter++) {
-        if (!kmeans_assign(vals, count, centers, assignments, sum, cnt)) {
+        if (!kmeans_assign(vals, count, centers, false, sum, cnt, nullptr)) {
             return 0;
         }
         for (int i = 0; i < Levels; i++) {
@@ -99,7 +115,7 @@ kmeans_refine(const float* vals, int count, double (&centers)[Levels], int* assi
         }
         std::sort(centers, centers + Levels);
     }
-    return kmeans_assign(vals, count, centers, assignments, sum, cnt);
+    return kmeans_assign(vals, count, centers, true, sum, cnt, noise);
 }
 
 template <int Levels>
@@ -124,20 +140,16 @@ estimate_c4fm_values_db(float* vals, int count, double bias_db) {
         return kInvalidSnrDb;
     }
 
-    double mu[4] = {percentile_value(vals, count, count / 8), percentile_value(vals, count, (3 * count) / 8),
-                    percentile_value(vals, count, (5 * count) / 8), percentile_value(vals, count, (7 * count) / 8)};
+    const int indices[4] = {count / 8, (3 * count) / 8, (5 * count) / 8, (7 * count) / 8};
+    double mu[4];
+    percentile_values(vals, count, indices, mu);
     std::sort(mu, mu + 4);
-    std::array<int, kMaxSnrSamples> assignments{};
     int cnt[4] = {0, 0, 0, 0};
-    if (!kmeans_refine(vals, count, mu, assignments.data(), cnt)) {
+    double noise = 0.0;
+    if (!kmeans_refine(vals, count, mu, cnt, &noise)) {
         return kInvalidSnrDb;
     }
 
-    double noise = 0.0;
-    for (int i = 0; i < count; i++) {
-        double e = (double)vals[i] - mu[assignments[(size_t)i]];
-        noise += e * e;
-    }
     int total = cnt[0] + cnt[1] + cnt[2] + cnt[3];
     double noise_var = noise / (double)total;
     double sig_var = signal_variance(mu, cnt, total);
@@ -153,19 +165,16 @@ estimate_gfsk_values_db(float* vals, int count, double bias_db) {
         return kInvalidSnrDb;
     }
 
-    double mu[2] = {percentile_value(vals, count, count / 4), percentile_value(vals, count, (3 * count) / 4)};
+    const int indices[2] = {count / 4, (3 * count) / 4};
+    double mu[2];
+    percentile_values(vals, count, indices, mu);
     std::sort(mu, mu + 2);
-    std::array<int, kMaxSnrSamples> assignments{};
     int cnt[2] = {0, 0};
-    if (!kmeans_refine(vals, count, mu, assignments.data(), cnt)) {
+    double noise = 0.0;
+    if (!kmeans_refine(vals, count, mu, cnt, &noise)) {
         return kInvalidSnrDb;
     }
 
-    double noise = 0.0;
-    for (int i = 0; i < count; i++) {
-        double e = (double)vals[i] - mu[assignments[(size_t)i]];
-        noise += e * e;
-    }
     int total = cnt[0] + cnt[1];
     double noise_var = noise / (double)total;
     double sig_var = signal_variance(mu, cnt, total);
@@ -186,7 +195,9 @@ estimate_best_phase_db(const float* samples, int sample_count, int samples_per_s
 
     int win = normalized_phase_window(samples_per_symbol, phase_window);
     int phases = samples_per_symbol;
-    std::array<float, kMaxSnrSamples> vals{};
+    /* Left uninitialized: each phase writes vals[0, count) before the estimator reads that range, and zero-filling
+     * the whole buffer per call cost more than the estimate on short blocks. */
+    std::array<float, kMaxSnrSamples> vals;
     double best = kInvalidSnrDb;
     for (int phase = 0; phase < phases; phase++) {
         int count = dsd_snr_collect_phase_samples(samples, sample_count, samples_per_symbol, phase, win, vals.data(),

@@ -111,6 +111,42 @@ if(_dsd_neo_dsp_target_arch MATCHES "aarch64|arm64|ARM64")
     target_sources(dsd-neo_dsp PRIVATE simd_widen_neon.cpp simd_stats_neon.cpp)
 endif()
 
+# Discriminator SNR k-means passes, private to snr_estimator.cpp. They keep the
+# estimator's IEEE semantics: each sample's nearest center must match the scalar
+# comparison exactly, and the double sums must not be reassociated further.
+set(_dsd_neo_kmeans_sources simd_kmeans.cpp)
+if(_dsd_neo_dsp_target_arch MATCHES "x86_64|AMD64|amd64")
+    list(APPEND _dsd_neo_kmeans_sources simd_kmeans_sse2.cpp)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set_source_files_properties(
+            simd_kmeans_sse2.cpp
+            PROPERTIES COMPILE_FLAGS "-msse2"
+        )
+    endif()
+    if(_avx2_flags)
+        list(APPEND _dsd_neo_kmeans_sources simd_kmeans_avx2.cpp)
+        set_source_files_properties(
+            simd_kmeans_avx2.cpp
+            PROPERTIES COMPILE_FLAGS "${_avx2_flags}"
+        )
+    endif()
+endif()
+if(_dsd_neo_dsp_target_arch MATCHES "aarch64|arm64|ARM64")
+    list(APPEND _dsd_neo_kmeans_sources simd_kmeans_neon.cpp)
+endif()
+target_sources(dsd-neo_dsp PRIVATE ${_dsd_neo_kmeans_sources})
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        ${_dsd_neo_kmeans_sources}
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        ${_dsd_neo_kmeans_sources}
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
 # Statistics preserve ordered scalar behavior for non-finite inputs and signed
 # zeros. Keep these checks and double-precision reductions under global fast-math.
 set(_dsd_neo_stats_sources
