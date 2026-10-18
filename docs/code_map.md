@@ -6634,11 +6634,25 @@ through `setSessionPhase()` before it dispatches the stop intent, when the track
 followed, not to a session id: the previous session's IDLE record, the new id's STARTING, RUNNING and STOPPING all
 publish Stopping until the attempt's terminal record (Idle, or a failure, published as without a request) or a later
 start attempt. `DecoderService` handles intents in order and runs a whole start inside one `onStartCommand`, so a
-delivered stop always turns RUNNING into STOPPING; RUNNING records for `kStopGraceMs` (2 s) after the request, with no
-STOPPING, drop it, republish Running and log one host diagnostics line. Times are `dsd_realtime_mono_ms()` read through
-`DecoderHostAndroid::readRealtimeMs()`, which `UI_QT_ANDROID_HOST` replaces. The request lives in the host; a recreated
+stop queued during configure is processed after it. Successful native cancellation turns RUNNING into STOPPING;
+RUNNING records for `kStopGraceMs` (2 s) after the request, with no STOPPING, drop it, republish Running and log one
+host diagnostics line. Times are `dsd_realtime_mono_ms()` read through `DecoderHostAndroid::readRealtimeMs()`, which
+`UI_QT_ANDROID_HOST` replaces. The request lives in the host; a recreated
 Activity maps the service state as before. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`,
 `tst_monitor_call_actions.qml`.
+
+Stop delivery (PR #723 follow-up): `DecoderService.stopDecoder()` also calls `requestEngineStop()` synchronously
+under the service lock, before posting the intent, for RUNNING and STOPPING. The JNI stop only raises atomics; the
+lock keeps another run from starting between choosing the session and signalling it. RUNNING is published after
+`nativeConfigure()` has reset the flags; earlier requests still follow ordered intent delivery, and JNI's existing
+startup latch covers the gap before the decode loop. The deferred intent carries `EXTRA_STOP_SESSION` when a session
+already exists; a stale stop cannot cancel a subsequent run. Missing context and refused dispatch are diagnosed and
+do not undo native cancellation. `onStartCommand()` signals notification stops before notification binder work;
+`onTaskRemoved()` requests a user stop even without Activity destruction. Repeated stops reach native code, allowing
+a user Stop to abandon a lifecycle drain. A START publishes `lastStartId` with its locked start/reject decision; the
+worker captures it under the lock publishing IDLE and passes that value to `stopSelf()`, so completion cannot read
+and stop a newer start. `ANDROID_ENGINE_STOP_JVM` now runs the actual service against a deferred-intent transport,
+a controlled native worker and platform stubs.
 
 Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker

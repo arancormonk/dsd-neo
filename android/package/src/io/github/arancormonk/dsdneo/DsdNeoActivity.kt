@@ -163,11 +163,10 @@ class DsdNeoActivity : QtActivity() {
         // Activity, and Qt keeps the process across them (it skips its own teardown for
         // exactly this case). Quitting there would take the UI down on a rotation.
         if (!isChangingConfigurations) {
-            // Signalled directly rather than through DecoderService.stopDecoder(): that
-            // posts an intent, and intents are delivered on this very thread, which is
-            // about to block inside super.onDestroy() and then never come back — the stop
-            // would sit in the queue until System.exit(0) threw it away. nativeStop() only
-            // raises the engine's stop flag, so it is safe to call from here.
+            // Signal before Qt teardown. Service intents are delivered on this very
+            // thread, which is about to block inside super.onDestroy() and then never
+            // come back, so queued service bookkeeping cannot complete here. nativeStop()
+            // only raises the engine's stop flag, so it is safe to call from here.
             //
             // Best effort, not a guarantee: nothing waits for the engine to finish
             // unwinding, because the only thread that could wait is the one whose blocking

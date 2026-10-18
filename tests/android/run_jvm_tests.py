@@ -139,7 +139,7 @@ def stop_callers_carry_their_cause():
         ("DecoderService.kt", r"stopDecoding\(StopCause\.LIFECYCLE\)", "the service's onDestroy drains"),
         (
             "DecoderService.kt",
-            r"ACTION_STOP -> \{(?:\s*//[^\n]*)*\s*stopDecoding\(StopCause\.fromWire\(intent\.getStringExtra\(EXTRA_STOP_CAUSE\)\)\)",
+            r"intent\?\.action == ACTION_STOP && requestEngineStop\(\s*StopCause\.fromWire\(intent\.getStringExtra\(EXTRA_STOP_CAUSE\)\)",
             "a stop intent's cause comes from its sender",
         ),
     )
@@ -206,10 +206,17 @@ SUITES = {
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
     "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
-    # Why the engine stops (#718 D4): only the user's Stop abandons pending rdio uploads. Plain Kotlin with no Android
-    # imports, so no stubs; the source check pins the cause each production caller passes.
+    # The reason mapping builds without Android; the actual service also runs against a deferred-intent transport.
     "engine_stop": Suite(
-        builds=(Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),),
+        builds=(
+            Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),
+            Build(
+                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt"),
+                tests=("DecoderServiceStopTest.kt",),
+                stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
+                       "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),
+            ),
+        ),
         checks=(stop_callers_carry_their_cause,),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
