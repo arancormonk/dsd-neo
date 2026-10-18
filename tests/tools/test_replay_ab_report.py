@@ -499,7 +499,9 @@ FAKE_DIGITAL_HOST = """#!/usr/bin/env bash
 # Stands in for dsd-neo in a digital replay: the startup notices a ProVoice or EDACS preset prints, then either
 # four ProVoice frames (--fake-provoice), one of them conventional ProVoice as a PVCONVENTIONAL build prints it,
 # three D-STAR superframes (--fake-dstar), one behind a header decoded from noise, whose callsigns print as raw
-# bytes that are not UTF-8, with some of their -Z AMBE lines, or two frames of a protocol that labels voice as "Voice".
+# bytes that are not UTF-8, with some of their -Z AMBE lines, DMR voice bursts of both slots among an idle burst and a
+# Connect Plus activity update that names a "Group Voice" (--fake-dmr), or two frames of a protocol that labels voice
+# as "Voice".
 echo "NOTICE: Decoding only ProVoice frames."
 echo "NOTICE: EDACS Analog Voice Channels are Experimental."
 case "$*" in
@@ -519,6 +521,15 @@ case "$*" in
     echo " AMBE F757D8434C3A80 err = [0] [0] "
     echo "12:00:00 Sync: +DSTAR VOICE  "
     echo "NOTICE: Total audio errors: 9"
+    ;;
+  *--fake-dmr*)
+    printf '\033[33m Activity Update TS1: Group Voice; Hash: 7; TS2: Idle; Hash: 0;\033[0m\n'
+    echo "12:00:00 Sync: +DMR   slot1  [slot2] | Color Code=04 | IDLE "
+    echo "12:00:00 Sync: +DMR  [SLOT1]  slot2  | Color Code=04 | VC1* "
+    echo "12:00:00 Sync: +DMR  [SLOT1]  slot2  | Color Code=04 | VC2 "
+    echo "12:00:00 Sync: +DMR   slot1  [SLOT2] | Color Code=04 | VC6 "
+    echo "12:00:00 Sync: +DMR MS/DM MODE/MONO | Color Code=01 | VC* "
+    echo "NOTICE: Total audio errors: 7"
     ;;
   *)
     echo "12:00:00 Sync: +NXDN48 RTCH Voice"
@@ -571,6 +582,13 @@ class ReplayAbDigitalMetric(unittest.TestCase):
         self.assertEqual(rows["host.variant"]["voice"], "3")
         self.assertEqual(rows["host.variant"]["errs"], "9")
         self.assertEqual(rows["host.variant"]["sync"], "3")
+
+    def test_dmr_voice_bursts_are_counted_and_activity_updates_are_not(self):
+        # DMR labels a voice burst "| VCn" (VC1* bootstrapped, VC* in MS mode) and never "Voice"; the CSBK activity
+        # update that names a "Group Voice" on a timeslot is signalling, not a frame (issue #729).
+        rows = self.rows("--fake-dmr")
+        self.assertEqual(rows["host.variant"]["voice"], "4")
+        self.assertEqual(rows["host.variant"]["errs"], "7")
 
     def test_voice_lines_of_other_protocols_are_still_counted(self):
         rows = self.rows("")
