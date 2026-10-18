@@ -5890,18 +5890,40 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_symbol_matched_filter_seam
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
 )
-dsd_neo_link_dsp_test(
+target_compile_definitions(
     dsd-neo_test_symbol_matched_filter_seam
-    dsd-neo_test_support
-    ${DSD_NEO_TEST_MATH_LIB}
-    ${LIBSNDFILE_LIBRARIES}
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_symbol_matched_filter_seam
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
 )
 add_test(
     NAME SYMBOL_MATCHED_FILTER_SEAM
     COMMAND dsd-neo_test_symbol_matched_filter_seam
 )
+
+add_executable(dsd-neo_test_dsp_symbol_anchor dsp/test_symbol_anchor.c)
+target_include_directories(
+    dsd-neo_test_dsp_symbol_anchor
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_symbol_anchor
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_SYMBOL_ANCHOR COMMAND dsd-neo_test_dsp_symbol_anchor)
 
 add_executable(dsd-neo_test_dsp_symbol_replay dsp/test_dsp_symbol_replay.c)
 target_include_directories(
@@ -10231,6 +10253,8 @@ target_include_directories(
     dsd-neo_test_dmr_data_sync
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
+# dmr_data.c checks an undecodable data burst for voice at the other polarity with mbelib's AMBE decoder (issue #729).
+target_link_libraries(dsd-neo_test_dmr_data_sync PRIVATE ${MBE_LINK_TARGET})
 add_test(NAME DMR_DATA_SYNC COMMAND dsd-neo_test_dmr_data_sync)
 
 add_executable(
@@ -10409,7 +10433,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_ms_data
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 add_test(NAME DMR_MS_DATA COMMAND dsd-neo_test_dmr_ms_data)
 
@@ -10448,10 +10472,24 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_le_infer_algid
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(dsd-neo_test_dmr_le_infer_algid PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_LE_INFER_ALGID COMMAND dsd-neo_test_dmr_le_infer_algid)
+
+add_executable(
+    dsd-neo_test_dmr_vcrypt_continuity
+    protocol/dmr/test_dmr_vcrypt_continuity.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_vcrypt_continuity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_vcrypt_continuity
+    PRIVATE dsd-neo_proto_dmr
+)
+add_test(NAME DMR_VCRYPT_CONTINUITY COMMAND dsd-neo_test_dmr_vcrypt_continuity)
 
 add_executable(
     dsd-neo_test_dmr_pi_kirisun
@@ -10460,7 +10498,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_pi_kirisun
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(dsd-neo_test_dmr_pi_kirisun PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_PI_KIRISUN COMMAND dsd-neo_test_dmr_pi_kirisun)
@@ -10479,7 +10517,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_flco_privacy_modes
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(
     dsd-neo_test_dmr_flco_privacy_modes
@@ -10527,7 +10565,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_alg_refresh_error
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(
     dsd-neo_test_dmr_bs_alg_refresh_error
@@ -12165,6 +12203,21 @@ dsd_neo_add_dmr_synth_test(
     GEN "-t 12 --alg none"
     MAX_MISSING 6
 )
+# A receiver that inverts the discriminator: BS voice syncs read as data syncs until the decoder proves the polarity
+# from the bursts (issue #729), with no -xr. A clear call and an AES-256 call: every frame decoded after that matches.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_INVERTED_VOICE
+    GEN "-t 12 --alg none --invert"
+    MIN_PERCENT 80
+    REQUIRE_REGEX "decoding inverted polarity"
+)
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_INVERTED_AES256
+    GEN "-t 12 --alg aes256 --invert"
+    DEC "-H '${_DSD_SYNTH_K256}'"
+    MIN_PERCENT 80
+    REQUIRE_REGEX "decoding inverted polarity"
+)
 # AES-256 call start: superframe 0 decrypts at the right keystream positions.
 dsd_neo_add_dmr_synth_test(
     DMR_SYNTH_AES256_CALL_START
@@ -12227,11 +12280,13 @@ dsd_neo_add_dmr_synth_test(
     NO_DROPOUT 1
 )
 # PI header decoded, first superframe faded out: frames may be muted, never
-# decrypted with the wrong MI.
+# decrypted with the wrong MI, and the complete late entry that follows
+# re-keys the slot, so the rest of the call decodes.
 dsd_neo_add_dmr_synth_test(
     DMR_SYNTH_PI_FIRST_SUPERFRAME_LOST
     GEN "-t 12 --alg aes256 --lose-first 1"
     DEC "-H '${_DSD_SYNTH_K256}'"
+    MIN_PERCENT 85
     REQUIRE_REGEX "DMR PI H- ALG ID: 25"
 )
 
@@ -14067,13 +14122,30 @@ if(DSD_HAS_RADIO)
         "Group Voice Channel Grant Update - Implicit"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
+    # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_VOICE
+        dmr_voice_synth
+        -fs
+        "Color Code=02 \\| VC6"
+    )
+    # The sigidwiki DMR recordings are control channels received at inverted polarity. A BS voice sync is an inverted
+    # data sync, so -fs used to read every burst as voice and publish a colour code from noise-made EMBs (issue #729).
+    # The decoder now proves the polarity from the bursts and decodes them as what they are, without -xr.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_T3_CC
+        dmr_t3_cc
+        -fs
+        "Color Code=01 \\| CSBK"
+        "\\| VC[1-6]"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_POLARITY_AUTO
         dmr_voice
         -fs
-        "Color Code=02"
+        "decoding inverted polarity.*Color Code=01 \\| CSBK"
+        "\\| VC[1-6]"
     )
-    dsd_neo_add_iq_decode_test(DECODE_IQ_DMR_T3_CC dmr_t3_cc -fs "Color Code=02")
     # CSBK-only RAS TSCC (issue #348): the colour-code gate must lock from
     # C_ALOHA traffic alone (no idle bursts, no voice on this channel) and -F
     # must bypass the RAS-masked CSBK CRC so the TIII site identity decodes.
@@ -15100,7 +15172,7 @@ if(DSD_HAS_RADIO)
 
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_DMR
-        dmr_voice
+        dmr_voice_synth
         -fs
         "Color Code=02"
         EXT .amb
@@ -15110,7 +15182,7 @@ if(DSD_HAS_RADIO)
     # The clear call under -q: every frame muted, so nothing is captured, not even its first frame.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_DMR_REVERSE_MUTE
-        dmr_voice
+        dmr_voice_synth
         "-fs -q"
         "Color Code=02"
         FILES 0
@@ -15219,7 +15291,7 @@ if(DSD_HAS_RADIO)
     )
     dsd_neo_add_iq_voice_chain_test(
         DECODE_IQ_VOICE_CHAIN_DMR
-        dmr_voice
+        dmr_voice_synth
         -fs
         "Color Code=02"
     )
@@ -15314,7 +15386,7 @@ if(DSD_HAS_RADIO)
     # A single DMR call (slot 2) in both ears: float output's mixer left the idle slot 1's channel silent.
     dsd_neo_add_iq_float_output_test(
         DECODE_IQ_FLOAT_OUTPUT_DMR
-        dmr_voice
+        dmr_voice_synth
         -fs
         "Color Code=02"
         2
@@ -15384,7 +15456,7 @@ if(DSD_HAS_RADIO)
     # The static WAV with no playback (-o null) in both formats.
     dsd_neo_add_iq_float_output_test(
         DECODE_IQ_FLOAT_OUTPUT_DMR_NULL_SINK
-        dmr_voice
+        dmr_voice_synth
         -fs
         "Color Code=02"
         2
@@ -16181,7 +16253,8 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
     # Speech parity (issue #518): under the default chain the AGC brings real NFM and AM
-    # speech to the level digital voice plays at. dmr_voice decodes to -24.9 dBFS RMS;
+    # speech to the level digital voice plays at: -24.9 dBFS RMS, the level the DMR path played dmr_voice at (a control
+    # channel at inverted polarity it then decoded as voice, issue #729; kept as the speech-level target);
     # nfm_ctcss_real (-fA) and am_airband_real (-fM) measure -23.9 dBFS each, and both
     # are held to that digital level +/-3 dB. DECODE_IQ_ANALOG_NEG_PARITY_FIXED shows the
     # fixed gain alone misses the window on the NFM excerpt.

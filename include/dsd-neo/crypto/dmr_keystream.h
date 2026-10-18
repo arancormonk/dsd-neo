@@ -57,12 +57,18 @@ uint32_t dmr_mi_advance32(uint32_t mi);
  * Does not mutate decoder state. Null output leaves the MI unchanged.
  */
 uint32_t dmr_aes_expand_iv(uint32_t mi, uint8_t iv[16]);
+/** Expand a DMR DES 32-bit MI into the 64-bit IV (the MI, then 32 more bits of the same recurrence as AES); the next
+ * superframe's MI is the IV's low 32 bits. Does not mutate decoder state. */
+uint64_t dmr_des_expand_iv(uint32_t mi);
 int dmr_basic_privacy_apply_frame49(unsigned long long key_id, char ambe_d[49]);
 int tyt_ap_pc4_apply_frame49(const dsd_state* state, char ambe_d[49]);
 int tyt_ep_aes_apply_frame49(const dsd_state* state, char ambe_d[49]);
 int hytera_bp_apply_frame49(unsigned long long k1, unsigned long long k2, unsigned long long k3, unsigned long long k4,
                             int* frame_counter, char ambe_d[49]);
 int vertex_key_map_apply_frame49(dsd_state* state, int slot, unsigned long long key, char ambe_d[49]);
+/** As vertex_key_map_apply_frame49(), for the frame at position @p pos (0..17) of its superframe; -1 keeps the
+ * slot's running counter. */
+int vertex_key_map_apply_frame49_at(dsd_state* state, int slot, unsigned long long key, int pos, char ambe_d[49]);
 void tyt16_ambe2_codeword_keystream(const dsd_state* state, char ambe_fr[4][24], int fnum);
 void csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]);
 void kirisun_adv_keystream_creation(dsd_state* state);

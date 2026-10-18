@@ -723,6 +723,11 @@ vertex_key_map_find_index(const dsd_state* state, unsigned long long key) {
 
 int
 vertex_key_map_apply_frame49(dsd_state* state, int slot, unsigned long long key, char ambe_d[49]) {
+    return vertex_key_map_apply_frame49_at(state, slot, key, -1, ambe_d);
+}
+
+int
+vertex_key_map_apply_frame49_at(dsd_state* state, int slot, unsigned long long key, int pos, char ambe_d[49]) {
     if (state == NULL || ambe_d == NULL) {
         return 0;
     }
@@ -740,6 +745,11 @@ vertex_key_map_apply_frame49(dsd_state* state, int slot, unsigned long long key,
         }
         state->vertex_ks_active_idx[slot] = idx;
         state->vertex_ks_counter[slot] = 0;
+    }
+    /* A positioned frame reads the keystream where its place in the superframe puts it, after the lookup above has
+       had its say (issue #729). */
+    if (pos >= 0) {
+        state->vertex_ks_counter[slot] = (state->vertex_ks_frame_mode[idx] == 1) ? pos : 49 * pos;
     }
 
     if (dmr_ambe49_should_skip_crypto(ambe_d) == 1) {

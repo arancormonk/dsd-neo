@@ -833,6 +833,31 @@ init_state_nxdn_defaults(dsd_state* state) {
     state->payload_miN = 0;
 }
 
+/* DMR voice crypto continuity and polarity evidence (issue #729): nothing known, every frame unpositioned. */
+static void
+init_state_dmr_voice_crypto_continuity(dsd_state* state) {
+    for (int slot = 0; slot < 2; slot++) {
+        state->dmr_vc_ref_state[slot] = 0U;
+        state->dmr_vc_ref_clock[slot] = 0U;
+        state->dmr_vc_ref_epoch[slot] = 0U;
+        state->dmr_vc_ref_carrier[slot] = 0U;
+        state->dmr_vc_untrusted[slot] = 0U;
+        state->dmr_voice_ks_pos[slot] = 0;
+        state->dmr_ks_key_tag[slot] = 0U;
+        state->dmr_ks_tag_burst[slot] = 0U;
+        state->dmr_vc6_seed[slot] = 0ULL;
+        state->dmr_vc6_seed_valid[slot] = 0U;
+        state->dmr_le_frag_mask[slot] = 0U;
+        state->dmr_le_candidate_valid[slot] = 0U;
+        state->dmr_le_candidate_mi[slot] = 0ULL;
+        state->dmr_crypto_pi_verified[slot] = 0U;
+    }
+    state->dmr_inverted_voice_evidence = 0U;
+    state->dmr_voice_sync_run = 0U;
+    state->dmr_voice_sync_clock = 0U;
+    state->dmr_voice_sync_epoch = 0U;
+}
+
 static void
 init_state_protocol_defaults_a(dsd_state* state) {
     // Initialize P25 neighbor/candidate UI helpers
@@ -924,6 +949,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->DMRvcR = 0;
     state->dropL = 256;
     state->dropR = 256;
+    init_state_dmr_voice_crypto_continuity(state);
 
     init_state_vendor_crypto_defaults(state);
 }

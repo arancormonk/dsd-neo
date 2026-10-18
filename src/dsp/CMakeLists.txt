@@ -31,6 +31,7 @@ target_sources(
         sync_hamming.c
         dmr_sync.c
         sync_calibration.c
+        symbol_anchor.c
         symbol_timing_debug.c
         analog_rx.c
         analog_ctcss.c

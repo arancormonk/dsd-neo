@@ -16,6 +16,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -24,6 +25,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -334,6 +336,51 @@ dmr_data_finalize(dsd_opts* opts, dsd_state* state, unsigned int SlotTypeOk, int
     }
 }
 
+/* The converse of dmr_bs_polarity_is_inverted() (issue #729): a BS voice sync received at the other polarity reads as a
+   data sync, so a voice call at the wrong polarity arrives as a data burst on every slot's burst A whose slot type never
+   decodes. Its first AMBE frame proves it: at the other polarity it passes the AMBE FEC with at most one correction,
+   which noise or a data burst does about once in ten thousand. Two such bursts with no data burst decoding between
+   them take the other polarity for the session, as the menu's toggle and -xr do; the hunt then finds the call. */
+static int
+dmr_data_burst_is_voice_inverted(const dmr_data_sync_ctx* ctx) {
+    if (ctx->state->dmr_ms_mode != 0 || strcmp(ctx->sync, DMR_BS_DATA_SYNC) != 0) {
+        return 0;
+    }
+    char frame[4][24];
+    DSD_MEMSET(frame, 0, sizeof(frame));
+    for (int i = 0; i < 36; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+        const int dibit = ctx->state->dmr_stereo_payload[12 + i] ^ 2;
+        frame[map->high_row][map->high_col] = (char)(1 & (dibit >> 1));
+        frame[map->low_row][map->low_col] = (char)(1 & dibit);
+    }
+    char ambe_d[49];
+    mbe_process_result result;
+    DSD_MEMSET(&result, 0, sizeof(result));
+    if (mbe_decodeAmbe3600x2450Frame((const char (*)[24])frame, ambe_d, &result) < 0) {
+        return 0;
+    }
+    return result.total_errors <= 1;
+}
+
+static void
+dmr_data_note_polarity_evidence(dsd_opts* opts, dsd_state* state, const dmr_data_sync_ctx* ctx) {
+    if (ctx->SlotTypeOk != 0 && ctx->cach_okay == 1) {
+        state->dmr_inverted_voice_evidence = 0;
+        return;
+    }
+    if (ctx->cach_okay != 1 || !dmr_data_burst_is_voice_inverted(ctx)) {
+        return;
+    }
+    if (++state->dmr_inverted_voice_evidence < 2U) {
+        return;
+    }
+    state->dmr_inverted_voice_evidence = 0;
+    opts->inverted_dmr = opts->inverted_dmr ? 0 : 1;
+    DSD_FPRINTF(stderr, "%s DMR: data bursts that are voice at the other polarity; decoding %s polarity%s\n", KYEL,
+                opts->inverted_dmr ? "inverted" : "normal", KNRM);
+}
+
 void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     dmr_data_sync_ctx ctx;
@@ -364,6 +411,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     }
 
     dmr_data_finalize(opts, state, ctx.SlotTypeOk, ctx.cach_okay);
+    dmr_data_note_polarity_evidence(opts, state, &ctx);
     if (debug_line[0] != '\0') {
         DSD_FPRINTF(stderr, "%s\n", debug_line);
     }

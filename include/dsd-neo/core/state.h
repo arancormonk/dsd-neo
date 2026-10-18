@@ -894,6 +894,17 @@ struct dsd_state {
      * 5.2 days at 4800 symbols/s, which is undefined behaviour and aborts a UBSan build
      * (#395). Readers must treat it as wrapping -- compare differences, never magnitudes. */
     uint32_t symbolcnt;
+    /* Symbols the grid produced, on every input path, since the state was set up. Unlike symbolcnt no protocol resets
+       it, so a DMR slot measures elapsed superframes on it (issue #729). Only DSP advances it. */
+    uint64_t symbol_clock;
+    /* Bumped whenever symbol_clock stops describing one continuous received stream: an RTL stream flush or an input
+       switch (DSP bumps it) or a scan target change (the engine does). Carrier changes are compared on carrier_seq. A
+       span measured across two epochs is no span. */
+    uint32_t symbol_clock_epoch;
+    uint32_t symbol_clock_input; /* dsd_opts::pcm_input_generation the last symbol was read under (DSP's) */
+    /* Set while the DSP sync anchor (state-ext slot 12, src/dsp/symbol_anchor.c) records or holds a move for the grid;
+       the grid looks the anchor up only then. */
+    uint8_t symbol_anchor_hot;
     uint32_t
         datascope_symbolcnt_mark; /* symbolcnt at the datascope's last refresh: the refresh never resets symbolcnt */
     int symbolc;
@@ -1237,6 +1248,13 @@ struct dsd_state {
     int dmr_heal_inherited_algid[2];
     int dmr_heal_inherited_keyid[2];
     uint8_t dmr_heal_valid[2];
+    /* The voice crypto continuity (dmr_vc_*, dmr_crypto_pi_verified) as the stash found it (issue #729). */
+    uint8_t dmr_heal_vc_ref_state[2];
+    uint64_t dmr_heal_vc_ref_clock[2];
+    uint32_t dmr_heal_vc_ref_epoch[2];
+    uint32_t dmr_heal_vc_ref_carrier[2];
+    uint8_t dmr_heal_vc_untrusted[2];
+    uint8_t dmr_heal_pi_verified[2];
     /* The live ALG ID and key id DMR last published into each slot's call epoch, whether or not the record took them
      * as the call's own (dsd_call_crypto_update::carried). The heal restores these for that epoch, which is what the
      * decoder has always restored: the call record no longer holds carried values. */
@@ -1375,6 +1393,25 @@ struct dsd_state {
     int dropR;
     int DMRvcL;
     int DMRvcR;
+    /* DMR voice crypto continuity per slot (src/protocol/dmr/dmr_vcrypt.c, issue #729). */
+    uint8_t dmr_vc_ref_state[2];    /* DMR_VC_REF_NONE, _FIRST (a PI prepared superframe 0) or _VALID */
+    uint64_t dmr_vc_ref_clock[2];   /* symbol_clock at the voice sync of the superframe the current IV is for */
+    uint32_t dmr_vc_ref_epoch[2];   /* symbol_clock_epoch that clock was read in */
+    uint32_t dmr_vc_ref_carrier[2]; /* carrier_seq it was read under */
+    uint8_t dmr_vc_untrusted[2];    /* the slot's MI chain is unknown: encrypted voice is muted until re-keyed */
+    int dmr_voice_ks_pos[2]; /* 1 + the frame's position 0..17 in its superframe; 0 when the caller is not DMR voice */
+    uint64_t dmr_ks_key_tag[2];         /* fingerprint of the ALG ID and key the slot's keystream was generated with */
+    uint8_t dmr_ks_tag_burst[2];        /* 1 + the burst (0..5) the fingerprint was last taken in; 0 when one is due */
+    unsigned long long dmr_vc6_seed[2]; /* Hytera Enhanced: the superframe's MI while VC6 decodes after its step */
+    uint8_t dmr_vc6_seed_valid[2];
+    uint8_t dmr_le_frag_mask[2];       /* VC bursts (bit n = VCn) whose late-entry fragments this superframe holds */
+    uint8_t dmr_le_candidate_valid[2]; /* a late-entry MI that disagreed with a trusted chain waits for confirmation */
+    unsigned long long dmr_le_candidate_mi[2];
+    uint8_t dmr_crypto_pi_verified[2];   /* the ALG ID and key id are the current call's from CRC-checked signalling */
+    uint8_t dmr_inverted_voice_evidence; /* failed data bursts in a row that read as voice at the other polarity */
+    uint8_t dmr_voice_sync_run;    /* adjacent BS bursts in a row whose sync field was the voice sync (dmr_bs.c) */
+    uint64_t dmr_voice_sync_clock; /* symbol clock at the end of the run's last sync field */
+    uint32_t dmr_voice_sync_epoch; /* symbol clock epoch of that reading */
 
     //keystream octet and bit arrays
     uint8_t ks_octetL[129 * 18];         //arbitary size, but large enough for the largest packed PDUs

@@ -18,6 +18,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -32,6 +33,7 @@
 #include <stdio.h>
 #include <time.h>
 #include "dmr_confidence.h"
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -39,7 +41,7 @@
 
 volatile uint8_t exitflag = 0;
 
-static uint8_t g_dibits[512];
+static uint8_t g_dibits[144 * 8];
 static int g_bootstrap_payload[90];
 static size_t g_dibit_index = 0;
 /* The read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
@@ -54,6 +56,7 @@ static unsigned int g_open_right_calls;
 static unsigned int g_close_left_calls;
 static unsigned int g_close_right_calls;
 static unsigned int g_process_mbe_calls;
+static uint8_t g_mbe_slots[64]; /* the slot each decoded frame went to, in order */
 static unsigned int g_play_ss3_calls;
 static unsigned int g_ui_redraw_calls;
 static unsigned int g_history_calls[2];
@@ -66,7 +69,10 @@ static uint8_t g_debug_dump_last_type;
 static unsigned int g_cach_calls;
 static unsigned int g_reset_blocks_calls;
 static unsigned int g_alg_reset_calls;
-static unsigned int g_refresh_error_calls;
+static unsigned int g_vcrypt_start_calls;
+static unsigned int g_vcrypt_end_calls;
+static int g_vcrypt_last_pos;
+static unsigned int g_anchor_calls;
 static unsigned int g_late_entry_calls;
 static uint8_t g_late_entry_last_vc;
 static unsigned int g_sm_voice_sync_calls;
@@ -96,6 +102,7 @@ reset_spies(void) {
     g_close_left_calls = 0;
     g_close_right_calls = 0;
     g_process_mbe_calls = 0;
+    DSD_MEMSET(g_mbe_slots, 0xFF, sizeof(g_mbe_slots));
     g_play_ss3_calls = 0;
     g_ui_redraw_calls = 0;
     g_history_calls[0] = 0;
@@ -110,7 +117,10 @@ reset_spies(void) {
     g_cach_calls = 0;
     g_reset_blocks_calls = 0;
     g_alg_reset_calls = 0;
-    g_refresh_error_calls = 0;
+    g_vcrypt_start_calls = 0;
+    g_vcrypt_end_calls = 0;
+    g_vcrypt_last_pos = -2;
+    g_anchor_calls = 0;
     g_late_entry_calls = 0;
     g_late_entry_last_vc = 0;
     g_sm_voice_sync_calls = 0;
@@ -185,8 +195,10 @@ load_bootstrap_voice_stream(uint8_t slot) {
 int
 get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
-    (void)state;
     (void)out_analog_signal;
+    if (state != NULL) {
+        state->symbol_clock++;
+    }
     if (g_continuous_voice) {
         /* Bound a broken escape so this regression fails instead of hanging. */
         assert(g_dibit_index < (size_t)144U * 80U);
@@ -201,6 +213,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
+    if (state != NULL) {
+        state->symbol_clock++;
+    }
     if (g_dibit_index == g_boundary_at && state != NULL) {
         state->carrier_seq++;
     }
@@ -330,6 +345,9 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
     if (g_process_mbe_calls == 0U) {
         g_sm_voice_sync_calls_at_first_mbe = g_sm_voice_sync_calls;
     }
+    if (g_process_mbe_calls < sizeof(g_mbe_slots)) {
+        g_mbe_slots[g_process_mbe_calls] = (uint8_t)state->currentslot;
+    }
     g_process_mbe_calls++;
     if (g_stage_mix_media) {
         dsd_audio_dmr_mix_media_staged(state->currentslot, DSD_DMR_MIX_MEDIA_SHORT);
@@ -431,11 +449,52 @@ dmr_alg_reset(dsd_opts* opts, dsd_state* state) {
     g_alg_reset_calls++;
 }
 
+/* The voice crypto continuity (dmr_vcrypt.c) and the symbol anchor are their own units' business: these spies only
+   see that the loop reports its voice syncs, VC6s and frame positions (issue #729). */
 void
-dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
+dmr_vcrypt_superframe_start(dsd_state* state, uint8_t slot) {
     (void)state;
-    g_refresh_error_calls++;
+    (void)slot;
+    g_vcrypt_start_calls++;
+}
+
+void
+dmr_vcrypt_hytera_vc6_step(dsd_state* state, uint8_t slot) {
+    (void)state;
+    (void)slot;
+}
+
+void
+dmr_vcrypt_superframe_end(dsd_state* state, uint8_t slot) {
+    (void)state;
+    (void)slot;
+    g_vcrypt_end_calls++;
+}
+
+void
+dmr_vcrypt_set_frame(dsd_state* state, uint8_t slot, uint8_t vc, uint8_t frame) {
+    (void)state;
+    (void)slot;
+    g_vcrypt_last_pos = (int)(vc - 1U) * 3 + (int)frame;
+}
+
+void
+dmr_vcrypt_clear_frame(dsd_state* state, uint8_t slot) {
+    (void)state;
+    (void)slot;
+}
+
+void
+dsd_symbol_arm_sync_anchor(dsd_state* state) {
+    (void)state;
+}
+
+void
+dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    (void)state;
+    (void)sync_dibits;
+    (void)count;
+    g_anchor_calls++;
 }
 
 void
@@ -535,7 +594,7 @@ test_bs_voice_sync_refreshes_when_trunk_tuned(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.trunk_is_tuned = 1;
-    state.currentslot = 0;
+    state.currentslot = 1; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_voice_burst_stream();
 
@@ -560,7 +619,7 @@ test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
     /* No capture is open: the burst opens nothing, its first frame creates the slot 2 capture, and the end of the stream
        closes it (issue #661). */
-    state.currentslot = 1;
+    state.currentslot = 0; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_single_burst_stream(1, DMR_BS_VOICE_SYNC);
     g_any_voice_open = 1;
@@ -602,7 +661,7 @@ test_bs_slot2_voice_integer_output_uses_ss3_playback(void) {
 
     opts.floating_point = 0;
     opts.pulse_digi_rate_out = 8000;
-    state.currentslot = 1;
+    state.currentslot = 0; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_single_burst_stream(1, DMR_BS_VOICE_SYNC);
     g_any_voice_open = 1;
@@ -612,6 +671,8 @@ test_bs_slot2_voice_integer_output_uses_ss3_playback(void) {
     assert(state.dmrburstR == 16);
     assert(g_play_ss3_calls == 1U);
     assert(g_process_mbe_calls == 3U);
+    // Burst A's three frames decode at superframe positions 0..2 (issue #729).
+    assert(g_vcrypt_last_pos == 2);
     assert(g_sm_voice_sync_last_slot == 1);
 }
 
@@ -623,7 +684,7 @@ test_bs_data_sync_closes_slot_file_and_resets_error_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.mbe_out_fR = (FILE*)(uintptr_t)1;
-    state.currentslot = 1;
+    state.currentslot = 0; /* the bootstrap read the other slot's burst A */
     load_single_burst_stream(1, DMR_BS_DATA_SYNC);
 
     dmrBS(&opts, &state);
@@ -638,7 +699,10 @@ test_bs_data_sync_closes_slot_file_and_resets_error_state(void) {
     assert(g_process_mbe_calls == 0U);
     assert(g_sm_voice_sync_calls == 0U);
     assert(g_reset_blocks_calls == 1U);
-    assert(g_refresh_error_calls == 1U);
+    // The error END takes no MI step of its own (issue #729): the next voice sync catches up what it costs.
+    assert(g_vcrypt_start_calls == 0U);
+    assert(g_vcrypt_end_calls == 0U);
+    assert(g_anchor_calls == 1U); // the data sync placed the symbol grid
     assert(g_confidence_reset_calls == 1U);
 }
 
@@ -649,10 +713,11 @@ test_bs_confidence_reject_resets_slot_without_voice_decode(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    state.currentslot = 0;
+    state.currentslot = 1; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_single_burst_stream(0, DMR_BS_VOICE_SYNC);
     g_confidence_result = DMR_CONFIDENCE_REJECT;
+    g_voice_slot_open = 0; /* not yet qualified: a mismatching colour code is no evidence to go on */
 
     dmrBS(&opts, &state);
 
@@ -663,8 +728,32 @@ test_bs_confidence_reject_resets_slot_without_voice_decode(void) {
     assert(g_debug_dump_calls == 0U);
     assert(g_process_mbe_calls == 0U);
     assert(g_reset_blocks_calls == 1U);
-    assert(g_refresh_error_calls == 1U);
+    // The rejected burst A still started the slot's superframe; the error END advanced nothing (issue #729).
+    assert(g_vcrypt_start_calls == 1U);
+    assert(g_vcrypt_end_calls == 0U);
     assert(g_confidence_reset_calls == 1U);
+}
+
+/* On a slot whose gate is open, one EMB naming another colour code is taken for the QR miscorrection it most likely is
+   (issue #729): it counts as an EMB miss and the burst's voice still decodes, as for an undecodable EMB. */
+static void
+test_bs_single_colour_code_mismatch_on_open_gate_is_an_emb_miss(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 1; /* the bootstrap read the other slot's burst A */
+    state.dmr_color_code = 16;
+    load_single_burst_stream(0, DMR_BS_VOICE_SYNC);
+    g_confidence_result = DMR_CONFIDENCE_REJECT;
+    g_voice_slot_open = 1;
+
+    dmrBS(&opts, &state);
+
+    assert(g_confidence_voice_burst_calls == 1U);
+    assert(g_confidence_reset_slot_calls == 0U);
+    assert(g_process_mbe_calls == 3U);
 }
 
 static void
@@ -675,7 +764,7 @@ test_bs_voice_gate_closed_skips_decode_but_keeps_loop_hooks(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.frontend_kind = DSD_FRONTEND_TERMINAL;
-    state.currentslot = 0;
+    state.currentslot = 1; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_single_burst_stream(0, DMR_BS_VOICE_SYNC);
     g_voice_slot_open = 0;
@@ -745,7 +834,7 @@ test_bs_burst_split_by_a_carrier_boundary_is_dropped(void) {
 
     opts.floating_point = 1;
     opts.pulse_digi_rate_out = 8000;
-    state.currentslot = 0;
+    state.currentslot = 1; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_voice_burst_stream();
     g_any_voice_open = 1;
@@ -762,7 +851,7 @@ test_bs_burst_split_by_a_carrier_boundary_is_dropped(void) {
     assert(g_sm_voice_sync_calls == 0U);
     assert(g_debug_dump_calls == 0U);
     assert(g_reset_blocks_calls == 1U);
-    assert(g_refresh_error_calls == 0U);
+    assert(g_vcrypt_end_calls == 0U);
     assert(g_confidence_reset_calls == 1U);
     assert(state.dmr_stereo == 0);
 }
@@ -793,7 +882,7 @@ test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped(void) {
     assert(g_late_entry_calls == 0U);
     assert(g_play_ss3_calls == 0U);
     assert(g_reset_blocks_calls == 1U);
-    assert(g_refresh_error_calls == 0U);
+    assert(g_vcrypt_end_calls == 0U);
     assert(g_confidence_reset_calls == 1U);
 }
 
@@ -809,7 +898,7 @@ test_bs_burst_cut_by_an_input_interruption_is_dropped(void) {
 
     opts.floating_point = 1;
     opts.pulse_digi_rate_out = 8000;
-    state.currentslot = 0;
+    state.currentslot = 1; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_voice_burst_stream();
     g_any_voice_open = 1;
@@ -827,7 +916,7 @@ test_bs_burst_cut_by_an_input_interruption_is_dropped(void) {
     assert(g_sm_voice_sync_calls == 0U);
     assert(g_debug_dump_calls == 0U);
     assert(g_reset_blocks_calls == 1U);
-    assert(g_refresh_error_calls == 0U);
+    assert(g_vcrypt_end_calls == 0U);
     assert(state.dmr_stereo == 0);
 }
 
@@ -857,7 +946,7 @@ test_bs_bootstrap_cut_by_an_input_interruption_is_dropped(void) {
     assert(g_late_entry_calls == 0U);
     assert(g_play_ss3_calls == 0U);
     assert(g_reset_blocks_calls == 1U);
-    assert(g_refresh_error_calls == 0U);
+    assert(g_vcrypt_end_calls == 0U);
 }
 
 /* Issue #574: the loop's end drops the audio staged for the stereo mixes, and with it each slot's fresh-media mark. The
@@ -874,7 +963,7 @@ test_bs_loop_end_discards_the_mix_media(void) {
 
     opts.floating_point = 1;
     opts.pulse_digi_rate_out = 8000;
-    state.currentslot = 0;
+    state.currentslot = 1; /* the bootstrap read the other slot's burst A */
     state.dmr_color_code = 16;
     load_single_burst_stream(0, DMR_BS_VOICE_SYNC);
     g_any_voice_open = 1;
@@ -919,10 +1008,146 @@ test_continuous_voice_yields_at_burst_boundary(void) {
     assert(g_process_mbe_calls > 0U);
     assert(g_sm_tick_calls > 1U);
     assert(g_confidence_reset_calls == 1U);
-    assert(g_refresh_error_calls == 0U);
+    assert(g_vcrypt_end_calls == 0U);
     assert(state.dmr_stereo == 0);
     dsd_frame_sync_hooks_set(NULL);
     g_continuous_voice = 0;
+}
+
+/* Three bursts with distinct leading payloads, so the redundant-carrier check lets the loop read each: burst A of
+   @p slot0 with a voice sync, then two EMB bursts whose TACTs name @p slot1 and @p slot2. */
+static void
+load_three_burst_stream(uint8_t slot0, uint8_t slot1, uint8_t slot2) {
+    load_single_burst_stream(slot0, DMR_BS_VOICE_SYNC);
+    g_dibits[144U + 12U + 16U] = 2U;
+    g_dibits[288U + 12U + 16U] = 1U;
+    g_dibits[288U + 12U + 17U] = 1U;
+    set_cach_tact_bit(144U, 1, slot1);
+    set_cach_tact_bit(288U, 1, slot2);
+}
+
+/* One TACT naming the slot alternation does not expect is the Hamming(7,4) miscorrection it most likely is: the burst
+   stays with alternation from the bootstrap's burst (issue #729). */
+static void
+test_bs_one_tact_disagreement_keeps_alternation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 1; /* the bootstrap read slot 2's burst A */
+    state.dmr_color_code = 16;
+    load_three_burst_stream(0, 0, 0); /* the second burst's TACT is wrong */
+    g_any_voice_open = 1;
+
+    dmrBS(&opts, &state);
+
+    assert(g_process_mbe_calls >= 9U);
+    assert(g_mbe_slots[0] == 0U);
+    assert(g_mbe_slots[3] == 1U);
+    assert(g_mbe_slots[6] == 0U);
+}
+
+/* Two TACTs in a row against alternation say the alternation started wrong (the bootstrap's own TACT was miscorrected):
+   it takes the TACT's slot from the second of them, so a wrong start costs one burst (issue #729). */
+static void
+test_bs_two_tact_disagreements_reanchor_alternation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0; /* wrong: the bootstrap's burst was slot 2's */
+    state.dmr_color_code = 16;
+    load_three_burst_stream(0, 1, 0);
+    g_any_voice_open = 1;
+
+    dmrBS(&opts, &state);
+
+    assert(g_process_mbe_calls >= 9U);
+    assert(g_mbe_slots[0] == 1U); /* one disagreement: alternation holds */
+    assert(g_mbe_slots[3] == 1U); /* the second: the TACT's slot */
+    assert(g_mbe_slots[6] == 0U); /* and alternation from there */
+}
+
+/* Once two TACTs confirmed alternation, two miscorrected ones in a row no longer move it: only the start may be
+   corrected by the TACT (issue #729). The bursts alternate slot 2, 1, 2, 1, 2; the third's and fourth's TACTs read
+   wrong. */
+static void
+test_bs_confirmed_alternation_ignores_two_wrong_tacts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0; /* the bootstrap read slot 1's burst A */
+    state.dmr_color_code = 16;
+    load_single_burst_stream(1, DMR_BS_VOICE_SYNC);
+    static const uint8_t tact[5] = {1U, 0U, 0U, 1U, 1U}; /* bursts 3 and 4 miscorrected */
+    for (size_t b = 1; b < 5U; b++) {
+        g_dibits[(b * 144U) + 12U + 16U] = (uint8_t)((b % 3U) + 1U);
+        g_dibits[(b * 144U) + 12U + 17U] = (uint8_t)(b & 3U);
+        set_cach_tact_bit(b * 144U, 1, tact[b]);
+    }
+    g_any_voice_open = 1;
+
+    dmrBS(&opts, &state);
+
+    assert(g_process_mbe_calls >= 15U);
+    static const uint8_t want[5] = {1U, 0U, 1U, 0U, 1U};
+    for (size_t b = 0; b < 5U; b++) {
+        assert(g_mbe_slots[b * 3U] == want[b]);
+    }
+}
+
+/* EMBs that decode but name another colour code are misses in a row on their slot: only an accepted EMB ends the
+   streak, so the slot's second rejected EMB ends the loop as two undecodable ones do (issue #729). */
+static void
+test_bs_consecutive_colour_code_rejections_end_the_loop(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 1;
+    state.dmr_color_code = 16;
+    load_three_burst_stream(0, 1, 0);
+    g_confidence_result = DMR_CONFIDENCE_REJECT;
+    g_voice_slot_open = 1;
+
+    dmrBS(&opts, &state);
+
+    /* Slot 1's burst A and slot 2's burst are each a first miss and decode; slot 1's next is its second. */
+    assert(g_process_mbe_calls == 6U);
+    assert(g_confidence_reset_slot_calls == 1U);
+    assert(g_confidence_reset_last_slot == 0U);
+}
+
+/* Voice sync on four adjacent bursts with no voice gate open is data at the other polarity; the run counts only
+   adjacent bursts, so burst A syncs a superframe apart (bursts B lost) never make one (issue #729). */
+static void
+test_bs_polarity_run_needs_adjacent_bursts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int adjacent = 0; adjacent < 2; adjacent++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = 1;
+        state.dmr_color_code = 16;
+        load_single_burst_stream(0, DMR_BS_VOICE_SYNC);
+        g_voice_slot_open = 0;
+        state.symbol_clock = 10000U;
+        /* The burst's sync field ends 90 symbols in; three runs' worth of voice syncs came before it. */
+        state.dmr_voice_sync_run = 3U;
+        state.dmr_voice_sync_clock = 10000U + 90U - (adjacent ? 144U : 864U);
+
+        dmrBS(&opts, &state);
+
+        assert(opts.inverted_dmr == (adjacent ? 1 : 0));
+        if (!adjacent) {
+            assert(state.dmr_voice_sync_run >= 1U && state.dmr_voice_sync_run < 4U);
+        }
+    }
 }
 
 int
@@ -934,6 +1159,7 @@ main(void) {
     test_bs_slot2_voice_integer_output_uses_ss3_playback();
     test_bs_data_sync_closes_slot_file_and_resets_error_state();
     test_bs_confidence_reject_resets_slot_without_voice_decode();
+    test_bs_single_colour_code_mismatch_on_open_gate_is_an_emb_miss();
     test_bs_voice_gate_closed_skips_decode_but_keeps_loop_hooks();
     test_bs_bootstrap_prefetched_voice_runs_first_frame_path();
     test_bs_burst_split_by_a_carrier_boundary_is_dropped();
@@ -941,6 +1167,11 @@ main(void) {
     test_bs_burst_cut_by_an_input_interruption_is_dropped();
     test_bs_bootstrap_cut_by_an_input_interruption_is_dropped();
     test_bs_loop_end_discards_the_mix_media();
+    test_bs_one_tact_disagreement_keeps_alternation();
+    test_bs_two_tact_disagreements_reanchor_alternation();
+    test_bs_confirmed_alternation_ignores_two_wrong_tacts();
+    test_bs_consecutive_colour_code_rejections_end_the_loop();
+    test_bs_polarity_run_needs_adjacent_bursts();
     dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");
     return 0;

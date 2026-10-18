@@ -13,12 +13,12 @@
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -26,10 +26,13 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -136,6 +139,19 @@ dmr_ms_collect_sync_bits(dsd_opts* opts, dsd_state* state, uint8_t syncdata[48],
     }
 }
 
+/* As in dmr_bs.c: an MS voice sync is the complement of an MS data sync, so a data burst at the other polarity reads
+   as voice sync. A voice superframe never repeats its sync in the bursts after A: two in a row mean the polarity is the
+   other one, which the decoder takes for the session before the hunt starts again (issue #729). */
+static int
+dmr_ms_sync_is_voice(const uint8_t syncdata[48]) {
+    char sync[25];
+    for (int i = 0; i < 24; i++) {
+        sync[i] = (syncdata[(size_t)2 * i] != 0U) ? '3' : '1';
+    }
+    sync[24] = 0;
+    return strcmp(sync, DMR_MS_VOICE_SYNC) == 0;
+}
+
 static uint8_t
 dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], uint8_t emb_pdu[16]) {
     uint8_t power = 9; // power and pre-emption indicator
@@ -201,11 +217,16 @@ dmr_ms_process_single_mbe(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24],
     DSD_MEMCPY(state->s_l4u[frame_idx], state->s_lu, sizeof(state->s_lu));
 }
 
+/* Each frame decodes at its position in the superframe (burst @p vc), where its keystream lies (issue #729). */
 static void
-dmr_ms_process_audio_frames(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frames* frames) {
+dmr_ms_process_audio_frames(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frames* frames, uint8_t vc) {
+    dmr_vcrypt_set_frame(state, 0U, vc, 0);
     dmr_ms_process_single_mbe(opts, state, frames->ambe_fr, 0);
+    dmr_vcrypt_set_frame(state, 0U, vc, 1);
     dmr_ms_process_single_mbe(opts, state, frames->ambe_fr2, 1);
+    dmr_vcrypt_set_frame(state, 0U, vc, 2);
     dmr_ms_process_single_mbe(opts, state, frames->ambe_fr3, 2);
+    dmr_vcrypt_clear_frame(state, 0U);
 }
 
 static void
@@ -319,7 +340,6 @@ void
 dmrMS(dsd_opts* opts, dsd_state* state) {
     char timestr[9];
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
-    UNUSED(timestr);
 
     dmr_ms_voice_frames frames;
     char cachdata[25];
@@ -329,6 +349,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
     uint8_t dummy_bits[196];
     uint8_t vc = 2;
     const uint8_t internalslot = 0;
+    int voice_syncs_after_a = 0;
 
     DSD_MEMSET(syncdata, 0, sizeof(syncdata));
     DSD_MEMSET(emb_pdu, 0, sizeof(emb_pdu));
@@ -361,6 +382,15 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         if (state->input_interrupted) {
             break;
         }
+        voice_syncs_after_a = dmr_ms_sync_is_voice(syncdata) ? voice_syncs_after_a + 1 : 0;
+        if (voice_syncs_after_a >= 2) {
+            opts->inverted_dmr = opts->inverted_dmr ? 0 : 1;
+            DSD_FPRINTF(
+                stderr,
+                "%s %s DMR MS: voice sync after burst A is data at the other polarity; decoding %s polarity%s\n",
+                timestr, KYEL, opts->inverted_dmr ? "inverted" : "normal", KNRM);
+            break;
+        }
         uint8_t power = dmr_ms_decode_embedded_color_code(state, syncdata, emb_pdu);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 90, 18, 18);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr3, 108, 36, 0);
@@ -373,13 +403,16 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         state->dmr_ms_mode = 1;
         dmr_ms_copy_frames_for_late_entry(&frames);
         dmr_ms_apply_keystream(state, &frames);
-        dmr_ms_process_audio_frames(opts, state, &frames);
+        dmr_ms_process_audio_frames(opts, state, &frames, vc);
         dmr_ms_play_voice(opts, state);
 
         if (vc == 6) {
             dmr_ms_handle_vc6_ops(opts, state, power, dummy_bits);
         }
         dmr_late_entry_mi_fragment(opts, state, vc, frames.m1, frames.m2, frames.m3);
+        if (vc == 6) {
+            dmr_vcrypt_superframe_end(state, 0U);
+        }
         if (!dmr_ms_advance_voice_cycle(opts, state, &vc)) {
             break;
         }
@@ -407,6 +440,9 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     dmr_sm_emit_voice_sync(opts, state, 0);
 
     dmr_ms_prepare_bootstrap_payload(state);
+    /* The voice sync the hunt accepted is burst A: the superframe starts here, and the MI catches up over any the
+       hunt spent between this one and the last (issue #729). */
+    dmr_vcrypt_superframe_start(state, 0U);
     dmr_ms_collect_bootstrap_cach(opts, state, cachdata);
     const uint32_t carrier_seq = state->carrier_seq;
     dmr_ms_decode_bootstrap_voice(opts, state, &frames);
@@ -422,7 +458,7 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     dmr_ms_copy_frames_for_late_entry(&frames);
     dmr_ms_apply_keystream(state, &frames);
-    dmr_ms_process_audio_frames(opts, state, &frames);
+    dmr_ms_process_audio_frames(opts, state, &frames, 1U);
     dmr_ms_play_voice(opts, state);
 
     dmr_late_entry_mi_fragment(opts, state, 1, frames.m1, frames.m2, frames.m3);

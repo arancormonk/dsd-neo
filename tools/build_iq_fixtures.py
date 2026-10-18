@@ -406,6 +406,17 @@ GAP_CAPTURE_STARTED_UTC = "2026-07-30T00:00:00Z"
 # (ETSI TS 102 658). The dibit-to-deviation map is dsd-neo's own slicer convention
 # (src/core/frames/dsd_dibit.c): 1 -> +3, 0 -> +1, 2 -> -1, 3 -> -3.
 DPMR_SYNTH_NAME = "dpmr_synth"
+
+# A clear DMR BS voice call on slot 1, slot 2 idle (a repeater's usual traffic), written by the test generator tests/protocol/dmr/dmr_synth.c (issue #729): the
+# two sigidwiki DMR recordings are control channels received at inverted polarity, not voice, so the voice and audio
+# chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK, outer
+# symbols at +/-1944 Hz), which remodulate() turns back into baseband with the audio's 99.5th percentile at the
+# deviation below (the raised-cosine overshoot sits a little above the outer level). It needs the built generator
+# (--dmr-synth-gen), which links mbelib-neo's AMBE encoder.
+DMR_VOICE_SYNTH_NAME = "dmr_voice_synth"
+DMR_VOICE_SYNTH_ARGS = ["-t", "4", "--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "40", "--seed", "7",
+                        "--lead", "0.3", "--tail", "0.2"]
+DMR_VOICE_SYNTH_DEVIATION = 2100.0 / (SAMPLE_RATE_HZ / 2.0)
 DPMR_SYNTH_SEED = 407
 DPMR_SYNTH_SYMBOL_RATE = 2400
 DPMR_SYNTH_OUTER_DEVIATION_HZ = 1050.0
@@ -1189,6 +1200,21 @@ def build_dpmr_synth(out_dir):
     return written
 
 
+def build_dmr_voice_synth(out_dir, generator, work_dir):
+    """Write the synthetic DMR BS voice fixture from the test generator's discriminator audio (issue #729)."""
+    os.makedirs(work_dir, exist_ok=True)
+    wav_path = os.path.join(work_dir, DMR_VOICE_SYNTH_NAME + ".wav")
+    subprocess.run([generator, "-o", wav_path] + DMR_VOICE_SYNTH_ARGS, check=True)
+    with wave.open(wav_path, "rb") as wav:
+        if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SAMPLE_RATE_HZ:
+            raise SystemExit(f"{wav_path}: expected 48 kHz mono s16 from the DMR generator")
+        audio = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
+    samples = remodulate(audio, DMR_VOICE_SYNTH_DEVIATION)
+    written = write_fixture(out_dir, DMR_VOICE_SYNTH_NAME, samples)
+    print(f"{DMR_VOICE_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+    return written
+
+
 def pack_field(bits, value, offset, width):
     for bit in range(width):
         bits[offset + bit] = (value >> (width - bit - 1)) & 1
@@ -1872,6 +1898,10 @@ def main():
         help="only regenerate fixtures derived from committed ones (no network/ffmpeg)",
     )
     parser.add_argument(
+        "--dmr-synth-gen",
+        help="the built DMR test generator (dsd-neo_test_dmr_synth_gen) that writes the dmr_voice_synth fixture",
+    )
+    parser.add_argument(
         "--only",
         action="append",
         help="regenerate just the named fixture(s); other fixtures and their downloads are skipped",
@@ -1899,6 +1929,10 @@ def main():
         total += build_am_synth(args.out)
         total += build_analog_synth(args.out)
         total += build_squelch_burst(args.out)
+        if args.dmr_synth_gen:
+            total += build_dmr_voice_synth(args.out, args.dmr_synth_gen, args.cache)
+        else:
+            print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
     else:
         for name in derived_fixture_names():
             if name in args.only:

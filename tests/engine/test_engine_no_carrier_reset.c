@@ -4058,6 +4058,11 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->dmr_pi_precall_rx[0] = state->dmr_pi_precall_rx[1] = 3U;
     state->dmr_pi_precall_algid[1] = 0x21U;
     state->dmr_pi_precall_kid[1] = 0x05U;
+    state->dmr_crypto_pi_verified[0] = state->dmr_crypto_pi_verified[1] = 1U;
+    state->dmr_vc_ref_state[1] = 2U;
+    state->dmr_le_candidate_valid[0] = 1U;
+    state->dmr_le_frag_mask[1] = 0x1EU;
+    state->dmr_voice_sync_run = 3U;
     state->dmr_alias_format[0] = 1;
     state->dmr_alias_block_len[0] = 4;
     state->dmr_alias_char_size[0] = 7;
@@ -4105,6 +4110,12 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     rc |= expect_true("assemblies: the boundary drops the DMR pre-call PI crypto",
                       state->dmr_pi_precall_rx[0] == 0U && state->dmr_pi_precall_rx[1] == 0U
                           && state->dmr_pi_precall_algid[1] == 0U && state->dmr_pi_precall_kid[1] == 0U);
+    /* Issue #729: and the slots' superframe chains, late-entry pieces, polarity run and PI-checked identifiers, whose ALG
+       and key id the boundary just cleared: left, they would refuse the next carrier's SB identifiers. */
+    rc |= expect_true("assemblies: the boundary drops the DMR voice crypto continuity",
+                      state->dmr_crypto_pi_verified[0] == 0U && state->dmr_crypto_pi_verified[1] == 0U
+                          && state->dmr_vc_ref_state[1] == 0U && state->dmr_le_candidate_valid[0] == 0U
+                          && state->dmr_le_frag_mask[1] == 0U && state->dmr_voice_sync_run == 0U);
     rc |= expect_true("assemblies: the boundary drops the DMR talker alias and the alias shown",
                       state->dmr_alias_format[0] == 0 && state->dmr_alias_block_len[0] == 0
                           && state->dmr_alias_char_size[0] == 0 && state->dmr_alias_block_segment[0][0][0][0] == 0

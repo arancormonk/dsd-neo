@@ -32,6 +32,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
@@ -1131,6 +1132,64 @@ test_le_vendor_mode_follows_the_call(void) {
         }
         dsd_state_ext_free_all(&state);
     }
+}
+
+// Issue #729: an LC naming another call that replaced the slot's active one (its terminator and the new call's headers
+// missed) forks the epoch without a BEGIN boundary. The old call's superframe chain and the identifiers its PI checked
+// go with it, or the new call's SB identifiers would be refused in favour of the old ones; a PI that prepared the new
+// call's superframe 0, its voice sync still due, stays. Once the PI'd voice runs, the fork cannot tell that PI from the
+// replaced call's: the chain goes, and late entry re-keys it (decided limit).
+static void
+test_epoch_fork_forgets_the_replaced_calls_crypto_continuity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    /* 0: an old call's PI'd chain; 1: a PI decoded after the old call's voice, its voice sync still due. */
+    for (int fresh_pi = 0; fresh_pi <= 1; fresh_pi++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = 1;
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 5005U, 6006U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+        assert(dsd_call_state_update_media(&state, 1U, 1, 0.0) > 0);
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(&state, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        state.dmr_vc_ref_state[1] = fresh_pi ? (uint8_t)DMR_VC_REF_FIRST : (uint8_t)DMR_VC_REF_VALID;
+        state.dmr_crypto_pi_verified[1] = 1U;
+
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 7007U, 8008U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 3U); /* an embedded LC */
+        dsd_call_snapshot next;
+        assert(dsd_call_state_get(&state, 1U, &next) > 0 && next.epoch != call.epoch);
+        if (fresh_pi) {
+            assert(state.dmr_vc_ref_state[1] == DMR_VC_REF_FIRST);
+            assert(state.dmr_crypto_pi_verified[1] == 1U);
+        } else {
+            assert(state.dmr_vc_ref_state[1] == DMR_VC_REF_NONE);
+            assert(state.dmr_crypto_pi_verified[1] == 0U);
+            /* The VC6 this LC was read ahead of has the abandoned MI: it stays muted. */
+            assert(state.dmr_vc_untrusted[1] == 1U);
+        }
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* A PI whose voice sync never came on time (that slot's bursts were missed) is no PI of the call a later voice header
+       opens: its chain and checked identifiers go. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 1;
+    state.dmr_vc_ref_state[1] = DMR_VC_REF_FIRST;
+    state.dmr_crypto_pi_verified[1] = 1U;
+    state.symbol_clock = 100000U; /* long after the PI, read at symbol 0 */
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 9009U, 1010U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(state.dmr_vc_ref_state[1] == DMR_VC_REF_NONE);
+    assert(state.dmr_crypto_pi_verified[1] == 0U);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -3451,6 +3510,7 @@ main(void) {
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
     test_le_vendor_mode_follows_the_call();
+    test_epoch_fork_forgets_the_replaced_calls_crypto_continuity();
     test_kirisun_lc_arms_sb_handling();
     test_flco_canonical_crypto_uses_algorithm_aware_keys();
     test_unfollowed_grant_frequency_stays_off_the_voice_call();

@@ -392,6 +392,7 @@ test_debug_replay_reopens_and_reprobes(void) {
     assert(getSymbol(&opts, &state, 0) == -3.0f);
     assert(state.symbol_replay_soft_records == 1U);
     assert(state.symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_SOFT);
+    const uint32_t first_pass_epoch = state.symbol_clock_epoch;
 
     state.symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_LEGACY;
     state.symbol_replay_header_checked = 1;
@@ -404,6 +405,8 @@ test_debug_replay_reopens_and_reprobes(void) {
     assert(state.symbol_replay_has_soft == 1);
     assert(state.symbol_replay_soft_records == 2U);
     assert(g_cleanup_calls == 0);
+    /* The capture starting over is no continuation of the last pass on the symbol clock (issue #729). */
+    assert(state.symbol_clock_epoch != first_pass_epoch);
 
     fclose(opts.symbolfile);
     opts.symbolfile = NULL;
@@ -820,6 +823,11 @@ test_symbol_helper_rtl_cache_and_center_contract(void) {
 
     assert(dsd_symbol_test_rtl_cache_and_center_contract(NULL) == 0);
     assert(dsd_symbol_test_rtl_cache_and_center_contract(values) == 10);
+    /* A stream flush the profile refresh meets ahead of any take still breaks the symbol clock's epoch (issue #729). */
+    unsigned int epochs[3] = {0U, 0U, 0U};
+    assert(dsd_symbol_test_rtl_flush_epochs(epochs) == 3);
+    assert(epochs[1] == epochs[0]);
+    assert(epochs[2] != epochs[1]);
     assert(values[0] == 1);
     assert(values[1] == 8);
     assert(values[2] == 1);

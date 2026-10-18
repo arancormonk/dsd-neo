@@ -2753,6 +2753,30 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   and the hunt's read hands the switch to Pulse to the engine (`dsd_engine_input_fallback()`).
   `dsd_symbol_note_timing_rate()` tells the RTL monitor output's rate rescale which rate the timing is in when an input
   switch returns to the radio. Tests: `DSP_INPUT_INTERRUPT`, `DSP_WAV_INPUT_EOF`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`.
+  The first crossing a frame records is still pending when the next hunt starts and moves the grid on its first symbol;
+  it was measured against the thresholds the warm start set, which are still in force, and dropping it was measured
+  worse on faNXDN (issue #729), so it stays.
+- Sync anchor (`symbol_anchor.c`, `include/dsd-neo/dsp/symbol_anchor.h`, issue #729). A decoder that reads burst after
+  burst without returning to the hunt (DMR BS for a whole repeater call) left the grid open loop, so a TX/RX clock
+  offset walked it off the symbols until a sync was lost. `dsd_symbol_note_sync_anchor()` names a sync word the grid
+  just read; one symbol later the samples it decided those symbols on are correlated against the word at every
+  sub-symbol shift (coarse), refined by a least-squares fit of the word's zero crossings, and the grid moves up to two
+  samples (a positive offset consumes extra samples) at the next symbol start, whatever `have_sync` says. State lives in
+  state-ext slot 12 (borrowed from the io range), allocated by the first note; samples are recorded only on the live
+  multi-sample path and only while `lastsynctype` is DMR. A stream flush, an RTL FSK timing reset, a switch to another
+  matched filter (the seam keeps the content position, but the recorded samples were shaped by the old filter), or a
+  rewind the seam's history cannot cover resets it, together with a move it queued that the grid took at the start of
+  the same symbol; a fractional rate alternating `samplesPerSymbol`, and the group
+  delay with it, under the same filter keeps the history (`SYMBOL_MATCHED_FILTER_SEAM` fractional-anchor). Caller: the `dmrBS` loop on every
+  exact BS voice or data sync. Tracking range (documented limit): one correction per sync word, so voice on both slots
+  (syncs up to ~330 ms apart) tracks +/-50 ppm cleanly; idle or data bursts give a sync every burst. Tests:
+  `DSP_SYMBOL_ANCHOR`, `DMR_SYNTH_DRIFT_*`.
+- `dsd_state::symbol_clock`/`symbol_clock_epoch` (issue #729): a 64-bit count of every symbol the grid produced that no
+  protocol resets (NXDN resets `symbolcnt`), and an epoch DSP bumps on an RTL stream flush or profile change (any reset
+  of the RTL symbol cache, also one the profile refresh meets ahead of a take), a symbol-capture replay starting over
+  (`-~`), or an input switch (`dsd_opts::pcm_input_generation` moving, one compare a symbol) and the engine bumps on a scan target
+  change (`dsd_engine_forget_carrier_decoding()`). Carrier changes are compared on `carrier_seq` by the reader. DMR
+  voice crypto measures missed superframes on it.
 - `symbol_timing_debug.c`: measures the sub-symbol offset the decoder's symbol grid settled on and reports it once
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
@@ -4801,6 +4825,55 @@ Key public headers (selection):
 
 Private per-protocol modules worth knowing about:
 
+- Voice crypto continuity (`dmr_vcrypt.c`, issue #729). Every DMR voice cipher keys a frame by its superframe's IV/MI
+  and its position 0..17. Per slot, `dmr_vc_ref_*` holds the symbol-clock position of the voice sync of the superframe
+  whose IV is current: a checked PI header or voice-header Hytera LC makes it FIRST (the next voice sync within four
+  burst pairs is superframe 0); every VC1 then counts superframes since it, signed and rounded to the nearest, and
+  advances the cipher's MI that many times (AES `dmr_aes_expand_iv`, DES `dmr_des_expand_iv`, RC4
+  `dmr_mi_advance32`, Kirisun `kirisun_lfsr`, Hytera Enhanced its LFSR), idempotent across repeated re-entry; a
+  processed VC6 moves it one superframe on. A different epoch or carrier, a gap over 10000 superframes, or a FIRST too
+  far before its voice sync loses the chain, and with it the identifiers a PI checked: encrypted
+  voice on that slot is muted (`FRAME EVENT ... type=MI_UNKNOWN`), whatever ALG ID the voice sync read (a
+  `--dmr-force-algid` installs one only as frames decode), until a PI, a complete late-entry MI or a Hytera LC re-keys
+  it. A PI trusts the slot at once; a late-entry MI or Hytera LC names the next superframe's MI, so the slot is trusted
+  from the next voice sync and the frames still to decode in this one stay muted. The chain ends at a call boundary (a voice header
+  that opens a transmission, unless a PI already prepared it; the terminator's crypto reset) and comes back with the
+  missed-terminator heal, and also at an LC naming another call that replaced the active one unannounced (an epoch
+  fork) and at a carrier boundary, which clears the checked identifiers with the ALG ID and key id. A PI of the call
+  now starting is kept: a FIRST whose voice sync is still due on this timeline. Once that PI's voice runs, an epoch
+  fork cannot tell it from the replaced call's, so the chain goes and late entry re-keys the slot (decided limit). Only
+  a PI whose CRC passed (or a Hytera PI whose checksum did) trusts the slot: one `-F` accepted as RAS sets its fields
+  but checks nothing, so it loses the chain and any earlier PI's trust, as do a PI naming no cipher the decoder knows
+  and an SB identifier naming another cipher or key. A forgotten or lost chain mutes the slot's MI-keyed frames at once (the VC6 an LC was read ahead of), not
+  from the next voice sync. A failed trunk-scan switch
+  that rolls back to the original carrier does not restore the chain (decided limit): the switch already cleared the
+  carrier's ALG ID, key id and confirmation evidence, and the slot re-keys as the original carrier proves itself
+  again. Hytera
+  Enhanced's BS reader steps its MI before VC6 decodes; the superframe's MI is kept aside (`dmr_vc6_seed`) until VC6
+  is done, so a keystream generated again for VC6 uses it. The voice readers (`dmr_bs.c` loop and bootstrap, `dmr_ms.c`) publish each frame's position
+  (`dmr_voice_ks_pos`, stored one up so a zeroed state is unpositioned) and the vocoder reads every positional
+  keystream from it (AES/DES/Kirisun 56-bit steps, Hytera Enhanced 49, RC4 drop 256 + 7/frame, Hytera BP frame index,
+  Static/Vertex frame or 49-bit steps), regenerating when the cipher or key fingerprint changes (a one-way AES-256 Matyas-Meyer-Oseas tag: the scalar key
+  starts the chain and the AES words, then the K words, each key one block, so material loaded twice cannot cancel;
+  taken once a burst and never for a clear slot; the key-bearing scratch is erased). The old error-time
+  refresh (one guessed step, RC4/Hytera/Kirisun only) is gone. Late entry decodes only a complete VC1..VC6 fragment
+  set of one superframe; against a trusted chain a disagreeing MI waits for the next superframe's to confirm it (its
+  successor under the cipher's own step: DES, AES, RC4, Kirisun); a held MI expires after that one superframe and is
+  dropped when a PI re-keys the slot or superframes go by unseen. An SB
+  identifier (FEC only) never replaces the ALG ID and key id a checked PI gave the current call. Tests:
+  `DMR_VCRYPT_CONTINUITY`, `DMR_LE_INFER_ALGID`, `DMR_BS_ALG_REFRESH_ERROR`, `CORE_MBE_CRYPTO_SCOPE`, `DMR_SYNTH_*`.
+- Slot and polarity evidence in the BS loop (`dmr_bs.c`, `dmr_data.c`, `dmr_ms.c`, issue #729). Bursts alternate
+  slots, so the slot follows alternation from the bootstrap's burst, not the Hamming(7,4) TACT bit (a perfect code
+  that miscorrects silently); until two TACTs agree with it, two in a row against it re-anchor it (a wrong start costs
+  one burst), and once confirmed no TACT moves it.
+  A BS voice sync is an inverted data sync: voice syncs on four adjacent bursts (one burst apart on the symbol clock,
+  the bootstrap's included; a lost burst breaks the run) with no voice gate open (data at the wrong polarity), two failed data bursts whose first AMBE frame passes FEC at the other polarity (a
+  call at the wrong polarity), or two MS voice syncs after burst A each take the other polarity for the session
+  (`opts->inverted_dmr`, as `-xr` and the menu toggle set it). On a slot whose voice gate is open, one EMB naming
+  another colour code counts as an EMB miss (the burst's voice still decodes) rather than ending the loop: it is far
+  likelier a QR(16,7,6) miscorrection; a second miss in a row ends it as before, and only an EMB the colour-code check
+  accepted ends a miss streak. Tests: `DMR_SYNTH_SLOT_FLIP`,
+  `DMR_SYNTH_INVERTED_*`, `DMR_BS_SYNC_TIMES`, `DECODE_IQ_DMR_T3_CC`, `DECODE_IQ_DMR_POLARITY_AUTO`.
 - Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
   51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the

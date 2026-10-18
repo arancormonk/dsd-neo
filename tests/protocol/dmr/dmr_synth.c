@@ -58,6 +58,7 @@
  *                      right after the headers)
  *   --lead SEC         idle bursts on both slots before the calls (default 0.6)
  *   --tail SEC         idle bursts after the calls (default 0.4)
+ *   --invert           write the discriminator audio at the other polarity (a receiver that inverts it)
  *
  * Decoder keys: aes256 -> -H '<16hex> <16hex> <16hex> <16hex>', aes128 -> -H '<16hex> <16hex>', rc4 -> -1 <10hex>.
  */
@@ -336,6 +337,7 @@ typedef struct {
     uint32_t mi[2];
     uint32_t tg, src;
     int hdr_repeat, term, le;
+    int invert;
     int lose_first;
     uint64_t seed;
     fault_t faults[MAX_FAULTS];
@@ -1158,6 +1160,8 @@ parse_args(int argc, char** argv, int* have_key) {
             cfg.hdr_repeat = parse_int_arg(next_arg(argc, argv, &i), 1, 8);
         } else if (strcmp(a, "--no-term") == 0) {
             cfg.term = 0;
+        } else if (strcmp(a, "--invert") == 0) {
+            cfg.invert = 1;
         } else if (strcmp(a, "--no-le") == 0) {
             cfg.le = 0;
         } else if (strcmp(a, "--le-corrupt") == 0) {
@@ -1211,7 +1215,7 @@ write_wav(const char* path, const float* x, size_t nsamp, double noise_std) {
     uint8_t buf[4096];
     size_t fill = 0;
     for (size_t n = 0; n < nsamp && ok; n++) {
-        double y = ((double)x[n] + noise_std * grand()) * 3000.0;
+        double y = ((double)x[n] + noise_std * grand()) * (cfg.invert ? -3000.0 : 3000.0);
         y = fmax(-32767.0, fmin(32767.0, y));
         int16_t v = (int16_t)lrint(y);
         buf[fill++] = (uint8_t)((uint16_t)v & 0xFFu);

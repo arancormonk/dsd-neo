@@ -42,6 +42,7 @@ void dsd_analog_sink_test_fail_alloc(int fail);
 void dsd_symbol_test_set_raw_wav_sync(void (*sync)(void));
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
+int dsd_symbol_test_rtl_flush_epochs(unsigned int out_epochs[3]);
 int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);
 #endif
 

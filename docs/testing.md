@@ -1504,6 +1504,15 @@ radio; `tools/replay_ab.sh` on real captures remains the evidence for decode qua
 | `DMR_SYNTH_SLOT_FLIP` | A TACT miscorrected to the other slot mid-call costs at most the flipped burst: no frame after it is muted or garbled on either slot. |
 | `DMR_SYNTH_DRIFT_20PPM`, `DMR_SYNTH_DRIFT_M20PPM` | A 20 s dual-slot clear call at +/-20 ppm and 25 dB SNR: at least 95% of each slot's frames decoded, fewer than 100 AMBE corrections in all, and no BS loop drop-out before the end. |
 | `DMR_SYNTH_PI_FIRST_SUPERFRAME_LOST` | PI header decoded, first superframe faded out: frames may be muted until the MI is known again, never decrypted with a wrong one. |
+| `DMR_SYNTH_INVERTED_VOICE`, `DMR_SYNTH_INVERTED_AES256` | The discriminator audio at the other polarity (`--invert`) and no `-xr`: the decoder proves the polarity from the bursts, and every frame it decodes after that is right. |
+
+The same generator writes the I/Q fixture `dmr_voice_synth` (a clear call on slot 1, colour code 2, slot 2 idle),
+which the DMR voice, MBE capture, voice-chain and float-output cases replay: `tools/build_iq_fixtures.py
+--dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen` regenerates it with the other fixtures (without the
+option the script skips it). The two sigidwiki DMR fixtures, `dmr_voice` and `dmr_t3_cc`, are control channels received
+at inverted polarity; before issue #729 `-fs` read their data bursts as voice, and the old voice cases pinned that.
+`DECODE_IQ_DMR_T3_CC` and `DECODE_IQ_DMR_POLARITY_AUTO` now pin what they are: CSBK and idle bursts on colour code 1,
+found at the polarity the decoder proves, with no voice burst decoded.
 
 ### MBE capture checks (issue #661)
 
@@ -1644,7 +1653,7 @@ that added them:
 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real`, `-n 50`, audible from -40 dBFS | captured 6000 ms, audible 4200 ms, in-band 18.4 dB, RMS -32.8 dBFS | captured ≥ 5800, audible ≥ 3500, in-band ≥ 14, RMS ≤ -25 dBFS |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 1700 ms from 460 ms, in-band 23.7 dB | captured ≥ 3900, audible ≥ 1200, first audible 250 to 1000 ms, in-band ≥ 18 |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3100 ms, in-band 25.5 dB | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20 |
-| `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | RMS -23.9 dBFS, no clipping: the level `dmr_voice` decodes to (-24.9 dBFS RMS) within 1 dB | captured ≥ 5800, RMS -27.9 to -21.9 dBFS (DMR voice ±3 dB), clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | RMS -23.9 dBFS, no clipping: the -24.9 dBFS RMS speech target (see below) within 1 dB | captured ≥ 5800, RMS -27.9 to -21.9 dBFS (DMR voice ±3 dB), clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | RMS -23.9 dBFS, no clipping | captured ≥ 7800, `PARITY_NFM_REAL`'s window, clip 0 |
 | `DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL` | `nfm_ctcss_real` under `-fA`, the `-6` raw WAV (issue #643) | raw WAV RMS -28.9 dBFS, peak -13.9 dBFS, no clipping: the monitor's 1/pi-scale samples at the level a PCM input at the reference has (before the fix: every sample 0) | raw WAV RMS ≥ -32 dBFS |
 | `DECODE_IQ_ANALOG_RAW_WAV_AM_REAL` | `am_airband_real` under `-fM`, the `-6` raw WAV | raw WAV RMS -18.3 dBFS, peak -4.5 dBFS, no clipping (before the fix: -117.8 dBFS, samples of -1, 0 and 1) | raw WAV RMS ≥ -21.5 dBFS |
@@ -1712,8 +1721,9 @@ When a later change adds a bound or a new kind of check to the host, add a negat
 
 A few things about these numbers. Since issue #518 the default monitor chain is the voice band-pass (300-3400 Hz,
 `-v 0x9`; its FM high-pass takes every CTCSS tone 40 dB down and a DCS signal about 32 dB) and the analog AGC (`-n 0`), which takes a
-steady tone's peaks to -10 dBFS and real speech to about the level digital voice decodes to: `dmr_voice` plays at
--24.9 dBFS RMS, `nfm_ctcss_real` and `am_airband_real` at -23.9 dBFS each, where the old chain played them at -44.6
+steady tone's peaks to -10 dBFS and real speech to about the level digital voice decodes to: the DMR voice path played
+the `dmr_voice` capture at -24.9 dBFS RMS (that capture later proved to be a control channel received at inverted
+polarity, decoded as voice, issue #729; the figure stays as the speech-level target the window encodes), `nfm_ctcss_real` and `am_airband_real` at -23.9 dBFS each, where the old chain played them at -44.6
 and -53.7 dBFS. Its gain depends on the signal, so a case that measures the excerpt rather than the AGC pins the fixed
 reference gain, `-n 50`, which takes 1 kHz at 3 kHz deviation, or AM at 50%, to -12 dBFS peak (-15 dBFS RMS) live and
 in replay alike; the smoke cases count audible blocks from -40 dBFS there, where the speech stands clear of the quiet

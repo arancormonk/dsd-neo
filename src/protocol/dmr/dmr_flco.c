@@ -42,6 +42,7 @@
 #include <time.h>
 #include "dmr_hytera.h"
 #include "dmr_tiii_site.h"
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -503,6 +504,19 @@ dmr_flco_handle_hytera_unknown_or_fid(dmr_flco_ctx* ctx) {
     return 0;
 }
 
+/* A checked Hytera Enhanced LC re-keys the slot as a PI header does (issue #729): in the voice header its MI is
+   superframe 0's; embedded, it is assembled at VC6 ahead of that burst's audio, and keys the next superframe. */
+static void
+dmr_flco_note_hytera_rekey(const dmr_flco_ctx* ctx) {
+    const uint8_t slot = ctx->slot != 0U ? 1U : 0U;
+    ctx->state->dmr_crypto_pi_verified[slot] = 1U;
+    if (ctx->type == 1U) {
+        dmr_vcrypt_note_first(ctx->state, slot);
+    } else if (ctx->type == 3U) {
+        dmr_vcrypt_note_next_superframe_mi(ctx->state, slot);
+    }
+}
+
 static int
 dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     if (!(*ctx->IrrecoverableErrors != 0 && ctx->fid == 0x68 && ctx->flco == 0x02)) {
@@ -552,6 +566,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
         dmr_enc_class_force(ctx->state, ctx->slot, 1);
         dmr_le_vendor_set(ctx->state, ctx->slot, DMR_LE_VENDOR_HYTERA_ENH);
         *ctx->IrrecoverableErrors = 0;
+        dmr_flco_note_hytera_rekey(ctx);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " (Checksum Err);");
@@ -620,6 +635,8 @@ dmr_flco_reset_slot_crypto(dmr_flco_ctx* ctx, uint8_t idx) {
     dmr_enc_class_reset(ctx->state, idx);
     dmr_le_vendor_reset(ctx->state, idx);
     dmr_pi_precall_reset(ctx->state, idx);
+    // The call's superframe chain ends with it (issue #729).
+    dmr_vcrypt_forget(ctx->state, idx);
 }
 
 static void
@@ -840,6 +857,18 @@ dmr_flco_voice_boundary(const dmr_flco_ctx* ctx) {
     return DSD_CALL_BOUNDARY_CONTINUE;
 }
 
+// A voice header opening a transmission ends the slot's superframe chain, its pending late entry and the previous
+// call's checked identifiers (issue #729), and so does an LC naming another call that replaced the active one
+// unannounced (its terminator and headers missed), unless a PI header of the call now starting prepared superframe 0
+// and its voice sync is still due (a PI decoded ahead of a late header repeat is the call's the header opens). A PI'd
+// call whose embedded LC forks the epoch only once its voice runs is re-keyed by late entry (decided limit).
+static void
+dmr_flco_forget_replaced_crypto_continuity(dsd_state* state, uint8_t slot) {
+    if (!dmr_vcrypt_pi_is_fresh(state, slot)) {
+        dmr_vcrypt_forget(state, slot);
+    }
+}
+
 static void
 dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -876,15 +905,19 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         dsd_call_state_get(ctx->state, ctx->slot, &before) > 0 && before.phase == DSD_CALL_PHASE_ACTIVE;
     const dsd_call_boundary boundary = dmr_flco_voice_boundary(ctx);
     (void)dsd_call_state_observe(ctx->state, &observation, boundary);
+    dsd_call_snapshot after;
+    const int have_after = dsd_call_state_get(ctx->state, ctx->slot, &after) > 0;
+    const int epoch_forked = was_active && have_after && after.epoch != before.epoch;
+    if (boundary == DSD_CALL_BOUNDARY_BEGIN || epoch_forked) {
+        dmr_flco_forget_replaced_crypto_continuity(ctx->state, ctx->slot != 0U ? 1U : 0U);
+    }
     // A new transmission replaced the slot's active call, whose terminator was missed, so the vendor late-entry mode
     // was that call's (issue #657): a voice LC header after the call carried voice (or after the header repeat window),
     // which dmr_flco_voice_boundary() reads as the next transmission even where it specializes an identity-less epoch
     // (a Kirisun or Hytera Enhanced call whose own LCs publish no identity) instead of opening its own, or an LC naming
     // another call, which forks the epoch. Header repeats and embedded LCs of the same call keep the mode, and so does
     // evidence decoded before any call was active (a PI after a lost voice LC header).
-    dsd_call_snapshot after;
-    const int have_after = dsd_call_state_get(ctx->state, ctx->slot, &after) > 0;
-    if (was_active && (boundary == DSD_CALL_BOUNDARY_BEGIN || (have_after && after.epoch != before.epoch))) {
+    if (was_active && (boundary == DSD_CALL_BOUNDARY_BEGIN || epoch_forked)) {
         dmr_le_vendor_reset(ctx->state, ctx->slot);
         // Where the canonical layer kept the epoch (it names an identity-less one after this call), the record still
         // holds what the replaced transmission published into it: none of that is this call's.
@@ -943,6 +976,12 @@ dmr_flco_stash_slot_crypto(dsd_state* state, uint8_t slot, uint64_t epoch) {
     state->dmr_heal_inherited[idx] = state->dmr_crypto_inherited[idx];
     state->dmr_heal_inherited_algid[idx] = state->dmr_crypto_inherited_algid[idx];
     state->dmr_heal_inherited_keyid[idx] = state->dmr_crypto_inherited_keyid[idx];
+    state->dmr_heal_vc_ref_state[idx] = state->dmr_vc_ref_state[idx];
+    state->dmr_heal_vc_ref_clock[idx] = state->dmr_vc_ref_clock[idx];
+    state->dmr_heal_vc_ref_epoch[idx] = state->dmr_vc_ref_epoch[idx];
+    state->dmr_heal_vc_ref_carrier[idx] = state->dmr_vc_ref_carrier[idx];
+    state->dmr_heal_vc_untrusted[idx] = state->dmr_vc_untrusted[idx];
+    state->dmr_heal_pi_verified[idx] = state->dmr_crypto_pi_verified[idx];
     state->dmr_heal_epoch[idx] = epoch;
     state->dmr_heal_valid[idx] = 1U;
 }
@@ -975,6 +1014,14 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     state->dmr_crypto_inherited[idx] = state->dmr_heal_inherited[idx];
     state->dmr_crypto_inherited_algid[idx] = state->dmr_heal_inherited_algid[idx];
     state->dmr_crypto_inherited_keyid[idx] = state->dmr_heal_inherited_keyid[idx];
+    // The superframe chain the MI belongs to comes back with it (issue #729): the clock went on running across the
+    // gap, so the next voice sync catches up over the superframes it spanned.
+    state->dmr_vc_ref_state[idx] = state->dmr_heal_vc_ref_state[idx];
+    state->dmr_vc_ref_clock[idx] = state->dmr_heal_vc_ref_clock[idx];
+    state->dmr_vc_ref_epoch[idx] = state->dmr_heal_vc_ref_epoch[idx];
+    state->dmr_vc_ref_carrier[idx] = state->dmr_heal_vc_ref_carrier[idx];
+    state->dmr_vc_untrusted[idx] = state->dmr_heal_vc_untrusted[idx];
+    state->dmr_crypto_pi_verified[idx] = state->dmr_heal_pi_verified[idx];
     // The stash held live, already-corroborated signaling; restoring it re-establishes the
     // classification so the resumed transmission is not re-proved from scratch.
     dmr_enc_class_force(state, idx, (*live.so & 0x40U) != 0U);
