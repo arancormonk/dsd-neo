@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <stdlib.h>
+#include "snr_phase_samples.h"
 
 namespace {
 
@@ -35,32 +36,6 @@ normalized_phase_window(int samples_per_symbol, int phase_window) {
         win = max_win;
     }
     return win;
-}
-
-int
-circular_phase_distance(int a, int b, int samples_per_symbol) {
-    int d = std::abs(a - b);
-    int wrapped = samples_per_symbol - d;
-    return (d < wrapped) ? d : wrapped;
-}
-
-int
-collect_phase_samples(const float* samples, int sample_count, int samples_per_symbol, int phase, int phase_window,
-                      float* vals, int max_vals) {
-    int count = 0;
-    for (int i = 0; i < sample_count && count < max_vals; i++) {
-        if (samples_per_symbol > 1) {
-            int sample_phase = i % samples_per_symbol;
-            if (circular_phase_distance(sample_phase, phase, samples_per_symbol) > phase_window) {
-                continue;
-            }
-        }
-        float v = samples[i];
-        if (std::isfinite(v)) {
-            vals[count++] = v;
-        }
-    }
-    return count;
 }
 
 double
@@ -214,8 +189,8 @@ estimate_best_phase_db(const float* samples, int sample_count, int samples_per_s
     std::array<float, kMaxSnrSamples> vals{};
     double best = kInvalidSnrDb;
     for (int phase = 0; phase < phases; phase++) {
-        int count =
-            collect_phase_samples(samples, sample_count, samples_per_symbol, phase, win, vals.data(), (int)vals.size());
+        int count = dsd_snr_collect_phase_samples(samples, sample_count, samples_per_symbol, phase, win, vals.data(),
+                                                  (int)vals.size());
         if (count <= 32) {
             continue;
         }

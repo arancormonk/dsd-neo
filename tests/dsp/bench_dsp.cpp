@@ -32,6 +32,7 @@
 #include <dsd-neo/dsp/pcm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <dsd-neo/dsp/simd_stats.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -1421,20 +1422,53 @@ bench_noise_squelch(const BenchOptions& opts, bool pcm) {
 }
 
 static int
-bench_one_snr(const BenchOptions& opts, const char* name, int count, int levels) {
-    constexpr int kSps = 10;
+bench_sample_stats(const BenchOptions& opts) {
+    int ran = 0;
+    for (int count : {24, 128, 256, 8192}) {
+        const bool iq = count >= 256;
+        const char* name = count == 24    ? "symbol_extrema_24"
+                           : count == 128 ? "symbol_extrema_128"
+                           : count == 256 ? "iq_abs_stats_256"
+                                          : "iq_abs_stats_8192";
+        const size_t stride = static_cast<size_t>(count) * (iq ? 2 : 1);
+        const size_t windows = iq ? 4 : 64;
+        std::vector<float> samples(stride * windows);
+        uint32_t seed = 0x4837abU;
+        for (float& x : samples) {
+            seed = seed * 1664525U + 1013904223U;
+            x = (static_cast<float>(seed >> 16) - 32768.0f) / 32768.0f;
+        }
+        size_t next = 0;
+        ran += run_case(opts, name, iq ? "complex_sample" : "sample", static_cast<double>(count), [&]() -> float {
+            float a = 0.0f, b = 0.0f;
+            const float* input = samples.data() + next * stride;
+            next = (next + 1) % windows;
+            if (iq) {
+                dsd_simd_iq_abs_stats(input, static_cast<size_t>(count), &a, &b);
+            } else {
+                dsd_simd_extrema_avg2(input, static_cast<size_t>(count), &a, &b);
+            }
+            return a + b;
+        });
+    }
+    return ran;
+}
+
+static int
+bench_one_snr(const BenchOptions& opts, const char* name, int count, int levels, int sps = 10) {
     std::vector<float> samples(static_cast<size_t>(count));
     uint32_t seed = 0x1234abcdU;
     for (int i = 0; i < count; i++) {
         seed = seed * 1664525U + 1013904223U;
-        const int symbol = i / kSps;
+        const int symbol = i / sps;
         const int rail = (symbol + symbol / 7) % levels;
         const float noise = static_cast<float>((seed >> 16) & 0xffffU) / 65536.0f - 0.5f;
         samples[static_cast<size_t>(i)] = static_cast<float>(2 * rail - levels + 1) + 0.15f * noise;
     }
+    const int window = std::max(1, sps / 10);
     return run_case(opts, name, "sample", static_cast<double>(count), [&]() -> float {
-        return static_cast<float>(levels == 4 ? dsd_snr_estimate_c4fm_real_db(samples.data(), count, kSps, 1, 0.0)
-                                              : dsd_snr_estimate_gfsk_real_db(samples.data(), count, kSps, 1, 0.0));
+        return static_cast<float>(levels == 4 ? dsd_snr_estimate_c4fm_real_db(samples.data(), count, sps, window, 0.0)
+                                              : dsd_snr_estimate_gfsk_real_db(samples.data(), count, sps, window, 0.0));
     });
 }
 
@@ -1445,6 +1479,10 @@ bench_snr(const BenchOptions& opts) {
     ran += bench_one_snr(opts, "snr_c4fm_2048", 2048, 4);
     ran += bench_one_snr(opts, "snr_gfsk_256", 256, 2);
     ran += bench_one_snr(opts, "snr_gfsk_2048", 2048, 2);
+    ran += bench_one_snr(opts, "snr_c4fm_256_sps20", 256, 4, 20);
+    ran += bench_one_snr(opts, "snr_c4fm_2048_sps20", 2048, 4, 20);
+    ran += bench_one_snr(opts, "snr_gfsk_256_sps20", 256, 2, 20);
+    ran += bench_one_snr(opts, "snr_gfsk_2048_sps20", 2048, 2, 20);
     return ran;
 }
 
@@ -1488,6 +1526,7 @@ main(int argc, char** argv) {
     ran += bench_matched_filters(opts);
     ran += bench_noise_squelch(opts, false);
     ran += bench_noise_squelch(opts, true);
+    ran += bench_sample_stats(opts);
     ran += bench_snr(opts);
     ran += bench_analog_rx(opts);
 

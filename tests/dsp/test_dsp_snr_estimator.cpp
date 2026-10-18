@@ -5,10 +5,15 @@
 
 #include <dsd-neo/dsp/snr_estimator.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <stdio.h>
+#include <stdlib.h>
+#include <vector>
 #include "dsd-neo/core/safe_api.h"
+#include "dsp/snr_phase_samples.h"
 
 namespace {
 
@@ -141,11 +146,76 @@ expect_invalid_for_nonfinite_bias(void) {
     return 0;
 }
 
+int
+expect_phase_collection_matches_modulo_scan(void) {
+    std::vector<float> samples(17000);
+    uint32_t seed = 187;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = deterministic_noise(&seed, 1.0f);
+        if (i % 127 == 0) {
+            samples[i] = float_from_bits(0x7fc00000U);
+        } else if (i % 271 == 0) {
+            samples[i] = float_from_bits(0x7f800000U);
+        } else if (i % 31 == 0) {
+            samples[i] = float_from_bits(0x80000000U);
+        }
+    }
+    std::vector<float> expected(8192);
+    std::vector<float> guarded(8194);
+    const float canary = 123456.0f;
+    for (int sps = 1; sps <= 64; ++sps) {
+        for (int phase = 0; phase < sps; ++phase) {
+            for (int requested : {0, 1, 2, sps / 10, sps / 2}) {
+                const int win = std::min(requested, sps / 2);
+                for (int length : {0, 31, 256, 8193, 17000}) {
+                    for (int cap : {0, 1, 17, 8192}) {
+                        int want = 0;
+                        for (int i = 0; i < length && want < cap; ++i) {
+                            const int distance = std::abs(i % sps - phase);
+                            if (std::min(distance, sps - distance) <= win && std::isfinite(samples[(size_t)i])) {
+                                expected[(size_t)want++] = samples[(size_t)i];
+                            }
+                        }
+                        guarded[0] = canary;
+                        guarded[(size_t)want + 1] = canary;
+                        guarded[(size_t)cap + 1] = canary;
+                        guarded.back() = canary;
+                        const int got = dsd_snr_collect_phase_samples(samples.data(), length, sps, phase, win,
+                                                                      guarded.data() + 1, cap);
+                        if (got != want
+                            || std::memcmp(expected.data(), guarded.data() + 1, (size_t)want * sizeof(float)) != 0
+                            || std::fabs(guarded[0] - canary) > 1e-7f
+                            || std::fabs(guarded[(size_t)got + 1] - canary) > 1e-7f
+                            || std::fabs(guarded[(size_t)cap + 1] - canary) > 1e-7f
+                            || std::fabs(guarded.back() - canary) > 1e-7f) {
+                            DSD_FPRINTF(stderr, "phase collector mismatch: sps=%d phase=%d win=%d n=%d cap=%d\n", sps,
+                                        phase, win, length, cap);
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (dsd_snr_collect_phase_samples(nullptr, 256, 10, 0, 1, guarded.data(), 8192) != 0
+        || dsd_snr_collect_phase_samples(samples.data(), 256, 10, 0, 1, nullptr, 8192) != 0
+        || dsd_snr_collect_phase_samples(samples.data(), -1, 10, 0, 1, guarded.data(), 8192) != 0
+        || dsd_snr_collect_phase_samples(samples.data(), 256, 0, 0, 1, guarded.data(), 8192) != 0
+        || dsd_snr_collect_phase_samples(samples.data(), 256, 65, 0, 1, guarded.data(), 8192) != 0
+        || dsd_snr_collect_phase_samples(samples.data(), 256, 10, 10, 1, guarded.data(), 8192) != 0
+        || dsd_snr_collect_phase_samples(samples.data(), 256, 10, 0, 6, guarded.data(), 8192) != 0) {
+        DSD_FPRINTF(stderr, "phase collector accepted invalid input\n");
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 int
 main(void) {
     int rc = 0;
+    rc |= expect_phase_collection_matches_modulo_scan();
     rc |= expect_good_four_level_estimate();
     rc |= expect_good_binary_estimate();
     rc |= expect_invalid_for_insufficient_data();

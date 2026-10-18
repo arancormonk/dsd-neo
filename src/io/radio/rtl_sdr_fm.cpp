@@ -31,6 +31,7 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
+#include <dsd-neo/dsp/simd_stats.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/squelch_floor.h>
@@ -1795,37 +1796,6 @@ demod_prepare_fll_seed_for_retune(const struct demod_state* s, DemodRetuneResetP
         plan->restore_cached_fll = true;
         plan->cached_fll_freq = cached_fll_freq;
         plan->retained_fll_scale = 1.0f;
-    }
-}
-
-static void
-iq_block_abs_stats(const float* iq, int len, float* mean_abs, float* max_abs, int* pair_count) {
-    float local_max_abs = 0.0f;
-    double sum_abs = 0.0;
-    int pairs = len >> 1;
-
-    if (iq) {
-        for (int n = 0; n < pairs; n++) {
-            float i = iq[(size_t)(n << 1) + 0];
-            float q = iq[(size_t)(n << 1) + 1];
-            float ai = fabsf(i);
-            float aq = fabsf(q);
-            float peak = (ai > aq) ? ai : aq;
-            if (peak > local_max_abs) {
-                local_max_abs = peak;
-            }
-            sum_abs += (double)ai + (double)aq;
-        }
-    }
-
-    if (mean_abs) {
-        *mean_abs = (pairs > 0) ? (float)(sum_abs / (double)pairs) : 0.0f;
-    }
-    if (max_abs) {
-        *max_abs = local_max_abs;
-    }
-    if (pair_count) {
-        *pair_count = pairs;
     }
 }
 
@@ -4170,10 +4140,10 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
         return 0;
     }
 #endif
-    int input_pairs = 0;
+    const int input_pairs = span->got >> 1;
     float input_mean_abs = 0.0f;
     float input_max_abs = 0.0f;
-    iq_block_abs_stats(span->input_block, span->got, &input_mean_abs, &input_max_abs, &input_pairs);
+    dsd_simd_iq_abs_stats(span->input_block, (size_t)input_pairs, &input_mean_abs, &input_max_abs);
     if (retune_settle_should_discard(d, input_mean_abs, input_max_abs, input_pairs)) {
         demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);

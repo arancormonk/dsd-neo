@@ -2700,6 +2700,15 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   recovery, CQPSK helpers
   (matched/RRC), and SIMD helpers; exposes runtime-tunable parameters consumed by the UI
 - Build files: `src/dsp/CMakeLists.txt`
+- Sample statistics in `<dsd-neo/dsp/simd_stats.h>` dispatch to AVX2, SSE2, NEON or scalar implementations.
+  `dsd_simd_extrema_avg2()` supplies the two-lowest/two-highest averages for the core symbol slicer's window,
+  counting duplicate samples. Non-finite values and signed-zero ties use the original ordered comparisons.
+  `dsd_simd_iq_abs_stats()` supplies the radio demodulator's mean absolute I/Q sum per complex pair and peak
+  component magnitude, with double-precision accumulation. Both accept unaligned windows and exact-sized tails.
+  Tests: `DSP_SIMD_STATS` checks each available backend, dispatch, duplicates and exceptional inputs.
+- SNR phase collection (`snr_phase_samples.h`, private to `snr_estimator.cpp`) visits each phase window as
+  ordered contiguous spans. It preserves input order, finite-value filtering and the finite-sample cap before
+  percentile selection and clustering. IEEE semantics remain enabled for the estimator and its collector tests.
 - CQPSK short convolutions: `costas.cpp` computes the FLL's four real dot products once and combines them for
   both band edges; filter design keeps the lower taps the exact conjugate of the upper taps. The NCO and feedback
   still advance per sample. `mmse_interp.cpp` applies each interpolated tap directly to both interleaved I/Q

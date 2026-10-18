@@ -15,6 +15,7 @@ target_sources(
         fsk_modem.c
         firdes.cpp
         simd_widen.cpp
+        simd_stats.cpp
         simd_fir.cpp
         dsd_filters.c
         pcm_input_staging.c
@@ -54,7 +55,7 @@ endif()
 # x86-64 SIMD sources with arch-specific flags
 if(_dsd_neo_dsp_target_arch MATCHES "x86_64|AMD64|amd64")
     target_sources(dsd-neo_dsp PRIVATE simd_fir_sse2.cpp)
-    target_sources(dsd-neo_dsp PRIVATE simd_widen_sse2.cpp)
+    target_sources(dsd-neo_dsp PRIVATE simd_widen_sse2.cpp simd_stats_sse2.cpp)
     # Explicit SSE2 flag for clarity and cross-compilation safety
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         set_source_files_properties(
@@ -63,6 +64,7 @@ if(_dsd_neo_dsp_target_arch MATCHES "x86_64|AMD64|amd64")
         )
         set_source_files_properties(
             simd_widen_sse2.cpp
+            simd_stats_sse2.cpp
             PROPERTIES COMPILE_FLAGS "-msse2"
         )
     endif()
@@ -83,13 +85,17 @@ if(_dsd_neo_dsp_target_arch MATCHES "x86_64|AMD64|amd64")
     endif()
     if(_avx2_flags)
         target_sources(dsd-neo_dsp PRIVATE simd_fir_avx2.cpp)
-        target_sources(dsd-neo_dsp PRIVATE simd_widen_avx2.cpp)
+        target_sources(
+            dsd-neo_dsp
+            PRIVATE simd_widen_avx2.cpp simd_stats_avx2.cpp
+        )
         set_source_files_properties(
             simd_fir_avx2.cpp
             PROPERTIES COMPILE_FLAGS "${_avx2_flags}"
         )
         set_source_files_properties(
             simd_widen_avx2.cpp
+            simd_stats_avx2.cpp
             PROPERTIES COMPILE_FLAGS "${_avx2_flags}"
         )
         target_compile_definitions(
@@ -102,20 +108,31 @@ endif()
 # ARM64 NEON (always available on AArch64)
 if(_dsd_neo_dsp_target_arch MATCHES "aarch64|arm64|ARM64")
     target_sources(dsd-neo_dsp PRIVATE simd_fir_neon.cpp)
-    target_sources(dsd-neo_dsp PRIVATE simd_widen_neon.cpp)
+    target_sources(dsd-neo_dsp PRIVATE simd_widen_neon.cpp simd_stats_neon.cpp)
 endif()
 
+# Statistics preserve ordered scalar behavior for non-finite inputs and signed
+# zeros. Keep these checks and double-precision reductions under global fast-math.
+set(_dsd_neo_stats_sources
+    simd_stats.cpp
+    simd_stats_sse2.cpp
+    simd_stats_avx2.cpp
+    simd_stats_neon.cpp
+)
+
 # The SNR estimator drops NaN and infinite samples and rejects a non-finite bias.
-# It runs once per demod block (metrics, not the sample path), and measures no
+# It runs for metrics updates (not the sample path), and measures no
 # slower with IEEE semantics, so keep them even when global fast-math is on.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         snr_estimator.cpp
+        ${_dsd_neo_stats_sources}
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
     set_source_files_properties(
         snr_estimator.cpp
+        ${_dsd_neo_stats_sources}
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()

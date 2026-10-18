@@ -26,6 +26,7 @@
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/simd_stats.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
@@ -194,55 +195,6 @@ print_datascope(const dsd_opts* opts, dsd_state* state, const float* sbuf2, int 
     }
 }
 
-static void
-symbol_window_extrema_avg2(const float* samples, int count, float* out_min, float* out_max) {
-    if (!samples || !out_min || !out_max || count < 2) {
-        if (out_min) {
-            *out_min = 0.0f;
-        }
-        if (out_max) {
-            *out_max = 0.0f;
-        }
-        return;
-    }
-
-    float min1 = samples[0];
-    float min2 = samples[1];
-    if (min2 < min1) {
-        const float tmp = min1;
-        min1 = min2;
-        min2 = tmp;
-    }
-
-    float max1 = samples[0];
-    float max2 = samples[1];
-    if (max2 > max1) {
-        const float tmp = max1;
-        max1 = max2;
-        max2 = tmp;
-    }
-
-    for (int i = 2; i < count; i++) {
-        const float v = samples[i];
-        if (v < min1) {
-            min2 = min1;
-            min1 = v;
-        } else if (v < min2) {
-            min2 = v;
-        }
-
-        if (v > max1) {
-            max2 = max1;
-            max1 = v;
-        } else if (v > max2) {
-            max2 = v;
-        }
-    }
-
-    *out_min = (min1 + min2) * 0.5f;
-    *out_max = (max1 + max2) * 0.5f;
-}
-
 static void DSD_ATTR_USED
 use_symbol(const dsd_opts* opts, dsd_state* state, float symbol) {
     UNUSED(symbol);
@@ -265,7 +217,7 @@ use_symbol(const dsd_opts* opts, dsd_state* state, float symbol) {
     // - QPSK: always (as before)
     // - C4FM: enable for P25 Phase 1 (+/-) to keep slicer thresholds fresh during calls
     if (state->rf_mod == 1 || (state->rf_mod == 0 && DSD_SYNC_IS_P25P1(state->lastsynctype))) {
-        symbol_window_extrema_avg2(state->sbuf, cap, &lmin, &lmax);
+        dsd_simd_extrema_avg2(state->sbuf, (size_t)cap, &lmin, &lmax);
         dsd_state_push_minmax_window(state, opts->msize, lmin, lmax);
         state->center = ((state->max) + (state->min)) / 2.0f;
         state->umid = (((state->max) - state->center) * 5.0f / 8.0f) + state->center;
