@@ -4,8 +4,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH MBELIB_PFFFT_SOURCE_PATH
     REPO arancormonk/pffft
-    REF 94d3c8323a530c5e60a2535505166366171c1fdb
-    SHA512 45efb3b29cfb791e9d363ce48be29182ae2eb80ed4ee3455ad7d7d6c3f2fee62454e4f6ed21cd67b89cd29b9238497f44e7e784e2e3e83c3436eaec5e8eb18c1
+    REF 77a7ecda1f58f041168636c99be3e6e968d984d7
+    SHA512 946faeab54f77e3a716384635bef50daecd67a8c6a634cae54de70ba7f93c52ec86ef55ade02c0600c01f8c30b7b3a26a88c52a83a0522488f8b9e3df984fb0b
 )
 file(
     STRINGS "${SOURCE_PATH}/tools/ci-dependency-pins.env"

@@ -2500,6 +2500,32 @@ rmdir "$T"; rm "$T.build" "$T.src"
 Repeat this in a `-DDSD_ENABLE_QT_UI=ON` build with `-R '^UI_QT'` and
 `QT_QPA_PLATFORM=offscreen` when a change touches the Qt tests.
 
+### Native CPU tuning tests
+
+`TOOLS_NATIVE_ARCH` (`tests/tools/test_native_arch.py`) configures the small
+project in `tests/tools/native_arch/` with the build's own compilers and reads
+its `compile_commands.json`. A plain Release or RelWithDebInfo configure must
+carry the host-tuning flag (unless the compiler rejects it), Debug must not, and
+`-DDSD_ENABLE_NATIVE=OFF`, a target ISA in `CMAKE_C_FLAGS` or
+`CMAKE_CXX_FLAGS_RELEASE`, and a toolchain file that sets `CMAKE_SYSTEM_NAME`
+must each skip it with the reason the configure output prints. It also runs
+`dsd_native_arch_skip_reason()` in script mode for the cases a host cannot
+configure (Android, iOS, Emscripten, universal and non-host macOS
+architectures, a compiler target), and on Linux x86 compares the MSVC CPUID
+probe (`cmake/native_arch_probe.c`, built with the host C compiler) against
+`/proc/cpuinfo`. It needs Ninja and skips without it.
+
+A native Release build changes code generation (wider vectors, FMA
+contraction), so run the full suite in both a default `dev-release` build
+(`-DBUILD_TESTING=ON`) and a `-DDSD_ENABLE_NATIVE=OFF` one when a change touches
+`cmake/NativeArch.cmake` or numerically sensitive code. CI builds that ship, or
+whose objects or dependency prefixes are cached and reused on other runners,
+stay portable: they pass `-DDSD_ENABLE_NATIVE=OFF` (and
+`-DMBELIB_ENABLE_NATIVE=OFF` for mbelib-neo). The `build-linux` job keeps the
+default tuning and hashes the CPU target that GCC resolves `-march=native` to
+into its ccache keys (`CCACHE_EXTRAFILES`), because ccache before 4.12 hashes
+that flag literally.
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch

@@ -356,7 +356,7 @@ jobs:
               }
 
               build_openssl "$openssl_sha"
-              build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo mbe_sha ""
+              build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo mbe_sha "-DMBELIB_ENABLE_NATIVE=OFF"
               build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 codec2_sha ""
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON"
               build_dep https://github.com/airspy/airspyone_host "$airspy_sha" libairspy airspy_sha "-DINSTALL_UDEV_RULES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
@@ -386,7 +386,10 @@ jobs:
                 fi
               fi
 
+              # Shipped binaries target the baseline CPU; aarch64 runs under QEMU user
+              # emulation, which CMake does not see as cross-compiling.
               cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF \
+                -DDSD_ENABLE_NATIVE=OFF \
                 -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
                 -DOPENSSL_ROOT_DIR="$DEPS" \
                 -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
