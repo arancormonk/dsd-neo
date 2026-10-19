@@ -163,6 +163,24 @@ class NativeArch(unittest.TestCase):
             self.assert_no_native_flag(self.commands_for(entries, "Ninja", "Release"))
 
     @unittest.skipUnless(shutil.which("ninja"), "Ninja is needed to inspect compile commands")
+    def test_native_probe_diagnostics(self):
+        for language in ("C", "CXX"):
+            with self.subTest(language=language), tempfile.TemporaryDirectory(prefix="dsd-native-") as directory:
+                _, log, result, _ = self.configure(directory)
+                flag = result["flags"]
+                if not flag.startswith("-m"):
+                    self.skipTest("no accepted GNU-style native flag on this host")
+                # Reconfigure the same tree: a cached successful probe must
+                # not hide a diagnostic from either compiler on the next run.
+                macro = f"DSD_NATIVE_ARCH_{language}_{re.sub(r'[^a-zA-Z0-9_]', '_', flag)}"
+                header = Path(directory) / "native warning.h"
+                header.write_text(f"#ifdef {macro}\n#warning native tuning diagnostic\n#endif\n", encoding="utf-8")
+                _, log, result, entries = self.configure(
+                    directory, f'-DCMAKE_REQUIRED_FLAGS=-include "{header.as_posix()}"')
+                self.assert_skipped(result, log, rf"^the {language} compiler rejects {re.escape(flag)}$")
+                self.assert_no_native_flag(self.commands_for(entries, "Ninja", "Release"))
+
+    @unittest.skipUnless(shutil.which("ninja"), "Ninja is needed to inspect compile commands")
     def test_user_isa_flags(self):
         with tempfile.TemporaryDirectory(prefix="dsd-native-") as directory:
             _, log, result, _ = self.configure(directory)

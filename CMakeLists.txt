@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(dsd-neo VERSION 2.11.3 LANGUAGES C CXX)
+project(dsd-neo VERSION 2.11.4 LANGUAGES C CXX)
 if(POLICY CMP0083)
     cmake_policy(SET CMP0083 NEW)
 endif()
