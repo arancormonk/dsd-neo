@@ -63,7 +63,11 @@ option(
     "Enable Release-like compiler and linker hardening when supported"
     ON
 )
-option(DSD_ENABLE_NATIVE "Enable native CPU tuning (-march/-mtune=native)" OFF)
+option(
+    DSD_ENABLE_NATIVE
+    "Tune Release-like builds for the build host CPU when safe (OFF for portable binaries)"
+    ON
+)
 option(DSD_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer in Debug builds" OFF)
 option(DSD_ENABLE_TSAN "Enable ThreadSanitizer in Debug builds" OFF)
@@ -542,17 +546,11 @@ if(DSD_ENABLE_FAST_MATH)
     endif()
 endif()
 
-# Optional native CPU tuning across all targets (non-portable binaries)
-if(DSD_ENABLE_NATIVE)
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        add_compile_options(
-            $<$<COMPILE_LANGUAGE:C>:-march=native>
-            $<$<COMPILE_LANGUAGE:C>:-mtune=native>
-            $<$<COMPILE_LANGUAGE:CXX>:-march=native>
-            $<$<COMPILE_LANGUAGE:CXX>:-mtune=native>
-        )
-    endif()
-endif()
+# Host CPU tuning for Release-like configs (non-portable binaries). Directory
+# scoped so every module and the embedded PFFFT get it; skipped when cross
+# compiling or when the user's flags already pick a target ISA.
+include(NativeArch)
+dsd_native_arch_apply("${DSD_ENABLE_NATIVE}")
 
 # Optional LTO/IPO for Release/RelWithDebInfo (when supported)
 if(DSD_ENABLE_LTO)
