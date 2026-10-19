@@ -16,9 +16,10 @@ set(_DSD_NATIVE_ARCH_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(DSD_NATIVE_ARCH_CONFIGS "$<CONFIG:Release,RelWithDebInfo,MinSizeRel>")
 set(_DSD_NATIVE_ARCH_TUNED_CONFIGS RELEASE RELWITHDEBINFO MINSIZEREL)
 
-# Flag forms that pick a target ISA. A user choice wins over host tuning.
+# Flag forms that pick a target ISA, also when quoted. A user choice wins over
+# host tuning.
 set(_DSD_NATIVE_ARCH_USER_ISA_REGEX
-    "(^|[ \t])(-march=|-mcpu=|[-/][Aa][Rr][Cc][Hh]:|-arch[ \t])"
+    "(^|[ \t])[\"']?(-march=|-mcpu=|[-/][Aa][Rr][Cc][Hh]:|-arch[ \t])"
 )
 
 # dsd_native_arch_skip_reason(<out-var>)
@@ -37,6 +38,16 @@ function(dsd_native_arch_skip_reason out_var)
         set(_reason "target system ${CMAKE_SYSTEM_NAME}")
     elseif(EMSCRIPTEN)
         set(_reason "target system Emscripten")
+    endif()
+
+    # An iOS-family SDK can be selected through the sysroot alone, without
+    # CMAKE_SYSTEM_NAME; resolved SDK paths are mixed case (iPhoneOS.sdk).
+    string(TOLOWER "${CMAKE_OSX_SYSROOT}" _sysroot)
+    if(
+        _reason STREQUAL ""
+        AND _sysroot MATCHES "(iphone|appletv|watch|xr)(os|simulator)"
+    )
+        set(_reason "CMAKE_OSX_SYSROOT selects ${CMAKE_OSX_SYSROOT}")
     endif()
 
     if(_reason STREQUAL "" AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -63,8 +74,17 @@ function(dsd_native_arch_skip_reason out_var)
                 )
                 break()
             endif()
-            foreach(_suffix IN ITEMS "" _RELEASE _RELWITHDEBINFO _MINSIZEREL)
-                set(_var "CMAKE_${_lang}_FLAGS${_suffix}")
+            # CC="gcc -march=x86-64" keeps the option in COMPILER_ARG1.
+            foreach(
+                _var
+                IN
+                ITEMS
+                    CMAKE_${_lang}_COMPILER_ARG1
+                    CMAKE_${_lang}_FLAGS
+                    CMAKE_${_lang}_FLAGS_RELEASE
+                    CMAKE_${_lang}_FLAGS_RELWITHDEBINFO
+                    CMAKE_${_lang}_FLAGS_MINSIZEREL
+            )
                 if("${${_var}}" MATCHES "${_DSD_NATIVE_ARCH_USER_ISA_REGEX}")
                     set(_reason "${_var} already selects a target ISA")
                     break()

@@ -40,12 +40,13 @@ probe_cpuid(unsigned int leaf, unsigned int subleaf, unsigned int regs[4]) {
 
 static unsigned long long
 probe_xgetbv(void) {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
     return _xgetbv(0);
 #else
     unsigned int eax = 0;
     unsigned int edx = 0;
-    /* XGETBV as bytes: the mnemonic needs -mxsave, which this file is not built with. */
+    /* XGETBV as bytes: the mnemonic (and clang-cl's _xgetbv) needs the xsave
+     * target feature, which this file is not built with. */
     __asm__ volatile(".byte 0x0f, 0x01, 0xd0" : "=a"(eax), "=d"(edx) : "c"(0));
     return ((unsigned long long)edx << 32) | eax;
 #endif

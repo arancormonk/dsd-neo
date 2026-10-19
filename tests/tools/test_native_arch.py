@@ -4,9 +4,11 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,9 +30,15 @@ message("REASON=[${reason}]")
 '''
 
 
+# Build settings a developer or packager may export; each case sets its own.
+ISOLATED_ENV = ("CFLAGS", "CXXFLAGS", "LDFLAGS", "CMAKE_TOOLCHAIN_FILE", "CMAKE_OSX_ARCHITECTURES",
+                "CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES", "CMAKE_GENERATOR")
+ENV = {name: value for name, value in os.environ.items() if name not in ISOLATED_ENV}
+
+
 class NativeArch(unittest.TestCase):
     def run_command(self, *command):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=ENV)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout + result.stderr
 
@@ -85,6 +93,9 @@ class NativeArch(unittest.TestCase):
         """A GNU-style compiler on an x86 or ARM host tunes unless it rejects the flag."""
         if re.search(r"compiler rejects|probe found no AVX", result["reason"]):
             return False
+        # The forwarded compiler command may itself pick an ISA (CC="gcc -march=x86-64").
+        if re.search(r"^CMAKE_(C|CXX)_COMPILER_ARG1 already selects", result["reason"]):
+            return False
         if re.search(r"MSVC host tuning covers", result["reason"]):
             return False
         self.assertTrue(X86_HOST or ARM_HOST or result["flags"], log)
@@ -98,7 +109,9 @@ class NativeArch(unittest.TestCase):
             return "/arch:AVX"
         if X86_HOST:
             return "-march=x86-64"
-        return "-mcpu=generic"
+        if MACHINE.startswith(("aarch64", "arm64")):
+            return "-march=armv8-a"
+        return "-march=armv7-a"
 
     @unittest.skipUnless(shutil.which("ninja"), "Ninja is needed to inspect compile commands")
     def test_release_and_debug(self):
@@ -201,6 +214,18 @@ class NativeArch(unittest.TestCase):
             ({"CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -march=znver3"}, r"^CMAKE_CXX_FLAGS_RELWITHDEBINFO already"),
             ({"CMAKE_C_FLAGS_MINSIZEREL": "/O1 /arch:AVX2"}, r"^CMAKE_C_FLAGS_MINSIZEREL already"),
             ({"CMAKE_CXX_FLAGS_RELEASE": "-O2 -arch arm64"}, r"^CMAKE_CXX_FLAGS_RELEASE already"),
+            ({"CMAKE_C_FLAGS": "-O2\t-march=x86-64"}, r"^CMAKE_C_FLAGS already selects"),
+            ({"CMAKE_C_FLAGS": '-O2 "-march=x86-64"'}, r"^CMAKE_C_FLAGS already selects"),
+            ({"CMAKE_CXX_FLAGS": "-O2 '-mcpu=cortex-a72'"}, r"^CMAKE_CXX_FLAGS already selects"),
+            ({"CMAKE_C_COMPILER_ARG1": " -march=x86-64"}, r"^CMAKE_C_COMPILER_ARG1 already selects"),
+            ({"CMAKE_CXX_COMPILER_ARG1": " clang++"}, r"^$"),
+            ({"CMAKE_SYSTEM_NAME": "Darwin", "CMAKE_HOST_SYSTEM_PROCESSOR": "x86_64",
+              "CMAKE_OSX_ARCHITECTURES": "x86_64", "CMAKE_OSX_SYSROOT": "iphonesimulator"},
+             r"^CMAKE_OSX_SYSROOT selects iphonesimulator$"),
+            ({"CMAKE_SYSTEM_NAME": "Darwin", "CMAKE_OSX_SYSROOT":
+              "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/"
+              "iPhoneSimulator.sdk"}, r"^CMAKE_OSX_SYSROOT selects "),
+            ({"CMAKE_SYSTEM_NAME": "Darwin", "CMAKE_OSX_SYSROOT": "macosx"}, r"^$"),
             # Only Release-like configs are tuned, so Debug flags do not count;
             # -mtune alone keeps the default target ISA.
             ({"CMAKE_C_FLAGS_DEBUG": "-march=x86-64"}, r"^$"),
@@ -212,8 +237,10 @@ class NativeArch(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform.startswith("linux") and X86_HOST, "compares the probe with /proc/cpuinfo")
     def test_msvc_probe_matches_cpuinfo(self):
-        compiler = (ARGS.cc_arg1 or "").strip() or ARGS.cc or "cc"
-        if Path(compiler).stem.lower() in ("cl", "clang-cl"):
+        # ARG1 holds the compiler behind a launcher ("ccache gcc") or extra
+        # arguments ("gcc -pipe"); either way it follows the executable.
+        compiler = [ARGS.cc or "cc", *shlex.split(ARGS.cc_arg1 or "")]
+        if any(Path(part).stem.lower() in ("cl", "clang-cl") for part in compiler):
             self.skipTest("needs a GNU-style C compiler")
         flags = set()
         for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
@@ -229,7 +256,7 @@ class NativeArch(unittest.TestCase):
                 expected = level
         with tempfile.TemporaryDirectory(prefix="dsd-native-") as directory:
             program = Path(directory) / "probe"
-            self.run_command(compiler, "-O2", "-o", str(program), str(ROOT / "cmake" / "native_arch_probe.c"))
+            self.run_command(*compiler, "-O2", "-o", str(program), str(ROOT / "cmake" / "native_arch_probe.c"))
             self.assertEqual(self.run_command(str(program)).strip(), expected, sorted(flags))
 
 
