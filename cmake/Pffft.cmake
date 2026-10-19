@@ -61,6 +61,8 @@ set(PFFFT_INCLUDE_DIR "${DSD_PFFFT_SOURCE_DIR}/include/pffft")
 set(_pffft_notice_sources
     src/pffft.c
     src/pffft_priv_impl.h
+    src/pffft_cplx_impl.h
+    src/pffft_real_impl.h
     include/pffft/pffft.h
     include/pffft/pffft_double.h
     src/simd/pf_float.h
