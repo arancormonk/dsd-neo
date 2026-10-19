@@ -9,7 +9,8 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
 function(run_generator case wav_name expect_name expected_error)
-    file(MAKE_DIRECTORY "${WORK_DIR}/${case}")
+    # Existing subdirectories make a misplaced open succeed if validation moves after it.
+    file(MAKE_DIRECTORY "${WORK_DIR}/${case}/sub")
     execute_process(
         COMMAND
             "${GEN_BIN}" -t 1 --lead 0 --tail 0 -o "${wav_name}" -e
@@ -40,15 +41,37 @@ function(run_generator case wav_name expect_name expected_error)
     )
         message(FATAL_ERROR "${case}: sanitizer report:\n${_out}\n${_err}")
     endif()
+    if(expected_error STREQUAL "${_bad_name_error}")
+        file(
+            GLOB_RECURSE _created_files
+            LIST_DIRECTORIES FALSE
+            "${WORK_DIR}/${case}/*"
+        )
+        if(wav_name STREQUAL "signal.wav")
+            # A valid WAV name is opened before the expectation name is checked.
+            list(REMOVE_ITEM _created_files "${WORK_DIR}/${case}/signal.wav")
+        endif()
+        if(_created_files)
+            message(
+                FATAL_ERROR
+                "${case}: created rejected output files: ${_created_files}"
+            )
+        endif()
+    endif()
 endfunction()
 
 set(_bad_name_error "output names must be single filenames")
-file(WRITE "${WORK_DIR}/escape.txt" "outside sentinel")
 set(_bad_names
     "../escape.txt"
     "..\\escape.txt"
     "sub/escape.txt"
     "sub\\escape.txt"
+    "./escape.txt"
+    ".\\escape.txt"
+    "sub/../escape.txt"
+    "sub\\..\\escape.txt"
+    ".../...//escape.txt"
+    "...\\...\\\\escape.txt"
     "${WORK_DIR}/escape.txt"
     "/escape.txt"
     "\\escape.txt"
@@ -56,7 +79,11 @@ set(_bad_names
     "C:/escape.txt"
     "C:\\escape.txt"
     "\\\\server\\share\\escape.txt"
+    "\\\\?\\C:\\escape.txt"
+    "\\\\.\\C:\\escape.txt"
     "escape.txt:stream"
+    "escape..txt"
+    "..."
     "."
     ".."
 )
@@ -68,11 +95,10 @@ foreach(_name IN LISTS _bad_names)
 endforeach()
 run_generator(empty_wav "" expected.txt "${_bad_name_error}")
 run_generator(empty_expect signal.wav "" "${_bad_name_error}")
-file(READ "${WORK_DIR}/escape.txt" _sentinel)
-if(NOT _sentinel STREQUAL "outside sentinel")
+if(EXISTS "${WORK_DIR}/escape.txt")
     message(
         FATAL_ERROR
-        "a rejected output path overwrote a file outside the working directory"
+        "a rejected output path created a file outside the working directory"
     )
 endif()
 
@@ -90,7 +116,17 @@ if(
     )
 endif()
 
+# A single dot within a filename is allowed, including a leading dot and multiple extensions.
+run_generator(valid_dots ".signal.sample.wav" ".expected.sample.txt" "")
+if(
+    NOT EXISTS "${WORK_DIR}/valid_dots/.signal.sample.wav"
+    OR NOT EXISTS "${WORK_DIR}/valid_dots/.expected.sample.txt"
+)
+    message(FATAL_ERROR "valid dotted output names were not preserved")
+endif()
+
 # Exclusive creation prevents overwriting regular files or following links out of the directory.
+file(WRITE "${WORK_DIR}/escape.txt" "outside sentinel")
 set(_exists_error "cannot create output file")
 foreach(_option wav expect)
     set(_case "existing_${_option}")

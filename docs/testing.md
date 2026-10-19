@@ -1478,6 +1478,15 @@ The generator's `-o` and `-e` options take new filenames in its working director
 and `:` are rejected, and existing files (including symlinks) are never replaced. Run it in the intended output
 directory; the CTest runner and I/Q fixture builder create a fresh directory for each run. `DMR_SYNTH_OUTPUT_PATHS`
 checks both output options against traversal, absolute paths, Windows drive/stream paths and existing files.
+Rejected paths must also leave nonexistent destinations absent, including paths into existing subdirectories;
+ordinary filenames with spaces, leading dots and multiple extensions remain valid.
+
+The CodeQL 2.27.2 `cpp/path-injection` reports
+[#2779](https://github.com/arancormonk/dsd-neo/security/code-scanning/2779) and
+[#2780](https://github.com/arancormonk/dsd-neo/security/code-scanning/2780) are false positives for these two options.
+The query treats the outer `open_output()` call as the file-access sink without accounting for its filename checks.
+Those checks run before the actual open, and exclusive creation prevents following existing or dangling symlinks.
+The alerts are handled individually with the `DMR_SYNTH_OUTPUT_PATHS` evidence; the query remains enabled.
 
 What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as raised-cosine 4FSK discriminator audio
 (alpha 0.2) with white Gaussian noise and an optional symbol-clock offset; CACH/TACT, voice superframes (voice sync,
