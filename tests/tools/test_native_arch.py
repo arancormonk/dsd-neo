@@ -38,6 +38,15 @@ ENV = {name: value for name, value in os.environ.items() if name not in ISOLATED
 
 
 class NativeArch(unittest.TestCase):
+    def setUp(self):
+        # The compile-command cases look for host-tuning flags, so a forwarded
+        # compiler command that carries an ISA option of its own (CC="gcc
+        # -march=native") would be indistinguishable; the rules themselves are
+        # covered by test_skip_rules.
+        if self._testMethodName != "test_skip_rules" and \
+                any(USER_ISA.search(arg or "") for arg in (ARGS.cc_arg1, ARGS.cxx_arg1)):
+            self.skipTest("the forwarded compiler command already selects a target ISA")
+
     def run_command(self, *command, env=None):
         result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=env or ENV)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -97,7 +106,7 @@ class NativeArch(unittest.TestCase):
         # The forwarded compiler command may itself pick an ISA (CC="gcc -march=x86-64").
         if re.search(r"^CMAKE_(C|CXX)_COMPILER_ARG1 already selects", result["reason"]):
             return False
-        if re.search(r"MSVC host tuning covers", result["reason"]):
+        if re.search(r"MSVC host tuning covers|no host tuning rule for processor", result["reason"]):
             return False
         self.assertTrue(X86_HOST or ARM_HOST or result["flags"], log)
         if X86_HOST or ARM_HOST:
@@ -112,7 +121,9 @@ class NativeArch(unittest.TestCase):
             return "-march=x86-64"
         if MACHINE.startswith(("aarch64", "arm64")):
             return "-march=armv8-a"
-        return "-march=armv7-a"
+        if MACHINE.startswith("armv7"):
+            return "-march=armv7-a"
+        return None
 
     @unittest.skipUnless(shutil.which("ninja"), "Ninja is needed to inspect compile commands")
     def test_release_and_debug(self):
@@ -153,13 +164,13 @@ class NativeArch(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("ninja"), "Ninja is needed to inspect compile commands")
     def test_user_isa_flags(self):
-        if any(USER_ISA.search(arg or "") for arg in (ARGS.cc_arg1, ARGS.cxx_arg1)):
-            self.skipTest("the forwarded compiler command already selects a target ISA")
         with tempfile.TemporaryDirectory(prefix="dsd-native-") as directory:
             _, log, result, _ = self.configure(directory)
             msvc = result["flags"].startswith("/arch:") or "MSVC" in result["reason"] or \
                 "probe found no AVX" in result["reason"]
         flag = self.user_isa_flag(msvc)
+        if flag is None:
+            self.skipTest(f"no known baseline ISA flag for {MACHINE}")
         for variable in ("CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS_RELEASE"):
             with self.subTest(variable=variable), tempfile.TemporaryDirectory(prefix="dsd-native-") as directory:
                 value = flag if variable == "CMAKE_C_FLAGS" else f"-O2 {flag}"
