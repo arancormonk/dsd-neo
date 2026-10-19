@@ -95,6 +95,26 @@ function(dsd_native_arch_skip_reason out_var)
             endif()
         endforeach()
     endif()
+
+    # MSVC and clang-cl also take options from the CL and _CL_ environment
+    # variables, which CMake does not copy into the flags above.
+    if(
+        _reason STREQUAL ""
+        AND (
+            MSVC
+            OR CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
+            OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
+        )
+    )
+        foreach(_env IN ITEMS CL _CL_)
+            if("$ENV{${_env}}" MATCHES "${_DSD_NATIVE_ARCH_USER_ISA_REGEX}")
+                set(_reason
+                    "the ${_env} environment variable already selects a target ISA"
+                )
+                break()
+            endif()
+        endforeach()
+    endif()
     set(${out_var} "${_reason}" PARENT_SCOPE)
 endfunction()
 

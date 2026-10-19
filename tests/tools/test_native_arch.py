@@ -31,14 +31,15 @@ message("REASON=[${reason}]")
 
 
 # Build settings a developer or packager may export; each case sets its own.
-ISOLATED_ENV = ("CFLAGS", "CXXFLAGS", "LDFLAGS", "CMAKE_TOOLCHAIN_FILE", "CMAKE_OSX_ARCHITECTURES",
+ISOLATED_ENV = ("CFLAGS", "CXXFLAGS", "LDFLAGS", "CL", "_CL_", "CMAKE_TOOLCHAIN_FILE", "CMAKE_OSX_ARCHITECTURES",
                 "CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES", "CMAKE_GENERATOR")
+USER_ISA = re.compile(r"(?:^|\s)[\"']?(?:-march=|-mcpu=|[-/]arch:|-arch\s)", re.I)
 ENV = {name: value for name, value in os.environ.items() if name not in ISOLATED_ENV}
 
 
 class NativeArch(unittest.TestCase):
-    def run_command(self, *command):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=ENV)
+    def run_command(self, *command, env=None):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300, env=env or ENV)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout + result.stderr
 
@@ -152,6 +153,8 @@ class NativeArch(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("ninja"), "Ninja is needed to inspect compile commands")
     def test_user_isa_flags(self):
+        if any(USER_ISA.search(arg or "") for arg in (ARGS.cc_arg1, ARGS.cxx_arg1)):
+            self.skipTest("the forwarded compiler command already selects a target ISA")
         with tempfile.TemporaryDirectory(prefix="dsd-native-") as directory:
             _, log, result, _ = self.configure(directory)
             msvc = result["flags"].startswith("/arch:") or "MSVC" in result["reason"] or \
@@ -179,14 +182,14 @@ class NativeArch(unittest.TestCase):
             self.assert_skipped(result, log, r"^cross-compiling for ")
             self.assert_no_native_flag(self.commands_for(entries, "Ninja", "Release"))
 
-    def skip_reason(self, **variables):
+    def skip_reason(self, environment=None, **variables):
         with tempfile.TemporaryDirectory(prefix="dsd-native-") as directory:
             script = Path(directory) / "skip_reason.cmake"
             script.write_text(SKIP_REASON_SCRIPT, encoding="utf-8")
             command = [ARGS.cmake, f"-DDSD_SOURCE_DIR={ROOT.as_posix()}"]
             command += [f"-D{name}={value}" for name, value in variables.items()]
             command += ["-P", str(script)]
-            log = self.run_command(*command)
+            log = self.run_command(*command, env={**ENV, **(environment or {})})
             match = re.search(r"REASON=\[(.*)\]", log, re.S)
             self.assertIsNotNone(match, log)
             return match[1]
@@ -234,6 +237,16 @@ class NativeArch(unittest.TestCase):
         for variables, expected in cases:
             with self.subTest(variables=variables):
                 self.assertRegex(self.skip_reason(**variables), expected)
+        # MSVC-style compilers read options from CL and _CL_ as well.
+        env_cases = [
+            ({"CL": "/arch:AVX"}, {"MSVC": "TRUE"}, r"^the CL environment variable already selects"),
+            ({"_CL_": "/O2 /arch:AVX2"}, {"CMAKE_C_COMPILER_FRONTEND_VARIANT": "MSVC"},
+             r"^the _CL_ environment variable already selects"),
+            ({"CL": "/arch:AVX"}, {}, r"^$"),
+        ]
+        for environment, variables, expected in env_cases:
+            with self.subTest(environment=environment, variables=variables):
+                self.assertRegex(self.skip_reason(environment, **variables), expected)
 
     @unittest.skipUnless(sys.platform.startswith("linux") and X86_HOST, "compares the probe with /proc/cpuinfo")
     def test_msvc_probe_matches_cpuinfo(self):
