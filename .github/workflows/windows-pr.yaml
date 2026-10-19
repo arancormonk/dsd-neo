@@ -105,6 +105,7 @@ jobs:
         # Use Ninja generator (override preset) so CMAKE_*_COMPILER_LAUNCHER works with sccache
         run: |
           cmake --preset win-msvc-release -G Ninja `
+            -DDSD_ENABLE_NATIVE=OFF `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
             -DDSD_REQUIRE_RTLSDR=ON `

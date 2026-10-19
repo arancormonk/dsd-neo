@@ -6503,6 +6503,28 @@ Additional includes of interest:
 
 Top‑level build files: `CMakeLists.txt`, `CMakePresets.json`, `apps/CMakeLists.txt`, `tests/CMakeLists.txt`
 
+Native CPU tuning (`cmake/NativeArch.cmake`, `DSD_ENABLE_NATIVE`, default ON):
+
+- `dsd_native_arch_apply()` adds the host-tuning flag as a directory-scoped compile option, so every module and the
+  embedded PFFFT get it, wrapped in `DSD_NATIVE_ARCH_CONFIGS` (`$<CONFIG:Release,RelWithDebInfo,MinSizeRel>`): Debug,
+  sanitizer and coverage builds stay on the compiler's baseline target, and multi-config generators tune per config.
+- GCC/Clang: `-march=native` on x86 (it implies `-mtune=native`), `-mcpu=native` on ARM/AArch64, each accepted only if
+  `check_c_compiler_flag`/`check_cxx_compiler_flag` pass. MSVC and clang-cl on x86/x64: `try_run` of
+  `cmake/native_arch_probe.c` (CPUID + XGETBV, the checks of `src/dsp/simd_x86_cpu.h` extended to every feature
+  `/arch:AVX`, `/arch:AVX2` (x86-64-v3) and `/arch:AVX512` (F/CD/BW/DQ/VL, opmask/ZMM state) may emit), cached as
+  `DSD_NATIVE_ARCH_MSVC_PROBE`.
+- `dsd_native_arch_skip_reason()` turns tuning off when cross-compiling, for Android/iOS/Emscripten, for a universal or
+  non-host `CMAKE_OSX_ARCHITECTURES`, for `CMAKE_<LANG>_COMPILER_TARGET`, or when `CMAKE_<LANG>_FLAGS` or a
+  release-like `CMAKE_<LANG>_FLAGS_<CONFIG>` already selects a target ISA (`-march=`, `-mcpu=`, `/arch:`, `-arch`).
+  The configure output names the flag or the reason.
+- Runtime AVX2 dispatch in `src/dsp` is unchanged: its per-file `-mavx2 -mfma` only adds features. MSVC accepts one
+  `/arch:` per compile, so those files drop their `/arch:AVX2` in tuned configs (MSVC compiles AVX2 intrinsics under
+  any `/arch:` level and the dispatcher runs them only on AVX2 hosts).
+- Shipped binaries are portable: the AppImage, macOS, Windows and Android builds pass `-DDSD_ENABLE_NATIVE=OFF` (the
+  Android presets set it), CI's mbelib-neo dependency builds and the vcpkg `mbe-neo` port pass
+  `-DMBELIB_ENABLE_NATIVE=OFF`, and `perf-bench` keeps it off. The AUR PKGBUILDs pass nothing: makepkg's `CFLAGS`
+  `-march=` keeps the user's `makepkg.conf` choice. `TOOLS_NATIVE_ARCH` covers the rules.
+
 Common interface targets:
 
 - `dsd-neo_warnings` — common warning flags (optional; controlled by `DSD_ENABLE_WARNINGS`, `DSD_WARNINGS_AS_ERRORS`)

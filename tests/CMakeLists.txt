@@ -17316,6 +17316,15 @@ if(Python3_Interpreter_FOUND)
             "--cxx-arg1=${CMAKE_CXX_COMPILER_ARG1}"
     )
     add_test(
+        NAME TOOLS_NATIVE_ARCH
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_native_arch.py --cmake
+            ${CMAKE_COMMAND} --cc ${CMAKE_C_COMPILER} --cxx
+            ${CMAKE_CXX_COMPILER} "--cc-arg1=${CMAKE_C_COMPILER_ARG1}"
+            "--cxx-arg1=${CMAKE_CXX_COMPILER_ARG1}"
+    )
+    add_test(
         NAME TOOLS_PFFFT_METADATA
         COMMAND
             ${Python3_EXECUTABLE}

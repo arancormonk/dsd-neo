@@ -24,6 +24,15 @@ The project may add warning, sanitizer, SIMD, LTO, or platform flags based on
 explicit CMake options, but should not discard user-supplied compiler or linker
 settings.
 
+Release-like builds are tuned for the build host's CPU by default
+(`DSD_ENABLE_NATIVE=ON`: `-march=native`, `-mcpu=native`, or the MSVC `/arch:`
+level a configure-time CPUID probe finds). Packagers building binaries for other
+machines pass `-DDSD_ENABLE_NATIVE=OFF`; the project's release assets do. A
+target ISA already present in `CMAKE_C_FLAGS`, `CMAKE_CXX_FLAGS` or a
+release-like `CMAKE_<LANG>_FLAGS_<CONFIG>` (`-march=`, `-mcpu=`, `/arch:`, for
+example from distribution `CFLAGS` such as makepkg's `-march=x86-64`) turns the
+tuning off, as do cross-compiling and Android/iOS targets.
+
 ## Debug Information
 
 The install rules do not strip binaries. If users request debug information

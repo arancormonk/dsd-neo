@@ -81,7 +81,17 @@ if(_dsd_neo_dsp_target_arch MATCHES "x86_64|AMD64|amd64")
     elseif(MSVC)
         check_cxx_compiler_flag("/arch:AVX2" DSD_NEO_HAS_AVX2_MSVC)
         if(DSD_NEO_HAS_AVX2_MSVC)
-            set(_avx2_flags "/arch:AVX2")
+            if(DSD_NATIVE_ARCH_FLAGS MATCHES "^/arch:")
+                # Release-like configs already carry the host's /arch: level
+                # (cmake/NativeArch.cmake); a second /arch: would override it
+                # (D9025). MSVC compiles AVX2 intrinsics under any /arch:, and
+                # the dispatcher runs them only on AVX2 hosts.
+                set(_avx2_flags
+                    "$<$<NOT:${DSD_NATIVE_ARCH_CONFIGS}>:/arch:AVX2>"
+                )
+            else()
+                set(_avx2_flags "/arch:AVX2")
+            endif()
         endif()
     endif()
     if(_avx2_flags)
