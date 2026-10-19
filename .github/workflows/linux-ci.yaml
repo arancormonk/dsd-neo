@@ -163,7 +163,7 @@ jobs:
           source tools/ci-dependency-pins.env
           tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
@@ -275,7 +275,7 @@ jobs:
           source tools/ci-dependency-pins.env
           tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
@@ -371,7 +371,7 @@ jobs:
           source tools/ci-dependency-pins.env
           tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
@@ -499,7 +499,7 @@ jobs:
             source tools/ci-dependency-pins.env
             tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
             cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+              -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
               -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
             cmake --build /tmp/mbelib-neo/build -j
             cmake --install /tmp/mbelib-neo/build
@@ -595,8 +595,16 @@ jobs:
             echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
             echo "CCACHE_NOHASHDIR=true"
             echo "CCACHE_SLOPPINESS=time_macros"
+            # dev-release tunes for this runner's CPU (-march=native). ccache before
+            # 4.12 hashes that flag literally and would reuse objects built on another
+            # runner model, so hash the CPU target GCC resolves it to as well.
+            echo "CCACHE_EXTRAFILES=${RUNNER_TEMP}/ccache-native-target.txt"
           } >> "$GITHUB_ENV"
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
+          {
+            gcc -march=native -Q --help=target
+            g++ -march=native -Q --help=target
+          } > "${RUNNER_TEMP}/ccache-native-target.txt"
 
       - name: Compute tool versions (for ccache key)
         id: toolver
@@ -644,7 +652,7 @@ jobs:
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
           fi
           tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
 
@@ -717,9 +725,12 @@ jobs:
 
       - name: Configure (Release preset)
         run: |
+          set -euxo pipefail
           cmake --preset dev-release \
             -DDSD_REQUIRE_RTLSDR=ON \
             -DDSD_REQUIRE_SOAPYSDR=ON
+          # The preset keeps the default host tuning (DSD_ENABLE_NATIVE=ON).
+          grep -Fq -- '-march=native' build/dev-release/compile_commands.json
 
       - name: Build
         run: |
@@ -783,7 +794,7 @@ jobs:
             source tools/ci-dependency-pins.env
             tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
             cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF \
               -DBUILD_SHARED_LIBS=ON \
               -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
             cmake --build /tmp/mbelib-neo/build -j
@@ -871,7 +882,7 @@ jobs:
             source tools/ci-dependency-pins.env
             tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
             cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+              -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
               -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
             cmake --build /tmp/mbelib-neo/build -j
             cmake --install /tmp/mbelib-neo/build
@@ -880,6 +891,7 @@ jobs:
             # which SIGILLs on a runner without AVX-512 and reads as a build failure.
             cmake -S . -B build/avx512 -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DDSD_ENABLE_NATIVE=OFF \
               -DCMAKE_C_FLAGS="-march=x86-64-v4" \
               -DCMAKE_CXX_FLAGS="-march=x86-64-v4" \
               -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
@@ -1683,7 +1695,7 @@ jobs:
             echo "Cached mbelib-neo does not match desired SHA; rebuilding"
           fi
           tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build
 
@@ -2157,7 +2169,7 @@ jobs:
             if [ ! -f "$pc1" ] && [ ! -f "$pc2" ]; then
               tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
               cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF \
                 -DBUILD_SHARED_LIBS=ON \
                 -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX"
               cmake --build /tmp/mbelib-neo/build -j

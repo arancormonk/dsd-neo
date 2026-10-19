@@ -216,7 +216,7 @@ jobs:
           source tools/ci-dependency-pins.env
           tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/.local"
           cmake --build /tmp/mbelib-neo/build -j
           cmake --install /tmp/mbelib-neo/build

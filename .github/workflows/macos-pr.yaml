@@ -159,7 +159,7 @@ jobs:
           fi
           tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
           cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
             -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
             -DCMAKE_OSX_ARCHITECTURES=arm64
           cmake --build /tmp/mbelib-neo/build -j
@@ -250,7 +250,7 @@ jobs:
           # No curses overrides on purpose: this is the discovery path a user
           # gets, and pinning it here is what kept issue #339 out of CI.
           cmake --preset dev-release -G Ninja \
-            -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DDSD_ENABLE_LTO=OFF -DDSD_ENABLE_NATIVE=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
             -DBUILD_TESTING=OFF
 

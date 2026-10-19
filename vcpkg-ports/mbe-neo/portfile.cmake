@@ -40,7 +40,11 @@ vcpkg_cmake_configure(
         -DMBELIB_BUILD_TESTS=OFF
         -DMBELIB_BUILD_EXAMPLES=OFF
         -DMBELIB_BUILD_DOCS=OFF
+        # Binary packages run on other machines; never tune for the build host.
+        -DMBELIB_ENABLE_NATIVE=OFF
         ${_mbe_pffft_options}
+    MAYBE_UNUSED_VARIABLES
+        MBELIB_ENABLE_NATIVE
 )
 
 vcpkg_cmake_install()
