@@ -63,7 +63,8 @@ endif()
 
 string(TIMESTAMP _t0 "%s" UTC)
 execute_process(
-    COMMAND "${GEN_BIN}" -o "${_wav}" -e "${_exp}" ${_gen_args}
+    COMMAND "${GEN_BIN}" -o signal.wav -e expected.txt ${_gen_args}
+    WORKING_DIRECTORY "${WORK_DIR}"
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err

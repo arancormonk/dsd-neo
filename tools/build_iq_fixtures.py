@@ -43,6 +43,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import urllib.request
 import wave
 import zipfile
@@ -1203,12 +1204,15 @@ def build_dpmr_synth(out_dir):
 def build_dmr_voice_synth(out_dir, generator, work_dir):
     """Write the synthetic DMR BS voice fixture from the test generator's discriminator audio (issue #729)."""
     os.makedirs(work_dir, exist_ok=True)
-    wav_path = os.path.join(work_dir, DMR_VOICE_SYNTH_NAME + ".wav")
-    subprocess.run([generator, "-o", wav_path] + DMR_VOICE_SYNTH_ARGS, check=True)
-    with wave.open(wav_path, "rb") as wav:
-        if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SAMPLE_RATE_HZ:
-            raise SystemExit(f"{wav_path}: expected 48 kHz mono s16 from the DMR generator")
-        audio = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
+    generator = os.path.abspath(generator)
+    with tempfile.TemporaryDirectory(prefix="dmr-synth-", dir=work_dir) as synth_dir:
+        wav_name = DMR_VOICE_SYNTH_NAME + ".wav"
+        subprocess.run([generator, "-o", wav_name] + DMR_VOICE_SYNTH_ARGS, cwd=synth_dir, check=True)
+        wav_path = os.path.join(synth_dir, wav_name)
+        with wave.open(wav_path, "rb") as wav:
+            if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SAMPLE_RATE_HZ:
+                raise SystemExit(f"{wav_path}: expected 48 kHz mono s16 from the DMR generator")
+            audio = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
     samples = remodulate(audio, DMR_VOICE_SYNTH_DEVIATION)
     written = write_fixture(out_dir, DMR_VOICE_SYNTH_NAME, samples)
     print(f"{DMR_VOICE_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")

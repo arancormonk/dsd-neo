@@ -1474,6 +1474,11 @@ comment at the top of the file), decodes the WAV it writes with `dsd-neo -o null
 and the case's key, and compares the result in `tests/protocol/dmr/dmr_synth_check.cmake`. The decoder output stays
 in `build/<preset>/tests/dmr_synth/<case>/`.
 
+The generator's `-o` and `-e` options take new filenames in its working directory. Directory separators, `..`
+and `:` are rejected, and existing files (including symlinks) are never replaced. Run it in the intended output
+directory; the CTest runner and I/Q fixture builder create a fresh directory for each run. `DMR_SYNTH_OUTPUT_PATHS`
+checks both output options against traversal, absolute paths, Windows drive/stream paths and existing files.
+
 What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as raised-cosine 4FSK discriminator audio
 (alpha 0.2) with white Gaussian noise and an optional symbol-clock offset; CACH/TACT, voice superframes (voice sync,
 EMB, embedded LC), voice LC, PI, terminator and idle bursts with their FEC built through the project's decoders, AMBE+2

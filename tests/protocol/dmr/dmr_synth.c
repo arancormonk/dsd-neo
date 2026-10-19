@@ -23,8 +23,9 @@
  * plaintext with those four bits replaced), so the exact 49-bit comparison stays meaningful.
  *
  * usage: dsd-neo_test_dmr_synth_gen -o out.wav [options]
- *   -o FILE            output WAV (required)
- *   -e FILE            expectation file (default none)
+ *   -o NAME            new output WAV in the working directory (required)
+ *   -e NAME            new expectation file in the working directory (default none)
+ *                      names must not contain directory separators, ':' or '..'; existing files are not replaced
  *   -t SEC             total duration in seconds (default 20)
  *   --ppm X            transmitter symbol-clock offset in ppm (default 0)
  *   --snr DB           SNR in dB against the outer symbol level (default 40)
@@ -914,6 +915,48 @@ apply_fault(int mode, int slot, const uint8_t* frag, int* out) {
     }
 }
 
+/* Emit one scheduled voice burst, including its plaintext expectations and any requested channel fault. */
+static void
+emit_voice_burst(slot_call* c, int slot, burst_desc bd, int period, FILE* ef, int* out) {
+    if (bd.vc == 1) {
+        if (bd.sf > 0) {
+            c->mi_cur = next_mi(c->mi_cur, cfg.alg);
+        }
+        if (cfg.alg != ALG_NONE) {
+            superframe_keystream(c, cfg.alg);
+            superframe_le(c, slot, bd.sf);
+        }
+    }
+    char fr[3][4][24];
+    for (int f = 0; f < 3; f++) {
+        char expect49[49];
+        make_voice_frame(c, bd.vc, f, fr[f], expect49);
+        if (ef) {
+            unsigned long long v = 0;
+            for (int b = 0; b < 49; b++) {
+                v = (v << 1) | (unsigned long long)(expect49[b] & 1);
+            }
+            DSD_FPRINTF(ef, "%d %d %d %d %014llX\n", slot + 1, bd.sf, bd.vc, f, v << 7);
+        }
+    }
+    const uint8_t* frag = (bd.vc >= 2 && bd.vc <= 5) ? &c->emb128[(size_t)32 * (bd.vc - 2)] : NULL;
+    build_voice_burst(slot, bd.vc, cfg.cc, fr, frag, out);
+    if (bd.sf < cfg.lose_first) {
+        for (int i = 0; i < SYMBOLS_PER_SLOT; i++) {
+            out[i] = rand_dibit();
+        }
+        return;
+    }
+    int fi = find_fault(slot, bd.sf, bd.vc);
+    if (fi < 0) {
+        return;
+    }
+    if (cfg.faults[fi].mode == CM_DROP && period == 0) {
+        die("cannot drop the first period");
+    }
+    apply_fault(cfg.faults[fi].mode, slot, frag, out);
+}
+
 /* Raised-cosine 4FSK at 48 kHz (alpha 0.2, +/-8 symbol taps) at the configured symbol-clock offset. */
 static float*
 modulate(const int* sym, size_t nsym, size_t* nsamp_out) {
@@ -1182,6 +1225,20 @@ parse_args(int argc, char** argv, int* have_key) {
 }
 
 /* ---------------------------------------------------------------- output */
+/* The caller selects the output directory by setting cwd. Exclusive creation also rejects existing symlinks. */
+static FILE*
+open_output(const char* name, const char* mode) {
+    if (!name || name[0] == '\0' || strcmp(name, ".") == 0 || strstr(name, "..") != NULL || strchr(name, '/') != NULL
+        || strchr(name, '\\') != NULL || strchr(name, ':') != NULL) {
+        die("output names must be single filenames without ':', '..' or directory separators");
+    }
+    FILE* f = dsd_fopen_private(name, mode);
+    if (!f) {
+        die("cannot create output file (it must not already exist)");
+    }
+    return f;
+}
+
 static void
 put_le32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)v;
@@ -1191,11 +1248,7 @@ put_le32(uint8_t* p, uint32_t v) {
 }
 
 static void
-write_wav(const char* path, const float* x, size_t nsamp, double noise_std) {
-    FILE* f = dsd_fopen_private(path, "wb");
-    if (!f) {
-        die("cannot open the output WAV");
-    }
+write_wav(FILE* f, const float* x, size_t nsamp, double noise_std) {
     uint32_t datalen = (uint32_t)(nsamp * 2);
     uint8_t h[44];
     DSD_MEMSET(h, 0, sizeof h);
@@ -1253,6 +1306,8 @@ main(int argc, char** argv) {
     if (!cfg.out) {
         usage();
     }
+    FILE* wav = open_output(cfg.out, "wbx");
+    FILE* ef = cfg.expect ? open_output(cfg.expect, "wx") : NULL;
     g_rng ^= cfg.seed * 0x9E3779B97F4A7C15ULL;
     if (g_rng == 0) {
         g_rng = 88172645463325252ULL;
@@ -1313,12 +1368,7 @@ main(int argc, char** argv) {
         bptc128_encode(lcb, calls[s].emb128);
     }
 
-    FILE* ef = NULL;
-    if (cfg.expect) {
-        ef = dsd_fopen_private(cfg.expect, "w");
-        if (!ef) {
-            die("cannot open the expectation file");
-        }
+    if (ef) {
         write_expect_header(ef, nsf);
     }
 
@@ -1355,47 +1405,7 @@ main(int argc, char** argv) {
                 pi_burst_payload(slot, d96);
                 build_data_burst(slot, cfg.cc, 0, d96, out);
                 break;
-            case B_VOICE: {
-                slot_call* c = &calls[slot];
-                if (bd.vc == 1) {
-                    if (bd.sf > 0) {
-                        c->mi_cur = next_mi(c->mi_cur, cfg.alg);
-                    }
-                    if (cfg.alg != ALG_NONE) {
-                        superframe_keystream(c, cfg.alg);
-                        superframe_le(c, slot, bd.sf);
-                    }
-                }
-                char fr[3][4][24];
-                for (int f = 0; f < 3; f++) {
-                    char expect49[49];
-                    make_voice_frame(c, bd.vc, f, fr[f], expect49);
-                    if (ef) {
-                        unsigned long long v = 0;
-                        for (int b = 0; b < 49; b++) {
-                            v = (v << 1) | (unsigned long long)(expect49[b] & 1);
-                        }
-                        DSD_FPRINTF(ef, "%d %d %d %d %014llX\n", slot + 1, bd.sf, bd.vc, f, v << 7);
-                    }
-                }
-                const uint8_t* frag = (bd.vc >= 2 && bd.vc <= 5) ? &c->emb128[(size_t)32 * (bd.vc - 2)] : NULL;
-                build_voice_burst(slot, bd.vc, cfg.cc, fr, frag, out);
-                if (bd.sf < cfg.lose_first) {
-                    for (int i = 0; i < SYMBOLS_PER_SLOT; i++) {
-                        out[i] = rand_dibit();
-                    }
-                    break;
-                }
-                int fi = find_fault(slot, bd.sf, bd.vc);
-                if (fi < 0) {
-                    break;
-                }
-                if (cfg.faults[fi].mode == CM_DROP && p == 0) {
-                    die("cannot drop the first period");
-                }
-                apply_fault(cfg.faults[fi].mode, slot, frag, out);
-                break;
-            }
+            case B_VOICE: emit_voice_burst(&calls[slot], slot, bd, p, ef, out); break;
             default:
                 idle_payload(d96);
                 build_data_burst(slot, cfg.cc, 9, d96, out);
@@ -1412,7 +1422,7 @@ main(int argc, char** argv) {
 
     size_t nsamp = 0;
     float* x = modulate(sym, nsym, &nsamp);
-    write_wav(cfg.out, x, nsamp, 3.0 / pow(10.0, cfg.snr / 20.0));
+    write_wav(wav, x, nsamp, 3.0 / pow(10.0, cfg.snr / 20.0));
     DSD_FPRINTF(stderr, "dmr_synth: wrote %s: %.2f s, %d superframes per voice slot\n", cfg.out,
                 (double)nsamp / 48000.0, nsf);
 

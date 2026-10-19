@@ -12151,6 +12151,18 @@ target_link_libraries(
         ${DSD_NEO_TEST_MATH_LIB}
 )
 
+add_test(
+    NAME DMR_SYNTH_OUTPUT_PATHS
+    COMMAND
+        ${CMAKE_COMMAND} "-DGEN_BIN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/dmr_synth/output_paths" -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/protocol/dmr/dmr_synth_output_paths.cmake"
+)
+set_tests_properties(
+    DMR_SYNTH_OUTPUT_PATHS
+    PROPERTIES LABELS "dmr-synth" TIMEOUT 60
+)
+
 set(_DSD_SYNTH_K256
     "0123456789ABCDEF FEDCBA9876543210 0F1E2D3C4B5A6978 8796A5B4C3D2E1F0"
 )
