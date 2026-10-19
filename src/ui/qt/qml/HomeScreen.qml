@@ -223,7 +223,48 @@ Item {
                 }
             }
 
+            // Keep creation within reach regardless of either collection's size.
+            Grid {
+                id: addActions
+                width: parent.width
+                spacing: Theme.gap
+                // Both equal cells must fit the wider complete label. Measure
+                // the actual font so larger text and translations stack early.
+                columns: width >= 2 * Math.max(addSystemAction.implicitWidth, addScanListAction.implicitWidth) + spacing ? 2 : 1
+                readonly property real cellWidth: Math.floor((width - (columns - 1) * spacing) / columns)
+
+                Column {
+                    width: addActions.cellWidth
+                    spacing: 6
+                    DashedActionButton {
+                        id: addSystemAction
+                        objectName: "addSystemButton"
+                        width: parent.width
+                        text: qsTr("+ Add a system")
+                        onClicked: radioReference.available ? addSystemMenu.open() : screen.addSystem()
+                    }
+                    Text {
+                        objectName: "addSystemHint"
+                        width: parent.width
+                        text: qsTr("USB, Airspy, network or file")
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
+                    }
+                }
+                DashedActionButton {
+                    id: addScanListAction
+                    objectName: "addScanListButton"
+                    width: addActions.cellWidth
+                    text: qsTr("+ Add a scan list")
+                    onClicked: screen.addScanList()
+                }
+            }
+
             MicroLabel {
+                objectName: "savedSystemsHeading"
+                visible: savedSystems.count > 0
                 text: qsTr("Saved systems")
             }
 
@@ -350,28 +391,10 @@ Item {
                 }
             }
 
-            Column {
-                width: parent.width
-                spacing: 6
-                DashedActionButton {
-                    objectName: "addSystemButton"
-                    width: parent.width
-                    text: qsTr("+ Add a system")
-                    onClicked: radioReference.available ? addSystemMenu.open() : screen.addSystem()
-                }
-                Text {
-                    objectName: "addSystemHint"
-                    width: parent.width
-                    text: qsTr("USB, Airspy, network or file")
-                    wrapMode: Text.Wrap
-                    color: Theme.textSecondary
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(13)
-                }
-            }
-
             // WP-S1: same play/edit gestures as saved systems.
             MicroLabel {
+                objectName: "scanListsHeading"
+                visible: scanLists.count > 0
                 text: qsTr("Scan lists")
             }
             Repeater {
@@ -395,13 +418,6 @@ Item {
                     onEdit: scanMenu.openFor(index)
                 }
             }
-            DashedActionButton {
-                objectName: "addScanListButton"
-                width: parent.width
-                text: qsTr("+ Add a scan list")
-                onClicked: screen.addScanList()
-            }
-
             MicroLabel {
                 text: qsTr("Or go looking")
             }
