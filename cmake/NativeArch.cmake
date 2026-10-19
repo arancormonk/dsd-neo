@@ -203,14 +203,21 @@ function(dsd_native_arch_flags flags_var reason_var)
         endif()
     endif()
 
-    # The compiler must accept the flag without a warning (the checks treat
-    # "unsupported"/"unused argument" diagnostics as failure).
+    # try_compile does not inherit the targets' warning policy. Reject all
+    # diagnostics, including Clang's AVX10/AVX-512 native-feature warning.
     if(_reason STREQUAL "" AND _flags)
         include(CheckCCompilerFlag)
         include(CheckCXXCompilerFlag)
+        if(MSVC OR _frontend STREQUAL "MSVC")
+            set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} /WX")
+        else()
+            set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -Werror")
+        endif()
         string(MAKE_C_IDENTIFIER "${_flags}" _flag_id)
         foreach(_lang IN LISTS _langs)
             set(_result "DSD_NATIVE_ARCH_${_lang}_${_flag_id}")
+            # A reconfigure may change the compiler flags or host CPU.
+            unset(${_result} CACHE)
             if(_lang STREQUAL "C")
                 check_c_compiler_flag("${_flags}" ${_result})
             else()

@@ -896,7 +896,7 @@ jobs:
           echo "Launcher identity and Qt loader resources OK."
 
       - name: Upload APK
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.names.outputs.ART_NAME }}
           path: ${{ steps.names.outputs.APK_PATH }}
@@ -905,7 +905,7 @@ jobs:
       # Capture these before the AAB invocation re-runs Gradle. Retracing a
       # sideload crash requires the mapping from the exact APK that shipped.
       - name: Upload APK R8 reports
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.names.outputs.ART_NAME }}.r8
           path: build/android-app/android/android-build/build/outputs/mapping/release/
@@ -941,7 +941,7 @@ jobs:
 
       - name: Upload enriched SBOM
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.names.outputs.ART_NAME }}.spdx.json
           path: ${{ steps.names.outputs.APK_PATH }}.spdx.json
@@ -1099,7 +1099,7 @@ jobs:
         id: aab_upload
         if: steps.aab.outputs.AAB_PATH != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.names.outputs.ART_NAME }}.aab
           path: ${{ steps.aab.outputs.AAB_PATH }}
@@ -1146,7 +1146,7 @@ jobs:
         id: aab_sbom_upload
         if: steps.aab.outputs.AAB_PATH != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.names.outputs.ART_NAME }}.aab.spdx.json
           path: ${{ steps.aab.outputs.AAB_PATH }}.spdx.json
@@ -1275,13 +1275,13 @@ jobs:
           persist-credentials: false
 
       - name: Download APK artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.build-apk.outputs.art_name }}
           path: dist
 
       - name: Download APK SBOM artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.build-apk.outputs.art_name }}.spdx.json
           path: dist
