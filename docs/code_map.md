@@ -606,7 +606,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer).
     Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF. An `x` after a write mode
     (`"wbx"`, C11's) creates exclusively: an existing file fails with EEXIST and keeps its bytes (issue #661: MBE
-    capture names)
+    capture names). Windows uses `CreateFile(CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT)` for these opens because the
+    CRT's `_O_EXCL` follows dangling symlinks. The final name is claimed without following a link, and
+    `out_opened` records creation even if attaching the CRT descriptor or stream fails. Tests:
+    `PLATFORM_FILE_COMPAT`, `DMR_SYNTH_OUTPUT_PATHS` (existing and dangling symlinks for both generator outputs)
   - Binary descriptors: `dsd_set_binary_mode()` disables Windows text translation on an existing descriptor (a
     validated no-op on POSIX). Engine setup uses it for `-o -` before emitting audio, so an inherited text-mode
     stdout cannot expand sample bytes containing LF into CRLF. Tests: `ENGINE_RUN_SETUP`, `PLATFORM_FILE_COMPAT`
