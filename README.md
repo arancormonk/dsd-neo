@@ -283,7 +283,13 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_ENABLE_FAST_MATH=ON` — Enable fast‑math (`-ffast-math`/`/fp:fast`) across targets.
   - `-DDSD_ENABLE_LTO=ON` — Enable IPO/LTO in Release builds (when supported).
   - `-DDSD_ENABLE_HARDENING=ON|OFF` — Enable supported Release-like compiler/linker hardening (default ON).
-  - `-DDSD_ENABLE_NATIVE=ON` — Enable `-march=native -mtune=native` (non‑portable binaries).
+  - `-DDSD_ENABLE_NATIVE=ON|OFF` — Tune Release, RelWithDebInfo and MinSizeRel builds for the build machine's CPU
+    (default ON): `-march=native` on x86, `-mcpu=native` on ARM, and the highest `/arch:` level (`AVX512`, `AVX2`,
+    `AVX`) a configure-time CPU probe finds on MSVC. Debug builds are never tuned. It is skipped, with the reason in
+    the configure output, when cross-compiling, for Android/iOS, for a universal or non-host
+    `CMAKE_OSX_ARCHITECTURES`, or when your compiler flags already pick a target (`-march=`, `-mcpu=`, `/arch:`).
+    The result runs only on CPUs like the build machine: packagers and anyone building binaries for other machines
+    pass `-DDSD_ENABLE_NATIVE=OFF` (the release assets do).
   - `-DDSD_ENABLE_ASAN=ON` — AddressSanitizer in Debug builds.
   - `-DDSD_ENABLE_UBSAN=ON` — UndefinedBehaviorSanitizer in Debug builds.
   - `-DDSD_ENABLE_TSAN=ON` — ThreadSanitizer in Debug builds; use a separate build from ASan/UBSan.

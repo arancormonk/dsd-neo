@@ -32,8 +32,9 @@ cmake --build --preset perf-bench --target dsd-neo_bench_tetra_viterbi -j
 ```
 
 The preset uses `RelWithDebInfo`, fast math, frame pointers, and tests enabled.
-It keeps LTO and native CPU tuning off so results are easier to compare across
-machines.
+It keeps LTO and native CPU tuning off (`DSD_ENABLE_NATIVE=OFF`, while other
+Release-like builds tune for the host by default) so results are easier to
+compare across machines.
 
 ## Run
 
