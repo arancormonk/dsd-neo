@@ -603,12 +603,14 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     if (!state || !observation || observation->slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;
     }
+    // Indexed through this bounded copy: re-reading observation->slot after the calls below loses the bound for GCC.
+    const uint8_t slot = observation->slot;
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
     if (!ext) {
         return -1;
     }
     dsd_call_state_ext_lock(ext);
-    dsd_call_snapshot* snapshot = &ext->calls.slots[observation->slot];
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     const double now_m = call_state_observed_m(observation->observed_m);
     const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
@@ -618,44 +620,44 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
     dsd_call_snapshot previous;
     if (begins_epoch) {
-        call_state_reset_voice_errors(state, observation->slot);
+        call_state_reset_voice_errors(state, slot);
         previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
-        ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
-        snapshot->epoch = ext->epoch_sequence[observation->slot];
-        snapshot->slot = observation->slot;
+        ext->epoch_sequence[slot] = call_state_next_nonzero(ext->epoch_sequence[slot]);
+        snapshot->epoch = ext->epoch_sequence[slot];
+        snapshot->slot = slot;
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
         snapshot->started_m = now_m;
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
             snapshot->crc_invalid = previous.crc_invalid;
-            ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
+            ext->events[slot].reacquired_epoch = snapshot->epoch;
             // Which epoch was reopened. Whether a history row may actually be merged is the event
             // layer's call -- it pairs this against the epoch its committed row belongs to -- but
             // the identity seeding and the suppressed START above are canonical either way.
-            ext->events[observation->slot].reacquired_from_epoch = previous.epoch;
+            ext->events[slot].reacquired_from_epoch = previous.epoch;
         }
         // reacquired_epoch is deliberately not cleared here. It is compared against the epoch it
         // names, and epoch ids only increase, so a stale value can never match a later epoch.
         // Clearing it would disarm a reacquisition whose staged row is still waiting to flush,
         // and that row would then be committed a second time.
-        ext->events[observation->slot].ended_committed = 0U;
-        ext->events[observation->slot].notice_epoch = 0U;
-        ext->events[observation->slot].notice_target_id = 0U;
-        ext->events[observation->slot].notice_kind = DSD_CALL_KIND_UNKNOWN;
-        ext->events[observation->slot].notice_handled = 0U;
+        ext->events[slot].ended_committed = 0U;
+        ext->events[slot].notice_epoch = 0U;
+        ext->events[slot].notice_target_id = 0U;
+        ext->events[slot].notice_kind = DSD_CALL_KIND_UNKNOWN;
+        ext->events[slot].notice_handled = 0U;
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
     call_state_apply_observation(snapshot, observation);
-    snapshot->crc_invalid |= state->event_crc_invalid[observation->slot];
+    snapshot->crc_invalid |= state->event_crc_invalid[slot];
     snapshot->updated_m = now_m;
     snapshot->ended_m = 0.0;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
     if (reacquires_ended_epoch && g_call_state_reacquire_hook != NULL) {
-        g_call_state_reacquire_hook(state, observation->slot, &previous);
+        g_call_state_reacquire_hook(state, slot, &previous);
     }
     return begins_epoch;
 }
