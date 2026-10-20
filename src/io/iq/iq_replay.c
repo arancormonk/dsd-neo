@@ -2669,6 +2669,11 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
         dsd_iq_replay_config_clear(&cfg);
         return DSD_IQ_ERR_IO;
     }
+    /* Unbuffered, so each read sees the file as it is then: a stdio buffer can hold bytes read ahead of the request
+       (musl fills its own on every read), and a file cut short after the open would then still hand over bytes it no
+       longer has before the read error. Replay reads are whole transfer blocks (about 5 ms of capture each, at any
+       rate), so this costs at most one read() per block. */
+    (void)setvbuf(src->fp, NULL, _IONBF, 0);
     src->remaining_bytes = effective;
     src->total_bytes = effective;
     src->align = dsd_iq_sample_format_alignment_bytes(cfg.format);
