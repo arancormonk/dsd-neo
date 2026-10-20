@@ -1440,9 +1440,7 @@ enum { kReplayReadChunk = 65536 }; /* this test's reads */
 /* Issue #572: the replay source knows from its open how many bytes the capture holds. A data file cut short after the
  * open (truncated while it replays) runs out before them, and the read that finds nothing more is an I/O error, not
  * the capture's end: the bytes still there are read first, then reads fail. A sidecar whose data_bytes is 0 (an
- * interrupted capture, replayed as the file was at its open) reads to that end with no error. The reads are 64 KiB,
- * larger than a stdio buffer, so none holds bytes the cut removed; the replay reader's own chunks are one live
- * transfer (dsd_iq_replay_chunk_bytes()), which at a low capture rate a stdio buffer can hold ahead of a cut. */
+ * interrupted capture, replayed as the file was at its open) reads to that end with no error. */
 static int
 test_replay_read_of_a_data_file_cut_short(void) {
     static const char* const files[] = {"cut.iq", "cut.iq.json", "whole.iq", "whole.iq.json", NULL};
@@ -1542,6 +1540,63 @@ typedef struct {
  * ring, and cs16 only at the cu8 stage (replay_convert_block_to_f32() in rtl_device.cpp). The open refuses any other
  * format and stage, naming them, where it used to open a capture whose every chunk the reader then dropped. --iq-info
  * still describes such a capture, and reports it as not replay compatible. */
+/* Issue #741: the replay reader's chunks are one live transfer (dsd_iq_replay_chunk_bytes()), smaller than a stdio
+ * buffer at a low capture rate, and musl reads ahead of every request. Reads smaller than any stdio buffer, with the
+ * file cut inside what one would hold ahead, still get only the bytes the file has left: the source reads unbuffered. */
+static int
+test_replay_small_reads_of_a_data_file_cut_short(void) {
+    static const char* const files[] = {"small.iq", "small.iq.json", NULL};
+    static uint8_t payload[3 * kReplayReadChunk];
+    uint8_t buf[1000];
+    int rc = 0;
+    char dir[256];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)((i * 31U) & 0xFFU);
+    }
+
+    char meta[512];
+    char data[512];
+    path_join(meta, sizeof(meta), dir, "small.iq.json");
+    path_join(data, sizeof(data), dir, "small.iq");
+    if (write_bytes_file(data, payload, sizeof(payload)) != 0
+        || write_valid_metadata(meta, "small.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 48000, 0,
+                                sizeof(payload))
+               != 0) {
+        return 1;
+    }
+    dsd_iq_replay_config cfg;
+    dsd_iq_replay_source* src = NULL;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    int prc = dsd_iq_replay_open(meta, &cfg, &src, err, sizeof(err));
+    rc |= expect_int("small reads: open", prc, DSD_IQ_OK);
+    if (prc != DSD_IQ_OK || !src) {
+        dsd_iq_replay_config_clear(&cfg);
+        return 1;
+    }
+    size_t got = 99U;
+    rc |= expect_int("small reads: first read", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("small reads: first read size", got, sizeof(buf));
+    rc |= expect_true("small reads: first read bytes", memcmp(buf, payload, sizeof(buf)) == 0);
+
+    /* Cut the file 500 bytes into the second read, under the open source. */
+    rc |= expect_int("small reads: cut", write_bytes_file(data, payload, sizeof(buf) + 500U), 0);
+    got = 99U;
+    rc |= expect_int("small reads: the bytes left", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("small reads: the bytes left, size", got, 500U);
+    rc |= expect_true("small reads: the bytes left, bytes", memcmp(buf, payload + sizeof(buf), 500U) == 0);
+    got = 99U;
+    rc |=
+        expect_int("small reads: the next read fails", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_ERR_IO);
+    rc |= expect_u64("small reads: the failed read's size", got, 0U);
+    dsd_iq_replay_close(src);
+    dsd_iq_replay_config_clear(&cfg);
+    return rc;
+}
+
 static int
 test_replay_open_refuses_formats_it_cannot_convert(void) {
     static const char* const files[] = {"capture.iq",
@@ -1923,6 +1978,7 @@ main(void) {
     rc |= test_relative_data_resolution_info_and_open_validation();
     rc |= test_replay_read_partial_eof_and_rewind();
     rc |= test_replay_read_of_a_data_file_cut_short();
+    rc |= test_replay_small_reads_of_a_data_file_cut_short();
     rc |= test_replay_open_refuses_formats_it_cannot_convert();
     rc |= test_replay_chunk_is_one_live_transfer();
     rc |= remove_temp_dirs();

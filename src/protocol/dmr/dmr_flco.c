@@ -750,15 +750,14 @@ dmr_flco_crypto_is_decoders_choice(const dmr_flco_ctx* ctx, uint8_t algid, uint1
 
 // The crypto fields a fresh pre-call PI header on the slot received that the live values still hold.
 static uint8_t
-dmr_flco_precall_received(const dmr_flco_ctx* ctx, uint8_t algid, uint16_t kid) {
+dmr_flco_precall_received(const dmr_flco_ctx* ctx, uint8_t slot, uint8_t algid, uint16_t kid) {
     uint8_t received = 0U;
-    const uint8_t precall = dmr_pi_precall_fresh(ctx->state, ctx->slot, dsd_decode_now_mono_s())
-                                ? ctx->state->dmr_pi_precall_rx[ctx->slot]
-                                : 0U;
-    if ((precall & DSD_CALL_CRYPTO_RX_ALG) != 0U && ctx->state->dmr_pi_precall_algid[ctx->slot] == algid) {
+    const uint8_t precall =
+        dmr_pi_precall_fresh(ctx->state, slot, dsd_decode_now_mono_s()) ? ctx->state->dmr_pi_precall_rx[slot] : 0U;
+    if ((precall & DSD_CALL_CRYPTO_RX_ALG) != 0U && ctx->state->dmr_pi_precall_algid[slot] == algid) {
         received |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
     }
-    if ((precall & DSD_CALL_CRYPTO_RX_KID) != 0U && ctx->state->dmr_pi_precall_kid[ctx->slot] == kid) {
+    if ((precall & DSD_CALL_CRYPTO_RX_KID) != 0U && ctx->state->dmr_pi_precall_kid[slot] == kid) {
         received |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
     }
     return received;
@@ -767,43 +766,42 @@ dmr_flco_precall_received(const dmr_flco_ctx* ctx, uint8_t algid, uint16_t kid) 
 // Whether the live @p algid / @p kid are still the ones a replaced call left behind; once they are not, the slot's
 // inherited mark is cleared.
 static int
-dmr_flco_crypto_carried(const dmr_flco_ctx* ctx, uint8_t algid, uint16_t kid) {
-    const uint8_t idx = ctx->slot;
-    const int carried = ctx->state->dmr_crypto_inherited[idx] != 0U
-                        && ctx->state->dmr_crypto_inherited_algid[idx] == (int)algid
-                        && ctx->state->dmr_crypto_inherited_keyid[idx] == (int)kid
+dmr_flco_crypto_carried(const dmr_flco_ctx* ctx, uint8_t slot, uint8_t algid, uint16_t kid) {
+    const int carried = ctx->state->dmr_crypto_inherited[slot] != 0U
+                        && ctx->state->dmr_crypto_inherited_algid[slot] == (int)algid
+                        && ctx->state->dmr_crypto_inherited_keyid[slot] == (int)kid
                         && !dmr_flco_crypto_is_decoders_choice(ctx, algid, kid);
     if (!carried) {
-        ctx->state->dmr_crypto_inherited[idx] = 0U;
+        ctx->state->dmr_crypto_inherited[slot] = 0U;
     }
     return carried;
 }
 
 static void
-dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
+dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot) {
     const int encrypted = (ctx->so & 0x40U) != 0U;
-    const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
-    const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
-    const uint64_t mi = ctx->slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
+    const uint8_t algid = (uint8_t)(slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
+    const uint16_t kid = (uint16_t)(slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
+    const uint64_t mi = slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
 
-    // Slot bound: dmr_flco_publish_voice(), the sole caller, returns early on
-    // ctx->slot >= DSD_CALL_STATE_SLOT_COUNT, so the per-slot reads below are in range.
+    // Slot bound: dmr_flco_publish_voice(), the sole caller, passes @p slot only once it is below
+    // DSD_CALL_STATE_SLOT_COUNT, so the per-slot reads below are in range.
     // Classify under the ALG the voice path will decrypt with; the published `.algid` stays OTA.
-    const int class_algid = dsd_dmr_classify_algid(ctx->state, (int)ctx->slot, (int)ctx->so);
+    const int class_algid = dsd_dmr_classify_algid(ctx->state, (int)slot, (int)ctx->so);
     const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, class_algid);
-    const int has_key = class_algid == 0 ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
-                                         : dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, class_algid, &key);
+    const int has_key = class_algid == 0 ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, slot)
+                                         : dsd_dmr_voice_kid_can_decrypt(ctx->state, slot, class_algid, &key);
     // The LC carries no ALG ID or key id: they are received only when a checked PI header carried them. One that
     // arrived before any call was active on the slot (its voice LC header lost) transfers into the call this LC
     // opens, for the fields the live values still hold -- a forced or inferred value written since is not what the PI
     // carried. Once in the call they stay with it; a later LC adds nothing.
-    const uint8_t received = dmr_flco_precall_received(ctx, algid, kid);
-    dmr_pi_precall_drop_hold(ctx->state, ctx->slot);
+    const uint8_t received = dmr_flco_precall_received(ctx, slot, algid, kid);
+    dmr_pi_precall_drop_hold(ctx->state, slot);
     // Live values a replaced call left behind (its terminator missed) are still what the voice path decrypts with,
     // but they are not this call's: published as carried, the call keeps its own (none, until its PI or the voice
     // path's forced or inferred choice supplies them). Once the live values change they are this call's, and so are
     // values that are the decoder's own choice for this call (dmr_flco_crypto_is_decoders_choice()).
-    const int carried = dmr_flco_crypto_carried(ctx, algid, kid);
+    const int carried = dmr_flco_crypto_carried(ctx, slot, algid, kid);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
@@ -818,8 +816,8 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
            established classification must not make the next call, whose LC says clear, encrypted. */
         .enc_observed = (ctx->lc_so & 0x40U) != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
     };
-    if (dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto) > 0) {
-        dmr_note_published_live_crypto(ctx->state, ctx->slot, algid, kid);
+    if (dsd_call_state_update_crypto(ctx->state, slot, &crypto) > 0) {
+        dmr_note_published_live_crypto(ctx->state, slot, algid, kid);
     }
 }
 
@@ -874,9 +872,12 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return;
     }
+    // Every per-slot access below indexes this bounded copy. Re-reading ctx->slot after the calls in between loses the
+    // bound (an LTO build of GCC 14 then reports the two-slot array writes as out of range under -Werror).
+    const uint8_t slot = ctx->slot;
     const dsd_call_observation observation = {
         .protocol = dmr_flco_voice_protocol(ctx->state),
-        .slot = ctx->slot,
+        .slot = slot,
         .kind = dmr_flco_call_kind(ctx),
         .ota_target_id = ctx->target,
         .policy_target_id = ctx->target,
@@ -894,22 +895,21 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
          * receiver stays put, so there it names another channel, not the carrier
          * this call is decoded on (issue #575).
          */
-        .frequency_hz = dsd_opts_trunk_vc_followed(ctx->opts) ? ctx->state->trunk_vc_freq[ctx->slot] : 0,
+        .frequency_hz = dsd_opts_trunk_vc_followed(ctx->opts) ? ctx->state->trunk_vc_freq[slot] : 0,
         .service_options = ctx->so,
         .emergency = (uint8_t)((ctx->so & 0x80U) != 0U),
         .priority = (uint8_t)(ctx->so & 0x03U),
         .has_service_metadata = 1U,
     };
     dsd_call_snapshot before;
-    const int was_active =
-        dsd_call_state_get(ctx->state, ctx->slot, &before) > 0 && before.phase == DSD_CALL_PHASE_ACTIVE;
+    const int was_active = dsd_call_state_get(ctx->state, slot, &before) > 0 && before.phase == DSD_CALL_PHASE_ACTIVE;
     const dsd_call_boundary boundary = dmr_flco_voice_boundary(ctx);
     (void)dsd_call_state_observe(ctx->state, &observation, boundary);
     dsd_call_snapshot after;
-    const int have_after = dsd_call_state_get(ctx->state, ctx->slot, &after) > 0;
+    const int have_after = dsd_call_state_get(ctx->state, slot, &after) > 0;
     const int epoch_forked = was_active && have_after && after.epoch != before.epoch;
     if (boundary == DSD_CALL_BOUNDARY_BEGIN || epoch_forked) {
-        dmr_flco_forget_replaced_crypto_continuity(ctx->state, ctx->slot != 0U ? 1U : 0U);
+        dmr_flco_forget_replaced_crypto_continuity(ctx->state, slot);
     }
     // A new transmission replaced the slot's active call, whose terminator was missed, so the vendor late-entry mode
     // was that call's (issue #657): a voice LC header after the call carried voice (or after the header repeat window),
@@ -918,22 +918,22 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     // another call, which forks the epoch. Header repeats and embedded LCs of the same call keep the mode, and so does
     // evidence decoded before any call was active (a PI after a lost voice LC header).
     if (was_active && (boundary == DSD_CALL_BOUNDARY_BEGIN || epoch_forked)) {
-        dmr_le_vendor_reset(ctx->state, ctx->slot);
+        dmr_le_vendor_reset(ctx->state, slot);
         // Where the canonical layer kept the epoch (it names an identity-less one after this call), the record still
         // holds what the replaced transmission published into it: none of that is this call's.
         if (have_after && after.epoch == before.epoch) {
-            (void)dsd_call_state_forget_crypto_values(ctx->state, ctx->slot);
+            (void)dsd_call_state_forget_crypto_values(ctx->state, slot);
         }
         // The slot's live ALG ID, key id and MI are still the replaced call's. Decryption keeps them, exactly as it
         // always has; publication marks them as that call's, so the new call never shows them as its own.
-        const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->slot);
-        ctx->state->dmr_crypto_inherited[ctx->slot] = 1U;
-        ctx->state->dmr_crypto_inherited_algid[ctx->slot] = *live.algid;
-        ctx->state->dmr_crypto_inherited_keyid[ctx->slot] = *live.keyid;
+        const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, slot);
+        ctx->state->dmr_crypto_inherited[slot] = 1U;
+        ctx->state->dmr_crypto_inherited_algid[slot] = *live.algid;
+        ctx->state->dmr_crypto_inherited_keyid[slot] = *live.keyid;
     }
-    dmr_flco_publish_crypto(ctx);
-    dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
-    dsd_signal_search_note_call(ctx->state, ctx->slot);
+    dmr_flco_publish_crypto(ctx, slot);
+    dsd_event_sync_slot(ctx->opts, ctx->state, slot);
+    dsd_signal_search_note_call(ctx->state, slot);
 }
 
 // The heal side of the unverified-terminator end. The terminator reset below clears the live

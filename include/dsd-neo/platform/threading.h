@@ -93,20 +93,36 @@ int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
 #define dsd_thread_create(thread, func, arg) dsd_thread_create_impl((thread), (arg), (func))
 #endif
 
+/*
+ * On POSIX builds join and self, like create, expand to the pthread call at
+ * the call site. musl declares pthread_t as a pointer in C and as an integer
+ * in C++, so an out-of-line function taking or returning dsd_thread_t would
+ * have a different type in C and C++ callers, which GCC's LTO rejects
+ * (-Wlto-type-mismatch).
+ */
+
 /**
  * @brief Wait for a thread to terminate.
  *
  * @param thread    Thread handle.
  * @return 0 on success, non-zero error code on failure.
  */
+#if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE)
+#define dsd_thread_join(thread) pthread_join((thread), NULL)
+#else
 int dsd_thread_join(dsd_thread_t thread);
+#endif
 
 /**
  * @brief Get handle/ID of the calling thread.
  *
  * @return Thread handle of caller.
  */
+#if !DSD_PLATFORM_WIN_NATIVE && !defined(DSD_NEO_THREADING_NO_INLINE_CREATE)
+#define dsd_thread_self() pthread_self()
+#else
 dsd_thread_t dsd_thread_self(void);
+#endif
 
 /*============================================================================
  * Mutex Functions

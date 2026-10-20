@@ -131,12 +131,6 @@ dsd_cond_timedwait(dsd_cond_t* cond, dsd_mutex_t* mutex, unsigned int timeout_ms
 }
 
 int
-dsd_thread_join(dsd_thread_t thread) {
-    (void)thread;
-    return 0;
-}
-
-int
 audio_conceal_init(struct audio_conceal_state* cs, size_t buffer_frames, int channels) {
     (void)cs;
     return (buffer_frames > 0U && channels > 0) ? 0 : -1;
