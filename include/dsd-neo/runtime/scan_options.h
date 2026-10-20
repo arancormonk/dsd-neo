@@ -142,6 +142,9 @@ int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_optio
  * "67.0/D023N"), alone or followed by a row option's switch, the rest of the cell the comma cut off too ("67.0
  * --squelch-db -60"). An RTL gain, and any other name with a space in it ("100 Main St", "D023 Repeater"), are that
  * column's own; a one-word name that is itself a standard tone or code ("100") reads as the list's rest.
+ * A receive filter list (--slot/dcc/ran/nac-allow or -block, issue #637) is judged the same way, by the values that
+ * filter takes ("370", "4/7"); a service name (--*-name) only past the header, since the rest of a name cannot be told
+ * from a column's own text.
  * Returns 1 with "--tone-allow: use / between entries, not commas" in @p error when refused, else 0. Never echoes the
  * cell or the field. */
 int dsd_scan_options_tone_list_split(const char* options, const char* next, int next_past_header, char* error,

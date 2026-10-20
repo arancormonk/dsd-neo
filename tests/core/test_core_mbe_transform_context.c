@@ -13,6 +13,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -2263,12 +2264,14 @@ test_process_mbe_frame_mbe_capture_honors_record_policy(void) {
         uint8_t call_slot;
         int current_slot;
         int right_file;
+        int slot1_blocked; /* --slot-block 1 (issue #637): X2 judges its slot 2 frames as slot 2, in the one file. */
     } cases[] = {
-        {"p25p1", DSD_SYNC_P25P1_POS, 0U, 0, 0},
-        {"nxdn", DSD_SYNC_NXDN_POS, 0U, 0, 0},
-        {"dstar stale slot", DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 0},
-        {"x2 slot 1", DSD_SYNC_X2TDMA_VOICE_POS, 1U, 1, 0},
-        {"dmr slot 1", DSD_SYNC_DMR_BS_VOICE_POS, 1U, 1, 1},
+        {"p25p1", DSD_SYNC_P25P1_POS, 0U, 0, 0, 0},
+        {"nxdn", DSD_SYNC_NXDN_POS, 0U, 0, 0, 0},
+        {"dstar stale slot", DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 0, 0},
+        {"x2 slot 1", DSD_SYNC_X2TDMA_VOICE_POS, 1U, 1, 0, 0},
+        {"x2 slot 2 past a blocked slot 1", DSD_SYNC_X2TDMA_VOICE_POS, 1U, 1, 0, 1},
+        {"dmr slot 1", DSD_SYNC_DMR_BS_VOICE_POS, 1U, 1, 1, 0},
     };
 
     static dsd_opts opts;
@@ -2302,6 +2305,10 @@ test_process_mbe_frame_mbe_capture_honors_record_policy(void) {
                 opts.mbe_out_fR = out;
             } else {
                 opts.mbe_out_f = out;
+            }
+            if (cases[c].slot1_blocked) {
+                opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+                opts.receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 1;
             }
             init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
             state.synctype = cases[c].protocol;
@@ -4171,6 +4178,63 @@ test_process_mbe_frame_activation_gate_and_wide_kid(void) {
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
     rc |= expect_eq_int("gate-wide-kid-activates-full-index", (int)state.R, (int)0xCCCCCULL);
 
+    return rc;
+}
+
+// Issue #637: a frame the receive policy has not admitted yet (Checking) opens no call, but the call a protocol path
+// already holds still selects its key: a talkgroup-mapped call decrypts with the mapped key, not the signalled one,
+// so the vocoder state the admitted frames continue from is the call's.
+static int
+test_process_mbe_frame_checking_call_keeps_mapped_key(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+
+    ambe_fr[0][6] = 1;
+    ambe_fr[2][18] = 1;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
+    opts.floating_point = 1;
+    opts.audio_gain = 1.0f;
+    opts.audio_gainR = 1.0f;
+    opts.receive.filters[DSD_RECEIVE_DCC].enabled = 1; /* No colour code verified yet: Checking. */
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.currentslot = 0;
+    state.dmr_color_code = 16U;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 123U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 123U,
+        .policy_target_id = 123U,
+    };
+    rc |= expect_eq_int("checking call opened", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+    processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
+    rc |= expect_eq_int("checking frame decrypts with the mapped key", (int)state.R, (int)0xBBBBBULL);
+    dsd_call_snapshot snapshot;
+    rc |= expect_eq_int("checking frame marks no media",
+                        dsd_call_state_get(&state, 0U, &snapshot) > 0 && snapshot.media_active == 0U, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -6555,6 +6619,7 @@ main(void) {
     rc |= test_dmr_straight_keystream_burst_stays_audible_under_reverse_mute();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
     rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
+    rc |= test_process_mbe_frame_checking_call_keeps_mapped_key();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
     rc |= test_play_mbe_files_does_not_carry_call_identity_across_files();

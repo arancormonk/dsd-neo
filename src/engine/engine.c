@@ -20,6 +20,8 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -2123,9 +2125,13 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
-    /* Trunk scan keeps the carrier identity in each target's snapshot, which saves and restores it. */
+    /* Trunk scan keeps the carrier's acquisition hints in each target's snapshot (the DMR confidence lock), but no
+       published code outlives the transmission that proved it (issue #637): the next transmission proves its own
+       before an access filter admits it or a service name labels it. */
     if (!preserve_scan_state) {
         dsd_engine_forget_carrier_codes(state);
+    } else {
+        dsd_engine_forget_carrier_code_values(state);
     }
 }
 
@@ -2135,12 +2141,23 @@ dsd_engine_forget_carrier_codes(dsd_state* state) {
         return;
     }
     dmr_confidence_reset(state);
+    dsd_engine_forget_carrier_code_values(state);
+}
+
+void
+dsd_engine_forget_carrier_code_values(dsd_state* state) {
+    if (!state) {
+        return;
+    }
     /* The colour code is read as this carrier's (issue #575), so it goes back to "not decoded" (16, as initState()
      * leaves it) with the lock. BS mode rewrites it when the gate relocks, before any burst is dispatched, but MS mode
      * has no lock: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode writes nothing, so the
      * previous carrier's code would label it. Here rather than in dmr_confidence_reset(), whose BS burst-error callers
      * stay on the same carrier. */
     state->dmr_color_code = 16U;
+    /* So is the slot the single-slot DMR decoder proved (issue #637): the next carrier proves its own. */
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
     /* The NXDN RAN likewise ((unsigned)-1, as initState() leaves it; RAN 0 is a legal code), with its stand-in mark. The
      * SACCH writes it only once the transmission is confirmed, and confirmation restarts at a no-carrier pass, so a call
      * opening on its FACCH1 VCALL would otherwise read the previous transmission's RAN. On a control channel the
@@ -2568,15 +2585,108 @@ no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state, int retune
     }
 }
 
+/* Relabel the active call on @p slot under the receive policy now in force. Returns 1 when that policy rejects it. */
+static int
+receive_boundary_rejects_call(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    dsd_call_state_refresh_receive(opts, state, slot);
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.receive_verdict == DSD_RECEIVE_REJECTED;
+}
+
+/* End @p slot's call the receive policy rejects, with its MBE capture only: the other slot's admitted call keeps
+   recording into its own. */
+static void
+receive_boundary_end_call(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (slot == 0U && dsd_engine_analog_call_active(state)) {
+        dsd_engine_analog_call_end(opts, state);
+    } else {
+        (void)dsd_call_state_end_ex(state, slot, 0.0, DSD_CALL_END_EXPLICIT);
+    }
+    if (slot == 0U && opts->mbe_out_f != NULL) {
+        closeMbeOutFile(opts, state);
+    } else if (slot == 1U && opts->mbe_out_fR != NULL) {
+        closeMbeOutFileR(opts, state);
+    }
+}
+
 void
-dsd_engine_receive_policy_boundary(dsd_opts* opts, dsd_state* state) {
+dsd_engine_receive_policy_boundary(dsd_opts* opts, dsd_state* state, int filters_were_enabled) {
     if (!opts || !state) {
         return;
     }
+    /* A carrier marked tuned without a voice-channel tune (dsd_engine_update_vc_tune_state() forgets the control
+       channel's codes) may hold codes that prove nothing about it, so once a filter is on it proves its own. */
+    if (!filters_were_enabled && dsd_receive_filters_enabled(opts) && opts->trunk_is_tuned == 1
+        && state->receive_codes_fresh_freq == 0) {
+        dsd_engine_forget_carrier_codes(state);
+    }
+    /* The Phase 2 playout's queued frames play under the verdicts the new policy gives their calls. */
     dsd_p25p2_playout_note_policy(opts, state);
-    dsd_p25p2_playout_drain(opts, state);
-    no_carrier_finalize_canonical_calls(opts, state, 1);
-    no_carrier_close_mbe_outputs_if_needed(opts, state);
+    /* Only a call the new policy rejects ends; one it still admits, or is checking, carries on under its new label, so
+       an edit (a name above all) never silences admitted reception. */
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (receive_boundary_rejects_call(opts, state, (uint8_t)slot)) {
+            /* Its queued Phase 2 frames, which the new verdict mutes, go with it; the other slot's admitted stream keeps
+               its queue and its 4V/2V pairing, which draining both would break. */
+            dsd_p25p2_playout_reset(state, slot);
+            receive_boundary_end_call(opts, state, (uint8_t)slot);
+        }
+        dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
+}
+
+/* The acquisition window a trunk voice channel's checking traffic gets where no trunk state machine bounds it (issue
+   #637): the DMR state machine's default grant timeout. */
+#define DSD_ENGINE_RECEIVE_ACQUIRE_S 4.0
+
+/* Whether admitted traffic was heard on the followed voice channel within the hangtime: followed DMR data, which
+   stamps only the monotonic activity (handle_data_sync()), or a call still observed (issue #637). */
+static int
+receive_admitted_still_heard(const dsd_opts* opts, const dsd_state* state, double now_m) {
+    const double hangtime_s = (double)opts->trunk_hangtime;
+    return (state->last_vc_sync_time_m > 0.0 && now_m - state->last_vc_sync_time_m <= hangtime_s)
+           || dsd_call_state_admitted_call_active(opts, state, now_m, hangtime_s);
+}
+
+int
+dsd_engine_trunk_receive_release_due(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned != 1 || !dsd_receive_filters_enabled(opts)) {
+        return 0;
+    }
+    /* Only admitted voice stamps the voice channel's activity (the DMR and NXDN voice paths), with the deadline
+       no_carrier_is_cc_return_due() applies once sync is gone. Admitted traffic still heard within the hangtime keeps
+       the channel: a call in progress (a data call, which stamps no wall-clock activity), or followed DMR data, which
+       stamps only the monotonic one (handle_data_sync()). */
+    const double now_m = dsd_decode_now_mono_s();
+    if (!no_carrier_is_cc_return_due(opts, state, dsd_decode_time())
+        || receive_admitted_still_heard(opts, state, now_m)) {
+        return 0;
+    }
+    /* Only traffic the policy rejects is let go here at once. Traffic it is still checking is the P25 and DMR trunk
+       state machines' to release, once their acquisition window closes (dmr_sm_receive_check(), the P25 receive
+       check): the hangtime would cut that window short. Other trunked protocols (NXDN) have no such window, so their
+       checking traffic gets one here, timed from the tune. Traffic the policy admits, or one no filter judges, holds the
+       channel as without a filter, data that opens no call (an NXDN SDCALL) included. */
+    const int protocol = state->synctype != DSD_SYNC_NONE ? state->synctype : state->lastsynctype;
+    int rejected = 0;
+    int checking = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        const dsd_receive_verdict verdict = dsd_receive_status(opts, state, protocol, slot);
+        checking |= verdict == DSD_RECEIVE_CHECKING;
+        rejected |= verdict == DSD_RECEIVE_REJECTED;
+    }
+    if (!checking) {
+        return rejected;
+    }
+    if (DSD_SYNC_IS_P25(protocol) || DSD_SYNC_IS_DMR(protocol)) {
+        return 0;
+    }
+    const double tuned_m = state->p25_last_vc_tune_time_m;
+    return tuned_m > 0.0 && now_m - tuned_m >= DSD_ENGINE_RECEIVE_ACQUIRE_S;
 }
 
 /* Whether a boundary of @p kind can run while the P25 or DMR state machine ticks, so that it must hold the P25 SM tick
@@ -3145,6 +3255,20 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     return frame_dispatchable;
 }
 
+/* Whether the receive policy hands the receiver back between synced frames (issue #637): a trunk voice channel only
+   rejected traffic holds goes back to the control channel through noCarrier(), and a -Y row whose traffic it does not
+   admit moves on. The receive verdict first: it answers at once under the default (disabled) policy, before the row
+   walk. */
+static int
+live_scanner_receive_should_yield(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_engine_trunk_receive_release_due(opts, state)) {
+        return 1;
+    }
+    return opts->scanner_mode == 1 && !state->lcn_scan_hold
+           && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s())
+           && dsd_engine_channel_scan_has_other_row(opts, state);
+}
+
 static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
@@ -3163,8 +3287,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             state->synctype = DSD_SYNC_NONE;
             break;
         }
-        if (opts->scanner_mode == 1 && !state->lcn_scan_hold && dsd_engine_channel_scan_has_other_row(opts, state)
-            && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s())) {
+        if (live_scanner_receive_should_yield(opts, state)) {
             state->synctype = DSD_SYNC_NONE;
             break;
         }

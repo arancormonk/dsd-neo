@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -43,6 +44,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -921,6 +923,49 @@ test_parser_accepts_optional_modulation_and_gain_columns(void) {
 
     dsd_trunk_scan_target_list_reset(&list);
     cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #637: a receive filter list in the options cell followed by a numeric column keeps that column's value: a DCC
+   list's lone last-looking number is the column's own (an RTL gain of 7), in either column order. */
+static int
+test_parser_keeps_gain_after_receive_options(void) {
+    static const struct {
+        const char* header;
+        const char* body;
+    } cases[] = {
+        {"id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,rtl_gain\n",
+         "dmr,dmr-conventional,461000000,,250,,base,--dcc-allow 4,7\n"},
+        {"id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain,options\n",
+         "dmr,dmr-conventional,461000000,,250,,base,7,--dcc-allow 4\n"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        if (make_temp_dir(dir, sizeof dir) != 0) {
+            return 1;
+        }
+        char target_path[DSD_TEST_PATH_MAX];
+        if (write_targets_file_with_header(dir, cases[i].header, cases[i].body, target_path, sizeof target_path) != 0) {
+            cleanup_paths(dir, NULL, NULL);
+            return 1;
+        }
+        static dsd_opts opts;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        opts.trunk_scan_idle_dwell_ms = 3000;
+        opts.trunk_scan_activity_hold_ms = 1200;
+        dsd_trunk_scan_target_list list;
+        DSD_MEMSET(&list, 0, sizeof list);
+        char err[256] = {0};
+        const int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+        if (rc != 0 || list.count != 1 || list.targets[0].rtl_gain_is_set != 1 || list.targets[0].rtl_gain_db != 7) {
+            DSD_FPRINTF(stderr, "receive options gain case %zu rc=%d count=%zu err=%s\n", i, rc, list.count, err);
+            test_rc = 1;
+        }
+        dsd_trunk_scan_target_list_reset(&list);
+        cleanup_paths(dir, target_path, NULL);
+    }
     return test_rc;
 }
 
@@ -3284,6 +3329,164 @@ test_nxdn_conventional_activity_hold(void) {
     return test_rc;
 }
 
+/* Issue #637: the receive policy judges a P25 conventional report by its own call's protocol and slot. A Phase 2 call
+   is admitted by its verified Phase 2 NAC (p2_cc), never by the Phase 1 NID's state->nac, and a slot filter applies to
+   its slot; traffic the policy checks or rejects never holds the target. */
+static int
+test_p25_conventional_activity_receive_policy(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-conventional,851500000,,250,250,\n"
+                             "b,dmr-conventional,461000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    static const struct {
+        const char* label;
+        const char* allow;
+        const char* block;
+        int kind;
+        int protocol;
+        int slot;
+        int holds;
+    } cases[] = {
+        {"phase 2 nac allowed", "293", "", DSD_RECEIVE_NAC, DSD_SYNC_P25P2_POS, 0, 1},
+        {"phase 1 nac checking", "293", "", DSD_RECEIVE_NAC, DSD_SYNC_P25P1_POS, 0, 0},
+        {"phase 2 nac blocked", "", "293", DSD_RECEIVE_NAC, DSD_SYNC_P25P2_POS, 1, 0},
+        {"phase 2 slot 2 blocked", "", "2", DSD_RECEIVE_SLOT, DSD_SYNC_P25P2_POS, 1, 0},
+        {"phase 2 slot 1 open", "", "2", DSD_RECEIVE_SLOT, DSD_SYNC_P25P2_POS, 0, 1},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_scan_opts_state(opts, state);
+        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "P25 conventional receive %s init failed: %s\n", cases[i].label, err);
+            test_rc = 1;
+            goto cleanup;
+        }
+        dsd_receive_filter* filter = &opts->receive.filters[cases[i].kind];
+        DSD_MEMSET(filter, 0, sizeof(*filter));
+        filter->enabled = 1;
+        if (dsd_receive_set_parse(cases[i].kind, cases[i].allow, &filter->allow, err, sizeof err) != 0
+            || dsd_receive_set_parse(cases[i].kind, cases[i].block, &filter->block, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "P25 conventional receive %s policy failed: %s\n", cases[i].label, err);
+            test_rc = 1;
+            goto cleanup;
+        }
+        /* A Phase 2 carrier: no Phase 1 NID, a verified Phase 2 NAC. */
+        state->nac = 0;
+        state->p2_cc = 0x293;
+        state->p2_cc_verified = 1;
+        trunk_scan_test_set_now(0.10);
+        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, cases[i].protocol, cases[i].slot, 1001, 2002, 0, 0,
+                                                        0);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (dsd_engine_trunk_scan_active_index(state) != (cases[i].holds ? 0U : 1U)) {
+            DSD_FPRINTF(stderr, "P25 conventional receive %s: hold %s\n", cases[i].label,
+                        cases[i].holds ? "missing" : "taken by traffic the policy does not admit");
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+
+cleanup:
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #637: a conventional target whose traffic the receive policy rejects lets the frame loop yield once the
+   acquisition window has run and another target can take the receiver; never while it is still acquiring. */
+static int
+test_receive_expiry_yields_conventional_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,250,\n"
+                             "b,dmr-conventional,462000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = 0;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "receive expiry init failed: %s\n", err);
+        test_rc = 1;
+    } else {
+        dsd_receive_filter* dcc = &opts->receive.filters[DSD_RECEIVE_DCC];
+        dcc->enabled = 1;
+        test_rc |= dsd_receive_set_parse(DSD_RECEIVE_DCC, "2", &dcc->block, err, sizeof err) != 0;
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmr_color_code = 2;
+        trunk_scan_test_set_now(0.10);
+        if (dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: yielded while still acquiring\n");
+            test_rc = 1;
+        }
+        trunk_scan_test_set_now(5.0);
+        if (!dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: rejected traffic kept the frame loop\n");
+            test_rc = 1;
+        }
+        /* Admitted data on the other slot (DCC 3 allowed there) stamps the activity hold, which keeps the target. */
+        state->dmr_color_code = 3;
+        state->currentslot = 1;
+        opts->trunk_tune_group_calls = 1;
+        opts->trunk_tune_data_calls = 1;
+        opts->scan_voice_only = 0;
+        dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 1);
+        state->dmr_color_code = 2;
+        if (dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: dropped a target admitted data holds\n");
+            test_rc = 1;
+        }
+        dcc->enabled = 0;
+        if (dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: yielded with no filter on\n");
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_p25_conventional_activity_hold(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -3345,8 +3548,8 @@ test_p25_conventional_activity_hold(void) {
             test_rc = 1;
         }
         trunk_scan_test_set_now(0.10);
-        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, 1001, 2002, cases[i].is_private,
-                                                        cases[i].encrypted, 0);
+        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, DSD_SYNC_P25P1_POS, 0, 1001, 2002,
+                                                        cases[i].is_private, cases[i].encrypted, 0);
         trunk_scan_test_set_now(0.30);
         dsd_engine_trunk_scan_tick(opts, state);
         if (dsd_engine_trunk_scan_active_index(state) != (cases[i].holds ? 0U : 1U)) {
@@ -3835,7 +4038,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
         }
         trunk_scan_test_set_now(0.10);
         if (!has_media) {
-            dsd_engine_trunk_scan_p25_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+            dsd_engine_trunk_scan_p25_conventional_activity(opts, state, DSD_SYNC_P25P1_POS, 0, 1001, 2002, 0, 0, 0);
         } else {
             // No activity report: the canonical P25 media alone must hold the park.
             dsd_call_observation obs = {0};
@@ -13105,6 +13308,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
+    rc |= run_with_default_tune_hook(test_parser_keeps_gain_after_receive_options);
     rc |= run_with_default_tune_hook(test_parser_accepts_p25_conventional_target);
     rc |= run_with_default_tune_hook(test_live_target_decryption_roundtrip);
     rc |= run_with_default_tune_hook(test_parser_accepts_target_key_columns);
@@ -13153,6 +13357,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_classes_enable_missing_decoders);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_p25_conventional_activity_hold);
+    rc |= run_with_default_tune_hook(test_p25_conventional_activity_receive_policy);
+    rc |= run_with_default_tune_hook(test_receive_expiry_yields_conventional_target);
     rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);
     rc |= run_with_default_tune_hook(test_conventional_activity_families_do_not_cross);
     rc |= run_with_default_tune_hook(test_nxdn48_conventional_activity_hold);

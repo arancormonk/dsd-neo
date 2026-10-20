@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <assert.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -16,6 +17,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <sndfile.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,12 +53,48 @@ test_protocol_context(dsd_opts* opts, dsd_state* state) {
     assert(dsd_receive_status(opts, state, DSD_SYNC_NXDN_POS, 0) == DSD_RECEIVE_CHECKING);
     state->nxdn_last_ran = 63;
     assert(!dsd_receive_allows(opts, state, DSD_SYNC_NXDN_POS, 0));
+    /* The single-slot DMR decoder (-fr/-nm on a repeater) decodes every burst on lane 0: the receive slot is the one
+       its CACH proved, never lane 0's own number, and a slot not proven yet is Checking (issue #637). */
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    assert(!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, 0));
+    dsd_receive_identity mono;
+    dsd_receive_identity_current(state, DSD_SYNC_DMR_BS_VOICE_POS, 0, &mono);
+    assert(mono.slot == 2 && !mono.slot_pending);
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    assert(dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, 0));
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+    assert(dsd_receive_status(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, 0) == DSD_RECEIVE_CHECKING);
+    /* The shared status text names the one slot the single-slot lane carries, never both lanes as one. */
+    char status[128];
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    dsd_app_receive_status_text(opts, state, status, sizeof status);
+    assert(strcmp(status, "Slot 2: Rejected by receive filter") == 0);
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    dsd_app_receive_status_text(opts, state, status, sizeof status);
+    assert(strcmp(status, "Slot 1: Allowed; slot 2: Rejected by receive filter") == 0);
+    state->synctype = DSD_SYNC_NONE;
+    assert(!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, 1)); /* Two-slot decoding: the burst's slot. */
+    assert(dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, 0));
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state->receive_context_active = 1;
     state->receive_context_protocol = DSD_SYNC_YSF_POS;
     assert(dsd_receive_current_allows(opts, state, 1)); /* Borrowed vocoder keeps its owner's protocol. */
     state->receive_context_active = 0;
     assert(!dsd_receive_current_allows(opts, state, 1));
+    /* YSF and scrambled dPMR play through NXDN's decoder under its synctype: playback is judged as the owner's, and
+       the owner's context ends where its playback does. */
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->nxdn_last_ran = 63;
+    assert(!dsd_receive_current_allows(opts, state, 0));
+    const dsd_receive_context outer = dsd_receive_context_begin(state, DSD_SYNC_YSF_POS);
+    assert(dsd_receive_current_allows(opts, state, 0));
+    const dsd_receive_context inner = dsd_receive_context_begin(state, DSD_SYNC_NXDN_POS);
+    assert(!dsd_receive_current_allows(opts, state, 0));
+    dsd_receive_context_end(state, inner);
+    assert(dsd_receive_current_allows(opts, state, 0));
+    dsd_receive_context_end(state, outer);
+    assert(!dsd_receive_current_allows(opts, state, 0) && !state->receive_context_active);
 }
 
 typedef struct {
@@ -94,6 +132,219 @@ check_recording(const char* name, void* user) {
     assert(remove(path) == 0);
     check->files++;
     return 0;
+}
+
+typedef struct {
+    const char* dir;
+    int files;
+    int traveler;
+    int dispatch;
+} service_files;
+
+static int
+count_service_files(const char* name, void* user) {
+    service_files* check = user;
+    check->traveler += strstr(name, "_SVC_Traveler__West_") != NULL;
+    check->dispatch += strstr(name, "_SVC_Dispatch") != NULL;
+    check->files++;
+    char path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
+    assert(remove(path) == 0);
+    return 0;
+}
+
+typedef struct {
+    const char* dir;
+    int files;
+    long frames;
+} recording_frames;
+
+static int
+count_recording_frames(const char* name, void* user) {
+    recording_frames* check = user;
+    char path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
+    SF_INFO info = {0};
+    SNDFILE* wav = sf_open(path, SFM_READ, &info);
+    assert(wav);
+    check->frames += (long)info.frames;
+    assert(sf_close(wav) == 0);
+    assert(remove(path) == 0);
+    check->files++;
+    return 0;
+}
+
+typedef struct {
+    const char* dir;
+    int files;
+    int temp;
+} teardown_check;
+
+static int
+check_teardown_recording(const char* name, void* user) {
+    teardown_check* check = user;
+    check->temp += strstr(name, "TEMP") != NULL;
+    check->files++;
+    char path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
+    assert(remove(path) == 0);
+    return 0;
+}
+
+/* Issue #637: enrichment (an alias, GPS, text) never reaches the history row of a call the receive policy is still
+   checking or rejects. */
+static void
+test_rejected_call_takes_no_enrichment(dsd_opts* opts, dsd_state* state) {
+    const dsd_receive_policy saved = opts->receive;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    set_filter(opts, DSD_RECEIVE_DCC, "", "7");
+    state->dmr_color_code = 7;
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_source_id = 11,
+        .ota_target_id = 22,
+        .policy_target_id = 22,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_state_refresh_receive(opts, state, 1U);
+    dsd_event_sync_slot(opts, state, 1U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 1U, &call) > 0 && call.receive_verdict == DSD_RECEIVE_REJECTED);
+    assert(dsd_event_enrich_alias(state, 1U, call.epoch, "Unit 11") == 0);
+    dsd_event_sync_slot(opts, state, 1U);
+    assert(dsd_call_state_end(state, 1U, 0.0) == 1);
+    dsd_event_sync_slot(opts, state, 1U);
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        assert(strstr(state->event_history_s[1].Event_History_Items[i].alias, "Unit 11") == NULL);
+    }
+    opts->receive = saved;
+    state->dmr_color_code = 16;
+}
+
+/* Issue #637: a call the policy admitted and a live edit then rejects still commits the segment it staged while
+   admitted: the row reaches history when the call ends. */
+static void
+test_admitted_segment_commits_after_rejection(dsd_opts* opts, dsd_state* state) {
+    const dsd_receive_policy saved = opts->receive;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    set_filter(opts, DSD_RECEIVE_DCC, "7", "");
+    state->dmr_color_code = 7;
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_source_id = 31,
+        .ota_target_id = 32,
+        .policy_target_id = 32,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_state_refresh_receive(opts, state, 1U);
+    dsd_event_sync_slot(opts, state, 1U);
+    assert(state->event_history_s[1].Event_History_Items[0].target_id == 32);
+    set_filter(opts, DSD_RECEIVE_DCC, "", "7");
+    dsd_call_state_refresh_receive(opts, state, 1U);
+    assert(dsd_call_state_end(state, 1U, 0.0) == 1);
+    dsd_event_sync_slot(opts, state, 1U);
+    assert(state->event_history_s[1].Event_History_Items[1].target_id == 32);
+    opts->receive = saved;
+    state->dmr_color_code = 16;
+}
+
+/* Issue #637: carrier-wide admission judges both over-the-air slots, whichever one the single-slot DMR decoder proved
+   for its voice lane: standalone data on the other slot is that slot's, so a -Y scan does not stay on rejected TS2
+   traffic after a TS1 call. */
+/* Issue #637: a call reacquired after a sync loss, before its code decodes again, keeps the service its IDs and crypto
+   were seeded from, so a different code decoded next ends it instead of relabelling the old call's identity. */
+static void
+test_reacquired_call_keeps_its_service(dsd_opts* opts, dsd_state* state) {
+    const dsd_receive_policy saved = opts->receive;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    state->dmr_color_code = 7;
+    const dsd_call_observation voice = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                        .slot = 0,
+                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                        .ota_target_id = 100,
+                                        .ota_source_id = 200,
+                                        .policy_target_id = 100};
+    assert(dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+    state->dmr_color_code = 16; /* The no-carrier pass forgot it. */
+    const dsd_call_observation anonymous = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    assert(dsd_call_state_observe(state, &anonymous, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.ota_target_id == 100 && call.receive_identity.known && call.receive_identity.value == 7);
+    state->dmr_color_code = 8;
+    dsd_call_state_refresh_receive(opts, state, 0U);
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
+    state->dmr_color_code = 16;
+    opts->receive = saved;
+}
+
+static void
+test_carrier_admission_judges_both_slots(dsd_opts* opts) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof state);
+    const dsd_receive_policy saved = opts->receive;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    assert(dsd_receive_carrier_allows(opts, &state)); /* No filter: everything. */
+    set_filter(opts, DSD_RECEIVE_SLOT, "1", "");
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_color_code = 7;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    assert(dsd_receive_allows(opts, &state, DSD_SYNC_DMR_BS_DATA_POS, 1)); /* The mono lane's proven TS1. */
+    assert(!dsd_receive_carrier_allows(opts, &state));
+    set_filter(opts, DSD_RECEIVE_SLOT, "1/2", "");
+    assert(dsd_receive_carrier_allows(opts, &state));
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    set_filter(opts, DSD_RECEIVE_DCC, "", "7");
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.nxdn_last_ran = 9;
+    assert(dsd_receive_carrier_allows(opts, &state)); /* FDMA: the protocol's own code. */
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    assert(!dsd_receive_carrier_allows(opts, &state));
+    opts->receive = saved;
+}
+
+/* Issue #637: the single-slot DMR decoder carries both over-the-air slots on lane 0, so a proven move from TS1 to TS2
+   with the same colour code is a new service: its call ends rather than taking TS2's name. While the next slot is
+   still pending the call keeps the slot it had proven. */
+static void
+test_mono_slot_change_is_a_boundary(dsd_opts* opts, dsd_state* state) {
+    const dsd_receive_policy saved = opts->receive;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    assert(dsd_receive_names_parse("--slot-name '1=Service A' --slot-name '2=Service B'", &opts->receive.names, NULL, 0)
+           == 0);
+    state->dmr_color_code = 7;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    const dsd_call_observation voice = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    assert(dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_state_refresh_receive(opts, state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.receive_identity.slot == 1);
+    const uint64_t epoch = call.epoch;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+    (void)dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_call_state_refresh_receive(opts, state, 0U);
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch);
+    assert(call.receive_identity.slot == 1 && !strcmp(call.service_label, "Service A"));
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    dsd_call_state_refresh_receive(opts, state, 0U);
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
+    assert(dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.epoch != epoch && call.receive_identity.slot == 2);
+    /* An observation alone (no refresh in between) splits the call too. */
+    const uint64_t ts2_epoch = call.epoch;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    (void)dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_CONTINUE);
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.epoch != ts2_epoch && call.receive_identity.slot == 1);
+    assert(dsd_call_state_end(state, 0U, 0.0) == 1);
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    state->dmr_color_code = 16;
+    opts->receive = saved;
 }
 
 static void
@@ -193,7 +444,71 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     recording_check check = {.dir = directory};
     assert(dsd_dir_list(directory, check_recording, &check) == 0);
     assert(check.files == 3 && check.traveler == 1 && check.dispatch == 1);
+    /* A tone still being acquired between two confirmed ones does not hide the change: each service gets its own
+       recording, never one under the later name. */
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1413;
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_DCS;
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    service_files services = {.dir = directory};
+    assert(dsd_dir_list(directory, count_service_files, &services) == 0);
+    assert(services.files == 2 && services.traveler == 1 && services.dispatch == 1);
+    /* A rate within the converter's tolerance of 48 kHz is written as it is, never dropped. */
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    dsd_engine_analog_call_block(opts, state, block, 960, 47999, 1);
+    dsd_engine_analog_call_block(opts, state, block, 960, 47999, 0);
+    recording_frames tolerated = {.dir = directory};
+    assert(dsd_dir_list(directory, count_recording_frames, &tolerated) == 0);
+    assert(tolerated.files == 1 && tolerated.frames == 960);
+    /* A teardown that skips the engine's finalize still publishes the open recording, never leaving its TEMP_ file. */
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    assert(dsd_engine_analog_call_active(state));
+    dsd_state_ext_free_all(state);
+    teardown_check teardown = {.dir = directory};
+    assert(dsd_dir_list(directory, check_teardown_recording, &teardown) == 0);
+    assert(teardown.files == 1 && teardown.temp == 0);
     assert(dsd_test_rmdir(directory) == 0);
+}
+
+/* A trunking context remembers the access code verified on each voice channel and refuses a grant to one the policy in
+   force rejects; a channel never verified, or one the policy admits again after an edit, is followed. */
+static void
+test_carrier_memory(dsd_opts* opts, dsd_state* state) {
+    const dsd_receive_policy saved = opts->receive;
+    const int saved_nac = state->nac;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    set_filter(opts, DSD_RECEIVE_NAC, "", "293");
+    dsd_receive_carriers carriers = {0};
+    state->nac = 0;
+    dsd_receive_carriers_note(&carriers, state, DSD_SYNC_P25P1_POS, 851012500);
+    assert(!dsd_receive_carriers_rejects(&carriers, opts, 851012500)); /* Nothing verified yet. */
+    state->nac = 0x293;
+    dsd_receive_carriers_note(&carriers, state, DSD_SYNC_P25P1_POS, 851012500);
+    assert(dsd_receive_carriers_rejects(&carriers, opts, 851012500));
+    assert(!dsd_receive_carriers_rejects(&carriers, opts, 851037500));
+    state->nac = 0x370; /* The newest verified code on the channel replaces the remembered one. */
+    dsd_receive_carriers_note(&carriers, state, DSD_SYNC_P25P1_POS, 851012500);
+    assert(!dsd_receive_carriers_rejects(&carriers, opts, 851012500));
+    state->nac = 0x293;
+    dsd_receive_carriers_note(&carriers, state, DSD_SYNC_P25P1_POS, 851012500);
+    set_filter(opts, DSD_RECEIVE_NAC, "", "370"); /* Judged by the policy in force, not the one it was noted under. */
+    assert(!dsd_receive_carriers_rejects(&carriers, opts, 851012500));
+    set_filter(opts, DSD_RECEIVE_NAC, "", "293");
+    for (long i = 1; i <= DSD_RECEIVE_CARRIER_MEMORY; i++) { /* A full memory reuses its oldest entry. */
+        dsd_receive_carriers_note(&carriers, state, DSD_SYNC_P25P1_POS, 851012500 + i * 12500);
+    }
+    assert(!dsd_receive_carriers_rejects(&carriers, opts, 851012500));
+    assert(dsd_receive_carriers_rejects(&carriers, opts, 851012500 + DSD_RECEIVE_CARRIER_MEMORY * 12500));
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    assert(!dsd_receive_carriers_rejects(&carriers, opts, 851012500 + 12500));
+    opts->receive = saved;
+    state->nac = saved_nac;
 }
 
 int
@@ -206,6 +521,12 @@ main(void) {
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
     test_protocol_context(opts, state);
+    test_carrier_memory(opts, state);
+    test_rejected_call_takes_no_enrichment(opts, state);
+    test_admitted_segment_commits_after_rejection(opts, state);
+    test_mono_slot_change_is_a_boundary(opts, state);
+    test_reacquired_call_keeps_its_service(opts, state);
+    test_carrier_admission_judges_both_slots(opts);
     test_events(opts, state);
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));

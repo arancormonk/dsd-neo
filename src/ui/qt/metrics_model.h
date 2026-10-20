@@ -276,10 +276,12 @@ class MetricsModel : public QObject {
     /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
      * monitor's Squelch row rather than the Radio sheet. */
     Q_PROPERTY(bool squelchAudioInput READ squelchAudioInput NOTIFY controlChanged)
+    /* Issue #637: the receive policy's verdict on what is received now ("Allowed", "Checking received identifier",
+     * "Slot 1: ...; slot 2: ..." on a two-slot carrier, "Filters off"), from the app-control receive view. */
+    Q_PROPERTY(QString receiveStatus READ receiveStatus NOTIFY controlChanged)
     /* Issue #518: the scan row on air for the "this channel" editors -- whether there is one, its name, and the
      * session-edit fields (DSD_SCAN_ROW_FIELD_*) it can take, runs an edit of and sets in its list, from the
      * app-control scan row view. */
-    Q_PROPERTY(QString receiveStatus READ receiveStatus NOTIFY controlChanged)
     Q_PROPERTY(bool scanRowActive READ scanRowActive NOTIFY controlChanged)
     Q_PROPERTY(QString scanRowLabel READ scanRowLabel NOTIFY controlChanged)
     /* Which row it is ("scanner:session:row"), for a sheet that must notice another row coming on air: two rows can
@@ -827,12 +829,13 @@ class MetricsModel : public QObject {
         return m_view.tuner_gain_row_override;
     }
 
-    /** @brief Whether a scan row is on air that the "this channel" editors can edit (issue #518). */
+    /** @brief The receive policy's verdict on current reception (issue #637). */
     QString
     receiveStatus() const {
         return m_view.receive_status;
     }
 
+    /** @brief Whether a scan row is on air that the "this channel" editors can edit (issue #518). */
     bool
     scanRowActive() const {
         return m_view.scan_row_active;

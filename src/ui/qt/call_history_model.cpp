@@ -588,6 +588,7 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.systemUid = item->channel_label[0] == '\0' ? systemUid : QString();
     row.channel = QString::fromUtf8(item->channel_label);
     row.service = QString::fromUtf8(item->service_label);
+    row.analog = item->systype == DSD_SYNC_ANALOG;
     row.receiveKind = item->receive_identity.kind;
     row.receiveValue = item->receive_identity.value;
     row.receiveKnown = item->receive_identity.known != 0;
@@ -610,6 +611,19 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
 }
 
 } // namespace
+
+// Fold the receive evidence and service name @p read gained into @p seen; returns whether it gained any (issue #637).
+bool
+CallHistoryModel::absorbSeenReceive(SeenState& seen, const SeenState& read) {
+    const bool received = (read.receiveKnown && !seen.receiveKnown) || (read.receiveSlot != 0 && seen.receiveSlot == 0)
+                          || (!read.service.isEmpty() && read.service != seen.service);
+    if (received) {
+        seen.receiveKnown = seen.receiveKnown || read.receiveKnown;
+        seen.receiveSlot = seen.receiveSlot != 0 ? seen.receiveSlot : read.receiveSlot;
+        seen.service = read.service.isEmpty() ? seen.service : read.service;
+    }
+    return received;
+}
 
 int
 CallHistoryModel::noteSeen(const QString& key, quint64 ring, const SeenState& read, bool voice) {
@@ -663,7 +677,8 @@ CallHistoryModel::noteSeen(const QString& key, quint64 ring, const SeenState& re
     int storedAc = seen->ac;
     const bool filled =
         call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
-    if (!advanced && !labelAdvanced && !filled) {
+    const bool received = absorbSeenReceive(*seen, read);
+    if (!advanced && !labelAdvanced && !filled && !received) {
         return SeenUnchanged;
     }
     if (labelAdvanced) {
@@ -719,6 +734,9 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
             read.freqHz = carrier.freqHz;
             read.acKind = carrier.codeKind;
             read.ac = carrier.code;
+            read.receiveKnown = item->receive_identity.known != 0;
+            read.receiveSlot = item->receive_identity.slot;
+            read.service = QString::fromUtf8(item->service_label);
             // Must match keyFor() on the equivalent Row, or a relaunched UI would
             // re-ingest every row its predecessor already logged.
             const QString key = seen_key(slot, seq, read.when, item->target_id, kind);
@@ -736,13 +754,80 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
 
 namespace {
 
+/* Two fragments are one service when their confirmed identities and labels agree. A fragment committed before its
+   access code or tone was confirmed carries no identity yet, and its label is at most a weaker (slot) name: it joins
+   the confirmed fragment, which tryMerge() lets name the row. Two unconfirmed fragments must agree on the label. The
+   over-the-air slot is proven on its own (receiveSlot, 0 while pending on the single-slot DMR decoder): two proven
+   slots that differ are two services whatever the codes, and a pending slot's fragment may carry no slot name. */
 bool
 receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
-    if (a.service != b.service) {
+    if (a.receiveSlot != 0 && b.receiveSlot != 0 && a.receiveSlot != b.receiveSlot) {
         return false;
     }
-    return !a.receiveKnown || !b.receiveKnown
-           || (a.receiveKind == b.receiveKind && a.receiveValue == b.receiveValue && a.receiveSlot == b.receiveSlot);
+    /* One fragment proved its slot and the other had it pending (FDMA rows carry no slot at all, on either side). */
+    const bool slotJustProven = (a.receiveSlot != 0) != (b.receiveSlot != 0);
+    if (a.receiveKnown && b.receiveKnown) {
+        /* The same confirmed service may gain the name it lacked (a name added, then the call reacquired). */
+        return a.receiveKind == b.receiveKind && a.receiveValue == b.receiveValue
+               && (a.service == b.service || slotJustProven || a.service.isEmpty() || b.service.isEmpty());
+    }
+    return a.receiveKnown || b.receiveKnown || a.service == b.service || slotJustProven;
+}
+
+/* Fold the identity evidence @p row carries into @p existing, which tryMerge() matched to it: a confirmed code the row
+   holds and the row lacks, and a slot the row has proven, each on its own. Returns 1 when the row's service label,
+   now the better-founded one, should name @p existing. */
+bool
+receive_adopt_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    bool adopt = false;
+    if (!existing.receiveKnown && row.receiveKnown) {
+        existing.receiveKnown = true;
+        existing.receiveKind = row.receiveKind;
+        existing.receiveValue = row.receiveValue;
+        adopt = true;
+    }
+    if (existing.receiveSlot == 0 && row.receiveSlot != 0) {
+        existing.receiveSlot = row.receiveSlot;
+        /* A slot name names only a row no confirmed code has named: a code's name outranks it
+           (dsd_receive_service_name()). */
+        adopt = adopt || (!row.service.isEmpty() && (existing.service.isEmpty() || !existing.receiveKnown));
+    }
+    /* A row no service named takes the name a later fragment of the same service carries. */
+    return adopt || (existing.service.isEmpty() && !row.service.isEmpty());
+}
+
+/* The textual target a row with no talkgroup names (an M17/D-STAR/YSF callsign, a dPMR dial string), or empty when
+   its name is only a label: the service the receive policy named it, the channel it was heard on, or the placeholder
+   (row_take_name()). A label changes as the call is confirmed (issue #637); a textual target does not. */
+QString
+row_textual_destination(const CallHistoryModel::Row& row) {
+    if (row.analog || (!row.service.isEmpty() && row.name == row.service)
+        || (!row.channel.isEmpty() && row.name == row.channel) || row.name == QStringLiteral("Talkgroup 0")) {
+        return QString();
+    }
+    return row.name;
+}
+
+/** @brief Whether two rows with no talkgroup (tg == 0) name the same destination; any rows with one do. */
+bool
+target_less_rows_same_destination(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (existing.tg != 0) {
+        return true;
+    }
+    // Textual targets (M17/D-STAR/YSF callsigns, dPMR dial strings) all share
+    // tg == 0, so the numeric check cannot tell two destinations apart;
+    // the target text is their identity. A name that is only a label (an analog
+    // transmission's, a service or channel name) is no destination of its own.
+    const QString existingTarget = row_textual_destination(existing);
+    const QString rowTarget = row_textual_destination(row);
+    if (!existingTarget.isEmpty() && !rowTarget.isEmpty() && existingTarget != rowTarget) {
+        return false;
+    }
+    // A row with no IDs at all (a conventional NFM transmission, issue #637) is named only by where it was heard:
+    // two such transmissions on different frequencies are two calls, whatever the gap between them. Trunked fragments
+    // keep a talkgroup, so their retunes still fold.
+    return existing.src != 0 || row.src != 0 || existing.freqHz == 0 || row.freqHz == 0
+           || existing.freqHz == row.freqHz;
 }
 
 /** @brief Whether two voice rows are one conversation the merge may fold together. */
@@ -762,10 +847,7 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
         || existing.systemUid != row.systemUid || existing.channel != row.channel) {
         return false;
     }
-    // Textual targets (M17/D-STAR/YSF callsigns, dPMR dial strings) all share
-    // tg == 0, so the numeric check above cannot tell two destinations apart;
-    // the name — built from the target text — is their identity.
-    if (existing.tg == 0 && existing.name != row.name) {
+    if (!target_less_rows_same_destination(existing, row)) {
         return false;
     }
     // Matched sources get the full retune window; a src-unknown pairing gets
@@ -879,11 +961,12 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows) {
             continue;
         }
         merge_source_label(existing, row);
-        if (!existing.receiveKnown && row.receiveKnown) {
-            existing.receiveKnown = true;
-            existing.receiveKind = row.receiveKind;
-            existing.receiveValue = row.receiveValue;
-            existing.receiveSlot = row.receiveSlot;
+        if (receive_adopt_identity(existing, row)) {
+            existing.service = row.service;
+            /* A service name outranks every other name a row has (row_take_name()). */
+            if (!row.service.isEmpty()) {
+                existing.name = row.service;
+            }
         }
         fold_carrier(existing, row);
         const qint64 start = qMin(existing.when, row.when);
@@ -938,12 +1021,7 @@ CallHistoryModel::absorbRepeatedNotice(const Row& row) {
     // A notice logged before rows carried a frequency and access code gains them here, when a fresh ring
     // delivers it again (a replay after an upgrade).
     fill_carrier(logged, row);
-    if (!logged.receiveKnown && row.receiveKnown) {
-        logged.receiveKnown = true;
-        logged.receiveKind = row.receiveKind;
-        logged.receiveValue = row.receiveValue;
-        logged.receiveSlot = row.receiveSlot;
-    }
+    (void)receive_adopt_identity(logged, row);
     const QModelIndex idx = index(repeated);
     Q_EMIT dataChanged(idx, idx, {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole});
     return true;
@@ -1243,6 +1321,7 @@ row_from_json(const QJsonObject& obj) {
     row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
     row.service = obj.value(QLatin1String("service")).toString();
+    row.analog = obj.value(QLatin1String("analog")).toBool();
     row.receiveKind = obj.value(QLatin1String("receiveKind")).toInt(DSD_RECEIVE_NONE);
     row.receiveValue = obj.value(QLatin1String("receiveValue")).toInt();
     row.receiveKnown = obj.value(QLatin1String("receiveKnown")).toBool();
@@ -1310,7 +1389,8 @@ CallHistoryModel::load() {
         // evicted or lost is logged again as new rows, one per fragment.
         m_seen.insert(keyFor(*it),
                       SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency, it->enc,
-                                it->sourceName, it->freqHz, it->codeKind, it->code, it->session, 0U, QString()});
+                                it->sourceName, it->freqHz, it->codeKind, it->code, it->receiveKnown, it->receiveSlot,
+                                it->service, it->session, 0U, QString()});
         if (tryMerge(*it, kMergeScanRows) < 0) {
             m_rows.prepend(*it);
         }
@@ -1342,6 +1422,9 @@ CallHistoryModel::load() {
         const QPair<int, int> code = json_access_code(obj, "acKind", "ac");
         state.acKind = code.first;
         state.ac = code.second;
+        state.receiveKnown = obj.value(QLatin1String("rxKnown")).toBool();
+        state.receiveSlot = obj.value(QLatin1String("rxSlot")).toInt();
+        state.service = obj.value(QLatin1String("svc")).toString();
         state.session = obj.value(QLatin1String("session")).toVariant().toLongLong();
         // Hex text: a nonce can use all 64 bits, more than a JSON number holds exactly.
         bool ringOk = false;
@@ -1401,10 +1484,15 @@ CallHistoryModel::rowsToJson(const QList<Row>& rows) {
         if (!row.service.isEmpty()) {
             obj.insert(QLatin1String("service"), row.service);
         }
+        if (row.analog) {
+            obj.insert(QLatin1String("analog"), true);
+        }
         if (row.receiveKnown) {
             obj.insert(QLatin1String("receiveKind"), row.receiveKind);
             obj.insert(QLatin1String("receiveValue"), row.receiveValue);
             obj.insert(QLatin1String("receiveKnown"), true);
+        }
+        if (row.receiveSlot != 0) {
             obj.insert(QLatin1String("receiveSlot"), row.receiveSlot);
         }
         obj.insert(QLatin1String("slot"), row.slot);
@@ -1450,6 +1538,15 @@ CallHistoryModel::seenToJson(const QHash<QString, SeenState>& seen) {
         if (call_history_access_code_known(state.acKind)) {
             obj.insert(QLatin1String("acKind"), state.acKind);
             obj.insert(QLatin1String("ac"), state.ac);
+        }
+        if (state.receiveKnown) {
+            obj.insert(QLatin1String("rxKnown"), true);
+        }
+        if (state.receiveSlot != 0) {
+            obj.insert(QLatin1String("rxSlot"), state.receiveSlot);
+        }
+        if (!state.service.isEmpty()) {
+            obj.insert(QLatin1String("svc"), state.service);
         }
         obj.insert(QLatin1String("session"), state.session);
         obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));

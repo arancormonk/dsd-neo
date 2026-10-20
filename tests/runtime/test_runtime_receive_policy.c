@@ -32,7 +32,7 @@ test_filters(void) {
     char error[160];
     assert(dsd_receive_option_apply(&policy, &seen, "--dcc-allow", "0/4/6/8", error, sizeof(error)) == 0);
     assert(dsd_receive_option_apply(&policy, &seen, "--dcc-block", "6/15", error, sizeof(error)) == 0);
-    dsd_receive_identity identity = {4, DSD_RECEIVE_DCC, 0, 1};
+    dsd_receive_identity identity = {4, DSD_RECEIVE_DCC, 0, 1, 0};
     assert(dsd_receive_policy_match(&policy, &identity) == DSD_RECEIVE_CHECKING);
     identity.known = 1;
     assert(dsd_receive_policy_match(&policy, &identity) == DSD_RECEIVE_ALLOWED);
@@ -79,7 +79,7 @@ test_names(void) {
                                    "Traveler' --tone-name D023I=Dispatch",
                                    &names, error, sizeof(error))
            == 0);
-    dsd_receive_identity identity = {7, DSD_RECEIVE_DCC, 1, 2};
+    dsd_receive_identity identity = {7, DSD_RECEIVE_DCC, 1, 2, 0};
     assert(strcmp(dsd_receive_service_name(&names, &identity), "Hospital") == 0);
     identity.value = 2;
     assert(strcmp(dsd_receive_service_name(&names, &identity), "Second slot") == 0);
@@ -113,6 +113,46 @@ test_names(void) {
     long_name[1] = '=';
     long_name[sizeof(long_name) - 1] = '\0';
     assert(dsd_receive_name_add(&names, DSD_RECEIVE_RAN, long_name, error, sizeof(error)) < 0);
+    /* Names are well-formed UTF-8 without C0 or C1 controls. */
+    DSD_MEMSET(&names, 0, sizeof(names));
+    const unsigned int before = names.count;
+    assert(dsd_receive_name_add(&names, DSD_RECEIVE_RAN, "2=Caf\xC3\xA9 \xE2\x86\x92 \xF0\x9F\x9A\x92", error,
+                                sizeof(error))
+           == 0);
+    assert(names.count == before + 1);
+    const char* invalid[] = {"3=\xC3", "3=\xC0\xAF",     "3=\xED\xA0\x80", "3=\xF4\x90\x80\x80",
+                             "3=\xFF", "3=x\xC2\x9B[2J", "3=\xE2\x82",     "3=\x80"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        assert(dsd_receive_name_add(&names, DSD_RECEIVE_RAN, invalid[i], error, sizeof(error)) < 0);
+        assert(names.count == before + 1);
+    }
+}
+
+/* A list is accepted only when its saved spelling fits as well: NACs 1..200 (512 of them, short hex spellings) save as
+   exactly DSD_RECEIVE_LIST_MAX characters, and one more NAC would save longer than any list can load. */
+static void
+test_list_fits_as_saved(void) {
+    char text[DSD_RECEIVE_LIST_MAX + 1];
+    char error[160];
+    for (unsigned int last = 0x200; last <= 0x201; last++) {
+        text[0] = '\0';
+        size_t used = 0;
+        for (unsigned int nac = 1; nac <= last; nac++) {
+            const int n = DSD_SNPRINTF(text + used, sizeof text - used, "%s%X", nac > 1 ? "/" : "", nac);
+            assert(n > 0 && (size_t)n < sizeof text - used);
+            used += (size_t)n;
+        }
+        dsd_receive_set set = {{0}};
+        const int rc = dsd_receive_set_parse(DSD_RECEIVE_NAC, text, &set, error, sizeof error);
+        if (last == 0x200) {
+            char saved[DSD_RECEIVE_LIST_MAX + 1];
+            assert(rc == 0);
+            assert(dsd_receive_set_format(DSD_RECEIVE_NAC, &set, saved, sizeof saved) == DSD_RECEIVE_LIST_MAX);
+        } else {
+            assert(rc < 0 && strstr(error, "too long") != NULL);
+            assert(!dsd_receive_set_contains(&set, 1));
+        }
+    }
 }
 
 int
@@ -120,5 +160,6 @@ main(void) {
     test_values();
     test_filters();
     test_names();
+    test_list_fits_as_saved();
     return 0;
 }

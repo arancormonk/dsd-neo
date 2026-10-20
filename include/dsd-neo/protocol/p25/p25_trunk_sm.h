@@ -18,6 +18,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_TRUNK_SM_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
@@ -266,7 +267,13 @@ typedef struct {
     // Timing
     double t_tune_m;                // Monotonic time of last VC tune
     double receive_check_started_m; // Repeated grants cannot extend a receive-policy acquisition window
-    double t_voice_m;               // Monotonic time of last voice activity
+    // The NAC last verified on each voice channel, so a grant to one the receive policy rejects is not followed.
+    dsd_receive_carriers receive_carriers;
+    // Whether this carrier's codes were forgotten at its tune, so what it holds now it proved;
+    // receive_check_freq_hz is the carrier that answer belongs to.
+    int receive_codes_fresh;
+    long receive_check_freq_hz;
+    double t_voice_m; // Monotonic time of last voice activity
     // The hangtime countdown has no field: it is derived from the per-slot
     // last_followed_m stamps by p25_sm_hangtime_started_m().
     double t_cc_sync_m;          // Monotonic time of last CC sync

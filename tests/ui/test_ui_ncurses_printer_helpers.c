@@ -13,6 +13,7 @@
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -26,6 +27,7 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -2479,6 +2481,30 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert(strstr(g_printw_capture, "P25 VOICE") == NULL);
     assert_capture_contains(" | VOICE");
 
+    /* Issue #637: a call the receive policy rejects shows no identity here, as the shared call view hides it. */
+    static dsd_opts rejecting;
+    DSD_MEMSET(&rejecting, 0, sizeof rejecting);
+    assert(dsd_receive_edit_parse(&rejecting.receive, DSD_RECEIVE_NAC, 1, "", "293", "", NULL, 0) == 0);
+    state->p2_cc = 0x293; /* A Phase 2 call: its NAC is the verified Phase 2 one. */
+    state->p2_cc_verified = 1U;
+    dsd_call_state_refresh_receive(&rejecting, state, 0U);
+    ui_slot_view rejected = ui_build_slot_view(&rejecting, state, 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&rejecting, state, &rejected);
+    assert(strstr(g_printw_capture, "1201") == NULL);
+    DSD_MEMSET(&rejecting.receive, 0, sizeof rejecting.receive);
+    /* A service name the policy gives the admitted call names it in the call line, as in the shared call view. */
+    assert(dsd_receive_names_parse("--nac-name 293=Fire", &rejecting.receive.names, NULL, 0) == 0);
+    dsd_call_state_refresh_receive(&rejecting, state, 0U);
+    ui_slot_view named = ui_build_slot_view(&rejecting, state, 0);
+    reset_printw_capture();
+    ui_render_slot_dxtra_line(state, &named, 1);
+    assert_capture_contains("[Fire]");
+    DSD_MEMSET(&rejecting.receive, 0, sizeof rejecting.receive);
+    dsd_call_state_refresh_receive(&rejecting, state, 0U);
+    state->p2_cc = 0;
+    state->p2_cc_verified = 0U;
+
     state->dmrburstR = 21;
     ui_slot_view idle_companion = ui_build_slot_view(&(dsd_opts){0}, state, 1);
     assert(idle_companion.canonical_p25 == 0);
@@ -2742,7 +2768,7 @@ test_live_protocol_panels_ignore_ended_call_identity(void) {
     assert_capture_contains("DST: unknown SRC: unknown");
 
     reset_printw_capture();
-    ui_render_nxdn_tgt_src_line(state);
+    ui_render_nxdn_tgt_src_line(&(dsd_opts){0}, state);
     assert(strstr(g_printw_capture, "424242") == NULL);
     assert(strstr(g_printw_capture, "434343") == NULL);
     assert_capture_contains("TGT: [    0]");
@@ -2992,7 +3018,7 @@ test_source_alias_rendering(void) {
     state->lastsynctype = obs.protocol;
     assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
     reset_printw_capture();
-    ui_render_nxdn_tgt_src_line(state);
+    ui_render_nxdn_tgt_src_line(&(dsd_opts){0}, state);
     assert_capture_contains("[Dispatch][A]");
     assert_capture_contains("[Radio alias]");
     g_source_alias_stub = NULL;
@@ -3391,9 +3417,83 @@ test_tetra_rows_follow_the_view(void) {
     free(opts);
 }
 
+/* Issue #637: data the receive policy withholds (an LRRP fix, an alias) shows nowhere, a data-only transmission with no
+   canonical call included. */
+static void
+test_withheld_data_without_a_call(void) {
+    static dsd_state state;
+    static dsd_opts rejecting;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&rejecting, 0, sizeof(rejecting));
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_color_code = 7;
+    DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof(state.dmr_lrrp_gps[1]), "%s", "lrrp-fix");
+    DSD_SNPRINTF(state.generic_talker_alias[1], sizeof(state.generic_talker_alias[1]), "%s", "alias-text");
+    ui_slot_view open = ui_build_slot_view(&rejecting, &state, 1);
+    assert(strcmp(open.lrrp_gps, "lrrp-fix") == 0 && strcmp(open.talker_alias, "alias-text") == 0);
+    rejecting.receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    rejecting.receive.filters[DSD_RECEIVE_DCC].block.bits[0] = UINT64_C(1) << 7; /* --dcc-block 7 */
+    ui_slot_view withheld = ui_build_slot_view(&rejecting, &state, 1);
+    assert(withheld.lrrp_gps[0] == '\0' && withheld.talker_alias[0] == '\0' && withheld.embedded_gps[0] == '\0');
+    dsd_state_ext_free_all(&state);
+}
+
+/* Issue #637: the NXDN line shows the decoder's alias only for admitted reception and names the call by the service the
+   receive policy gave it; the analog tone line names the NFM call the same way. */
+static void
+test_nxdn_and_analog_live_service_names(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    state.nxdn_last_ran = 9U;
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "Unit 7");
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(&opts, &state);
+    assert_capture_contains("Alias: [Unit 7]");
+    assert(dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_RAN, 1, "", "9", "", NULL, 0) == 0);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(&opts, &state); /* No canonical call: the live verdict withholds it. */
+    assert(strstr(g_printw_capture, "Unit 7") == NULL);
+    const dsd_call_observation nxdn = {.protocol = DSD_SYNC_NXDN_POS,
+                                       .slot = 0,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 100,
+                                       .policy_target_id = 100};
+    assert(dsd_call_state_observe(&state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_state_refresh_receive(&opts, &state, 0U);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(&opts, &state);
+    assert(strstr(g_printw_capture, "Unit 7") == NULL && strstr(g_printw_capture, "100") == NULL);
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    assert(dsd_receive_names_parse("--ran-name '9=Hospital'", &opts.receive.names, NULL, 0) == 0);
+    dsd_call_state_refresh_receive(&opts, &state, 0U);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(&opts, &state);
+    assert_capture_contains("Alias: [Unit 7]");
+    assert_capture_contains("[Hospital]");
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    assert(dsd_receive_names_parse("--tone-name '141.3=Traveler'", &opts.receive.names, NULL, 0) == 0);
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    seed_rx_tone(&state, 1, DSD_ANALOG_TONE_STATE_LOCKED, 1413);
+    const dsd_call_observation nfm = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    assert(dsd_call_state_observe(&state, &nfm, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_state_refresh_receive(&opts, &state, 0U);
+    reset_printw_capture();
+    ui_render_call_info_rx_tone_line(&opts, &state);
+    assert_capture_contains("Rx tone: CTCSS 141.3 Hz [Traveler]");
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     test_tetra_rows_follow_the_view();
+    test_nxdn_and_analog_live_service_names();
+    test_withheld_data_without_a_call();
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();

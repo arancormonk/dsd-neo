@@ -16,6 +16,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1908,6 +1909,38 @@ test_sacch_at_voice_position_fills(void) {
     return rc;
 }
 
+/* Issue #637: the receive policy is a hard gate on queued Phase 2 audio: a talkgroup hold never plays a call whose NAC
+   it rejects. */
+static int
+test_receive_rejection_overrides_the_hold(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.p2_cc = 0x293;
+    state.p2_cc_verified = 1U;
+    state.tg_hold = 4242U;
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 4242U,
+        .policy_target_id = 4242U,
+        .ota_source_id = 9U,
+    };
+    int rc = expect_int("call observed", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_p25p2_playout_verdict verdict;
+    (void)dsd_p25p2_playout_policy_verdict(&opts, &state, 0, &verdict, NULL, NULL);
+    rc |= expect_int("the hold plays the call", verdict.hold, 1);
+    opts.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    opts.receive.filters[DSD_RECEIVE_NAC].block.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
+    (void)dsd_p25p2_playout_policy_verdict(&opts, &state, 0, &verdict, NULL, NULL);
+    rc |= expect_int("a rejected NAC clears the hold", verdict.hold, 0);
+    rc |= expect_int("a rejected NAC blocks the call", verdict.blocked, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_blast});
@@ -1961,6 +1994,7 @@ main(void) {
 #endif
     rc |= test_close_after_covered_superframe_keeps_18();
     rc |= test_sacch_at_voice_position_fills();
+    rc |= test_receive_rejection_overrides_the_hold();
     dsd_state_ext_free_all(&g_state);
     if (rc != 0) {
         return 1;

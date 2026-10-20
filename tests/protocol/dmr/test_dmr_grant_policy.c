@@ -13,6 +13,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -421,6 +422,92 @@ test_receive_data_grant(dsd_opts* opts, dsd_state* state) {
     dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
     rc |= expect_true("disabled slot filter permits Connect Plus data tune",
                       opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == 856250000L);
+    return rc;
+}
+
+/* Issue #637: a voice channel whose verified colour code the policy rejects is remembered by the DMR context, and a
+   grant to it is not followed; once the policy admits the code, the grant is. */
+static int
+test_receive_rejected_carrier_grant(dsd_opts* opts, dsd_state* state) {
+    init_env(opts, state);
+    install_trunk_tuning_hooks();
+    state->trunk_chan_map[4] = 856250000L;
+    state->last_vc_sync_time = 0;
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    ctx->receive_carriers.entries[0] =
+        (dsd_receive_carrier){.freq_hz = 856250000L, .value = 7, .kind = DSD_RECEIVE_DCC};
+    uint8_t bits[256], bytes[48];
+    build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+    int rc = expect_true("dcc block parsed",
+                         dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "", "7", "", NULL, 0) == 0);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    rc |= expect_true("a channel whose verified colour code is blocked is not followed", opts->trunk_is_tuned == 0);
+    opts->receive.filters[DSD_RECEIVE_DCC].enabled = 0;
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    rc |= expect_true("the channel is followed once the policy admits its code",
+                      opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == 856250000L);
+    return rc;
+}
+
+/* Issue #637: a voice channel a CSBK path tuned itself (Connect Plus data) gets the bounded receive window too: a
+   carrier whose verified colour code the policy blocks is released once the window closes, and its code is
+   remembered. */
+static int
+test_receive_csbk_tuned_carrier_window(dsd_opts* opts, dsd_state* state) {
+    init_env(opts, state);
+    install_trunk_tuning_hooks();
+    state->trunk_chan_map[4] = 856250000L;
+    state->last_vc_sync_time = 0;
+    uint8_t bits[256], bytes[48];
+    build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    int rc = expect_true("connect plus data grant tuned", opts->trunk_is_tuned == 1);
+    state->receive_codes_fresh_freq = 856250000L; /* As the engine's tune does under a filter. */
+    rc |= expect_true("dcc block parsed",
+                      dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "", "7", "", NULL, 0) == 0);
+    state->dmr_color_code = 7U;
+    opts->frame_dmr = 1; /* The DMR state machine ticks only while DMR trunking can recover. */
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    dmr_sm_tick_ctx(ctx, opts, state);
+    rc |= expect_true("the window opens on the rejected carrier",
+                      opts->trunk_is_tuned == 1 && ctx->receive_check_started_m > 0.0);
+    rc |= expect_true("the carrier's code is remembered",
+                      dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, 856250000L));
+    ctx->receive_check_started_m -= 10.0;
+    dmr_sm_tick_ctx(ctx, opts, state);
+    rc |= expect_true("the rejected carrier is released when the window closes", opts->trunk_is_tuned == 0);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    return rc;
+}
+
+/* Issue #637: with every receive filter off a voice channel whose colour code differs from its control channel's keeps
+   its grant's call. The tune forgets the published code (dsd_engine_forget_carrier_code_values()), so the voice sync
+   that precedes the channel's first EMB seeds the call with no identity, and the channel's code then names it rather
+   than ending it as a changed service. */
+static int
+test_receive_vc_code_differs_from_cc(dsd_opts* opts, dsd_state* state) {
+    init_env(opts, state);
+    install_trunk_tuning_hooks();
+    int rc = expect_true(
+        "names parsed",
+        dsd_receive_names_parse("--dcc-name '4=Control' --dcc-name '7=Voice'", &opts->receive.names, NULL, 0) == 0);
+    dmr_sm_event_t grant = dmr_sm_ev_group_grant(852000000, 0, 100, 200);
+    dmr_sm_event(dmr_sm_get_ctx(), opts, state, &grant);
+    state->dmr_color_code = 16U; /* As the engine's voice-channel tune leaves it. */
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice sync opens the grant's call with no identity",
+                      dsd_call_state_get(state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.ota_target_id == 100U && !call.receive_identity.known);
+    state->dmr_color_code = 7U;
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    dsd_call_state_refresh_receive(opts, state, 0);
+    rc |= expect_true("the channel's own code names the call and keeps it",
+                      dsd_call_state_get(state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.ota_target_id == 100U && call.receive_identity.known
+                          && call.receive_identity.value == 7U);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
     return rc;
 }
 
@@ -1216,6 +1303,24 @@ main(void) {
     rc |= expect_true("xpt site status emits grant", dmr_sm_get_ctx()->vc_tg == 77);
     dsd_state_ext_free_all(&xpt_st);
 
+    /* Issue #637: a candidate the receive policy rejects is passed over, so an allowed TS2 call after a rejected TS1
+       one is followed. */
+    init_env(&xpt_opts, &xpt_st);
+    xpt_opts.audio_in_type = AUDIO_IN_RTL;
+    xpt_opts.rtlsdr_center_freq = 461250000L;
+    xpt_st.trunk_chan_map[1] = 461262500L;
+    xpt_st.trunk_chan_map[2] = 461262500L;
+    xpt_st.last_vc_sync_time = time(NULL) - 10;
+    rc |= expect_true("slot allow parsed",
+                      dsd_receive_edit_parse(&xpt_opts.receive, DSD_RECEIVE_SLOT, 1, "2", "", "", NULL, 0) == 0);
+    uint8_t xpt_two_status[6] = {3U, 3U, 0U, 0U, 0U, 0U};
+    uint8_t xpt_two_tg[6] = {77U, 66U, 0U, 0U, 0U, 0U};
+    build_xpt_site_status(bits, bytes, 0U, 0U, xpt_two_status, xpt_two_tg);
+    dmr_cspdu(&xpt_opts, &xpt_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt follows the allowed TS2 call past the rejected TS1 one", dmr_sm_get_ctx()->vc_tg == 66);
+    DSD_MEMSET(&xpt_opts.receive, 0, sizeof xpt_opts.receive);
+    dsd_state_ext_free_all(&xpt_st);
+
     init_env(&xpt_opts, &xpt_st);
     xpt_opts.audio_in_type = AUDIO_IN_RTL;
     xpt_opts.rtlsdr_center_freq = 462000000L;
@@ -1275,6 +1380,9 @@ main(void) {
     rc |= expect_true("xpt adjacent sets branding", strcmp(xpt_st.dmr_branding_sub, "XPT ") == 0);
 
     rc |= test_receive_data_grant(opts, st);
+    rc |= test_receive_rejected_carrier_grant(opts, st);
+    rc |= test_receive_csbk_tuned_carrier_window(opts, st);
+    rc |= test_receive_vc_code_differs_from_cc(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

@@ -618,7 +618,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     const double now_m = call_state_observed_m(observation->observed_m);
     dsd_receive_identity received;
-    dsd_receive_identity_current(state, observation->protocol, observation->slot, &received);
+    dsd_receive_identity_current(state, observation->protocol, slot, &received);
     const int service_changed = dsd_receive_identity_changed(&snapshot->receive_identity, &received);
     const int begins_epoch = service_changed || call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
@@ -656,9 +656,16 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         ext->events[slot].notice_target_id = 0U;
         ext->events[slot].notice_kind = DSD_CALL_KIND_UNKNOWN;
         ext->events[slot].notice_handled = 0U;
-    }
-    if (begins_epoch || received.known) {
-        snapshot->receive_identity = received;
+        if (reacquires_ended_epoch) {
+            /* The reopened call keeps the service its IDs and crypto were seeded from (issue #637): a code decoded later
+               that differs ends it rather than relabelling it, as on any active call. */
+            snapshot->receive_identity = previous.receive_identity;
+            dsd_receive_identity_merge(&snapshot->receive_identity, &received);
+        } else {
+            snapshot->receive_identity = received;
+        }
+    } else {
+        dsd_receive_identity_merge(&snapshot->receive_identity, &received);
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
     call_state_apply_observation(snapshot, observation);
@@ -1377,6 +1384,18 @@ dsd_call_state_test_set_epoch(dsd_state* state, uint8_t slot, uint64_t epoch) {
 }
 #endif
 
+int
+dsd_call_state_admitted_call_active(const dsd_opts* opts, const dsd_state* state, double now_m, double window_s) {
+    for (int slot = 0; state && slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && now_m - call.updated_m < window_s && dsd_receive_allows(opts, state, call.protocol, slot)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void
 dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     if (!opts || !state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -1398,9 +1417,7 @@ dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint8_t s
         }
         call->receive_verdict = (uint8_t)dsd_receive_policy_match(&opts->receive, &identity);
         if (!dsd_receive_identity_changed(&call->receive_identity, &identity)) {
-            if (identity.known) {
-                call->receive_identity = identity;
-            }
+            dsd_receive_identity_merge(&call->receive_identity, &identity);
             DSD_SNPRINTF(call->service_label, sizeof(call->service_label), "%s",
                          dsd_receive_service_name(&opts->receive.names, &call->receive_identity));
         }

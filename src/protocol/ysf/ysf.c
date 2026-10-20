@@ -19,6 +19,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -439,6 +440,8 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
 
     int st = state->synctype;
     state->synctype = DSD_SYNC_NXDN_POS;
+    /* The frames decode and play through NXDN's decoder under its synctype; the receive policy judges YSF's. */
+    const dsd_receive_context receive = dsd_receive_context_begin(state, DSD_SYNC_YSF_POS);
 
     for (; start < stop; start++) {
         //debug
@@ -468,6 +471,7 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
         DSD_FPRINTF(stderr, "\n");
     }
 
+    dsd_receive_context_end(state, receive);
     state->synctype = st;
 }
 

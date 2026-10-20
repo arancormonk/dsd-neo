@@ -57,6 +57,10 @@ def main():
             replay(option + "-blocked", fixture, mode,
                    ["--" + option + "-allow", value, "--" + option + "-block", value], denied=True)
         replay("slot-block", "dmr_voice", "-fr", ["--slot-block", "1/2"], denied=True)
+        # The fixture's voice is on TS2. The single-slot decoder runs it on its one lane, so the slot filter must judge
+        # the slot the CACH names, not the lane: blocking TS2 mutes it, blocking TS1 does not.
+        replay("mono-slot-2-blocked", "dmr_voice", "-fr", ["--slot-block", "2"], denied=True)
+        replay("mono-slot-1-blocked", "dmr_voice", "-fr", ["--slot-block", "1"])
         replay("fdma-no-slot", "p25p1_c4fm_vc", "-f1", ["--slot-block", "1/2"])
         replay("nxdn-name", "nxdn48", "-fi", ["--ran-name", "1=Hospital / Dispatch"],
                service="Hospital / Dispatch")

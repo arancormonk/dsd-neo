@@ -54,12 +54,31 @@ typedef struct {
     dsd_service_names names;
 } dsd_receive_policy;
 
-/** Explicit reception context. slot is 1/2 for a two-slot protocol, 0 for FDMA/analog. */
+/** Explicit reception context. slot is 1/2 for a two-slot protocol, 0 for FDMA/analog. slot_pending: a two-slot
+ * carrier whose slot is not verified yet (the single-slot DMR decoder before a CACH TACT passes); slot is then 0 and
+ * an enabled slot filter is Checking. */
 typedef struct {
     uint16_t value;
     uint8_t kind;
     uint8_t known;
     uint8_t slot;
+    uint8_t slot_pending;
 } dsd_receive_identity;
+
+#define DSD_RECEIVE_CARRIER_MEMORY 16
+
+/** The verified access code a trunking state machine last received on one voice-channel frequency. */
+typedef struct {
+    long freq_hz; /* 0: unused */
+    uint16_t value;
+    uint8_t kind;
+} dsd_receive_carrier;
+
+/** A trunking context's memory of its voice channels' access codes, so a grant to a channel whose code the policy
+ * rejects is not followed again and again (each would hold the receiver for the acquisition window). */
+typedef struct {
+    dsd_receive_carrier entries[DSD_RECEIVE_CARRIER_MEMORY];
+    unsigned int next;
+} dsd_receive_carriers;
 
 #endif

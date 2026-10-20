@@ -43,7 +43,14 @@ dsd_app_receive_status_text(const dsd_opts* opts, const dsd_state* state, char* 
     dsd_receive_identity identity;
     dsd_receive_identity_current(state, protocol, 0, &identity);
     const char* first = receive_status_name(dsd_receive_status(opts, state, protocol, 0));
-    if (identity.slot) {
+    if (DSD_SYNC_IS_DMR(protocol) && state->dmr_mono_rx_slot != DSD_DMR_MONO_RX_NONE) {
+        /* The single-slot decoder has one lane, carrying the over-the-air slot it proved (issue #637). */
+        if (identity.slot) {
+            DSD_SNPRINTF(out, capacity, "Slot %u: %s", (unsigned int)identity.slot, first);
+        } else {
+            DSD_SNPRINTF(out, capacity, "%s", first);
+        }
+    } else if (identity.slot) {
         DSD_SNPRINTF(out, capacity, "Slot 1: %s; slot 2: %s", first,
                      receive_status_name(dsd_receive_status(opts, state, protocol, 1)));
     } else {

@@ -20,6 +20,7 @@
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/receive_types.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -631,6 +632,22 @@ test_hdu_read_and_fec_updates_rs_success_soft_success_and_failure_state(void) {
     rc |= expect_int("hdu rs hard soft count", (int)state.p25_p1_soft_rs_ok, 0);
     rc |= expect_int("hdu rs hard collected soft dibits", soft_dibit_index, 324);
     rc |= expect_int("hdu rs hard sync time set", state.last_vc_sync_time != 0, 1);
+
+    /* Issue #637: a header whose NAC the receive policy rejects holds no voice channel. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_soft_inputs();
+    reset_fec_stubs();
+    status_count = 21;
+    soft_dibit_index = 0;
+    state.nac = 0x293;
+    opts.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    opts.receive.filters[DSD_RECEIVE_NAC].block.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
+    rc |= expect_int(
+        "hdu rejected success",
+        hdu_read_and_fec(&opts, &state, hex_data, hex_parity, soft_dibits, &status_count, &soft_dibit_index), 0);
+    rc |= expect_int("hdu rejected sync time untouched",
+                     state.last_vc_sync_time == 0 && state.last_vc_sync_time_m == 0.0, 1);
+    DSD_MEMSET(&opts.receive, 0, sizeof(opts.receive));
 
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_soft_inputs();

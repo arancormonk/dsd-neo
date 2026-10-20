@@ -43,6 +43,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -1329,9 +1330,11 @@ ui_cmd_leaves_scanner_scope(const dsd_opts* opts, int was_scanner) {
 }
 
 /* End every slot's call now and commit it (dsd_event_sync_slot()), its last render reading the carrier it was heard
-   on. */
+   on. An analog call ends through its own lifecycle first (issue #637), so its per-call recording closes under the row
+   it was heard as, its mode and service name included, before the commit clears that row. */
 static void
 ui_end_calls(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_analog_call_end(opts, state);
     const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
@@ -2491,7 +2494,7 @@ ui_cmd_handle_receive_set(dsd_opts* opts, dsd_state* state, const struct dsd_app
         return UI_CMD_APPLY_FAILED;
     }
     dsd_scan_mode_set_configured_receive(opts, state, &policy);
-    ui_set_toast(state, 3, "%s", "Receive defaults saved; channel overrides stay in force");
+    ui_set_toast(state, 3, "%s", "Receive defaults applied; channel overrides stay in force");
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -8191,14 +8194,15 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
 }
 
-/* A command that can change what the talkgroup policy lets an active call play: the policy store, the hold or the
-   allow list. */
+/* A command that can change what an active call may play: the talkgroup policy store, the hold or the allow list, or
+   the configured receive policy (issue #637), whose boundary ends calls, drains the playout and rotates the per-call
+   WAVs as the watchdog's release does. */
 static int
 command_changes_call_verdict(const struct dsd_app_command* c) {
     return command_writes_policy_store(c)
            || (c
                && (c->id == DSD_APP_CMD_TG_HOLD_TOGGLE || c->id == DSD_APP_CMD_TG_HOLD_SET
-                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE));
+                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE || c->id == DSD_APP_CMD_RECEIVE_SET));
 }
 
 /* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, a slot switch (with the

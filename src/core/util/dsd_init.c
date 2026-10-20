@@ -334,6 +334,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->analog_am_bandwidth_hz = 0;               // 0 = default AM channel width, not an explicit request
     opts->analog_tone_filter = DSD_TONE_FILTER_OFF; // no CTCSS/DCS receive policy (issue #527)
     DSD_MEMSET(&opts->analog_tone_set, 0, sizeof(opts->analog_tone_set));
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive)); // no receive filters or service names (issue #637)
 
     opts->inverted_p2 = 0;
     opts->p2counter = 0;

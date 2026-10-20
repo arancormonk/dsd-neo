@@ -523,8 +523,8 @@ int rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_r
  * output ring whose producer delivers one sample after @p feed_after_ms, with the Signal search owner set to
  * @p search_owner (0: no search). @p analog_monitor enables the NFM idle yield. Reports what the read returned
  * (-1 for a search deadline, 0 for an idle monitor) and how long it waited. */
-int rtl_stream_test_search_live_read_bound(uint64_t search_owner, int analog_monitor, int feed_after_ms, int* out_got,
-                                           uint64_t* out_waited_ms);
+int rtl_stream_test_search_live_read_bound(uint64_t search_owner, const dsd_opts* live_opts, int feed_after_ms,
+                                           int* out_got, uint64_t* out_waited_ms);
 
 typedef struct rtl_stream_test_digital_row_result {
     int open_rc;

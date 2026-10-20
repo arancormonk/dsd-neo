@@ -7,6 +7,7 @@
 #include <QIODevice>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -14,13 +15,12 @@
 #include <QVariant>
 #include <QtGlobal>
 #include <cstdio>
+#include <stdint.h>
 #include <utility>
 #include "../../android/decoder_host_android.h"
 #include "../../android/run_status.h"
 #include "../../android/session_state_map.h"
 #include "decoder_host.h"
-
-class QObject;
 
 static QJsonObject&
 retained_record() {

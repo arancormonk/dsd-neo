@@ -386,8 +386,8 @@ dsd_p25p2_call_policy_decision(const dsd_opts* opts, const dsd_state* state, con
 }
 
 int
-dsd_p25p2_decode_audio_allowed_verdict(const dsd_opts* opts, const dsd_state* state, int slot, int alg,
-                                       dsd_p25p2_burst_decision* burst, int* burst_valid) {
+dsd_p25p2_decode_policy_verdict(const dsd_opts* opts, const dsd_state* state, int slot, int alg,
+                                dsd_p25p2_burst_decision* burst, int* burst_valid) {
     dsd_tg_policy_decision decision;
     dsd_call_snapshot call;
     dsd_p25p2_policy_key key;
@@ -398,8 +398,7 @@ dsd_p25p2_decode_audio_allowed_verdict(const dsd_opts* opts, const dsd_state* st
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
-    if (!dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)
-        || !dsd_p25p2_slot_crypto_permits_audio(opts, state, slot, alg)) {
+    if (!dsd_p25p2_slot_crypto_permits_audio(opts, state, slot, alg)) {
         return 0;
     }
     if (!dsd_p25p2_slot_active_call(state, slot, &call)) {
@@ -419,6 +418,18 @@ dsd_p25p2_decode_audio_allowed_verdict(const dsd_opts* opts, const dsd_state* st
         }
     }
     return dsd_p25p2_media_decision_allows_audio(&decision);
+}
+
+int
+dsd_p25p2_decode_audio_allowed_verdict(const dsd_opts* opts, const dsd_state* state, int slot, int alg,
+                                       dsd_p25p2_burst_decision* burst, int* burst_valid) {
+    if (burst_valid) {
+        *burst_valid = 0;
+    }
+    if (!state || slot < 0 || slot > 1 || !dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)) {
+        return 0;
+    }
+    return dsd_p25p2_decode_policy_verdict(opts, state, slot, alg, burst, burst_valid);
 }
 
 int
@@ -452,7 +463,9 @@ dsd_p25p2_playout_policy_verdict(const dsd_opts* opts, const dsd_state* state, i
     if (dsd_p25p2_call_policy_decision(opts, state, &call, &judged, &decision) == 0) {
         dsd_p25p2_verdict_from_decision(&decision, out);
         if (!dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)) {
+            /* A hard gate (issue #637): no talkgroup hold plays traffic the receive policy rejects or is checking. */
             out->blocked = 1;
+            out->hold = 0;
             out->recordable = 0;
         }
     }

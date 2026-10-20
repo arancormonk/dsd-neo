@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -17,6 +18,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
 
@@ -1559,18 +1561,34 @@ static int
 test_search_live_read_bound(void) {
     int got = 0;
     uint64_t waited_ms = 0U;
-    int failed =
-        expect_int_eq("search read hook", rtl_stream_test_search_live_read_bound(7U, 0, 3000, &got, &waited_ms), 0);
+    static dsd_opts digital;
+    static dsd_opts nfm;
+    static dsd_opts am;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    digital.audio_in_type = AUDIO_IN_RTL;
+    nfm = digital;
+    nfm.analog_only = 1;
+    nfm.monitor_input_audio = 1;
+    nfm.analog_demod = DSD_ANALOG_DEMOD_FM;
+    am = nfm;
+    am.analog_demod = DSD_ANALOG_DEMOD_AM;
+    int failed = expect_int_eq("search read hook",
+                               rtl_stream_test_search_live_read_bound(7U, &digital, 3000, &got, &waited_ms), 0);
     failed |= expect_int_eq("a search's read gives up on a silent producer", got, -1);
     failed |= expect_waited("a search's read", waited_ms, 100U, 2000U);
 
     failed |= expect_int_eq("read hook outside a search",
-                            rtl_stream_test_search_live_read_bound(0U, 0, 300, &got, &waited_ms), 0);
+                            rtl_stream_test_search_live_read_bound(0U, &digital, 300, &got, &waited_ms), 0);
     failed |= expect_int_eq("outside a search the read waits for the producer", got, 1);
     failed |= expect_waited("a read outside a search", waited_ms, 250U, 60000U);
-    failed |= expect_int_eq("NFM read hook", rtl_stream_test_search_live_read_bound(0U, 1, 3000, &got, &waited_ms), 0);
+    failed |=
+        expect_int_eq("NFM read hook", rtl_stream_test_search_live_read_bound(0U, &nfm, 3000, &got, &waited_ms), 0);
     failed |= expect_int_eq("an idle NFM monitor yields without ending the stream", got, 0);
     failed |= expect_waited("an idle NFM read", waited_ms, 100U, 2000U);
+    /* Issue #637: the mode in force decides, so an NFM session switched to AM waits for its producer again. */
+    failed |= expect_int_eq("AM read hook", rtl_stream_test_search_live_read_bound(0U, &am, 300, &got, &waited_ms), 0);
+    failed |= expect_int_eq("an AM monitor waits for the producer", got, 1);
+    failed |= expect_waited("an AM read", waited_ms, 250U, 60000U);
     return failed;
 }
 

@@ -131,8 +131,10 @@ receive_scope(void* context, int selected) {
         p->enabled = filter->enabled;
         (void)dsd_receive_set_format(p->kind, &filter->allow, p->allow, sizeof p->allow);
         (void)dsd_receive_set_format(p->kind, &filter->block, p->block, sizeof p->block);
-        DSD_SNPRINTF(receive_editor.title, sizeof receive_editor.title, "%s filter [%s]",
-                     dsd_receive_kind_name(p->kind), p->enabled ? "On" : "Off");
+        /* As the menu rows spell them ("DCC filter..."), not the option keys dsd_receive_kind_name() gives. */
+        static const char* const kinds[DSD_RECEIVE_FILTER_COUNT] = {"Slot", "DCC", "RAN", "NAC"};
+        DSD_SNPRINTF(receive_editor.title, sizeof receive_editor.title, "%s filter [%s]", kinds[p->kind],
+                     p->enabled ? "On" : "Off");
         ui_chooser_start_at(receive_editor.title, filters, selected == 1 ? 5 : 3, 0, receive_action, context);
     }
 }

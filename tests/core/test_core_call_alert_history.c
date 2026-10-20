@@ -12,6 +12,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -1571,6 +1573,39 @@ test_source_less_data_call_does_not_suppress_next_voice_start_alert(void) {
 
     rc |= expect_int("voice start after source-less data should beep once", g_beeper_count, 1);
     rc |= expect_int("voice start after source-less data should use voice tone", g_last_beeper_id, 40);
+    return rc;
+}
+
+/* Issue #637: a call first seen while the receive policy is still checking its colour code withholds VOICE_START,
+   sounds it once the code is admitted, and never for a code the policy rejects. */
+static int
+test_voice_start_alert_waits_for_receive_admission(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (int blocked = 0; blocked <= 1; blocked++) {
+        reset_fixture(&opts, &state, event_history);
+        opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START;
+        assert(dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_DCC, 1, blocked ? "" : "5", blocked ? "5" : "", "",
+                                      NULL, 0)
+               == 0);
+        state.dmr_color_code = 16U;
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_call_state_refresh_receive(&opts, &state, 0U);
+        watchdog_event_history(&opts, &state, 0);
+        rc |= expect_int("a call the policy still checks does not beep yet", g_beeper_count, 0);
+        state.dmr_color_code = 5U;
+        dsd_call_state_refresh_receive(&opts, &state, 0U);
+        watchdog_event_history(&opts, &state, 0);
+        watchdog_event_history(&opts, &state, 0);
+        rc |= expect_int(blocked ? "a rejected call never beeps" : "an admitted call beeps once", g_beeper_count,
+                         blocked ? 0 : 1);
+        DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+        dsd_state_ext_free_all(&state);
+    }
     return rc;
 }
 
@@ -3675,6 +3710,8 @@ test_reacquisition_merge_fills_frequency_and_code_only(void) {
 
     arm_radio_input(&opts, 852000000U);
     state.dmr_color_code = 5U;
+    /* The reacquired segment confirms a named service the first never learned (issue #637). */
+    assert(dsd_receive_names_parse("--dcc-name 5=Hospital", &opts.receive.names, NULL, 0) == 0);
     assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
                              DSD_CALL_BOUNDARY_CONTINUE)
            == 1);
@@ -3686,6 +3723,41 @@ test_reacquisition_merge_fills_frequency_and_code_only(void) {
     rc |= expect_int("filled reacquisition stays one row", committed_history_rows(&event_history[0]), 1);
     rc |= expect_i64("merge fills an unknown frequency", merged->freq_hz, 852000000);
     rc |= expect_access_code("merge fills an unknown code", merged, DSD_ACCESS_CODE_COLOR_CODE, 5U);
+    rc |= expect_int("merge takes the confirmed service identity",
+                     merged->receive_identity.known && merged->receive_identity.kind == DSD_RECEIVE_DCC
+                         && merged->receive_identity.value == 5U,
+                     1);
+    rc |= expect_int("merge takes the confirmed service name", strcmp(merged->service_label, "Hospital") == 0, 1);
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+
+    /* Issue #637: the single-slot DMR decoder can confirm the colour code before the over-the-air slot. A segment that
+       had the slot pending takes the slot (and its name) the reacquired one proved, though both confirmed the code. */
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 5U;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+    assert(dsd_receive_names_parse("--slot-name 1=Dispatch", &opts.receive.names, NULL, 0) == 0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    merged = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("pending-slot reacquisition stays one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("merge takes the proven slot",
+                     merged->receive_identity.known && merged->receive_identity.value == 5U
+                         && merged->receive_identity.slot == 1U && !merged->receive_identity.slot_pending,
+                     1);
+    rc |= expect_int("merge takes the proven slot's name", strcmp(merged->service_label, "Dispatch") == 0, 1);
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -7295,6 +7367,7 @@ main(void) {
     rc |= test_staged_access_code_of_another_kind_is_not_reused();
     rc |= test_invalid_live_access_code_never_erases_a_known_one();
     rc |= test_reacquisition_merge_fills_frequency_and_code_only();
+    rc |= test_voice_start_alert_waits_for_receive_admission();
     rc |= test_unknown_access_codes_render_as_dashes();
     rc |= test_dpmr_event_line_prints_the_decoded_colour_code();
     rc |= test_reacquisition_merge_upgrades_an_unknown_system_code();

@@ -17,6 +17,8 @@ int dsd_receive_policy_validate(const dsd_receive_policy* policy, int kind, char
 int dsd_receive_filter_equal(const dsd_receive_filter* a, const dsd_receive_filter* b);
 int dsd_receive_names_equal(const dsd_service_names* a, const dsd_service_names* b);
 int dsd_receive_policy_equal(const dsd_receive_policy* a, const dsd_receive_policy* b);
+/** Whether any filter (slot, DCC, RAN, NAC) of @p policy is enabled; the default policy has none. */
+int dsd_receive_policy_filters_enabled(const dsd_receive_policy* policy);
 
 const char* dsd_receive_kind_name(int kind);
 int dsd_receive_value_parse(int kind, const char* text, unsigned int* out);

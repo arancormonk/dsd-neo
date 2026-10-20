@@ -40,7 +40,14 @@ typedef struct {
 int dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks);
 void dsd_engine_cleanup(dsd_opts* opts, dsd_state* state);
 /** End calls under their old receive policy before a live edit (decoder thread). */
-void dsd_engine_receive_policy_boundary(dsd_opts* opts, dsd_state* state);
+/** The effective receive policy has just changed (issue #637): a call it no longer admits ends; one it still admits is
+ * relabelled and carries on. Codes a voice channel inherited from its control channel are forgotten when filters come
+ * on. */
+void dsd_engine_receive_policy_boundary(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
+/** Whether a followed trunk voice channel is held only by traffic the receive policy rejects (issue #637): a filter is
+ * on and no admitted traffic has refreshed the channel's activity within the trunk hangtime. Continuous sync never
+ * reaches noCarrier(), whose control-channel return then lets the channel go, so the frame loops yield on this. */
+int dsd_engine_trunk_receive_release_due(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * Run the decode clock on the capture clock of the I/Q replay the input names (`--iq-replay`; issue #572).

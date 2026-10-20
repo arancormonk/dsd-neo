@@ -384,6 +384,9 @@ typedef struct {
     /* A sync-loss end may still be reacquired, so its VOICE_END alert is held until the
      * reacquisition window closes. Stamped with the monotonic deadline to beep at. */
     uint8_t end_alert_pending;
+    /* The call's VOICE_START was withheld while the receive policy was still checking it (issue #637): it sounds once
+       the call is admitted, never for one rejected. */
+    uint8_t start_alert_pending;
     double end_alert_due_m;
     /* An identity-less voice row whose recoverable end lacks positive end evidence is held
      * un-committed rather than dropped: a terminator decoding after the fade retracts the
@@ -430,6 +433,10 @@ int dsd_call_state_protocol_family(int protocol);
 int dsd_call_state_ensure(dsd_state* state);
 /** Refresh active admission and naming from current validated reception; ended records are immutable. */
 void dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+/** Whether a call (voice or data) is active on either slot that the receive policy in force admits, judged now by the
+ * call's own protocol and slot, and still heard: observed within @p window_s of @p now_m (decode clock). A call whose
+ * terminator was missed stays ACTIVE, so its phase alone holds nothing (issue #637). */
+int dsd_call_state_admitted_call_active(const dsd_opts* opts, const dsd_state* state, double now_m, double window_s);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
 int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 /** Record resolver provenance on the matching call epoch, without changing call

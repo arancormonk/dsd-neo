@@ -34,7 +34,9 @@ typedef struct {
     uint16_t nxdn_site;
 } dsd_signal_search_site_note;
 
-typedef void (*dsd_signal_search_evidence_fn)(const dsd_state*, const char*, uint32_t, uint32_t, const char*);
+/* The evidence: the reporting protocol's name, the synctype and slot its traffic is judged by (synctype < 0: the
+   decoder's current ones), then the IDs and access text. */
+typedef void (*dsd_signal_search_evidence_fn)(const dsd_state*, const char*, int, int, uint32_t, uint32_t, const char*);
 typedef void (*dsd_signal_search_site_fn)(const dsd_state*, const dsd_signal_search_site_note*);
 typedef void (*dsd_signal_search_call_fn)(const dsd_state*, uint8_t);
 typedef int (*dsd_signal_search_active_fn)(const dsd_state*);
@@ -46,6 +48,10 @@ int dsd_signal_search_is_running(const dsd_state* state);
 void dsd_signal_search_evidence_set(dsd_signal_search_evidence_fn fn);
 void dsd_signal_search_note_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                      const char* access);
+/** dsd_signal_search_note_evidence() for traffic of @p sync on @p slot rather than the decoder's current ones (a P25
+ * Phase 2 SACCH announces the opposite voice slot, issue #637). */
+void dsd_signal_search_note_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot,
+                                        uint32_t target, uint32_t source, const char* access);
 /** Install at engine startup. Protocol code calls dsd_signal_search_note_site() once per decoded message, after the
  * message was dispatched, with the values of that message alone; the default is a no-op. */
 void dsd_signal_search_site_set(dsd_signal_search_site_fn fn);

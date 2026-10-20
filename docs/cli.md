@@ -1371,7 +1371,14 @@ block wins, and every applicable dimension must pass. Slot filters do not affect
 access filter stays **Checking** until reception supplies a validated identifier, including a block-only
 filter. A configured Phase 2 descrambler seed is not proof of a received NAC. Existing CRC/FEC,
 talkgroup, encryption and synthesis gates still apply. Control-channel acquisition remains available;
-a grant without destination access-code evidence receives the existing bounded acquisition window.
+a grant without destination access-code evidence receives the existing bounded acquisition window. A trunking
+receiver remembers the code it verified on each voice channel (up to 16), so it stops following grants to a channel
+whose code the policy rejects; a policy edit that admits that code takes effect at the next grant. Only codes a voice
+channel proved after its tune are remembered: a tune forgets the control channel's codes (with a filter on, their
+confirmation locks too), so they never name, split or admit the voice channel's calls. A slot
+filter judges the over-the-air slot even on the single-slot DMR decoder (`-fr`, `-nm`): a repeater's slot is proven
+by two consecutive bursts' CACH, a direct-mode one by its sync word, and the first bursts stay Checking. A proven
+move to the other slot starts a new call there, even with the same colour code.
 Rejected traffic does not refresh an activity hold. A manually held conventional channel stays selected and muted.
 
 Names use repeatable `--slot-name`, `--dcc-name`, `--ran-name`, `--nac-name` and `--tone-name` options:
@@ -1389,9 +1396,10 @@ conflicting names for that selector are refused. `--no-service-names` clears the
 
 Live editors are on the Qt/Android monitor under **Signal & site**: **Receive filters** and **Service names**.
 They offer **All channels** / **This channel**, with **Use default** and **List value** for session-only row edits.
-The terminal equivalents are **Decoder → Receive filters** and **Trunking → Channels & groups → Service names**.
+The terminal equivalents are under **Decoder → Receive filters and names**.
 Edits are validated and applied as a whole on the decoder thread; a stale destination is refused.
-A policy change closes the affected active call under its old label. Completed history retains its service
+A policy change ends only an active call it now rejects; a call it still admits, or is checking, carries on, and a
+name edit relabels it. Completed history retains its service
 identity and label, and different confirmed identifiers do not merge into one call.
 
 `-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
@@ -1402,7 +1410,7 @@ while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonym
 named WAVs without fabricated talkgroup IDs. See [receive configuration](config-system.md) and
 [row options](csv-formats.md).
 
-## Tone filter (CTCSS/DCS receive policy)
+### Tone filter (CTCSS/DCS receive policy)
 
 The tone filter decides, from the tone or code the monitor receives (above), which analog FM traffic is heard. It is a
 setting, shown apart from what is received, and it is off by default: then the ordinary carrier squelch alone decides.

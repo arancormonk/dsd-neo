@@ -50,10 +50,11 @@ fake_control(dsd_opts* opts, dsd_state* state, int op) {
 static int g_activity_calls;
 
 static void
-fake_p25_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source, int is_private,
-                  int encrypted, int data_call) {
+fake_p25_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot, uint32_t target,
+                  uint32_t source, int is_private, int encrypted, int data_call) {
     assert(opts == g_last_opts);
     assert(state == g_last_state);
+    assert(protocol == DSD_SYNC_P25P1_POS && slot == 0);
     assert(target == 1001U && source == 2002U);
     assert(is_private == 1 && encrypted == 1 && data_call == 0);
     g_activity_calls++;
@@ -205,7 +206,7 @@ main(void) {
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 0);
-    dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, 1001U, 2002U, 1, 1, 0);
+    dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 0);
 
     /* Installed: every op reaches the implementation with its arguments and result intact. */
@@ -220,7 +221,7 @@ main(void) {
     assert(g_last_op == DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE);
     assert(g_last_opts == &opts);
     assert(g_last_state == &state);
-    dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, 1001U, 2002U, 1, 1, 0);
+    dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
 
     g_control_result = DSD_TRUNK_SCAN_CONTROL_REFUSED;
@@ -242,7 +243,7 @@ main(void) {
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 4);
-    dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, 1001U, 2002U, 1, 1, 0);
+    dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
     test_recovery_ownership();
     test_presumptive_startup_owner();

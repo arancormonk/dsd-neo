@@ -24,6 +24,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -467,11 +468,34 @@ test_feed(void) {
     assert(await_line(c, "status", "\"tg_policy\":{\"context\":\"", 3000U));
     assert(strstr(g_line, "\"decryption\":{\"target_id\":\"\",\"tune_generation\":\"") != NULL);
 
+    /* Issue #637: status carries the receive verdict and the configured filters and names, in receive_set's spelling,
+       so a client can read one before it replaces it. */
+    char receive_error[160];
+    assert(dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_NAC, 1, "293/A12", "370", "", receive_error,
+                                  sizeof receive_error)
+           == 0);
+    assert(
+        dsd_receive_edit_parse(&opts->receive, 4, 0, "", "", "--nac-name 293=Fire", receive_error, sizeof receive_error)
+        == 0);
+    /* The feed sends status at most every 250 ms: publish until it carries the edited policy. */
+    int receive_seen = 0;
+    for (int attempt = 0; attempt < 30 && !receive_seen; attempt++) {
+        dsd_telemetry_publish_both_and_redraw(opts, state);
+        receive_seen = await_line(c, "status", "\"receive\":{\"status\":\"Checking received identifier\"", 100U);
+    }
+    assert(receive_seen);
+    assert(strstr(g_line, "{\"kind\":0,\"enabled\":0,\"allow\":\"\",\"block\":\"\"}") != NULL);
+    assert(strstr(g_line, "{\"kind\":3,\"enabled\":1,\"allow\":\"293/A12\",\"block\":\"370\"}") != NULL);
+    assert(strstr(g_line, "\"names\":\"--nac-name \\\"293=Fire\\\"\"") != NULL);
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+
     /* A row enriched in place after it was sent -- here the older of two, as a late alias lands on a call a newer
        notice already followed -- is sent again, marked as an update, under the same identity. */
     commit_event(state, "Notice", 10U);
     dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(await_line(c, "event", "\"t_name\":\"Notice\"", 3000U));
+    /* A row no reception named reports kind "none" (6), never kind 0 ("slot"). */
+    assert(strstr(g_line, "\"receive_kind\":6,\"receive_value\":0,\"receive_known\":false") != NULL);
     Event_History* older = &state->event_history_s[0].Event_History_Items[2];
     assert(strcmp(older->t_name, "Dispatch") == 0);
     DSD_SNPRINTF(older->alias, sizeof older->alias, "%s", "Late Alias");
@@ -592,6 +616,24 @@ test_feed(void) {
     }
     assert(saw_neighbor);
     assert(strstr(g_line, "\"site\":0,\"lra\":null,") != NULL);
+
+    /* Issue #637: clearing the history while subscribed sends no blank rows: a cleared row (receive kind "none") is
+       the empty row the feed suppresses. */
+    init_event_history(&state->event_history_s[0], 0, DSD_EVENT_HISTORY_LEN);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    commit_event(state, "AfterClear", 12U);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    int blank_events = 0;
+    int saw_after_clear = 0;
+    const uint64_t clear_deadline = dsd_realtime_mono_ms() + 3000U;
+    while (dsd_realtime_mono_ms() < clear_deadline && !saw_after_clear) {
+        if (read_line(c, 100U) != 1 || strstr(g_line, "\"type\":\"event\"") == NULL) {
+            continue;
+        }
+        saw_after_clear = strstr(g_line, "\"t_name\":\"AfterClear\"") != NULL;
+        blank_events += !saw_after_clear && strstr(g_line, "\"t_name\":\"\"") != NULL;
+    }
+    assert(saw_after_clear && blank_events == 0);
 
     /* Stopping drains: a row published just before the stop still reaches the subscriber, then the stream ends. */
     commit_event(state, "Final", 11U);

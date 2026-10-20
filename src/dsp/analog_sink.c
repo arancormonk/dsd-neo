@@ -280,6 +280,10 @@ dsd_analog_sink_write(const dsd_opts* opts, dsd_state* state, dsd_analog_sink si
     }
     analog_sink_lane* lane = &ext->lane[sink];
     const int prepared = analog_sink_lane_prepare(opts, ext, lane, block_hz, sink_hz);
+    if (prepared == DSD_ANALOG_SINK_NATIVE) {
+        /* Within the converter's tolerance of the sink rate: as for an equal rate, the call WAV is written here. */
+        return analog_sink_native(sink, buf, n, gain, block_hz, write, ctx);
+    }
     if (prepared != DSD_ANALOG_SINK_WROTE) {
         return prepared;
     }

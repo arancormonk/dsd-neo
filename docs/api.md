@@ -305,6 +305,14 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 * `scan_row`: the scan row on air (`{scanner, session, row, mode, editable,
   edited, listed, opts_match, target_id, label}`), which `scan_row_edit` must
   quote, or `null` when no scan row is on air.
+* `receive`: `{status, filters[{kind, enabled, allow, block}], names}`. `status`
+  is the receive policy's verdict on current reception (`Filters off`, `Allowed`,
+  `Checking received identifier`, `Rejected by receive filter`, or
+  `Slot 1: ...; slot 2: ...` on a two-slot carrier). `filters` (kinds `0` slot,
+  `1` DCC, `2` RAN, `3` NAC) and `names` are the configured defaults that
+  `receive_set` edits, spelled as `receive_set` takes them, so a client can read
+  one before it replaces it (`enabled` is `0` or `1`, as `receive_set` takes it). A scan row's own overrides are not
+  shown here.
 
 ### `result`: asynchronous completions
 
@@ -538,8 +546,9 @@ field, and the decoder refuses the rest when it applies the command.
   the configured list (`list` must then be absent or empty).
 * **`receive_set`**: replaces one configured filter (`kind`: `0` slot, `1` DCC,
   `2` RAN, `3` NAC), or the complete naming table (`kind:4`). `enabled` is `0`
-  or `1`; `allow` and `block` are slash-separated identifier strings, with NACs
-  in hexadecimal. Block wins; an empty allow list admits any known identifier.
+  or `1` (omitted: `0`, so the filter is off); `allow` and `block` are
+  slash-separated identifier strings, with NACs in hexadecimal (omitted: empty).
+  Read the current values from `status.receive` first. Block wins; an empty allow list admits any known identifier.
   `names` uses the shared naming-option grammar, for example
   `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. Naming alone does not
   filter. Invalid input rejects the whole edit. A channel override continues to

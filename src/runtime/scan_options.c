@@ -837,13 +837,25 @@ option_starts_switch(const char* text) {
     return option_find(name) != NULL;
 }
 
-/* Whether @p text, a field of the file's own columns, can only be the rest of a tone list a comma cut off: one run of
- * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/161.0"), the first a supported CTCSS tone or
- * DCS code, alone or followed by a row option's switch, the rest of the options cell the same comma cut off
- * ("67.0 --squelch-db -60"). A column's own text is left alone: a value no list takes (an RTL gain) and anything else
- * with a space in it, such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
+/* The receive filter kind (DSD_RECEIVE_SLOT..NAC) a switch's list names, or -1 for any other switch. */
 static int
-option_is_tone_list_rest(const char* text) {
+option_receive_filter_kind(const scan_option_spec* spec) {
+    for (int kind = 0; spec && kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (spec->field == ((uint32_t)DSD_SCAN_OPT_SLOT << kind)) {
+            return kind;
+        }
+    }
+    return -1;
+}
+
+/* Whether @p text, a field of the file's own columns, can only be the rest of @p spec's list a comma cut off: one run of
+ * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/161.0" for a tone list; "370", "4/7" for a
+ * receive filter), the first an entry that list takes, alone or followed by a row option's switch, the rest of the
+ * options cell the same comma cut off ("67.0 --squelch-db -60"). A column's own text is left alone: a value no list
+ * takes (an RTL gain), a lone number after a receive filter's list (a gain of 7 after "--dcc-allow 4"), and anything
+ * else with a space in it, such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
+static int
+option_is_list_rest(const scan_option_spec* spec, const char* text) {
     size_t len = strlen(text);
     while (len > 0U && option_space((unsigned char)text[len - 1U])) {
         len--;
@@ -856,8 +868,18 @@ option_is_tone_list_rest(const char* text) {
     }
     DSD_MEMCPY(entry, text, first);
     entry[first] = '\0';
-    dsd_tone_set unused;
-    return dsd_tone_set_parse(entry, &unused, NULL, 0) == 0;
+    if (spec->field == DSD_SCAN_OPT_TONE) {
+        dsd_tone_set unused;
+        return dsd_tone_set_parse(entry, &unused, NULL, 0) == 0;
+    }
+    const int kind = option_receive_filter_kind(spec);
+    /* A receive filter's entries are bare numbers, which a numeric column (an RTL gain) takes too: a lone one is that
+       column's own value (issue #637). Only a '/' run or the rest of the options cell after it shows the cut list. */
+    if (kind >= 0 && first == len) {
+        return 0;
+    }
+    unsigned int unused = 0;
+    return kind >= 0 && dsd_receive_value_parse(kind, entry, &unused) == 0;
 }
 
 int
@@ -867,11 +889,13 @@ dsd_scan_options_tone_list_split(const char* options, const char* next, int next
         return 0;
     }
     const char* rest = option_skip_space(next);
-    if (rest[0] == '\0' || (!next_past_header && !option_is_tone_list_rest(rest))) {
+    if (rest[0] == '\0') {
         return 0;
     }
     const scan_option_spec* spec = option_trailing_tone_list(options);
-    if (!spec || (spec->field != DSD_SCAN_OPT_TONE && !next_past_header)) {
+    /* Past the header any field is the comma's doing; within it only text the cut list takes (a service name's rest
+       cannot be told from a column's own text). */
+    if (!spec || (!next_past_header && !option_is_list_rest(spec, rest))) {
         return 0;
     }
     (void)option_error(error, error_size, spec->name,

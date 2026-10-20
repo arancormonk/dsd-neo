@@ -6,17 +6,21 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -27,6 +31,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -473,12 +478,13 @@ release_guard_once_waited(void* opaque) {
     DSD_THREAD_RETURN;
 }
 
+/* Drain one command, queued by @p submit while the test holds the tick guard, and expect it to wait for the guard. */
 static int
-drain_wav_command_under_held_guard(int cmd_id, const char* path, const char* label) {
+drain_command_under_held_guard(int cmd_id, const char* path, const void* data, size_t n, const char* label) {
     int rc = expect(p25_sm_tick_guard_try_enter(), "the test holds the guard");
     g_wav_guard_stalled = 0;
     g_wav_guard_baseline = dsd_app_command_test_policy_guard_waits();
-    const int queued = path ? dsd_app_command_set_string(cmd_id, path) : dsd_app_command_submit(cmd_id, NULL, 0);
+    const int queued = path ? dsd_app_command_set_string(cmd_id, path) : dsd_app_command_submit(cmd_id, data, n);
     rc |= expect(queued > 0, label);
     dsd_thread_t releaser;
     const int started = dsd_thread_create(&releaser, release_guard_once_waited, NULL) == 0;
@@ -490,10 +496,15 @@ drain_wav_command_under_held_guard(int cmd_id, const char* path, const char* lab
         dsd_thread_join(releaser);
     }
     rc |= expect(started, "releaser started");
-    rc |= expect(drained == 1, "one wav command drained");
+    rc |= expect(drained == 1, "one command drained");
     rc |= expect(!g_wav_guard_stalled, "releaser did not reach fixture stall bound");
     rc |= expect(dsd_app_command_test_policy_guard_waits() == g_wav_guard_baseline + 1, label);
     return rc;
+}
+
+static int
+drain_wav_command_under_held_guard(int cmd_id, const char* path, const char* label) {
+    return drain_command_under_held_guard(cmd_id, path, NULL, 0, label);
 }
 
 static int
@@ -539,6 +550,123 @@ test_wav_commands_take_the_guard(void) {
     return rc;
 }
 
+/* Issue #637: a change of the configured receive policy runs the receive boundary, which ends calls, drains the P25
+   Phase 2 playout and rotates the per-call WAVs as the watchdog's release does, so the command waits for the guard. */
+static int
+test_receive_set_takes_the_guard(void) {
+    dsd_scan_row_profile row = {0};
+    g_phase = 17;
+    int rc = setup();
+    dsd_app_receive_payload edit;
+    DSD_MEMSET(&edit, 0, sizeof edit);
+    edit.kind = DSD_RECEIVE_NAC;
+    edit.enabled = 1;
+    DSD_SNPRINTF(edit.allow, sizeof edit.allow, "%s", "293");
+    /* The carrier was marked tuned without a voice-channel tune, so the verified code it holds may be another's. */
+    g_opts.trunk_is_tuned = 1;
+    g_state.receive_codes_fresh_freq = 0;
+    g_state.p2_cc_verified = 1U;
+    rc |= drain_command_under_held_guard(DSD_APP_CMD_RECEIVE_SET, NULL, &edit, sizeof edit,
+                                         "a receive policy edit waits for the guard");
+    rc |=
+        expect(g_state.p2_cc_verified == 0U, "the first filter forgets the inherited code: the channel proves its own");
+    rc |= expect(g_opts.receive.filters[DSD_RECEIVE_NAC].enabled == 1
+                     && dsd_receive_set_contains(&g_opts.receive.filters[DSD_RECEIVE_NAC].allow, 0x293U),
+                 "the receive policy edit applied");
+    /* An edit ends only a call the new policy rejects: one it still checks or admits carries on, a name edit relabels
+       it, and none of them silences admitted reception. */
+    dsd_call_snapshot call;
+    rc |= expect(dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE,
+                 "a call the policy is checking carries on");
+    g_state.p2_cc_verified = 1U;
+    dsd_app_receive_payload names;
+    DSD_MEMSET(&names, 0, sizeof names);
+    names.kind = 4;
+    DSD_SNPRINTF(names.names, sizeof names.names, "%s", "--nac-name 293=Fire");
+    rc |= expect(dsd_app_command_submit(DSD_APP_CMD_RECEIVE_SET, &names, sizeof names) > 0, "name edit queued");
+    rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "name edit drained");
+    rc |= expect(dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                     && strcmp(call.service_label, "Fire") == 0,
+                 "a name edit relabels the admitted call and keeps it");
+    edit.kind = DSD_RECEIVE_NAC;
+    edit.enabled = 1;
+    edit.allow[0] = '\0';
+    DSD_SNPRINTF(edit.block, sizeof edit.block, "%s", "293");
+    rc |= expect(dsd_app_command_submit(DSD_APP_CMD_RECEIVE_SET, &edit, sizeof edit) > 0, "block edit queued");
+    rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "block edit drained");
+    rc |= expect(dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE,
+                 "a call the policy now rejects ends");
+    cleanup(&row);
+    return rc;
+}
+
+/* Issue #637: a followed trunk voice channel only rejected traffic holds is let go once the hangtime runs, even while
+   frames stay in sync; never with every filter off, while admitted voice refreshes it, while an admitted call is in
+   progress and still heard, or while the traffic is still checking (the state machine's acquisition window bounds
+   that). */
+static int
+test_trunk_receive_release_due(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_hangtime = 1.0f;
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.nxdn_last_ran = 9;
+    state.last_vc_sync_time = dsd_decode_time() - 5;
+    g_phase = 18;
+    int rc = expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "never with every filter off");
+    opts.receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    opts.receive.filters[DSD_RECEIVE_RAN].block.bits[0] = UINT64_C(1) << 9;
+    rc |= expect(dsd_engine_trunk_receive_release_due(&opts, &state), "rejected traffic alone is let go");
+    state.nxdn_last_ran = (unsigned int)-1;
+    state.p25_last_vc_tune_time_m = dsd_decode_now_mono_s();
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "checking NXDN traffic gets an acquisition window from the tune");
+    state.p25_last_vc_tune_time_m = dsd_decode_now_mono_s() - 5.0;
+    rc |= expect(dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "checking NXDN traffic is let go once its acquisition window closes");
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    opts.receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    state.dmr_color_code = 16U;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "checking DMR traffic is the state machine's to release once its acquisition window closes");
+    opts.receive.filters[DSD_RECEIVE_DCC].enabled = 0;
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.nxdn_last_ran = 8;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "admitted data that opens no call keeps the channel");
+    opts.receive.filters[DSD_RECEIVE_RAN].enabled = 0;
+    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    opts.receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "a filter that does not judge NXDN keeps it");
+    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 0;
+    opts.receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    state.nxdn_last_ran = 9;
+    state.last_vc_sync_time = dsd_decode_time();
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "admitted voice refreshed the channel");
+    state.last_vc_sync_time = dsd_decode_time() - 5;
+    dsd_call_observation data = {
+        .protocol = DSD_SYNC_DMR_BS_DATA_POS, .slot = 1, .kind = DSD_CALL_KIND_DATA, .ota_target_id = 7};
+    state.dmr_color_code = 3;
+    rc |= expect(dsd_call_state_observe(&state, &data, DSD_CALL_BOUNDARY_BEGIN) == 1, "data call observed");
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "an admitted call in progress keeps it");
+    /* A call whose terminator was missed stays ACTIVE: once it is not heard within the hangtime it holds nothing. */
+    (void)dsd_call_state_end(&state, 1U, 0.0);
+    data.observed_m = dsd_decode_now_mono_s() - 3.0;
+    rc |= expect(dsd_call_state_observe(&state, &data, DSD_CALL_BOUNDARY_BEGIN) == 1, "stale data call observed");
+    rc |= expect(dsd_engine_trunk_receive_release_due(&opts, &state), "a stale admitted call holds nothing");
+    /* Followed DMR data stamps only the monotonic activity (handle_data_sync()): it keeps the channel too. */
+    state.last_vc_sync_time_m = dsd_decode_now_mono_s();
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "admitted data heard within the hangtime keeps it");
+    state.last_vc_sync_time_m = 0.0;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 write_csv(char* path, const char* content) {
     const int fd = dsd_test_mkstemp(path, DSD_TEST_PATH_MAX, "dsd_policy_guard");
@@ -572,6 +700,8 @@ main(void) {
         for (g_phase = 15; g_phase <= 16; ++g_phase) {
             rc |= run_phase();
         }
+        rc |= test_receive_set_takes_the_guard();
+        rc |= test_trunk_receive_release_due();
     }
     (void)remove(g_block_csv);
     (void)remove(g_allow_csv);

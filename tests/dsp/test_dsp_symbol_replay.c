@@ -4042,6 +4042,51 @@ test_auto_squelch_gates_each_sample(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #637: a block the speaker does not play but -P records (the output muted, a transmission on air) runs the sink
+   gate for the recording, so the gate's gain is already up when the speaker opens mid-transmission. The speaker then
+   ramps in over 5 ms of its own instead of starting at full level; once open it plays at the gate's gain. */
+static void
+test_speaker_ramps_in_after_recording_only_blocks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    opts.rtl_squelch_margin_db = 10;
+    opts.rtl_squelch_level = 2.0;
+    g_chain_removes_tone = 0;
+    start_monitor_capture(&opts);
+    dsd_trunk_tuning_requests_reset();
+
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    assert(state.analog_rx.carrier_open == 1);
+    opts.dmr_stereo_wav = 1;
+    opts.audio_out = 0;
+    const int muted_blocks = g_monitor_blocks;
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    assert(g_monitor_blocks == muted_blocks);
+    opts.audio_out = 1;
+    g_played_len = 0;
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    assert(g_monitor_blocks == muted_blocks + 1 && g_played_len == 960U * sizeof(short));
+    short out[960];
+    DSD_MEMCPY(out, g_played, sizeof out);
+    assert(out[0] > 0 && out[0] < 10);
+    assert(out[100] > 400 && out[100] < 430);
+    assert(out[959] > 990);
+    g_played_len = 0;
+    feed_flagged_block(&opts, &state, 1000.0f, 960U, 960U);
+    DSD_MEMCPY(out, g_played, sizeof out);
+    assert(out[0] > 990);
+    opts.dmr_stereo_wav = 0;
+    g_chain_removes_tone = 1;
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
 /* Issue #574: the analog monitor stamps audible audio for a block of analog reception it writes to its sink: on the
    FM or AM monitor (never the -8 source monitor during digital decoding), with the tap's carrier open and the tone
    policy passing it, and under the auto squelch with at least one sample its own gate hears -- whatever the audio's
@@ -5241,6 +5286,7 @@ main(void) {
     test_tone_policy_check_is_no_scan_activity();
     test_chain_playing_follows_the_sink();
     test_auto_squelch_gates_each_sample();
+    test_speaker_ramps_in_after_recording_only_blocks();
     test_monitor_stamps_analog_reception();
     test_pcm_noise_squelch_gates_each_sample();
     test_pcm_noise_squelch_follows_the_passband();

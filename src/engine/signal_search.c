@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -66,6 +67,9 @@ typedef struct {
 typedef struct {
     dsd_signal_search_config config;
     dsd_signal_search_status status;
+    /* The decoder's options, which outlive the search: its receive policy judges what the search may report and hold
+       on (issue #637). */
+    const dsd_opts* opts;
     dsd_scan_settings saved;
     dsd_signal_search_publish_fn publish;
     void* user;
@@ -446,6 +450,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         return -1;
     }
     c->config = *config;
+    c->opts = opts;
     c->publish = observer;
     c->user = user;
     c->status.session_id = config->session_id;
@@ -472,7 +477,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         free(c);
         return -1;
     }
-    dsd_signal_search_evidence_set(dsd_engine_signal_search_evidence);
+    dsd_signal_search_evidence_set(dsd_engine_signal_search_evidence_at);
     dsd_signal_search_site_set(dsd_engine_signal_search_site);
     dsd_signal_search_call_set(dsd_engine_signal_search_call);
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
@@ -576,9 +581,22 @@ search_receiving(const search_coord* c, const dsd_state* state) {
 void
 dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                   const char* access) {
+    dsd_engine_signal_search_evidence_at(state, protocol, -1, -1, target, source, access);
+}
+
+void
+dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                                     uint32_t source, const char* access) {
     search_coord* c = search_get(state);
-    /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. */
+    /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. Traffic the receive
+       policy rejects or is still checking neither confirms the hit nor keeps the search listening (issue #637), judged
+       by the protocol and slot the report names when it names them. */
     if (!c || !search_receiving(c, state)) {
+        return;
+    }
+    const int admitted = sync >= 0 ? dsd_receive_allows(c->opts, state, sync, slot)
+                                   : dsd_receive_current_allows(c->opts, state, state->currentslot);
+    if (!admitted) {
         return;
     }
     c->activity = dsd_decode_now_mono_ms();
@@ -687,7 +705,7 @@ search_call_equal(const search_call* a, const search_call* b) {
 static const char*
 search_call_admit(const search_coord* c, const dsd_state* state, uint8_t slot, dsd_call_snapshot* record) {
     if (dsd_call_state_get(state, slot, record) <= 0 || record->phase != DSD_CALL_PHASE_ACTIVE
-        || record->crc_invalid != 0U) {
+        || record->crc_invalid != 0U || !dsd_receive_allows(c->opts, state, record->protocol, slot)) {
         return NULL;
     }
     const char* protocol = search_call_protocol(record->protocol);

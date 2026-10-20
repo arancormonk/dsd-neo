@@ -693,6 +693,19 @@ check_tone_list_split(void) {
         {"--tone-allow", "67.0", 1, NULL},
         {"--tone-allow 'unterminated", "67.0", 1, NULL},
         {"", "67.0", 1, NULL},
+        /* Receive filter lists (issue #637) are judged by the values their filter takes, in any column. */
+        {"--nac-allow 293", "370/371", 0, "--nac-allow: use / between entries, not commas"},
+        {"--nac-allow 293", "370", 1, "--nac-allow: use / between entries, not commas"},
+        /* A lone number within the header is the next column's own (a gain of 7 after a DCC list). */
+        {"--dcc-allow 4", "7", 0, NULL},
+        {"--dcc-allow 4", "7 --slot-block 2", 0, "--dcc-allow: use / between entries, not commas"},
+        {"--dcc-block=4", "7/9 --slot-block 2", 0, "--dcc-block: use / between entries, not commas"},
+        {"--ran-allow 1", "64", 0, NULL},
+        {"--nac-allow 293", "bandplan.csv", 0, NULL},
+        {"--dcc-allow 4", "Fire", 1, "--dcc-allow: use / between entries, not commas"},
+        /* A service name's rest cannot be told from a column's own text: only past the header. */
+        {"--dcc-name 7=Hospital", "West", 0, NULL},
+        {"--dcc-name 7=Hospital", "West", 1, "--dcc-name: commas are not supported in service names"},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

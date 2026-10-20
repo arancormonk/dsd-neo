@@ -245,6 +245,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * for every row of that session. */
         QString channel;
         QString service;
+        /* A conventional analog (NFM) transmission (issue #637): its name is only a label (the channel, "NFM" or a
+           tone's service name), never its destination. Persisted; older rows read false. */
+        bool analog = false;
         int receiveKind = 6;
         int receiveValue = 0;
         bool receiveKnown = false;
@@ -302,6 +305,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 freqHz = 0;
         int acKind = 0;
         int ac = 0;
+        /* The receive evidence and service name last read (issue #637). The core only adds to them in place (a
+         * reacquired segment that confirmed the code, proved the slot or named the service), so a gain is an advance. */
+        bool receiveKnown = false;
+        int receiveSlot = 0;
+        QString service;
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;
@@ -354,6 +362,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
     int noteSeen(const QString& key, quint64 ring, const SeenState& read, bool voice);
+    static bool absorbSeenReceive(SeenState& seen, const SeenState& read);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);

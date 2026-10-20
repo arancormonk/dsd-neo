@@ -14,6 +14,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -666,6 +667,54 @@ test_followed_voice_channel_frequency_reaches_the_voice_call(void) {
     dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.frequency_hz == 0);
+    dsd_state_ext_free_all(&state);
+}
+
+/* Issue #637: a voice LC holds the followed voice channel only for a slot the receive policy admits; the carrier's
+   control-channel stamp is kept either way. */
+static void
+test_voice_lc_holds_the_channel_only_when_admitted(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lc_bits[80];
+    uint32_t irr = 0U;
+
+    for (int slot = 1; slot >= 0; slot--) {
+        dsd_state_ext_free_all(&state);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.trunk_enable = 1;
+        opts.trunk_is_tuned = 1;
+        opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+        opts.receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 1; /* --slot-allow 1 */
+        state.trunk_cc_freq = 851012500L;
+        state.currentslot = slot;
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+        irr = 0U;
+        dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+        assert(state.last_cc_sync_time != 0);
+        assert(slot == 1 ? state.last_vc_sync_time == 0 : state.last_vc_sync_time != 0);
+    }
+    /* The single-slot output (-nm) folds a standalone TS2 LC onto lane 0; the burst's own CACH slot, which
+       dmr_data_sync() hands it as the lane's receive slot, still judges it. */
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.dmr_mono = 1;
+    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    opts.receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 1; /* --slot-allow 1 */
+    state.trunk_cc_freq = 851012500L;
+    state.currentslot = 1;
+    state.dmr_stereo = 0;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    irr = 0U;
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(state.currentslot == 0 && state.last_vc_sync_time == 0);
     dsd_state_ext_free_all(&state);
 }
 
@@ -3489,6 +3538,7 @@ main(void) {
     InitAllFecFunction();
 
     test_repeated_voice_lc_header_keeps_one_epoch();
+    test_voice_lc_holds_the_channel_only_when_admitted();
     test_stale_headerless_epoch_does_not_absorb_next_header();
     test_repeated_voice_lc_headers_commit_one_history_row();
     test_unverified_terminator_ends_call_recoverably();

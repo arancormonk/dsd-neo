@@ -2015,6 +2015,8 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     state->nac = 0;
     state->p2_cc_verified = 0;
     state->dmr_color_code = 16;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
     state->nxdn_last_ran = (unsigned int)-1;
     state->nxdn_last_ran_stand_in = 0;
     // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding.
@@ -3766,12 +3768,29 @@ trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     return 1;
 }
 
+int
+dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->active >= coord->count) {
+        return 0;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    const double now_m = trunk_scan_now_m();
+    return trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
+           && !trunk_scan_activity_hold_running(opts, rt, now_m)
+           && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m)
+           && trunk_scan_rejection_has_alternate(opts, state, coord, now_m);
+}
+
 /* What may release the target on air before its holds are weighed: the per-visit cap, then a tone-policy rejection.
  * Returns 1 when the tick is spent. */
 static int
 trunk_scan_service_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                            dsd_trunk_scan_target_runtime* rt, double now_m) {
+    /* Only admitted activity stamps the target's activity hold (trunk_scan_conventional_activity(), the voice gate's
+       media), data included, so a hold still running keeps the target whatever the receive verdict on air. */
     if (trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
+        && !trunk_scan_activity_hold_running(opts, rt, now_m)
         && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m)) {
         rt->last_allowed_activity_m = 0.0;
         if (trunk_scan_rejection_has_alternate(opts, state, coord, now_m)) {
@@ -4115,14 +4134,13 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
 }
 
 /* Shared body for every conventional target type: the hold decision is protocol-independent,
- * so the per-protocol entry points below differ only in which family may claim the hold. */
+ * so the per-protocol entry points below differ only in which family may claim the hold. The receive policy judges the
+ * reporting call's own protocol and slot (issue #637): only traffic it admits holds the target. */
 static void
 trunk_scan_conventional_activity(trunk_scan_conventional_family family, const dsd_opts* opts, const dsd_state* state,
-                                 uint32_t target, uint32_t source, int is_private, int encrypted, int data_call) {
-    const int protocol = family == TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR    ? DSD_SYNC_DMR_BS_VOICE_POS
-                         : family == TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN ? DSD_SYNC_NXDN_POS
-                                                                         : DSD_SYNC_P25P1_POS;
-    if (!dsd_receive_allows(opts, state, protocol, state ? state->currentslot : 0)) {
+                                 int protocol, int slot, uint32_t target, uint32_t source, int is_private,
+                                 int encrypted, int data_call) {
+    if (!dsd_receive_allows(opts, state, protocol, slot)) {
         return;
     }
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
@@ -4155,22 +4173,24 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
 void
 dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                 uint32_t source, int is_private, int encrypted, int data_call) {
-    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR, opts, state, target, source, is_private,
-                                     encrypted, data_call);
+    /* A DMR report comes from the slot being decoded. */
+    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR, opts, state, DSD_SYNC_DMR_BS_VOICE_POS,
+                                     state ? state->currentslot : 0, target, source, is_private, encrypted, data_call);
 }
 
 void
 dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                  uint32_t source, int is_private, int encrypted, int data_call) {
-    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, opts, state, target, source, is_private,
-                                     encrypted, data_call);
+    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, opts, state, DSD_SYNC_NXDN_POS, 0, target,
+                                     source, is_private, encrypted, data_call);
 }
 
 void
-dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
-                                                uint32_t source, int is_private, int encrypted, int data_call) {
-    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_P25, opts, state, target, source, is_private,
-                                     encrypted, data_call);
+dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                                uint32_t target, uint32_t source, int is_private, int encrypted,
+                                                int data_call) {
+    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_P25, opts, state, protocol, slot, target, source,
+                                     is_private, encrypted, data_call);
 }
 
 static void
@@ -4629,10 +4649,12 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     rt->edit = *next;
     dsd_scan_option_values scratch;
     const dsd_scan_option_values* after = trunk_scan_target_values(rt, &scratch);
-    if (dsd_scan_option_receive_differs(&before, after)) {
-        dsd_frame_sync_hook_receive_policy_boundary(opts, state);
-    }
+    const int receive_changed = dsd_scan_option_receive_differs(&before, after);
+    const int filters_were_enabled = dsd_receive_filters_enabled(opts);
     (void)dsd_scan_mode_options(opts, state, after);
+    if (receive_changed) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state, filters_were_enabled);
+    }
     /* The receiver's request changed: the width the decoder runs, or, for a rigctl peer, whether the target sets one of
        its own. Only a rollback reaches here with a retune still in flight (an edit of the width is BUSY then), which
        lands with the width now in dsd_opts (trunk_scan_reapply_analog_width()). */

@@ -98,8 +98,8 @@ dsd_frame_sync_hook_analog_call_block(dsd_opts* opts, dsd_state* state, const fl
 }
 
 void
-dsd_frame_sync_hook_receive_policy_boundary(dsd_opts* opts, dsd_state* state) {
+dsd_frame_sync_hook_receive_policy_boundary(dsd_opts* opts, dsd_state* state, int filters_were_enabled) {
     if (g_frame_sync_hooks.receive_policy_boundary) {
-        g_frame_sync_hooks.receive_policy_boundary(opts, state);
+        g_frame_sync_hooks.receive_policy_boundary(opts, state, filters_were_enabled);
     }
 }

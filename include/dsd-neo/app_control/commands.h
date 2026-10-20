@@ -223,12 +223,17 @@ enum dsd_app_command_id {
     // monitor's next read of audio. Not coalescible: each queued edit is judged, and applied or refused, on its own.
     DSD_APP_CMD_TONE_FILTER_SET = 510, // payload: dsd_app_tone_filter_payload
     // Session edit of one field of the scan row on air ("this channel", issue #518): the squelch, channel width, tone
-    // policy or (a --trunk-scan target's) tuner gain the row runs for the rest of the session, over what its list
-    // sets; the configured defaults are not touched and nothing is saved. Names the row the editor opened on (scanner,
-    // session, row, target id), so an edit that outlives the visit still reaches that row, and one from an earlier
-    // scan is refused. Not coalescible, and no scoped (suspend/resume) command: it changes the row's options itself.
-    DSD_APP_CMD_RECEIVE_SET = 512,   // payload: dsd_app_receive_payload
+    // policy, receive filter or service names (issue #637) or (a --trunk-scan target's) tuner gain the row runs for the
+    // rest of the session, over what its list sets; the configured defaults are not touched and nothing is saved.
+    // Names the row the editor opened on (scanner, session, row, target id), so an edit that outlives the visit still
+    // reaches that row, and one from an earlier scan is refused. Not coalescible, and no scoped (suspend/resume)
+    // command: it changes the row's options itself.
     DSD_APP_CMD_SCAN_ROW_EDIT = 511, // payload: dsd_app_scan_row_edit_payload
+    // Configured receive policy (issue #637): one slot/DCC/RAN/NAC filter (kind 0..3) or the whole service-name table
+    // (kind 4), checked by dsd_receive_edit_parse() and refused with a toast, changing nothing, when invalid. While a
+    // scan row with its own receive options is on air the row keeps them. Applied at once in memory (a config save
+    // writes it); takes the P25 SM tick guard because a changed effective policy ends calls and rotates per-call WAVs.
+    DSD_APP_CMD_RECEIVE_SET = 512, // payload: dsd_app_receive_payload
 
     // Pulse audio device selection
     DSD_APP_CMD_PULSE_OUT_SET = 520, // payload: char name[]

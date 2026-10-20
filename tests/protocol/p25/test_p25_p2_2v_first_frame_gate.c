@@ -15,6 +15,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -468,6 +469,41 @@ main(void) {
     rc |= expect_eq("slot1 allowed: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 allowed: soft mbe calls", g_mbe_soft_calls, 2);
     rc |= expect_eq("slot1 allowed: hard mbe calls", g_mbe_hard_calls, 0);
+
+    // Issue #637: a slot the receive policy is still checking (no NAC proven yet) keeps decoding, muted and queued
+    // nowhere, so the vocoder and cipher positions it consumes stay in step for the frames admitted once it is proven.
+    reset_state(&opts, &st);
+    st.currentslot = 0;
+    st.payload_algid = 0x80;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p2_cc = 0x293;
+    st.p2_cc_verified = 0U;
+    opts.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    opts.receive.filters[DSD_RECEIVE_NAC].allow.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("checking slot: frames still decode", g_mbe_soft_calls, 2);
+    rc |= expect_eq("checking slot: audio stays shut", st.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("checking slot: nothing queued to play", dsd_p25p2_playout_level(&st, 0), 0);
+    st.p2_cc_verified = 1U;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("admitted slot: frames decode", g_mbe_soft_calls, 2);
+    rc |= expect_eq("admitted slot: audio opens", st.p25_p2_audio_allowed[0], 1);
+    opts.receive.filters[DSD_RECEIVE_NAC].allow.bits[0x293 / 64] = 0U;
+    st.p2_cc = 0x293;
+    st.p2_cc_verified = 1U;
+    opts.receive.filters[DSD_RECEIVE_NAC].block.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    st.last_vc_sync_time = 0;
+    st.last_vc_sync_time_m = 0.0;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("rejected slot: nothing decodes", g_mbe_soft_calls, 0);
+    rc |= expect_eq("rejected slot: holds no voice channel", st.last_vc_sync_time == 0 && st.last_vc_sync_time_m == 0.0,
+                    1);
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
 
     // A rejected slot remains closed when ordinary frame preparation
     // re-evaluates an otherwise clear crypto identity.

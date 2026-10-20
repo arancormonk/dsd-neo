@@ -84,6 +84,24 @@ Item {
             compare(fake.sent.destination.session, 7);
             compare(fake.sent.action, 2);
         }
+        function test_kind_picker_follows_sheet_kind() {
+            sheet.openEditor();
+            var picker = item("receiveFilterKind");
+            picker.currentIndex = 3;
+            picker.activated(3);
+            compare(sheet.kind, 3);
+            compare(picker.currentIndex, 3);
+            // A later change of the sheet's kind (a fresh open) still reaches the picker.
+            sheet.kind = 1;
+            compare(picker.currentIndex, 1);
+            // An activation the unsaved-edit guard holds keeps showing the kind in force.
+            item("receiveAllow").text = "9";
+            picker.currentIndex = 2;
+            picker.activated(2);
+            compare(sheet.kind, 1);
+            compare(picker.currentIndex, 1);
+            item("discardDialogKeep").activate();
+        }
         function test_back_protects_unsaved_edits() {
             sheet.openEditor();
             item("receiveAllow").text = "2";

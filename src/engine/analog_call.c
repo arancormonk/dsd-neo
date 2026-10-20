@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -23,17 +24,20 @@
 typedef struct {
     SNDFILE* wav;
     char path[1024];
+    char dir[512]; /* The folder the recording was opened in, for a teardown that has no dsd_opts. */
     time_t opened;
     int active;
     int recording_attempted;
     dsd_receive_identity identity;
 } analog_call;
 
+/* A teardown that skipped dsd_engine_finalize_calls() still publishes an open recording under its final name, without
+   the history row it no longer has (and without an rdio export), instead of leaving its TEMP_ file behind. */
 static void
 analog_call_free(void* ptr) {
     analog_call* call = (analog_call*)ptr;
     if (call->wav) {
-        sf_close(call->wav);
+        call->wav = close_and_rename_wav_file_ex(call->wav, NULL, call->path, call->dir, NULL, call->opened, 0);
     }
     free(call);
 }
@@ -86,11 +90,17 @@ dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* What the analog sink hands the recording's samples to: the open WAV alone, as each sink's own context type carries
+   only what its writer needs (symbol_raw_wav_sink, symbol_monitor_sink), never the module's state. */
+typedef struct {
+    SNDFILE* wav;
+} analog_call_sink;
+
 static void
 analog_call_write(const void* context, const short* samples, size_t count) {
-    analog_call* call = (analog_call*)context;
-    if (call->wav) {
-        (void)sf_write_short(call->wav, samples, (sf_count_t)count);
+    const analog_call_sink* sink = (const analog_call_sink*)context;
+    if (sink->wav) {
+        (void)sf_write_short(sink->wav, samples, (sf_count_t)count);
     }
 }
 
@@ -119,15 +129,18 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const fl
     if (opts->dmr_stereo_wav && !call->recording_attempted) {
         call->recording_attempted = 1;
         call->wav = open_wav_file(opts->wav_out_dir, call->path, sizeof(call->path), 48000, 0);
+        DSD_SNPRINTF(call->dir, sizeof(call->dir), "%s", opts->wav_out_dir);
         call->opened = dsd_decode_time();
     }
     if (!opts->dmr_stereo_wav && call->wav) {
         call->wav = close_and_rename_wav_file(call->wav, opts, call->path, opts->wav_out_dir,
                                               state->event_history_s ? &state->event_history_s[0] : NULL, call->opened);
+        call->path[0] = '\0';
     }
     if (call->wav) {
+        const analog_call_sink sink = {call->wav};
         (void)dsd_analog_sink_write(opts, state, DSD_ANALOG_SINK_CALL_WAV, samples, count, 1.0, sample_rate, 48000,
-                                    analog_call_write, call);
+                                    analog_call_write, &sink);
     }
 }
 
@@ -159,8 +172,12 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samp
     };
     (void)dsd_call_state_observe(state, &observation,
                                  call->active ? DSD_CALL_BOUNDARY_CONTINUE : DSD_CALL_BOUNDARY_BEGIN);
+    /* The last confirmed tone stays the call's until the call ends: a block whose tone is still being acquired names
+       no service of its own, and a later confirmed tone is compared with the confirmed one before it. */
+    if (!call->active || identity.known) {
+        call->identity = identity;
+    }
     call->active = 1;
-    call->identity = identity;
     const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
     (void)dsd_call_state_update_crypto(state, 0, &crypto);
     (void)dsd_call_state_update_media(state, 0, 1, 0.0);

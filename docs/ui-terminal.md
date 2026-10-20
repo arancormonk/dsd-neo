@@ -123,15 +123,16 @@ Main Menu
 │           ├── CQPSK timing gain... [75 x0.001]     (CQPSK path only)
 │           └── CQPSK timing bias (EMA) <n>          (status, CQPSK path only)
 ├── Decoder
-│   ├── Receive filters
-│   │   ├── Slot filter...
-│   │   ├── DCC filter...
-│   │   ├── RAN filter...
-│   │   └── NAC filter...
 │   ├── Mode... [Auto]
 │   ├── Modulation [C4FM]                        m
 │   ├── P25 Phase 2 modulation lock [Off]        M
 │   ├── CQPSK path [On]                              (RTL-SDR input only)
+│   ├── Receive filters and names
+│   │   ├── Slot filter...
+│   │   ├── DCC filter...
+│   │   ├── RAN filter...
+│   │   ├── NAC filter...
+│   │   └── Service names...
 │   ├── Audio filters
 │   │   ├── Low-pass filter (960 Hz) [Off]       V
 │   │   ├── High-pass filter (960 Hz) [Off]      B
@@ -182,7 +183,6 @@ Main Menu
 │   │   ├── Import group list CSV...
 │   │   ├── Import source ID list CSV...
 │   │   ├── Import P25 band plan CSV...
-│   │   ├── Service names...
 │   │   ├── Export learned P25 band plan...
 │   │   ├── ─────                                    (RadioReference builds)
 │   │   ├── Import from RadioReference...            (RadioReference builds)
@@ -511,7 +511,7 @@ rows' chooser is titled `NFM passband` or `AM passband`, and their `This channel
 channel (8000..25000)`) opens on the passband the row runs: its own width, the configured one it follows, or `-B`
 standing in for an unset NFM width. See [Live per-channel edits](trunk-scan.md#runtime-behavior).
 
-`Decoder > Receive filters` edits slot, DMR DCC, NXDN RAN and P25 NAC filters.
+`Decoder > Receive filters and names` edits slot, DMR DCC, NXDN RAN and P25 NAC filters.
 Each filter has separate allow and block lists and an enabled state. Enter identifiers
 separated by `/`; NACs are hexadecimal (`293/370`). Block wins when a value appears
 in both lists. An enabled filter waits in `Checking` until a validated identifier
@@ -519,7 +519,7 @@ arrives. Rejected traffic stays muted and creates no call history, per-call reco
 or activity hold. Slot filters apply only to supported two-slot protocols. A manual
 scan hold keeps the channel selected even when its traffic is rejected.
 
-`Trunking > Channels & groups > Service names...` edits a naming table using options
+Its `Service names...` row edits a naming table using options
 such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching access-code
 or tone name takes precedence over a slot name; otherwise the existing channel label
 is used. Naming does not enable filtering. Names appear in live calls, completed

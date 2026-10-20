@@ -18,9 +18,13 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/analog_call.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -83,6 +87,37 @@ static int g_rtl_ted_sps = 5;
 static int g_rtl_ted_sps_override = 0;
 static int g_drain_audio_calls = 0;
 static int g_rtl_tune_calls = 0;
+static int g_forget_codes_calls = 0;
+static int g_analog_call_end_calls = 0;
+
+/* The conventional NFM call's end, which a tuned release runs first (issue #637). */
+void
+dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_analog_call_end_calls++;
+}
+
+/* The engine's carrier-code reset and the receive policy's filter switch, as trunk_tuning.c calls them (issue #637). */
+void
+dsd_engine_forget_carrier_codes(dsd_state* state) {
+    (void)state;
+    g_forget_codes_calls++;
+}
+
+static int g_forget_code_values_calls = 0;
+
+void
+dsd_engine_forget_carrier_code_values(dsd_state* state) {
+    (void)state;
+    g_forget_code_values_calls++;
+}
+
+int
+dsd_receive_filters_enabled(const dsd_opts* opts) {
+    return opts && opts->receive.filters[DSD_RECEIVE_NAC].enabled;
+}
+
 static int g_rtl_tagged_tune_calls = 0;
 static uint64_t g_rtl_last_request_id = 0U;
 static int g_rtl_pending_active = 0;
@@ -1873,7 +1908,10 @@ main(void) {
     g_setfreq_calls = 0;
     g_last_setfreq_hz = 0;
 
+    g_analog_call_end_calls = 0;
     assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    /* Issue #637: the release ends a conventional NFM call before it commits the slot's history. */
+    assert(g_analog_call_end_calls == 1);
 
     assert(g_setfreq_calls == 1);
     assert(g_last_setfreq_hz == 461000000);
@@ -2001,6 +2039,16 @@ main(void) {
     assert(opts->trunk_is_tuned == 1);
     assert(state->trunk_vc_freq[0] == 853000000);
     assert(g_frame_sync_reset_calls == 1);
+    /* Issue #637: the voice channel proves its own codes. Without a receive filter only the published codes go (the
+       confirmation lock stays, so decoding carries on as before); with one the codes are forgotten with their gates. */
+    assert(g_forget_codes_calls == 0 && g_forget_code_values_calls == 1);
+    assert(state->receive_codes_fresh_freq == 853000000);
+    opts->trunk_is_tuned = 0;
+    opts->receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853012500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_forget_codes_calls == 1 && g_forget_code_values_calls == 1);
+    assert(state->receive_codes_fresh_freq == 853012500);
+    opts->receive.filters[DSD_RECEIVE_NAC].enabled = 0;
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */

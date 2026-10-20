@@ -122,6 +122,16 @@ note_search_evidence(const dsd_state* state, const char* protocol, uint32_t targ
     dsd_signal_search_note_evidence(state, protocol, checked ? target : 0U, checked ? source : 0U, NULL);
 }
 
+/* note_search_evidence() for a report that names the synctype and voice slot of its traffic (P25: a Phase 2 SACCH
+   announces the opposite slot), which the search judges and reads the CRC scope of (issue #637). */
+static void
+note_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                        uint32_t source) {
+    const int lane = (slot >= 0 && slot <= 1) ? slot : (state ? state->currentslot & 1 : 0);
+    const int checked = state != NULL && state->event_crc_invalid[lane] == 0U;
+    dsd_signal_search_note_evidence_at(state, protocol, sync, lane, checked ? target : 0U, checked ? source : 0U, NULL);
+}
+
 void
 dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                               uint32_t source, int is_private, int encrypted, int data_call) {
@@ -141,11 +151,13 @@ dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_s
 }
 
 void
-dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
-                                              uint32_t source, int is_private, int encrypted, int data_call) {
-    note_search_evidence(state, "P25", target, source);
+dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                              uint32_t target, uint32_t source, int is_private, int encrypted,
+                                              int data_call) {
+    note_search_evidence_at(state, "P25", protocol, slot, target, source);
     if (g_trunk_scan_hooks.p25_conventional_activity) {
-        g_trunk_scan_hooks.p25_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
+        g_trunk_scan_hooks.p25_conventional_activity(opts, state, protocol, slot, target, source, is_private, encrypted,
+                                                     data_call);
     }
 }
 

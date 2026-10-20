@@ -36,6 +36,11 @@ void dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state);
  * `p2_cc` itself. The no-carrier reset runs it outside trunk scan, whose per-target snapshots keep these, and the
  * carrier boundary runs it (dsd_engine_carrier_boundary()), since the next carrier can sync before any no-carrier pass. */
 void dsd_engine_forget_carrier_codes(dsd_state* state);
+/** Forget the codes dsd_engine_forget_carrier_codes() forgets, but keep the DMR confidence lock: a trunk voice-channel
+ * tune with every receive filter off (issue #637). The voice channel's first decoded code replaces them, and the lock,
+ * the control channel's, still gates its bursts as before (a locked gate republishes the colour code at the first
+ * matching burst), so call start is not delayed. */
+void dsd_engine_forget_carrier_code_values(dsd_state* state);
 /** With trunking off, forget what the carrier on air left beyond its codes (issue #575): what the trunking-off
  * no-carrier pass forgets of it (the P25 voice frequencies a grant update wrote, the DMR rest channel and branding, the
  * NXDN site and channel plan) and the DMR grants' voice frequencies (`trunk_vc_freq[]`). The carrier boundary runs it

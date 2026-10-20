@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -40,6 +41,7 @@
 #include <time.h>
 #include "dmr_cach.h"
 #include "dmr_confidence.h"
+#include "dmr_mono_slot.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -644,13 +646,18 @@ run_dmr_bs_slot_vc6_post_voice(dsd_opts* opts, dsd_state* state, const dmr_bs_ct
     }
 }
 
+/* A followed voice channel's activity: the carrier is alive (the control channel's stamp), and the slot's voice holds
+   the channel only while the receive policy admits it (issue #637), so a carrier only rejected traffic holds is let go
+   at its hangtime even when a CSBK path followed it without the state machine. */
 static void
-update_dmr_bs_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
+update_dmr_bs_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state, int slot) {
     if (opts->trunk_is_tuned == 1) {
         time_t now = dsd_decode_time();
         double nowm = dsd_decode_now_mono_s();
-        state->last_vc_sync_time = now;
-        state->last_vc_sync_time_m = nowm;
+        if (dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, slot)) {
+            state->last_vc_sync_time = now;
+            state->last_vc_sync_time_m = nowm;
+        }
         state->last_cc_sync_time = now;
         state->last_cc_sync_time_m = nowm;
     }
@@ -711,7 +718,7 @@ process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
         dmr_vcrypt_superframe_end(state, ctx->internalslot);
     }
     increment_dmr_bs_slot_vc(ctx);
-    update_dmr_bs_sync_times_if_tuned(opts, state);
+    update_dmr_bs_sync_times_if_tuned(opts, state, ctx->internalslot);
 
     ctx->tact_okay = 0;
     ctx->emb_ok = 0;
@@ -895,7 +902,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
         DSD_FPRINTF(stderr, "\n");
     }
 
-    if (opts->trunk_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1 && dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, ctx->internalslot)) {
         state->last_vc_sync_time = dsd_decode_time();
         state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
@@ -1030,6 +1037,8 @@ void
 dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     dmr_bs_bootstrap_ctx ctx;
     init_dmr_bs_bootstrap_ctx(&ctx);
+    /* Two-slot decoding: each burst's own slot is the receive slot (issue #637). */
+    dmr_mono_slot_forget(state);
 
     seed_dmr_bs_bootstrap_payload(opts, state);
 

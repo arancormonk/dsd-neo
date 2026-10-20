@@ -1046,6 +1046,8 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     scan_configured_retime(opts, state);
+    /* The receive policy in force before the suspension, to judge active calls by once the row's options are back. */
+    const dsd_receive_policy receive_before = scope->effective.receive;
     dsd_scan_settings_capture(opts, state, &scope->configured);
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     scope->suspended = 0;
@@ -1087,6 +1089,9 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
      * value would leave the row's threshold behind. */
     scope->squelch_pending = SCAN_SQUELCH_SETTLED;
     scan_squelch_push(opts);
+    if (!dsd_receive_policy_equal(&receive_before, &opts->receive)) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state, dsd_receive_policy_filters_enabled(&receive_before));
+    }
     return unchanged ? 0 : 1;
 }
 
@@ -1426,15 +1431,19 @@ dsd_scan_mode_set_configured_receive(dsd_opts* opts, dsd_state* state, const dsd
             effective.names = scope->options.receive.names;
         }
     }
-    /* Freeze admitted calls under their old labels before any effective policy changes.
-     * A default hidden by the current row does not interrupt reception. */
-    if (state && !dsd_receive_policy_equal(&effective, &opts->receive)) {
-        dsd_frame_sync_hook_receive_policy_boundary(opts, state);
-    }
+    /* The engine judges active calls by the policy now in force, once it is in force. A default hidden by the current
+     * row does not interrupt reception. */
+    /* While the scope is suspended (a CONFIG_APPLY) the policy in force is a passing one: dsd_scan_mode_resume()
+     * judges the calls once the row's own options are back. */
+    const int changed = state && !(scope && scope->suspended) && !dsd_receive_policy_equal(&effective, &opts->receive);
+    const int filters_were_enabled = dsd_receive_policy_filters_enabled(&opts->receive);
     opts->receive = *policy;
     if (scope && !scope->suspended) {
         scope->configured.receive = *policy;
         scan_option_apply_receive(opts, NULL, &scope->options);
+    }
+    if (changed) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state, filters_were_enabled);
     }
     return 0;
 }

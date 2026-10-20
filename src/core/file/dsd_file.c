@@ -821,7 +821,13 @@ mbe_out_slot_ready(dsd_opts* opts, dsd_state* state, int slot, int owner, dsd_mb
 
 void
 dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format format, const char* bits) {
-    if (!dsd_receive_current_allows(opts, state, slot)) {
+    dsd_mbe_out_write_rx(opts, state, slot, slot, format, bits);
+}
+
+void
+dsd_mbe_out_write_rx(dsd_opts* opts, dsd_state* state, int slot, int rx_slot, dsd_mbe_out_format format,
+                     const char* bits) {
+    if (!dsd_receive_current_allows(opts, state, rx_slot)) {
         return;
     }
     if (!opts || !state || !bits) {
@@ -1892,7 +1898,9 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
 
 static void
 sdrtrunk_json_reset_event_state(dsd_state* state) {
-    state->dmr_color_code = 0;
+    /* The recording carries no colour code: 16 is "none decoded" (issue #637), so no access filter or service name
+       takes a placeholder for a received one. */
+    state->dmr_color_code = 16U;
     (void)dsd_call_state_end(state, 0U, 0.0);
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;

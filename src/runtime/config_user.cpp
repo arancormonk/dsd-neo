@@ -62,8 +62,10 @@ user_config_strip_inline_comment(char* line) {
     }
     int in_quote = 0;
     for (char* p = line; *p; ++p) {
-        if ((!in_quote && (*p == '"' || *p == '\'')) || *p == in_quote) {
-            in_quote = in_quote ? 0 : *p;
+        /* Only double quotes protect a comment character, in every section: an apostrophe is ordinary text in a path
+           or a name ("/home/o'neil"). The [receive] names renderer double-quotes every name. */
+        if (*p == '"') {
+            in_quote = !in_quote;
             continue;
         }
         if (!in_quote && (*p == '#' || *p == ';')) {

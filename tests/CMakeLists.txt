@@ -5277,6 +5277,7 @@ add_executable(
     dsd-neo_test_core_receive
     core/test_core_receive.c
     ../src/engine/analog_call.c
+    ../src/app_control/receive_view.c
 )
 target_link_libraries(
     dsd-neo_test_core_receive
@@ -7940,6 +7941,11 @@ target_include_directories(
     dsd-neo_test_p25_p1_hdu_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# The voice-channel activity stamps follow the receive policy (issue #637).
+target_link_libraries(
+    dsd-neo_test_p25_p1_hdu_helpers
+    PRIVATE dsd-neo_test_receive_support
+)
 add_test(NAME P25_P1_HDU_HELPERS COMMAND dsd-neo_test_p25_p1_hdu_helpers)
 
 # P25 P1 common LDU IMBE/status and Hamming helpers
@@ -7963,6 +7969,11 @@ target_include_directories(
     dsd-neo_test_p25_p1_ldu1_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# The voice-channel activity stamps follow the receive policy (issue #637).
+target_link_libraries(
+    dsd-neo_test_p25_p1_ldu1_helpers
+    PRIVATE dsd-neo_test_receive_support
+)
 add_test(NAME P25_P1_LDU1_HELPERS COMMAND dsd-neo_test_p25_p1_ldu1_helpers)
 
 # P25 P1 LDU2 ESS/LSD packing and soft RS reliability helpers
@@ -7974,6 +7985,11 @@ add_executable(
 target_include_directories(
     dsd-neo_test_p25_p1_ldu2_helpers
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+# The voice-channel activity stamps follow the receive policy (issue #637).
+target_link_libraries(
+    dsd-neo_test_p25_p1_ldu2_helpers
+    PRIVATE dsd-neo_test_receive_support
 )
 add_test(NAME P25_P1_LDU2_HELPERS COMMAND dsd-neo_test_p25_p1_ldu2_helpers)
 
@@ -10337,7 +10353,10 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 # dmr_data.c checks an undecodable data burst for voice at the other polarity with mbelib's AMBE decoder (issue #729).
-target_link_libraries(dsd-neo_test_dmr_data_sync PRIVATE ${MBE_LINK_TARGET})
+target_link_libraries(
+    dsd-neo_test_dmr_data_sync
+    PRIVATE ${MBE_LINK_TARGET} dsd-neo_test_receive_support
+)
 add_test(NAME DMR_DATA_SYNC COMMAND dsd-neo_test_dmr_data_sync)
 
 add_executable(
@@ -10513,6 +10532,7 @@ add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
 )
 target_include_directories(
     dsd-neo_test_dmr_ms_data
@@ -18199,6 +18219,8 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search
         engine/test_engine_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search
@@ -18217,6 +18239,8 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search_scene
         engine/test_engine_signal_search_scene.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search_scene

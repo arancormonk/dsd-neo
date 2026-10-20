@@ -23,11 +23,13 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -35,6 +37,8 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stddef.h>
@@ -316,6 +320,7 @@ eh_init_empty_fingerprint(void) {
     blank.subtype = -1;
     blank.severity = DSD_EVENT_SEVERITY_UNKNOWN;
     blank.category = DSD_EVENT_CATEGORY_UNKNOWN;
+    blank.receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE; /* Kind "none", never kind 0 (slot) (issue #637). */
     g_eh_empty_fp = row_fingerprint(&blank);
 }
 
@@ -448,6 +453,39 @@ build_call(const dsd_state* state, dsd_json_buf* b) {
     return end_line(b, &w);
 }
 
+/* The receive policy (issue #637): its verdict on current reception, and the configured filters and naming table that
+   receive_set edits, in receive_set's own spelling, so a client can read a filter or the table before it replaces it. */
+static void
+encode_receive(dsd_json_writer* w, const dsd_opts* opts, const dsd_state* state) {
+    char status[128];
+    dsd_app_receive_status_text(opts, state, status, sizeof status);
+    dsd_receive_policy policy;
+    dsd_scan_mode_configured_receive(opts, state, &policy);
+    (void)dsd_json_key(w, "receive");
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_kv_strn(w, "status", status, sizeof status);
+    (void)dsd_json_key(w, "filters");
+    (void)dsd_json_arr_begin(w);
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        char allow[DSD_RECEIVE_LIST_MAX + 1];
+        char block[DSD_RECEIVE_LIST_MAX + 1];
+        (void)dsd_receive_set_format(kind, &policy.filters[kind].allow, allow, sizeof allow);
+        (void)dsd_receive_set_format(kind, &policy.filters[kind].block, block, sizeof block);
+        (void)dsd_json_obj_begin(w);
+        (void)dsd_json_kv_i64(w, "kind", kind);
+        /* 0/1, as receive_set takes it, so a client can send a filter back as it read it. */
+        (void)dsd_json_kv_i64(w, "enabled", policy.filters[kind].enabled ? 1 : 0);
+        (void)dsd_json_kv_strn(w, "allow", allow, sizeof allow);
+        (void)dsd_json_kv_strn(w, "block", block, sizeof block);
+        (void)dsd_json_obj_end(w);
+    }
+    (void)dsd_json_arr_end(w);
+    char names[DSD_RECEIVE_NAMES_TEXT_MAX + 1];
+    (void)dsd_receive_names_format(&policy.names, names, sizeof names);
+    (void)dsd_json_kv_strn(w, "names", names, sizeof names);
+    (void)dsd_json_obj_end(w);
+}
+
 /* What the stateful commands must quote back: the talkgroup list version, the decryption context, the scan row. */
 static void
 encode_control_context(dsd_json_writer* w, const dsd_state* state) {
@@ -484,6 +522,11 @@ encode_control_context(dsd_json_writer* w, const dsd_state* state) {
         (void)dsd_json_obj_end(w);
     } else {
         (void)dsd_json_kv_null(w, "scan_row");
+    }
+    if (g_live_opts != NULL) {
+        encode_receive(w, g_live_opts, state);
+    } else {
+        (void)dsd_json_kv_null(w, "receive");
     }
 }
 

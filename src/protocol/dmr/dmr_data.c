@@ -19,8 +19,10 @@
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -31,6 +33,7 @@
 #include <string.h>
 #include "dmr_cach.h"
 #include "dmr_confidence.h"
+#include "dmr_mono_slot.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -151,7 +154,13 @@ dmr_data_collect_cach(dmr_data_sync_ctx* ctx) {
     ctx->cach_okay = 1;
     ctx->state->currentslot = tact_bits[1];
     if (ctx->state->dmr_ms_mode == 1) {
+        /* The single-slot decoder's one lane keeps the burst's own slot for the receive policy (issue #637). */
+        dmr_mono_slot_note(ctx->state, 1, tact_bits[1]);
         ctx->state->currentslot = 0;
+    } else if (ctx->opts->dmr_mono == 1 && ctx->state->dmr_stereo == 0) {
+        /* A standalone burst the single-slot output folds onto lane 0 (dmr_flco_ctx_init()) is judged by its own CACH
+           slot for its dispatch: dmr_data_sync() set the voice lane's proof aside and restores it after. */
+        ctx->state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
     }
     return 1;
 }
@@ -387,6 +396,18 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     dmr_data_sync_init_ctx(&ctx, opts, state);
     char debug_line[192];
     debug_line[0] = '\0';
+    /* The receive slot (issue #637). A standalone data burst is decoded as a two-slot burst, by its CACH's own slot, so
+       it is judged by that slot and not by the one the single-slot decoder proved for its voice lane, which is kept for
+       the voice that follows. A data burst the single-slot decoder reads (MS mode) takes its slot as its voice does: a
+       direct-mode sync word names it, a repeater's CACH proves it, and otherwise it stays Checking. */
+    const int standalone = state->dmr_ms_mode != 1;
+    const uint8_t mono_slot = state->dmr_mono_rx_slot;
+    const uint8_t mono_candidate = state->dmr_mono_rx_candidate;
+    if (standalone) {
+        dmr_mono_slot_forget(state);
+    } else {
+        dmr_mono_slot_begin(state);
+    }
 
     if (dmr_data_collect_cach(&ctx)) {
         dmr_data_collect_first_half(&ctx);
@@ -412,6 +433,18 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
     dmr_data_finalize(opts, state, ctx.SlotTypeOk, ctx.cach_okay);
     dmr_data_note_polarity_evidence(opts, state, &ctx);
+    /* What a standalone burst the receive policy rejects or is still checking left in its lane's position cache (an
+       LRRP fix, a data call line) goes before the voice lane's proof comes back: the terminal judges that lane by the
+       proof, not by the slot the burst was heard on (issue #637). */
+    if (standalone && ctx.cach_okay == 1 && state->carrier_seq == ctx.carrier_seq
+        && !dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, state->currentslot & 1)) {
+        state->dmr_lrrp_gps[state->currentslot & 1][0] = '\0';
+    }
+    /* Only onto the carrier it was proven on: a boundary during the burst (a replay retune) forgot it for good. */
+    if (standalone && state->carrier_seq == ctx.carrier_seq) {
+        state->dmr_mono_rx_slot = mono_slot;
+        state->dmr_mono_rx_candidate = mono_candidate;
+    }
     if (debug_line[0] != '\0') {
         DSD_FPRINTF(stderr, "%s\n", debug_line);
     }

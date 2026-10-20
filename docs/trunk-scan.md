@@ -869,6 +869,9 @@ Targets accept compatible slot/DCC/RAN/NAC filters and service-name rules in `op
 [CSV receive options](csv-formats.md#receive-filters-and-service-names). A target replaces each specified filter
 kind or its naming table and otherwise inherits global `[receive]` defaults. Rejected traffic is muted and creates
 no call events or recordings, and does not refresh activity holds. Control-channel acquisition remains possible;
-voice grants lacking destination access-code evidence have a bounded acquisition window. Manual conventional-channel
+voice grants lacking destination access-code evidence have a bounded acquisition window, and a new voice channel gets
+a window of its own. A grant to a voice channel whose verified NAC or colour code the policy rejects is not followed
+again: each trunking context remembers the code it last verified on up to 16 voice frequencies, judged by the policy
+in force, so an edit that admits the code makes its grants followed again. Manual conventional-channel
 hold keeps a rejected channel selected and muted. A restored target must validate its received identifier again.
 Names reflect received services without changing the target ID or base channel label.

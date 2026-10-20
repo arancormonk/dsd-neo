@@ -287,7 +287,10 @@ switch is refused with its option name and an explanation. `--no-service-names` 
 Allow and block may coexist for one kind. The first switch for that kind replaces its complete inherited
 filter. A naming option replaces the complete inherited naming table, with subsequent naming options adding
 rules. Unmentioned filters and names inherit defaults, which return when the row is left. Use `/`, never a
-comma, inside a list. Quotes group an option's argument; they do not permit commas in service names.
+comma, inside a list. Quotes group an option's argument; they do not permit commas in service names. A receive list
+cut by a comma is refused when its rest lies past the header's last column, or is a `/` run (`7/9`) or a value followed
+by another row option (`7 --slot-block 2`); a lone number in the next column is that column's own (an `rtl_gain` of
+`7` after `--dcc-allow 4`).
 
 ```csv
 Channel,Frequency,Name,Mode,Options

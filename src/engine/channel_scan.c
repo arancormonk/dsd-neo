@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -1172,10 +1173,12 @@ channel_scan_install_edit(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
     }
     dsd_scan_option_values scratch;
     const dsd_scan_option_values* values = channel_scan_row_values(state, row, &scratch);
-    if (dsd_scan_option_receive_differs(before, values)) {
-        dsd_frame_sync_hook_receive_policy_boundary(opts, state);
-    }
+    const int receive_changed = dsd_scan_option_receive_differs(before, values);
+    const int filters_were_enabled = dsd_receive_filters_enabled(opts);
     (void)dsd_scan_mode_options(opts, state, values);
+    if (receive_changed) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state, filters_were_enabled);
+    }
     /* The row on air is the one its last tune staged: its staged options carry the edit too, for whatever reads the
        tune's (dsd_engine_scan_tuning_row_options()). A live rigctl request reads the scope in force. */
     if (row == scan->row) {

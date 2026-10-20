@@ -32,6 +32,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_cach.h"
+#include "dmr_mono_slot.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -95,12 +97,22 @@ dmr_ms_read_cach(dsd_opts* opts, dsd_state* state, char cachdata[25]) {
     }
 }
 
-static uint8_t
-dmr_ms_decode_tact(const char cachdata[25], uint8_t tact_bits[7]) {
-    for (int i = 0; i < 7; i++) {
-        tact_bits[i] = (uint8_t)cachdata[i];
+/* The burst's CACH TACT, deinterleaved from its CACH dibits @p cach, for the slot this single-slot decoder follows
+   (issue #637). */
+static void
+dmr_ms_note_rx_slot(dsd_state* state, const char cach[25]) {
+    uint8_t bits[DMR_CACH_INTERLEAVE_BITS];
+    for (int i = 0; i < 12; i++) {
+        const int dibit = (unsigned char)cach[i];
+        bits[dmr_cach_interleave[(size_t)i * 2]] = (uint8_t)(1 & (dibit >> 1));
+        bits[dmr_cach_interleave[((size_t)i * 2) + 1]] = (uint8_t)(1 & dibit);
     }
-    return Hamming_7_4_decode(tact_bits) ? 1 : 0;
+    uint8_t tact[7];
+    for (int i = 0; i < 7; i++) {
+        tact[i] = bits[i];
+    }
+    const int ok = Hamming_7_4_decode(tact) ? 1 : 0;
+    dmr_mono_slot_note(state, ok, tact[1]);
 }
 
 static void
@@ -343,7 +355,6 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 
     dmr_ms_voice_frames frames;
     char cachdata[25];
-    uint8_t tact_bits[7];
     uint8_t syncdata[48];
     uint8_t emb_pdu[16];
     uint8_t dummy_bits[196];
@@ -372,7 +383,10 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 
         dmr_ms_init_voice_frames(&frames);
         dmr_ms_read_cach(opts, state, cachdata);
-        (void)dmr_ms_decode_tact(cachdata, tact_bits);
+        /* A CACH an interruption cut or a boundary moved is erasures, never slot evidence. */
+        if (!dsd_state_frame_read_lost(state, carrier_seq)) {
+            dmr_ms_note_rx_slot(state, cachdata);
+        }
 
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr, 12, 36, 0);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18, 0);
@@ -444,6 +458,9 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
        hunt spent between this one and the last (issue #729). */
     dmr_vcrypt_superframe_start(state, 0U);
     dmr_ms_collect_bootstrap_cach(opts, state, cachdata);
+    /* The bootstrap runs again at every superframe, and its buffered CACH is not the one that names the burst's slot:
+       the slot is proven from the voice cycle's own bursts (dmrMS()), and forgotten at a carrier boundary. */
+    dmr_mono_slot_begin(state);
     const uint32_t carrier_seq = state->carrier_seq;
     dmr_ms_decode_bootstrap_voice(opts, state, &frames);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {

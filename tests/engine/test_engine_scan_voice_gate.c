@@ -1567,6 +1567,53 @@ test_receive_admission_bounds_acquisition(void) {
           !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 101.3));
     CHECK("other slot's stale media cannot renew hold",
           dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
+    /* Whichever lane the decoder is on: an idle admitted TS1 does not keep a channel only rejected TS2 traffic holds,
+       and admitted media keeps it. */
+    fix.state->currentslot = 0;
+    CHECK("an idle admitted lane cannot hold rejected traffic",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 103.9);
+    CHECK("admitted media on either lane holds", !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
+    /* Issue #637: an admitted call that ended still holds through its voice hold, for the reply, and no longer. */
+    (void)dsd_call_state_end(fix.state, 0, 104.0);
+    fix.opts->scan_voice_only = 1;
+    CHECK("an ended admitted call holds through its voice hold",
+          !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.5));
+    CHECK("an ended admitted call holds no longer than its voice hold",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 110.0));
+    fix.opts->scan_voice_only = 0;
+    /* With voice-only scanning off, an admitted data call in progress keeps the channel; voice-only waits for voice. */
+    dsd_call_observation data = {.protocol = DSD_SYNC_DMR_BS_DATA_POS,
+                                 .slot = 0,
+                                 .kind = DSD_CALL_KIND_DATA,
+                                 .ota_target_id = 33,
+                                 .observed_m = 109.5};
+    (void)dsd_call_state_observe(fix.state, &data, DSD_CALL_BOUNDARY_BEGIN);
+    fix.opts->scan_voice_only = 1;
+    CHECK("voice-only scanning does not wait for data",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 110.0));
+    fix.opts->scan_voice_only = 0;
+    CHECK("an admitted data call keeps the channel", !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 110.0));
+    /* A call whose terminator was missed stays ACTIVE: once it is no longer heard it holds nothing. */
+    CHECK("a stale admitted call cannot hold rejected traffic",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 120.0));
+    /* A sync loss forgets the live colour code: the call admitted by the code it was received with keeps its voice
+       hold until the carrier proves the code again. */
+    (void)dsd_call_state_end(fix.state, 0, 110.0);
+    DSD_MEMSET(&fix.opts->receive, 0, sizeof fix.opts->receive);
+    CHECK("DCC allow", dsd_receive_edit_parse(&fix.opts->receive, DSD_RECEIVE_DCC, 1, "2", "", "", NULL, 0) == 0);
+    fix.state->dmr_color_code = 2;
+    dsd_call_observation voice2 = obs;
+    voice2.observed_m = 120.0;
+    (void)dsd_call_state_observe(fix.state, &voice2, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.0);
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.5);
+    fix.state->dmr_color_code = 16;
+    fix.opts->scan_voice_only = 1;
+    CHECK("an admitted call keeps its hold while the live code is unknown",
+          !dsd_scan_receive_should_leave(fix.opts, fix.state, 119.0, 121.0));
+    fix.opts->scan_voice_only = 0;
     fixture_free(&fix);
 }
 

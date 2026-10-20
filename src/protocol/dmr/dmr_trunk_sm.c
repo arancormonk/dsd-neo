@@ -575,6 +575,7 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
     ctx->receive_check_started_m = 0.0;
+    ctx->receive_check_freq_hz = 0;
 
     if (opts) {
         opts->trunk_is_tuned = 0;
@@ -652,6 +653,12 @@ dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
     long freq = resolve_freq(state, ev->freq_hz, ev->lpcn);
     if (freq <= 0) {
         sm_log(opts, "grant-no-freq");
+        return 0;
+    }
+    if (dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, freq)) {
+        /* The channel's colour code was verified before and the receive policy rejects it: following the grant would
+           only hold the receiver for the acquisition window again (issue #637). */
+        sm_log(opts, "grant-receive-rejected");
         return 0;
     }
 
@@ -1016,11 +1023,22 @@ grant_timeout_expired(const dmr_sm_ctx_t* ctx, double now_m, double grant_timeou
     return (now_m - ctx->t_tune_m) >= grant_timeout;
 }
 
-static void
-tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime, double grant_timeout) {
-    if (state && state->trunk_sm_force_release != 0) {
-        do_release(ctx, opts, state, "release-forced");
-        return;
+/* Receive admission on the voice channel at @p freq the receiver is on (issue #637), whether a followed grant or a
+   CSBK path (Cap+, Connect Plus) tuned it: the colour code verified there is remembered, and a carrier no slot of which
+   the policy admits is released once its acquisition window closes. A new channel starts a window of its own; repeated
+   grants to the same one cannot extend it. Returns 1 while nothing on the carrier is admitted. */
+static int
+dmr_sm_receive_check(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long freq, double now_m,
+                     double grant_timeout) {
+    if (freq != ctx->receive_check_freq_hz) {
+        ctx->receive_check_freq_hz = freq;
+        ctx->receive_check_started_m = 0.0;
+        /* Its codes are its own only when its tune forgot the control channel's (dsd_engine_update_vc_tune_state()
+           does): decided at the tune, not now. */
+        ctx->receive_codes_fresh = state && freq != 0 && state->receive_codes_fresh_freq == freq;
+    }
+    if (ctx->receive_codes_fresh) {
+        dsd_receive_carriers_note(&ctx->receive_carriers, state, DSD_SYNC_DMR_BS_VOICE_POS, freq);
     }
     int admitted = 0;
     for (int slot = 0; slot < 2; slot++) {
@@ -1030,17 +1048,29 @@ tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, do
             ctx->slots[slot].voice_active = 0;
         }
     }
-    if (!admitted) {
-        if (ctx->receive_check_started_m <= 0.0) {
-            ctx->receive_check_started_m = now_m;
-        }
-        if (now_m - ctx->receive_check_started_m >= grant_timeout) {
-            ctx->receive_check_started_m = 0.0;
-            do_release(ctx, opts, state, "receive-filter");
-        }
+    if (admitted) {
+        ctx->receive_check_started_m = 0.0;
+        return 0;
+    }
+    if (ctx->receive_check_started_m <= 0.0) {
+        ctx->receive_check_started_m = now_m;
+    }
+    if (now_m - ctx->receive_check_started_m >= grant_timeout) {
+        ctx->receive_check_started_m = 0.0;
+        do_release(ctx, opts, state, "receive-filter");
+    }
+    return 1;
+}
+
+static void
+tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime, double grant_timeout) {
+    if (state && state->trunk_sm_force_release != 0) {
+        do_release(ctx, opts, state, "release-forced");
         return;
     }
-    ctx->receive_check_started_m = 0.0;
+    if (dmr_sm_receive_check(ctx, opts, state, ctx->vc_freq_hz, now_m, grant_timeout)) {
+        return;
+    }
     clear_stale_voice_slots(ctx, now_m);
 
     if (has_voice_activity(ctx)) {
@@ -1177,6 +1207,9 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         case DMR_SM_ON_CC:
             if (!opts || opts->trunk_is_tuned != 1) {
                 tick_on_cc(ctx, opts, now_m, cc_grace);
+            } else if (state) {
+                /* A voice channel a CSBK path tuned itself (Cap+, Connect Plus) is judged as a followed grant's. */
+                (void)dmr_sm_receive_check(ctx, opts, state, state->trunk_vc_freq[0], now_m, grant_timeout);
             }
             break;
 

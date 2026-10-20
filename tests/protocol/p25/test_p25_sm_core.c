@@ -10,6 +10,8 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -21,6 +23,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <math.h>
 #ifdef USE_RADIO
@@ -2202,6 +2205,141 @@ main(void) {
     assert(ctx20.slots[0].grant_active == 1);
     assert(s20.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
+    // 28b) Issue #637: a NAC filter still Checking on the TDMA VC (no verified Phase 2 NAC yet) does not hold the
+    // CQPSK retry back: on a channel that only decodes on the CQPSK path, the retry is how the NAC gets proven.
+    static dsd_opts o20n;
+    static dsd_state s20n;
+    o20n = o20;
+    s20n = s20;
+    s20n.p25_vc_cqpsk_override = -1;
+    s20n.p2_cc_verified = 0U;
+    o20n.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20n.receive.filters[DSD_RECEIVE_NAC].allow, NULL, 0) == 0);
+    p25_sm_ctx_t ctx20n;
+    p25_sm_init_ctx(&ctx20n, &o20n, &s20n);
+    g_result_tune_to_freq_calls = 0;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_event_t retry_checking = p25_sm_ev_group_grant(ch9, 0, 1234, 42, 0);
+    p25_sm_event(&ctx20n, &o20n, &s20n, &retry_checking);
+    assert(g_result_tune_to_freq_calls == 1 && ctx20n.state == P25_SM_TUNED && ctx20n.vc_is_tdma == 1);
+    s20n.receive_codes_fresh_freq = ctx20n.vc_freq_hz; /* As the engine's tune does under a filter. */
+    s20n.p25_vc_cqpsk_override = 0;
+    const double checking_grant_m = dsd_decode_now_mono_s() - 0.85;
+    ctx20n.t_tune_m = checking_grant_m;
+    ctx20n.t_voice_m = 0.0;
+    ctx20n.slots[0].last_grant_m = checking_grant_m;
+    p25_sm_tick_ctx(&ctx20n, &o20n, &s20n);
+    assert(g_result_tune_to_freq_calls == 2);
+    assert(ctx20n.vc_cqpsk_retry_done == 1);
+    assert(ctx20n.state == P25_SM_TUNED);
+
+    // 28c) Issue #637: once the VC's NAC is verified and the policy blocks it, the tuned context remembers the code
+    // and the receive window releases the VC. A grant to that channel is then not followed, until the policy admits
+    // it (judged on a fresh control-channel context carrying the same memory, apart from post-release rules).
+    DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+    o20n.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20n.receive.filters[DSD_RECEIVE_NAC].block, NULL, 0) == 0);
+    s20n.p2_cc_verified = 1U;
+    const long rejected_vc_hz = ctx20n.vc_freq_hz;
+    ctx20n.receive_check_started_m = dsd_decode_now_mono_s() - 10.0;
+    p25_sm_tick_ctx(&ctx20n, &o20n, &s20n);
+    assert(ctx20n.state != P25_SM_TUNED);
+    assert(dsd_receive_carriers_rejects(&ctx20n.receive_carriers, &o20n, rejected_vc_hz));
+    p25_sm_ctx_t ctx20r;
+    p25_sm_init_ctx(&ctx20r, &o20n, &s20n);
+    ctx20r.receive_carriers = ctx20n.receive_carriers;
+    const int tunes_before_rejected = g_result_tune_to_freq_calls;
+    p25_sm_event_t rejected_grant = p25_sm_ev_group_grant(ch9, 0, 1234, 42, 0);
+    p25_sm_event(&ctx20r, &o20n, &s20n, &rejected_grant);
+    assert(g_result_tune_to_freq_calls == tunes_before_rejected);
+    assert(ctx20r.state != P25_SM_TUNED);
+    DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+    p25_sm_event(&ctx20r, &o20n, &s20n, &rejected_grant);
+    assert(g_result_tune_to_freq_calls == tunes_before_rejected + 1);
+    assert(ctx20r.state == P25_SM_TUNED);
+
+    // 28e) Issue #637: a carrier tuned with every filter off kept the control channel's codes, so nothing it holds is
+    // remembered as its code, even once a filter is enabled during the visit.
+    {
+        p25_sm_ctx_t stale;
+        DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+        s20n.p2_cc = 0x293;
+        s20n.p2_cc_verified = 1U;
+        p25_sm_init_ctx(&stale, &o20n, &s20n);
+        p25_sm_event_t stale_grant = p25_sm_ev_group_grant(ch9, 0, 1237, 45, 0);
+        p25_sm_event(&stale, &o20n, &s20n, &stale_grant);
+        assert(stale.state == P25_SM_TUNED);
+        s20n.receive_codes_fresh_freq = 0; /* A carrier marked tuned without a voice-channel tune kept the codes. */
+        /* The filter comes on before the first tick: freshness is the tune's, not the policy's now. */
+        o20n.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+        assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20n.receive.filters[DSD_RECEIVE_NAC].block, NULL, 0)
+               == 0);
+        p25_sm_tick_ctx(&stale, &o20n, &s20n);
+        assert(!dsd_receive_carriers_rejects(&stale.receive_carriers, &o20n, stale.vc_freq_hz));
+        DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+    }
+
+    // 28d) Issue #637: a PTT on a slot whose NAC is still Checking is accepted, so its crypto fields load, but marks
+    // no voice activity; a rejected NAC refuses it; an admitted one is followed as usual.
+    {
+        p25_sm_ctx_t* gctx = p25_sm_get_ctx();
+        DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+        o20n.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+        assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20n.receive.filters[DSD_RECEIVE_NAC].allow, NULL, 0)
+               == 0);
+        s20n.p2_cc_verified = 0U;
+        p25_sm_init_ctx(gctx, &o20n, &s20n);
+        p25_sm_event_t ptt_grant = p25_sm_ev_group_grant(ch9, 0, 1236, 44, 0);
+        p25_sm_event(gctx, &o20n, &s20n, &ptt_grant);
+        assert(gctx->state == P25_SM_TUNED);
+        assert(p25_sm_emit_ptt_call(&o20n, &s20n, 0, 1236, 0, 44, 1, 0) == 1);
+        assert(gctx->slots[0].voice_active == 0);
+        dsd_call_snapshot checking_call;
+        assert(dsd_call_state_get(&s20n, 0U, &checking_call) > 0 && checking_call.phase == DSD_CALL_PHASE_ACTIVE);
+        /* Once the NAC is proven, the anonymous ACTIVE that follows continues the PTT's call, not a new one. */
+        s20n.p2_cc_verified = 1U;
+        assert(p25_sm_emit_active(&o20n, &s20n, 0) == 1);
+        dsd_call_snapshot admitted_call;
+        assert(dsd_call_state_get(&s20n, 0U, &admitted_call) > 0 && admitted_call.epoch == checking_call.epoch);
+        assert(admitted_call.ota_target_id == 1236U);
+        s20n.p2_cc = 0x370;
+        assert(p25_sm_emit_ptt_call(&o20n, &s20n, 0, 1236, 0, 44, 1, 0) == 0);
+        s20n.p2_cc = 0x293;
+        assert(p25_sm_emit_ptt_call(&o20n, &s20n, 0, 1236, 0, 44, 1, 0) == 1);
+        assert(gctx->slots[0].voice_active == 1);
+        DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+        p25_sm_init_ctx(gctx, &o20n, &s20n);
+    }
+
+    // 28f) Issue #637: a live edit that blocks the followed slot of an active TDMA call, while the other slot idles
+    // allowed, retires the slot at once, and the carrier is let go when its hangtime has run.
+    {
+        p25_sm_ctx_t* gctx = p25_sm_get_ctx();
+        DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+        s20n.p2_cc = 0x293;
+        s20n.p2_cc_verified = 1U;
+        p25_sm_init_ctx(gctx, &o20n, &s20n);
+        p25_sm_event_t followed_grant = p25_sm_ev_group_grant(ch9, 0, 1238, 46, 0);
+        p25_sm_event(gctx, &o20n, &s20n, &followed_grant);
+        assert(gctx->state == P25_SM_TUNED && gctx->slots[0].grant_active == 1);
+        assert(p25_sm_emit_ptt_call(&o20n, &s20n, 0, 1238, 0, 46, 1, 0) == 1);
+        assert(gctx->slots[0].voice_active == 1);
+        s20n.p25_p2_audio_allowed[0] = 1;
+        o20n.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+        assert(dsd_receive_set_parse(DSD_RECEIVE_SLOT, "1", &o20n.receive.filters[DSD_RECEIVE_SLOT].block, NULL, 0)
+               == 0);
+        p25_sm_tick_ctx(gctx, &o20n, &s20n);
+        assert(gctx->slots[0].grant_active == 0 && gctx->slots[0].voice_active == 0);
+        assert(s20n.p25_p2_audio_allowed[0] == 0 && gctx->slots[0].last_followed_m > 0.0);
+        assert(gctx->state == P25_SM_TUNED);
+        gctx->slots[0].last_followed_m -= (double)o20n.trunk_hangtime + 1.0;
+        gctx->t_tune_m -= (double)o20n.trunk_hangtime + 1.0;
+        p25_sm_tick_ctx(gctx, &o20n, &s20n);
+        assert(gctx->state != P25_SM_TUNED);
+        DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
+        p25_sm_init_ctx(gctx, &o20n, &s20n);
+    }
+
     // 30) An already-selected CQPSK P25P2 VC gets one demodulator-only
     // recovery attempt only when frame sync is otherwise about to abandon a
     // no-sync tune. Normal grant lead time must not trigger the reset.
@@ -2286,6 +2424,22 @@ main(void) {
     assert(ctx20v.slots[0].last_active_m == 0.0);
     p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
     assert(g_cc_reacquire_request_calls == 1);
+
+    // Issue #637: the same frame sync proves the demodulator locked while a NAC filter is still Checking the
+    // carrier's code; the watchdog must not reset a locked demodulator because the policy has no verdict yet.
+    g_cc_reacquire_request_calls = 0;
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    age_stalled_vc_reacquire_case(&ctx20v, &s20v, 1.5);
+    o20v.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20v.receive.filters[DSD_RECEIVE_NAC].allow, NULL, 0) == 0);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    p25_sm_note_vc_frame_sync(&ctx20v, &o20v, &s20v);
+    assert(ctx20v.vc_reacquire_eligible == 0);
+    assert(ctx20v.vc_no_sync_passes == 0U);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+    DSD_MEMSET(&o20v.receive, 0, sizeof(o20v.receive));
 
     g_cc_reacquire_request_calls = 0;
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);

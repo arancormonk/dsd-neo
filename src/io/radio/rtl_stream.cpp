@@ -23,7 +23,8 @@
 extern "C" {
 // Backend operations hidden from the installed context API.
 int dsd_rtl_stream_open(dsd_opts* opts);
-int dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_state* state);
+int dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
+                           const dsd_state* state);
 uint32_t rtl_stream_output_generation(void);
 int dsd_rtl_stream_tune(dsd_opts* opts, uint32_t frequency);
 int dsd_rtl_stream_tune_tagged(dsd_opts* opts, uint32_t frequency, uint64_t request_id);
@@ -173,7 +174,8 @@ RtlSdrOrchestrator::read(float* out, uint8_t* flags, size_t count, int& out_got)
     const bool replay_active = opts_->iq_replay_active != 0;
     for (;;) {
         const uint32_t generation_before = rtl_stream_output_generation();
-        int got = dsd_rtl_stream_read_ex(out, flags, count, opts_, nullptr);
+        /* The started copy carries the PPM mirrors; the caller's live options carry the receive mode in force. */
+        int got = dsd_rtl_stream_read_ex(out, flags, count, opts_, caller_opts_, nullptr);
         if (got < 0) {
             return got;
         }

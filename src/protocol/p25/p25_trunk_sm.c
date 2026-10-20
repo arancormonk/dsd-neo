@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -414,8 +415,9 @@ p25_sm_reset_vc_reacquire_tracking(p25_sm_ctx_t* ctx) {
 static void
 p25_sm_note_vc_decode_activity(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, const char* source, int slot,
                                double now_m) {
-    if (!ctx || !ctx->vc_reacquire_eligible
-        || !dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, slot)) {
+    /* Decode progress is a fact about the demodulator, not about receive admission: traffic the receive policy is
+       still checking or rejects keeps the reacquire watchdog quiet too (issue #637). */
+    if (!ctx || !ctx->vc_reacquire_eligible) {
         return;
     }
     if (now_m <= 0.0) {
@@ -1962,6 +1964,10 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     if (!ctx || !ev) {
         return;
     }
+    if (!reused_carrier) {
+        /* A new carrier gets its own receive acquisition window; repeated grants to this one cannot extend it. */
+        ctx->receive_check_started_m = 0.0;
+    }
     ctx->vc_freq_hz = freq;
     ctx->vc_channel = ev->channel;
     ctx->vc_tg = target_id;
@@ -2404,10 +2410,20 @@ p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     return is_tdma_channel(state, ev->channel) ? 0 : 1;
 }
 
+/* Whether the receive policy lets a grant to @p channel's @p slot at @p freq be followed (issue #637): its slot, and the
+   NAC last verified on that voice channel, which a rejected one makes not worth the acquisition window again. */
 static int
-p25_receive_grant_allowed(const dsd_opts* opts, const dsd_state* state, int channel, int slot) {
-    return dsd_receive_grant_allows(opts, is_tdma_channel(state, channel) ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS,
-                                    slot);
+p25_receive_grant_allowed(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int channel, int slot,
+                          long freq) {
+    if (!dsd_receive_grant_allows(opts, is_tdma_channel(state, channel) ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS,
+                                  slot)) {
+        return 0;
+    }
+    if (dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, freq)) {
+        sm_log(opts, state, "grant-receive-rejected");
+        return 0;
+    }
+    return 1;
 }
 
 static int
@@ -2429,7 +2445,7 @@ p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     out->now_m = dsd_decode_now_mono_s();
     out->slot = channel_slot(state, ev->channel);
     out->logical_slot = is_tdma_channel(state, ev->channel) ? out->slot : 0;
-    if (!p25_receive_grant_allowed(opts, state, ev->channel, out->logical_slot)) {
+    if (!p25_receive_grant_allowed(ctx, opts, state, ev->channel, out->logical_slot, out->freq)) {
         return 0;
     }
     if (p25_grant_stale_regrant_blocked(ctx, opts, state, ev, out->freq, out->logical_slot, eval_ctx->data_call,
@@ -3898,6 +3914,19 @@ p25_voice_start_suppress_post_end_repeat(p25_sm_ctx_t* ctx, dsd_opts* opts, cons
     return 1;
 }
 
+/* The receive policy's say on a voice start (issue #637): -1 refuses one it rejects; 1 accepts one it is still checking,
+   so the caller still takes the PTT's crypto fields (the audio gates judge admission), but no voice activity holds the
+   channel until the slot is admitted; 0 lets an admitted start through. */
+static int
+p25_voice_start_receive_gate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, int slot) {
+    const dsd_receive_verdict receive =
+        dsd_receive_status(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, slot);
+    if (receive == DSD_RECEIVE_REJECTED) {
+        return -1;
+    }
+    return receive == DSD_RECEIVE_CHECKING ? 1 : 0;
+}
+
 static int
 handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, const char* why) {
     if (!ctx || !ev) {
@@ -3909,7 +3938,8 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
 
     double now_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_decode_now_mono_s();
     int s = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
-    if (!dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, s)) {
+    const int receive = p25_voice_start_receive_gate(ctx, opts, state, s);
+    if (receive < 0) {
         return 0;
     }
     if (p25_voice_start_suppress_post_end_repeat(ctx, opts, state, s, ev, why, now_m)) {
@@ -3918,6 +3948,11 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
     int new_epoch = !ctx->slots[s].voice_active;
     if (!p25_voice_start_apply_event(ctx, opts, state, s, ev, now_m, &new_epoch)) {
         return 0;
+    }
+    if (receive > 0) {
+        /* Still checking: the start's identity and epoch are kept, so the crypto fields its PTT brings survive until
+           the slot is admitted, but no voice activity holds the channel before then. */
+        return 1;
     }
     const int reused = ctx->vc_activity_seen && new_epoch;
     if (new_epoch) {
@@ -4799,6 +4834,7 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
 static void
 p25_release_clear_context(p25_sm_ctx_t* ctx, int count_return) {
     ctx->receive_check_started_m = 0.0;
+    ctx->receive_check_freq_hz = 0;
     p25_grant_clear_slot_state(ctx);
     p25_sm_clear_followed_history(ctx);
     ctx->vc_freq_hz = 0;
@@ -5527,17 +5563,19 @@ p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* 
     }
     double now_m = dsd_decode_now_mono_s();
     int sync_slot = p25_sm_vc_sync_slot(ctx, state, slot);
+    /* The sync proves the receiver is locked whatever the receive policy says of its traffic: the reacquire watchdog
+       and the CQPSK timing memory see it. Only admitted traffic holds the voice channel (issue #637). */
+    p25_sm_note_vc_decode_activity(ctx, (dsd_opts*)opts, state, "sync", sync_slot, now_m);
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "vc_sync", "freq=%ld ch=0x%04X tg=%d tdma=%d slot=%d", ctx->vc_freq_hz,
+                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, ctx->vc_is_tdma, sync_slot);
+    p25_sm_note_successful_vc_timing(ctx, opts, state);
     if (!dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, sync_slot)) {
         return;
     }
-    p25_sm_note_vc_decode_activity(ctx, (dsd_opts*)opts, state, "sync", sync_slot, now_m);
     ctx->t_voice_m = now_m;
     if (sync_slot >= 0 && sync_slot <= 1 && ctx->slots[sync_slot].grant_active && !ctx->slots[sync_slot].data_call) {
         ctx->slots[sync_slot].last_active_m = now_m;
     }
-    p25_sm_diagf((dsd_opts*)opts, state, ctx, "vc_sync", "freq=%ld ch=0x%04X tg=%d tdma=%d slot=%d", ctx->vc_freq_hz,
-                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, ctx->vc_is_tdma, sync_slot);
-    p25_sm_note_successful_vc_timing(ctx, opts, state);
 }
 
 static void
@@ -6405,15 +6443,47 @@ p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
     return 1;
 }
 
+/* Remember the code this voice channel holds, when it is its own: its tune forgot the control channel's
+   (dsd_engine_update_vc_tune_state() does, issue #637). */
+static void
+p25_sm_receive_note_carrier(p25_sm_ctx_t* ctx, const dsd_state* state) {
+    if (ctx->vc_freq_hz != ctx->receive_check_freq_hz) {
+        ctx->receive_check_freq_hz = ctx->vc_freq_hz;
+        /* Decided at the tune, not now: a carrier tuned another way still holds what the control channel left. */
+        ctx->receive_codes_fresh = ctx->vc_freq_hz != 0 && state->receive_codes_fresh_freq == ctx->vc_freq_hz;
+    }
+    if (ctx->receive_codes_fresh) {
+        dsd_receive_carriers_note(&ctx->receive_carriers, state,
+                                  ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, ctx->vc_freq_hz);
+    }
+}
+
+/* Whether the receive policy admits @p slot's traffic. A followed slot it rejects (a live edit, or its code proven) is
+   retired as an ended call is, so its grant and audio no longer hold the carrier and the hangtime counts from now while
+   the other slot carries nothing admitted (issue #637). */
+static int
+p25_sm_receive_slot(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, double now_m) {
+    const dsd_receive_verdict verdict =
+        dsd_receive_status(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, slot);
+    if (verdict == DSD_RECEIVE_OFF || verdict == DSD_RECEIVE_ALLOWED) {
+        return 1;
+    }
+    if (verdict == DSD_RECEIVE_REJECTED && ctx->vc_is_tdma
+        && (ctx->slots[slot].grant_active || ctx->slots[slot].voice_active)) {
+        p25_sm_note_followed_until(ctx, slot, now_m);
+        p25_voice_clear_slot_grant(ctx, state, slot);
+        state->p25_p2_audio_allowed[slot] = 0;
+    }
+    ctx->slots[slot].voice_active = 0;
+    return 0;
+}
+
 static int
 p25_sm_receive_check(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double grant_timeout) {
+    p25_sm_receive_note_carrier(ctx, state);
     int admitted = 0;
     for (int slot = 0; slot < (ctx->vc_is_tdma ? 2 : 1); slot++) {
-        if (dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, slot)) {
-            admitted = 1;
-        } else {
-            ctx->slots[slot].voice_active = 0;
-        }
+        admitted |= p25_sm_receive_slot(ctx, opts, state, slot, now_m);
     }
     if (!admitted) {
         if (ctx->receive_check_started_m <= 0.0) {
@@ -6435,10 +6505,12 @@ p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
     if (!ctx) {
         return;
     }
+    /* The CQPSK retry comes first: a Phase 2 voice channel that only decodes on the CQPSK path cannot prove its NAC,
+       so the receive check would otherwise hold it in Checking until it times out (issue #637). */
+    p25_sm_tick_tuned_try_cqpsk_retry(ctx, opts, state, now_m);
     if (p25_sm_receive_check(ctx, opts, state, now_m, grant_timeout)) {
         return;
     }
-    p25_sm_tick_tuned_try_cqpsk_retry(ctx, opts, state, now_m);
     if (p25_sm_tick_crypto_classification(ctx, opts, state, now_m, grant_timeout)) {
         return;
     }
@@ -6810,7 +6882,8 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
         return;
     }
     const int encrypted = p25_sm_conventional_call_encrypted(&call);
-    dsd_trunk_scan_hook_p25_conventional_activity(opts, state, target, (uint32_t)call.ota_source_id,
+    dsd_trunk_scan_hook_p25_conventional_activity(opts, state, call.protocol, slot, target,
+                                                  (uint32_t)call.ota_source_id,
                                                   call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
 }
 

@@ -100,6 +100,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].service_label[0] = '\0';
         DSD_MEMSET(&event_struct->Event_History_Items[i].receive_identity, 0,
                    sizeof(event_struct->Event_History_Items[i].receive_identity));
+        /* No identity is kind "none", never kind 0 (slot), for every reader of a row no reception named. */
+        event_struct->Event_History_Items[i].receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE;
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].freq_hz = 0;
@@ -1020,6 +1022,16 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
     }
     watchdog_event_merge_identity_fields(retained, staged);
     watchdog_event_merge_system_identity(retained, staged);
+    /* A segment that confirmed the service the interrupted one never did names the row; one that confirmed nothing
+       only fills a name the row lacks (issue #637). The access code and the over-the-air slot are proven apart (the
+       single-slot DMR decoder can confirm the code first), so each is folded in on its own; a slot name only fills a
+       row with none, since a code's name outranks it. A changed service never merges
+       (watchdog_event_staged_row_merges()). */
+    const int code_confirmed = !retained->receive_identity.known && staged->receive_identity.known;
+    dsd_receive_identity_merge(&retained->receive_identity, &staged->receive_identity);
+    if (code_confirmed || (retained->service_label[0] == '\0' && staged->service_label[0] != '\0')) {
+        copy_str_field(retained->service_label, staged->service_label, sizeof retained->service_label);
+    }
 
     added->alias =
         (uint8_t)watchdog_event_merge_text_progressive(retained->alias, staged->alias, sizeof(retained->alias), 1);
@@ -1202,12 +1214,27 @@ watchdog_event_history_matches_call(const Event_History* item, const dsd_call_sn
     return item->source_id == 0U || (call->ota_source_id <= UINT32_MAX && item->source_id == call->ota_source_id);
 }
 
+/* The VOICE_START a call's receive check withheld sounds once the call is admitted; a rejected or ended call drops it. */
+static void
+watchdog_event_admitted_start_alert(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                    dsd_call_event_lifecycle* lifecycle) {
+    if (!lifecycle->start_alert_pending || call->receive_verdict == DSD_RECEIVE_CHECKING) {
+        return;
+    }
+    lifecycle->start_alert_pending = 0U;
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && call->receive_verdict != DSD_RECEIVE_REJECTED
+        && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
+        beeper(opts, state, slot, 40, 86, 3);
+    }
+}
+
 static void
 watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                      dsd_call_event_lifecycle* lifecycle) {
     Event_History_I* event_struct = &state->event_history_s[slot];
     const int epoch_changed = lifecycle->epoch != call->epoch;
     if (!epoch_changed) {
+        watchdog_event_admitted_start_alert(opts, state, slot, call, lifecycle);
         return;
     }
 
@@ -1250,10 +1277,14 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
         // before this call's START rather than partway into it.
         watchdog_event_flush_pending_end_alert(opts, state, slot, lifecycle, 1);
     }
+    lifecycle->start_alert_pending = 0U;
     if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA && !reacquired
-        && call->receive_verdict != DSD_RECEIVE_CHECKING && call->receive_verdict != DSD_RECEIVE_REJECTED
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
-        beeper(opts, state, slot, 40, 86, 3);
+        if (call->receive_verdict == DSD_RECEIVE_CHECKING) {
+            lifecycle->start_alert_pending = 1U;
+        } else if (call->receive_verdict != DSD_RECEIVE_REJECTED) {
+            beeper(opts, state, slot, 40, 86, 3);
+        }
     }
 }
 
@@ -2455,6 +2486,12 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
         return;
     }
     if (call->receive_verdict == DSD_RECEIVE_CHECKING || call->receive_verdict == DSD_RECEIVE_REJECTED) {
+        /* Nothing it holds now renders (issue #637), but a segment staged while the policy admitted it (a live edit
+           rejected the call part-way) still ends, commits and rotates as its call did. */
+        if (lifecycle != NULL && lifecycle->epoch == call->epoch) {
+            watchdog_event_finalize_ended(opts, state, slot, call, lifecycle, &state->event_history_s[slot],
+                                          finalize_ended);
+        }
         return;
     }
     const dsd_call_snapshot* effective_call = call;
@@ -2923,7 +2960,9 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* call = &ext->calls.slots[slot];
-    if (call->epoch != epoch) {
+    /* A call the receive policy is still checking or rejects publishes nothing, enrichment included (issue #637). */
+    if (call->epoch != epoch || call->receive_verdict == DSD_RECEIVE_CHECKING
+        || call->receive_verdict == DSD_RECEIVE_REJECTED) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }

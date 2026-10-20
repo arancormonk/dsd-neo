@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -4672,12 +4673,17 @@ test_receive_defaults_and_row_inheritance(void) {
     auto cfg = std::make_unique<dsdneoUserConfig>();
     char path[DSD_TEST_PATH_MAX];
     RECEIVE_CHECK(
-        write_temp_config("[receive]\nslot_enabled = true\nslot_allow = 1\ndcc_enabled = true\ndcc_allow = 0/7\n"
-                          "dcc_block = 0\nnac_enabled = true\nnac_allow = 0x293/FFE\n"
-                          "names = --dcc-name \"7=Hospital's #1\" --tone-name 'D023I=Dispatch'\n",
+        write_temp_config("[logging]\nevent_log = /home/o'neil/events.log  # main log\n"
+                          "[receive]\nslot_enabled = true\nslot_allow = 1\ndcc_enabled = True\ndcc_allow = 0/7\n"
+                          "dcc_block = 0\nnac_enabled = ON\nnac_allow = 0x293/FFE\n"
+                          "names = --dcc-name \"7=Hospital's #1\" --tone-name 'D023I=Dispatch' ; comment\n",
                           path, sizeof path)
         == 0);
     RECEIVE_CHECK(dsd_user_config_load(path, cfg.get()) == 0 && cfg->has_receive && !cfg->receive_refused);
+    /* An apostrophe is ordinary text: the comment after it is still a comment (only double quotes protect one). */
+    RECEIVE_CHECK(!strcmp(cfg->event_log, "/home/o'neil/events.log"));
+    /* [receive] booleans are spelled as every other INI boolean: case does not matter. */
+    RECEIVE_CHECK(cfg->receive.filters[DSD_RECEIVE_DCC].enabled && cfg->receive.filters[DSD_RECEIVE_NAC].enabled);
     RECEIVE_CHECK(cfg->receive.names.count == 2);
     dsd_apply_user_config_to_opts(cfg.get(), opts.get(), state.get());
     RECEIVE_CHECK(opts->receive.filters[DSD_RECEIVE_DCC].enabled);
@@ -4718,6 +4724,41 @@ test_receive_defaults_and_row_inheritance(void) {
     return 0;
 }
 
+static int g_receive_boundaries = 0;
+
+static void
+count_receive_boundary(dsd_opts*, dsd_state*, int) {
+    g_receive_boundaries++;
+}
+
+/* Issue #637: a configuration applied while the scan scope is suspended judges no call against the passing global
+   policy: once the row's own options are back, the boundary runs only if the policy in force really changed. */
+static int
+test_receive_boundary_waits_for_resume(void) {
+    auto opts = std::make_unique<dsd_opts>();
+    auto state = std::make_unique<dsd_state>();
+    dsd_frame_sync_hooks hooks = {};
+    hooks.receive_policy_boundary = count_receive_boundary;
+    dsd_frame_sync_hooks_set(&hooks);
+    dsd_scan_options row = {};
+    char error[160];
+    RECEIVE_CHECK(dsd_scan_options_parse("--dcc-allow 7", DSD_SCAN_MODE_DMR, 1, &row, error, sizeof error) == 0);
+    RECEIVE_CHECK(dsd_scan_mode_enter(opts.get(), state.get(), DSD_SCAN_MODE_DMR) == 0);
+    RECEIVE_CHECK(dsd_scan_mode_options(opts.get(), state.get(), &row.values) == 0);
+    g_receive_boundaries = 0;
+    RECEIVE_CHECK(dsd_scan_mode_suspend(opts.get(), state.get()) == 1);
+    dsd_receive_policy global = {};
+    RECEIVE_CHECK(dsd_receive_edit_parse(&global, DSD_RECEIVE_DCC, 1, "", "7", "", error, sizeof error) == 0);
+    RECEIVE_CHECK(dsd_scan_mode_set_configured_receive(opts.get(), state.get(), &global) == 0);
+    RECEIVE_CHECK(g_receive_boundaries == 0);
+    (void)dsd_scan_mode_resume(opts.get(), state.get());
+    RECEIVE_CHECK(g_receive_boundaries == 0);
+    RECEIVE_CHECK(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 7));
+    dsd_frame_sync_hooks_set(nullptr);
+    dsd_state_ext_free_all(state.get());
+    return 0;
+}
+
 #undef RECEIVE_CHECK
 
 int
@@ -4725,6 +4766,7 @@ main(void) {
     int rc = 0;
     rc |= test_imports_dir_follows_config_dir();
     rc |= test_receive_defaults_and_row_inheritance();
+    rc |= test_receive_boundary_waits_for_resume();
     rc |= test_rtl_bw_khz_72_round_trip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();

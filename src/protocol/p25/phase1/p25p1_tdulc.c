@@ -18,7 +18,9 @@
 
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
@@ -241,7 +243,9 @@ tdulc_finalize_tail_symbols(dsd_opts* opts, dsd_state* state, int* status_count)
     read_zeros(opts, state, 20, status_count);
 
     state->p25_p1_last_tdu_m = dsd_decode_now_mono_s();
-    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    if (dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 0)) {
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    }
     if (*status_count != 35) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "*** SYNC ERROR\n");

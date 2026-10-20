@@ -16,6 +16,7 @@
  * 2024-03 EDACS-FME display improvements
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include "dsd-neo/core/input_level.h"
 
@@ -2135,13 +2136,21 @@ ui_render_event_history_section(const dsd_state* state) {
     attroff(COLOR_PAIR(4)); //cyan for history
 }
 
+/* As the shared call view (dsd_app_call_line_state()) has it: a call the receive policy is still checking or rejects
+   shows no identity, alias or location (issue #637). */
+static int
+ui_call_receive_withheld(const dsd_call_snapshot* call) {
+    return call->receive_verdict == DSD_RECEIVE_CHECKING || call->receive_verdict == DSD_RECEIVE_REJECTED;
+}
+
 static int
 ui_active_call_snapshot(const dsd_state* state, uint8_t slot, dsd_call_snapshot* call) {
     if (call == NULL) {
         return 0;
     }
     DSD_MEMSET(call, 0, sizeof(*call));
-    if (dsd_call_state_get(state, slot, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE) {
+    if (dsd_call_state_get(state, slot, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
+        && !ui_call_receive_withheld(call)) {
         return 1;
     }
     DSD_MEMSET(call, 0, sizeof(*call));
@@ -2448,8 +2457,20 @@ ui_render_nxdn_site_line(const dsd_state* state, int idas) {
     printw("\n");
 }
 
+/* Whether the NXDN decoder's talker alias may show (issue #637): the decoder keeps it whatever the receive policy says,
+   so like the call's identity it shows only for reception the policy admits, with or without a canonical call. */
+static int
+ui_nxdn_alias_admitted(const dsd_opts* opts, const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && ui_call_receive_withheld(&call)) {
+        return 0;
+    }
+    return dsd_receive_allows(opts, state, DSD_SYNC_NXDN_POS, 0);
+}
+
 static void
-ui_render_nxdn_tgt_src_line(const dsd_state* state) {
+ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     dsd_call_snapshot call;
     (void)ui_active_call_snapshot(state, 0U, &call);
     const unsigned long target = call.ota_target_id <= ULONG_MAX ? (unsigned long)call.ota_target_id : 0UL;
@@ -2457,11 +2478,17 @@ ui_render_nxdn_tgt_src_line(const dsd_state* state) {
     printw("| ");
     printw("TGT: [%5lu] ", target);
     printw("SRC: [%5lu] ", source);
-    printw("Alias: [%s]", state->generic_talker_alias[0]);
+    printw("Alias: [%s]", ui_nxdn_alias_admitted(opts, state) ? state->generic_talker_alias[0] : "");
     {
         char group_mode[8];
         char group_name[50];
-        if (ui_lookup_group_label(state, target, group_mode, sizeof(group_mode), group_name, sizeof(group_name))) {
+        /* The service the receive policy named the call names it first, as in the shared call view
+           (slot_call_name()); the imported group label otherwise. */
+        if (call.service_label[0] != '\0') {
+            attron(COLOR_PAIR(4));
+            printw(" [%s]", call.service_label);
+        } else if (ui_lookup_group_label(state, target, group_mode, sizeof(group_mode), group_name,
+                                         sizeof(group_name))) {
             printw("TG: ");
             attron(COLOR_PAIR(4));
             printw(" [%s]", group_name);
@@ -2571,7 +2598,7 @@ ui_render_call_info_nxdn(const dsd_opts* opts, const dsd_state* state) {
     int idas = ui_nxdn_is_idas(state);
     ui_render_nxdn_monitor_line(opts, state, idas);
     ui_render_nxdn_site_line(state, idas);
-    ui_render_nxdn_tgt_src_line(state);
+    ui_render_nxdn_tgt_src_line(opts, state);
     ui_render_nxdn_encryption_line(opts, state);
     ui_render_nxdn_active_channels_and_tg_hold(opts, state);
 }
@@ -2905,17 +2932,33 @@ ui_apply_canonical_call_slot(ui_slot_view* slot, const dsd_call_snapshot* call) 
                  call->crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? " Encrypted" : "");
 }
 
+static void
+ui_slot_hide_decoded_data(ui_slot_view* slot) {
+    slot->embedded_gps = "";
+    slot->lrrp_gps = "";
+    slot->talker_alias = "";
+}
+
 static ui_slot_view
 ui_build_slot_view(const dsd_opts* opts, const dsd_state* state, int slot_idx) {
     ui_slot_view slot;
     DSD_MEMSET(&slot, 0, sizeof(slot));
     ui_fill_slot_decoder_state(state, slot_idx, &slot);
+    /* Data the receive policy withholds on this lane (an LRRP fix, an alias) shows nowhere, a data-only transmission
+       with no canonical call included (issue #637). */
+    if (!dsd_receive_current_allows(opts, state, slot_idx)) {
+        ui_slot_hide_decoded_data(&slot);
+    }
     dsd_call_state_snapshot calls;
     if (dsd_call_state_copy_snapshot(state, &calls) > 0) {
         const dsd_call_snapshot* call = &calls.slots[slot_idx];
-        slot.call = *call;
-        if (call->phase == DSD_CALL_PHASE_ACTIVE) {
-            ui_apply_canonical_call_slot(&slot, call);
+        if (ui_call_receive_withheld(call)) {
+            ui_slot_hide_decoded_data(&slot);
+        } else {
+            slot.call = *call;
+            if (call->phase == DSD_CALL_PHASE_ACTIVE) {
+                ui_apply_canonical_call_slot(&slot, call);
+            }
         }
     }
     const int p25p2_context = DSD_SYNC_IS_P25P2(state->synctype) || DSD_SYNC_IS_P25P2(state->lastsynctype);
@@ -3307,6 +3350,13 @@ ui_render_slot_group_label(const dsd_state* state, const ui_slot_view* slot, int
     if (!show_ids) {
         return;
     }
+    /* The service the receive policy named the call (issue #637) names it first, as in the shared call view
+       (slot_call_name()); the imported group label otherwise. */
+    if (slot->call.phase == DSD_CALL_PHASE_ACTIVE && slot->call.service_label[0] != '\0') {
+        attron(COLOR_PAIR(4));
+        printw(" [%s]", slot->call.service_label);
+        return;
+    }
 
     char group_mode[8];
     char group_name[50];
@@ -3541,6 +3591,12 @@ ui_render_call_info_rx_tone_line(const dsd_opts* opts, const dsd_state* state) {
     printw("| ");
     attron(COLOR_PAIR(4));
     printw("%s", line + 2);
+    /* The service the receive policy named the analog call (issue #637), as the shared call view names it. */
+    dsd_call_snapshot call;
+    if (ui_active_call_snapshot(state, 0U, &call) && call.protocol == DSD_SYNC_ANALOG
+        && call.service_label[0] != '\0') {
+        printw(" [%s]", call.service_label);
+    }
     ui_restore_call_info_color(state);
     printw("\n");
 }

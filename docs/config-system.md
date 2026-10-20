@@ -454,7 +454,8 @@ names = --slot-name "1=Dispatch" --dcc-name "7=Hospital" --tone-name "141.3=20R 
 ```
 
 `names` uses the same naming-option grammar as the CLI and CSV row options, including quoted names with
-spaces. Limits and identifier ranges are in [Receive filters and service names](cli.md#receive-filters-and-service-names).
+spaces. As everywhere in the file, only double quotes keep a `#` or `;` from starting a comment, so quote a name that
+contains one with double quotes (saving always does). Limits and identifier ranges are in [Receive filters and service names](cli.md#receive-filters-and-service-names).
 Saving while a scan row is active writes the configured defaults, not that row's effective overrides.
 A row replaces each filter kind it specifies in full, or its entire naming table; omitted kinds inherit.
 Explicit `--no-<kind>-filter` and `--no-service-names` override enabled/named defaults. Leaving the row

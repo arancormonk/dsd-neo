@@ -145,10 +145,13 @@ ModalSheet {
         model: [qsTr("Slot · TDMA only"), qsTr("DCC · DMR"), qsTr("RAN · NXDN"), qsTr("NAC · P25")]
         currentIndex: sheet.kind
         onActivated: function (index) {
-            currentIndex = sheet.kind;
+            // Activation wrote currentIndex; bind it to sheet.kind again so the picker shows the kind in force while
+            // the unsaved-edit guard asks, and follows every later change of sheet.kind.
+            currentIndex = Qt.binding(function () {
+                return sheet.kind;
+            });
             sheet.guard(function () {
                 sheet.kind = index;
-                kindPicker.currentIndex = index;
                 sheet.loadPolicy();
             });
         }

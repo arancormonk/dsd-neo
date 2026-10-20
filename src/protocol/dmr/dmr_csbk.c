@@ -904,7 +904,9 @@ dmr_cspdu_pf0_handle_p_protect(const dsd_opts* opts, dsd_state* state, uint8_t c
         return;
     }
     if (p_kind == 2) {
-        if (state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1) {
+        /* The advisory holds the voice channel for admitted traffic only (issue #637). */
+        if (state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1
+            && dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, state->currentslot)) {
             state->last_vc_sync_time = dsd_decode_time();
             state->last_vc_sync_time_m = dsd_decode_now_mono_s();
             if (opts->verbose > 2) {
@@ -2025,6 +2027,14 @@ dmr_cspdu_cap_plus_3e_reconcile_seeds(const dmr_cap_plus_3e_ctx* ctx) {
     }
 }
 
+/* Whether a grant this module tunes itself may go to @p freq_hz: not to a voice channel whose verified colour code the
+   receive policy rejects (issue #637), as the trunk state machine's own grants (dmr_sm_resolve_tunable_grant()). */
+static int
+dmr_csbk_receive_carrier_allowed(const dsd_opts* opts, long freq_hz) {
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    return !ctx || !dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, freq_hz);
+}
+
 static void
 dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
     if ((dsd_decode_time() - state->last_vc_sync_time) <= 2) {
@@ -2051,6 +2061,9 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
         }
 
         const long int grant_freq = state->trunk_chan_map[j + 1];
+        if (!dmr_csbk_receive_carrier_allowed(opts, grant_freq)) {
+            continue;
+        }
         const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
         const uint64_t generation_before = dsd_trunk_tuning_generation();
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
@@ -2313,6 +2326,23 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     dmr_cspdu_con_plus_try_tune_voice(opts, state, &g);
 }
 
+/* Follow a Connect Plus data grant the talkgroup policy allows, unless the receive policy rejects its slot or the
+   colour code verified on its channel (issue #637). Returns 0 only when the tune was refused. */
+static int
+dmr_cspdu_con_plus_tune_data(dsd_opts* opts, dsd_state* state, uint8_t lcn, uint8_t tslot) {
+    const long freq = state->trunk_chan_map[lcn];
+    if (freq == 0 || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_DATA_POS, tslot)
+        || !dmr_csbk_receive_carrier_allowed(opts, freq)) {
+        return 1;
+    }
+    if (!dsd_trunk_tune_result_is_ok(dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL))) {
+        return 0;
+    }
+    state->is_con_plus = 1;
+    dmr_reset_blocks(opts, state);
+    return 1;
+}
+
 static void
 dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu[], int csbk_o) {
     uint32_t dtarget;
@@ -2357,18 +2387,10 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
         return;
     }
 
-    policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision)
-                     && dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_DATA_POS, tslot);
+    policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision);
     if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
-        if (state->trunk_chan_map[lcn] != 0) {
-            dsd_trunk_tune_result tune_result =
-                dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0, NULL);
-            if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-                (void)dsd_recent_activity_restore(state, &activity_transaction);
-                return;
-            }
-            state->is_con_plus = 1;
-            dmr_reset_blocks(opts, state);
+        if (!dmr_cspdu_con_plus_tune_data(opts, state, lcn, tslot)) {
+            (void)dsd_recent_activity_restore(state, &activity_transaction);
         }
     } else if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1) {
         dmr_policy_log_block(opts, 0, dtarget, 0, &policy_decision);
@@ -2513,7 +2535,10 @@ dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const uint8_t t_tg[18],
         dsd_tg_policy_decision policy_decision;
         int policy_allowed;
 
-        if (tg == 0 || state->trunk_cc_freq == 0 || opts->trunk_enable != 1) {
+        /* A candidate the receive policy rejects (its slot, or its channel's verified colour code) is passed over for
+           the next one, as on Cap+ (issue #637): the state machine would refuse it and this loop stop at it. */
+        if (tg == 0 || state->trunk_cc_freq == 0 || opts->trunk_enable != 1
+            || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, slot_idx & 1)) {
             continue;
         }
 
@@ -2523,7 +2548,8 @@ dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const uint8_t t_tg[18],
             dmr_policy_log_block(opts, 1, tg, 0, &policy_decision);
             continue;
         }
-        if (state->trunk_chan_map[slot_idx + 1] == 0) {
+        if (state->trunk_chan_map[slot_idx + 1] == 0
+            || !dmr_csbk_receive_carrier_allowed(opts, state->trunk_chan_map[slot_idx + 1])) {
             continue;
         }
         if (!(opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {

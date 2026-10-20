@@ -25,7 +25,9 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -284,8 +286,11 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
     }
 
     state->p25_p1_voice_fec_ok++;
-    state->last_vc_sync_time = dsd_decode_time();
-    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    /* Only traffic the receive policy admits holds the voice channel (issue #637). */
+    if (dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 0)) {
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    }
 
     return 0;
 }

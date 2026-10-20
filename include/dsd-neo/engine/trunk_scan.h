@@ -130,6 +130,10 @@ void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
  * Decoder thread only; the caller must hold the SM guard. Used by long protocol loops
  * to unwind before the next coordinator tick performs the advance. */
 int dsd_engine_trunk_scan_visit_expired(const dsd_opts* opts, dsd_state* state);
+/** Whether the receive policy lets go of the conventional target on air (issue #637): it admits none of its traffic
+ * past the acquisition window, no operator hold keeps it, and another target can take the receiver. Read-only, so
+ * the frame loop can yield on it mid-transmission; the coordinator's tick then advances. */
+int dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state* state);
 /**
  * @brief Apply an operator scan control (a dsd_trunk_scan_control_op from
  * runtime/trunk_scan_hooks.h) to the parked target list.
@@ -178,9 +182,12 @@ void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const
 /** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity */
 void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                       uint32_t source, int is_private, int encrypted, int data_call);
-/** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity */
-void dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
-                                                     uint32_t source, int is_private, int encrypted, int data_call);
+/** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity
+ * @param protocol The call's DSD_SYNC_P25* protocol (Phase 1 or Phase 2), judged by the receive policy.
+ * @param slot     The call's slot: 0 for Phase 1, 0/1 for Phase 2. */
+void dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                                     int slot, uint32_t target, uint32_t source, int is_private,
+                                                     int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
 /**
  * @brief Whether the scan running now visits an analog row that runs the configured NFM width (issue #526).

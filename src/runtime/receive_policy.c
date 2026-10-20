@@ -3,6 +3,7 @@
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <stdint.h>
@@ -27,6 +28,15 @@ dsd_receive_names_equal(const dsd_service_names* a, const dsd_service_names* b) 
         }
     }
     return 1;
+}
+
+int
+dsd_receive_policy_filters_enabled(const dsd_receive_policy* policy) {
+    int any_enabled = 0;
+    for (int kind = 0; policy && kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        any_enabled |= policy->filters[kind].enabled;
+    }
+    return any_enabled;
 }
 
 int
@@ -136,6 +146,16 @@ dsd_receive_set_contains(const dsd_receive_set* set, unsigned int value) {
     return set && value < 4096 && ((set->bits[value / 64] >> (value % 64)) & 1U) != 0;
 }
 
+static int
+receive_append(char* out, size_t capacity, const char* text) {
+    size_t used = strlen(out), length = strlen(text);
+    if (used + length >= capacity) {
+        return -1;
+    }
+    DSD_MEMCPY(out + used, text, length + 1);
+    return 0;
+}
+
 int
 dsd_receive_set_parse(int kind, const char* text, dsd_receive_set* out, char* error, size_t capacity) {
     if (!out || !text || kind < 0 || kind >= DSD_RECEIVE_FILTER_COUNT || strlen(text) > DSD_RECEIVE_LIST_MAX) {
@@ -169,17 +189,13 @@ dsd_receive_set_parse(int kind, const char* text, dsd_receive_set* out, char* er
             return receive_error(error, capacity, "empty identifier after /");
         }
     }
-    *out = parsed;
-    return 0;
-}
-
-static int
-receive_append(char* out, size_t capacity, const char* text) {
-    size_t used = strlen(out), length = strlen(text);
-    if (used + length >= capacity) {
-        return -1;
+    /* Every accepted list must also fit as saved: the canonical spelling (three hex digits per NAC) can be longer than
+       the text it came from, and a list that could not be written back would be lost on the next save. */
+    char canonical[DSD_RECEIVE_LIST_MAX + 1];
+    if (dsd_receive_set_format(kind, &parsed, canonical, sizeof canonical) < 0) {
+        return receive_error(error, capacity, "receive list too long once saved");
     }
-    DSD_MEMCPY(out + used, text, length + 1);
+    *out = parsed;
     return 0;
 }
 
@@ -231,8 +247,12 @@ dsd_receive_policy_match(const dsd_receive_policy* policy, const dsd_receive_ide
     if (!policy || !identity) {
         return DSD_RECEIVE_OFF;
     }
-    dsd_receive_verdict slot =
-        identity->slot ? receive_filter_match(&policy->filters[DSD_RECEIVE_SLOT], 1, identity->slot) : DSD_RECEIVE_OFF;
+    dsd_receive_verdict slot = DSD_RECEIVE_OFF;
+    if (identity->slot) {
+        slot = receive_filter_match(&policy->filters[DSD_RECEIVE_SLOT], 1, identity->slot);
+    } else if (identity->slot_pending) {
+        slot = receive_filter_match(&policy->filters[DSD_RECEIVE_SLOT], 0, 0);
+    }
     dsd_receive_verdict code =
         identity->kind > DSD_RECEIVE_SLOT && identity->kind < DSD_RECEIVE_FILTER_COUNT
             ? receive_filter_match(&policy->filters[identity->kind], identity->known, identity->value)
@@ -240,7 +260,7 @@ dsd_receive_policy_match(const dsd_receive_policy* policy, const dsd_receive_ide
     if (slot == DSD_RECEIVE_REJECTED || code == DSD_RECEIVE_REJECTED) {
         return DSD_RECEIVE_REJECTED;
     }
-    if (code == DSD_RECEIVE_CHECKING) {
+    if (code == DSD_RECEIVE_CHECKING || slot == DSD_RECEIVE_CHECKING) {
         return DSD_RECEIVE_CHECKING;
     }
     return slot == DSD_RECEIVE_ALLOWED || code == DSD_RECEIVE_ALLOWED ? DSD_RECEIVE_ALLOWED : DSD_RECEIVE_OFF;
@@ -264,16 +284,55 @@ dsd_receive_service_name(const dsd_service_names* names, const dsd_receive_ident
     return slot;
 }
 
+/* Length of the well-formed UTF-8 sequence at @p s (shortest form, no surrogates, at most U+10FFFF), or 0. */
+static size_t
+receive_utf8_sequence(const unsigned char* s) {
+    if (s[0] < 0x80U) {
+        return 1;
+    }
+    size_t length;
+    uint32_t scalar, minimum;
+    if ((s[0] & 0xE0U) == 0xC0U) {
+        length = 2, scalar = s[0] & 0x1FU, minimum = 0x80U;
+    } else if ((s[0] & 0xF0U) == 0xE0U) {
+        length = 3, scalar = s[0] & 0x0FU, minimum = 0x800U;
+    } else if ((s[0] & 0xF8U) == 0xF0U) {
+        length = 4, scalar = s[0] & 0x07U, minimum = 0x10000U;
+    } else {
+        return 0;
+    }
+    for (size_t i = 1; i < length; i++) {
+        if ((s[i] & 0xC0U) != 0x80U) {
+            return 0;
+        }
+        scalar = (scalar << 6) | (s[i] & 0x3FU);
+    }
+    if (scalar < minimum || scalar > 0x10FFFFU || (scalar >= 0xD800U && scalar <= 0xDFFFU)) {
+        return 0;
+    }
+    return length;
+}
+
 static int
 receive_name_valid(const char* name, char* error, size_t capacity) {
     size_t length = strlen(name);
     if (length == 0 || length >= DSD_SERVICE_LABEL_SIZE || name[0] == ' ' || name[length - 1] == ' ') {
         return receive_error(error, capacity, "name must be 1..63 bytes, without leading or trailing spaces");
     }
-    for (size_t i = 0; i < length; i++) {
-        if ((unsigned char)name[i] < 32 || name[i] == 127 || name[i] == ',' || name[i] == '"') {
+    for (size_t i = 0; i < length;) {
+        const unsigned char c = (unsigned char)name[i];
+        if (c < 32 || c == 127 || c == ',' || c == '"') {
             return receive_error(error, capacity, "names cannot contain commas, double quotes or control characters");
         }
+        /* Names reach UTF-8 displays, history files, JSON and WAV names: only well-formed UTF-8 is taken. */
+        const size_t sequence = receive_utf8_sequence((const unsigned char*)name + i);
+        if (sequence == 0) {
+            return receive_error(error, capacity, "names must be valid UTF-8");
+        }
+        if (c == 0xC2U && (unsigned char)name[i + 1] < 0xA0U) { /* U+0080..U+009F, the C1 controls (CSI among them). */
+            return receive_error(error, capacity, "names cannot contain commas, double quotes or control characters");
+        }
+        i += sequence;
     }
     return 0;
 }
@@ -364,6 +423,9 @@ receive_names_option(dsd_receive_policy* policy, unsigned int* seen, int kind, i
         names = policy->names;
     }
     if (action == 4) {
+        if (*seen & (1U << 17)) {
+            return receive_error(error, capacity, "duplicate no-service-names");
+        }
         if (*seen & (1U << 16)) {
             return receive_error(error, capacity, "cannot combine no-service-names with naming options");
         }
@@ -516,11 +578,12 @@ dsd_receive_names_format(const dsd_service_names* names, char* out, size_t capac
 static int
 receive_enabled_parse(const char* value, int* out, char* error, size_t capacity) {
     int enabled;
-    if (strcmp(value, "true") == 0 || strcmp(value, "1") == 0 || strcmp(value, "yes") == 0
-        || strcmp(value, "on") == 0) {
+    /* Spelled as every other INI boolean is (user_config_parse_bool_value()): case does not matter. */
+    if (dsd_strcasecmp(value, "true") == 0 || dsd_strcasecmp(value, "1") == 0 || dsd_strcasecmp(value, "yes") == 0
+        || dsd_strcasecmp(value, "on") == 0) {
         enabled = 1;
-    } else if (strcmp(value, "false") == 0 || strcmp(value, "0") == 0 || strcmp(value, "no") == 0
-               || strcmp(value, "off") == 0) {
+    } else if (dsd_strcasecmp(value, "false") == 0 || dsd_strcasecmp(value, "0") == 0
+               || dsd_strcasecmp(value, "no") == 0 || dsd_strcasecmp(value, "off") == 0) {
         enabled = 0;
     } else {
         return receive_error(error, capacity, "enabled must be true or false");
