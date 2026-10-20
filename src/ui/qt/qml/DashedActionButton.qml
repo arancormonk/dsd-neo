@@ -28,6 +28,7 @@ Item {
     Keys.onReturnPressed: activate()
     Keys.onSpacePressed: activate()
     FocusFrame {}
+    implicitWidth: Math.max(Theme.minimumTouchSize, Math.ceil(label.implicitWidth) + 24)
     implicitHeight: Math.max(54, label.implicitHeight + 24)
 
     Canvas {

@@ -5908,6 +5908,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
+- Listen creation actions (issue #709): `qml/HomeScreen.qml` places Add a system and Add a scan list after the status
+  cards and before either saved collection, inside the same modal-guarded scroll body. Two equal columns fit only
+  when both can hold the wider button's complete label plus padding (`DashedActionButton.implicitWidth`); otherwise
+  they stack in focus order, keeping the source hint beneath Add a system. The available content width, including
+  the supporting pane, and the current font determine reflow. Empty collection headings are hidden. Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
 - AM (issue #524): `qml/Util.js` `DECODE_MODES` carries an `AM` chip (`-fM`) marked `iqOnly`, which the Radio sheet
   (`metrics.radioInput`, with a `radioDecodeIqNote` saying why) and the add-system wizard (`radioSource`) do not offer
   for audio that arrives demodulated. The wizard drops an `iqOnly` flag back to Auto when its source moves off the radio
