@@ -25,6 +25,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
@@ -63,6 +64,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
 #include "pcm_input_staging.h"
+#include "symbol_anchor_internal.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
@@ -86,6 +88,7 @@ float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
+int dsd_symbol_test_rtl_flush_epochs(unsigned int out_epochs[3]);
 int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);
 #endif
 // NOLINTEND(misc-use-internal-linkage)
@@ -332,6 +335,14 @@ typedef struct {
        SYMBOL_MONITOR_OFF_PROFILE or SYMBOL_MONITOR_UNKNOWN (symbol_refresh_rtl_profile()). */
     int rtl_monitor_kind;
 #endif
+    /* The sync anchor, once a protocol has named a sync word (symbol_anchor.c); NULL until then. */
+    dsd_symbol_anchor* anchor;
+    /* The move the anchor made at this symbol's start: a seam later in the same symbol that discards the anchor's
+       samples (symbol_sync_matched_filter_seam()) discards the move measured on them too. */
+    int anchor_applied;
+    /* Whether this symbol's samples are recorded at all: for the timing trace or for the anchor. One test a sample,
+       the one the trace alone used to cost. */
+    int recording;
 } symbol_work_ctx;
 
 #ifdef USE_RADIO
@@ -361,6 +372,19 @@ symbol_work_ctx_init(symbol_work_ctx* work, const dsd_state* state) {
         return;
     }
     work->analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
+}
+
+/* One more symbol on the clock DMR measures superframes on (dsd_state::symbol_clock, issue #729). An input switch
+   (or reopened file) moves dsd_opts::pcm_input_generation; the epoch follows it here, for one compare a symbol. The
+   RTL readers bump it where they meet a stream flush, the engine on a scan target change, and DMR compares the carrier
+   count itself. */
+static inline void
+symbol_clock_tick(const dsd_opts* opts, dsd_state* state) {
+    if (opts->pcm_input_generation != state->symbol_clock_input) {
+        state->symbol_clock_input = opts->pcm_input_generation;
+        state->symbol_clock_epoch++;
+    }
+    state->symbol_clock++;
 }
 
 /* No have_sync term: the frame is exactly the window a timing question needs to see,
@@ -671,7 +695,14 @@ symbol_adjust_timing_c4fm(const dsd_state* state, int* i) {
 
 static inline void
 symbol_adjust_timing_index(dsd_state* state, int have_sync, int symbol_span, int* i) {
-    if (symbol_span <= 1 || *i != 0 || have_sync != 0) {
+    if (symbol_span <= 1 || *i != 0) {
+        return;
+    }
+    /* Inside a frame nothing acts on a crossing. The first one the frame records is still pending when the next
+       hunt starts and moves the grid on its first symbol: it was measured against the thresholds the warm start
+       set, which are the ones still in force, so it is not the stale crossing #404 removed, only a frame old.
+       Dropping it instead was measured worse on a real NXDN capture under -fa (issue #729), so it stays. */
+    if (have_sync != 0) {
         return;
     }
     if (state->jitter < 0) {
@@ -1034,6 +1065,9 @@ rtl_symbol_cache_profile(dsd_state* state, int output_kind, int channel_profile,
         || state->rtl_symbol_cache_symbol_rate_hz != symbol_rate_hz || state->rtl_symbol_cache_levels != levels
         || state->rtl_symbol_cache_generation != generation) {
         rtl_symbol_cache_reset_pending(state);
+        /* The samples cached for the old stream or profile are dropped: symbols are no measure across the seam, also
+           when a flush lands between reads and this refresh, ahead of any take, is the first to meet it (issue #729). */
+        state->symbol_clock_epoch++;
         state->rtl_symbol_cache_output_kind = output_kind;
         state->rtl_symbol_cache_channel_profile = channel_profile;
         state->rtl_symbol_cache_symbol_rate_hz = symbol_rate_hz;
@@ -1099,6 +1133,24 @@ dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]) {
     rtl_symbol_cache_clear(&state);
     out_values[9] = state.rtl_symbol_cache_len + state.rtl_symbol_cache_output_kind + state.rtl_symbol_cache_levels;
     return 10;
+}
+
+/* The symbol clock epoch across RTL cache profile refreshes: a first profile, the same again, and a new stream
+   generation under it. */
+int
+dsd_symbol_test_rtl_flush_epochs(unsigned int out_epochs[3]) {
+    if (!out_epochs) {
+        return 0;
+    }
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    (void)rtl_symbol_cache_profile(&state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL, 3, 4800, 4, 7U);
+    out_epochs[0] = state.symbol_clock_epoch;
+    (void)rtl_symbol_cache_profile(&state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL, 3, 4800, 4, 7U);
+    out_epochs[1] = state.symbol_clock_epoch;
+    (void)rtl_symbol_cache_profile(&state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL, 3, 4800, 4, 8U);
+    out_epochs[2] = state.symbol_clock_epoch;
+    return 3;
 }
 #endif
 
@@ -2130,6 +2182,7 @@ symbol_reset_rtl_fsk_timing_if_needed(dsd_state* state, int output_rate_hz, int 
     state->rtl_fsk_sps_accum = 0;
     state->jitter = -1;
     dsd_symbol_timing_trace_reset(state);
+    dsd_symbol_anchor_reset(state);
     symbol_reset_rtl_fsk_discriminator_slicer(state);
     return 1;
 }
@@ -2228,6 +2281,7 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
             return 0;
         }
         work->rtl_span_restart = 1;
+        state->symbol_clock_epoch++; /* the stream flushed: symbols are no measure across it */
         symbol_refresh_rtl_profile_after_take(state, work, cache_status);
         if (!work->rtl_fsk_discriminator_output) {
             return 0;
@@ -2578,6 +2632,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
             return -1;
         }
 
+        state->symbol_clock_epoch++; /* the stream flushed: symbols are no measure across it */
         symbol_refresh_rtl_profile_after_take(state, work, cache_status);
         if (!work->rtl_symbol_rate_output) {
             break;
@@ -2598,6 +2653,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
     }
     dsd_symbol_history_push(state, work->sample);
     state->symbolcnt++;
+    symbol_clock_tick(opts, state);
     symbol_maybe_publish_rtl_input_level(opts, state);
     return 1;
 }
@@ -2728,6 +2784,8 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
                 *symbol_out = -1.0f;
                 return 1;
             }
+            /* The capture starts over: its symbols do not follow the last pass's (issue #729). */
+            state->symbol_clock_epoch++;
             if (replay_retry_count++ == 0) {
                 continue;
             }
@@ -2824,6 +2882,7 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
     }
 
     const int previous_delay = seam->delay;
+    const int previous_kind = seam->kind;
     const int delay = dsd_sps_filter_group_delay(kind, sps);
     seam->kind = (int)kind;
     seam->sps = sps;
@@ -2832,11 +2891,16 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
     /* The sample in hand is the newest the history holds, unless a hand-back is
        still being read out, in which case those come after it. */
     const int newer_than_in_hand = seam->replay;
+    /* Whether the samples an anchor recorded still line up with those to come (symbol_anchor.c): a new filter shapes
+       them differently, and a rewind the history cannot cover skips content. A fractional rate alternating
+       samplesPerSymbol, and the group delay with it, moves nothing, and keeps the anchor's history. */
+    int anchor_stale = (int)kind != previous_kind;
     if (delay < previous_delay) {
         int rewind = previous_delay - delay;
         const int held_before_in_hand = seam->raw_count - newer_than_in_hand - 1;
         if (rewind > held_before_in_hand) {
             rewind = held_before_in_hand > 0 ? held_before_in_hand : 0;
+            anchor_stale = 1;
         }
         seam->replay = newer_than_in_hand + 1 + rewind;
         seam_prime(seam, kind, sps, seam->replay, delay);
@@ -2860,8 +2924,69 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
     /* The crossing that was pending belonged to the stream that just ended. */
     state->jitter = -1;
     dsd_symbol_timing_trace_reset(state);
+    if (anchor_stale) {
+        dsd_symbol_anchor_reset(state);
+        work->anchor = NULL;
+        return 2;
+    }
     return 1;
 }
+
+/* Picks up a pending anchor move before the symbol's first sample and says whether this symbol records samples; the
+   anchor is in play only around a sync word a protocol named (symbol_anchor.c), otherwise this is one test. Returns
+   the span index the symbol starts from. */
+static int
+symbol_anchor_begin(dsd_state* state, symbol_work_ctx* work) {
+    int i = 0;
+    work->anchor_applied = 0;
+    dsd_symbol_anchor* anchor = (state->symbol_anchor_hot != 0U)
+                                    ? DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR)
+                                    : NULL;
+    if (anchor != NULL) {
+        /* A sync word read inside the frame placed the grid: move it the samples it asked for, a positive measurement
+           (the symbols sit later than the grid) by consuming more samples. The crossing pending from the previous
+           symbol is not acted on as well. */
+        const int slip = dsd_symbol_anchor_take_slip(anchor);
+        if (slip != 0 && work->symbol_span > 1) {
+            i = -slip;
+            work->anchor_applied = slip;
+            state->jitter = -1;
+        }
+        work->anchor = dsd_symbol_anchor_recording(anchor) ? anchor : NULL;
+        if (!dsd_symbol_anchor_hot(anchor)) {
+            state->symbol_anchor_hot = 0U;
+        }
+    }
+    work->recording = work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE || work->anchor != NULL;
+    return i;
+}
+
+#ifdef USE_RADIO
+/* This sample opens a new stream: every retune and replay RESET bumps the stream generation, which flushes whatever
+   was cached. Averaging it with what the old stream left in this symbol would make the symbol depend on how full the
+   cache happened to be when the flush landed. The caller restarts the span. */
+static void
+symbol_rtl_span_restart(dsd_state* state, symbol_work_ctx* work) {
+    work->rtl_span_restart = 0;
+    work->sum = 0.0f;
+    work->count = 0;
+    if (work->rtl_fsk_discriminator_output && state->samplesPerSymbol > 1) {
+        work->symbol_span = state->samplesPerSymbol;
+    }
+    state->jitter = -1;
+    /* The recorded raw history is from the stream that just ended, so it
+       cannot prime a filter for the one starting here. */
+    seam_forget(&state->matched_filter);
+    seam_note_raw(&state->matched_filter, work->sample);
+    /* Same reasoning for the timing trace: correlating a sync word across a
+       stream seam would measure the flush, not the grid. */
+    dsd_symbol_timing_trace_reset(state);
+    dsd_symbol_anchor_reset(state);
+    work->anchor = NULL;
+    work->anchor_applied = 0;
+    work->timing_samples = 0;
+}
+#endif
 
 /* A while loop rather than a for: the span index is not a plain counter. The
    timing nudge moves it before the first sample is taken, and a stream flush
@@ -2869,7 +2994,7 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
    it reads as one. */
 static int
 symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, symbol_work_ctx* work) {
-    int i = 0;
+    int i = symbol_anchor_begin(state, work);
     while (i < work->symbol_span) {
         symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
         if (!symbol_take_sample_into_history(opts, state, work)) {
@@ -2877,30 +3002,17 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
         }
         /* Before the span-restart check below, so a flush the catch-up runs into
            is handled by it rather than being swallowed here. */
-        if (!symbol_sync_matched_filter_seam(opts, state, have_sync, work)) {
+        const int seam = symbol_sync_matched_filter_seam(opts, state, have_sync, work);
+        if (seam == 0) {
             return 0;
         }
+        if (seam == 2) {
+            i += work->anchor_applied;
+            work->anchor_applied = 0;
+        }
 #ifdef USE_RADIO
-        /* This sample opens a new stream: every retune and replay RESET bumps
-           the stream generation, which flushes whatever was cached. Averaging it
-           with what the old stream left in this symbol would make the symbol
-           depend on how full the cache happened to be when the flush landed. */
         if (work->rtl_span_restart) {
-            work->rtl_span_restart = 0;
-            work->sum = 0.0f;
-            work->count = 0;
-            if (work->rtl_fsk_discriminator_output && state->samplesPerSymbol > 1) {
-                work->symbol_span = state->samplesPerSymbol;
-            }
-            state->jitter = -1;
-            /* The recorded raw history is from the stream that just ended, so it
-               cannot prime a filter for the one starting here. */
-            seam_forget(&state->matched_filter);
-            seam_note_raw(&state->matched_filter, work->sample);
-            /* Same reasoning for the timing trace: correlating a sync word across a
-               stream seam would measure the flush, not the grid. */
-            dsd_symbol_timing_trace_reset(state);
-            work->timing_samples = 0;
+            symbol_rtl_span_restart(state, work);
             i = 0;
         }
 #endif
@@ -2911,14 +3023,25 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
         work->sample =
             dsd_sps_filter_apply((dsd_sps_filter_kind)work->matched_filter_kind, work->sample, state->samplesPerSymbol);
         work->sample = symbol_apply_sync_clip(state, have_sync, work->sample);
-        if (work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE) {
-            dsd_symbol_timing_trace_push_sample(state, work->sample);
-            work->timing_samples++;
+        if (work->recording) {
+            if (work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE) {
+                dsd_symbol_timing_trace_push_sample(state, work->sample);
+                work->timing_samples++;
+            }
+            if (work->anchor != NULL) {
+                dsd_symbol_anchor_push_sample(work->anchor, work->sample, i == state->symbolCenter);
+            }
         }
         symbol_update_jitter(state, work->timing_level, i, work->sample);
         symbol_accumulate_sample(state, work, i, work->sample);
         state->lastsample = work->sample;
         i++;
+    }
+    if (work->anchor != NULL) {
+        dsd_symbol_anchor_end_symbol(work->anchor, work->symbol_span);
+        if (!dsd_symbol_anchor_hot(work->anchor)) {
+            state->symbol_anchor_hot = 0U;
+        }
     }
     if (work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE) {
         dsd_symbol_timing_trace_push_span(state, work->timing_samples);
@@ -2984,6 +3107,7 @@ symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symb
 #endif
     dsd_symbol_history_push(state, symbol);
     state->symbolcnt++;
+    symbol_clock_tick(opts, state);
 #ifdef USE_RADIO
     symbol_maybe_publish_rtl_input_level(opts, state);
 #endif

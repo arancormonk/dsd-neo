@@ -20,6 +20,7 @@ target_sources(
         dmr_flco.c
         dmr_hytera.c
         dmr_le.c
+        dmr_vcrypt.c
         dmr_ms.c
         dmr_pdu.c
         dmr_rc.c

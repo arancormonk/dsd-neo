@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_vcrypt.h"
 
 static int g_stream[4096];
 static size_t g_stream_index;
@@ -196,6 +197,33 @@ dsd_fopen_private(const char* path, const char* mode) {
     (void)mode;
     g_fopen_private_calls++;
     return NULL;
+}
+
+/* The voice crypto continuity is dmr_vcrypt.c's business (issue #729); MS data never decodes voice. */
+void
+dmr_vcrypt_superframe_start(dsd_state* state, uint8_t slot) {
+    (void)state;
+    (void)slot;
+}
+
+void
+dmr_vcrypt_superframe_end(dsd_state* state, uint8_t slot) {
+    (void)state;
+    (void)slot;
+}
+
+void
+dmr_vcrypt_set_frame(dsd_state* state, uint8_t slot, uint8_t vc, uint8_t frame) {
+    (void)state;
+    (void)slot;
+    (void)vc;
+    (void)frame;
+}
+
+void
+dmr_vcrypt_clear_frame(dsd_state* state, uint8_t slot) {
+    (void)state;
+    (void)slot;
 }
 
 void

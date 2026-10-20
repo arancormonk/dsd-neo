@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -182,6 +183,56 @@ dsd_private_stream_mode(const char* mode, char* out, size_t out_size) {
     return 0;
 }
 
+static int
+dsd_private_create_errno(DWORD err) {
+    static const struct {
+        DWORD win_error;
+        int posix_error;
+    } errors[] = {
+        {ERROR_FILE_EXISTS, EEXIST},         {ERROR_ALREADY_EXISTS, EEXIST},
+        {ERROR_FILE_NOT_FOUND, ENOENT},      {ERROR_PATH_NOT_FOUND, ENOENT},
+        {ERROR_INVALID_DRIVE, ENOENT},       {ERROR_ACCESS_DENIED, EACCES},
+        {ERROR_SHARING_VIOLATION, EACCES},   {ERROR_LOCK_VIOLATION, EACCES},
+        {ERROR_TOO_MANY_OPEN_FILES, EMFILE}, {ERROR_DISK_FULL, ENOSPC},
+        {ERROR_HANDLE_DISK_FULL, ENOSPC},    {ERROR_NOT_ENOUGH_MEMORY, ENOMEM},
+        {ERROR_OUTOFMEMORY, ENOMEM},         {ERROR_FILENAME_EXCED_RANGE, ENAMETOOLONG},
+        {ERROR_INVALID_NAME, EINVAL},        {ERROR_INVALID_PARAMETER, EINVAL},
+    };
+
+    for (size_t i = 0; i < sizeof errors / sizeof errors[0]; ++i) {
+        if (errors[i].win_error == err) {
+            return errors[i].posix_error;
+        }
+    }
+    return EIO;
+}
+
+static int
+dsd_private_create_exclusive(const char* path, int flags, int* out_opened) {
+    DWORD access = GENERIC_WRITE;
+    if ((flags & _O_RDWR) != 0) {
+        access |= GENERIC_READ;
+    }
+    /* _open(_O_CREAT | _O_EXCL) follows dangling symlinks on Windows. Claim the final name itself atomically, as
+       POSIX O_CREAT | O_EXCL does, instead of creating a missing link target. */
+    HANDLE handle = CreateFileA(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, CREATE_NEW,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        errno = dsd_private_create_errno(GetLastError());
+        return -1;
+    }
+    if (out_opened) {
+        *out_opened = 1;
+    }
+    int fd = _open_osfhandle((intptr_t)handle, flags & (_O_WRONLY | _O_RDWR | _O_BINARY | _O_TEXT | _O_NOINHERIT));
+    if (fd < 0) {
+        int saved_errno = errno;
+        CloseHandle(handle);
+        errno = saved_errno;
+    }
+    return fd;
+}
+
 FILE*
 dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
     if (out_opened) {
@@ -208,7 +259,8 @@ dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
         return NULL;
     }
 
-    int fd = _open(path, flags, _S_IREAD | _S_IWRITE);
+    int fd = (flags & _O_EXCL) != 0 ? dsd_private_create_exclusive(path, flags, out_opened)
+                                    : _open(path, flags, _S_IREAD | _S_IWRITE);
     if (fd < 0) {
         return NULL;
     }

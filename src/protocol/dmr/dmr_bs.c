@@ -22,6 +22,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
@@ -39,6 +40,7 @@
 #include <time.h>
 #include "dmr_cach.h"
 #include "dmr_confidence.h"
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -72,6 +74,11 @@ typedef struct {
     uint8_t cc;
     uint8_t power;
     short skipcount;
+    /* The slot of the previous burst the loop read, -1 before the first (whose TACT starts the count): bursts
+       alternate slots, so this decides the next one's, not its TACT (issue #729). */
+    int8_t prev_slot;
+    uint8_t tact_disagree;
+    uint8_t tact_agree;
     char timestr[9];
 } dmr_bs_ctx;
 
@@ -102,10 +109,14 @@ init_dmr_bs_ctx(const dsd_state* state, dmr_bs_ctx* ctx) {
     ctx->power = 9;
     ctx->vc1 = 7;
     ctx->vc2 = 7;
+    ctx->prev_slot = -1;
+    /* The bootstrap just read the slot's burst A, so the loop's first burst is the other slot's. */
     if (state->currentslot == 0) {
         ctx->vc1 = 2;
+        ctx->prev_slot = 0;
     } else if (state->currentslot == 1) {
         ctx->vc2 = 2;
+        ctx->prev_slot = 1;
     }
 }
 
@@ -173,6 +184,67 @@ read_dmr_bs_sync_segment(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     ctx->sync[24] = 0;
 }
 
+/* A BS voice sync is the symbol-wise complement of a BS data sync, so the hunt cannot tell a voice burst from a data
+   burst received at the other polarity: an inverted control channel or idle slot reads as voice sync on every burst.
+   A voice superframe carries its sync on burst A alone, and an EMB on B-F, so voice sync on four adjacent bursts in a
+   row (two of each slot), with no slot's EMB ever having opened its voice gate, is never voice. The polarity is the
+   other one: the decoder takes it for the session (the -xr setting, which the menu toggles too) and ends the loop, and
+   the hunt finds the bursts again as what they are. Left alone, the wrong polarity decoded data as voice whenever noise
+   made an EMB look valid, and with a steady symbol grid it never left the loop at all (issue #729). */
+#define DMR_BS_BURST_SYMBOLS      144U
+#define DMR_BS_POLARITY_RUN       4U
+/* How far from one burst after the last sync field the next may end and still be its neighbour: the grid's slips move
+   a sync field by a few symbols, a lost burst by a whole one. */
+#define DMR_BS_ADJACENT_TOLERANCE 12U
+
+/* Counts a voice sync field into the run, which holds only syncs read on adjacent bursts. The run is the state's, not
+   the loop's: identical idle bursts end the loop after two (the redundant-carrier check), and the hunt re-enters it on
+   the next voice sync, so the run is counted across those entries -- the bootstrap's burst too. But a burst the
+   decoder never saw breaks it: on real voice, lost bursts B leave burst A syncs that would otherwise read as a run. */
+static uint8_t
+dmr_bs_note_voice_sync_run(dsd_state* state, int voice_sync) {
+    /* A slot whose gate opened carried EMBs that decoded: the polarity is proved, whatever the syncs look like. */
+    if (!voice_sync || dmr_confidence_voice_slot_open(state, 0U) || dmr_confidence_voice_slot_open(state, 1U)) {
+        state->dmr_voice_sync_run = 0;
+        return 0;
+    }
+    const uint64_t since = state->symbol_clock - state->dmr_voice_sync_clock;
+    const int adjacent = state->dmr_voice_sync_run > 0U && state->dmr_voice_sync_epoch == state->symbol_clock_epoch
+                         && since >= (uint64_t)(DMR_BS_BURST_SYMBOLS - DMR_BS_ADJACENT_TOLERANCE)
+                         && since <= (uint64_t)(DMR_BS_BURST_SYMBOLS + DMR_BS_ADJACENT_TOLERANCE);
+    if (!adjacent) {
+        state->dmr_voice_sync_run = 1;
+    } else if (state->dmr_voice_sync_run < 255U) {
+        state->dmr_voice_sync_run++;
+    }
+    state->dmr_voice_sync_clock = state->symbol_clock;
+    state->dmr_voice_sync_epoch = state->symbol_clock_epoch;
+    return state->dmr_voice_sync_run;
+}
+
+static int
+dmr_bs_polarity_is_inverted(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
+    if (dmr_bs_note_voice_sync_run(state, strcmp(ctx->sync, DMR_BS_VOICE_SYNC) == 0) < DMR_BS_POLARITY_RUN) {
+        return 0;
+    }
+    opts->inverted_dmr = opts->inverted_dmr ? 0 : 1;
+    state->dmr_voice_sync_run = 0;
+    DSD_FPRINTF(stderr, "%s %s DMR: voice sync on every burst is data at the other polarity; decoding %s polarity%s\n",
+                ctx->timestr, KYEL, opts->inverted_dmr ? "inverted" : "normal", KNRM);
+    return 1;
+}
+
+/* The loop reads burst after burst without returning to the frame-sync hunt, the only place the symbol grid used to
+   move, so a call long enough for the transmitter's symbol clock to drift against the sample clock walked the grid off
+   the symbols until a sync was lost (issue #729). A sync word read whole is a known pattern to place the grid on; the
+   EMB of bursts B-F is not, until its FEC passes, and one sync per slot superframe plus every data burst is plenty. */
+static void
+note_dmr_bs_sync_anchor(const dsd_state* state, const dmr_bs_ctx* ctx) {
+    if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) == 0 || strcmp(ctx->sync, DMR_BS_DATA_SYNC) == 0) {
+        dsd_symbol_note_sync_anchor(state, ctx->sync, 24);
+    }
+}
+
 static void
 extract_dmr_bs_sync_from_payload(const dsd_state* state, int payload_offset, char sync[25]) {
     for (int i = 0; i < 24; i++) {
@@ -180,6 +252,33 @@ extract_dmr_bs_sync_from_payload(const dsd_state* state, int payload_offset, cha
         sync[i] = (dibit | 1) + 48;
     }
     sync[24] = 0;
+}
+
+/* A base station's bursts alternate slots, and the loop reads every one of them in turn. The TACT's slot bit is only
+   Hamming(7,4)-protected, a perfect code that decodes two bit errors into a wrong codeword without a word, which would
+   hand the burst to the other slot and leave this slot's VC count a burst behind -- its VC6 then never runs, nor the MI
+   step and late entry with it. Alternation decides, from the burst the bootstrap read. Until two TACTs agree with it,
+   two in a row against it say the start was wrong (the bootstrap's own TACT miscorrected) and move it, so a wrong
+   start costs one burst; once confirmed, TACTs no longer move it, and miscorrections cost nothing. */
+static uint8_t
+dmr_bs_next_slot(dmr_bs_ctx* ctx) {
+    const uint8_t tact_slot = ctx->tact_bits[1] != 0U ? 1U : 0U;
+    if (ctx->prev_slot < 0) {
+        return tact_slot;
+    }
+    const uint8_t expected = (uint8_t)(ctx->prev_slot ^ 1);
+    if (tact_slot == expected) {
+        ctx->tact_disagree = 0;
+        if (ctx->tact_agree < 2U) {
+            ctx->tact_agree++;
+        }
+        return expected;
+    }
+    if (ctx->tact_agree >= 2U || ++ctx->tact_disagree < 2U) {
+        return expected;
+    }
+    ctx->tact_disagree = 0;
+    return tact_slot;
 }
 
 static int
@@ -202,7 +301,8 @@ collect_dmr_bs_cach_and_tact(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) 
         return 0;
     }
 
-    ctx->internalslot = ctx->tact_bits[1];
+    ctx->internalslot = dmr_bs_next_slot(ctx);
+    ctx->prev_slot = (int8_t)ctx->internalslot;
     state->currentslot = ctx->internalslot;
     return 1;
 }
@@ -333,27 +433,46 @@ handle_dmr_bs_frame_sync_miss(const dmr_bs_ctx* ctx, uint8_t* vc1, uint8_t* vc2)
     return DMR_BS_ACTION_CONTINUE;
 }
 
+/* Counts an EMB that did not decode, or named another colour code, on @p slot; returns the misses in a row. */
+static uint8_t
+note_dmr_bs_emb_miss(dsd_state* state, uint8_t slot) {
+    uint8_t* miss = &state->dmr_emb_err[slot];
+    if (*miss < 0xFF) {
+        (*miss)++;
+    }
+    return *miss;
+}
+
+/* A burst on a slot whose voice gate is still closed: not decoded, and the loop ends without a usable EMB or sync. */
+static dmr_bs_action
+skip_dmr_bs_closed_gate_burst(dsd_state* state, dmr_bs_ctx* ctx) {
+    if (ctx->emb_ok != 1 && strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
+        dmr_confidence_reset_slot(state, ctx->internalslot);
+        return DMR_BS_ACTION_END;
+    }
+    increment_dmr_bs_slot_vc(ctx);
+    ctx->tact_okay = 0;
+    ctx->emb_ok = 0;
+    if (ctx->vc1 > 14 || ctx->vc2 > 14) {
+        return DMR_BS_ACTION_END;
+    }
+    return DMR_BS_ACTION_SKIP;
+}
+
 static dmr_bs_action
 check_dmr_bs_emb_and_confidence(dsd_state* state, dmr_bs_ctx* ctx) {
     ctx->emb_ok = QR_16_7_6_decode(ctx->emb_pdu) ? 1 : 0;
 
     if (ctx->emb_ok == 1) {
-        state->dmr_emb_err[ctx->internalslot] = 0;
         ctx->cc = (uint8_t)((ctx->emb_pdu[0] << 3) + (ctx->emb_pdu[1] << 2) + (ctx->emb_pdu[2] << 1) + ctx->emb_pdu[3]);
         ctx->power = ctx->emb_pdu[4];
         state->color_code = ctx->cc;
-    } else {
-        if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
-            uint8_t* miss = &state->dmr_emb_err[ctx->internalslot];
-            if (*miss < 0xFF) {
-                (*miss)++;
-            }
-            if (*miss >= 2) {
-                return DMR_BS_ACTION_END;
-            }
-        } else {
-            state->dmr_emb_err[ctx->internalslot] = 0;
+    } else if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
+        if (note_dmr_bs_emb_miss(state, ctx->internalslot) >= 2) {
+            return DMR_BS_ACTION_END;
         }
+    } else {
+        state->dmr_emb_err[ctx->internalslot] = 0;
     }
 
     int voice_gate_open = dmr_confidence_voice_slot_open(state, ctx->internalslot);
@@ -361,27 +480,22 @@ check_dmr_bs_emb_and_confidence(dsd_state* state, dmr_bs_ctx* ctx) {
         dmr_confidence_result confidence = dmr_confidence_note_voice_burst(state, ctx->internalslot, ctx->cc);
         if (confidence == DMR_CONFIDENCE_REJECT) {
             ctx->emb_ok = 0;
-            dmr_confidence_reset_slot(state, ctx->internalslot);
-            return DMR_BS_ACTION_END;
+            /* On a slot whose gate is open, one EMB naming another colour code is far likelier a QR(16,7,6)
+               miscorrection of a noisy burst than another system: it counts as the EMB miss it is, and only a second
+               in a row ends the loop, as two undecodable EMBs do. Ending on the first dropped the rest of the
+               superframe, and the gate's re-qualification the next one's first bursts (issue #729). */
+            if (note_dmr_bs_emb_miss(state, ctx->internalslot) >= 2 || !voice_gate_open) {
+                dmr_confidence_reset_slot(state, ctx->internalslot);
+                return DMR_BS_ACTION_END;
+            }
+        } else {
+            /* Only an EMB the colour-code check accepted ends a miss streak. */
+            state->dmr_emb_err[ctx->internalslot] = 0;
         }
         voice_gate_open = dmr_confidence_voice_slot_open(state, ctx->internalslot);
     }
 
-    if (voice_gate_open == 0) {
-        if (ctx->emb_ok != 1 && strcmp(ctx->sync, DMR_BS_VOICE_SYNC) != 0) {
-            dmr_confidence_reset_slot(state, ctx->internalslot);
-            return DMR_BS_ACTION_END;
-        }
-        increment_dmr_bs_slot_vc(ctx);
-        ctx->tact_okay = 0;
-        ctx->emb_ok = 0;
-        if (ctx->vc1 > 14 || ctx->vc2 > 14) {
-            return DMR_BS_ACTION_END;
-        }
-        return DMR_BS_ACTION_SKIP;
-    }
-
-    return DMR_BS_ACTION_CONTINUE;
+    return voice_gate_open == 0 ? skip_dmr_bs_closed_gate_burst(state, ctx) : DMR_BS_ACTION_CONTINUE;
 }
 
 static uint8_t
@@ -413,7 +527,7 @@ static void
 handle_dmr_bs_slot_vc6_pre_link(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
     if (ctx->internalslot == 0 && ctx->vc1 == 6) {
         if (state->payload_algid == 0x02) {
-            hytera_enhanced_alg_refresh(state);
+            dmr_vcrypt_hytera_vc6_step(state, 0U);
         }
         DSD_FPRINTF(stderr, "\n");
         dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB, NULL);
@@ -421,7 +535,7 @@ handle_dmr_bs_slot_vc6_pre_link(dsd_opts* opts, dsd_state* state, const dmr_bs_c
 
     if (ctx->internalslot == 1 && ctx->vc2 == 6) {
         if (state->payload_algidR == 0x02) {
-            hytera_enhanced_alg_refresh(state);
+            dmr_vcrypt_hytera_vc6_step(state, 1U);
         }
         DSD_FPRINTF(stderr, "\n");
         dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB, NULL);
@@ -469,12 +583,18 @@ process_dmr_bs_voice_frame(dsd_opts* opts, dsd_state* state, uint8_t internalslo
     store_dmr_bs_processed_audio(state, internalslot, frame_index);
 }
 
+/* Each frame decodes at its position in the superframe (burst @p vc, 1..6), which is where every DMR voice cipher's
+   keystream for it lies, whichever bursts before it the gate skipped or the loop lost (issue #729). */
 static void
-process_dmr_bs_three_voice_frames(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char ambe_fr[4][24],
-                                  char ambe_fr2[4][24], char ambe_fr3[4][24]) {
+process_dmr_bs_three_voice_frames(dsd_opts* opts, dsd_state* state, uint8_t internalslot, uint8_t vc,
+                                  char ambe_fr[4][24], char ambe_fr2[4][24], char ambe_fr3[4][24]) {
+    dmr_vcrypt_set_frame(state, internalslot, vc, 0);
     process_dmr_bs_voice_frame(opts, state, internalslot, ambe_fr, 0);
+    dmr_vcrypt_set_frame(state, internalslot, vc, 1);
     process_dmr_bs_voice_frame(opts, state, internalslot, ambe_fr2, 1);
+    dmr_vcrypt_set_frame(state, internalslot, vc, 2);
     process_dmr_bs_voice_frame(opts, state, internalslot, ambe_fr3, 2);
+    dmr_vcrypt_clear_frame(state, internalslot);
 }
 
 static void
@@ -572,7 +692,7 @@ process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     copy_dmr_bs_voice_frames(ctx->m1, ctx->m2, ctx->m3, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
     apply_dmr_bs_voice_keystream(state, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
-    process_dmr_bs_three_voice_frames(opts, state, ctx->internalslot, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
+    process_dmr_bs_three_voice_frames(opts, state, ctx->internalslot, vc, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
     if (opts->use_dsp_output == 1) {
         write_dmr_bs_dsp_output(opts, state, ctx->internalslot);
@@ -587,6 +707,9 @@ process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
 
     run_dmr_bs_slot_vc6_post_voice(opts, state, ctx);
     collect_dmr_bs_late_entry(opts, state, ctx);
+    if (vc == 6U) {
+        dmr_vcrypt_superframe_end(state, ctx->internalslot);
+    }
     increment_dmr_bs_slot_vc(ctx);
     update_dmr_bs_sync_times_if_tuned(opts, state);
 
@@ -644,7 +767,6 @@ finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
         DSD_FPRINTF(stderr, "| VOICE CACH/EMB ERR");
         DSD_FPRINTF(stderr, "%s", KNRM);
         DSD_FPRINTF(stderr, "\n");
-        dmr_refresh_algids_on_error(opts, state);
         dmr_reset_blocks(opts, state);
     }
 
@@ -764,7 +886,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
         DSD_FPRINTF(stderr, "\n");
     }
 
-    process_dmr_bs_three_voice_frames(opts, state, ctx->internalslot, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
+    process_dmr_bs_three_voice_frames(opts, state, ctx->internalslot, 1U, ctx->ambe_fr, ctx->ambe_fr2, ctx->ambe_fr3);
 
     dmr_late_entry_mi_fragment(opts, state, 1, ctx->m1, ctx->m2, ctx->m3);
 
@@ -810,8 +932,23 @@ process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     }
     DSD_MEMCPY(ctx->redundancyB, ctx->redundancyA, sizeof(ctx->redundancyA));
 
-    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 48, 18, 0, NULL);
+    /* The sync field follows these 18 dibits: the symbol grid records from the last of them, a symbol ahead of the sync
+       word for its shifts to read into, for note_dmr_bs_sync_anchor(). */
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 48, 17, 0, NULL);
+    dsd_symbol_arm_sync_anchor(state);
+    read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 65, 1, 17, NULL);
     read_dmr_bs_sync_segment(opts, state, ctx);
+    if (dmr_bs_polarity_is_inverted(opts, state, ctx)) {
+        /* Not a decode failure: the hunt starts again at the polarity the bursts proved. */
+        ctx->tact_okay = 1;
+        ctx->emb_ok = 1;
+        return DMR_BS_ACTION_END;
+    }
+    note_dmr_bs_sync_anchor(state, ctx);
+    if (strcmp(ctx->sync, DMR_BS_VOICE_SYNC) == 0) {
+        /* Burst A starts the slot's next superframe: catch the MI up over any the loop did not see. */
+        dmr_vcrypt_superframe_start(state, ctx->internalslot);
+    }
     build_dmr_bs_emb_pdu(ctx);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr2, 90, 18, 18, NULL);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx->ambe_fr3, 108, 36, 0, NULL);
@@ -903,6 +1040,10 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     if (!collect_dmr_bs_bootstrap_prefetched_voice(state, &ctx)) {
         goto END;
     }
+    /* The voice sync the hunt just accepted is burst A: the slot's superframe starts here (issue #729), and the
+       burst is one of the polarity run's. */
+    dmr_vcrypt_superframe_start(state, ctx.internalslot);
+    (void)dmr_bs_note_voice_sync_run(state, 1);
 
     dmr_sm_emit_voice_sync(opts, state, ctx.internalslot);
 
@@ -934,7 +1075,6 @@ END:
         DSD_FPRINTF(stderr, "| VOICE CACH/SYNC ERR");
         DSD_FPRINTF(stderr, "%s", KNRM);
         DSD_FPRINTF(stderr, "\n");
-        dmr_refresh_algids_on_error(opts, state);
         dmr_reset_blocks(opts, state);
     }
 }

@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -71,6 +72,7 @@ dmr_maybe_infer_algid_from_key(dsd_state* state, uint8_t slot_idx, unsigned long
             state->payload_algid = dmr_le_key_inferred_algid(state, 0U);
             state->payload_keyid = 0xFF;
             state->payload_mi = mi_final;
+            dmr_vcrypt_note_next_superframe_mi(state, 0U);
         }
         return;
     }
@@ -81,6 +83,7 @@ dmr_maybe_infer_algid_from_key(dsd_state* state, uint8_t slot_idx, unsigned long
         state->payload_algidR = dmr_le_key_inferred_algid(state, 1U);
         state->payload_keyidR = 0xFF;
         state->payload_miR = mi_final;
+        dmr_vcrypt_note_next_superframe_mi(state, 1U);
     }
 }
 
@@ -97,6 +100,29 @@ dmr_print_le_mi_mismatch(unsigned long long old_mi, unsigned long long new_mi, u
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
+/* The MI the late entry of the superframe after @p mi carries: one superframe's step of the slot's cipher. */
+static unsigned long long
+dmr_le_next_superframe_mi(int algid, unsigned long long mi) {
+    switch (algid) {
+        case 0x22: return dmr_des_expand_iv((uint32_t)mi) & 0xFFFFFFFFULL;
+        case 0x24:
+        case 0x25: {
+            uint8_t iv[16];
+            return dmr_aes_expand_iv((uint32_t)mi, iv);
+        }
+        case 0x21: return dmr_mi_advance32((uint32_t)mi);
+        case 0x35:
+        case 0x36:
+        case 0x37: return kirisun_lfsr(mi);
+        default: return mi;
+    }
+}
+
+/* A complete late-entry MI that passed Golay and its CRC4 (issue #729). With no trusted chain on the slot (a late
+   entry, a chain lost on a gap) it is adopted at once, as ever. Against a chain a CRC-checked PI header or an earlier
+   late entry anchored and the superframe clock kept, a disagreeing one is more likely a Golay miscorrection the 4-bit
+   CRC let through (1 in 16) than a wrong chain: it is held, and adopted only when the next superframe's late entry is
+   its successor. */
 static void
 dmr_process_verified_mi_slot(dsd_state* state, uint8_t slot_idx, unsigned long long mi_final, uint8_t mi_crc_ok) {
     unsigned long long* payload_mi = NULL;
@@ -117,15 +143,33 @@ dmr_process_verified_mi_slot(dsd_state* state, uint8_t slot_idx, unsigned long l
         return;
     }
 
+    const int trusted = state->dmr_vc_ref_state[slot_idx] == DMR_VC_REF_VALID && !state->dmr_vc_untrusted[slot_idx];
+    int agrees = mi_crc_ok == 1 && *payload_mi == mi_final;
     if (*payload_mi != mi_final) {
         dmr_print_le_mi_mismatch(*payload_mi, mi_final, mi_crc_ok, slot_number);
         if (mi_crc_ok == 1) {
-            *payload_mi = mi_final;
+            const int confirmed = state->dmr_le_candidate_valid[slot_idx] != 0U
+                                  && dmr_le_next_superframe_mi(algid, state->dmr_le_candidate_mi[slot_idx]) == mi_final;
+            if (!trusted || confirmed) {
+                *payload_mi = mi_final;
+                agrees = 1;
+                state->dmr_le_candidate_valid[slot_idx] = 0U;
+            } else {
+                state->dmr_le_candidate_mi[slot_idx] = mi_final;
+                state->dmr_le_candidate_valid[slot_idx] = 2U; /* expires after the next superframe (dmr_vcrypt.c) */
+                DSD_FPRINTF(stderr, "%s Slot %u Late Entry MI held until the next superframe confirms it%s\n", KCYN,
+                            slot_number, KNRM);
+            }
         }
+    } else if (mi_crc_ok == 1) {
+        state->dmr_le_candidate_valid[slot_idx] = 0U;
     }
 
     // Run expansions afterwards, or LE verification won't match up properly.
     dmr_run_lfsr_for_verified_alg(state, algid);
+    if (agrees) {
+        dmr_vcrypt_note_next_superframe_mi(state, slot_idx);
+    }
 }
 
 static void
@@ -239,6 +283,9 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
     (void)dsd_dmr_apply_forced_algid(state);
 
     //collect our fragments and place them into storage
+    if (vc >= 1U && vc <= 6U) {
+        state->dmr_le_frag_mask[slot_idx] |= (uint8_t)(1U << vc);
+    }
     if (vc < 8) {
         state->late_entry_mi_fragment[slot_idx][vc][0] = (uint64_t)convert_bits_into_output(&ambe_fr[3][0], 4);
         state->late_entry_mi_fragment[slot_idx][vc][1] = (uint64_t)convert_bits_into_output(&ambe_fr2[3][0], 4);
@@ -257,8 +304,11 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
     uint8_t slot = state->currentslot;
     uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
     dsd_dmr_late_entry_result result = {0};
+    /* Only the six bursts of this superframe assemble its MI: with any missing (the gate skipped them, the loop
+       dropped out) the rest of the array is another superframe's, and whatever decodes from the mix is not an MI. */
+    const int complete = (state->dmr_le_frag_mask[slot_idx] & 0x7EU) == 0x7EU;
     const int golay_all_pass =
-        dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[slot_idx][0][0], &result) ? 1 : 0;
+        complete && dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[slot_idx][0][0], &result) ? 1 : 0;
     const unsigned long long int mi_final = result.mi;
     const uint8_t mi_crc_ok = result.crc_ok ? 1U : 0U;
 
@@ -277,22 +327,6 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
         dmr_run_lfsr_for_verified_alg(state, state->payload_algid);
     } else if (slot == 1 && state->payload_algidR != 0) {
         dmr_run_lfsr_for_verified_alg(state, state->payload_algidR);
-    }
-}
-
-void
-dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state) {
-    for (uint8_t slot = 0; slot < 2; slot++) {
-        int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
-        if (algid >= 0x21) {
-            state->currentslot = slot;
-            dmr_alg_refresh(opts, state);
-        } else if (algid == 0x02) {
-            // hytera_enhanced_alg_refresh reads state->currentslot to pick the slot MI.
-            state->currentslot = slot;
-            hytera_enhanced_alg_refresh(state);
-            dmr_alg_refresh(opts, state);
-        }
     }
 }
 
@@ -533,10 +567,18 @@ dmr_sbrc_apply_enc_identifier_slot0(const dsd_opts* opts, dsd_state* state, uint
         DSD_FPRINTF(stderr, "\n");
     }
 
-    state->payload_keyid = key;
-    if (state->payload_algid != alg) {
-        state->payload_algid = alg + 0x20; // assuming DMRA approved alg values (moto patent)
+    /* The SB identifier has only its BPTC FEC: no CRC. It never replaces an identifier a CRC-checked PI header gave
+       the current call (issue #729); it still names one the call has none of, or only an inherited or inferred one. */
+    if (state->dmr_crypto_pi_verified[0] != 0U && (state->payload_algid != alg + 0x20 || state->payload_keyid != key)) {
+        DSD_FPRINTF(stderr, "%s(PI identifier kept)%s ", KCYN, KNRM);
+        return;
     }
+    if (state->payload_algid != alg + 0x20 || state->payload_keyid != key) {
+        /* Another cipher or key than the slot's chain was built for: its MI anchors nothing now (issue #729). */
+        dmr_vcrypt_lose(state, 0U);
+    }
+    state->payload_keyid = key;
+    state->payload_algid = alg + 0x20; // assuming DMRA approved alg values (moto patent)
     // The slot's current call carried this identifier: its values are that call's own now, even when they repeat the
     // ones a call whose terminator was missed left live.
     state->dmr_crypto_inherited[0] = 0U;
@@ -557,10 +599,19 @@ dmr_sbrc_apply_enc_identifier_slot1(const dsd_opts* opts, dsd_state* state, uint
         DSD_FPRINTF(stderr, "\n");
     }
 
-    state->payload_keyidR = key;
-    if (state->payload_algidR != alg) {
-        state->payload_algidR = alg + 0x20; // assuming DMRA approved alg values (moto patent)
+    /* The SB identifier has only its BPTC FEC: no CRC. It never replaces an identifier a CRC-checked PI header gave
+       the current call (issue #729); it still names one the call has none of, or only an inherited or inferred one. */
+    if (state->dmr_crypto_pi_verified[1] != 0U
+        && (state->payload_algidR != alg + 0x20 || state->payload_keyidR != key)) {
+        DSD_FPRINTF(stderr, "%s(PI identifier kept)%s ", KCYN, KNRM);
+        return;
     }
+    if (state->payload_algidR != alg + 0x20 || state->payload_keyidR != key) {
+        /* Another cipher or key than the slot's chain was built for: its MI anchors nothing now (issue #729). */
+        dmr_vcrypt_lose(state, 1U);
+    }
+    state->payload_keyidR = key;
+    state->payload_algidR = alg + 0x20;  // assuming DMRA approved alg values (moto patent)
     state->dmr_crypto_inherited[1] = 0U; // the current call's own, as on slot 0
 }
 

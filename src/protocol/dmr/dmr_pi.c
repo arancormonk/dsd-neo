@@ -11,6 +11,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
@@ -24,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "dmr_hytera.h"
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -296,6 +298,27 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
     }
 }
 
+/* A checked PI header named the slot's cipher and prepared its first superframe's IV/MI (issue #729): the ALG ID and
+   key id are the call's own (an SB identifier does not replace them), and the voice sync that follows the header is
+   superframe 0. A PI naming no cipher the decoder knows checks nothing to keep. */
+static void
+dmr_pi_note_verified_first(dsd_state* state, int checksum_verified) {
+    const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
+    /* Under -F the burst decoder accepts a PI whose CRC failed against the standard mask as RAS: that is no check of its
+       content, and trust comes only from a CRC (or the Hytera checksum) that passed (CRC/FEC provenance). */
+    const int unverified =
+        !checksum_verified && (state->event_crc_invalid[slot] & (DSD_CRC_RAS_UNVERIFIED | DSD_CRC_FAILED)) != 0U;
+    if (unverified || (slot == 0U ? state->payload_algid : state->payload_algidR) == 0) {
+        /* Its fields replaced the slot's ALG ID, key id and MI all the same: whatever trust an earlier PI gave them, and
+           the chain they anchored, are gone. */
+        state->dmr_crypto_pi_verified[slot] = 0U;
+        dmr_vcrypt_lose(state, slot);
+        return;
+    }
+    state->dmr_crypto_pi_verified[slot] = 1U;
+    dmr_vcrypt_note_first(state, slot);
+}
+
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
     const uint8_t MFID = PI_BYTE[1];
@@ -309,6 +332,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x0A && CRCCorrect == 1) { //Kirisun
         dmr_pi_handle_kirisun(state, PI_BYTE);
+        dmr_pi_note_verified_first(state, 0);
         dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG);
         return;
     }
@@ -316,6 +340,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
     if (MFID == 0x68) { //Hytera Enhanced
         dmr_pi_handle_hytera(opts, state, PI_BYTE);
         if (dmr_hytera_checksum(PI_BYTE, 9U) == PI_BYTE[9]) {
+            dmr_pi_note_verified_first(state, 1);
             dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
         }
         return;
@@ -323,6 +348,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x10 && CRCCorrect == 1) { //DMRA
         dmr_pi_handle_dmra(state, PI_BYTE);
+        dmr_pi_note_verified_first(state, 0);
         dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
     }
 }
@@ -331,20 +357,8 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 void
 LFSR64(dsd_state* state) {
     {
-        unsigned long long int lfsr = 0;
-
-        if (state->currentslot == 0) {
-            lfsr = (uint64_t)state->payload_mi;
-        } else {
-            lfsr = (uint64_t)state->payload_miR;
-        }
-
-        uint8_t cnt = 0;
-
-        for (cnt = 0; cnt < 32; cnt++) {
-            unsigned long long int bit = ((lfsr >> 31) ^ (lfsr >> 21) ^ (lfsr >> 1) ^ (lfsr >> 0)) & 0x1;
-            lfsr = (lfsr << 1) | bit;
-        }
+        const unsigned long long int lfsr =
+            dmr_des_expand_iv((uint32_t)(state->currentslot == 0 ? state->payload_mi : state->payload_miR));
 
         if (state->currentslot == 0) {
             DSD_FPRINTF(stderr, "%s", KYEL);

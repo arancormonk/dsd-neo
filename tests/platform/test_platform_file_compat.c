@@ -677,29 +677,47 @@ expect_private_exclusive_create(void) {
     const char* name = "dsd_neo_private_exclusive_test.tmp";
     (void)remove(name);
     int ok = 1;
-    int opened = -1;
-    FILE* fp = dsd_fopen_private_ex(name, "wbx", &opened);
-    ok = ok && fp != NULL && opened == 1;
-    if (fp) {
-        ok = fputs("keep", fp) >= 0 && ok;
-        ok = fclose(fp) == 0 && ok;
+    const char* modes[] = {"wx", "wbx", "w+x", "w+bx"};
+    for (size_t i = 0; i < sizeof modes / sizeof modes[0]; ++i) {
+        int opened = -1;
+        FILE* fp = dsd_fopen_private_ex(name, modes[i], &opened);
+        ok = ok && fp != NULL && opened == 1;
+        if (fp) {
+            ok = fputs("keep\n", fp) >= 0 && ok;
+            if (strchr(modes[i], '+') != NULL) {
+                char buf[16] = {0};
+                ok = dsd_fseek64(fp, 0, SEEK_SET) == 0 && ok;
+                ok = fgets(buf, sizeof buf, fp) != NULL && ok;
+                ok = strcmp(buf, "keep\n") == 0 && ok;
+            }
+            ok = fclose(fp) == 0 && ok;
+        }
+        opened = -1;
+        errno = 0;
+        fp = dsd_fopen_private_ex(name, modes[i], &opened);
+        ok = ok && fp == NULL && errno == EEXIST && opened == 0;
+        if (fp) {
+            (void)fclose(fp);
+        }
+        const char* expected = "keep\n";
+#if DSD_PLATFORM_WIN_NATIVE
+        if (strchr(modes[i], 'b') == NULL) {
+            expected = "keep\r\n";
+        }
+#endif
+        ok = ok && file_text_is(name, expected);
+        ok = remove(name) == 0 && ok;
     }
-    opened = -1;
     errno = 0;
-    fp = dsd_fopen_private_ex(name, "wbx", &opened);
-    ok = ok && fp == NULL && errno == EEXIST && opened == 0;
-    if (fp) {
-        (void)fclose(fp);
-    }
-    ok = ok && file_text_is(name, "keep");
-    errno = 0;
-    fp = dsd_fopen_private(name, "ax");
+    FILE* fp = dsd_fopen_private(name, "ax");
     ok = ok && fp == NULL && errno == EINVAL;
     if (fp) {
         (void)fclose(fp);
     }
-    fp = dsd_fopen_private(name, "wx+");
-    ok = ok && fp == NULL && errno == EEXIST;
+    int opened = -1;
+    errno = 0;
+    fp = dsd_fopen_private_ex("dsd_neo_missing_private_dir/exclusive.tmp", "wbx", &opened);
+    ok = ok && fp == NULL && errno == ENOENT && opened == 0;
     if (fp) {
         (void)fclose(fp);
     }

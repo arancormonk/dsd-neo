@@ -14,6 +14,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -73,6 +74,8 @@ fill_le_fragments_for_mi(dsd_state* state, uint8_t slot, uint32_t mi32) {
             state->late_entry_mi_fragment[slot][4 + row][col] = go_nib;
         }
     }
+    // All six bursts of the superframe delivered their fragments (issue #729: only a complete set decodes).
+    state->dmr_le_frag_mask[slot] = 0x7EU;
 }
 
 static void
@@ -225,28 +228,201 @@ test_verified_mi_updates_existing_slot_mi(void) {
     assert((uint32_t)state.payload_mi == mi);
 }
 
+/* The RC4 32-bit MI step, written out here so the decoder's helpers are checked against it rather than themselves. */
+static uint32_t
+expected_rc4_next(uint32_t mi) {
+    uint64_t lfsr = mi;
+    for (int i = 0; i < 32; i++) {
+        const uint64_t bit = ((lfsr >> 31) ^ (lfsr >> 3) ^ (lfsr >> 1)) & 1U;
+        lfsr = (lfsr << 1) | bit;
+    }
+    return (uint32_t)lfsr;
+}
+
+/* The DES 64-bit IV: the MI, then 32 more bits of the x^32 + x^22 + x^2 + x + 1 recurrence. */
+static uint64_t
+expected_des_iv(uint32_t mi) {
+    uint64_t lfsr = mi;
+    for (int i = 0; i < 32; i++) {
+        const uint64_t bit = ((lfsr >> 31) ^ (lfsr >> 21) ^ (lfsr >> 1) ^ lfsr) & 1U;
+        lfsr = (lfsr << 1) | bit;
+    }
+    return lfsr;
+}
+
 static void
-test_alg_refresh_on_error_refreshes_each_encrypted_slot(void) {
+test_dropout_catch_up_advances_each_encrypted_slot(void) {
+    // Issue #729: the superframe whose VC6 a burst-loop drop-out cost is caught up at the slot's next voice sync, on
+    // each encrypted slot, with its keystream rebuilt; the old error-time refresh guessed one step for RC4 only.
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    state.K1 = 1;
     state.payload_algid = 0x21;
     state.payload_mi = 0x11223344ULL;
     state.DMRvcL = 7;
     state.payload_algidR = 0x22;
     state.payload_miR = 0x55667788ULL;
     state.DMRvcR = 9;
+    state.currentslot = 1;
 
-    dmr_refresh_algids_on_error(&opts, &state);
+    state.symbol_clock = 10000U;
+    for (uint8_t slot = 0; slot < 2; slot++) {
+        dmr_vcrypt_note_first(&state, slot);
+        dmr_vcrypt_superframe_start(&state, slot);
+        assert(state.dmr_vc_ref_state[slot] == DMR_VC_REF_VALID);
+    }
+    // Neither slot's VC6 ran; their next voice syncs arrive one superframe on.
+    state.symbol_clock += DMR_VC_SUPERFRAME_SYMBOLS;
+    dmr_vcrypt_superframe_start(&state, 0);
+    dmr_vcrypt_superframe_start(&state, 1);
 
+    assert((uint32_t)state.payload_mi == expected_rc4_next(0x11223344U));
+    const uint64_t des_iv = expected_des_iv(0x55667788U);
+    assert(state.payload_miN == des_iv);
+    assert((uint32_t)state.payload_miR == (uint32_t)des_iv);
     assert(state.dropL == 256);
     assert(state.dropR == 256);
     assert(state.DMRvcL == 0);
     assert(state.DMRvcR == 0);
     assert(state.currentslot == 1);
+    assert(state.dmr_vc_untrusted[0] == 0U && state.dmr_vc_untrusted[1] == 0U);
+}
+
+static void
+test_incomplete_fragment_set_is_not_an_mi(void) {
+    // Issue #729: the gate skipped a burst (or the loop lost one), so the array mixes two superframes' fragments.
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x34;
+    state.payload_mi = 0x01020304ULL;
+    fill_le_fragments_for_mi(&state, 0, 0xA1B2C3D4U);
+    state.dmr_le_frag_mask[0] = 0x7EU & ~(1U << 2); // VC2 never arrived this superframe
+    dmr_late_entry_mi(&opts, &state);
+    assert((uint32_t)state.payload_mi == 0x01020304U);
+}
+
+static void
+test_late_entry_against_trusted_chain_waits_for_confirmation(void) {
+    // Issue #729: against a chain a PI header anchored, one disagreeing late entry (a Golay miscorrection passes CRC4
+    // one time in 16) is held; the next superframe's late entry, its successor, confirms it.
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x34;
+    state.payload_mi = 0x01020304ULL;
+    state.symbol_clock = 5000U;
+    dmr_vcrypt_note_first(&state, 0);
+    dmr_vcrypt_superframe_start(&state, 0);
+    assert(state.dmr_vc_ref_state[0] == DMR_VC_REF_VALID && state.dmr_vc_untrusted[0] == 0U);
+
+    const uint32_t wrong = 0xA1B2C3D4U;
+    fill_le_fragments_for_mi(&state, 0, wrong);
+    dmr_late_entry_mi(&opts, &state);
+    assert((uint32_t)state.payload_mi == 0x01020304U);
+    assert(state.dmr_le_candidate_valid[0] != 0U);
+
+    const uint32_t successor = expected_rc4_next(wrong);
+    fill_le_fragments_for_mi(&state, 0, successor);
+    dmr_late_entry_mi(&opts, &state);
+    assert((uint32_t)state.payload_mi == successor);
+    assert(state.dmr_le_candidate_valid[0] == 0U);
+}
+
+static void
+test_held_late_entry_mi_expires_and_a_pi_drops_it(void) {
+    // Issue #729: a held late-entry MI is confirmed only by the very next superframe's; one superframe later it has
+    // expired, and a PI that re-keys the slot drops it at once, so neither can overwrite the chain the PI anchored.
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int pi_rekey = 0; pi_rekey <= 1; pi_rekey++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = 0;
+        state.payload_algid = 0x21;
+        state.payload_keyid = 0x34;
+        state.payload_mi = 0x01020304ULL;
+        state.symbol_clock = 5000U;
+        dmr_vcrypt_note_first(&state, 0);
+        dmr_vcrypt_superframe_start(&state, 0);
+
+        const uint32_t wrong = 0xA1B2C3D4U;
+        fill_le_fragments_for_mi(&state, 0, wrong);
+        dmr_late_entry_mi(&opts, &state);
+        assert(state.dmr_le_candidate_valid[0] != 0U);
+        dmr_vcrypt_superframe_end(&state, 0);
+        if (pi_rekey) {
+            dmr_vcrypt_note_first(&state, 0); // a PI header: the slot is re-keyed
+        } else {
+            dmr_vcrypt_superframe_end(&state, 0); // the next superframe's late entry never completed
+        }
+        assert(state.dmr_le_candidate_valid[0] == 0U);
+    }
+}
+
+static void
+test_late_entry_without_trusted_chain_is_adopted_at_once(void) {
+    // A late entrant (no PI header seen, chain unknown) keeps today's immediate adoption, and the chain is trusted
+    // from the next superframe on.
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x34;
+    state.payload_mi = 0x01020304ULL;
+    state.symbol_clock = 7000U;
+    dmr_vcrypt_superframe_start(&state, 0);
+    assert(state.dmr_vc_untrusted[0] == 1U);
+
+    fill_le_fragments_for_mi(&state, 0, 0xA1B2C3D4U);
+    dmr_late_entry_mi(&opts, &state);
+    assert((uint32_t)state.payload_mi == 0xA1B2C3D4U);
+    assert(state.dmr_vc_ref_state[0] == DMR_VC_REF_VALID);
+    dmr_vcrypt_superframe_end(&state, 0);
+    state.symbol_clock += DMR_VC_SUPERFRAME_SYMBOLS;
+    dmr_vcrypt_superframe_start(&state, 0);
+    assert(state.dmr_vc_untrusted[0] == 0U);
+}
+
+static void
+test_kirisun_late_entry_candidate_is_confirmed_by_its_successor(void) {
+    // Kirisun steps its MI with kirisun_lfsr() each superframe: two successive genuine late-entry MIs that disagree
+    // with a stale trusted chain confirm one another (issue #729).
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.payload_algid = 0x36;
+    state.payload_keyid = 0x01;
+    state.payload_mi = 0x01020304ULL;
+    state.symbol_clock = 9000U;
+    dmr_vcrypt_note_first(&state, 0);
+    dmr_vcrypt_superframe_start(&state, 0);
+
+    const uint32_t genuine = 0x5A6B7C8DU;
+    fill_le_fragments_for_mi(&state, 0, genuine);
+    dmr_late_entry_mi(&opts, &state);
+    assert(state.dmr_le_candidate_valid[0] != 0U);
+
+    const uint32_t successor = kirisun_lfsr(genuine);
+    fill_le_fragments_for_mi(&state, 0, successor);
+    dmr_late_entry_mi(&opts, &state);
+    assert(state.dmr_le_candidate_valid[0] == 0U);
 }
 
 static void
@@ -285,7 +461,12 @@ main(void) {
     test_fragment_wrapper_maps_slot2_to_slot1_and_triggers_decode();
     test_forced_algid_preserves_pi_header_keyid();
     test_verified_mi_updates_existing_slot_mi();
-    test_alg_refresh_on_error_refreshes_each_encrypted_slot();
+    test_dropout_catch_up_advances_each_encrypted_slot();
+    test_incomplete_fragment_set_is_not_an_mi();
+    test_late_entry_against_trusted_chain_waits_for_confirmation();
+    test_late_entry_without_trusted_chain_is_adopted_at_once();
+    test_held_late_entry_mi_expires_and_a_pi_drops_it();
+    test_kirisun_late_entry_candidate_is_confirmed_by_its_successor();
     test_alg_refresh_ignores_invalid_current_slot();
 
     printf("DMR LE infer algid: OK\n");

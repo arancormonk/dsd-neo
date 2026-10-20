@@ -10,10 +10,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-void dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state);
+/* A dmrBS drop-out costs a slot the VC6 whose MI step Hytera Enhanced takes; the slot's next voice sync takes the step
+   it missed (issue #729, which replaced the error-time refresh this test first covered). Both voice syncs here are one
+   superframe apart on one continuous timeline. */
+static void
+run_dropout(dsd_state* state, uint8_t slot) {
+    state->symbol_clock = 20000U;
+    dmr_vcrypt_note_first(state, slot);
+    dmr_vcrypt_superframe_start(state, slot);
+    state->symbol_clock += DMR_VC_SUPERFRAME_SYMBOLS;
+    dmr_vcrypt_superframe_start(state, slot);
+}
 
 static unsigned long long int
 hytera_expected_next_mi(unsigned long long int mi_value) {
@@ -57,13 +68,14 @@ test_slot1_hytera_refresh_updates_slot1_mi(void) {
     state->payload_miR = 0x0A1B2C3D4EULL;
 
     const unsigned long long int expected_r = hytera_expected_next_mi(state->payload_miR);
-    dmr_refresh_algids_on_error(opts, state);
+    run_dropout(state, 1);
 
     assert(state->payload_mi == 0x0123456789ULL);
     assert(state->payload_miR == expected_r);
-    assert(state->currentslot == 1);
+    assert(state->currentslot == 0);
     assert(state->dropL == 0);
     assert(state->dropR == 256);
+    assert(state->DMRvcR == 0);
 
     free(state);
     free(opts);
@@ -84,13 +96,14 @@ test_slot1_refresh_gate_uses_slot1_algid(void) {
     state->payload_miR = 0x0099887766ULL;
 
     const unsigned long long int expected_l = hytera_expected_next_mi(state->payload_mi);
-    dmr_refresh_algids_on_error(opts, state);
+    run_dropout(state, 0);
 
     assert(state->payload_mi == expected_l);
     assert(state->payload_miR == 0x0099887766ULL);
-    assert(state->currentslot == 0);
+    assert(state->currentslot == 1);
     assert(state->dropL == 256);
     assert(state->dropR == 0);
+    assert(state->DMRvcL == 0);
 
     free(state);
     free(opts);
@@ -100,6 +113,6 @@ int
 main(void) {
     test_slot1_hytera_refresh_updates_slot1_mi();
     test_slot1_refresh_gate_uses_slot1_algid();
-    printf("DMR BS error alg refresh: OK\n");
+    printf("DMR BS drop-out MI catch-up: OK\n");
     return 0;
 }

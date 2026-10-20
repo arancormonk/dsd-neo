@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -19,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -466,6 +468,52 @@ test_pi_dmra_normalizes_aes128_and_expands_iv(void) {
     assert(state.DMRvcL == 0);
 }
 
+/* Under -F the burst decoder hands dmr_pi() a PI whose CRC failed against the standard mask as RAS-accepted: its fields
+   apply as ever, but it checks nothing, so it neither trusts the slot's identifiers nor anchors superframe 0 (issue
+   #729, CRC/FEC provenance). A PI whose CRC passed does both. */
+static void
+test_pi_ras_accepted_header_is_not_verified(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int ras = 0; ras <= 1; ras++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = 0;
+        state.event_crc_invalid[0] = ras ? (uint8_t)DSD_CRC_RAS_UNVERIFIED : 0U;
+        uint8_t pi[10] = {0x04, 0x10, 0x12, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+        dmr_pi(&opts, &state, pi, 1, 0);
+        assert(state.payload_algid == 0x24);
+        assert(state.dmr_crypto_pi_verified[0] == (ras ? 0U : 1U));
+        assert(state.dmr_vc_ref_state[0] == (ras ? (uint8_t)DMR_VC_REF_NONE : (uint8_t)DMR_VC_REF_FIRST));
+    }
+    /* After a verified PI, an unverified one that replaced its fields takes the verification and the chain with it. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    uint8_t verified[10] = {0x04, 0x10, 0x44, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, verified, 1, 0);
+    assert(state.dmr_crypto_pi_verified[0] == 1U && state.dmr_vc_ref_state[0] == DMR_VC_REF_FIRST);
+    state.event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    uint8_t unverified[10] = {0x04, 0x10, 0x45, 0x55, 0x66, 0x77, 0x88, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, unverified, 1, 0);
+    assert(state.payload_keyid == 0x45);
+    assert(state.dmr_crypto_pi_verified[0] == 0U);
+    assert(state.dmr_vc_ref_state[0] == DMR_VC_REF_NONE && state.dmr_vc_untrusted[0] == 1U);
+
+    /* So does one naming a cipher the decoder does not know, which leaves no ALG ID at all: nothing is left to keep, and
+       a later SB identifier must be able to name the call's. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    dmr_pi(&opts, &state, verified, 1, 0);
+    assert(state.dmr_crypto_pi_verified[0] == 1U);
+    uint8_t unknown_alg[10] = {0x65, 0x10, 0x44, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, unknown_alg, 1, 0);
+    assert(state.payload_algid == 0);
+    assert(state.dmr_crypto_pi_verified[0] == 0U);
+    assert(state.dmr_vc_ref_state[0] == DMR_VC_REF_NONE);
+}
+
 static void
 test_pi_dmra_normalizes_rc4_without_iv_expansion(void) {
     static dsd_opts opts;
@@ -848,6 +896,38 @@ test_sbrc_standard_slot1_encryption_identifier_guards(void) {
     assert(state.payload_keyidR == 0x44);
 }
 
+/* An SB naming another cipher or key than the slot's late-entry chain was built for leaves that chain's MI anchoring
+   nothing: the chain is lost (muted until re-keyed) and no held candidate survives, while the fragments collected stay.
+   The same identifier repeated keeps the chain (issue #729). */
+static void
+test_sbrc_identifier_change_loses_the_chain(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int change = 0; change <= 1; change++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_le = 1;
+        state.currentslot = 1;
+        state.dmr_soR = 0x40U;
+        state.payload_algidR = change ? 0x21 : 0x25; /* the SB below names AES-256, key 0x44 */
+        state.payload_keyidR = 0x44;
+        state.dmr_vc_ref_state[1] = DMR_VC_REF_VALID; /* a late entry anchored it: no PI checked the identifier */
+        state.dmr_le_candidate_valid[1] = 2U;
+        state.dmr_le_frag_mask[1] = 0x1EU;
+        load_single_burst_value(&state, 1, (uint16_t)((0x44U << 3U) | 5U));
+        dmr_sbrc(&opts, &state, 0);
+        assert(state.payload_algidR == 0x25);
+        if (change) {
+            assert(state.dmr_vc_ref_state[1] == DMR_VC_REF_NONE);
+            assert(state.dmr_vc_untrusted[1] == 1U);
+            assert(state.dmr_le_candidate_valid[1] == 0U);
+        } else {
+            assert(state.dmr_vc_ref_state[1] == DMR_VC_REF_VALID);
+        }
+        assert(state.dmr_le_frag_mask[1] == 0x1EU);
+    }
+}
+
 static void
 test_sbrc_reverse_channel_commands(void) {
     static dsd_opts opts;
@@ -1022,6 +1102,15 @@ test_le_dmra_pi_replaces_stale_vendor_mode(void) {
 
                 dmr_late_entry_mi_fragment(opts, state, 2U, fr, fr, fr);
                 assert(state->late_entry_mi_fragment[slot][2][0] == 0xFU);
+                // An SB identifier has only its FEC: it does not replace the ALG ID and key id the call's CRC-checked
+                // PI gave it (issue #729), whether standard SB parsing is on or off.
+                load_single_burst_value(state, (uint8_t)slot, 0x225U);
+                dmr_sbrc(opts, state, 0);
+                assert((slot == 0 ? state->payload_algid : state->payload_algidR) == 0x21);
+                assert((slot == 0 ? state->payload_keyid : state->payload_keyidR) == 0x03);
+                // Once a call boundary retires the PI's identifiers, standard SB parsing -- back on now that the
+                // vendor mode is gone -- names the call's cipher when enabled, and leaves it alone when not.
+                dmr_vcrypt_forget(state, (uint8_t)slot);
                 load_single_burst_value(state, (uint8_t)slot, 0x225U);
                 dmr_sbrc(opts, state, 0);
                 assert((slot == 0 ? state->payload_algid : state->payload_algidR) == (enabled ? 0x25 : 0x21));
@@ -1049,6 +1138,8 @@ main(void) {
     test_pi_kirisun_generic_alg_sets_fields();
     test_pi_irrecoverable_error_is_noop();
     test_pi_dmra_normalizes_aes128_and_expands_iv();
+    test_pi_ras_accepted_header_is_not_verified();
+    test_sbrc_identifier_change_loses_the_chain();
     test_pi_dmra_normalizes_rc4_without_iv_expansion();
     test_pi_dmra_native_family_algid_preserves_rc4_id();
     test_pi_dmra_normalizes_des_on_slot1_and_expands_iv();

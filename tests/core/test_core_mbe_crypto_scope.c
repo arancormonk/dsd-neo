@@ -1122,6 +1122,140 @@ test_dmr_des_frames_match_reference(void) {
     return rc;
 }
 
+/* A DMR frame decodes at the position in its superframe its reader publishes (issue #729): the bursts before it that
+   the voice gate skipped, or that a drop-out lost, do not shift the keystream it reads. Each positional cipher's
+   frames 6..17, decoded alone, match the same frames of a superframe decoded whole. */
+static int
+run_positioned_dmr_frames(key_setup_fn setup, int slot, int first, frame_trace* out) {
+    reset_state(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+    setup(&g_state);
+    if (trace_begin() != 0) {
+        return 1;
+    }
+    for (int pos = first; pos < 18; pos++) {
+        g_state.dmr_voice_ks_pos[slot] = pos + 1; /* stored one up: 0 is unpositioned */
+        processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, g_ambe_fr[pos % FIXTURE_FRAMES], NULL);
+    }
+    g_state.dmr_voice_ks_pos[slot] = 0;
+    return trace_end(out);
+}
+
+static int
+test_dmr_positioned_frames_skip_lost_bursts(void) {
+    static const key_case ciphers[] = {{"des", key_dmr_des},
+                                       {"aes128", key_dmr_aes},
+                                       {"rc4", key_dmr_rc4},
+                                       {"hytera bp", key_forced_hytera},
+                                       {"hytera enhanced", key_dmr_hytera_enhanced}};
+    int rc = 0;
+    for (size_t c = 0; c < sizeof(ciphers) / sizeof(ciphers[0]); c++) {
+        for (int slot = 0; slot < 2; slot++) {
+            static frame_trace whole;
+            static frame_trace tail;
+            rc |= run_positioned_dmr_frames(ciphers[c].setup, slot, 0, &whole);
+            rc |= run_positioned_dmr_frames(ciphers[c].setup, slot, 6, &tail);
+            rc |= expect_int("positioned frames decoded", whole.frames, 18);
+            rc |= expect_int("positioned tail decoded", tail.frames, 12);
+            for (int f = 0; f < 12 && f < tail.frames && f + 6 < whole.frames; f++) {
+                if (strcmp(tail.data[f], whole.data[f + 6]) != 0) {
+                    DSD_FPRINTF(stderr, "%s slot %d position %d got %s want %s\n", ciphers[c].name, slot + 1, f + 6,
+                                tail.data[f], whole.data[f + 6]);
+                    rc = 1;
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+/* A direct key loads the same words as the AES key (A1..A4) and the Kirisun/Hytera words (K1..K4). Replacing it between
+   bursts changes the slot's key fingerprint all the same, and the frames after decrypt with the new key: no part of
+   the material may cancel another (issue #729). */
+static void
+key_direct_words(dsd_state* s, int slot, uint64_t base) {
+    const uint64_t words[4] = {base, base ^ 0x1111111111111111ULL, base ^ 0x2222222222222222ULL,
+                               base ^ 0x4444444444444444ULL};
+    s->A1[slot] = s->K1 = words[0];
+    s->A2[slot] = s->K2 = words[1];
+    s->A3[slot] = s->K3 = words[2];
+    s->A4[slot] = s->K4 = words[3];
+}
+
+static int
+test_dmr_direct_key_replacement_regenerates_the_keystream(void) {
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        static frame_trace whole;
+        static frame_trace split;
+        for (int run = 0; run < 2; run++) {
+            reset_state(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+            key_dmr_aes(&g_state);
+            key_direct_words(&g_state, slot, run == 0 ? 0x0F1E2D3C4B5A6978ULL : 0x0123456789ABCDEFULL);
+            if (trace_begin() != 0) {
+                return 1;
+            }
+            for (int pos = 0; pos < 18; pos++) {
+                if (run == 1 && pos == 3) {
+                    key_direct_words(&g_state, slot, 0x0F1E2D3C4B5A6978ULL); /* the next burst's key */
+                }
+                g_state.dmr_voice_ks_pos[slot] = pos + 1;
+                processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, g_ambe_fr[pos % FIXTURE_FRAMES], NULL);
+            }
+            g_state.dmr_voice_ks_pos[slot] = 0;
+            rc |= trace_end(run == 0 ? &whole : &split);
+        }
+        rc |= expect_int("direct key frames decoded", split.frames, 18);
+        for (int f = 3; f < 18 && f < split.frames && f < whole.frames; f++) {
+            if (strcmp(split.data[f], whole.data[f]) != 0) {
+                DSD_FPRINTF(stderr, "direct key slot %d position %d got %s want %s\n", slot + 1, f, split.data[f],
+                            whole.data[f]);
+                rc = 1;
+            }
+        }
+    }
+    return rc;
+}
+
+/* Hytera Enhanced's BS reader steps the MI before the slot's VC6 frames decode (issue #729). A key that changed by then
+   has the keystream generated again for VC6, from this superframe's MI, which the step left aside, not the next one's. */
+static int
+test_dmr_hytera_vc6_regenerates_from_the_superframe_mi(void) {
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        static frame_trace whole;
+        static frame_trace split;
+        rc |= run_positioned_dmr_frames(key_dmr_hytera_enhanced, slot, 0, &whole);
+
+        reset_state(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        key_dmr_hytera_enhanced(&g_state);
+        if (trace_begin() != 0) {
+            return 1;
+        }
+        for (int pos = 0; pos < 18; pos++) {
+            if (pos == 15) {
+                unsigned long long* mi = slot == 0 ? &g_state.payload_mi : &g_state.payload_miR;
+                g_state.dmr_vc6_seed[slot] = *mi;
+                g_state.dmr_vc6_seed_valid[slot] = 1U;
+                *mi ^= 0x5A5A5A5A5AULL; /* the next superframe's */
+                g_state.K1 ^= 1ULL;     /* the slot's key fingerprint moved: the keystream is generated again */
+            }
+            g_state.dmr_voice_ks_pos[slot] = pos + 1;
+            processMbeFrame(&g_opts, &g_state, DSD_VOICE_PROTOCOL_DMR, NULL, g_ambe_fr[pos % FIXTURE_FRAMES], NULL);
+        }
+        g_state.dmr_voice_ks_pos[slot] = 0;
+        rc |= trace_end(&split);
+        rc |= expect_int("hytera vc6 frames decoded", split.frames, 18);
+        for (int f = 15; f < 18 && f < split.frames && f < whole.frames; f++) {
+            if (strcmp(split.data[f], whole.data[f]) != 0) {
+                DSD_FPRINTF(stderr, "hytera vc6 slot %d position %d got %s want %s\n", slot + 1, f, split.data[f],
+                            whole.data[f]);
+                rc = 1;
+            }
+        }
+    }
+    return rc;
+}
+
 /* DMR RC4 decrypts every frame whose C0 the Golay code corrected: three C0 bit errors (mbelib-neo 2.5 counts them per
    TIA-102.BABA-1 5.5, where 2.4 reported fewer) still decode to the frame's own parameters, so the frame decrypts as
    the clean one does, on both slots. */
@@ -1531,6 +1665,9 @@ main(void) {
     rc |= test_p25p1_keystream_read_is_bounded();
     rc |= test_dmr_keystream_read_is_bounded();
     rc |= test_dmr_des_frames_match_reference();
+    rc |= test_dmr_positioned_frames_skip_lost_bursts();
+    rc |= test_dmr_hytera_vc6_regenerates_from_the_superframe_mi();
+    rc |= test_dmr_direct_key_replacement_regenerates_the_keystream();
     rc |= test_dmr_rc4_decrypts_three_c0_errors();
     rc |= test_dmr_rc4_corrected_frames_are_not_repeated();
     rc |= test_amb_capture_replays_as_live();

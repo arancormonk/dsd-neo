@@ -28,6 +28,7 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
@@ -40,7 +41,9 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "symbol_anchor_internal.h"
 #include "test_support.h"
 
 dsd_socket_t
@@ -382,6 +385,51 @@ test_switch_on_while_handing_back_continues_the_position(const char* wav_path) {
     grid_close(&g);
 }
 
+/* A fractional rate alternates samplesPerSymbol, and the filter's group delay with it, under the same filter: the seam
+   keeps the content position, so the samples a sync anchor has recorded still line up and it keeps recording toward
+   the sync word a protocol is about to name. A switch to another filter does reset it: the samples it holds were shaped
+   by the old one (issue #729). */
+static void
+test_fractional_span_keeps_the_sync_anchor(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    grid g;
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, "fractional") == 0);
+    dsd_symbol_arm_sync_anchor(&state);
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, &state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    assert(anchor != NULL);
+    for (int m = 0; m < 12; m++) {
+        state.samplesPerSymbol = (m % 2 == 0) ? SPS + 1 : SPS;
+        (void)getSymbol(&opts, &state, 1);
+        assert(exitflag == 0);
+        assert(dsd_symbol_anchor_recording(anchor));
+    }
+    assert(state.matched_filter.sps == SPS);
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    (void)getSymbol(&opts, &state, 1);
+    assert(!dsd_symbol_anchor_recording(anchor));
+    dsd_state_ext_free_all(&state);
+    grid_close(&g);
+}
+
+/* A move the anchor queued is taken at the next symbol's start. When a seam in that same symbol discards the anchor's
+   samples (a switch to another filter), it discards the move measured on them too: the grid reads on at the content
+   position it had, with no displacement left over (issue #729). */
+static void
+test_filter_switch_drops_the_anchor_move(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    grid g;
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, "anchor move") == 0);
+    dsd_symbol_arm_sync_anchor(&state);
+    dsd_symbol_anchor_test_queue_slip(&state, 1);
+    assert(run_phase(&g, DSD_SYNC_P25P1_POS, DSD_SPS_FILTER_P25, "anchor move") == 0);
+    dsd_state_ext_free_all(&state);
+    grid_close(&g);
+}
+
 typedef struct {
     const char* name;
     void (*run)(const char* wav_path);
@@ -394,6 +442,8 @@ static const seam_case kCases[] = {
     {"shorter", test_switch_to_shorter_filter_continues_the_position},
     {"longer", test_switch_to_longer_filter_continues_the_position},
     {"handing-back", test_switch_on_while_handing_back_continues_the_position},
+    {"fractional-anchor", test_fractional_span_keeps_the_sync_anchor},
+    {"anchor-move", test_filter_switch_drops_the_anchor_move},
 };
 
 /* An optional argument names one case to run alone, for watching it fail. */

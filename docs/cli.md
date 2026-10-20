@@ -1468,6 +1468,10 @@ setting, shown apart from what is received, and it is off by default: then the o
 ## Mode Tweaks & Advanced
 
 - Inversions: `-xx` X2 non‑inverted, `-xr` DMR inverted, `-xd` dPMR inverted, `-xz` M17 inverted
+  - DMR proves its polarity from the bursts (issue #729): a BS voice sync is an inverted data sync, so bursts read at
+    the wrong polarity show as voice sync on every burst (a control channel or idle slot) or as data bursts whose slot
+    type never decodes but whose voice frames do at the other polarity (a call). Either takes the other polarity for
+    the session, with a notice, as `-xr` or the menu toggle would; `-xr` only sets where it starts.
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Analog filter bitmap (advanced): `-v <hex>`, default `0x9`. `0x1` the analog monitor's voice band-pass: 300-3400 Hz,
   which takes every CTCSS tone at least 40 dB down on FM, and a DCS signal about 32 dB (a 200 Hz high-pass on AM); `0x2` a 960 Hz

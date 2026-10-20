@@ -1466,6 +1466,68 @@ except where a published vector is the point. Tests that need time run on the de
 | `TETRA_VOICE_PIPELINE`, `TETRA_VOICE_CODEC` | The speech path against a stand-in decoder (`tests/protocol/tetra/tetra_test_codec.c`) installed with `tetra_voice_set_codec_for_test()`, its samples saying which decode made them: speech starts at a CRC-passed burst, bad frames after it are concealed until a run of four ends it, a stolen half slot's frame is concealed ahead of its speech frame, 240-sample frames leave the output whole 160-sample blocks with the rest carried, a carrier-boundary reset drops the carry and resets the decoder, air-encrypted speech is decrypted at the right key stream bits once it is back in speech frame order, a TEA1 reduced key decrypts its own carrier's speech and no other's, speech starts over at another call or another talker, and the channel, timeslot, encryption, talkgroup and record gates hold back what they should. A decoder that cannot be made, and one whose decodes fail, give one log line each and no audio. `TETRA_VOICE_CODEC` also plays good, CRC-failed and stolen frames through mbelib-neo's decoder and requires exactly the samples a fresh decoder makes of the same frames, before and after a carrier-boundary reset. |
 | `TETRA_PUBLICATION`, `APP_CONTROL_TETRA_VIEW`, `TETRA_FMT_HELPERS` | What the decoder publishes for the frontends (nothing before a block decoded, the timeslot bitmap TN1 first, the algorithms signalling named, the cell's security, the carrier being received through tunes in flight, completed and rolled back, which kind of key applies, never a key, cleared with the state), the rows every frontend shows from it, and the encryption-mode and MM status names. |
 
+### Synthetic DMR signals
+
+`ctest --preset dev-debug -L dmr-synth --output-on-failure` runs the `DMR_SYNTH_*` cases (issue #729). Each one runs
+the helper `dsd-neo_test_dmr_synth_gen` (`tests/protocol/dmr/dmr_synth.c`, not itself a test; its options are in the
+comment at the top of the file), decodes the WAV it writes with `dsd-neo -o null -fs -i <wav> --frame-log <log> -Z`
+and the case's key, and compares the result in `tests/protocol/dmr/dmr_synth_check.cmake`. The decoder output stays
+in `build/<preset>/tests/dmr_synth/<case>/`.
+
+The generator's `-o` and `-e` options take new filenames in its working directory. Directory separators, `..`
+and `:` are rejected, and existing files (including symlinks) are never replaced. Run it in the intended output
+directory; the CTest runner and I/Q fixture builder create a fresh directory for each run. `DMR_SYNTH_OUTPUT_PATHS`
+checks both output options against traversal, absolute paths, Windows drive/stream paths and existing files.
+Rejected paths must also leave nonexistent destinations absent, including paths into existing subdirectories;
+ordinary filenames with spaces, leading dots and multiple extensions remain valid.
+
+The CodeQL 2.27.2 `cpp/path-injection` reports
+[#2779](https://github.com/arancormonk/dsd-neo/security/code-scanning/2779) and
+[#2780](https://github.com/arancormonk/dsd-neo/security/code-scanning/2780) are false positives for these two options.
+The query treats the outer `open_output()` call as the file-access sink without accounting for its filename checks.
+Those checks run before the actual open, and exclusive creation prevents following existing or dangling symlinks.
+The alerts are handled individually with the `DMR_SYNTH_OUTPUT_PATHS` evidence; the query remains enabled.
+
+What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as raised-cosine 4FSK discriminator audio
+(alpha 0.2) with white Gaussian noise and an optional symbol-clock offset; CACH/TACT, voice superframes (voice sync,
+EMB, embedded LC), voice LC, PI, terminator and idle bursts with their FEC built through the project's decoders, AMBE+2
+voice from mbelib-neo's encoder, DMRA AES-256, AES-128 and RC4 voice with the per-superframe MI advance and late-entry
+MI fragments, and faults placed on a named burst: a lost burst (the redundant-carrier copy that ends the BS frame loop
+exactly there), CACH and sync noise, a wrong colour code, a TACT miscorrected to the other slot, corrupted late-entry
+fragments, and voice superframes lost after the headers. Output is deterministic for a given seed.
+
+The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
+(for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry
+the fragment nibble). The MI/IV LFSRs, the late-entry layout and the RC4 keystream are written independently in the
+generator, so a decoder and generator cannot share a wrong LFSR; only the AES block primitive and the FEC decoders
+used to search parity are the project's. The checker places each decoded frame by the voice burst header printed
+before it and the per-slot burst sequence, re-anchoring by content after an unseen gap, and names every mismatch by
+case, slot, superframe, VC and frame with the expected and decoded value.
+
+What it does not prove: the channel is ideal apart from noise and clock offset (no fading, multipath, frequency
+offset, deviation error or receiver filtering), the signal comes in as discriminator audio rather than I/Q, and only
+the BS path is covered. A pass shows the decoder agrees with an independent model of the standard, not with a real
+radio; `tools/replay_ab.sh` on real captures remains the evidence for decode quality.
+
+| Case | What it pins |
+| --- | --- |
+| `DMR_SYNTH_CLEAR_VOICE` | A clear call decodes exactly, at most the two bursts the voice gate skips at call start missing. |
+| `DMR_SYNTH_AES256_CALL_START`, `DMR_SYNTH_AES128_BOTH_SLOTS` | Every decoded frame of an encrypted call decrypts right from superframe 0 on, on one or both slots. |
+| `DMR_SYNTH_AES256_BURST_LOSS`, `DMR_SYNTH_RC4_BURST_LOSS` | One burst lost at slot 1 superframe 10 VC3: every later frame decrypts right, and every frame from the next superframe's first opened burst on is decoded. |
+| `DMR_SYNTH_AES256_LOSS_NO_LE` | The same with every later late-entry MI undecodable, so the MI chain has to survive on its own. |
+| `DMR_SYNTH_SLOT_FLIP` | A TACT miscorrected to the other slot mid-call costs at most the flipped burst: no frame after it is muted or garbled on either slot. |
+| `DMR_SYNTH_DRIFT_20PPM`, `DMR_SYNTH_DRIFT_M20PPM` | A 20 s dual-slot clear call at +/-20 ppm and 25 dB SNR: at least 95% of each slot's frames decoded, fewer than 100 AMBE corrections in all, and no BS loop drop-out before the end. |
+| `DMR_SYNTH_PI_FIRST_SUPERFRAME_LOST` | PI header decoded, first superframe faded out: frames may be muted until the MI is known again, never decrypted with a wrong one. |
+| `DMR_SYNTH_INVERTED_VOICE`, `DMR_SYNTH_INVERTED_AES256` | The discriminator audio at the other polarity (`--invert`) and no `-xr`: the decoder proves the polarity from the bursts, and every frame it decodes after that is right. |
+
+The same generator writes the I/Q fixture `dmr_voice_synth` (a clear call on slot 1, colour code 2, slot 2 idle),
+which the DMR voice, MBE capture, voice-chain and float-output cases replay: `tools/build_iq_fixtures.py
+--dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen` regenerates it with the other fixtures (without the
+option the script skips it). The two sigidwiki DMR fixtures, `dmr_voice` and `dmr_t3_cc`, are control channels received
+at inverted polarity; before issue #729 `-fs` read their data bursts as voice, and the old voice cases pinned that.
+`DECODE_IQ_DMR_T3_CC` and `DECODE_IQ_DMR_POLARITY_AUTO` now pin what they are: CSBK and idle bursts on colour code 1,
+found at the polarity the decoder proves, with no voice burst decoded.
+
 ### MBE capture checks (issue #661)
 
 `DECODE_IQ_MBE_CAPTURE_*` (CTest labels `iq-decode` and `mbe-capture`) replay a voice fixture with
@@ -1605,7 +1667,7 @@ that added them:
 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real`, `-n 50`, audible from -40 dBFS | captured 6000 ms, audible 4200 ms, in-band 18.4 dB, RMS -32.8 dBFS | captured ≥ 5800, audible ≥ 3500, in-band ≥ 14, RMS ≤ -25 dBFS |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 1700 ms from 460 ms, in-band 23.7 dB | captured ≥ 3900, audible ≥ 1200, first audible 250 to 1000 ms, in-band ≥ 18 |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3100 ms, in-band 25.5 dB | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20 |
-| `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | RMS -23.9 dBFS, no clipping: the level `dmr_voice` decodes to (-24.9 dBFS RMS) within 1 dB | captured ≥ 5800, RMS -27.9 to -21.9 dBFS (DMR voice ±3 dB), clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | RMS -23.9 dBFS, no clipping: the -24.9 dBFS RMS speech target (see below) within 1 dB | captured ≥ 5800, RMS -27.9 to -21.9 dBFS (DMR voice ±3 dB), clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | RMS -23.9 dBFS, no clipping | captured ≥ 7800, `PARITY_NFM_REAL`'s window, clip 0 |
 | `DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL` | `nfm_ctcss_real` under `-fA`, the `-6` raw WAV (issue #643) | raw WAV RMS -28.9 dBFS, peak -13.9 dBFS, no clipping: the monitor's 1/pi-scale samples at the level a PCM input at the reference has (before the fix: every sample 0) | raw WAV RMS ≥ -32 dBFS |
 | `DECODE_IQ_ANALOG_RAW_WAV_AM_REAL` | `am_airband_real` under `-fM`, the `-6` raw WAV | raw WAV RMS -18.3 dBFS, peak -4.5 dBFS, no clipping (before the fix: -117.8 dBFS, samples of -1, 0 and 1) | raw WAV RMS ≥ -21.5 dBFS |
@@ -1673,8 +1735,9 @@ When a later change adds a bound or a new kind of check to the host, add a negat
 
 A few things about these numbers. Since issue #518 the default monitor chain is the voice band-pass (300-3400 Hz,
 `-v 0x9`; its FM high-pass takes every CTCSS tone 40 dB down and a DCS signal about 32 dB) and the analog AGC (`-n 0`), which takes a
-steady tone's peaks to -10 dBFS and real speech to about the level digital voice decodes to: `dmr_voice` plays at
--24.9 dBFS RMS, `nfm_ctcss_real` and `am_airband_real` at -23.9 dBFS each, where the old chain played them at -44.6
+steady tone's peaks to -10 dBFS and real speech to about the level digital voice decodes to: the DMR voice path played
+the `dmr_voice` capture at -24.9 dBFS RMS (that capture later proved to be a control channel received at inverted
+polarity, decoded as voice, issue #729; the figure stays as the speech-level target the window encodes), `nfm_ctcss_real` and `am_airband_real` at -23.9 dBFS each, where the old chain played them at -44.6
 and -53.7 dBFS. Its gain depends on the signal, so a case that measures the excerpt rather than the AGC pins the fixed
 reference gain, `-n 50`, which takes 1 kHz at 3 kHz deviation, or AM at 50%, to -12 dBFS peak (-15 dBFS RMS) live and
 in replay alike; the smoke cases count audible blocks from -40 dBFS there, where the speech stands clear of the quiet

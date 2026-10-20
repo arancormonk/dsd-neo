@@ -440,9 +440,11 @@ for r in $(seq 1 "$reps"); do
     errs=$(grep -a -oE 'Total audio errors: [0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$' || true)
     # Voice frames: lines that label one "Voice", or a ProVoice frame's " VOICE" after its sync, trunked (PV)
     # or conventional (PV_C, which prints its addresses in between), or a D-STAR sync, voice or header, each of
-    # which opens a superframe of 21 AMBE frames. Startup notices that mention voice (the EDACS/ProVoice presets
-    # print two) are not frames.
-    voice=$(grep -a -v '^NOTICE:' "$log" | grep -a -cE 'Voice|Sync: [+-]PV(_C)? .*VOICE|Sync: [+-]DSTAR (VOICE|HEADER)' || true)
+    # which opens a superframe of 21 AMBE frames, or a DMR voice burst ("| VC1".."| VC6", "| VC*" for a
+    # bootstrapped one), either slot. Startup notices that mention voice (the EDACS/ProVoice presets print two) are
+    # not frames, and neither is a DMR Connect Plus activity update naming a "Group Voice" on a timeslot.
+    voice=$(grep -a -v '^NOTICE:' "$log" | grep -a -v 'Activity Update' |
+      grep -a -cE 'Voice|Sync: [+-]PV(_C)? .*VOICE|Sync: [+-]DSTAR (VOICE|HEADER)|Sync: [+-]DMR .*\| VC[1-6*]' || true)
     sync=$(grep -a -cE 'Sync: ' "$log" || true)
     analog=()
     for key in "${analog_keys[@]}"; do

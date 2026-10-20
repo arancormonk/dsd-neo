@@ -37,3 +37,13 @@ dmr_aes_expand_iv(uint32_t mi, uint8_t iv[16]) {
     }
     return ((uint32_t)iv[4] << 24U) | ((uint32_t)iv[5] << 16U) | ((uint32_t)iv[6] << 8U) | iv[7];
 }
+
+uint64_t
+dmr_des_expand_iv(uint32_t mi) {
+    uint64_t lfsr = mi;
+    for (unsigned int i = 0; i < 32U; i++) {
+        const uint64_t bit = ((lfsr >> 31U) ^ (lfsr >> 21U) ^ (lfsr >> 1U) ^ lfsr) & 1U;
+        lfsr = (lfsr << 1U) | bit;
+    }
+    return lfsr;
+}

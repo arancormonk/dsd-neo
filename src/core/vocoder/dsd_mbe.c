@@ -700,7 +700,7 @@ mbe_p25p1_advance_keystream(dsd_state* state) {
 }
 
 static void
-mbe_mute_exhausted_frame(dsd_opts* opts, dsd_state* state, int slot, mbe_frame_ctx_t* frame_ctx) {
+mbe_mute_crypto_frame(dsd_opts* opts, dsd_state* state, int slot, mbe_frame_ctx_t* frame_ctx, const char* reason) {
     float* audio = (slot == 1) ? state->audio_out_temp_bufR : state->audio_out_temp_buf;
     int* errs = (slot == 1) ? &state->errsR : &state->errs;
     int* errs2 = (slot == 1) ? &state->errs2R : &state->errs2;
@@ -708,7 +708,108 @@ mbe_mute_exhausted_frame(dsd_opts* opts, dsd_state* state, int slot, mbe_frame_c
     store_process_result(MBE_STATUS_INVALID_BITS, audio, errs, errs2, err_str, sizeof(state->err_str), NULL);
     frame_ctx->crypto_muted = 1;
     frame_ctx->capture = MBE_CAPTURE_NONE;
-    dsd_frame_logf(opts, "FRAME EVENT slot=%d type=KEYSTREAM_EXHAUSTED action=mute", slot + 1);
+    dsd_frame_logf(opts, "FRAME EVENT slot=%d type=%s action=mute", slot + 1, reason);
+}
+
+static void
+mbe_mute_exhausted_frame(dsd_opts* opts, dsd_state* state, int slot, mbe_frame_ctx_t* frame_ctx) {
+    mbe_mute_crypto_frame(opts, state, slot, frame_ctx, "KEYSTREAM_EXHAUSTED");
+}
+
+/* The position 0..17 in its voice superframe that the DMR reader published for this frame, where every DMR voice
+   cipher's keystream for it lies (issue #729); -1 for other protocols and unpositioned callers, which keep the slot's
+   running counters. */
+static int
+mbe_dmr_frame_pos(const dsd_state* state, const mbe_frame_ctx_t* frame_ctx, int slot) {
+    if (frame_ctx->protocol != DSD_VOICE_PROTOCOL_DMR) {
+        return -1;
+    }
+    const int pos = state->dmr_voice_ks_pos[slot != 0 ? 1 : 0] - 1; /* stored one up: 0 is unpositioned */
+    return (pos >= 0 && pos <= 17) ? pos : -1;
+}
+
+/* A fingerprint of the cipher and key a DMR slot's keystream would be generated with. Whatever writer changes them --
+   a PI header, the keyloader, an autoload, a heal -- a later positioned frame sees a different one and builds the
+   keystream again, rather than reading on in one generated from other material. The low byte is the ALG ID; the rest
+   is one-way (Matyas-Meyer-Oseas): the scalar key starts the chain, then the AES words and the K words each key
+   AES-256 over it in turn, the output XORed in. No word is folded onto another, so material loaded twice (a direct
+   key fills both) cannot cancel. The tag a replaced key leaves behind does not give the key back, and the key-bearing
+   scratch is erased. */
+static uint64_t
+mbe_dmr_key_tag(const dsd_state* state, int slot, int algid) {
+    const int s = slot != 0 ? 1 : 0;
+    uint64_t parts[9] = {
+        s ? state->RR : state->R,
+        state->A1[s],
+        state->A2[s],
+        state->A3[s],
+        state->A4[s],
+        state->K1,
+        state->K2,
+        state->K3,
+        state->K4,
+    };
+    uint8_t material[2][32];
+    uint8_t chain[16] = {'d', 's', 'd', '-', 'n', 'e', 'o', ' ', 'k', 'e', 'y', ' ', 't', 'a', 'g', 0};
+    for (size_t b = 0; b < 8U; b++) {
+        chain[b] ^= (uint8_t)(parts[0] >> (56U - (8U * b)));
+    }
+    for (size_t i = 1; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        for (size_t b = 0; b < 8U; b++) {
+            material[(i - 1U) / 4U][(((i - 1U) % 4U) * 8U) + b] = (uint8_t)(parts[i] >> (56U - (8U * b)));
+        }
+    }
+    uint8_t block[16];
+    for (size_t m = 0; m < 2U; m++) {
+        aes_ofb_keystream_output(chain, material[m], block, DSD_AES_KEY_256, 1); /* E_material(chain) */
+        for (size_t b = 0; b < sizeof(chain); b++) {
+            chain[b] ^= block[b];
+        }
+    }
+    uint64_t tag = 0U;
+    for (size_t b = 0; b < 7U; b++) {
+        tag = (tag << 8U) | chain[b];
+    }
+    tag = (tag << 8U) | (uint8_t)algid;
+    DSD_SECURE_ZERO(parts, sizeof(parts));
+    DSD_SECURE_ZERO(material, sizeof(material));
+    DSD_SECURE_ZERO(block, sizeof(block));
+    DSD_SECURE_ZERO(chain, sizeof(chain));
+    return tag;
+}
+
+/* Whether the slot's keystream was generated from the cipher and key in force. The fingerprint is taken once a burst
+   (signalling and the talkgroup autoload change keys between bursts), at once when the ALG ID moved, and never for a
+   clear slot, whose frames read no keystream. */
+static void
+mbe_dmr_check_key_tag(dsd_state* state, int slot, int pos) {
+    const int algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    const uint8_t burst = (uint8_t)((pos / 3) + 1);
+    uint64_t tag = 0U;
+    if (algid == 0) {
+        state->dmr_ks_tag_burst[slot] = 0U;
+    } else if (burst != state->dmr_ks_tag_burst[slot]
+               || (uint8_t)(state->dmr_ks_key_tag[slot] & 0xFFU) != (uint8_t)algid) {
+        tag = mbe_dmr_key_tag(state, slot, algid);
+        state->dmr_ks_tag_burst[slot] = burst;
+    } else {
+        return;
+    }
+    if (tag != state->dmr_ks_key_tag[slot]) {
+        state->dmr_ks_key_tag[slot] = tag;
+        if (slot == 0) {
+            state->DMRvcL = 0;
+        } else {
+            state->DMRvcR = 0;
+        }
+    }
+}
+
+/* The DMR ciphers whose keystream follows a per-superframe MI. */
+static int
+mbe_dmr_algid_uses_mi(int algid) {
+    return algid == 0x02 || algid == 0x21 || algid == 0x22 || algid == 0x24 || algid == 0x25 || algid == 0x35
+           || algid == 0x36 || algid == 0x37;
 }
 
 static int
@@ -1041,11 +1142,21 @@ mbe_slot_straight_ks_armed(const dsd_state* state) {
     return state->straight_ks == 1 && state->straight_mod > 0;
 }
 
+/* A positioned DMR frame reads the manual keystream where its superframe position puts it (issue #729). */
+static void
+mbe_slot_position_straight_ks(dsd_state* state, int pos) {
+    const int slot = state->currentslot == 1 ? 1 : 0;
+    if (pos >= 0) {
+        state->static_ks_counter[slot] = (state->straight_frame_mode == 1) ? pos : 49 * pos;
+    }
+}
+
 static int
-mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
+mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49], int pos) {
     if (mbe_slot_straight_ks_armed(state)) {
         state->dmr_so = 0;
         state->payload_algid = 0;
+        mbe_slot_position_straight_ks(state, pos);
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
         return 1;
     }
@@ -1053,10 +1164,11 @@ mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
 }
 
 static int
-mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49]) {
+mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49], int pos) {
     if (mbe_slot_straight_ks_armed(state)) {
         state->dmr_soR = 0;
         state->payload_algidR = 0;
+        mbe_slot_position_straight_ks(state, pos);
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
         return 1;
     }
@@ -1192,7 +1304,9 @@ mbeslot_left_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
     if ((dsd_key_hytera_present(state) && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x68)
         || (dsd_key_hytera_present(state) && state->M == 1)) {
-        (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, &state->DMRvcL, frame_ctx->ambe_d);
+        int frame = mbe_dmr_frame_pos(state, frame_ctx, 0);
+        (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, frame >= 0 ? &frame : &state->DMRvcL,
+                                      frame_ctx->ambe_d);
         frame_ctx->slot_keyed[0] = 1;
     }
 }
@@ -1208,7 +1322,9 @@ mbeslot_right_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) 
     if ((dsd_key_hytera_present(state) && state->dmr_soR & 0x40 && state->payload_keyidR == 0
          && state->dmr_fidR == 0x68)
         || (dsd_key_hytera_present(state) && state->M == 1)) {
-        (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, &state->DMRvcR, frame_ctx->ambe_d);
+        int frame = mbe_dmr_frame_pos(state, frame_ctx, 1);
+        (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, frame >= 0 ? &frame : &state->DMRvcR,
+                                      frame_ctx->ambe_d);
         frame_ctx->slot_keyed[1] = 1;
     }
 }
@@ -1216,7 +1332,8 @@ mbeslot_right_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) 
 static void
 mbeslot_left_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR && state->payload_algid == 0x07 && state->straight_ks != 1) {
-        frame_ctx->vertex_ks_applied_l = vertex_key_map_apply_frame49(state, 0, state->R, frame_ctx->ambe_d);
+        frame_ctx->vertex_ks_applied_l = vertex_key_map_apply_frame49_at(
+            state, 0, state->R, mbe_dmr_frame_pos(state, frame_ctx, 0), frame_ctx->ambe_d);
         if (frame_ctx->vertex_ks_applied_l == 1) {
             state->dmr_so &= ~0x40U;
         }
@@ -1231,7 +1348,8 @@ mbeslot_left_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx)
 static void
 mbeslot_right_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     if (frame_ctx->protocol == DSD_VOICE_PROTOCOL_DMR && state->payload_algidR == 0x07 && state->straight_ks != 1) {
-        frame_ctx->vertex_ks_applied_r = vertex_key_map_apply_frame49(state, 1, state->RR, frame_ctx->ambe_d);
+        frame_ctx->vertex_ks_applied_r = vertex_key_map_apply_frame49_at(
+            state, 1, state->RR, mbe_dmr_frame_pos(state, frame_ctx, 1), frame_ctx->ambe_d);
         if (frame_ctx->vertex_ks_applied_r == 1) {
             state->dmr_soR &= ~0x40U;
         }
@@ -1308,9 +1426,13 @@ mbeslot_left_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
         }
     }
 
+    const int pos = mbe_dmr_frame_pos(state, frame_ctx, 0);
+    if (pos >= 0) {
+        state->bit_counterL = (long int)pos * 56L;
+    }
     const int applied = mbeslot_xor_keystream_frame(state->ks_bitstreamL, MBE_SLOT_DES_KS_BITS, &state->bit_counterL,
                                                     frame_ctx->ambe_d);
-    state->DMRvcL++;
+    state->DMRvcL = (pos >= 0) ? pos + 1 : state->DMRvcL + 1;
     return applied;
 }
 
@@ -1342,9 +1464,13 @@ mbeslot_right_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
         }
     }
 
+    const int pos = mbe_dmr_frame_pos(state, frame_ctx, 1);
+    if (pos >= 0) {
+        state->bit_counterR = (long int)pos * 56L;
+    }
     const int applied = mbeslot_xor_keystream_frame(state->ks_bitstreamR, MBE_SLOT_DES_KS_BITS, &state->bit_counterR,
                                                     frame_ctx->ambe_d);
-    state->DMRvcR++;
+    state->DMRvcR = (pos >= 0) ? pos + 1 : state->DMRvcR + 1;
     return applied;
 }
 
@@ -1410,7 +1536,9 @@ mbeslot_left_keystream_start_index(dsd_opts* opts, dsd_state* state, const uint8
     }
     if (state->payload_algid == 0x02) {
         n = 0;
-        hytera_enhanced_rc4_setup(opts, state, state->R, state->payload_mi);
+        /* After the BS reader's VC6 step, the superframe's own MI (issue #729). */
+        hytera_enhanced_rc4_setup(opts, state, state->R,
+                                  state->dmr_vc6_seed_valid[0] ? state->dmr_vc6_seed[0] : state->payload_mi);
     }
     if (state->payload_algid == 0x36) {
         n = 0;
@@ -1436,7 +1564,8 @@ mbeslot_right_keystream_start_index(dsd_opts* opts, dsd_state* state, const uint
     }
     if (state->payload_algidR == 0x02) {
         n = 0;
-        hytera_enhanced_rc4_setup(opts, state, state->RR, state->payload_miR);
+        hytera_enhanced_rc4_setup(opts, state, state->RR,
+                                  state->dmr_vc6_seed_valid[1] ? state->dmr_vc6_seed[1] : state->payload_miR);
     }
     if (state->payload_algidR == 0x36) {
         n = 0;
@@ -1548,10 +1677,14 @@ mbeslot_left_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_c
     if (state->DMRvcL == 0) {
         mbeslot_left_init_keystream(opts, state, aes_key);
     }
+    const int pos = mbe_dmr_frame_pos(state, frame_ctx, 0);
+    if (pos >= 0) {
+        state->bit_counterL = (long int)pos * ((state->payload_algid == 0x02) ? 49L : 56L);
+    }
 
     const int applied = mbeslot_left_apply_keystream_bits(state, frame_ctx);
     DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
-    state->DMRvcL++;
+    state->DMRvcL = (pos >= 0) ? pos + 1 : state->DMRvcL + 1;
     if (applied < 0) {
         return -1;
     }
@@ -1573,10 +1706,14 @@ mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_
     if (state->DMRvcR == 0) {
         mbeslot_right_init_keystream(opts, state, aes_key);
     }
+    const int pos = mbe_dmr_frame_pos(state, frame_ctx, 1);
+    if (pos >= 0) {
+        state->bit_counterR = (long int)pos * ((state->payload_algidR == 0x02) ? 49L : 56L);
+    }
 
     const int applied = mbeslot_right_apply_keystream_bits(state, frame_ctx);
     DSD_SECURE_ZERO(aes_key, sizeof(aes_key));
-    state->DMRvcR++;
+    state->DMRvcR = (pos >= 0) ? pos + 1 : state->DMRvcR + 1;
     if (applied < 0) {
         return -1;
     }
@@ -1605,6 +1742,10 @@ mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     rckey[7] = ((state->payload_mi & 0xFF00) >> 8);
     rckey[8] = ((state->payload_mi & 0xFF) >> 0);
 
+    const int pos = mbe_dmr_frame_pos(state, frame_ctx, 0);
+    if (pos >= 0) {
+        state->dropL = 256 + 7 * pos;
+    }
     if (dmr_ambe49_should_skip_crypto(frame_ctx->ambe_d) == 1) {
         state->dropL += 7;
         return;
@@ -1645,6 +1786,10 @@ mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     rckey[7] = ((state->payload_miR & 0xFF00) >> 8);
     rckey[8] = ((state->payload_miR & 0xFF) >> 0);
 
+    const int pos = mbe_dmr_frame_pos(state, frame_ctx, 1);
+    if (pos >= 0) {
+        state->dropR = 256 + 7 * pos;
+    }
     if (dmr_ambe49_should_skip_crypto(frame_ctx->ambe_d) == 1) {
         state->dropR += 7;
         return;
@@ -1731,6 +1876,31 @@ mbeslot_right_apply_p25p2_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
     unpack_ambe(plain, frame_ctx->ambe_d);
 }
 
+/* Before a positioned DMR frame decrypts (issue #729): a cipher or key that changed since the slot's keystream was
+   generated has it generated again, and a slot whose MI chain is unknown (dmr_vcrypt.c) mutes the frame rather than
+   decrypt it with an MI from another superframe, unless the manual -S keystream replaces the cipher. Returns 1 when
+   the frame was muted. */
+static int
+mbeslot_dmr_gate_positioned(dsd_opts* opts, dsd_state* state, int slot, mbe_frame_ctx_t* frame_ctx) {
+    const int pos = mbe_dmr_frame_pos(state, frame_ctx, slot);
+    if (pos < 0) {
+        return 0;
+    }
+    mbe_dmr_check_key_tag(state, slot, pos);
+    const int algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    if (state->dmr_vc_untrusted[slot] == 0U || !mbe_dmr_algid_uses_mi(algid) || mbe_slot_straight_ks_armed(state)) {
+        return 0;
+    }
+    const int armed = (algid == 0x21 || algid == 0x22)
+                          ? dsd_key_scalar_present(state, slot)
+                          : (slot == 0 ? mbeslot_left_aes_enabled(state) : mbeslot_right_aes_enabled(state));
+    if (!armed) {
+        return 0;
+    }
+    mbe_mute_crypto_frame(opts, state, slot, frame_ctx, "MI_UNKNOWN");
+    return 1;
+}
+
 static void
 mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_vocoder_soft_bit ambe_soft_fr[4][24],
                      mbe_frame_ctx_t* frame_ctx) {
@@ -1751,6 +1921,9 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
         mbeslot_left_apply_basic_privacy(state, frame_ctx);
     }
     mbeslot_left_apply_vertex_standard(state, frame_ctx);
+    if (mbeslot_dmr_gate_positioned(opts, state, 0, frame_ctx)) {
+        return;
+    }
     // Past its keystream the frame is muted, unless the manual -S keystream is armed: it replaces the signalled
     // cipher (and clears the ALG ID) below, as it does on a frame the cipher decrypted.
     if ((mbeslot_left_apply_des(state, frame_ctx) < 0 || mbeslot_left_apply_aes_and_streams(opts, state, frame_ctx) < 0)
@@ -1763,7 +1936,7 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
     if (dmr_owned) {
         mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
     }
-    if (mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d)) {
+    if (mbe_slot_apply_straight_ks_left(state, frame_ctx->ambe_d, mbe_dmr_frame_pos(state, frame_ctx, 0))) {
         frame_ctx->slot_keyed[0] = 1;
         frame_ctx->straight_ks[0] = 1;
     }
@@ -1789,6 +1962,9 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
         mbeslot_right_apply_basic_privacy(state, frame_ctx);
     }
     mbeslot_right_apply_vertex_standard(state, frame_ctx);
+    if (mbeslot_dmr_gate_positioned(opts, state, 1, frame_ctx)) {
+        return;
+    }
     if ((mbeslot_right_apply_des(state, frame_ctx) < 0
          || mbeslot_right_apply_aes_and_streams(opts, state, frame_ctx) < 0)
         && !mbe_slot_straight_ks_armed(state)) {
@@ -1800,7 +1976,7 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
     if (dmr_owned) {
         mbe_apply_vendor_overlays(state, frame_ctx->ambe_d);
     }
-    if (mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d)) {
+    if (mbe_slot_apply_straight_ks_right(state, frame_ctx->ambe_d, mbe_dmr_frame_pos(state, frame_ctx, 1))) {
         frame_ctx->slot_keyed[1] = 1;
         frame_ctx->straight_ks[1] = 1;
     }

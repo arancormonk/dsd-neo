@@ -2213,6 +2213,32 @@ no_carrier_reset_voice_and_audio_metrics(dsd_state* state) {
     mbe_initMbeParms(state->cur_mp2, state->prev_mp2, state->prev_mp_enhanced2);
 }
 
+/* The DMR slots' superframe chains, late-entry assemblies, checked identifiers and polarity evidence (issue #729) are
+   the carrier's: the next one's calls key and prove their own. */
+static void
+forget_dmr_voice_crypto_continuity(dsd_state* state) {
+    for (int slot = 0; slot < 2; slot++) {
+        state->dmr_vc_ref_state[slot] = 0U;
+        state->dmr_vc_ref_clock[slot] = 0U;
+        state->dmr_vc_ref_epoch[slot] = 0U;
+        state->dmr_vc_ref_carrier[slot] = 0U;
+        state->dmr_vc_untrusted[slot] = 0U;
+        state->dmr_voice_ks_pos[slot] = 0;
+        state->dmr_ks_key_tag[slot] = 0U;
+        state->dmr_ks_tag_burst[slot] = 0U;
+        state->dmr_vc6_seed[slot] = 0ULL;
+        state->dmr_vc6_seed_valid[slot] = 0U;
+        state->dmr_le_frag_mask[slot] = 0U;
+        state->dmr_le_candidate_valid[slot] = 0U;
+        state->dmr_le_candidate_mi[slot] = 0ULL;
+        state->dmr_crypto_pi_verified[slot] = 0U;
+    }
+    state->dmr_inverted_voice_evidence = 0U;
+    state->dmr_voice_sync_run = 0U;
+    state->dmr_voice_sync_clock = 0U;
+    state->dmr_voice_sync_epoch = 0U;
+}
+
 static void
 no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dmr_ms_mode = 0;
@@ -2248,6 +2274,7 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dropL = 256;
     state->dropR = 256;
     state->payload_miN = 0;
+    forget_dmr_voice_crypto_continuity(state);
     state->p25vc = 0;
     state->payload_miP = 0;
     DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
@@ -2608,6 +2635,9 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     dmr_le_vendor_reset(state, 1);
     dmr_pi_precall_reset(state, 0);
     dmr_pi_precall_reset(state, 1);
+    // So are the slots' superframe chains and the identifiers a PI header checked: the boundary clears the ALG and key
+    // id they vouched for, and a PI's trust left behind would refuse the next carrier's own SB identifiers.
+    forget_dmr_voice_crypto_continuity(state);
 }
 
 /* With its codes and evidence, step 3 drops every multi-frame assembly the decoders keep in dsd_state that can publish
@@ -2681,6 +2711,9 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     // Nor TETRA decoding: its partial TM-SDUs, its TDMA clock and its speech in progress (the codec's decoder state, the
     // speech's integrity and its unplayed samples).
     tetra_forget_carrier(state);
+    // Nor a span measured on the symbol clock: the symbols the old target produced are not time elapsed on the new one
+    // (a DMR slot's missed superframes, issue #729).
+    state->symbol_clock_epoch++;
 }
 
 void
@@ -3467,7 +3500,11 @@ dsd_engine_cleanup_print_stats(dsd_state* state) {
             LOG_INFO("NOTICE: Runtime: %llu ms\n", (unsigned long long)elapsed_ms);
         }
     }
-    LOG_INFO("NOTICE: Total audio errors: %i\n", state->debug_audio_errors);
+    /* Both slots: a two-slot decoder counts its second slot's corrections apart (issue #729). */
+    LOG_INFO("NOTICE: Total audio errors: %i\n", state->debug_audio_errors + state->debug_audio_errorsR);
+    if (state->debug_audio_errorsR != 0) {
+        LOG_INFO("NOTICE: Audio errors by slot: %i / %i\n", state->debug_audio_errors, state->debug_audio_errorsR);
+    }
     LOG_INFO("NOTICE: Total header errors: %i\n", state->debug_header_errors);
     LOG_INFO("NOTICE: Total irrecoverable header errors: %i\n", state->debug_header_critical_errors);
     LOG_INFO("NOTICE: Exiting.\n");
