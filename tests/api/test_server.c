@@ -17,6 +17,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
@@ -485,10 +486,17 @@ test_feed(void) {
     staged->freq_hz = 851012500;
     staged->access_code_kind = (uint8_t)DSD_ACCESS_CODE_NAC;
     staged->access_code = 0x293U;
+    DSD_SNPRINTF(staged->service_label, sizeof staged->service_label, "%s", "Hospital West");
+    staged->receive_identity.kind = DSD_RECEIVE_NAC;
+    staged->receive_identity.known = 1;
+    staged->receive_identity.value = 0x293U;
     commit_event(state, "Tuned", 12U);
     dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(await_line(c, "event", "\"t_name\":\"Tuned\"", 3000U));
     assert(strstr(g_line, "\"channel\":0,\"freq_hz\":851012500,\"access_code_kind\":2,\"access_code\":659,") != NULL);
+    assert(strstr(g_line, "\"service_label\":\"Hospital West\"") != NULL);
+    assert(strstr(g_line, "\"receive_kind\":3,\"receive_value\":659,\"receive_known\":true,\"receive_slot\":0")
+           != NULL);
     staged->freq_hz = 0;
     staged->access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
     staged->access_code = 0U;
@@ -503,6 +511,17 @@ test_feed(void) {
     dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(await_line(c, "event", "\"freq_hz\":852000000", 3000U));
     assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
+
+    /* A late service identity alone changes the row's digest and reaches subscribers. */
+    DSD_SNPRINTF(untuned->service_label, sizeof untuned->service_label, "%s", "Road crews");
+    untuned->receive_identity.kind = DSD_RECEIVE_RAN;
+    untuned->receive_identity.known = 1;
+    untuned->receive_identity.value = 23;
+    state->event_history_s[0].commit_rev++;
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "event", "\"service_label\":\"Road crews\"", 3000U));
+    assert(strstr(g_line, "\"update\":true") != NULL);
+    assert(strstr(g_line, "\"receive_kind\":2,\"receive_value\":23,\"receive_known\":true") != NULL);
     untuned->access_code_kind = (uint8_t)DSD_ACCESS_CODE_RAN;
     untuned->access_code = 23U;
     state->event_history_s[0].commit_rev++;

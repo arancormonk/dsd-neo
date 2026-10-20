@@ -4,12 +4,17 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 
 #include <ctype.h>
 #include <stddef.h>
@@ -388,7 +393,7 @@ dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
 // matters for the standalone mode.)
 int
 dsd_call_state_protocol_voice_is_anonymous(int protocol) {
-    return DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_PROVOICE(protocol);
+    return DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_PROVOICE(protocol) || protocol == DSD_SYNC_ANALOG;
 }
 
 // Protocol capability, kept beside voice_is_anonymous for the same reason. The question this
@@ -612,9 +617,13 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     const double now_m = call_state_observed_m(observation->observed_m);
-    const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
+    dsd_receive_identity received;
+    dsd_receive_identity_current(state, observation->protocol, observation->slot, &received);
+    const int service_changed = dsd_receive_identity_changed(&snapshot->receive_identity, &received);
+    const int begins_epoch = service_changed || call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
-    const int reacquires_ended_epoch = begins_epoch && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
+    const int reacquires_ended_epoch =
+        begins_epoch && !service_changed && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
     // Copied out of the locked region for the reacquire hook: the hook runs protocol code and
     // must not execute under the canonical lock. Every read is dominated by the begins_epoch
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
@@ -647,6 +656,9 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         ext->events[slot].notice_target_id = 0U;
         ext->events[slot].notice_kind = DSD_CALL_KIND_UNKNOWN;
         ext->events[slot].notice_handled = 0U;
+    }
+    if (begins_epoch || received.known) {
+        snapshot->receive_identity = received;
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
     call_state_apply_observation(snapshot, observation);
@@ -1364,3 +1376,34 @@ dsd_call_state_test_set_epoch(dsd_state* state, uint8_t slot, uint64_t epoch) {
     return 1;
 }
 #endif
+
+void
+dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (call->phase == DSD_CALL_PHASE_ACTIVE) {
+        dsd_receive_identity identity;
+        dsd_receive_identity_current(state, call->protocol, slot, &identity);
+        if (dsd_receive_identity_changed(&call->receive_identity, &identity)) {
+            dsd_call_state_ext_unlock(ext);
+            (void)dsd_call_state_end_ex(state, slot, 0.0, DSD_CALL_END_EXPLICIT);
+            return;
+        }
+        call->receive_verdict = (uint8_t)dsd_receive_policy_match(&opts->receive, &identity);
+        if (!dsd_receive_identity_changed(&call->receive_identity, &identity)) {
+            if (identity.known) {
+                call->receive_identity = identity;
+            }
+            DSD_SNPRINTF(call->service_label, sizeof(call->service_label), "%s",
+                         dsd_receive_service_name(&opts->receive.names, &call->receive_identity));
+        }
+    }
+    dsd_call_state_ext_unlock(ext);
+}

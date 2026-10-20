@@ -203,7 +203,8 @@ committed to the event history.
 ```json
 {"type":"call","seq":12,"slots":[
   {"slot":0,"state":2,"name":"Dispatch","tg_text":"101","src_text":"Unit 7",
-   "channel":"Site 1","tg_id":101,"elapsed_ms":1815,"kid":0,"algid":0,
+   "channel":"Site 1","service_label":"Hospital","receive_kind":3,
+   "receive_value":659,"receive_known":true,"tg_id":101,"elapsed_ms":1815,"kid":0,"algid":0,
    "emergency":false,"priority":0,"enc":false,
    "frequency_hz":851375000,"protocol":2,"kind":2,"ota_source_id":7}]}
 ```
@@ -211,6 +212,8 @@ committed to the event history.
 `state` is a `DSD_APP_CALL_LINE_*` value (`1` idle, `2` active, `3` ended); a
 slot with nothing to show is omitted. The fields are documented in
 [`include/dsd-neo/app_control/call_view.h`](../include/dsd-neo/app_control/call_view.h).
+`service_label` is the name selected by the validated received identifier; `channel`
+keeps the base channel label. Receive identity fields use the same values as event rows below.
 
 ### `event`: event history rows (alpha tags, aliases, system info)
 
@@ -248,6 +251,8 @@ not the history from before.
 | `event`, `internal` | The event text, and DSD-neo's own notices. |
 | `enc`, `enc_alg`, `enc_key`, `mi` | Encryption indicators: the algorithm, the key **id** and the over-the-air MI, never key material. |
 | `channel`, `channel_label` | Trunk channel number and named scan channel. |
+| `service_label` | Name selected by the received access code, CTCSS/DCS tone or slot. Empty when no naming rule matches; the base channel label and permanent target ID do not change. Completed rows keep their name. |
+| `receive_kind`, `receive_value`, `receive_known`, `receive_slot` | Validated service identity, separate from the older `access_code_kind` enum. Kind: `0` slot, `1` DCC, `2` RAN, `3` NAC, `4` CTCSS, `5` DCS, `6` none. Value is decimal (NAC `293` is `659`), CTCSS in tenths of Hz, or canonical DCS code multiplied by two plus polarity (`0` normal, `1` inverted). `receive_known` is a boolean; an unknown value is not an admission match. `receive_slot` is `1`/`2` for TDMA, `0` for FDMA or analog. The `call` message uses its existing zero-based `slot` instead. |
 | `freq_hz` | Frequency in Hz the call was heard on, `0` when unknown: the call's own frequency (a grant's channel, the voice channel a trunking receiver followed) when it has one, else the receiver's tuned frequency as it stood when the call was first seen live. Off a radio input (rigctl on an audio input included) and under `--playfiles`, only the call's own frequency is recorded. |
 | `access_code_kind`, `access_code` | The access code the call was heard with. `access_code_kind`: `0` none known, `1` colour code (DMR 0-15, dPMR 0-63), `2` P25 NAC (Phase 1 or 2), `3` NXDN RAN, `4` M17 CAN; these values never change. `access_code` is the code (decimal; NAC 0x293 is `659`) and means nothing when the kind is `0`. Taken while the call is live, from decodes the protocol checked (a CRC or FEC; for a dPMR colour code the call's confirmation; for a P25 Phase 2 NAC a burst descrambled with it that passed its check, or a network status broadcast naming it, on the carrier the call is on; a call carried only by unscrambled control bursts records none), and frozen once it has ended; never taken under `--playfiles`. An NXDN IDAS (Type-D) or DCR call has none: neither carries a RAN. |
 | `event_time`, `event_start_time` | Unix time of the last activity and of the start. |
@@ -461,7 +466,8 @@ field, and the decoder refuses the rest when it applies the command.
 | `nfm_bandwidth_set` | `{value:Hz 8000..25000, 0=default}` |
 | `am_bandwidth_set` | `{value:Hz 5000..20000, 0=default}` |
 | `tone_filter_set` | `{mode:0\|1\|2,list,keep_list}` |
-| `scan_row_edit` | `{scanner,session,row,mode,target_id,field,action,squelch_db,squelch_mode,squelch_margin_db,width_hz,tone_mode,tone_list,gain_db}` |
+| `receive_set` | `{kind:0..4,enabled:0\|1,allow,block,names}` |
+| `scan_row_edit` | `{scanner,session,row,mode,target_id,field,action,squelch_db,squelch_mode,squelch_margin_db,width_hz,tone_mode,tone_list,gain_db,receive:{kind,enabled,allow,block,names}}` |
 | `pulse_out_set` | `{value:name, <=99 bytes}` |
 | `pulse_in_set` | `{value:name, <=99 bytes}` |
 | `input_vol_set` | `{value:mult 1..16}` |
@@ -530,12 +536,26 @@ field, and the decoder refuses the rest when it applies the command.
 * **`tone_filter_set`**: `mode` is `0` off, `1` allow, `2` block; `list` is the
   `/`-separated CTCSS/DCS list. `keep_list:true` changes only the mode and keeps
   the configured list (`list` must then be absent or empty).
+* **`receive_set`**: replaces one configured filter (`kind`: `0` slot, `1` DCC,
+  `2` RAN, `3` NAC), or the complete naming table (`kind:4`). `enabled` is `0`
+  or `1`; `allow` and `block` are slash-separated identifier strings, with NACs
+  in hexadecimal. Block wins; an empty allow list admits any known identifier.
+  `names` uses the shared naming-option grammar, for example
+  `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. Naming alone does not
+  filter. Invalid input rejects the whole edit. A channel override continues to
+  apply until that channel is left. See [Receive filters and service names](cli.md#receive-filters-and-service-names).
 * **`scan_row_edit`**: a session edit of the scan row on air. Quote `scanner`,
   `session`, `row`, `mode` and `target_id` from `status.scan_row`; `field` is one
-  `DSD_SCAN_ROW_FIELD_*` (`1` squelch, `2` width, `4` tone, `8` gain) and `action`
+  `DSD_SCAN_ROW_FIELD_*` (`1` squelch, `2` width, `4` tone, `8` gain,
+  `16` slot filter, `32` DCC, `64` RAN, `128` NAC, `256` service names) and `action`
   one `dsd_scan_row_edit_action` (`1` set, `2` inherit, `3` reset). For a set,
   give the field's value: `squelch_db` (or `squelch_mode` with
-  `squelch_margin_db`), `width_hz`, `tone_mode` with `tone_list`, or `gain_db`.
+  `squelch_margin_db`), `width_hz`, `tone_mode` with `tone_list`, `gain_db`, or
+  a nested `receive` object with the same fields as `receive_set`. A disabled
+  filter overrides an inherited enabled filter; inherit restores the configured
+  default, and reset restores the imported list value. Capture the row context
+  when an editor opens: a moved scan may edit that captured row for its next
+  visit, but a replaced list or session is rejected. These edits do not write CSVs.
   See [`include/dsd-neo/app_control/commands.h`](../include/dsd-neo/app_control/commands.h).
 * **`tg_row_set`**: `fields` is a bitmask (`1` listen, `2` priority, `4` preempt,
   `8` name, `16` tags); fields not in the mask keep their value.

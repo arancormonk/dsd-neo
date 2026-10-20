@@ -13,6 +13,8 @@
 #include <cmath>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
 #include <utility>
 #include "command_bridge.h"
@@ -39,6 +41,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <stdint.h>
 
@@ -593,6 +596,114 @@ CommandBridge::squelchMarginDefaultDb() {
     return DSD_SQUELCH_MARGIN_DEFAULT_DB;
 }
 
+namespace {
+QVariantMap
+receivePolicyMap(const dsd_receive_policy& policy) {
+    QVariantList filters, names;
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        char allow[DSD_RECEIVE_LIST_MAX + 1], block[DSD_RECEIVE_LIST_MAX + 1];
+        (void)dsd_receive_set_format(kind, &policy.filters[kind].allow, allow, sizeof allow);
+        (void)dsd_receive_set_format(kind, &policy.filters[kind].block, block, sizeof block);
+        filters.append(QVariantMap{{"enabled", policy.filters[kind].enabled != 0},
+                                   {"allow", QString::fromUtf8(allow)},
+                                   {"block", QString::fromUtf8(block)}});
+    }
+    for (unsigned int i = 0; i < policy.names.count; i++) {
+        const auto& rule = policy.names.rules[i];
+        char value[32];
+        (void)dsd_receive_value_format(rule.kind, rule.value, value, sizeof value);
+        names.append(QVariantMap{{"kind", qMin(static_cast<int>(rule.kind), 4)},
+                                 {"value", QString::fromUtf8(value)},
+                                 {"name", QString::fromUtf8(rule.name)}});
+    }
+    return {{"filters", filters}, {"names", names}};
+}
+
+QString
+receivePayload(int kind, bool enabled, const QString& allow, const QString& block, const QVariantList& names,
+               dsd_app_receive_payload* out) {
+    *out = {};
+    out->kind = kind;
+    out->enabled = enabled;
+    const QByteArray a = allow.toUtf8(), b = block.toUtf8();
+    if (a.contains('\0') || b.contains('\0') || a.size() >= static_cast<qsizetype>(sizeof out->allow)
+        || b.size() >= static_cast<qsizetype>(sizeof out->block)) {
+        return QStringLiteral("The identifier list is too long or contains a NUL character.");
+    }
+    DSD_MEMCPY(out->allow, a.constData(), static_cast<size_t>(a.size()));
+    DSD_MEMCPY(out->block, b.constData(), static_cast<size_t>(b.size()));
+    dsd_receive_policy checked{};
+    char why[160] = "";
+    if (kind == DSD_RECEIVE_FILTER_COUNT) {
+        for (const QVariant& item : names) {
+            const QVariantMap rule = item.toMap();
+            const QByteArray text =
+                (rule.value("value").toString() + QLatin1Char('=') + rule.value("name").toString()).toUtf8();
+            if (text.contains('\0')
+                || dsd_receive_name_add(&checked.names, rule.value("kind").toInt(), text.constData(), why,
+                                        sizeof why)) {
+                return why[0] ? QString::fromUtf8(why) : QStringLiteral("A name contains a NUL character.");
+            }
+        }
+        if (dsd_receive_names_format(&checked.names, out->names, sizeof out->names) < 0) {
+            return QStringLiteral("The naming table is too long.");
+        }
+    }
+    return dsd_receive_edit_parse(&checked, kind, enabled, out->allow, out->block, out->names, why, sizeof why)
+               ? QString::fromUtf8(why)
+               : QString();
+}
+} // namespace
+
+QVariantMap
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::receiveContext() const {
+    dsd_receive_policy policy{};
+    dsd_scan_mode_configured_receive(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &policy);
+    return receivePolicyMap(policy);
+}
+
+int
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::receiveField(int kind) const {
+    return kind >= 0 && kind <= DSD_RECEIVE_FILTER_COUNT ? DSD_SCAN_ROW_FIELD_SLOT << kind : 0;
+}
+
+QString
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::receiveError(int kind, bool enabled, const QString& allow, const QString& block,
+                            const QVariantList& names) const {
+    dsd_app_receive_payload payload{};
+    return receivePayload(kind, enabled, allow, block, names, &payload);
+}
+
+bool
+CommandBridge::setReceive(int kind, bool enabled, const QString& allow, const QString& block, const QVariantList& names,
+                          const QVariantMap& row, int action) const {
+    dsd_app_receive_payload payload{};
+    if (action == DSD_SCAN_ROW_EDIT_SET && !receivePayload(kind, enabled, allow, block, names, &payload).isEmpty()) {
+        return false;
+    }
+    if (row.value("active").toBool()) {
+        dsd_app_scan_row_edit_payload edit{};
+        edit.scanner = row.value("scanner").toInt();
+        edit.session = static_cast<uint32_t>(row.value("session").toULongLong());
+        edit.row = row.value("row").toInt();
+        edit.mode = row.value("mode").toInt();
+        edit.field = receiveField(kind);
+        edit.action = action;
+        edit.receive = payload;
+        const auto target = row.value("target").toString().toUtf8();
+        if (target.contains('\0') || target.size() >= static_cast<qsizetype>(sizeof edit.target_id)) {
+            return false;
+        }
+        DSD_MEMCPY(edit.target_id, target.constData(), static_cast<size_t>(target.size()));
+        return accepted(dsd_app_command_scan_row_edit(&edit));
+    }
+    return action == DSD_SCAN_ROW_EDIT_SET
+           && accepted(dsd_app_command_submit(DSD_APP_CMD_RECEIVE_SET, &payload, sizeof payload));
+}
+
 QVariantMap
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::scanRowContext() const {
@@ -614,8 +725,10 @@ CommandBridge::scanRowContext() const {
             {"mode", static_cast<int>(view.mode)},
             {"target", QString::fromUtf8(view.target_id)},
             {"label", QString::fromUtf8(view.label)},
+            {"editable", static_cast<int>(view.editable)},
             {"key", QStringLiteral("%1:%2:%3").arg(view.scanner).arg(view.session).arg(view.row)},
             {"toneMode", opts->analog_tone_filter},
+            {"receive", receivePolicyMap(opts->receive)},
             {"toneList", QString::fromUtf8(list)}};
 }
 

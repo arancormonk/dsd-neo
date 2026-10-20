@@ -1,0 +1,6 @@
+channel,frequency_hz,name,mode,options
+1,451400000,Hospital repeater,dmr,--slot-allow 1/2 --dcc-allow 4/6/7 --dcc-block 6 --slot-name '1=Dispatch' --dcc-name '7=Hospital'
+2,451400000,Public works,nxdn48,--ran-allow 0/12 --ran-name '12=Road crews'
+3,851375000,County radio,p25,--nac-allow 293/370 --nac-name '293=County dispatch'
+4,146520000,Traveler,nfm,--tone-name '141.3=20R Traveler' --tone-name 'D023N=Local calling'
+5,154600000,Open reception,dmr,--no-slot-filter --no-dcc-filter --no-service-names

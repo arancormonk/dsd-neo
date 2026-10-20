@@ -29,7 +29,7 @@
 #include "symbol_test_support.h"
 #endif
 
-#define ANALOG_SINK_COUNT 2
+#define ANALOG_SINK_COUNT 3
 
 /* The reception a sink last wrote in: the RTL stream generation (RTL input), the trunk-tuning generation and the PCM
    input stream generation. */
@@ -154,6 +154,15 @@ dsd_analog_sink_note_reception(const dsd_state* state) {
     analog_sink_ext* ext = analog_sink_ext_find(state);
     if (ext) {
         ext->lane[DSD_ANALOG_SINK_MONITOR].gap = 1;
+        ext->lane[DSD_ANALOG_SINK_CALL_WAV].gap = 1;
+    }
+}
+
+void
+dsd_analog_sink_end_call(const dsd_state* state) {
+    analog_sink_ext* ext = analog_sink_ext_find(state);
+    if (ext) {
+        ext->lane[DSD_ANALOG_SINK_CALL_WAV].gap = 1;
     }
 }
 
@@ -229,11 +238,32 @@ analog_sink_emit(analog_sink_ext* ext, analog_sink_lane* lane, const float* buf,
     }
 }
 
+static int
+analog_sink_native(dsd_analog_sink sink, const float* buf, size_t n, double gain, int block_hz,
+                   dsd_analog_sink_write_fn write, const void* ctx) {
+    if (sink != DSD_ANALOG_SINK_CALL_WAV) {
+        return DSD_ANALOG_SINK_NATIVE;
+    }
+    if (!buf || !write || block_hz <= 0) {
+        return DSD_ANALOG_SINK_MUTED;
+    }
+    short output[DSD_ANALOG_SINK_CHUNK];
+    for (size_t pos = 0; pos < n;) {
+        size_t count = n - pos < DSD_ANALOG_SINK_CHUNK ? n - pos : DSD_ANALOG_SINK_CHUNK;
+        for (size_t i = 0; i < count; i++) {
+            output[i] = analog_sink_to_i16((float)(gain * (double)buf[pos + i]));
+        }
+        write(ctx, output, count);
+        pos += count;
+    }
+    return DSD_ANALOG_SINK_WROTE;
+}
+
 int
 dsd_analog_sink_write(const dsd_opts* opts, dsd_state* state, dsd_analog_sink sink, const float* buf, size_t n,
                       double gain, int block_hz, int sink_hz, dsd_analog_sink_write_fn write, const void* ctx) {
     if (block_hz == sink_hz) {
-        return DSD_ANALOG_SINK_NATIVE;
+        return analog_sink_native(sink, buf, n, gain, block_hz, write, ctx);
     }
     if (!opts || !state || !buf || !write || (int)sink < 0 || (int)sink >= ANALOG_SINK_COUNT) {
         return DSD_ANALOG_SINK_MUTED;

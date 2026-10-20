@@ -35,6 +35,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -1383,6 +1384,10 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
         return 1;
     }
+    if (!state->lcn_scan_hold
+        && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s())) {
+        return dsd_engine_channel_scan_has_other_row(opts, state);
+    }
     const int tone_gate = dsd_scan_analog_tone_gate(opts, state);
     /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor
      * nor waits it out, but moves on at this pass. The caller still lets an operator hold keep the row, muted. A list
@@ -2546,13 +2551,32 @@ no_carrier_reset_ysf_and_dstar_strings(dsd_state* state) {
 // within the reacquisition window and on a different channel, be folded into its history row.
 static void
 no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state, int retuned) {
+    if (retuned) {
+        dsd_engine_analog_call_end(opts, state);
+    } else {
+        dsd_engine_analog_call_tick(opts, state);
+    }
     const dsd_call_end_reason reason = retuned ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS;
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         const uint8_t call_slot = (uint8_t)slot;
+        if (slot == 0 && dsd_engine_analog_call_active(state)) {
+            continue;
+        }
         if (dsd_call_state_end_ex(state, call_slot, 0.0, reason) > 0) {
             dsd_event_sync_slot(opts, state, call_slot);
         }
     }
+}
+
+void
+dsd_engine_receive_policy_boundary(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    dsd_p25p2_playout_note_policy(opts, state);
+    dsd_p25p2_playout_drain(opts, state);
+    no_carrier_finalize_canonical_calls(opts, state, 1);
+    no_carrier_close_mbe_outputs_if_needed(opts, state);
 }
 
 /* Whether a boundary of @p kind can run while the P25 or DMR state machine ticks, so that it must hold the P25 SM tick
@@ -3139,6 +3163,11 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             state->synctype = DSD_SYNC_NONE;
             break;
         }
+        if (opts->scanner_mode == 1 && !state->lcn_scan_hold && dsd_engine_channel_scan_has_other_row(opts, state)
+            && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s())) {
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
             dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_decode_now_mono_s());
             if (dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())) {
@@ -3294,6 +3323,8 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         dsd_runtime_pump_controls(opts, state);
+        /* An interrupted idle read skips noCarrier(), but a stalled NFM call still expires. */
+        dsd_engine_analog_call_tick(opts, state);
         if (dsd_engine_signal_search_tick(opts, state)) {
             dsd_sleep_ms(2);
             continue;
@@ -3415,6 +3446,7 @@ dsd_engine_cleanup_watchdog_snapshots(dsd_opts* opts, dsd_state* state) {
    for a reacquisition that can no longer happen. Repeating it finds nothing left to do. */
 static void
 dsd_engine_finalize_calls(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_analog_call_end(opts, state);
     dsd_engine_cleanup_watchdog_snapshots(opts, state);
     noCarrier(opts, state);
     dsd_engine_cleanup_watchdog_snapshots(opts, state);

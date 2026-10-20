@@ -28,6 +28,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
@@ -874,6 +875,9 @@ void
 MetricsModel::fillScanRow(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_app_scan_row_view row{};
     (void)dsd_app_scan_row_view_get(opts_snapshot, snapshot, &row);
+    char receive_status[192];
+    dsd_app_receive_status_text(opts_snapshot, snapshot, receive_status, sizeof receive_status);
+    next.receive_status = QString::fromUtf8(receive_status);
     next.scan_row_active = row.active != 0;
     next.scan_row_label = row.active ? QString::fromUtf8(row.label) : QString();
     next.scan_row_key =

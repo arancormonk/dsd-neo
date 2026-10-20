@@ -27,6 +27,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -856,11 +857,17 @@ dsd_audio_write_mono_frame_wav(SNDFILE* file, dsd_state* state, const char* cont
 
 void
 writeSynthesizedVoice(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !dsd_receive_current_allows(opts, state, state->currentslot)) {
+        return;
+    }
     dsd_audio_write_mono_frame_wav(opts->wav_out_f, state, "writeSynthesizedVoice");
 }
 
 void
 dsd_write_mono_voice_to_slot_wav(dsd_opts* opts, dsd_state* state, int slot) {
+    if (opts && state && !dsd_receive_current_allows(opts, state, slot)) {
+        return;
+    }
     if (!opts || !state) {
         return;
     }
@@ -873,6 +880,9 @@ dsd_write_mono_voice_to_slot_wav(dsd_opts* opts, dsd_state* state, int slot) {
 
 void
 writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !dsd_receive_current_allows(opts, state, 1)) {
+        return;
+    }
     int n;
     short aout_buf[160];
     short* aout_buf_p;
@@ -897,6 +907,9 @@ writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
 //short Mono to Stereo version for new static .wav files in stereo format for TDMA
 void
 writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !dsd_receive_current_allows(opts, state, state->currentslot)) {
+        return;
+    }
     int n;
     short aout_buf[160];
     short* aout_buf_p;

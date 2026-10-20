@@ -13,6 +13,7 @@
 
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/runtime/config.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -226,6 +227,7 @@ enum dsd_app_command_id {
     // sets; the configured defaults are not touched and nothing is saved. Names the row the editor opened on (scanner,
     // session, row, target id), so an edit that outlives the visit still reaches that row, and one from an earlier
     // scan is refused. Not coalescible, and no scoped (suspend/resume) command: it changes the row's options itself.
+    DSD_APP_CMD_RECEIVE_SET = 512,   // payload: dsd_app_receive_payload
     DSD_APP_CMD_SCAN_ROW_EDIT = 511, // payload: dsd_app_scan_row_edit_payload
 
     // Pulse audio device selection
@@ -537,6 +539,15 @@ typedef struct {
     char list[DSD_APP_TONE_FILTER_LIST_SIZE]; /* NUL-terminated; "" for none */
 } dsd_app_tone_filter_payload;
 
+/** One receive filter (kind 0..3) or the complete naming table (kind 4). */
+typedef struct {
+    int32_t kind;
+    int32_t enabled;
+    char allow[DSD_RECEIVE_LIST_MAX + 1];
+    char block[DSD_RECEIVE_LIST_MAX + 1];
+    char names[DSD_RECEIVE_NAMES_TEXT_MAX + 1];
+} dsd_app_receive_payload;
+
 /** DSD_APP_CMD_SCAN_ROW_EDIT ("this channel", issue #518). The row as the frontends saw it: @c scanner, @c session and
  * @c row are dsd_state::scan_row_scanner, scan_row_session and scan_row_index, and @c target_id a --trunk-scan target's
  * id (trunk_scan_active_id; "" for a -Y row). @c field is one DSD_SCAN_ROW_FIELD_* and @c action a
@@ -560,6 +571,7 @@ typedef struct {
     int32_t squelch_margin_db; /* AUTO: 3..30 dB over the learned floor; NOISE: 3..30 dB of quieting */
     char target_id[64];
     char tone_list[DSD_APP_TONE_FILTER_LIST_SIZE];
+    dsd_app_receive_payload receive;
 } dsd_app_scan_row_edit_payload;
 
 typedef enum {

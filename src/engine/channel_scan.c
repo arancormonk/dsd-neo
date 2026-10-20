@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -155,9 +156,9 @@ channel_scan_publish_row(dsd_state* state, const channel_scan* scan) {
     state->scan_row_session = scan->session;
     state->scan_row_index = row;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN;
-    state->scan_row_editable = (uint8_t)dsd_scan_row_edit_fields(dsd_channel_mode_get(state, (size_t)row), 0);
-    state->scan_row_edited = (uint8_t)dsd_scan_row_edit_fields_edited(entry ? &entry->edit : NULL);
-    state->scan_row_listed = (uint8_t)dsd_scan_row_edit_fields_listed(profile ? &profile->values : NULL, 0);
+    state->scan_row_editable = (uint16_t)dsd_scan_row_edit_fields(dsd_channel_mode_get(state, (size_t)row), 0);
+    state->scan_row_edited = (uint16_t)dsd_scan_row_edit_fields_edited(entry ? &entry->edit : NULL);
+    state->scan_row_listed = (uint16_t)dsd_scan_row_edit_fields_listed(profile ? &profile->values : NULL, 0);
 }
 
 static void
@@ -1171,6 +1172,9 @@ channel_scan_install_edit(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
     }
     dsd_scan_option_values scratch;
     const dsd_scan_option_values* values = channel_scan_row_values(state, row, &scratch);
+    if (dsd_scan_option_receive_differs(before, values)) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state);
+    }
     (void)dsd_scan_mode_options(opts, state, values);
     /* The row on air is the one its last tune staged: its staged options carry the edit too, for whatever reads the
        tune's (dsd_engine_scan_tuning_row_options()). A live rigctl request reads the scope in force. */

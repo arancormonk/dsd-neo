@@ -28,6 +28,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/platform/sockets.h>
@@ -351,9 +352,38 @@ replay_retune_step(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+static int g_analog_step = 0;
+
+static int
+analog_stall_step(dsd_opts* opts, dsd_state* state) {
+    if (++g_analog_step == 1) {
+        opts->analog_only = 1;
+        opts->monitor_input_audio = 1;
+        opts->audio_in_type = AUDIO_IN_UDP;
+        state->analog_rx.carrier_open = 1;
+        const float samples[2] = {1000.0f, 1000.0f};
+        dsd_engine_analog_call_block(opts, state, samples, 2, 48000, 1);
+        expect("NFM reception starts a call", dsd_engine_analog_call_active(state));
+        state->analog_rx.stale_after_ms = 1U;
+        state->input_interrupted = 1; /* An idle read yields, with no replacement input. */
+    } else {
+        uint8_t reason = 0U;
+        expect("an idle read expires the stale NFM call", !dsd_engine_analog_call_active(state));
+        expect("a stalled call ends explicitly",
+               call_phase(state, &reason) == DSD_CALL_PHASE_ENDED && reason == DSD_CALL_END_EXPLICIT);
+        opts->analog_only = 0;
+        opts->monitor_input_audio = 0;
+        opts->audio_in_type = AUDIO_IN_NULL;
+    }
+    return DSD_SYNC_NONE;
+}
+
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
+    if (g_analog_step < 2) {
+        return analog_stall_step(opts, state);
+    }
     if (g_replay_step < 6) {
         return replay_retune_step(opts, state);
     }

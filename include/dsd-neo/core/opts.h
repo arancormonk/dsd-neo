@@ -19,6 +19,7 @@
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/platform/platform.h>
 #ifdef __cplusplus
 #include <dsd-neo/core/safe_api.h>
@@ -244,6 +245,7 @@ struct dsd_opts {
        runs over these while the row is on air, so a save reads them from the configured view. */
     int analog_tone_filter;
     dsd_tone_set analog_tone_set;
+    dsd_receive_policy receive;
     int pulse_raw_rate_in;
     int pulse_raw_rate_out;
     int pulse_digi_rate_in;

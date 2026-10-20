@@ -151,6 +151,7 @@ qt_add_resources(
         qml/TalkgroupsScreen.qml
         qml/ToggleRow.qml
         qml/ToneFilterSheet.qml
+        qml/ReceivePolicySheet.qml
         qml/TunerMarker.qml
         qml/UiPanel.qml
         qml/WizardScreen.qml

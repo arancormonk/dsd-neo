@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -14,7 +15,9 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -188,6 +191,7 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->rtl_squelch_mode = opts->rtl_squelch_mode;
     out->rtl_squelch_margin_db = opts->rtl_squelch_margin_db;
     out->analog_tone_set = opts->analog_tone_set;
+    out->receive = opts->receive;
     out->analog_tone_filter = opts->analog_tone_filter;
     out->force_key = state->M;
     out->aggressive_framesync = opts->aggressive_framesync;
@@ -256,6 +260,7 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->rtl_squelch_mode = saved->rtl_squelch_mode;
     opts->rtl_squelch_margin_db = saved->rtl_squelch_margin_db;
     opts->analog_tone_set = saved->analog_tone_set;
+    opts->receive = saved->receive;
     opts->analog_tone_filter = saved->analog_tone_filter;
     opts->aggressive_framesync = saved->aggressive_framesync;
     opts->dmr_crc_relaxed_default = saved->dmr_crc_relaxed_default;
@@ -280,6 +285,7 @@ scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src
     dst->rtl_squelch_mode = src->rtl_squelch_mode;
     dst->rtl_squelch_margin_db = src->rtl_squelch_margin_db;
     dst->analog_tone_set = src->analog_tone_set;
+    dst->receive = src->receive;
     dst->analog_tone_filter = src->analog_tone_filter;
     dst->force_key = src->force_key;
     dst->aggressive_framesync = src->aggressive_framesync;
@@ -799,6 +805,19 @@ scan_option_apply_tone(dsd_opts* opts, dsd_state* state, const dsd_scan_option_v
 
 /* One applier per row option that lands in dsd_opts/dsd_state. A new row option adds a row
  * here, never a branch: the lookup stays flat however many options the grammar grows. */
+static void
+scan_option_apply_receive(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (values->present & (DSD_SCAN_OPT_SLOT << kind)) {
+            opts->receive.filters[kind] = values->receive.filters[kind];
+        }
+    }
+    if (values->present & DSD_SCAN_OPT_NAMES) {
+        opts->receive.names = values->receive.names;
+    }
+}
+
 static const struct {
     uint32_t field;
     scan_option_applier apply;
@@ -818,6 +837,7 @@ static const struct {
     {DSD_SCAN_OPT_SQUELCH, scan_option_apply_squelch},
     {DSD_SCAN_OPT_BANDWIDTH, scan_option_apply_bandwidth},
     {DSD_SCAN_OPT_TONE, scan_option_apply_tone},
+    {DSD_SCAN_OPT_RECEIVE, scan_option_apply_receive},
 };
 
 static void
@@ -1370,6 +1390,51 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
         scan_scope_apply(opts, state, &temporary, SCAN_ROW_STAGED);
         dsd_scan_settings_capture(opts, state, out);
         dsd_scan_settings_restore(&effective, opts, state);
+    }
+    return 0;
+}
+
+void
+dsd_scan_mode_configured_receive(const dsd_opts* opts, const dsd_state* state, dsd_receive_policy* out) {
+    if (!out) {
+        return;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (configured) {
+        *out = configured->receive;
+    } else if (opts) {
+        *out = opts->receive;
+    } else {
+        DSD_MEMSET(out, 0, sizeof(*out));
+    }
+}
+
+int
+dsd_scan_mode_set_configured_receive(dsd_opts* opts, dsd_state* state, const dsd_receive_policy* policy) {
+    if (!opts || !policy) {
+        return -1;
+    }
+    scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    dsd_receive_policy effective = *policy;
+    if (scope && !scope->suspended) {
+        for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; ++kind) {
+            if (scope->options.present & (DSD_SCAN_OPT_SLOT << kind)) {
+                effective.filters[kind] = scope->options.receive.filters[kind];
+            }
+        }
+        if (scope->options.present & DSD_SCAN_OPT_NAMES) {
+            effective.names = scope->options.receive.names;
+        }
+    }
+    /* Freeze admitted calls under their old labels before any effective policy changes.
+     * A default hidden by the current row does not interrupt reception. */
+    if (state && !dsd_receive_policy_equal(&effective, &opts->receive)) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state);
+    }
+    opts->receive = *policy;
+    if (scope && !scope->suspended) {
+        scope->configured.receive = *policy;
+        scan_option_apply_receive(opts, NULL, &scope->options);
     }
     return 0;
 }

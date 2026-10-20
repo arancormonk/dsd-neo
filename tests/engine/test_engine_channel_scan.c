@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -30,6 +31,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -2411,7 +2413,8 @@ test_row_session_edits(void) {
     assert(state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN && state->scan_row_index == 0);
     assert(state->scan_row_session != 0U && state->scan_row_edited == 0U);
     assert(state->scan_row_editable
-           == (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE));
+           == (uint16_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
+                         | DSD_SCAN_ROW_FIELD_NAMES));
     assert(state->scan_row_listed == (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH));
     const uint32_t session = state->scan_row_session;
 
@@ -2538,6 +2541,70 @@ test_row_session_edits(void) {
     tunes = reset_count = 0;
 }
 
+static void
+test_receive_row_session_edits(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+        assert(dsd_channel_mode_set(state, row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    assert(dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "9", "", "", NULL, 0) == 0);
+    const dsd_receive_policy defaults = opts->receive;
+    dsd_scan_row_profile* listed = calloc(1, sizeof(*listed));
+    assert(listed);
+    listed->values.present = DSD_SCAN_OPT_DCC;
+    assert(dsd_receive_edit_parse(&listed->values.receive, DSD_RECEIVE_DCC, 1, "7", "", "", NULL, 0) == 0);
+    assert(dsd_channel_profile_set(state, 0, listed) == 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    const uint32_t session = state->scan_row_session;
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 7));
+    dsd_scan_row_edit_value value = {0};
+    assert(dsd_receive_edit_parse(&value.receive, DSD_RECEIVE_DCC, 1, "8", "", "", NULL, 0) == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 8));
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_INHERIT,
+                                            NULL, NULL)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 9));
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_RESET,
+                                            NULL, NULL)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 7));
+    assert(dsd_receive_names_parse("--dcc-name '7=Hospital'", &value.receive.names, NULL, 0) == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    assert(opts->receive.names.count == 0);
+    /* An incompatible table is refused atomically, preserving the stored destination's name. */
+    assert(dsd_receive_names_parse("--ran-name '7=Wrong protocol'", &value.receive.names, NULL, 0) == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_REFUSED);
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(strcmp(opts->receive.names.rules[0].name, "Hospital") == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session + 1U, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STALE);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(dsd_receive_policy_equal(&opts->receive, &defaults));
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -2569,6 +2636,7 @@ main(void) {
     test_am_row_warnings_for_its_widths();
     test_row_widths_on_audio_input();
     test_row_session_edits();
+    test_receive_row_session_edits();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

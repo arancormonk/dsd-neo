@@ -11,6 +11,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -282,6 +284,9 @@ typedef struct {
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
     dsd_call_key_selection key_selection;
+    dsd_receive_identity receive_identity;
+    uint8_t receive_verdict;
+    char service_label[DSD_SERVICE_LABEL_SIZE];
 } dsd_call_snapshot;
 
 typedef struct {
@@ -423,6 +428,8 @@ int dsd_call_state_protocol_family(int protocol);
 
 /** Ensure the canonical call-state extension and its transaction mutex exist. */
 int dsd_call_state_ensure(dsd_state* state);
+/** Refresh active admission and naming from current validated reception; ended records are immutable. */
+void dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint8_t slot);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
 int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 /** Record resolver provenance on the matching call epoch, without changing call

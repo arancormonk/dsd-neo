@@ -71,6 +71,7 @@ typedef struct {
     /* Its list as displayed (dsd_tone_set_format_display(): "100.0 Hz/D023N", the entries past the room counted); ""
        without one. */
     char tone_list[96];
+    char receive_summary[256];
 } dsd_csv_channel_profile;
 
 typedef void (*dsd_csv_channel_profile_cb)(const dsd_csv_channel_profile* row, void* context);

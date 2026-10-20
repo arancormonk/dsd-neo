@@ -432,6 +432,34 @@ Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the f
 | `iq_balance` | BOOL | Enable RTL IQ balance (image suppression; kept off while AM runs: it would cancel a carrier at 0 Hz) | `false` |
 | `iq_dc_block` | BOOL | Enable RTL I/Q DC blocker (kept off while AM runs: it would remove a carrier at 0 Hz) | `false` |
 
+**[receive] section:**
+
+This section persists global receive filters and service names. All filters default to disabled; names default
+to an empty table. Each of `slot`, `dcc`, `ran` and `nac` has `<kind>_enabled` (boolean), `<kind>_allow` and
+`<kind>_block` (slash-separated identifier lists). An empty allow list means every validated identifier;
+an empty block list blocks none. Block wins. A present empty section restores those defaults; an omitted
+section leaves the current settings alone. A malformed receive setting refuses the section as a whole.
+
+```ini
+[receive]
+slot_enabled = true
+slot_allow = 1/2
+dcc_enabled = true
+dcc_allow = 4/7
+dcc_block = 4
+ran_enabled = false
+nac_enabled = true
+nac_allow = 293/0xA12
+names = --slot-name "1=Dispatch" --dcc-name "7=Hospital" --tone-name "141.3=20R Traveler"
+```
+
+`names` uses the same naming-option grammar as the CLI and CSV row options, including quoted names with
+spaces. Limits and identifier ranges are in [Receive filters and service names](cli.md#receive-filters-and-service-names).
+Saving while a scan row is active writes the configured defaults, not that row's effective overrides.
+A row replaces each filter kind it specifies in full, or its entire naming table; omitted kinds inherit.
+Explicit `--no-<kind>-filter` and `--no-service-names` override enabled/named defaults. Leaving the row
+restores configured defaults.
+
 **[analog] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|

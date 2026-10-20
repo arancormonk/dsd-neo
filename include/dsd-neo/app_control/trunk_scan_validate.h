@@ -41,6 +41,7 @@ typedef struct {
     int bandwidth_hz;
     int tone_filter;
     char tone_list[96];
+    char receive_summary[256];
 } dsd_app_scan_csv_target;
 
 typedef enum {

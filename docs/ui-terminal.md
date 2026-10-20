@@ -123,6 +123,11 @@ Main Menu
 │           ├── CQPSK timing gain... [75 x0.001]     (CQPSK path only)
 │           └── CQPSK timing bias (EMA) <n>          (status, CQPSK path only)
 ├── Decoder
+│   ├── Receive filters
+│   │   ├── Slot filter...
+│   │   ├── DCC filter...
+│   │   ├── RAN filter...
+│   │   └── NAC filter...
 │   ├── Mode... [Auto]
 │   ├── Modulation [C4FM]                        m
 │   ├── P25 Phase 2 modulation lock [Off]        M
@@ -177,6 +182,7 @@ Main Menu
 │   │   ├── Import group list CSV...
 │   │   ├── Import source ID list CSV...
 │   │   ├── Import P25 band plan CSV...
+│   │   ├── Service names...
 │   │   ├── Export learned P25 band plan...
 │   │   ├── ─────                                    (RadioReference builds)
 │   │   ├── Import from RadioReference...            (RadioReference builds)
@@ -504,6 +510,27 @@ when the scanner leaves or the channel map changes) and are never saved. On audi
 rows' chooser is titled `NFM passband` or `AM passband`, and their `This channel` prompt (`NFM passband Hz on this
 channel (8000..25000)`) opens on the passband the row runs: its own width, the configured one it follows, or `-B`
 standing in for an unset NFM width. See [Live per-channel edits](trunk-scan.md#runtime-behavior).
+
+`Decoder > Receive filters` edits slot, DMR DCC, NXDN RAN and P25 NAC filters.
+Each filter has separate allow and block lists and an enabled state. Enter identifiers
+separated by `/`; NACs are hexadecimal (`293/370`). Block wins when a value appears
+in both lists. An enabled filter waits in `Checking` until a validated identifier
+arrives. Rejected traffic stays muted and creates no call history, per-call recording
+or activity hold. Slot filters apply only to supported two-slot protocols. A manual
+scan hold keeps the channel selected even when its traffic is rejected.
+
+`Trunking > Channels & groups > Service names...` edits a naming table using options
+such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching access-code
+or tone name takes precedence over a slot name; otherwise the existing channel label
+is used. Naming does not enable filtering. Names appear in live calls, completed
+history and named per-call WAVs; NFM calls include their received CTCSS/DCS tone.
+
+Both editors offer `All channels` and, for a compatible active scan row, `This channel`.
+`Use default` removes that field's override; `List value` restores its imported value.
+Channel edits last for the session and leave the source CSV unchanged. The editor
+captures its destination before prompting, so a scan move cannot redirect an edit to
+another row. See [Receive filters and service names](cli.md#receive-filters-and-service-names)
+for limits and identifier syntax.
 
 `DSP bandwidth...` prompts with the selectable bandwidths (4, 6, 8, 12, 16, 24, 48 or 72 kHz; 72 is TETRA's) and snaps
 another value to the nearest of them, the narrower of two as near. On an Airspy it refuses 72 kHz, since no Airspy

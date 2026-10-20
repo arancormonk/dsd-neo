@@ -272,6 +272,23 @@ dsd_cli_usage_section_decode(void) {
     printf("                               shown apart; a scanner moves on from rejected traffic.\n");
     printf("      --tone-block <list>      Mute analog FM traffic carrying a listed tone or code; hear the rest.\n");
     printf("      --no-tone-filter         No tone filter (the default): ordinary carrier squelch.\n");
+    printf("      --slot-allow <1/2>       Allow listed TDMA slots; --slot-block blocks listed slots. FDMA is "
+           "unaffected.\n");
+    printf("      --dcc-allow <0..15>      DMR color codes; --dcc-block blocks listed codes.\n");
+    printf("      --ran-allow <0..63>      NXDN RANs; --ran-block blocks listed RANs.\n");
+    printf("      --nac-allow <001..FFE>   P25 NACs in hex (optional 0x); --nac-block blocks listed NACs.\n");
+    printf("                               Use / between values. Allow and block can coexist; block wins.\n");
+    printf("                               Unknown access codes stay Checking and muted until validated.\n");
+    printf(
+        "      --no-slot-filter        Disable this filter; also --no-dcc-filter, --no-ran-filter, --no-nac-filter.\n");
+    printf("      --dcc-name <code=name>  Service label, e.g. --dcc-name \"7=Hospital\". Repeat up to 32 names.\n");
+    printf(
+        "                               Also --slot-name, --ran-name, --nac-name, --tone-name \"141.3=Traveler\".\n");
+    printf("                               Access/tone names precede slot names, then the channel label. Names do not "
+           "filter.\n");
+    printf("      --no-service-names      Clear inherited service names. -P also records conventional NFM "
+           "transmissions.\n");
+
     printf("      --squelch <setting>      Squelch: off, a level in dB (-60), auto[+N] or noise[+N] (N 3..30,\n");
     printf("                               default 10). auto opens N dB above the noise floor each analog channel\n");
     printf("                               learns; noise opens an FM channel when its discriminator noise above\n");

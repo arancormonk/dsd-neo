@@ -1786,12 +1786,19 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
     if (block_hz <= 0) {
         dsd_analog_sink_break(state);
     }
+    const int reception = !discard && dsd_analog_tone_detection_active(opts) && opts->trunk_enable == 0
+                          && state->carrier == 0 && dsd_trunk_tuning_pending_request() == 0U
+                          && dsd_analog_rx_carrier_open_now(opts, state)
+                          && dsd_analog_tone_gate_passes(dsd_analog_tone_gate_in_force(opts, state));
+    const int processing = allowed || (reception && opts->dmr_stereo_wav);
     if (dsd_squelch_flags_in_force(opts, state)) {
-        symbol_process_unsynced_audio_runs(opts, state, analog_block, allowed, discard);
-        const int heard = symbol_apply_sink_gate(opts, state, analog_block, allowed);
-        symbol_output_unsynced_analog(opts, state, analog_block, heard, block_hz);
+        symbol_process_unsynced_audio_runs(opts, state, analog_block, processing, discard);
+        const int heard = symbol_apply_sink_gate(opts, state, analog_block, processing);
+        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, reception);
+        symbol_output_unsynced_analog(opts, state, analog_block, heard && allowed, block_hz);
     } else {
-        symbol_process_unsynced_audio(opts, state, analog_block, allowed, discard);
+        symbol_process_unsynced_audio(opts, state, analog_block, processing, discard);
+        dsd_frame_sync_hook_analog_call_block(opts, state, state->analog_out_f, analog_block, block_hz, reception);
         symbol_output_unsynced_analog(opts, state, analog_block, allowed, block_hz);
     }
     symbol_reset_analog_buffers(state);
@@ -2309,7 +2316,12 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         return 1;
     }
     int got = 0;
-    if (dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got) < 0 || got != 1) {
+    const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got);
+    if (read_rc == 0 && got == 0 && dsd_analog_tone_detection_active(opts)) {
+        state->input_interrupted = 1;
+        return 0;
+    }
+    if (read_rc < 0 || got != 1) {
         symbol_rtl_read_failed(opts, state);
         return 0;
     }

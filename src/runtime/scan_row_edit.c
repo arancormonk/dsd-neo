@@ -3,9 +3,11 @@
 
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
@@ -56,6 +58,11 @@ dsd_scan_row_edit_fields(unsigned int mode, int gain_editable) {
     }
     if (gain_editable) {
         fields |= DSD_SCAN_ROW_FIELD_GAIN;
+    }
+    for (int i = 0; i <= DSD_RECEIVE_FILTER_COUNT; i++) {
+        if (options & (DSD_SCAN_OPT_SLOT << i)) {
+            fields |= DSD_SCAN_ROW_FIELD_SLOT << i;
+        }
     }
     return fields;
 }
@@ -124,6 +131,26 @@ dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_
     if (!value) {
         return scan_row_edit_reason(err, err_size, "no value");
     }
+    for (int i = 0; i <= DSD_RECEIVE_FILTER_COUNT; i++) {
+        if (field == (uint32_t)(DSD_SCAN_ROW_FIELD_SLOT << i)) {
+            if (dsd_receive_policy_validate(&value->receive, i, err, err_size) != 0) {
+                return 0;
+            }
+            if (i == DSD_RECEIVE_FILTER_COUNT) {
+                for (unsigned int n = 0; n < value->receive.names.count; n++) {
+                    const int kind = value->receive.names.rules[n].kind;
+                    const uint32_t name_field =
+                        kind >= DSD_RECEIVE_CTCSS ? DSD_SCAN_ROW_FIELD_TONE : (uint32_t)DSD_SCAN_ROW_FIELD_SLOT << kind;
+                    const int compatible = (dsd_scan_row_edit_fields(mode, 0) & name_field) != 0;
+                    if (!compatible) {
+                        return scan_row_edit_reason(err, err_size,
+                                                    "a name's identifier does not apply to this channel's mode");
+                    }
+                }
+            }
+            return 1;
+        }
+    }
     switch (field) {
         case DSD_SCAN_ROW_FIELD_SQUELCH: return scan_row_edit_squelch_valid(mode, value, err, err_size);
         case DSD_SCAN_ROW_FIELD_WIDTH: return scan_row_edit_width_valid(mode, value->width_hz, err, err_size);
@@ -139,6 +166,16 @@ dsd_scan_row_edit_value_valid(unsigned int mode, uint32_t field, const dsd_scan_
 
 static void
 scan_row_edit_copy_value(dsd_scan_row_edit_value* dst, uint32_t field, const dsd_scan_row_edit_value* src) {
+    for (int i = 0; i <= DSD_RECEIVE_FILTER_COUNT; i++) {
+        if (field == (uint32_t)(DSD_SCAN_ROW_FIELD_SLOT << i)) {
+            if (i == DSD_RECEIVE_FILTER_COUNT) {
+                dst->receive.names = src->receive.names;
+            } else {
+                dst->receive.filters[i] = src->receive.filters[i];
+            }
+            return;
+        }
+    }
     switch (field) {
         case DSD_SCAN_ROW_FIELD_SQUELCH:
             dst->squelch_db = src->squelch_db;
@@ -222,12 +259,35 @@ dsd_scan_row_edit_fields_listed(const dsd_scan_option_values* row, int list_gain
     if (row && (row->present & DSD_SCAN_OPT_TONE)) {
         fields |= DSD_SCAN_ROW_FIELD_TONE;
     }
+    for (int i = 0; i <= DSD_RECEIVE_FILTER_COUNT; i++) {
+        if (row && (row->present & (DSD_SCAN_OPT_SLOT << i))) {
+            fields |= DSD_SCAN_ROW_FIELD_SLOT << i;
+        }
+    }
     return fields;
 }
 
 uint32_t
 dsd_scan_row_edit_fields_edited(const dsd_scan_row_edit* edit) {
     return edit ? (edit->set | edit->inherit) : 0U;
+}
+
+static void
+scan_row_edit_apply_receive(const dsd_scan_row_edit* edit, dsd_scan_option_values* out) {
+    for (int i = 0; i <= DSD_RECEIVE_FILTER_COUNT; i++) {
+        uint32_t field = (uint32_t)DSD_SCAN_ROW_FIELD_SLOT << i;
+        uint32_t option = (uint32_t)DSD_SCAN_OPT_SLOT << i;
+        if (edit->set & field) {
+            out->present |= option;
+            if (i == DSD_RECEIVE_FILTER_COUNT) {
+                out->receive.names = edit->value.receive.names;
+            } else {
+                out->receive.filters[i] = edit->value.receive.filters[i];
+            }
+        } else if (edit->inherit & field) {
+            out->present &= ~option;
+        }
+    }
 }
 
 void
@@ -255,6 +315,7 @@ dsd_scan_row_edit_apply(const dsd_scan_option_values* row, const dsd_scan_row_ed
     } else if (edit->inherit & DSD_SCAN_ROW_FIELD_SQUELCH) {
         out->present &= ~(uint32_t)DSD_SCAN_OPT_SQUELCH;
     }
+    scan_row_edit_apply_receive(edit, out);
     const int kind = dsd_scan_mode_analog_kind((dsd_scan_mode)mode);
     if ((edit->set & DSD_SCAN_ROW_FIELD_WIDTH) && kind >= 0) {
         out->present |= DSD_SCAN_OPT_BANDWIDTH;

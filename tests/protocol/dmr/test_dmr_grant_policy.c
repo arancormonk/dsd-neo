@@ -13,11 +13,13 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -400,6 +402,26 @@ build_con_plus_termination(uint8_t* bits, uint8_t* bytes, uint32_t target) {
     bytes[2] = (uint8_t)((target >> 16U) & 0xFFU);
     bytes[3] = (uint8_t)((target >> 8U) & 0xFFU);
     bytes[4] = (uint8_t)(target & 0xFFU);
+}
+
+static int
+test_receive_data_grant(dsd_opts* opts, dsd_state* state) {
+    init_env(opts, state);
+    install_trunk_tuning_hooks();
+    opts->verbose = 1; /* The rejected grant's diagnostic must read an initialized policy decision. */
+    state->trunk_chan_map[4] = 856250000L;
+    state->last_vc_sync_time = 0;
+    uint8_t bits[256], bytes[48];
+    build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+    int rc = expect_true("slot block parsed",
+                         dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "", "1", "", NULL, 0) == 0);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    rc |= expect_true("slot block prevents Connect Plus data tune", opts->trunk_is_tuned == 0);
+    opts->receive.filters[DSD_RECEIVE_SLOT].enabled = 0;
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    rc |= expect_true("disabled slot filter permits Connect Plus data tune",
+                      opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == 856250000L);
+    return rc;
 }
 
 static void
@@ -1252,6 +1274,7 @@ main(void) {
     dmr_cspdu(&xpt_opts, &xpt_st, bits, bytes, 1U, 0U);
     rc |= expect_true("xpt adjacent sets branding", strcmp(xpt_st.dmr_branding_sub, "XPT ") == 0);
 
+    rc |= test_receive_data_grant(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

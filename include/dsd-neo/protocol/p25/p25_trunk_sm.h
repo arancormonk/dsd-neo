@@ -264,8 +264,9 @@ typedef struct {
     p25_sm_enc_reprobe_memo_t enc_reprobes[P25_SM_ENC_REPROBE_MEMO_MAX];
 
     // Timing
-    double t_tune_m;  // Monotonic time of last VC tune
-    double t_voice_m; // Monotonic time of last voice activity
+    double t_tune_m;                // Monotonic time of last VC tune
+    double receive_check_started_m; // Repeated grants cannot extend a receive-policy acquisition window
+    double t_voice_m;               // Monotonic time of last voice activity
     // The hangtime countdown has no field: it is derived from the per-slot
     // last_followed_m stamps by p25_sm_hangtime_started_m().
     double t_cc_sync_m;          // Monotonic time of last CC sync

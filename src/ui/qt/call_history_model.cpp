@@ -4,6 +4,7 @@
  */
 
 #include <QChar>
+#include <dsd-neo/core/receive_types.h>
 #include "call_history_model.h"
 
 #include <QByteArray>
@@ -32,6 +33,8 @@
 #include <atomic>
 #endif
 
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include "call_history_merge.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
@@ -255,6 +258,15 @@ row_carrier_value(const CallHistoryModel::Row& row, int role) {
     }
 }
 
+QString
+row_received_tone(const CallHistoryModel::Row& row) {
+    char tone[32] = "";
+    if (row.receiveKnown && (row.receiveKind == DSD_RECEIVE_CTCSS || row.receiveKind == DSD_RECEIVE_DCS)) {
+        (void)dsd_receive_value_format(row.receiveKind, static_cast<unsigned int>(row.receiveValue), tone, sizeof tone);
+    }
+    return QString::fromUtf8(tone);
+}
+
 /** @brief One row's value for @p role; an unknown role reads as null. */
 QVariant
 row_role_value(const CallHistoryModel::Row& row, int role) {
@@ -269,6 +281,10 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::KindRole: return row.kind;
         case CallHistoryModel::DetailRole: return row.detail;
         case CallHistoryModel::ChannelRole: return row.channel;
+        case CallHistoryModel::ServiceNameRole: return row.service;
+        case CallHistoryModel::ReceivedToneRole: {
+            return row_received_tone(row);
+        }
         case CallHistoryModel::SessionRole: return row.session;
         default: return row_carrier_value(row, role);
     }
@@ -320,6 +336,8 @@ CallHistoryModel::roleNames() const {
     roles.insert(KindRole, QByteArrayLiteral("kind"));
     roles.insert(DetailRole, QByteArrayLiteral("detail"));
     roles.insert(ChannelRole, QByteArrayLiteral("channel"));
+    roles.insert(ServiceNameRole, QByteArrayLiteral("serviceName"));
+    roles.insert(ReceivedToneRole, QByteArrayLiteral("receivedTone"));
     roles.insert(SessionRole, QByteArrayLiteral("session"));
     roles.insert(FreqHzRole, QByteArrayLiteral("freqHz"));
     roles.insert(AccessCodeRole, QByteArrayLiteral("accessCode"));
@@ -452,7 +470,7 @@ ring_item_display_kind(const Event_History* item) {
         // scan channel it was heard on, which is the only name encrypted
         // traffic on a conventional list ever gets.
         if (item->target_id == 0U && item->tgt_str[0] == '\0' && item->t_name[0] == '\0'
-            && item->channel_label[0] == '\0') {
+            && item->channel_label[0] == '\0' && item->service_label[0] == '\0' && item->systype != DSD_SYNC_ANALOG) {
             return -1;
         }
         return CallHistoryModel::KindVoice;
@@ -516,18 +534,8 @@ row_take_carrier(CallHistoryModel::Row& row, const Event_History* item) {
 }
 
 /** @brief One committed ring item as a display row. */
-CallHistoryModel::Row
-row_from_item(const Event_History* item, const QString& sessionLabel, const QString& systemUid, int slot,
-              qulonglong seq) {
-    CallHistoryModel::Row row;
-    row.slot = slot;
-    row.seq = seq;
-    row.tg = static_cast<qulonglong>(item->target_id);
-    row.src = static_cast<qulonglong>(item->source_id);
-    row.sourceName = QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str);
-    row.enc = item->enc != 0U;
-    row.emergency = item->emergency != 0U;
-    row.kind = item->category == DSD_EVENT_CATEGORY_VOICE ? CallHistoryModel::KindVoice : CallHistoryModel::KindNotice;
+void
+row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
     if (row.kind == CallHistoryModel::KindNotice) {
         /* The emitter's summary line names what happened ("SMS from 1234",
          * "LRRP position"); the payload — the decoded message or GPS string —
@@ -541,6 +549,8 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
         if (row.name.isEmpty()) {
             row.name = !row.detail.isEmpty() ? row.detail : QStringLiteral("Data message");
         }
+    } else if (item->service_label[0] != '\0') {
+        row.name = QString::fromUtf8(item->service_label);
     } else if (item->t_name[0] != '\0') {
         row.name = QString::fromUtf8(item->t_name);
     } else if (item->tgt_str[0] != '\0') {
@@ -550,8 +560,24 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
          * operator recognises it by, and "Talkgroup 0" is not. */
         row.name = QString::fromUtf8(item->channel_label);
     } else {
-        row.name = QStringLiteral("Talkgroup %1").arg(row.tg);
+        row.name =
+            item->systype == DSD_SYNC_ANALOG ? QStringLiteral("NFM") : QStringLiteral("Talkgroup %1").arg(row.tg);
     }
+}
+
+CallHistoryModel::Row
+row_from_item(const Event_History* item, const QString& sessionLabel, const QString& systemUid, int slot,
+              qulonglong seq) {
+    CallHistoryModel::Row row;
+    row.slot = slot;
+    row.seq = seq;
+    row.tg = static_cast<qulonglong>(item->target_id);
+    row.src = static_cast<qulonglong>(item->source_id);
+    row.sourceName = QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str);
+    row.enc = item->enc != 0U;
+    row.emergency = item->emergency != 0U;
+    row.kind = item->category == DSD_EVENT_CATEGORY_VOICE ? CallHistoryModel::KindVoice : CallHistoryModel::KindNotice;
+    row_take_name(row, item);
     /* The system is the saved entry this session runs, for every row alike, so
      * the system filter keeps listing what the Home screen lists. The scan channel
      * the row was heard on (a -Y row name or a trunk-scan target id) rides its own
@@ -561,6 +587,11 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     // Retained scan rows remain ineligible even if rotation has since stopped.
     row.systemUid = item->channel_label[0] == '\0' ? systemUid : QString();
     row.channel = QString::fromUtf8(item->channel_label);
+    row.service = QString::fromUtf8(item->service_label);
+    row.receiveKind = item->receive_identity.kind;
+    row.receiveValue = item->receive_identity.value;
+    row.receiveKnown = item->receive_identity.known != 0;
+    row.receiveSlot = item->receive_identity.slot;
     /* The ring stamps both ends of the transmission: event_start_time when the
      * epoch began, event_time as its last render (its end, once committed). Their
      * difference is the measured duration — never this process's ingest lag, which
@@ -705,10 +736,22 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
 
 namespace {
 
+bool
+receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
+    if (a.service != b.service) {
+        return false;
+    }
+    return !a.receiveKnown || !b.receiveKnown
+           || (a.receiveKind == b.receiveKind && a.receiveValue == b.receiveValue && a.receiveSlot == b.receiveSlot);
+}
+
 /** @brief Whether two voice rows are one conversation the merge may fold together. */
 bool
 rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     if (existing.kind != CallHistoryModel::KindVoice) {
+        return false;
+    }
+    if (!receive_services_compatible(existing, row)) {
         return false;
     }
     // A zero source id is "not yet learned", not a distinct unit: late-entry
@@ -836,6 +879,12 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows) {
             continue;
         }
         merge_source_label(existing, row);
+        if (!existing.receiveKnown && row.receiveKnown) {
+            existing.receiveKnown = true;
+            existing.receiveKind = row.receiveKind;
+            existing.receiveValue = row.receiveValue;
+            existing.receiveSlot = row.receiveSlot;
+        }
         fold_carrier(existing, row);
         const qint64 start = qMin(existing.when, row.when);
         const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
@@ -863,7 +912,7 @@ CallHistoryModel::findRepeatedNotice(const Row& row) const {
         if (existing.kind == KindNotice && existing.when == row.when && existing.tg == row.tg && existing.src == row.src
             && existing.name == row.name && existing.detail == row.detail && existing.systemName == row.systemName
             && existing.systemUid == row.systemUid && existing.channel == row.channel
-            && !m_noticeTwinsTaken.contains(keyFor(existing))) {
+            && receive_services_compatible(existing, row) && !m_noticeTwinsTaken.contains(keyFor(existing))) {
             return i;
         }
     }
@@ -889,8 +938,14 @@ CallHistoryModel::absorbRepeatedNotice(const Row& row) {
     // A notice logged before rows carried a frequency and access code gains them here, when a fresh ring
     // delivers it again (a replay after an upgrade).
     fill_carrier(logged, row);
+    if (!logged.receiveKnown && row.receiveKnown) {
+        logged.receiveKnown = true;
+        logged.receiveKind = row.receiveKind;
+        logged.receiveValue = row.receiveValue;
+        logged.receiveSlot = row.receiveSlot;
+    }
     const QModelIndex idx = index(repeated);
-    Q_EMIT dataChanged(idx, idx, {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole});
+    Q_EMIT dataChanged(idx, idx, {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole});
     return true;
 }
 
@@ -910,9 +965,10 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // signals: a merge is a dataChanged on the absorbing row, a new call inserts
     // at its sorted (newest-first) position. Never a reset — delegates and the
     // reader's scroll position survive every ingest.
-    static const QVector<int> mergeRoles = {WhenRole,         SrcRole,      SourceNameRole, EncRole,
-                                            DurationSecsRole, DayLabelRole, TimeTextRole,   EmergencyRole,
-                                            SessionRole,      FreqHzRole,   AccessCodeRole, AccessCodeTextRole};
+    static const QVector<int> mergeRoles = {WhenRole,         SrcRole,          SourceNameRole, EncRole,
+                                            DurationSecsRole, DayLabelRole,     TimeTextRole,   EmergencyRole,
+                                            SessionRole,      FreqHzRole,       AccessCodeRole, AccessCodeTextRole,
+                                            ServiceNameRole,  ReceivedToneRole, NameRole};
     // A call heard again overlaps the logged call it repeats, which the merge folds it into as it
     // folds any overlapping fragment, so that row joins the running session and no new row is logged.
     // Only the search reaches further: a replay's calls sort by the capture's stamps, anywhere in the
@@ -1186,6 +1242,11 @@ row_from_json(const QJsonObject& obj) {
     row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
     row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
+    row.service = obj.value(QLatin1String("service")).toString();
+    row.receiveKind = obj.value(QLatin1String("receiveKind")).toInt(DSD_RECEIVE_NONE);
+    row.receiveValue = obj.value(QLatin1String("receiveValue")).toInt();
+    row.receiveKnown = obj.value(QLatin1String("receiveKnown")).toBool();
+    row.receiveSlot = obj.value(QLatin1String("receiveSlot")).toInt();
     row.slot = obj.value(QLatin1String("slot")).toInt();
     row.seq = obj.value(QLatin1String("seq")).toVariant().toULongLong();
     // Older stores have no label provenance; their surviving row identity
@@ -1336,6 +1397,15 @@ CallHistoryModel::rowsToJson(const QList<Row>& rows) {
         }
         if (!row.channel.isEmpty()) {
             obj.insert(QLatin1String("channel"), row.channel);
+        }
+        if (!row.service.isEmpty()) {
+            obj.insert(QLatin1String("service"), row.service);
+        }
+        if (row.receiveKnown) {
+            obj.insert(QLatin1String("receiveKind"), row.receiveKind);
+            obj.insert(QLatin1String("receiveValue"), row.receiveValue);
+            obj.insert(QLatin1String("receiveKnown"), true);
+            obj.insert(QLatin1String("receiveSlot"), row.receiveSlot);
         }
         obj.insert(QLatin1String("slot"), row.slot);
         obj.insert(QLatin1String("seq"), static_cast<qint64>(row.seq));

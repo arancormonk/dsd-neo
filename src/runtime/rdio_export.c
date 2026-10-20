@@ -638,7 +638,9 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, dsd_r
     out->encrypted = event->enc ? 1 : 0;
     out->short_name = event->sysid_string;
 
-    if (event->t_name[0] != '\0') {
+    if (event->service_label[0] != '\0') {
+        out->talkgroup_tag = event->service_label;
+    } else if (event->t_name[0] != '\0') {
         out->talkgroup_tag = event->t_name;
     } else if (event->tgt_str[0] != '\0') {
         out->talkgroup_tag = event->tgt_str;

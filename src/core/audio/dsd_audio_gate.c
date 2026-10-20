@@ -18,6 +18,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -397,7 +398,8 @@ dsd_p25p2_decode_audio_allowed_verdict(const dsd_opts* opts, const dsd_state* st
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
-    if (!dsd_p25p2_slot_crypto_permits_audio(opts, state, slot, alg)) {
+    if (!dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)
+        || !dsd_p25p2_slot_crypto_permits_audio(opts, state, slot, alg)) {
         return 0;
     }
     if (!dsd_p25p2_slot_active_call(state, slot, &call)) {
@@ -449,6 +451,10 @@ dsd_p25p2_playout_policy_verdict(const dsd_opts* opts, const dsd_state* state, i
     }
     if (dsd_p25p2_call_policy_decision(opts, state, &call, &judged, &decision) == 0) {
         dsd_p25p2_verdict_from_decision(&decision, out);
+        if (!dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)) {
+            out->blocked = 1;
+            out->recordable = 0;
+        }
     }
     return 1;
 }
@@ -512,7 +518,7 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
     }
 
     // The slot keeps the mute @p enc_in brought in; the policy only adds one.
-    int enc = (enc_in != 0) ? 1 : 0;
+    int enc = (enc_in != 0 || !dsd_receive_current_allows(opts, state, slot < 0 ? state->currentslot : slot)) ? 1 : 0;
     if (slot >= 0 && slot <= 1) {
         policy_tg = dsd_audio_p25_policy_target_for_slot(state, slot, ota_tg);
     } else {
@@ -570,7 +576,7 @@ dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state,
     if (!opts || !state || slot < 0 || slot > 1) {
         return 0;
     }
-    return state->mbe_slot_muted[slot] == 0 ? 1 : 0;
+    return state->mbe_slot_muted[slot] == 0 && dsd_receive_current_allows(opts, state, slot);
 }
 
 static int
@@ -602,7 +608,7 @@ static int
 dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int slot) {
     dsd_tg_policy_decision decision;
 
-    if (!opts || !state) {
+    if (!opts || !state || !dsd_receive_current_allows(opts, state, slot)) {
         return 1;
     }
 

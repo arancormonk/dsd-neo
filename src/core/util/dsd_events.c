@@ -19,6 +19,8 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
@@ -29,6 +31,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -94,6 +97,9 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].t_mode[0] = '\0';
         event_struct->Event_History_Items[i].s_mode[0] = '\0';
         event_struct->Event_History_Items[i].channel_label[0] = '\0';
+        event_struct->Event_History_Items[i].service_label[0] = '\0';
+        DSD_MEMSET(&event_struct->Event_History_Items[i].receive_identity, 0,
+                   sizeof(event_struct->Event_History_Items[i].receive_identity));
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].freq_hz = 0;
@@ -130,6 +136,11 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].severity = event_struct->Event_History_Items[i - 1].severity;
         event_struct->Event_History_Items[i].category = event_struct->Event_History_Items[i - 1].category;
         event_struct->Event_History_Items[i].crc_invalid = event_struct->Event_History_Items[i - 1].crc_invalid;
+        copy_str_field(event_struct->Event_History_Items[i].service_label,
+                       event_struct->Event_History_Items[i - 1].service_label,
+                       sizeof event_struct->Event_History_Items[i].service_label);
+        event_struct->Event_History_Items[i].receive_identity =
+            event_struct->Event_History_Items[i - 1].receive_identity;
         event_struct->Event_History_Items[i].systype = event_struct->Event_History_Items[i - 1].systype;
         event_struct->Event_History_Items[i].subtype = event_struct->Event_History_Items[i - 1].subtype;
         event_struct->Event_History_Items[i].sys_id1 = event_struct->Event_History_Items[i - 1].sys_id1;
@@ -1073,7 +1084,9 @@ watchdog_event_staged_row_merges(const Event_History_I* event_struct, const dsd_
     if (retained_index == 0U || staged->category != DSD_EVENT_CATEGORY_VOICE) {
         return 0;
     }
-    return event_struct->Event_History_Items[retained_index].category == DSD_EVENT_CATEGORY_VOICE;
+    return event_struct->Event_History_Items[retained_index].category == DSD_EVENT_CATEGORY_VOICE
+           && !dsd_receive_identity_changed(&event_struct->Event_History_Items[retained_index].receive_identity,
+                                            &staged->receive_identity);
 }
 
 // Rebuild the merged row's user-legible string from its now-complete fields. Returns non-zero
@@ -1238,6 +1251,7 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
         watchdog_event_flush_pending_end_alert(opts, state, slot, lifecycle, 1);
     }
     if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA && !reacquired
+        && call->receive_verdict != DSD_RECEIVE_CHECKING && call->receive_verdict != DSD_RECEIVE_REJECTED
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
         beeper(opts, state, slot, 40, 86, 3);
     }
@@ -1299,6 +1313,7 @@ typedef struct {
     char t_mode[200];
     char s_mode[200];
     char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    char service_label[DSD_SERVICE_LABEL_SIZE];
     uint8_t channel_label_resolved;
     uint16_t svc_opts;
     uint8_t subtype;
@@ -1437,6 +1452,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     }
     ctx->protocol = call->protocol;
     ctx->crc_invalid = call->crc_invalid;
+    DSD_SNPRINTF(ctx->service_label, sizeof(ctx->service_label), "%s", call->service_label);
     ctx->kind = call->kind;
     ctx->category = call->kind == DSD_CALL_KIND_DATA ? DSD_EVENT_CATEGORY_DATA : DSD_EVENT_CATEGORY_VOICE;
     ctx->crypto = call->crypto;
@@ -1461,6 +1477,10 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
+    if (call->protocol == DSD_SYNC_ANALOG) {
+        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NFM");
+        return;
+    }
     ctx->sys_id1 = state->p2_wacn;
     ctx->sys_id2 = state->p2_sysid;
     if (state->nac != 0) {
@@ -2128,7 +2148,8 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
                                           const char* timestr, const char* sys_string, char* event_string,
                                           size_t event_size) {
     char sys_label[DSD_CHANNEL_LABEL_SIZE + 32];
-    const char* sys = watchdog_event_sys_label(ctx->channel_label, sys_string, sys_label, sizeof(sys_label));
+    const char* sys = watchdog_event_sys_label(ctx->service_label[0] ? ctx->service_label : ctx->channel_label,
+                                               sys_string, sys_label, sizeof(sys_label));
     if (DSD_SYNC_IS_YSF(ctx->protocol) || DSD_SYNC_IS_DSTAR(ctx->protocol)) {
         watchdog_event_current_build_event_text_ids(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_M17(ctx->protocol)) {
@@ -2147,6 +2168,9 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
         watchdog_event_current_build_event_nxdn(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_TETRA(ctx->protocol)) {
         watchdog_event_current_build_event_tetra(ctx, datestr, timestr, sys, event_string, event_size);
+    } else if (ctx->protocol == DSD_SYNC_ANALOG) {
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s NFM; Frequency: %lld Hz; ", datestr, timestr, sys,
+                     (long long)ctx->freq_hz);
     }
     // A fresh string carries no marker yet.
     watchdog_event_mark_crc(event_string, event_size, 0U, ctx->crc_invalid);
@@ -2236,6 +2260,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_SNPRINTF(ctx->t_mode, sizeof(ctx->t_mode), "%s", item->t_mode);
     DSD_SNPRINTF(ctx->s_mode, sizeof(ctx->s_mode), "%s", item->s_mode);
     DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", item->channel_label);
+    DSD_SNPRINTF(ctx->service_label, sizeof(ctx->service_label), "%s", item->service_label);
     ctx->channel_label_resolved = item->channel_label_resolved;
     ctx->t_name_loaded = item->t_name[0] != '\0' ? 1U : 0U;
     ctx->s_name_loaded = item->s_name[0] != '\0' ? 1U : 0U;
@@ -2429,6 +2454,9 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     if (watchdog_event_current_skip_ended(call, lifecycle)) {
         return;
     }
+    if (call->receive_verdict == DSD_RECEIVE_CHECKING || call->receive_verdict == DSD_RECEIVE_REJECTED) {
+        return;
+    }
     const dsd_call_snapshot* effective_call = call;
 
     Event_History_I* event_struct = &state->event_history_s[slot];
@@ -2456,6 +2484,8 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
     watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
+    DSD_SNPRINTF(candidate.service_label, sizeof(candidate.service_label), "%s", call->service_label);
+    candidate.receive_identity = call->receive_identity;
 
     char event_string[2000];
     DSD_MEMSET(event_string, 0, sizeof(event_string));
@@ -2490,6 +2520,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 // finalize pass already uses.
 static void
 watchdog_event_current_open_and_render(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* note) {
+    dsd_call_state_refresh_receive(opts, state, slot);
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     if (!ext) {
         // No call has been observed: nothing to render, and no call to carry a note.
@@ -2502,7 +2533,8 @@ watchdog_event_current_open_and_render(dsd_opts* opts, dsd_state* state, uint8_t
     // A note is the slot's call's: with no call to carry it -- none observed, or one that ended and
     // already committed its row -- it is declined. Written into the blank staged row, it became a
     // note-only row when the next epoch opened.
-    if (note != NULL && watchdog_event_call_is_authoritative(call, lifecycle)) {
+    if (note != NULL && watchdog_event_call_is_authoritative(call, lifecycle)
+        && call->receive_verdict != DSD_RECEIVE_CHECKING && call->receive_verdict != DSD_RECEIVE_REJECTED) {
         Event_History_I* event_struct = &state->event_history_s[slot];
         DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
                      sizeof(event_struct->Event_History_Items[0].internal_str), "%s", note);
@@ -2534,7 +2566,8 @@ dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, cons
 // active -- the call is ACTIVE and the lifecycle has opened its epoch.
 static int
 watchdog_event_slot_call_is_open(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
-    return call->epoch != 0U && call->phase == DSD_CALL_PHASE_ACTIVE && lifecycle->epoch == call->epoch;
+    return call->epoch != 0U && call->phase == DSD_CALL_PHASE_ACTIVE && lifecycle->epoch == call->epoch
+           && call->receive_verdict != DSD_RECEIVE_CHECKING && call->receive_verdict != DSD_RECEIVE_REJECTED;
 }
 
 // Detail a protocol decodes without naming the call it belongs to -- D-STAR slow-data text and
@@ -2578,6 +2611,7 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
 
 void
 dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    dsd_call_state_refresh_receive(opts, state, slot);
     if (!opts || !state || !state->event_history_s || slot > 1U) {
         return;
     }
@@ -2750,6 +2784,9 @@ dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
                                 const char* detail, int finalize_call) {
     if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
         return -1;
+    }
+    if (!dsd_receive_allows(opts, state, call->protocol, slot)) {
+        return 0;
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     watchdog_event_lock_if_present(ext);
@@ -3114,6 +3151,12 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     if (!dsd_event_data_notice_args_valid(opts, state, slot, observation, category, notice)) {
         return -1;
     }
+    if (!dsd_receive_allows(opts, state, observation->protocol, slot)) {
+        if (consume_staged_payload) {
+            dsd_event_stage_clear(state, slot);
+        }
+        return 0;
+    }
 
     (void)dsd_call_state_ensure(state);
     dsd_event_history_transaction transaction;
@@ -3129,6 +3172,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     dsd_event_history_item_set_metadata(
         item, dsd_crc_is_failed(item->crc_invalid) ? DSD_EVENT_SEVERITY_WARNING : DSD_EVENT_SEVERITY_INFO, category);
     item->systype = observation->protocol;
+    dsd_receive_identity_current(state, observation->protocol, slot, &item->receive_identity);
+    DSD_SNPRINTF(item->service_label, sizeof(item->service_label), "%s",
+                 dsd_receive_service_name(&opts->receive.names, &item->receive_identity));
     item->subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
     item->gi = -1;
     item->source_id = observation->ota_source_id <= UINT32_MAX ? (uint32_t)observation->ota_source_id : 0U;
@@ -3166,8 +3212,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     char datestr[11];
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
-    watchdog_event_render_notice_line(datestr, timestr, item->channel_label, notice, item->event_string,
-                                      sizeof(item->event_string));
+    watchdog_event_render_notice_line(datestr, timestr,
+                                      item->service_label[0] ? item->service_label : item->channel_label, notice,
+                                      item->event_string, sizeof(item->event_string));
     watchdog_event_mark_crc(item->event_string, sizeof(item->event_string), 0U, item->crc_invalid);
 
     write_event_to_log_file(opts, state, slot, 0U, item->event_string);

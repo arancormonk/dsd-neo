@@ -229,7 +229,7 @@ int rtl_stream_get_requested_ppm(const dsd_opts* opts);
  * @param ctx Stream context.
  * @param out Destination buffer for samples. Must not be NULL.
  * @param count Maximum number of samples to read.
- * @param out_got [out] Set to the number of samples actually read.
+ * @param out_got [out] Set to the number of samples actually read; 0 when a live NFM monitor yields on an idle input.
  * @return 0 on success; otherwise <0 on error (e.g., shutdown).
  */
 int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);

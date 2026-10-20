@@ -11,6 +11,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -18,6 +19,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -226,6 +228,14 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
     if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+        return;
+    }
+    if (strcmp(entry->section, "receive") == 0) {
+        dsd_receive_policy policy = {};
+        char error[160];
+        if (dsd_receive_config_set(&policy, entry->key, val, error, sizeof(error)) != 0) {
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, error);
+        }
         return;
     }
     if (strcmp(entry->section, "input") == 0 && strncmp(entry->key, "airspy_", 7) == 0) {
@@ -760,7 +770,7 @@ validate_config_stream_syntax_append(FILE* stream, const char* source_path, int 
         return -1;
     }
 
-    char line[1024];
+    char line[8192];
     config_validation_scan_t scan = {};
     scan.source_path = source_path;
     scan.depth = depth;

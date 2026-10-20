@@ -16,12 +16,14 @@
  * 2024-03 EDACS-FME display improvements
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/receive_types.h>
 #include "dsd-neo/core/input_level.h"
 
 #include <curses.h>
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -3595,6 +3597,16 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_render_call_info_rx_tone_line(opts, state);
 
     ui_render_call_info_tone_filter_line(opts, state);
+
+    int receive_enabled = 0;
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        receive_enabled |= opts->receive.filters[kind].enabled;
+    }
+    if (receive_enabled) {
+        char receive_status[160];
+        dsd_app_receive_status_text(opts, state, receive_status, sizeof receive_status);
+        printw("| Receive: %s\n", receive_status);
+    }
 
     ui_render_call_info_dstar(state);
 

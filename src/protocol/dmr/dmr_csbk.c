@@ -26,6 +26,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -2037,7 +2038,8 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
 
         dmr_csbk_print_group_label(state, (uint32_t)ctx->t_tg[j]);
         policy_allowed = dmr_policy_tune_allowed(opts, state, ctx->t_tg[j], 0, is_group_call, 0, &policy_decision);
-        if (ctx->t_tg[j] == 0 || state->trunk_cc_freq == 0 || opts->trunk_enable != 1) {
+        if (ctx->t_tg[j] == 0 || state->trunk_cc_freq == 0 || opts->trunk_enable != 1
+            || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, j & 1)) {
             continue;
         }
         if (!policy_allowed) {
@@ -2355,7 +2357,8 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
         return;
     }
 
-    policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision);
+    policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision)
+                     && dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_DATA_POS, tslot);
     if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
         if (state->trunk_chan_map[lcn] != 0) {
             dsd_trunk_tune_result tune_result =

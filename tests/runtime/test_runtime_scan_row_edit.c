@@ -35,11 +35,12 @@ parse_row(const char* text, unsigned int mode) {
    the gain only where the caller says the row runs one of its own. A blank -Y row in a legacy list has no scope. */
 static void
 test_fields_follow_the_option_grammar(void) {
-    const uint32_t sq = DSD_SCAN_ROW_FIELD_SQUELCH;
+    const uint32_t sq = DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_NAMES;
     assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_NFM, 0) == (sq | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE));
     assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_AM, 0) == (sq | DSD_SCAN_ROW_FIELD_WIDTH));
-    assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_P25, 0) == sq);
-    assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_DMR, 1) == (sq | DSD_SCAN_ROW_FIELD_GAIN));
+    assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_P25, 0) == (sq | DSD_SCAN_ROW_FIELD_SLOT | DSD_SCAN_ROW_FIELD_NAC));
+    assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_DMR, 1)
+           == (sq | DSD_SCAN_ROW_FIELD_GAIN | DSD_SCAN_ROW_FIELD_SLOT | DSD_SCAN_ROW_FIELD_DCC));
     assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_AM, 1) == (sq | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_GAIN));
     assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_INHERIT, 1) == 0U);
     assert(dsd_scan_row_edit_fields(DSD_SCAN_MODE_LAST + 1U, 1) == 0U);

@@ -2205,7 +2205,7 @@ seed_dmr_confidence(dsd_state* state, unsigned int cc) {
 
 static int
 expect_dmr_confidence(const char* label, const dsd_state* state, unsigned int cc, uint8_t locked) {
-    if (state->dmr_color_code != cc || state->dmr_confidence_locked != locked || state->dmr_confidence_color_code != cc
+    if (state->dmr_color_code != 16U || state->dmr_confidence_locked != locked || state->dmr_confidence_color_code != cc
         || state->dmr_confidence_candidate_cc != cc) {
         DSD_FPRINTF(stderr, "%s DMR confidence mismatch cc=%u locked=%u conf_cc=%u candidate=%u\n", label,
                     state->dmr_color_code, state->dmr_confidence_locked, state->dmr_confidence_color_code,
@@ -2465,13 +2465,14 @@ test_p25_nac_state_isolated_per_target(void) {
     state.p2_cc_verified = 0U; /* the second target's seed was never proven */
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.nac != 0x2A1) {
-        DSD_FPRINTF(stderr, "P25 scan target did not restore its own NAC active=%zu nac=0x%03X\n",
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.nac != 0) {
+        DSD_FPRINTF(stderr, "P25 scan target reused a stale received NAC active=%zu nac=0x%03X\n",
                     dsd_engine_trunk_scan_active_index(&state), state.nac);
         test_rc = 1;
     }
-    if (state.p2_cc != 0x2A1ULL || state.p2_cc_verified != 1U) {
-        DSD_FPRINTF(stderr, "P25 scan target did not restore its Phase 2 seed and its proof cc=0x%03llX verified=%u\n",
+    if (state.p2_cc != 0x2A1ULL || state.p2_cc_verified != 0U) {
+        DSD_FPRINTF(stderr,
+                    "P25 scan target did not restore its Phase 2 seed without stale proof cc=0x%03llX verified=%u\n",
                     state.p2_cc, (unsigned)state.p2_cc_verified);
         test_rc = 1;
     }
@@ -4231,9 +4232,10 @@ test_nxdn_state_isolated_per_target(void) {
         DSD_FPRINTF(stderr, "nxdn identity scan did not rotate back to first target\n");
         test_rc = 1;
     }
-    test_rc |= expect_nxdn_identity("restored target", &state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
-    if (state.nxdn_last_ran_stand_in != 1U) {
-        DSD_FPRINTF(stderr, "restored target lost its stand-in mark, so its value would read as a RAN\n");
+    test_rc |= expect_nxdn_identity("restored target", &state, 12, 461012500, (unsigned int)-1, 0x25U, 3, "Type-C", 1,
+                                    96, 12, 4);
+    if (state.nxdn_last_ran_stand_in != 0U) {
+        DSD_FPRINTF(stderr, "restored target retained a stale stand-in mark\n");
         test_rc = 1;
     }
 
@@ -12569,7 +12571,9 @@ test_target_edit_squelch_live_and_stored(void) {
     int test_rc = expect_target_squelch(&opts, "edit init", -60, 1);
     if (state.scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN || state.scan_row_session == 0U
         || state.scan_row_index != 0
-        || state.scan_row_editable != (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_GAIN)
+        || state.scan_row_editable
+               != (uint16_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_GAIN | DSD_SCAN_ROW_FIELD_SLOT
+                             | DSD_SCAN_ROW_FIELD_NAC | DSD_SCAN_ROW_FIELD_NAMES)
         || state.scan_row_listed != (uint8_t)DSD_SCAN_ROW_FIELD_SQUELCH || state.scan_row_edited != 0U) {
         DSD_FPRINTF(stderr, "published row scanner=%u session=%u index=%d editable=%#x listed=%#x edited=%#x\n",
                     (unsigned)state.scan_row_scanner, (unsigned)state.scan_row_session, (int)state.scan_row_index,
@@ -12843,8 +12847,8 @@ test_target_edit_width_and_tone(void) {
     g_scan_dsp_rate_hz = 24000;
     int test_rc = expect_nfm_front(&opts, "width edit init", 1, 12500, 0);
     if (state.scan_row_editable
-            != (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
-                         | DSD_SCAN_ROW_FIELD_GAIN)
+            != (uint16_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
+                          | DSD_SCAN_ROW_FIELD_GAIN | DSD_SCAN_ROW_FIELD_NAMES)
         || state.scan_row_listed != (uint8_t)DSD_SCAN_ROW_FIELD_WIDTH) {
         DSD_FPRINTF(stderr, "nfm target editable=%#x listed=%#x\n", (unsigned)state.scan_row_editable,
                     (unsigned)state.scan_row_listed);

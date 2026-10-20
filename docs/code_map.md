@@ -7056,3 +7056,30 @@ keeps a passband per mode and takes 0 as "unchanged"): the analog targets instal
 for its demodulator and passband, the targets after the one with its own passband run the peer's own again, a peer that
 refuses AM makes the advance move past the am target, and shutdown returns the peer to FM with its own FM and AM
 passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LISTS`.
+
+### Receive admission and service identity (#637)
+
+- `core/receive_types.h` owns bounded filter bitsets, naming rules and received identities. Runtime's
+  `receive_policy.h` parses/validates CLI, INI, CSV and command edits; the frame path only matches pre-parsed data.
+  `core/receive.h` supplies explicit protocol/slot admission from validated DCC/RAN/NAC/tone evidence. A P25 Phase 2
+  seed without proof and NXDN stand-in values stay unknown. Shared-vocoder invocations carry their owning protocol
+  through `dsd_state::receive_context_*`, since YSF/dPMR temporarily borrow another protocol's decoder.
+- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
+  acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media
+  into a hold. Restoring a scan target preserves acquisition hints but clears its current received-code proof.
+- Canonical calls carry a separate service label, received identity and admission verdict. A confirmed identity
+  change starts another epoch; completed event/history rows retain their labels. Frontend/API history merging checks
+  confirmed service identities. Channel labels, numeric IDs and imported files keep their existing meaning.
+- `engine/analog_call.c` owns conventional NFM call/recording lifecycle in the engine scan-owner extension. Runtime's
+  frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency. Speaker output is independent
+  of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
+  `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
+  A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption,
+  and the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing
+  received-tone freshness deadline closes stalled calls and WAVs on the decoder thread. Replay reads keep their
+  sample-driven behavior. `IO_RTL_RETUNE_PREPARE`, `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
+- App-control receive commands validate complete edits before application. Row commands retain scanner session and
+  row/target identity. `receive_view` shares checking/rejection text with Qt and terminal. The Qt ReceivePolicySheet
+  uses existing modal/keyboard/discard behavior; terminal menu_receive uses one captured destination per prompt chain.
+  Global defaults live in `[receive]`; `scan_mode` restores them after row overrides. Recording publication sanitizes
+  service-name filename components; Rdio uses its supported talkgroup label without changing the numeric target.

@@ -10,9 +10,11 @@
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -22,6 +24,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #ifdef USE_RADIO
@@ -2009,6 +2012,11 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
         return;
     }
     trunk_scan_restore_snapshot(state, &rt->snapshot);
+    state->nac = 0;
+    state->p2_cc_verified = 0;
+    state->dmr_color_code = 16;
+    state->nxdn_last_ran = (unsigned int)-1;
+    state->nxdn_last_ran_stand_in = 0;
     // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding.
     // Keep it in the raw snapshot only for rollback to a carrier that a failed switch never left (issue #657).
     DSD_MEMSET(state->dmr_le_vendor, 0, sizeof(state->dmr_le_vendor));
@@ -2139,9 +2147,9 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
     state->scan_row_index = (int32_t)coord->active;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN;
     state->scan_row_editable =
-        (uint8_t)dsd_scan_row_edit_fields(trunk_scan_target_mode(rt->target.type), coord->gain_editable);
-    state->scan_row_edited = (uint8_t)dsd_scan_row_edit_fields_edited(&rt->edit);
-    state->scan_row_listed = (uint8_t)dsd_scan_row_edit_fields_listed(listed, rt->target.rtl_gain_is_set);
+        (uint16_t)dsd_scan_row_edit_fields(trunk_scan_target_mode(rt->target.type), coord->gain_editable);
+    state->scan_row_edited = (uint16_t)dsd_scan_row_edit_fields_edited(&rt->edit);
+    state->scan_row_listed = (uint16_t)dsd_scan_row_edit_fields_listed(listed, rt->target.rtl_gain_is_set);
 }
 
 // A user purge clears the live ledger; every parked target keeps its own copy,
@@ -3763,6 +3771,14 @@ trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
 static int
 trunk_scan_service_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                            dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
+        && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m)) {
+        rt->last_allowed_activity_m = 0.0;
+        if (trunk_scan_rejection_has_alternate(opts, state, coord, now_m)) {
+            trunk_scan_advance(opts, state, coord);
+        }
+        return 1;
+    }
     return trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)
            || trunk_scan_service_tone_rejection(opts, state, coord, rt, now_m);
 }
@@ -4103,6 +4119,12 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
 static void
 trunk_scan_conventional_activity(trunk_scan_conventional_family family, const dsd_opts* opts, const dsd_state* state,
                                  uint32_t target, uint32_t source, int is_private, int encrypted, int data_call) {
+    const int protocol = family == TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR    ? DSD_SYNC_DMR_BS_VOICE_POS
+                         : family == TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN ? DSD_SYNC_NXDN_POS
+                                                                         : DSD_SYNC_P25P1_POS;
+    if (!dsd_receive_allows(opts, state, protocol, state ? state->currentslot : 0)) {
+        return;
+    }
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!opts || !state || !coord || coord->count == 0) {
         return;
@@ -4607,6 +4629,9 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     rt->edit = *next;
     dsd_scan_option_values scratch;
     const dsd_scan_option_values* after = trunk_scan_target_values(rt, &scratch);
+    if (dsd_scan_option_receive_differs(&before, after)) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state);
+    }
     (void)dsd_scan_mode_options(opts, state, after);
     /* The receiver's request changed: the width the decoder runs, or, for a rigctl peer, whether the target sets one of
        its own. Only a rollback reaches here with a retune still in flight (an edit of the width is BUSY then), which

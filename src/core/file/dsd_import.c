@@ -1595,8 +1595,9 @@ csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_
     out->squelch_margin_db = dsd_squelch_mode_is_dynamic(out->squelch_mode) ? profile->values.squelch_margin_db : 0;
     out->bandwidth_hz =
         profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH) ? profile->values.channel_bw_hz : -1;
-    out->tone_filter =
-        dsd_scan_option_tone_summary(profile ? &profile->values : NULL, out->tone_list, sizeof(out->tone_list));
+    const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+    out->tone_filter = dsd_scan_option_tone_summary(values, out->tone_list, sizeof out->tone_list);
+    dsd_scan_option_receive_summary(values, out->receive_summary, sizeof out->receive_summary);
 }
 
 int

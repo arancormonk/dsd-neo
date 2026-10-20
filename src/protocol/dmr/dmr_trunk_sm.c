@@ -9,6 +9,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -573,6 +574,7 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_crc_flags = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
+    ctx->receive_check_started_m = 0.0;
 
     if (opts) {
         opts->trunk_is_tuned = 0;
@@ -644,6 +646,9 @@ dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         return 0;
     }
 
+    if (!dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, ev->slot)) {
+        return 0;
+    }
     long freq = resolve_freq(state, ev->freq_hz, ev->lpcn);
     if (freq <= 0) {
         sm_log(opts, "grant-no-freq");
@@ -874,6 +879,9 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
     double now_m = dsd_decode_now_mono_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
+    if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
+        return;
+    }
     ctx->slots[s].voice_active = 1;
     ctx->slots[s].last_active_m = now_m;
     ctx->t_voice_m = now_m;
@@ -924,6 +932,9 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
     double now_m = dsd_decode_now_mono_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
+    if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, s)) {
+        return;
+    }
     ctx->slots[s].last_active_m = now_m;
     ctx->t_voice_m = now_m;
 
@@ -1011,7 +1022,25 @@ tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, do
         do_release(ctx, opts, state, "release-forced");
         return;
     }
-
+    int admitted = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        if (dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, slot)) {
+            admitted = 1;
+        } else {
+            ctx->slots[slot].voice_active = 0;
+        }
+    }
+    if (!admitted) {
+        if (ctx->receive_check_started_m <= 0.0) {
+            ctx->receive_check_started_m = now_m;
+        }
+        if (now_m - ctx->receive_check_started_m >= grant_timeout) {
+            ctx->receive_check_started_m = 0.0;
+            do_release(ctx, opts, state, "receive-filter");
+        }
+        return;
+    }
+    ctx->receive_check_started_m = 0.0;
     clear_stale_voice_slots(ctx, now_m);
 
     if (has_voice_activity(ctx)) {

@@ -135,6 +135,7 @@ static const sample k_samples[] = {
     {"nfm_bandwidth_set", "{\"value\":12500}"},
     {"am_bandwidth_set", "{\"value\":0}"},
     {"tone_filter_set", "{\"mode\":1,\"list\":\"100.0\"}"},
+    {"receive_set", "{\"kind\":1,\"enabled\":1,\"allow\":\"7\",\"block\":\"8\"}"},
     {"scan_row_edit", "{\"scanner\":2,\"session\":1,\"row\":0,\"field\":1,\"action\":1,\"squelch_db\":-50}"},
     {"pulse_out_set", "{\"value\":\"default\"}"},
     {"pulse_in_set", "{\"value\":\"default\"}"},

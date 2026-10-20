@@ -5,6 +5,8 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -114,6 +116,9 @@ scan_voice_snapshot_is_voice(const dsd_call_snapshot* call) {
 
 static int
 scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call) {
+    if (!dsd_receive_allows(opts, state, call->protocol, call->slot)) {
+        return 0;
+    }
     const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
     if (target == 0U) {
         /* Unknown identity (LC never decoded) counts as voice. */
@@ -177,7 +182,8 @@ dsd_scan_tg_hold_call_active(const dsd_state* state) {
         if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
             continue;
         }
-        if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA) {
+        if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA
+            || call.receive_verdict == DSD_RECEIVE_CHECKING || call.receive_verdict == DSD_RECEIVE_REJECTED) {
             continue;
         }
         /* The remapped policy target is the identity the hold is compared against everywhere
@@ -568,4 +574,21 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
      * hold the deadline function returns < 0, so MANUAL_HOLD reports the cap as paused. */
     report.visit_deadline_m = dsd_engine_scan_visit_deadline_m(opts, state);
     dsd_scan_timing_publish(state, &report);
+}
+
+int
+dsd_scan_receive_should_leave(const dsd_opts* opts, const dsd_state* state, double arrived_m, double now_m) {
+    if (!opts || !state || arrived_m < 0.0 || dsd_receive_current_allows(opts, state, state->currentslot)) {
+        return 0;
+    }
+    dsd_scan_voice_probe_result media;
+    (void)dsd_scan_voice_probe(opts, state, &media);
+    const double hold_s =
+        (double)scan_voice_resolve_ms(opts->scan_voice_hold_ms, DSD_SCAN_VOICE_DEFAULT_HOLD_MS) / 1000.0;
+    if (media.active_media_m >= arrived_m && now_m - media.active_media_m < hold_s) {
+        return 0;
+    }
+    const double acquire_s =
+        (double)scan_voice_resolve_ms(opts->scan_voice_qualify_ms, DSD_SCAN_VOICE_DEFAULT_QUALIFY_MS) / 1000.0;
+    return now_m - arrived_m >= acquire_s;
 }

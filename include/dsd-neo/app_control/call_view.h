@@ -19,6 +19,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_CALL_VIEW_H_
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -107,6 +108,8 @@ typedef struct {
      * that has a name of its own.
      */
     char channel[DSD_APP_CALL_CHANNEL_SIZE];
+    char service[DSD_SERVICE_LABEL_SIZE];
+    dsd_receive_identity receive_identity;
     uint64_t tg_id;      /**< OTA target when one decoded, else the policy-resolved id. */
     double started_m;    /**< Exact monotonic epoch start for ACTIVE and ENDED lines; 0 on other lines. */
     uint32_t elapsed_ms; /**< Since the epoch started; frozen at the end for ENDED. */

@@ -12,6 +12,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #if defined(_WIN32)
 #include <algorithm>
 #endif
@@ -791,6 +792,13 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     } else if (strcmp(section, "dsp") == 0) {
         cfg->has_dsp = 1;
         apply_dsp_section_key(cfg, key_lc, val);
+    } else if (strcmp(section, "receive") == 0) {
+        cfg->has_receive = 1;
+        char error[160];
+        if (dsd_receive_config_set(&cfg->receive, key_lc, val, error, sizeof(error)) != 0) {
+            cfg->receive_refused = 1;
+            LOG_WARN("Config [receive]: %s; receive defaults were not applied\n", error);
+        }
     } else if (strcmp(section, "analog") == 0) {
         cfg->has_analog = 1;
         apply_analog_section_key(cfg, key_lc, val);
@@ -856,6 +864,9 @@ static int process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, c
    none, and loading it puts the default back. */
 static void
 note_section_present(dsdneoUserConfig* cfg, const char* section) {
+    if (strcmp(section, "receive") == 0) {
+        cfg->has_receive = 1;
+    }
     if (strcmp(section, "analog") == 0) {
         cfg->has_analog = 1;
     }
@@ -869,7 +880,7 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
         return -1;
     }
 
-    char line[1024];
+    char line[8192];
     char current_section[64];
     current_section[0] = '\0';
 
@@ -1193,7 +1204,7 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
         return -1;
     }
 
-    char line[1024];
+    char line[8192];
     while (fgets(line, sizeof line, fp)) {
         char inc_path[1024];
         int parse_rc = user_config_parse_include_directive_line(line, inc_path, sizeof inc_path);
@@ -1305,7 +1316,7 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
     /* Includes are already processed by dsd_user_config_load_profile() before
      * calling this function. This function only extracts profile overlay keys. */
 
-    char line[1024];
+    char line[8192];
     char current_section[64];
     current_section[0] = '\0';
     char target_profile[64];
@@ -1463,7 +1474,7 @@ dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* nam
 
     int count = 0;
     size_t buf_used = 0;
-    char line[1024];
+    char line[8192];
 
     while (fgets(line, sizeof line, stream) && count < max_names) {
         const char* profile_name = NULL;

@@ -57,6 +57,7 @@ target_sources(
     dsd-neo_engine
     PRIVATE
         engine.c
+        analog_call.c
         channel_scan.c
         signal_search.c
         frame_sync_hooks_install.c

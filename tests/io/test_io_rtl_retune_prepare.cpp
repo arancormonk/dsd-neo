@@ -1560,14 +1560,17 @@ test_search_live_read_bound(void) {
     int got = 0;
     uint64_t waited_ms = 0U;
     int failed =
-        expect_int_eq("search read hook", rtl_stream_test_search_live_read_bound(7U, 3000, &got, &waited_ms), 0);
+        expect_int_eq("search read hook", rtl_stream_test_search_live_read_bound(7U, 0, 3000, &got, &waited_ms), 0);
     failed |= expect_int_eq("a search's read gives up on a silent producer", got, -1);
     failed |= expect_waited("a search's read", waited_ms, 100U, 2000U);
 
     failed |= expect_int_eq("read hook outside a search",
-                            rtl_stream_test_search_live_read_bound(0U, 300, &got, &waited_ms), 0);
+                            rtl_stream_test_search_live_read_bound(0U, 0, 300, &got, &waited_ms), 0);
     failed |= expect_int_eq("outside a search the read waits for the producer", got, 1);
     failed |= expect_waited("a read outside a search", waited_ms, 250U, 60000U);
+    failed |= expect_int_eq("NFM read hook", rtl_stream_test_search_live_read_bound(0U, 1, 3000, &got, &waited_ms), 0);
+    failed |= expect_int_eq("an idle NFM monitor yields without ending the stream", got, 0);
+    failed |= expect_waited("an idle NFM read", waited_ms, 100U, 2000U);
     return failed;
 }
 

@@ -53,7 +53,8 @@ int dsd_rtl_stream_io_hook_read(dsd_state* state, float* out, size_t count, int*
 /**
  * @brief dsd_rtl_stream_io_hook_read() with one flag byte per sample read into @p flags (issue #518 follow-up): the
  * auto squelch's per-sample gate (DSD_SQUELCH_FLAG_CLOSED when closed). Through read_ex when installed, otherwise
- * through read with every flag 0 (open). @p flags may be NULL.
+ * through read with every flag 0 (open). @p flags may be NULL. A live NFM monitor may return success with
+ * @p out_got set to 0 on an idle input, letting its decoder thread service call deadlines.
  */
 int dsd_rtl_stream_io_hook_read_ex(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got);
 

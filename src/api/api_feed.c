@@ -204,6 +204,11 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_strn(w, "t_mode", e->t_mode, sizeof e->t_mode);
     (void)dsd_json_kv_strn(w, "s_mode", e->s_mode, sizeof e->s_mode);
     (void)dsd_json_kv_strn(w, "channel_label", e->channel_label, sizeof e->channel_label);
+    (void)dsd_json_kv_strn(w, "service_label", e->service_label, sizeof e->service_label);
+    (void)dsd_json_kv_u64(w, "receive_kind", e->receive_identity.kind);
+    (void)dsd_json_kv_u64(w, "receive_value", e->receive_identity.value);
+    (void)dsd_json_kv_bool(w, "receive_known", e->receive_identity.known);
+    (void)dsd_json_kv_u64(w, "receive_slot", e->receive_identity.slot);
     (void)dsd_json_kv_u64(w, "channel", e->channel);
     (void)dsd_json_kv_i64(w, "freq_hz", e->freq_hz);
     (void)dsd_json_kv_u64(w, "access_code_kind", e->access_code_kind);
@@ -287,6 +292,12 @@ row_fingerprint(const Event_History* e) {
     h = fnv1a_str(h, e->t_mode, sizeof e->t_mode);
     h = fnv1a_str(h, e->s_mode, sizeof e->s_mode);
     h = fnv1a_str(h, e->channel_label, sizeof e->channel_label);
+    h = fnv1a_str(h, e->service_label, sizeof e->service_label);
+    h = fnv1a_byte(h, e->receive_identity.kind);
+    h = fnv1a_byte(h, e->receive_identity.known);
+    h = fnv1a_byte(h, e->receive_identity.slot);
+    h = fnv1a_byte(h, (unsigned char)e->receive_identity.value);
+    h = fnv1a_byte(h, (unsigned char)(e->receive_identity.value >> 8));
     h = fnv1a_str(h, e->alias, sizeof e->alias);
     h = fnv1a_str(h, e->gps_s, sizeof e->gps_s);
     h = fnv1a_str(h, e->text_message, sizeof e->text_message);
@@ -401,6 +412,10 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_strn(w, "tg_text", view.tg_text, sizeof view.tg_text);
     (void)dsd_json_kv_strn(w, "src_text", view.src_text, sizeof view.src_text);
     (void)dsd_json_kv_strn(w, "channel", view.channel, sizeof view.channel);
+    (void)dsd_json_kv_strn(w, "service_label", view.service, sizeof view.service);
+    (void)dsd_json_kv_u64(w, "receive_kind", view.receive_identity.kind);
+    (void)dsd_json_kv_u64(w, "receive_value", view.receive_identity.value);
+    (void)dsd_json_kv_bool(w, "receive_known", view.receive_identity.known);
     (void)dsd_json_kv_u64(w, "tg_id", view.tg_id);
     (void)dsd_json_kv_u64(w, "elapsed_ms", view.elapsed_ms);
     (void)dsd_json_kv_u64(w, "kid", view.kid);
@@ -409,7 +424,8 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_u64(w, "priority", view.priority);
     (void)dsd_json_kv_bool(w, "enc", view.enc);
     dsd_call_snapshot snap;
-    if (dsd_call_state_get(state, (uint8_t)slot, &snap) > 0) {
+    if ((view.state == DSD_APP_CALL_LINE_ACTIVE || view.state == DSD_APP_CALL_LINE_ENDED)
+        && dsd_call_state_get(state, (uint8_t)slot, &snap) > 0) {
         (void)dsd_json_kv_i64(w, "frequency_hz", snap.frequency_hz);
         (void)dsd_json_kv_i64(w, "protocol", snap.protocol);
         (void)dsd_json_kv_i64(w, "kind", snap.kind);

@@ -862,3 +862,13 @@ their own keys and DMR maps. Session defaults change beneath explicit target pro
 These live changes do not rewrite the saved profile or alter talkgroup exclusions.
 Legacy `-Y` rows support their configured per-row profiles; live target replacement
 is exposed for the trunk-scan coordinator's stable target IDs only.
+
+### Receive admission and names
+
+Targets accept compatible slot/DCC/RAN/NAC filters and service-name rules in `options`; see
+[CSV receive options](csv-formats.md#receive-filters-and-service-names). A target replaces each specified filter
+kind or its naming table and otherwise inherits global `[receive]` defaults. Rejected traffic is muted and creates
+no call events or recordings, and does not refresh activity holds. Control-channel acquisition remains possible;
+voice grants lacking destination access-code evidence have a bounded acquisition window. Manual conventional-channel
+hold keeps a rejected channel selected and muted. A restored target must validate its received identifier again.
+Names reflect received services without changing the target ID or base channel label.

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -413,7 +414,8 @@ p25_sm_reset_vc_reacquire_tracking(p25_sm_ctx_t* ctx) {
 static void
 p25_sm_note_vc_decode_activity(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, const char* source, int slot,
                                double now_m) {
-    if (!ctx || !ctx->vc_reacquire_eligible) {
+    if (!ctx || !ctx->vc_reacquire_eligible
+        || !dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, slot)) {
         return;
     }
     if (now_m <= 0.0) {
@@ -2403,6 +2405,12 @@ p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
 }
 
 static int
+p25_receive_grant_allowed(const dsd_opts* opts, const dsd_state* state, int channel, int slot) {
+    return dsd_receive_grant_allows(opts, is_tdma_channel(state, channel) ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS,
+                                    slot);
+}
+
+static int
 p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                         const dsd_tg_policy_decision* decision, const p25_grant_eval_ctx_t* eval_ctx,
                         p25_grant_route_ctx_t* out) {
@@ -2421,6 +2429,9 @@ p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     out->now_m = dsd_decode_now_mono_s();
     out->slot = channel_slot(state, ev->channel);
     out->logical_slot = is_tdma_channel(state, ev->channel) ? out->slot : 0;
+    if (!p25_receive_grant_allowed(opts, state, ev->channel, out->logical_slot)) {
+        return 0;
+    }
     if (p25_grant_stale_regrant_blocked(ctx, opts, state, ev, out->freq, out->logical_slot, eval_ctx->data_call,
                                         out->now_m, &out->stale_regrant_probe)) {
         return 0;
@@ -3898,6 +3909,9 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
 
     double now_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_decode_now_mono_s();
     int s = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
+    if (!dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, s)) {
+        return 0;
+    }
     if (p25_voice_start_suppress_post_end_repeat(ctx, opts, state, s, ev, why, now_m)) {
         return 1;
     }
@@ -4784,6 +4798,7 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
 
 static void
 p25_release_clear_context(p25_sm_ctx_t* ctx, int count_return) {
+    ctx->receive_check_started_m = 0.0;
     p25_grant_clear_slot_state(ctx);
     p25_sm_clear_followed_history(ctx);
     ctx->vc_freq_hz = 0;
@@ -5486,19 +5501,7 @@ p25_sm_vc_sync_slot(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
 }
 
 static void
-p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
-    if (!ctx || ctx->state != P25_SM_TUNED) {
-        return;
-    }
-    double now_m = dsd_decode_now_mono_s();
-    int sync_slot = p25_sm_vc_sync_slot(ctx, state, slot);
-    p25_sm_note_vc_decode_activity(ctx, (dsd_opts*)opts, state, "sync", sync_slot, now_m);
-    ctx->t_voice_m = now_m;
-    if (sync_slot >= 0 && sync_slot <= 1 && ctx->slots[sync_slot].grant_active && !ctx->slots[sync_slot].data_call) {
-        ctx->slots[sync_slot].last_active_m = now_m;
-    }
-    p25_sm_diagf((dsd_opts*)opts, state, ctx, "vc_sync", "freq=%ld ch=0x%04X tg=%d tdma=%d slot=%d", ctx->vc_freq_hz,
-                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, ctx->vc_is_tdma, sync_slot);
+p25_sm_note_successful_vc_timing(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     /* Learn successful TDMA VC acquisition only for the OP25-style CQPSK timing
      * chain. */
@@ -5511,9 +5514,30 @@ p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* 
         }
     }
 #else
+    (void)ctx;
     (void)opts;
     (void)state;
 #endif
+}
+
+static void
+p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
+    if (!ctx || ctx->state != P25_SM_TUNED) {
+        return;
+    }
+    double now_m = dsd_decode_now_mono_s();
+    int sync_slot = p25_sm_vc_sync_slot(ctx, state, slot);
+    if (!dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, sync_slot)) {
+        return;
+    }
+    p25_sm_note_vc_decode_activity(ctx, (dsd_opts*)opts, state, "sync", sync_slot, now_m);
+    ctx->t_voice_m = now_m;
+    if (sync_slot >= 0 && sync_slot <= 1 && ctx->slots[sync_slot].grant_active && !ctx->slots[sync_slot].data_call) {
+        ctx->slots[sync_slot].last_active_m = now_m;
+    }
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "vc_sync", "freq=%ld ch=0x%04X tg=%d tdma=%d slot=%d", ctx->vc_freq_hz,
+                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, ctx->vc_is_tdma, sync_slot);
+    p25_sm_note_successful_vc_timing(ctx, opts, state);
 }
 
 static void
@@ -6381,10 +6405,37 @@ p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
     return 1;
 }
 
+static int
+p25_sm_receive_check(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double grant_timeout) {
+    int admitted = 0;
+    for (int slot = 0; slot < (ctx->vc_is_tdma ? 2 : 1); slot++) {
+        if (dsd_receive_allows(opts, state, ctx->vc_is_tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS, slot)) {
+            admitted = 1;
+        } else {
+            ctx->slots[slot].voice_active = 0;
+        }
+    }
+    if (!admitted) {
+        if (ctx->receive_check_started_m <= 0.0) {
+            ctx->receive_check_started_m = now_m;
+        }
+        if (now_m - ctx->receive_check_started_m >= grant_timeout) {
+            ctx->receive_check_started_m = 0.0;
+            do_release(ctx, opts, state, "receive-filter", 0);
+        }
+        return 1;
+    }
+    ctx->receive_check_started_m = 0.0;
+    return 0;
+}
+
 static void
 p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime,
                   double grant_timeout) {
     if (!ctx) {
+        return;
+    }
+    if (p25_sm_receive_check(ctx, opts, state, now_m, grant_timeout)) {
         return;
     }
     p25_sm_tick_tuned_try_cqpsk_retry(ctx, opts, state, now_m);
@@ -6809,7 +6860,9 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     if (!ev->ptt_signature_valid) {
         p25_sm_note_conventional_activity(opts, state, slot, call.target);
     }
-    (void)dsd_call_state_update_media(state, (uint8_t)slot, 1, 0.0);
+    if (dsd_receive_allows(opts, state, call.protocol, slot)) {
+        (void)dsd_call_state_update_media(state, (uint8_t)slot, 1, 0.0);
+    }
     dsd_event_sync_slot(opts, state, (uint8_t)slot);
     return 1;
 }

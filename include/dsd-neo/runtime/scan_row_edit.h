@@ -16,6 +16,7 @@
 #define DSD_NEO_RUNTIME_SCAN_ROW_EDIT_H
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -30,8 +31,15 @@ enum {
     DSD_SCAN_ROW_FIELD_WIDTH = 1U << 1,   /**< channel width, the row's --nfm-bandwidth-hz / --am-bandwidth-hz */
     DSD_SCAN_ROW_FIELD_TONE = 1U << 2,    /**< CTCSS/DCS policy, the row's --tone-allow / --tone-block / ... */
     DSD_SCAN_ROW_FIELD_GAIN = 1U << 3,    /**< tuner gain, a trunk-scan target's rtl_gain column */
+    DSD_SCAN_ROW_FIELD_SLOT = 1U << 4,
+    DSD_SCAN_ROW_FIELD_DCC = 1U << 5,
+    DSD_SCAN_ROW_FIELD_RAN = 1U << 6,
+    DSD_SCAN_ROW_FIELD_NAC = 1U << 7,
+    DSD_SCAN_ROW_FIELD_NAMES = 1U << 8,
+    DSD_SCAN_ROW_FIELDS_RECEIVE = DSD_SCAN_ROW_FIELD_SLOT | DSD_SCAN_ROW_FIELD_DCC | DSD_SCAN_ROW_FIELD_RAN
+        | DSD_SCAN_ROW_FIELD_NAC | DSD_SCAN_ROW_FIELD_NAMES,
     DSD_SCAN_ROW_FIELDS_ALL = DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
-        | DSD_SCAN_ROW_FIELD_GAIN,
+        | DSD_SCAN_ROW_FIELD_GAIN | DSD_SCAN_ROW_FIELDS_RECEIVE,
 };
 
 /** What a change does to a field. */
@@ -56,6 +64,7 @@ typedef struct {
     dsd_tone_set tone_set;
     /** Tuner gain in whole dB, 1..49, or 0 for the tuner's AGC. */
     int gain_db;
+    dsd_receive_policy receive;
 } dsd_scan_row_edit_value;
 
 /** One row's session edits. A field is in at most one of @p set and @p inherit. Zeroed means no edits. */

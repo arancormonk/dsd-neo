@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -109,8 +110,28 @@ dsd_app_scan_row_field_name(uint32_t field, unsigned int mode) {
                                                                                          : "NFM bandwidth";
         case DSD_SCAN_ROW_FIELD_TONE: return "tone filter";
         case DSD_SCAN_ROW_FIELD_GAIN: return "RTL gain";
+        case DSD_SCAN_ROW_FIELD_SLOT: return "slot filter";
+        case DSD_SCAN_ROW_FIELD_DCC: return "DCC filter";
+        case DSD_SCAN_ROW_FIELD_RAN: return "RAN filter";
+        case DSD_SCAN_ROW_FIELD_NAC: return "NAC filter";
+        case DSD_SCAN_ROW_FIELD_NAMES: return "service names";
         default: return "setting";
     }
+}
+
+static int
+scan_row_receive_value_text(uint32_t field, const dsd_scan_row_edit_value* value, char* out, size_t out_size) {
+    for (int i = 0; i <= DSD_RECEIVE_FILTER_COUNT; i++) {
+        if (field == (uint32_t)(DSD_SCAN_ROW_FIELD_SLOT << i)) {
+            if (i == DSD_RECEIVE_FILTER_COUNT) {
+                DSD_SNPRINTF(out, out_size, "%u rules", value->receive.names.count);
+            } else {
+                DSD_SNPRINTF(out, out_size, "%s", value->receive.filters[i].enabled ? "enabled" : "off");
+            }
+            return 0;
+        }
+    }
+    return -1;
 }
 
 int
@@ -121,6 +142,9 @@ dsd_app_scan_row_value_text(uint32_t field, const dsd_scan_row_edit_value* value
     out[0] = '\0';
     if (!value) {
         return -1;
+    }
+    if (field >= DSD_SCAN_ROW_FIELD_SLOT) {
+        return scan_row_receive_value_text(field, value, out, out_size);
     }
     switch (field) {
         case DSD_SCAN_ROW_FIELD_SQUELCH:

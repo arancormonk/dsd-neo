@@ -19,6 +19,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -239,6 +240,8 @@ typedef struct {
     // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
     // rendered as a bracketed prefix between the row's timestamp and its protocol token.
     char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    char service_label[DSD_SERVICE_LABEL_SIZE];
+    dsd_receive_identity receive_identity;
     // Whether channel_label above has been resolved for this row. An unnamed channel resolves to
     // an empty label, which is an answer and not a missing one -- a -Y list with only some rows
     // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
@@ -868,6 +871,9 @@ struct dsd_state {
     float center;
     int jitter;
     int synctype;
+    /* The protocol that owns a shared vocoder invocation; synctype may temporarily select another decoder. */
+    int receive_context_protocol;
+    uint8_t receive_context_active;
     float min;
     float max;
     float lmid;
@@ -2129,9 +2135,9 @@ struct dsd_state {
     uint32_t scan_row_session;
     int32_t scan_row_index;
     uint8_t scan_row_scanner;
-    uint8_t scan_row_editable;
-    uint8_t scan_row_edited;
-    uint8_t scan_row_listed;
+    uint16_t scan_row_editable;
+    uint16_t scan_row_edited;
+    uint16_t scan_row_listed;
     /* The number dsd_opts::scan_row_scope_seq took when the row's options were installed (dsd_scan_mode_options()). */
     uint32_t scan_row_scope_seq;
     /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice

@@ -1354,7 +1354,55 @@ code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
   (some receivers' discriminator outputs, some sound cards) turns every code into the other signal of the same number,
   so a D023N transmitter reads as `DCS D047N / D023I`.
 
-### Tone filter (CTCSS/DCS receive policy)
+### Receive filters and service names
+
+Receive filters apply to decoded output, call/data/location publication, per-call WAV/MBE recordings,
+and scan activity. They leave raw input WAV, I/Q and symbol captures available for diagnostics.
+
+| Kind | Allow / block | Values | Disable |
+| --- | --- | --- | --- |
+| Slot | `--slot-allow`, `--slot-block` | `1`, `2`; DMR, P25 Phase 2 and X2-TDMA only | `--no-slot-filter` |
+| DCC | `--dcc-allow`, `--dcc-block` | DMR color codes `0..15` | `--no-dcc-filter` |
+| RAN | `--ran-allow`, `--ran-block` | NXDN48/96 RANs `0..63` | `--no-ran-filter` |
+| NAC | `--nac-allow`, `--nac-block` | P25 Phase 1/2 hexadecimal `001..FFE`, optional `0x` | `--no-nac-filter` |
+
+Use `/` between values, for example `--dcc-allow 4/6/8 --dcc-block 6`. Allow and block may coexist;
+block wins, and every applicable dimension must pass. Slot filters do not affect FDMA. An enabled
+access filter stays **Checking** until reception supplies a validated identifier, including a block-only
+filter. A configured Phase 2 descrambler seed is not proof of a received NAC. Existing CRC/FEC,
+talkgroup, encryption and synthesis gates still apply. Control-channel acquisition remains available;
+a grant without destination access-code evidence receives the existing bounded acquisition window.
+Rejected traffic does not refresh an activity hold. A manually held conventional channel stays selected and muted.
+
+Names use repeatable `--slot-name`, `--dcc-name`, `--ran-name`, `--nac-name` and `--tone-name` options:
+
+```sh
+dsd-neo -i rtl:0:461.0M -fr --dcc-allow 4/7 --slot-name '1=Dispatch' --dcc-name '7=Hospital'
+dsd-neo -i rtl:0:154.43M -fA -P --tone-name '141.3=20R Traveler' --tone-name 'D023N=County fire'
+```
+
+A matching access-code or tone name wins over a slot name, followed by the existing channel label.
+Naming alone never filters traffic. The channel label and permanent scan-target ID remain unchanged.
+Each scope accepts up to 32 selectors and names up to 63 UTF-8 bytes. Empty names, leading/trailing spaces,
+commas, double quotes and control characters are refused. Equivalent DCS spellings share one selector;
+conflicting names for that selector are refused. `--no-service-names` clears the inherited table.
+
+Live editors are on the Qt/Android monitor under **Signal & site**: **Receive filters** and **Service names**.
+They offer **All channels** / **This channel**, with **Use default** and **List value** for session-only row edits.
+The terminal equivalents are **Decoder → Receive filters** and **Trunking → Channels & groups → Service names**.
+Edits are validated and applied as a whole on the decoder thread; a stale destination is refused.
+A policy change closes the affected active call under its old label. Completed history retains its service
+identity and label, and different confirmed identifiers do not merge into one call.
+
+`-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
+History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions.
+Carrier end, rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
+include a sanitized `_SVC_` component. Rdio exports use the service name in their talkgroup label field
+while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
+named WAVs without fabricated talkgroup IDs. See [receive configuration](config-system.md) and
+[row options](csv-formats.md).
+
+## Tone filter (CTCSS/DCS receive policy)
 
 The tone filter decides, from the tone or code the monitor receives (above), which analog FM traffic is heard. It is a
 setting, shown apart from what is received, and it is off by default: then the ordinary carrier squelch alone decides.

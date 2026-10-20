@@ -46,6 +46,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <initializer_list>
 #include <memory>
@@ -1823,6 +1824,43 @@ test_repeated_notice_gains_carrier(void) {
     }
 }
 
+/* Co-channel services retain separate histories even when all numeric call IDs match. */
+void
+test_receive_service_identity(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = kCaptureStart + 200;
+    {
+        CallHistoryModel model;
+        for (int code = 7; code <= 8; ++code) {
+            Event_History* item = ring.commit(0, 1001, 2001, when, when + 4, "", "", "Base channel");
+            item->receive_identity.known = 1;
+            item->receive_identity.kind = DSD_RECEIVE_DCC;
+            item->receive_identity.value = static_cast<uint16_t>(code);
+            item->receive_identity.slot = 1;
+            DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", "Hospital");
+            model.refresh(ring.state);
+        }
+        expect("different confirmed services cannot merge", model.count() == 2);
+        Event_History* analog = ring.commit(0, 0, 0, when + 10, when + 20, "", "", "Base channel");
+        analog->receive_identity = {1413, DSD_RECEIVE_CTCSS, 1, 0};
+        DSD_SNPRINTF(analog->service_label, sizeof analog->service_label, "%s", "20R Traveler");
+        model.refresh(ring.state);
+        expect("service names reach display without replacing the base channel",
+               model.data(model.index(0), CallHistoryModel::NameRole) == "20R Traveler"
+                   && model.data(model.index(0), CallHistoryModel::ChannelRole) == "Base channel");
+        expect("tone is available in history",
+               model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "141.3");
+    }
+    {
+        CallHistoryModel model;
+        expect("service rows persist separately", model.count() == 3);
+        expect("service and tone survive reload",
+               model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "20R Traveler"
+                   && model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "141.3");
+    }
+}
+
 std::atomic<int> g_storeBuildsOnGui{0};
 std::atomic<int> g_storeBuildsElsewhere{0};
 
@@ -1941,6 +1979,7 @@ main(int argc, char** argv) {
     test_carrier_filled_in_place_reingests();
     test_fragments_on_different_frequencies_merge();
     test_repeated_notice_gains_carrier();
+    test_receive_service_identity();
     test_stores_serialise_off_the_gui_thread();
 
     QDir(dataDir).removeRecursively();

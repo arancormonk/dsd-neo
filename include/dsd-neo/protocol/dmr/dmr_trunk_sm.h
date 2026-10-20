@@ -112,9 +112,10 @@ typedef struct {
     uint8_t vc_crc_flags;
 
     // Timing (monotonic only)
-    double t_tune_m;    // Time of last VC tune
-    double t_voice_m;   // Time of last voice activity
-    double t_cc_sync_m; // Time of last CC sync
+    double t_tune_m;                // Time of last VC tune
+    double receive_check_started_m; // Bounded acquisition while receive admission is pending/rejected
+    double t_voice_m;               // Time of last voice activity
+    double t_cc_sync_m;             // Time of last CC sync
 
     /* CC probes do not replace the confirmed/configured return destination.
      * These fields live in each scan target's existing DMR context. */

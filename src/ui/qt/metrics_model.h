@@ -279,6 +279,7 @@ class MetricsModel : public QObject {
     /* Issue #518: the scan row on air for the "this channel" editors -- whether there is one, its name, and the
      * session-edit fields (DSD_SCAN_ROW_FIELD_*) it can take, runs an edit of and sets in its list, from the
      * app-control scan row view. */
+    Q_PROPERTY(QString receiveStatus READ receiveStatus NOTIFY controlChanged)
     Q_PROPERTY(bool scanRowActive READ scanRowActive NOTIFY controlChanged)
     Q_PROPERTY(QString scanRowLabel READ scanRowLabel NOTIFY controlChanged)
     /* Which row it is ("scanner:session:row"), for a sheet that must notice another row coming on air: two rows can
@@ -827,6 +828,11 @@ class MetricsModel : public QObject {
     }
 
     /** @brief Whether a scan row is on air that the "this channel" editors can edit (issue #518). */
+    QString
+    receiveStatus() const {
+        return m_view.receive_status;
+    }
+
     bool
     scanRowActive() const {
         return m_view.scan_row_active;
@@ -2037,6 +2043,7 @@ class MetricsModel : public QObject {
         bool tone_filter_visible = false;
         bool tone_filter_editable = false;
         bool tone_filter_row_override = false;
+        QString receive_status;
         bool scan_row_active = false;
         bool scan_row_synced = false;
         bool tetra_visible = false;
@@ -2209,12 +2216,12 @@ class MetricsModel : public QObject {
 
         bool
         controlEquals(const View& other) const {
-            return audio_muted == other.audio_muted && held_tg == other.held_tg
-                   && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
-                   && replay_input == other.replay_input && trunking_enabled == other.trunking_enabled
-                   && scanner_mode == other.scanner_mode && scanControlEquals(other) && scan_mode == other.scan_mode
-                   && decode_mode == other.decode_mode && decryptionEquals(other) && radioControlsEqual(other)
-                   && tgLockoutsEqual(other);
+            return receive_status == other.receive_status && audio_muted == other.audio_muted
+                   && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count
+                   && tuner_controlled == other.tuner_controlled && replay_input == other.replay_input
+                   && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
+                   && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
+                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other);
         }
     };
 

@@ -1306,3 +1306,13 @@ After a failed run, Retry acknowledges the USB diagnostic and Play can start the
 saved system again once the service is inactive. The site chooser also offers
 “Dismiss failure and choose a site”; it returns to Idle only after the host confirms
 that the service has finished stopping.
+
+### Receive filters and service names
+
+While listening, open **Signal & site → Receive filters** or **Service names**. Filters have an On/Off setting and
+separate allow/block lists. Naming rows choose an identifier, its value and a service name. **All channels** edits
+the configured default; **This channel**, **Use default** and **List value** edit the captured scan row for this
+session. A stale row/session command is refused. Back and Escape protect unsaved changes; validation errors keep
+the editor open. History and notifications use received service names while preserving the channel label.
+Conventional NFM history records the tone identity and `-P` records each accepted transmission independently of
+speaker output. See [receive behavior and limits](../docs/cli.md#receive-filters-and-service-names).

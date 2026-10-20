@@ -48,6 +48,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -8386,7 +8387,7 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
 }
 
 static int
-rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count) {
+rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count, int analog_monitor) {
     int empty = 0;
     uint64_t empty_since_ms = 0U;
     for (;;) {
@@ -8406,13 +8407,15 @@ rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count) {
            The orchestrator reads with no decoder state, so the bound follows the search's
            ownership of the tuner; it is timed from the first empty poll, so a read that
            finds samples reads no clock. */
-        if (rtl_signal_search_owner() != 0U) {
+        if (rtl_signal_search_owner() != 0U || analog_monitor) {
             const uint64_t now_ms = dsd_realtime_mono_ms();
             if (!empty) {
                 empty = 1;
                 empty_since_ms = now_ms;
             } else if (now_ms - empty_since_ms >= 100U) {
-                return -1;
+                /* An NFM monitor yields without ending its stream, so the decoder can expire a
+                   stalled call and its recording. A search retains its existing failed-read contract. */
+                return rtl_signal_search_owner() != 0U ? -1 : 0;
             }
         }
 
@@ -8444,9 +8447,9 @@ rtl_stream_read_live(float* out, uint8_t* flags, size_t count, dsd_opts* opts, c
 
     int perf_on = rtl_perf_enabled();
     uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-    int got = rtl_stream_read_live_samples(out, flags, count);
+    int got = rtl_stream_read_live_samples(out, flags, count, dsd_analog_tone_detection_active(opts));
     if (got <= 0) {
-        return -1;
+        return got;
     }
     if (perf_on) {
         rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
@@ -8631,7 +8634,7 @@ rtl_stream_read_replay(float* out, uint8_t* flags, size_t count) {
  * @param count Maximum number of samples to read.
  * @param opts  Decoder options (must not be NULL; used for runtime PPM changes).
  * @param state Decoder state (unused).
- * @return Number of samples read (>=1), 0 if count==0, or -1 on exit.
+ * @return Number of samples read (>=1), 0 for an idle live NFM monitor or count==0, or -1 on exit.
  */
 extern "C" int
 dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_state* state) {
@@ -13962,7 +13965,7 @@ static DSD_THREAD_RETURN_TYPE
 }
 
 extern "C" int
-rtl_stream_test_search_live_read_bound(uint64_t search_owner, int feed_after_ms, int* out_got,
+rtl_stream_test_search_live_read_bound(uint64_t search_owner, int analog_monitor, int feed_after_ms, int* out_got,
                                        uint64_t* out_waited_ms) {
     if (!out_got || !out_waited_ms || feed_after_ms <= 0) {
         return -1;
@@ -13988,7 +13991,7 @@ rtl_stream_test_search_live_read_bound(uint64_t search_owner, int feed_after_ms,
     if (started) {
         float sample = 0.0f;
         const uint64_t read_started_ms = dsd_realtime_mono_ms();
-        *out_got = rtl_stream_read_live_samples(&sample, NULL, 1U);
+        *out_got = rtl_stream_read_live_samples(&sample, NULL, 1U, analog_monitor);
         *out_waited_ms = dsd_realtime_mono_ms() - read_started_ms;
         feeder.read_done.store(1, std::memory_order_release);
         (void)dsd_thread_join(thread);

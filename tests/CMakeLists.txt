@@ -247,6 +247,21 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_decode_clock PUBLIC dsd-neo_platform)
 
 add_library(
+    dsd-neo_test_receive_support
+    STATIC
+    ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+)
+target_include_directories(
+    dsd-neo_test_receive_support
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_receive_support
+    PUBLIC $<LINK_ONLY:dsd-neo_runtime>
+)
+
+add_library(
     dsd-neo_test_call_state_support
     STATIC
     ${PROJECT_SOURCE_DIR}/src/core/util/call_state.c
@@ -259,7 +274,10 @@ target_include_directories(
 # call_state.c stamps call and recent-activity times from the decode clock.
 target_link_libraries(
     dsd-neo_test_call_state_support
-    PUBLIC dsd-neo_test_decode_clock dsd-neo_platform
+    PUBLIC
+        dsd-neo_test_decode_clock
+        dsd-neo_platform
+        dsd-neo_test_receive_support
 )
 target_compile_definitions(
     dsd-neo_test_call_state_support
@@ -2105,6 +2123,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
 )
+target_link_libraries(
+    dsd-neo_test_nxdn_frame_routing
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_nxdn_frame_routing
     PRIVATE
@@ -3072,6 +3094,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
@@ -3835,6 +3858,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
     )
     target_include_directories(
@@ -3914,7 +3938,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_call_history_model
-        PRIVATE Qt6::Core Qt6::Test
+        PRIVATE Qt6::Core Qt6::Test dsd-neo_test_receive_support
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_call_history_model
@@ -5248,6 +5272,17 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         COMMAND dsd-neo_test_core_call_alert_history_sndfile_alt_tag
     )
 endif()
+
+add_executable(
+    dsd-neo_test_core_receive
+    core/test_core_receive.c
+    ../src/engine/analog_call.c
+)
+target_link_libraries(
+    dsd-neo_test_core_receive
+    PRIVATE dsd-neo_core dsd-neo_dsp dsd-neo_test_support
+)
+add_test(NAME CORE_RECEIVE COMMAND dsd-neo_test_core_receive)
 
 add_executable(dsd-neo_test_core_state_ext core/test_core_state_ext.c)
 target_include_directories(
@@ -9235,6 +9270,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_t3_sm_clamp
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_clamp
     PRIVATE
@@ -9259,6 +9298,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_t3_sm_release
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_release
     PRIVATE
@@ -9282,6 +9325,10 @@ add_executable(
     test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
@@ -9310,6 +9357,10 @@ add_executable(
     test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_shim
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_shim
@@ -9341,6 +9392,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_cmove
+    PRIVATE dsd-neo_test_receive_support
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_cmove
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_cmove
@@ -9374,6 +9433,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_t3_force_release
+    PRIVATE dsd-neo_test_receive_support
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_force_release
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_t3_force_release
     PRIVATE
@@ -9406,6 +9473,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_t3_move_release
+    PRIVATE dsd-neo_test_receive_support
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_move_release
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_t3_move_release
     PRIVATE
@@ -9437,6 +9512,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    PRIVATE dsd-neo_test_receive_support
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_ann_wd_tscc
@@ -10751,6 +10834,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_time_fallback
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_lrrp_time_fallback
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -10779,6 +10866,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_time_valid
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_lrrp_time_valid
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -10803,6 +10894,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_token_alignment
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_token_alignment
@@ -10831,6 +10926,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -10858,6 +10957,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_lrrp_resync_prefix
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -10884,6 +10987,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_position_token_precedence
@@ -10913,6 +11020,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_crc_gating
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_lrrp_crc_gating
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -10937,6 +11048,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_empty_payload_type
@@ -10966,6 +11081,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_lrrp_wrapped_document
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -10994,6 +11113,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_pdu_utf16_text
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_pdu_utf16_text
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -11019,6 +11142,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_tms_utf16le
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_tms_utf16le
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -11039,6 +11166,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
@@ -11067,6 +11198,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_lrrp_event_crc_gating
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -11093,6 +11228,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+)
+target_link_libraries(
+    dsd-neo_test_dmr_udp_comp_header
+    PRIVATE dsd-neo_test_receive_support
 )
 target_include_directories(
     dsd-neo_test_dmr_udp_comp_header
@@ -11134,6 +11273,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
+target_link_libraries(
+    dsd-neo_test_dmr_locn_time_fallback
+    PRIVATE dsd-neo_test_receive_support
+)
 target_include_directories(
     dsd-neo_test_dmr_locn_time_fallback
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
@@ -11166,7 +11309,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_embedded_gps_position_error
-    PRIVATE dsd-neo_platform dsd-neo_test_support ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE
+        dsd-neo_test_receive_support
+        dsd-neo_platform
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(
     NAME DMR_EMBEDDED_GPS_POSITION_ERROR
@@ -11192,7 +11339,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_core_gps_lrrp_crc_gating
-    PRIVATE dsd-neo_platform dsd-neo_test_support ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE
+        dsd-neo_test_receive_support
+        dsd-neo_platform
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(
     NAME CORE_GPS_LRRP_CRC_GATING
@@ -14025,6 +14176,21 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS "iq-decode" TIMEOUT 120
         )
     endfunction()
+
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_IQ_RECEIVE_POLICY
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/receive_iq_check.py
+                $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+        )
+        set_tests_properties(
+            DECODE_IQ_RECEIVE_POLICY
+            PROPERTIES LABELS "iq-decode" TIMEOUT 180
+        )
+    endif()
 
     # Reject case: the fixture must run (expected) and must not produce a decode
     # (not_expected). Used for receiver noise, which a decoder should ignore entirely.
@@ -18139,3 +18305,16 @@ if(WIN32 AND CURSES_INCLUDE_DIRS)
     unset(_dsd_neo_test_includes)
     unset(_dsd_neo_curses_dir)
 endif()
+
+add_executable(
+    dsd-neo_test_runtime_receive_policy
+    runtime/test_runtime_receive_policy.c
+)
+target_link_libraries(
+    dsd-neo_test_runtime_receive_policy
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_RECEIVE_POLICY
+    COMMAND dsd-neo_test_runtime_receive_policy
+)

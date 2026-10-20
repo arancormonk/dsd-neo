@@ -276,6 +276,30 @@ can be changed for the rest of the session from the frontends' "this channel" ed
 default whatever the row says; the file is never written, and Config->Save never saves such an edit. See [Live
 per-channel edits](trunk-scan.md#runtime-behavior).
 
+### Receive filters and service names
+
+The `options` cell accepts the receive switches in [CLI receive filters](cli.md#receive-filters-and-service-names).
+`--slot-*` and slot names apply to `dmr` and `p25` rows (P25 FDMA remains unaffected); `--dcc-*` and DCC names
+to `dmr`; `--ran-*` and RAN names to `nxdn48`/`nxdn96`; `--nac-*` and NAC names to `p25`; tone names to `nfm`.
+The corresponding conventional and trunked target types use the same compatibility checks. An incompatible
+switch is refused with its option name and an explanation. `--no-service-names` explicitly clears a table.
+
+Allow and block may coexist for one kind. The first switch for that kind replaces its complete inherited
+filter. A naming option replaces the complete inherited naming table, with subsequent naming options adding
+rules. Unmentioned filters and names inherit defaults, which return when the row is left. Use `/`, never a
+comma, inside a list. Quotes group an option's argument; they do not permit commas in service names.
+
+```csv
+Channel,Frequency,Name,Mode,Options
+1,461000000,Shared repeater,dmr,--dcc-allow 4/7 --dcc-block 4 --dcc-name '7=Hospital'
+2,851375000,P25 channel,p25,--nac-allow 293/A12 --slot-block 2 --nac-name '293=Public works'
+3,154430000,County repeater,nfm,--tone-name '141.3=20R Traveler'
+```
+
+Import previews summarize the row's filters and naming-rule count. Live **This channel** edits are session-only;
+**Use default** inherits the configured value and **List value** restores the imported row. These edits never
+rewrite the imported CSV or change a permanent target ID.
+
 ### Analog rows
 
 `nfm` and `am` channel-map rows and `nfm-conventional` and `am-conventional` trunk-scan targets accept only the options

@@ -688,6 +688,7 @@ appendChannelProfile(const dsd_csv_channel_profile* row, void* context) {
                                 invalid when it runs the configured policy. */
                     {"toneFilter", row->tone_filter >= 0 ? QVariant(row->tone_filter) : QVariant()},
                     {"toneList", QString::fromUtf8(row->tone_list)},
+                    {"receiveSummary", QString::fromUtf8(row->receive_summary)},
                     {"profileRef", QString::fromUtf8(row->profile_ref)}});
 }
 
@@ -755,6 +756,7 @@ appendTargetPreview(const dsd_app_scan_csv_target* target, void* context) {
                        list; invalid when it runs the configured policy. */
         {"toneFilter", target->tone_filter >= 0 ? QVariant(target->tone_filter) : QVariant()},
         {"toneList", QString::fromUtf8(target->tone_list)},
+        {"receiveSummary", QString::fromUtf8(target->receive_summary)},
         {"modulation", QString::fromUtf8(target->modulation)}});
 }
 } // namespace

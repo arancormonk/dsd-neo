@@ -3496,17 +3496,22 @@ test_access_code_refreshes_while_live_and_freezes_at_the_end(void) {
     rc |= expect_access_code("a colour code locked while live lands", &event_history[0].Event_History_Items[0],
                              DSD_ACCESS_CODE_COLOR_CODE, 3U);
 
-    // A re-lock onto a different code while the call is still live -- the BS lock follows sustained evidence of a
-    // new colour code -- replaces the known one: refreshed, not filled once.
+    // A confirmed service change closes the old epoch, even with identical call IDs.
     state.dmr_color_code = 5U;
     dsd_event_sync_slot(&opts, &state, 0U);
-    rc |= expect_access_code("a different live code replaces a known one", &event_history[0].Event_History_Items[0],
+    rc |= expect_int("service change commits the old row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_access_code("old service keeps its received code", &event_history[0].Event_History_Items[1],
+                             DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_access_code("new service owns a separate row", &event_history[0].Event_History_Items[0],
                              DSD_ACCESS_CODE_COLOR_CODE, 5U);
-
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     state.dmr_color_code = 7U;
     dsd_event_sync_slot(&opts, &state, 0U);
-    rc |= expect_int("frozen code commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("service change commits two rows", committed_history_rows(&event_history[0]), 2);
     rc |= expect_access_code("ended render keeps the code the call was heard with",
                              &event_history[0].Event_History_Items[1], DSD_ACCESS_CODE_COLOR_CODE, 5U);
 
@@ -3651,9 +3656,11 @@ test_reacquisition_merge_fills_frequency_and_code_only(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
 
     const Event_History* merged = &event_history[0].Event_History_Items[1];
-    int rc = expect_int("reacquired transmission stays one row", committed_history_rows(&event_history[0]), 1);
-    rc |= expect_i64("merge never overwrites a known frequency", merged->freq_hz, 851012500);
-    rc |= expect_access_code("merge never overwrites a known code", merged, DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    int rc = expect_int("different confirmed services stay separate", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_i64("new service owns its frequency", merged->freq_hz, 852000000);
+    rc |= expect_access_code("new service owns its code", merged, DSD_ACCESS_CODE_COLOR_CODE, 5U);
+    rc |= expect_access_code("previous service stays immutable", &event_history[0].Event_History_Items[2],
+                             DSD_ACCESS_CODE_COLOR_CODE, 3U);
 
     // The other direction: a first segment that learned neither takes the reacquired segment's.
     reset_fixture(&opts, &state, event_history);

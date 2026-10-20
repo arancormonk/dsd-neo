@@ -39,6 +39,8 @@ typedef struct {
  */
 int dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks);
 void dsd_engine_cleanup(dsd_opts* opts, dsd_state* state);
+/** End calls under their old receive policy before a live edit (decoder thread). */
+void dsd_engine_receive_policy_boundary(dsd_opts* opts, dsd_state* state);
 
 /**
  * Run the decode clock on the capture clock of the I/Q replay the input names (`--iq-replay`; issue #572).

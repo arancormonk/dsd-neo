@@ -31,6 +31,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -73,6 +74,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1479,6 +1481,7 @@ ui_restore_receive_settings(dsd_opts* opts, dsd_state* state, const dsd_scan_set
     dsd_scan_settings back = *before;
     ui_restore_settings_keeping_row_policy(opts, state, &back, &now);
     opts->analog_tone_set = before->analog_tone_set;
+    opts->receive = before->receive;
     opts->analog_tone_filter = before->analog_tone_filter;
 }
 
@@ -2469,6 +2472,29 @@ ui_cmd_handle_tone_filter_set(dsd_opts* opts, dsd_state* state, const struct dsd
     return UI_CMD_APPLY_COMPLETED;
 }
 
+static int
+ui_cmd_handle_receive_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || c->n != sizeof(dsd_app_receive_payload)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_app_receive_payload edit;
+    DSD_MEMCPY(&edit, c->data, sizeof edit);
+    if (!memchr(edit.allow, '\0', sizeof edit.allow) || !memchr(edit.block, '\0', sizeof edit.block)
+        || !memchr(edit.names, '\0', sizeof edit.names)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_receive_policy policy;
+    dsd_scan_mode_configured_receive(opts, state, &policy);
+    char why[160];
+    if (dsd_receive_edit_parse(&policy, edit.kind, edit.enabled, edit.allow, edit.block, edit.names, why, sizeof why)) {
+        ui_set_toast(state, 5, "Refused: %s", why);
+        return UI_CMD_APPLY_FAILED;
+    }
+    dsd_scan_mode_set_configured_receive(opts, state, &policy);
+    ui_set_toast(state, 3, "%s", "Receive defaults saved; channel overrides stay in force");
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 /* A session edit of the scan row on air ("this channel", issue #518): scan_row_edit.c applies it and words the toast. */
 static int
 ui_cmd_handle_scan_row_edit(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
@@ -2490,6 +2516,7 @@ apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct
         {DSD_APP_CMD_NFM_BANDWIDTH_SET, ui_cmd_handle_nfm_bandwidth_set},
         {DSD_APP_CMD_AM_BANDWIDTH_SET, ui_cmd_handle_am_bandwidth_set},
         {DSD_APP_CMD_TONE_FILTER_SET, ui_cmd_handle_tone_filter_set},
+        {DSD_APP_CMD_RECEIVE_SET, ui_cmd_handle_receive_set},
         {DSD_APP_CMD_SCAN_ROW_EDIT, ui_cmd_handle_scan_row_edit},
         {DSD_APP_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
         {DSD_APP_CMD_TG_HOLD_SET, ui_cmd_handle_tg_hold_set},
@@ -4328,6 +4355,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
     {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
     {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
+    {DSD_APP_CMD_RECEIVE_SET, sizeof(dsd_app_receive_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},

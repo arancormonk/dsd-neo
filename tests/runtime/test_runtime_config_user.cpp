@@ -14,6 +14,7 @@
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -4432,8 +4434,8 @@ test_imports_dir_follows_config_dir(void) {
 
     /* Not named *_dir: readability-suspicious-call-argument reads a "<x>_dir"
        argument in dsd_test_path_join's `out` slot as swapped with its `dir`. */
-    char cfg_root[DSD_TEST_PATH_MAX];
-    char expected[DSD_TEST_PATH_MAX];
+    char cfg_root[DSD_TEST_PATH_MAX] = {};
+    char expected[DSD_TEST_PATH_MAX] = {};
     int rc = dsd_test_path_join(cfg_root, sizeof cfg_root, scratch, "dsd-neo") != 0 ? 1 : 0;
     rc |= dsd_test_path_join(expected, sizeof expected, cfg_root, "imports") != 0 ? 1 : 0;
 
@@ -4653,10 +4655,76 @@ test_tg_lockout_persistence_roundtrip(void) {
     return rc;
 }
 
+static void
+receive_check(bool condition, int line) {
+    if (!condition) {
+        DSD_FPRINTF(stderr, "receive configuration check failed at line %d\n", line);
+        abort();
+    }
+}
+
+#define RECEIVE_CHECK(condition) receive_check((condition), __LINE__)
+
+static int
+test_receive_defaults_and_row_inheritance(void) {
+    auto opts = std::make_unique<dsd_opts>();
+    auto state = std::make_unique<dsd_state>();
+    auto cfg = std::make_unique<dsdneoUserConfig>();
+    char path[DSD_TEST_PATH_MAX];
+    RECEIVE_CHECK(
+        write_temp_config("[receive]\nslot_enabled = true\nslot_allow = 1\ndcc_enabled = true\ndcc_allow = 0/7\n"
+                          "dcc_block = 0\nnac_enabled = true\nnac_allow = 0x293/FFE\n"
+                          "names = --dcc-name \"7=Hospital's #1\" --tone-name 'D023I=Dispatch'\n",
+                          path, sizeof path)
+        == 0);
+    RECEIVE_CHECK(dsd_user_config_load(path, cfg.get()) == 0 && cfg->has_receive && !cfg->receive_refused);
+    RECEIVE_CHECK(cfg->receive.names.count == 2);
+    dsd_apply_user_config_to_opts(cfg.get(), opts.get(), state.get());
+    RECEIVE_CHECK(opts->receive.filters[DSD_RECEIVE_DCC].enabled);
+    RECEIVE_CHECK(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_NAC].allow, 0xFFE));
+    RECEIVE_CHECK(!strcmp(opts->receive.names.rules[0].name, "Hospital's #1"));
+    const dsd_receive_policy defaults = opts->receive;
+    dsd_scan_options row = {};
+    char error[160];
+    RECEIVE_CHECK(dsd_scan_options_parse("--no-dcc-filter --slot-block 2 --dcc-name '0=On call'", DSD_SCAN_MODE_DMR, 1,
+                                         &row, error, sizeof error)
+                  == 0);
+    RECEIVE_CHECK(dsd_scan_mode_enter(opts.get(), state.get(), DSD_SCAN_MODE_DMR) == 0);
+    RECEIVE_CHECK(dsd_scan_mode_options(opts.get(), state.get(), &row.values) == 0);
+    RECEIVE_CHECK(!opts->receive.filters[DSD_RECEIVE_DCC].enabled);
+    RECEIVE_CHECK(!dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_SLOT].allow, 1));
+    RECEIVE_CHECK(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_SLOT].block, 2));
+    RECEIVE_CHECK(opts->receive.names.count == 1 && !strcmp(opts->receive.names.rules[0].name, "On call"));
+    dsd_snapshot_opts_to_user_config(opts.get(), state.get(), cfg.get());
+    RECEIVE_CHECK(dsd_receive_policy_equal(&cfg->receive, &defaults));
+    RECEIVE_CHECK(dsd_user_config_save_atomic(path, cfg.get()) == 0);
+    dsd_user_config_init(cfg.get());
+    RECEIVE_CHECK(dsd_user_config_load(path, cfg.get()) == 0 && !cfg->receive_refused);
+    RECEIVE_CHECK(dsd_receive_policy_equal(&cfg->receive, &defaults));
+    RECEIVE_CHECK(dsd_scan_mode_options(opts.get(), state.get(), nullptr) == 0);
+    RECEIVE_CHECK(dsd_receive_policy_equal(&opts->receive, &defaults));
+    const dsd_scan_options previous = row;
+    RECEIVE_CHECK(dsd_scan_options_parse("--ran-allow 1", DSD_SCAN_MODE_DMR, 1, &row, error, sizeof error) < 0);
+    RECEIVE_CHECK(previous.values.present == row.values.present
+                  && !dsd_scan_option_receive_differs(&previous.values, &row.values));
+    dsd_user_config_init(cfg.get());
+    RECEIVE_CHECK(dsd_user_config_apply_key(cfg.get(), "receive", "dcc_allow", "3") == 1);
+    RECEIVE_CHECK(dsd_user_config_apply_key(cfg.get(), "receive", "nac_allow", "FFF") == 1);
+    RECEIVE_CHECK(cfg->receive_refused);
+    dsd_apply_user_config_to_opts(cfg.get(), opts.get(), state.get());
+    RECEIVE_CHECK(dsd_receive_policy_equal(&opts->receive, &defaults));
+    dsd_state_ext_free_all(state.get());
+    RECEIVE_CHECK(remove(path) == 0);
+    return 0;
+}
+
+#undef RECEIVE_CHECK
+
 int
 main(void) {
     int rc = 0;
     rc |= test_imports_dir_follows_config_dir();
+    rc |= test_receive_defaults_and_row_inheritance();
     rc |= test_rtl_bw_khz_72_round_trip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();

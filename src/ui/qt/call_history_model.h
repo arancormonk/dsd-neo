@@ -81,15 +81,17 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,      // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole,      // "12:04"
-        KindRole,          // RowKind: voice call or data/control notice
-        DetailRole,        // notice payload: decoded text message or GPS string
-        ChannelRole,       // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
-        SourceNameRole,    // resolved source label, falling back to the OTA source text
-        SessionRole,       // decode session that logged the row, or last extended it (see session())
-        FreqHzRole,        // frequency in Hz the call was heard on (qint64), 0 when unknown
-        AccessCodeRole,    // "CC 1", "NAC 293", "RAN 5", "CAN 0" (app_control/access_code_view.h), else empty
+        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
+        TimeTextRole,   // "12:04"
+        KindRole,       // RowKind: voice call or data/control notice
+        DetailRole,     // notice payload: decoded text message or GPS string
+        ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SourceNameRole, // resolved source label, falling back to the OTA source text
+        SessionRole,    // decode session that logged the row, or last extended it (see session())
+        FreqHzRole,     // frequency in Hz the call was heard on (qint64), 0 when unknown
+        AccessCodeRole, // "CC 1", "NAC 293", "RAN 5", "CAN 0" (app_control/access_code_view.h), else empty
+        ServiceNameRole,
+        ReceivedToneRole,
         AccessCodeTextRole // "Color code 1", "Network access code 293", ..., else empty
     };
 
@@ -242,6 +244,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * system: the system is the saved entry the session runs, and stays so
          * for every row of that session. */
         QString channel;
+        QString service;
+        int receiveKind = 6;
+        int receiveValue = 0;
+        bool receiveKnown = false;
+        int receiveSlot = 0;
         /* Ring identity, persisted with the row so keyFor() can reproduce the key
          * the ring scan used. slot is the TDMA slot; seq is the push-sequence stamp
          * the row was committed at (push_seq - index + 1), which is stable for the

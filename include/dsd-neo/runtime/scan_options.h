@@ -5,6 +5,7 @@
 #ifndef DSD_NEO_RUNTIME_SCAN_OPTIONS_H
 #define DSD_NEO_RUNTIME_SCAN_OPTIONS_H
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/receive_types.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -45,6 +46,13 @@ enum {
     /** The nfm row sets its own CTCSS/DCS receive policy (--tone-allow, --tone-block or --no-tone-filter: one
      * option in three spellings, issue #527). */
     DSD_SCAN_OPT_TONE = 1U << 23,
+    DSD_SCAN_OPT_SLOT = 1U << 24,
+    DSD_SCAN_OPT_DCC = 1U << 25,
+    DSD_SCAN_OPT_RAN = 1U << 26,
+    DSD_SCAN_OPT_NAC = 1U << 27,
+    DSD_SCAN_OPT_NAMES = 1U << 28,
+    DSD_SCAN_OPT_RECEIVE = DSD_SCAN_OPT_SLOT | DSD_SCAN_OPT_DCC | DSD_SCAN_OPT_RAN | DSD_SCAN_OPT_NAC
+        | DSD_SCAN_OPT_NAMES,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -82,6 +90,7 @@ typedef struct {
     int tone_filter;
     /** Its list: every entry a standard tone or code, held once (core/analog_tone.h); empty with --no-tone-filter. */
     dsd_tone_set tone_set;
+    dsd_receive_policy receive;
     int mute_dmr;
     int tune_data_calls;
     int tune_enc_calls;
@@ -91,9 +100,14 @@ typedef struct {
     char key_profile_ref[64];
 } dsd_scan_option_values;
 
+/** Compact display summary of row-local receive filters and names. */
+void dsd_scan_option_receive_summary(const dsd_scan_option_values* values, char* out, size_t capacity);
+int dsd_scan_option_receive_differs(const dsd_scan_option_values* before, const dsd_scan_option_values* after);
+
 /** Parsed import metadata. Wipe after materializing; never publish this object to a frontend. */
 typedef struct {
     dsd_scan_option_values values;
+    unsigned int receive_seen; /* parser bookkeeping, never part of the live policy */
     uint64_t bp;
     uint64_t scalar;
     uint64_t hytera[4];

@@ -4,9 +4,11 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -99,6 +101,24 @@ static int option_set_path(const scan_option_spec* spec, const char* argument, u
     "expects whole Hz from " OPTION_HZ(DSD_ANALOG_AM_WIDTH_MIN_HZ) " to " OPTION_HZ(DSD_ANALOG_AM_WIDTH_MAX_HZ)
 
 static const scan_option_spec specifications[] = {
+    {"--slot-allow", DSD_SCAN_OPT_SLOT, DMR | P25, 1, 0, 0, 0, NULL, NULL},
+    {"--slot-block", DSD_SCAN_OPT_SLOT, DMR | P25, 1, 0, 0, 0, NULL, NULL},
+    {"--no-slot-filter", DSD_SCAN_OPT_SLOT, DMR | P25, 0, 0, 0, 0, NULL, NULL},
+    {"--dcc-allow", DSD_SCAN_OPT_DCC, DMR, 1, 0, 0, 0, NULL, NULL},
+    {"--dcc-block", DSD_SCAN_OPT_DCC, DMR, 1, 0, 0, 0, NULL, NULL},
+    {"--no-dcc-filter", DSD_SCAN_OPT_DCC, DMR, 0, 0, 0, 0, NULL, NULL},
+    {"--ran-allow", DSD_SCAN_OPT_RAN, NXDN, 1, 0, 0, 0, NULL, NULL},
+    {"--ran-block", DSD_SCAN_OPT_RAN, NXDN, 1, 0, 0, 0, NULL, NULL},
+    {"--no-ran-filter", DSD_SCAN_OPT_RAN, NXDN, 0, 0, 0, 0, NULL, NULL},
+    {"--nac-allow", DSD_SCAN_OPT_NAC, P25, 1, 0, 0, 0, NULL, NULL},
+    {"--nac-block", DSD_SCAN_OPT_NAC, P25, 1, 0, 0, 0, NULL, NULL},
+    {"--no-nac-filter", DSD_SCAN_OPT_NAC, P25, 0, 0, 0, 0, NULL, NULL},
+    {"--slot-name", DSD_SCAN_OPT_NAMES, DMR | P25, 1, 0, 0, 0, NULL, NULL},
+    {"--dcc-name", DSD_SCAN_OPT_NAMES, DMR, 1, 0, 0, 0, NULL, NULL},
+    {"--ran-name", DSD_SCAN_OPT_NAMES, NXDN, 1, 0, 0, 0, NULL, NULL},
+    {"--nac-name", DSD_SCAN_OPT_NAMES, P25, 1, 0, 0, 0, NULL, NULL},
+    {"--tone-name", DSD_SCAN_OPT_NAMES, NFM, 1, 0, 0, 0, NULL, NULL},
+    {"--no-service-names", DSD_SCAN_OPT_NAMES, ANY_MODES, 0, 0, 0, 0, NULL, NULL},
     {"-b", DSD_SCAN_OPT_BP, DMR, 1, 0, 0, 0, NULL, option_set_bp},
     {"-H", DSD_SCAN_OPT_HYTERA, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_hex},
     {"-1", DSD_SCAN_OPT_SCALAR, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_hex},
@@ -538,6 +558,15 @@ option_invalid(const scan_option_spec* spec, const char* argument, char* error, 
 static int
 option_apply(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed,
              scan_force_options* forces, char* error, size_t error_size) {
+    if (spec->field & DSD_SCAN_OPT_RECEIVE) {
+        if (dsd_receive_option_apply(&parsed->values.receive, &parsed->receive_seen, spec->name, argument, error,
+                                     error_size)
+            != 0) {
+            return -1;
+        }
+        parsed->values.present |= spec->field;
+        return 1;
+    }
     const int old_force = parsed->values.force;
     if ((parsed->values.present & spec->field) && spec->field != DSD_SCAN_OPT_FORCE) {
         return option_error(error, error_size, spec->name, "duplicate option");
@@ -627,7 +656,7 @@ dsd_scan_options_fields_for_mode(unsigned int mode, int conventional) {
 static int
 option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_options* parsed,
             scan_force_options* forces, char* error, size_t error_size) {
-    char token[1024] = {0};
+    char token[DSD_RECEIVE_LIST_MAX + 33] = {0};
     char argument[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
     int rc = option_token(cursor, token, sizeof(token));
     if (rc <= 0) {
@@ -668,7 +697,7 @@ static int
 option_file_read(const char* text, const char** cursor, dsd_scan_option_file_cb callback, void* context) {
     *cursor = option_skip_space(*cursor);
     const char* start = *cursor;
-    char token[1024] = {0};
+    char token[DSD_RECEIVE_LIST_MAX + 33] = {0};
     char argument[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
     int rc = option_token(cursor, token, sizeof(token));
     if (rc <= 0) {
@@ -765,7 +794,7 @@ option_trailing_tone_list(const char* text) {
     const scan_option_spec* last = NULL;
     const scan_option_spec* awaiting = NULL;
     const char* cursor = text;
-    char token[1024];
+    char token[DSD_RECEIVE_LIST_MAX + 33];
     int rc;
     while ((rc = option_token(&cursor, token, sizeof(token))) == 1) {
         if (awaiting) {
@@ -780,7 +809,7 @@ option_trailing_tone_list(const char* text) {
             *equals = '\0';
         }
         const scan_option_spec* spec = option_find(token);
-        if (spec && spec->field == DSD_SCAN_OPT_TONE && spec->argument) {
+        if (spec && (spec->field & (DSD_SCAN_OPT_TONE | DSD_SCAN_OPT_RECEIVE)) && spec->argument) {
             if (equals) {
                 last = spec;
             } else {
@@ -842,10 +871,12 @@ dsd_scan_options_tone_list_split(const char* options, const char* next, int next
         return 0;
     }
     const scan_option_spec* spec = option_trailing_tone_list(options);
-    if (!spec) {
+    if (!spec || (spec->field != DSD_SCAN_OPT_TONE && !next_past_header)) {
         return 0;
     }
-    (void)option_error(error, error_size, spec->name, "use / between entries, not commas");
+    (void)option_error(error, error_size, spec->name,
+                       spec->field == DSD_SCAN_OPT_NAMES ? "commas are not supported in service names"
+                                                         : "use / between entries, not commas");
     return 1;
 }
 
@@ -875,4 +906,80 @@ dsd_scan_option_tone_summary(const dsd_scan_option_values* values, char* list, s
         (void)dsd_tone_set_format_display(&values->tone_set, list, list_size);
     }
     return values->tone_filter;
+}
+
+static void
+receive_summary_set(int kind, const dsd_receive_set* set, const char* empty, char* out, size_t capacity) {
+    unsigned int count = 0;
+    size_t used = 0;
+    out[0] = '\0';
+    for (unsigned int v = 0; v < 4096; v++) {
+        if (!dsd_receive_set_contains(set, v)) {
+            continue;
+        }
+        count++;
+        if (count <= 6) {
+            char value[16];
+            (void)dsd_receive_value_format(kind, v, value, sizeof value);
+            int n = DSD_SNPRINTF(out + used, capacity - used, "%s%s", used ? "/" : "", value);
+            if (n < 0 || (size_t)n >= capacity - used) {
+                return;
+            }
+            used += (size_t)n;
+        }
+    }
+    if (count > 6) {
+        DSD_SNPRINTF(out + used, capacity - used, " (+%u more)", count - 6);
+    } else if (!count) {
+        DSD_SNPRINTF(out, capacity, "%s", empty);
+    }
+}
+
+void
+dsd_scan_option_receive_summary(const dsd_scan_option_values* values, char* out, size_t capacity) {
+    if (!out || !capacity) {
+        return;
+    }
+    out[0] = '\0';
+    size_t used = 0;
+    static const char* const names[] = {"Slot", "DCC", "RAN", "NAC"};
+    for (int kind = 0; values && kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (!(values->present & (DSD_SCAN_OPT_SLOT << kind))) {
+            continue;
+        }
+        const dsd_receive_filter* filter = &values->receive.filters[kind];
+        char allowed[64], blocked[64];
+        receive_summary_set(kind, &filter->allow, "all known", allowed, sizeof allowed);
+        receive_summary_set(kind, &filter->block, "none", blocked, sizeof blocked);
+        const int written = DSD_SNPRINTF(out + used, capacity - used, "%s%s %s (allow %s; block %s)", used ? "; " : "",
+                                         names[kind], filter->enabled ? "on" : "off", allowed, blocked);
+        if (written < 0 || (size_t)written >= capacity - used) {
+            return;
+        }
+        used += (size_t)written;
+    }
+    if (values && (values->present & DSD_SCAN_OPT_NAMES)) {
+        DSD_SNPRINTF(out + used, capacity - used, "%sService names: %u", used ? "; " : "", values->receive.names.count);
+    } else if (!used) {
+        DSD_SNPRINTF(out, capacity, "%s", "Receive filters and names: default");
+    }
+}
+
+int
+dsd_scan_option_receive_differs(const dsd_scan_option_values* before, const dsd_scan_option_values* after) {
+    const unsigned int b = before ? (before->present & DSD_SCAN_OPT_RECEIVE) : 0U;
+    const unsigned int a = after ? (after->present & DSD_SCAN_OPT_RECEIVE) : 0U;
+    if (a != b) {
+        return 1;
+    }
+    if (!a) {
+        return 0;
+    }
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if ((a & (DSD_SCAN_OPT_SLOT << kind))
+            && !dsd_receive_filter_equal(&before->receive.filters[kind], &after->receive.filters[kind])) {
+            return 1;
+        }
+    }
+    return (a & DSD_SCAN_OPT_NAMES) && !dsd_receive_names_equal(&before->receive.names, &after->receive.names);
 }

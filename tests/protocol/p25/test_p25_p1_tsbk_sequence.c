@@ -21,7 +21,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -446,12 +445,6 @@ void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-}
-
-void
-dsd_rtl_stream_metrics_hook_p25p1_ber_update(int ok_delta, int err_delta) {
-    (void)ok_delta;
-    (void)err_delta;
 }
 
 static int

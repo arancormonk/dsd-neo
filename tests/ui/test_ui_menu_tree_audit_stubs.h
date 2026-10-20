@@ -124,6 +124,11 @@
     X(act_toggle_ui_p25_iden)                                                                                          \
     X(act_toggle_ui_p25_metrics)                                                                                       \
     X(act_toggle_ui_p25_neighbors)                                                                                     \
+    X(act_receive_slot)                                                                                                \
+    X(act_receive_dcc)                                                                                                 \
+    X(act_receive_ran)                                                                                                 \
+    X(act_receive_nac)                                                                                                 \
+    X(act_service_names)                                                                                               \
     X(act_tone_filter)                                                                                                 \
     X(act_trunk_toggle)                                                                                                \
     X(act_tune_data)                                                                                                   \

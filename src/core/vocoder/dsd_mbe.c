@@ -29,6 +29,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -2055,7 +2056,7 @@ mbe_dmr_slot_crypto_class(const dsd_state* state, int slot, const mbe_frame_ctx_
 // protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute.
 static int
 mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
-    if (frame_ctx->crypto_muted) {
+    if (frame_ctx->crypto_muted || !dsd_receive_current_allows(opts, state, slot)) {
         return 1;
     }
     switch (frame_ctx->protocol) {
@@ -2562,6 +2563,10 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out
         return 0;
     }
     const uint8_t slot = mark_vocoder_call_media_slot(protocol, state->currentslot);
+    if (!dsd_receive_current_allows(opts, state, slot)) {
+        return 0;
+    }
+    dsd_call_state_refresh_receive(opts, state, slot);
     dsd_call_snapshot call;
     int has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
                      && mark_vocoder_call_media_protocol_compatible(protocol, call.protocol);
@@ -2587,11 +2592,34 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out
 }
 
 static void
+/* Admission follows the owner, including YSF/dPMR borrowing an NXDN or P25 decoder. */
+receive_vocoder_context(dsd_state* state, dsd_voice_protocol protocol) {
+    int sync = state->synctype;
+    switch (protocol) {
+        case DSD_VOICE_PROTOCOL_DMR: sync = DSD_SYNC_DMR_BS_VOICE_POS; break;
+        case DSD_VOICE_PROTOCOL_P25P1: sync = DSD_SYNC_P25P1_POS; break;
+        case DSD_VOICE_PROTOCOL_P25P2: sync = DSD_SYNC_P25P2_POS; break;
+        case DSD_VOICE_PROTOCOL_NXDN: sync = DSD_SYNC_NXDN_POS; break;
+        case DSD_VOICE_PROTOCOL_DPMR: sync = DSD_SYNC_DPMR_FS2_POS; break;
+        case DSD_VOICE_PROTOCOL_YSF: sync = DSD_SYNC_YSF_POS; break;
+        case DSD_VOICE_PROTOCOL_DSTAR: sync = DSD_SYNC_DSTAR_VOICE_POS; break;
+        case DSD_VOICE_PROTOCOL_X2TDMA: sync = DSD_SYNC_X2TDMA_VOICE_POS; break;
+        case DSD_VOICE_PROTOCOL_PROVOICE: sync = DSD_SYNC_PROVOICE_POS; break;
+        default: break;
+    }
+    state->receive_context_active = 1;
+    state->receive_context_protocol = sync;
+}
+
+static void
 processMbeFrameInternal(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23],
                         char ambe_fr[4][24], char imbe7100_fr[7][24], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                         dsd_vocoder_soft_bit ambe_soft_fr[4][24], dsd_vocoder_soft_bit imbe7100_soft_fr[7][24]) {
     mbe_frame_ctx_t frame_ctx;
     dsd_call_snapshot call;
+    const int saved_protocol = state->receive_context_protocol;
+    const uint8_t saved_active = state->receive_context_active;
+    receive_vocoder_context(state, protocol);
 
     const int have_call = mark_vocoder_call_media(opts, state, &call);
     mbe_prepare_frame_state(state, &frame_ctx, have_call ? &call : NULL, protocol);
@@ -2624,6 +2652,8 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, dsd_voice_protocol pro
     }
 
     mbe_post_audio_and_recording(opts, state, &frame_ctx);
+    state->receive_context_protocol = saved_protocol;
+    state->receive_context_active = saved_active;
 }
 
 void

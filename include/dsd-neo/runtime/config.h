@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/platform/platform.h>
 
 /* Include schema types first (before extern "C" for C++ compat) */
@@ -681,6 +682,10 @@ typedef struct dsdneoUserConfig {
     /* [analog] (runtime/analog_channel.h). A width is the full RF channel-filter width in Hz; 0 is the kind's
        default (the key left out), which a save does not write. The loader refuses a value outside the kind's range
        and keeps the default. */
+    int has_receive;
+    int receive_refused;
+    dsd_receive_policy receive;
+
     int has_analog;
     int analog_nfm_bandwidth_hz;
     int analog_am_bandwidth_hz;
