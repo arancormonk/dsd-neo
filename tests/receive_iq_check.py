@@ -12,25 +12,36 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary")
     parser.add_argument("fixtures")
+    # The test-only scan host (tests/engine/scan_mode_replay.c): -C loads a real channel map and row 0's own options
+    # are installed as the conventional scanner installs them, which I/Q replay cannot retune to.
+    parser.add_argument("scan_host")
     args = parser.parse_args()
     fixtures = Path(args.fixtures).resolve()
     with tempfile.TemporaryDirectory(prefix="dsd-receive-iq-") as temporary:
         root = Path(temporary)
 
-        def replay(name, fixture, mode, options, denied=False, service=None, unnamed=None, per_call=False):
+        def replay(name, fixture, mode, options, denied=False, service=None, unnamed=None, per_call=False, row=None):
             directory = root / name
             directory.mkdir()
             wav = directory / "decoded.wav"
             events = directory / "events.log"
             # -P and -w exclude each other. Analog audio reaches only the per-call recording (-w is digital-only).
             recording_option = ["-P"] if per_call else ["-w", str(wav)]
+            binary = args.binary
+            if row is not None:
+                # A channel-map row carrying the options in its CSV cell, entered by the scan host.
+                (directory / "map.csv").write_text("channel,frequency_hz,name,mode,options\n1,851375000,Row,"
+                                                   + {"-fr": "dmr", "-fA": "nfm"}[mode] + "," + row + "\n")
+                binary = args.scan_host
+                options = [*options, "-C", "map.csv"]
             result = subprocess.run(
-                [args.binary, "--frontend", "none", mode, *options,
+                [binary, "--frontend", "none", mode, *options,
                  "--iq-replay", str(fixtures / (fixture + ".iq.json")),
                  "-o", "null", *recording_option, "-J", str(events)],
                 cwd=directory, capture_output=True, text=True, timeout=60, check=False)
             output = result.stdout + result.stderr
             assert result.returncode == 0, output
+            assert row is None or "Scan override applied:" in output, output
             assert not re.search(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer|runtime error:",
                                  output), output
             calls = sorted((directory / "WAV").glob("*.wav")) if per_call else []
@@ -116,6 +127,24 @@ def main():
                       service="20R Traveler", per_call=True) == allowed
         replay("tone-allow-blocked", "nfm_ctcss_synth_1000", "-fA", ["--tone-allow", "97.4/141.3", *tone_name],
                denied=True, per_call=True)
+
+        # The same, from a channel-map row's options cell rather than the command line: the rows the issue asks for.
+        # Each baseline is the host's own unnamed row, since a dmr row runs the dual-slot decoder and the NFM row's
+        # tone filter withholds the audio heard while its tone is acquired.
+        row_baseline = replay("row-dcc-default", "dmr_voice_synth", "-fr", [], per_call=True, row="")
+        assert replay("row-dcc-name", "dmr_voice_synth", "-fr", [], service="Mall Two", per_call=True,
+                      row="--dcc-name '2=Mall Two' --dcc-name 7=Hospital") == row_baseline
+        assert replay("row-dcc-name-other", "dmr_voice_synth", "-fr", [], unnamed=True, per_call=True,
+                      row="--dcc-name 7=Hospital") == row_baseline
+        replay("row-dcc-allow", "dmr_voice_synth", "-fr", [], denied=True, per_call=True, row="--dcc-allow 4/6/8")
+        row_allow = "--tone-allow 97.4/100.0/141.3"
+        row_tone_baseline = replay("row-tone-default", "nfm_ctcss_synth_1000", "-fA", [], unnamed=True,
+                                   per_call=True, row=row_allow)
+        assert replay("row-tone-name", "nfm_ctcss_synth_1000", "-fA", [], service="20R Traveler", per_call=True,
+                      row=row_allow + " --tone-name '100.0=20R Traveler'") == row_tone_baseline
+        # The reporter's own row: it hears 97.4 and 141.3 Hz only, so this 100.0 Hz call records nothing.
+        replay("row-tone-reporter", "nfm_ctcss_synth_1000", "-fA", [], denied=True, per_call=True,
+               row="--tone-allow 97.4/141.3 --tone-name '141.3=20R Traveler'")
 
 
 if __name__ == "__main__":

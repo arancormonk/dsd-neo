@@ -6797,6 +6797,7 @@ add_executable(
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/channel_label.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -14227,6 +14228,7 @@ if(DSD_HAS_RADIO)
                 ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/receive_iq_check.py
                 $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+                $<TARGET_FILE:dsd-neo_test_scan_mode_replay>
         )
         set_tests_properties(
             DECODE_IQ_RECEIVE_POLICY

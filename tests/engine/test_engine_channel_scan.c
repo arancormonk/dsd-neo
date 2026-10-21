@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -2628,6 +2629,54 @@ test_receive_row_session_edits(void) {
     tunes = reset_count = 0;
 }
 
+/* Issue #637: a committed -Y row is the channel calls are heard on (its name the label every event row falls back to),
+   and its own options cell's names become the live naming table for the visit: a matching colour code names the call
+   by its service, another keeps the row's label. Leaving puts the configured table back. */
+static void
+test_committed_row_names_its_services(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
+    assert(dsd_state_trunk_lcn_name_set(state, 0, "Mall") == 0);
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_receive_names_parse("--dcc-name 3=Configured", &opts->receive.names, NULL, 0) == 0);
+    dsd_scan_row_profile* listed = calloc(1, sizeof(*listed));
+    assert(listed);
+    char error[160];
+    dsd_scan_options row;
+    DSD_MEMSET(&row, 0, sizeof(row));
+    assert(dsd_scan_options_parse("--dcc-name 7=Hospital --dcc-name 14=Municipality", DSD_SCAN_MODE_DMR, 1, &row, error,
+                                  sizeof(error))
+           == 0);
+    listed->values = row.values;
+    assert(dsd_channel_profile_set(state, 0, listed) == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    char label[64];
+    assert(dsd_channel_label_current(opts, state, label, sizeof(label)) > 0 && strcmp(label, "Mall") == 0);
+    dsd_receive_identity identity = {.value = 7, .kind = DSD_RECEIVE_DCC, .known = 1};
+    assert(strcmp(dsd_receive_service_name(&opts->receive.names, &identity), "Hospital") == 0);
+    identity.value = 14;
+    assert(strcmp(dsd_receive_service_name(&opts->receive.names, &identity), "Municipality") == 0);
+    identity.value = 2; /* The row's own repeater: no name, so its calls keep the row's label. */
+    assert(dsd_receive_service_name(&opts->receive.names, &identity)[0] == '\0');
+    identity.value = 3; /* The row's table replaces the configured one rather than adding to it. */
+    assert(dsd_receive_service_name(&opts->receive.names, &identity)[0] == '\0');
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(strcmp(dsd_receive_service_name(&opts->receive.names, &identity), "Configured") == 0);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 /* Issue #637: leaving the scanner ends an open NFM call through its own lifecycle before the slots' calls are ended
    and committed, so its per-call recording closes under the row it was heard as, never the emptied one. */
 static void
@@ -2656,6 +2705,7 @@ main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
     test_leave_restores_configured_receive_family();
     test_leave_ends_the_nfm_call_before_its_row_commits();
+    test_committed_row_names_its_services();
     test_leave_retimes_the_digital_landing();
     test_leave_lands_where_it_times_the_configured_decoder();
     test_leave_keeps_the_rows_recorded_landing();

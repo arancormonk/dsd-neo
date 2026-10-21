@@ -8336,6 +8336,109 @@ test_target_policy_options_rotate_and_restore(void) {
     return failed;
 }
 
+/* The service a target's own row names traffic by, from the live naming table. */
+static const char*
+live_service_name(const dsd_opts* opts, uint8_t kind, uint16_t value) {
+    const dsd_receive_identity identity = {.value = value, .kind = kind, .known = 1};
+    return dsd_receive_service_name(&opts->receive.names, &identity);
+}
+
+/* The targets file's bytes, so a test can show the session never wrote to it. */
+static int
+read_targets_file(const char* path, char* out, size_t cap) {
+    DSD_MEMSET(out, 0, cap);
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    const size_t n = fread(out, 1U, cap - 1U, fp);
+    (void)fclose(fp);
+    return n < cap - 1U ? 0 : -1;
+}
+
+/* Issue #637, end to end from the reporter's own trunk_scan_targets.csv rows: each target's options cell becomes the
+   live naming table (and the NFM target's tone filter) while it is on air, replacing the configured table and never
+   merged with the other target's; rotating back reinstalls it, a live "this channel" names edit relabels the parked
+   target without touching the file, and shutdown puts the configured table back. */
+static int
+test_target_receive_names_rotate_and_restore(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,"
+                         "keys_hex_csv,single_key_dec,single_key_hex,options,p25_bandplan_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "Mall,dmr-conventional,464125000,,500,,,auto,,,,,"
+                                       "--dcc-name 7=Hospital --dcc-name 14=Municipality,\n"
+                                       "20R Local,nfm-conventional,462675000,,500,500,,,,,,,--squelch noise+3 "
+                                       "--nfm-bandwidth-hz 8000 --tone-allow 97.4/141.3 "
+                                       "--tone-name '141.3=20R Traveler',\n",
+                                       path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static char written[8192];
+    static char reread[8192];
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_nfm_bandwidth_hz = 20000;
+    char error[256] = {0};
+    int failed = read_targets_file(path, written, sizeof(written)) != 0
+                 || dsd_receive_names_parse("--dcc-name 3=Configured", &opts.receive.names, error, sizeof(error)) != 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof(opts.trunk_scan_targets_csv), "%s", path);
+    trunk_scan_test_set_now(0.0);
+    if (!failed) {
+        failed = dsd_engine_trunk_scan_init(&opts, &state, error, sizeof(error)) != 0;
+    }
+    if (!failed) {
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0;
+        failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 7), "Hospital") != 0
+                  || strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 14), "Municipality") != 0
+                  || live_service_name(&opts, DSD_RECEIVE_DCC, 2)[0] != '\0'
+                  || live_service_name(&opts, DSD_RECEIVE_DCC, 3)[0] != '\0';
+        trunk_scan_test_set_now(0.51);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 1;
+        failed |= opts.receive.names.count != 1
+                  || strcmp(live_service_name(&opts, DSD_RECEIVE_CTCSS, 1413), "20R Traveler") != 0
+                  || live_service_name(&opts, DSD_RECEIVE_DCC, 7)[0] != '\0';
+        failed |= opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW
+                  || !dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 974)
+                  || !dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 1413)
+                  || dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 1000);
+        trunk_scan_test_set_now(1.02);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0;
+        failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 7), "Hospital") != 0
+                  || opts.analog_tone_filter != DSD_TONE_FILTER_OFF;
+        dsd_scan_row_edit_value value;
+        DSD_MEMSET(&value, 0, sizeof(value));
+        failed |= dsd_receive_names_parse("--dcc-name 7=ER", &value.receive.names, error, sizeof(error)) != 0;
+        failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "Mall",
+                                                    DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+                  != DSD_SCAN_ROW_EDIT_APPLIED;
+        failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 7), "ER") != 0;
+        failed |= read_targets_file(path, reread, sizeof(reread)) != 0 || strcmp(written, reread) != 0;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 3), "Configured") != 0
+              || live_service_name(&opts, DSD_RECEIVE_DCC, 7)[0] != '\0';
+    failed |= read_targets_file(path, reread, sizeof(reread)) != 0 || strcmp(written, reread) != 0;
+    if (failed) {
+        DSD_FPRINTF(stderr, "target receive names rotation regression: %s\n", error);
+    }
+    dsd_state_trunk_lcn_free(&state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    return failed;
+}
+
 static int
 test_target_options_rotate_and_restore(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -13389,6 +13492,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_initial_key_allocation_failure);
     rc |= run_with_default_tune_hook(test_target_options_rotate_and_restore);
     rc |= run_with_default_tune_hook(test_target_policy_options_rotate_and_restore);
+    rc |= run_with_default_tune_hook(test_target_receive_names_rotate_and_restore);
     rc |= run_with_default_tune_hook(test_prepare_failure_keeps_outgoing_snapshot);
     rc |= run_with_default_tune_hook(test_target_voice_gate_options_apply);
     rc |= run_with_default_tune_hook(test_parser_optional_headers_are_case_insensitive);

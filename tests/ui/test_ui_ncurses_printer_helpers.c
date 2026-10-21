@@ -3489,10 +3489,53 @@ test_nxdn_and_analog_live_service_names(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #637: the DMR slot line names the call by its colour code's service, and the Rx tone line names an NFM call
+   by its DCS code's (any spelling of the code). */
+static void
+test_dmr_and_dcs_live_service_names(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    assert(dsd_receive_names_parse("--dcc-name 2=Mall --dcc-name '7=Hospital'", &opts.receive.names, NULL, 0) == 0);
+    state.synctype = state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 7;
+    const dsd_call_observation dmr = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                      .slot = 0,
+                                      .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                      .ota_target_id = 100,
+                                      .ota_source_id = 1001,
+                                      .policy_target_id = 100};
+    assert(dsd_call_state_observe(&state, &dmr, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_state_refresh_receive(&opts, &state, 0U);
+    ui_slot_view named = ui_build_slot_view(&opts, &state, 0);
+    reset_printw_capture();
+    ui_render_slot_dxtra_line(&state, &named, 1);
+    assert_capture_contains("[Hospital]");
+    assert(strstr(g_printw_capture, "Mall") == NULL);
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    /* D047I is the other spelling of D023N's signal. */
+    assert(dsd_receive_names_parse("--tone-name 'D047I=County fire'", &opts.receive.names, NULL, 0) == 0);
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    seed_rx_code(&state, 0023, 0);
+    const dsd_call_observation nfm = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    assert(dsd_call_state_observe(&state, &nfm, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_state_refresh_receive(&opts, &state, 0U);
+    reset_printw_capture();
+    ui_render_call_info_rx_tone_line(&opts, &state);
+    assert_capture_contains("Rx tone: DCS D023N / D047I [County fire]");
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     test_tetra_rows_follow_the_view();
     test_nxdn_and_analog_live_service_names();
+    test_dmr_and_dcs_live_service_names();
     test_withheld_data_without_a_call();
     test_voice_average_units();
     test_source_alias_rendering();
