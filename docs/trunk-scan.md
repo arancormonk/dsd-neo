@@ -59,7 +59,7 @@ Column behavior:
 
 | Column | Required | Meaning |
 |--------|----------|---------|
-| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Keep it under 64 bytes. |
+| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](#receive-admission-and-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists, and in log messages. Keep it under 64 bytes. |
 | `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel, held on carrier) or `am-conventional` (one analog AM channel, held on carrier); see [Analog NFM and AM targets](#analog-nfm-and-am-targets). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
 | `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |

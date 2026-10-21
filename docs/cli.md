@@ -297,7 +297,8 @@ Windows console runs:
   event's own stamp rather than reading the clock again; a voice transmission reacquired after a sync loss
   appends a `Reacquired:` continuation carrying the stamp of the row it extends. While scanning a `-Y` list
   or rotating `--trunk-scan` targets, each line names the channel it was heard on in brackets between the
-  timestamp and the protocol token; lines from a receiver that is not scanning a named channel are unchanged.
+  timestamp and the protocol token. A [service name](#receive-filters-and-service-names) that labels the traffic
+  takes that place, scanning or not; other lines from a receiver that is not scanning a named channel are unchanged.
   In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
   P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]`, while FDMA rows carry no slot tag.
   DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`

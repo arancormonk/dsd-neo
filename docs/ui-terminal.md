@@ -826,7 +826,8 @@ Call Info repeats the answer on its own first line, because compact view hides t
 It reads `Target:` for the active `--trunk-scan` target, `Channel:` for the name of the `-Y` row on air when trunk
 scan is not running, and nothing at all when neither scanner is running or the row has no name. The word matches the
 Input Output row it repeats: a target is a whole system, and "channel" already means a channel number lower in Call
-Info. Event history rows carry the same label as a bracketed prefix — see "Event History Rows" below.
+Info. Event history rows carry the same label as a bracketed prefix, or the service name that labels the traffic —
+see "Event History Rows" below.
 
 ## Received Tone
 
@@ -940,8 +941,10 @@ While scanning, an event history row names the channel it was heard on: the chan
 `-Y` scan list, or the active `--trunk-scan` target's id, in brackets between the row's timestamp
 and its protocol token — `2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; ...`. It answers
 the question a bare `TGT: 00000000` row cannot, which is where encrypted traffic was heard. Data
-notices (SMS, LRRP, registrations) carry the same prefix. A receiver that is not scanning a named
-channel renders exactly what it always did, and Short mode (`h`) still drops only the date, so the
+notices (SMS, LRRP, registrations) carry the same prefix. Traffic a service name labels (`--dcc-name 7=Hospital`
+and the other [naming options](cli.md#receive-filters-and-service-names)) carries that name in the brackets instead,
+scanning or not: `2026-04-30 09:12:04 [Hospital] DMR TGT: ...`. Any other row from a receiver that is not scanning a
+named channel renders exactly what it always did, and Short mode (`h`) still drops only the date, so the
 prefix survives into the compact row. The channel is resolved once, when the transmission's first
 row renders, so a call that outlives a scan step keeps the channel it was actually heard on — and a
 call heard on a scan-list row with no name stays unlabelled rather than picking up the name of the
