@@ -875,3 +875,19 @@ again: each trunking context remembers the code it last verified on up to 16 voi
 in force, so an edit that admits the code makes its grants followed again. Manual conventional-channel
 hold keeps a rejected channel selected and muted. A restored target must validate its received identifier again.
 Names reflect received services without changing the target ID or base channel label.
+
+One row can carry several services that share a frequency. Name each one by the identifier that tells it apart, as
+`value=Name` on the option for that identifier: `--dcc-name`, `--ran-name`, `--nac-name`, `--slot-name` or
+`--tone-name` (CTCSS or DCS). Traffic no name matches keeps the row's own label:
+
+```csv
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,keys_hex_csv,single_key_dec,single_key_hex,options,p25_bandplan_csv
+Mall,dmr-conventional,464125000,,500,,,auto,,,,,--dcc-name 7=Hospital --dcc-name 14=Municipality,
+20R Local,nfm-conventional,462675000,,500,500,,,,,,,--squelch noise+3 --nfm-bandwidth-hz 8000 --tone-allow 97.4/141.3 --tone-name '141.3=20R Traveler',
+```
+
+Here colour code 2 traffic shows as **Mall**, colour code 7 as **Hospital** and 14 as **Municipality**, and 20R Local
+hears 97.4 Hz and 141.3 Hz, naming the 141.3 Hz traffic **20R Traveler**. The name appears in the call display,
+the event history and the per-call recording's file name (`-P`, as an `_SVC_` component). Rdio-scanner exports carry
+it as the talkgroup label; conventional NFM has no talkgroup ID, so its calls are recorded as named WAVs but are not
+exported to Rdio. The CSV file itself is never changed. Quote a name with spaces in single or double quotes.

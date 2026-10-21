@@ -19,6 +19,7 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <functional>
 #include <iterator>
 #include <stddef.h>
@@ -57,8 +58,70 @@ optionType(const QString& option) {
     return option == "-G" ? "group" : "dmrTgKeys";
 }
 
+/* A file operand for a spreadsheet-quoted options cell: as it is when it needs no grouping, else grouped by a
+   doubled quote, or by single quotes when it holds a double quote. */
+QByteArray
+csvQuotedOperand(const QString& value) {
+    const QByteArray bytes = value.toUtf8();
+    const bool plain = !bytes.isEmpty() && std::none_of(bytes.begin(), bytes.end(), [](char c) {
+        return c == ' ' || c == '\t' || c == '"' || c == '\'';
+    });
+    if (plain) {
+        return bytes;
+    }
+    if (!bytes.contains('"')) {
+        return "\"\"" + bytes + "\"\"";
+    }
+    return bytes.contains('\'') ? bytes : "'" + bytes + "'";
+}
+
+struct QuotedOperand {
+    size_t offset = 0, length = 0;
+    QString option, path;
+    bool whole = false;
+};
+
+int
+collectQuotedOperand(void* context, const char* option, const char* path, size_t offset, size_t length, int whole) {
+    static_cast<QList<QuotedOperand>*>(context)->append(
+        {offset, length, QString::fromUtf8(option), QString::fromUtf8(path), whole != 0});
+    return 0;
+}
+
+/* A channel-map options cell a spreadsheet quoted (dsd_scan_options_cell_csv_quoted(), issue #637), read as the
+   loader reads it: each file operand is rewritten in place, quoted for the cell, which keeps its own quotes. False when
+   the cell is not one. */
+bool
+rewriteQuotedOptions(const QString& options, const std::function<QString(const QString&, const QString&)>& resolve,
+                     QString& rewritten) {
+    QByteArray cell = options.trimmed().toUtf8();
+    if (cell.size() < 2 || cell.front() != '"' || cell.back() != '"') {
+        return false;
+    }
+    const char* content = cell.constData() + 1;
+    const size_t length = static_cast<size_t>(cell.size()) - 2;
+    QList<QuotedOperand> operands;
+    if (!dsd_scan_options_cell_csv_quoted(cell.constData(), content, length)
+        || dsd_scan_options_visit_cell_files(cell.constData(), content, length, &operands, collectQuotedOperand,
+                                             nullptr)
+               != 0) {
+        return false;
+    }
+    for (auto i = operands.crbegin(); i != operands.crend(); ++i) {
+        const QByteArray value = csvQuotedOperand(resolve(i->path, optionType(i->option)));
+        cell.replace(static_cast<qsizetype>(i->offset) + 1, static_cast<qsizetype>(i->length),
+                     i->whole ? i->option.toUtf8() + "=" + value : value);
+    }
+    rewritten = QString::fromUtf8(cell);
+    return true;
+}
+
 QString
 rewriteOptions(QString options, const std::function<QString(const QString&, const QString&)>& resolve) {
+    QString quoted;
+    if (rewriteQuotedOptions(options, resolve, quoted)) {
+        return quoted;
+    }
     options = unquote(options);
     static const QRegularExpression paths(
         QStringLiteral("(?:^|\\s)(-K|-k|-G|--dmr-tg-key-csv)(?:=|\\s+)(?:\"([^\"]+)\"|'([^']+)'|(\\S+))"));
@@ -446,7 +509,7 @@ class TrunkBundleStager {
         const QByteArray base = local ? original.toUtf8() : QByteArray("<document>");
         QList<TargetReference> refs;
         char error[512] = {};
-        const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetReference, &refs};
+        const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetReference, &refs, nullptr};
         if (dsd_app_scan_csv_inspect(copy.toUtf8().constData(), base.constData(), input.channel, &callbacks, error,
                                      sizeof error)) {
             result.error = "format";
@@ -609,12 +672,12 @@ stage_trunk_csv_bundle(DecoderHost* host, const QString& reference, const QStrin
 
 static bool
 collectReachableReferences(const QString& path, QList<TargetReference>& refs) {
-    const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetReference, &refs};
+    const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetReference, &refs, nullptr};
     if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, nullptr, 0)) {
         return false;
     }
     QList<TargetReference> nested;
-    const dsd_app_scan_csv_callbacks nestedCallbacks{nullptr, collectTargetReference, &nested};
+    const dsd_app_scan_csv_callbacks nestedCallbacks{nullptr, collectTargetReference, &nested, nullptr};
     const bool failed = std::any_of(refs.cbegin(), refs.cend(), [&nestedCallbacks](const TargetReference& ref) {
         return ref.kind == DSD_APP_SCAN_FILE_CHANNEL
                && dsd_app_scan_csv_inspect(ref.resolved.toUtf8().constData(), nullptr, 1, &nestedCallbacks, nullptr, 0);

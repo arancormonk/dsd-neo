@@ -111,6 +111,7 @@ struct CODEC2;
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_options.h>
 #endif
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_device.h>
@@ -359,6 +360,9 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         LOG_INFO("NOTICE: Imported channel map from %s\n", opts->chan_in_file);
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
+        dsd_scan_option_baseline configured;
+        dsd_scan_option_baseline_configured(opts, state, &configured);
+        csvChanWarnUnreachableNames(state, &configured);
         /* A config file's -Y list, or one the command line read no row from: the command line checked a list it
            imported rows from (issue #527). */
         if (opts->scanner_mode == 1) {
@@ -1676,12 +1680,7 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
 // the old frequency cannot be reacquired here no matter what the next epoch looks like.
 static void
 no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, reason) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), reason, 0);
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
@@ -3987,12 +3986,7 @@ dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
        run's end already finalized, or a slot with none, has nothing left to end. An NFM call's recording closes with
        it, against the row being committed (issue #637). */
     if (opts && state && state->event_history_s) {
-        dsd_engine_analog_call_end(opts, state);
-        const double ended_m = dsd_decode_now_mono_s();
-        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-            (void)dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT);
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
+        dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 1);
     }
     dsd_decode_clock_use_system();
     dsd_state_rebase_decode_timestamps(opts, state);

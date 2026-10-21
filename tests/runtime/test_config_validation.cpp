@@ -550,6 +550,80 @@ test_analog_tone_policy_validation(void) {
     return result;
 }
 
+/* The WARNINGs and ERRORs validating @p ini gives, and whether a WARNING on @p section/@p key holds @p text. */
+static int
+validate_ini_warning(const char* ini, const char* section, const char* key, const char* text, int* warnings,
+                     int* errors) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return -1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    const int rc = dsd_user_config_validate(path, &diags);
+    int found = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_WARNING && strcmp(diags.items[i].section, section) == 0
+            && strcmp(diags.items[i].key, key) == 0 && strstr(diags.items[i].message, text)) {
+            found = 1;
+        }
+    }
+    *warnings = diags.warning_count;
+    *errors = diags.error_count;
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return rc != 0 ? -1 : found;
+}
+
+/*
+ * Issue #637: a service name the configured receive or tone filters reject never shows. It is kept, so validation
+ * WARNS (after includes and profiles are composed, whatever the key order), and never refuses it.
+ */
+static int
+test_receive_unreachable_names_validation(void) {
+    int result = 0;
+    int warnings = 0;
+    int errors = 0;
+
+    static const struct {
+        const char* ini;
+        const char* section;
+        const char* key;
+        const char* text;
+    } stranded[] = {
+        {"[receive]\nnames = --dcc-name 7=Hospital\ndcc_enabled = true\ndcc_block = 7\n", "receive", "names", "DCC 7"},
+        {"[analog]\ntone_filter = allow\ntone_list = 97.4\n[receive]\nnames = --tone-name '141.3=20R Traveler'\n",
+         "receive", "names", "CTCSS 141.3"},
+        {"[receive]\nnames = --dcc-name 7=Hospital\n[profile.mall]\nreceive.dcc_enabled = true\n"
+         "receive.dcc_allow = 2\n",
+         "profile.mall", "receive.names", "DCC 7"},
+    };
+
+    for (size_t i = 0; i < sizeof stranded / sizeof stranded[0]; i++) {
+        if (validate_ini_warning(stranded[i].ini, stranded[i].section, stranded[i].key, stranded[i].text, &warnings,
+                                 &errors)
+                != 1
+            || errors != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s should warn on %s.%s naming \"%s\" (errors=%d)\n", stranded[i].ini,
+                        stranded[i].section, stranded[i].key, stranded[i].text, errors);
+            result = 1;
+        }
+    }
+    static const char* const clean[] = {
+        "[receive]\nnames = --dcc-name 7=Hospital\ndcc_enabled = true\ndcc_allow = 2/7\n",
+        "[receive]\nnames = --dcc-name 7=Hospital\ndcc_enabled = false\ndcc_block = 7\n",
+        "[analog]\ntone_filter = allow\ntone_list = 97.4/141.3\n[receive]\nnames = --tone-name '141.3=Traveler'\n",
+    };
+    for (size_t i = 0; i < sizeof clean / sizeof clean[0]; i++) {
+        if (validate_ini_warning(clean[i], "receive", "names", "never shown", &warnings, &errors) != 0 || warnings != 0
+            || errors != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s should validate clean (warnings=%d errors=%d)\n", clean[i], warnings, errors);
+            result = 1;
+        }
+    }
+    return result;
+}
+
 /*
  * Issue #524: [mode] decode = am and [analog] am_bandwidth_hz. An in-range whole-Hz width validates; one outside
  * 5000..20000 or not whole Hz is an error carrying the parser's text (the loader refuses it rather than clamping),
@@ -2074,6 +2148,7 @@ main(void) {
     rc |= test_schema_accessors_and_type_names();
     rc |= test_diagnostics_direct_api_and_print_formats();
     rc |= test_valid_config();
+    rc |= test_receive_unreachable_names_validation();
     rc |= test_persisted_v1_validation_boundary();
     rc |= test_included_persisted_version_validation_boundary();
     rc |= test_included_unknown_and_invalid_value_diagnostics();

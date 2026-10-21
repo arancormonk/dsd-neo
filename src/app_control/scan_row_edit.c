@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -346,9 +347,9 @@ scan_row_edit_follow_up(dsd_opts* opts, dsd_state* state, const dsd_app_scan_row
 
 /* The notice for the engine's @p status, and what the command reports. */
 static int
-scan_row_edit_outcome(const char* label, const dsd_app_scan_row_edit_payload* p, const dsd_scan_row_edit_value* value,
-                      int status, const dsd_scan_row_edit_result* result, char* notice, size_t notice_size,
-                      int* ttl_s) {
+scan_row_edit_outcome(const dsd_opts* opts, const dsd_state* state, const char* label,
+                      const dsd_app_scan_row_edit_payload* p, const dsd_scan_row_edit_value* value, int status,
+                      const dsd_scan_row_edit_result* result, char* notice, size_t notice_size, int* ttl_s) {
     char value_text[64] = {0};
     if (p->action == DSD_SCAN_ROW_EDIT_SET) {
         (void)dsd_app_scan_row_value_text((uint32_t)p->field, value, value_text, sizeof value_text);
@@ -356,6 +357,11 @@ scan_row_edit_outcome(const char* label, const dsd_app_scan_row_edit_payload* p,
     (void)dsd_app_scan_row_notice(label, (uint32_t)p->field, (unsigned int)p->mode, p->action, value_text, status,
                                   status == DSD_SCAN_ROW_EDIT_REFUSED ? result->err : NULL, notice, notice_size);
     if (status == DSD_SCAN_ROW_EDIT_APPLIED || status == DSD_SCAN_ROW_EDIT_STORED) {
+        /* A name the row's filters, or the configured ones it inherits, now reject is kept but never shows (issue
+           #637). */
+        if ((uint32_t)p->field & (DSD_SCAN_ROW_FIELDS_RECEIVE | DSD_SCAN_ROW_FIELD_TONE)) {
+            dsd_app_receive_note_unreachable(opts, state, &result->options, notice, notice_size);
+        }
         return DSD_APP_SCAN_ROW_EDIT_DONE;
     }
     *ttl_s = 5;
@@ -401,5 +407,5 @@ dsd_app_apply_scan_row_edit(dsd_opts* opts, dsd_state* state, const struct dsd_a
     if (status == DSD_SCAN_ROW_EDIT_APPLIED || status == DSD_SCAN_ROW_EDIT_STORED) {
         scan_row_edit_note_width_superseded(&p, records_before);
     }
-    return scan_row_edit_outcome(label, &p, &value, status, &result, notice, notice_size, ttl_s);
+    return scan_row_edit_outcome(opts, state, label, &p, &value, status, &result, notice, notice_size, ttl_s);
 }

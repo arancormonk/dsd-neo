@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -547,6 +548,28 @@ validate_composed_tone_policy(const dsdneoUserConfig* cfg, const char* section, 
     dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "tone_filter", msg);
 }
 
+/* A service name the receive or tone filters reject never shows (issue #637): kept, so a service can be blocked for a
+   while, and warned about. */
+static void
+validate_composed_receive_names(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->has_receive || cfg->receive_refused) {
+        return;
+    }
+    dsd_scan_option_baseline configured = {};
+    configured.receive = cfg->receive;
+    if (cfg->has_analog && !cfg->analog_tone_list_refused) {
+        configured.tone_filter = cfg->analog_tone_filter;
+        configured.tone_set = cfg->analog_tone_set;
+    }
+    char names[128];
+    if (dsd_scan_option_unreachable_names(nullptr, &configured, names, sizeof names) > 0) {
+        char msg[192];
+        DSD_SNPRINTF(msg, sizeof msg, "service names never shown, the filters reject them: %s", names);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, 0, section ? section : "receive", key ? key : "names", msg);
+    }
+}
+
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
@@ -557,6 +580,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_analog_width(cfg, "analog", "nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, "analog", "am_bandwidth_hz", diags);
     validate_composed_tone_policy(cfg, "analog", "tone_filter", diags);
+    validate_composed_receive_names(cfg, "receive", "names", diags);
 }
 
 static void
@@ -572,6 +596,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_analog_width(cfg, section, "analog.nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, section, "analog.am_bandwidth_hz", diags);
     validate_composed_tone_policy(cfg, section, "analog.tone_filter", diags);
+    validate_composed_receive_names(cfg, section, "receive.names", diags);
 }
 
 static void

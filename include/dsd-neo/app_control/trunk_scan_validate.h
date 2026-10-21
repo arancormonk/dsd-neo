@@ -69,6 +69,9 @@ typedef struct {
     dsd_app_scan_csv_target_cb target;
     dsd_app_scan_csv_reference_cb reference;
     void* context;
+    /** The configured policies each target's receive_summary notes unreachable service names over
+     * (dsd_scan_option_receive_summary_against()); NULL judges each target alone. */
+    const struct dsd_scan_option_baseline* baseline;
 } dsd_app_scan_csv_callbacks;
 
 /** Synchronous inspection, without opening companions. base_path specifies the

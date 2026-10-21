@@ -6,7 +6,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
@@ -165,20 +164,13 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    // A conventional NFM call ends first (issue #637): its recording closes and is named against its own history row,
-    // before the release below commits that row and the next target's state replaces it.
-    dsd_engine_analog_call_end(opts, state);
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        // The state machine is leaving this voice channel by decision, not because the carrier
-        // went away, so nothing that follows on the control channel may be read as this
-        // transmission resuming. Spelled out rather than left to the default: the counterpart
-        // cleanup in no_carrier_clear_voice_tune_state() is reached only from noCarrier() and
-        // does classify its ends as sync loss, and the two must differ deliberately.
-        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    // A conventional NFM call ends first (dsd_engine_end_calls(), issue #637), before the release commits its row and
+    // the next target's state replaces it. The state machine is leaving this voice channel by decision, not because
+    // the carrier went away, so nothing that follows on the control channel may be read as this transmission
+    // resuming. Spelled out rather than left to the default: the counterpart cleanup in
+    // no_carrier_clear_voice_tune_state() is reached only from noCarrier() and does classify its ends as sync loss,
+    // and the two must differ deliberately.
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
     (void)dsd_recent_activity_clear_all(state);
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));

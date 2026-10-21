@@ -2977,6 +2977,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_edit.c
     ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/receive_note.c
 )
 target_include_directories(
     dsd-neo_test_app_control_scan_row_edit
@@ -6766,6 +6767,7 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
@@ -6794,6 +6796,7 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -6857,6 +6860,7 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
@@ -6944,6 +6948,7 @@ add_executable(
     engine/test_engine_channel_scan_squelch_gate.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
 )
 target_include_directories(
     dsd-neo_test_engine_channel_scan_squelch_gate
@@ -12333,6 +12338,23 @@ set_tests_properties(
     DMR_SYNTH_OUTPUT_PATHS
     PROPERTIES LABELS "dmr-synth" TIMEOUT 60
 )
+
+# Three repeaters sharing one DMR frequency, named by colour code (issue #637): separate calls and one call whose
+# colour code changes keep their own names and audio (protocol/dmr/dmr_receive_names_check.py).
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME DMR_SYNTH_RECEIVE_NAMES
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dmr/dmr_receive_names_check.py
+            $<TARGET_FILE:dsd-neo> $<TARGET_FILE:dsd-neo_test_dmr_synth_gen>
+    )
+    set_tests_properties(
+        DMR_SYNTH_RECEIVE_NAMES
+        PROPERTIES LABELS "dmr-synth" TIMEOUT 180
+    )
+endif()
 
 set(_DSD_SYNTH_K256
     "0123456789ABCDEF FEDCBA9876543210 0F1E2D3C4B5A6978 8796A5B4C3D2E1F0"

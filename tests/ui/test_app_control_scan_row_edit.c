@@ -11,9 +11,11 @@
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -22,8 +24,11 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -310,6 +315,67 @@ test_applied_and_stored(void) {
            == DSD_APP_SCAN_ROW_EDIT_REFUSED);
     expect_notice(notice, "Refused: the scan changed; nothing applied");
     assert(ttl == 5);
+}
+
+/* A names-table edit of the row: its naming table set to @p names. */
+static const struct dsd_app_command*
+names_command(const char* names) {
+    (void)command(DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET, NULL);
+    dsd_app_scan_row_edit_payload p;
+    DSD_MEMCPY(&p, g_cmd.data, sizeof p);
+    p.receive.kind = DSD_RECEIVE_FILTER_COUNT;
+    DSD_SNPRINTF(p.receive.names, sizeof p.receive.names, "%s", names);
+    DSD_MEMCPY(g_cmd.data, &p, sizeof p);
+    return &g_cmd;
+}
+
+/* Issue #637: an accepted tone or receive edit that leaves a service name only rejected traffic could carry says so,
+   whether it applies now or from the row's next visit; the row's options are judged over the configured policies. */
+static void
+test_notes_unreachable_names(void) {
+    char notice[DSD_APP_SCAN_ROW_NOTICE_SIZE];
+    int ttl = 0;
+    reset();
+    dsd_scan_option_values* row = &g_engine_result.options;
+    row->present = DSD_SCAN_OPT_NAMES | DSD_SCAN_OPT_TONE;
+    assert(dsd_receive_names_parse("--tone-name '141.3=20R Traveler'", &row->receive.names, NULL, 0) == 0);
+    row->tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse("97.4", &row->tone_set, NULL, 0) == 0);
+    g_engine_status = DSD_SCAN_ROW_EDIT_STORED;
+    assert(apply(command(DSD_SCAN_ROW_FIELD_TONE, DSD_SCAN_ROW_EDIT_SET, "97.4"), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_DONE);
+    assert(strstr(notice, "from its next visit; never shown: CTCSS 141.3") != NULL);
+    /* Another field's edit says nothing of names. */
+    assert(apply(command(DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, NULL), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_DONE);
+    assert(strstr(notice, "never shown") == NULL);
+    /* The row's name under the configured tone filter it inherits. */
+    row->present = DSD_SCAN_OPT_NAMES;
+    g_opts.analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    assert(dsd_tone_set_parse("141.3", &g_opts.analog_tone_set, NULL, 0) == 0);
+    g_engine_status = DSD_SCAN_ROW_EDIT_APPLIED;
+    assert(apply(names_command("--tone-name '141.3=20R Traveler'"), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_DONE);
+    assert(strstr(notice, "; never shown: CTCSS 141.3") != NULL);
+    /* A long channel label: the notice gives way, the note does not. */
+    {
+        dsd_app_scan_row_edit_payload p;
+        DSD_MEMCPY(&p, names_command("--tone-name '141.3=20R Traveler'")->data, sizeof p);
+        DSD_SNPRINTF(p.target_id, sizeof p.target_id, "%s", "Countywide Emergency Medical Dispatch Operations");
+        DSD_MEMCPY(g_cmd.data, &p, sizeof p);
+    }
+    g_engine_status = DSD_SCAN_ROW_EDIT_STORED;
+    assert(apply(&g_cmd, notice, sizeof notice, &ttl) == DSD_APP_SCAN_ROW_EDIT_DONE);
+    const size_t length = strlen(notice);
+    static const char kept[] = "...; never shown: CTCSS 141.3";
+    assert(length < sizeof notice && length > strlen(kept) && strcmp(notice + length - strlen(kept), kept) == 0);
+    assert(strncmp(notice, "This channel (Countywide", 24) == 0);
+    g_engine_status = DSD_SCAN_ROW_EDIT_APPLIED;
+    /* Reachable again: no note. */
+    g_opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
+    assert(apply(names_command("--tone-name '141.3=20R Traveler'"), notice, sizeof notice, &ttl)
+           == DSD_APP_SCAN_ROW_EDIT_DONE);
+    assert(strstr(notice, "never shown") == NULL);
 }
 
 /* The RTL front end refuses the width request at once: the row's previous width goes back, and only the width. Accepted,
@@ -611,6 +677,7 @@ test_auto_refused_on_audio_input(void) {
 int
 main(void) {
     test_applied_and_stored();
+    test_notes_unreachable_names();
     test_width_refusals();
     test_consecutive_width_requests();
     test_settle_asks_for_the_width_put_back();

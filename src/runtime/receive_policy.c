@@ -266,6 +266,83 @@ dsd_receive_policy_match(const dsd_receive_policy* policy, const dsd_receive_ide
     return slot == DSD_RECEIVE_ALLOWED || code == DSD_RECEIVE_ALLOWED ? DSD_RECEIVE_ALLOWED : DSD_RECEIVE_OFF;
 }
 
+/* Whether traffic named by @p rule can be admitted: an enabled filter of its kind, or for a CTCSS/DCS name the analog
+   tone filter (@p tone_mode, @p tone_set), lets its identifier through. */
+static int
+receive_name_reachable(const dsd_receive_policy* policy, int tone_mode, const dsd_tone_set* tone_set,
+                       const dsd_service_name* rule) {
+    if (rule->kind == DSD_RECEIVE_CTCSS || rule->kind == DSD_RECEIVE_DCS) {
+        if (!tone_set || (tone_mode != DSD_TONE_FILTER_ALLOW && tone_mode != DSD_TONE_FILTER_BLOCK)) {
+            return 1;
+        }
+        const int listed = rule->kind == DSD_RECEIVE_CTCSS
+                               ? dsd_tone_set_contains_ctcss(tone_set, (int)rule->value)
+                               : dsd_tone_set_contains_dcs(tone_set, (int)(rule->value / 2U), (int)(rule->value % 2U));
+        return tone_mode == DSD_TONE_FILTER_ALLOW ? listed : !listed;
+    }
+    return rule->kind >= DSD_RECEIVE_FILTER_COUNT
+           || receive_filter_match(&policy->filters[rule->kind], 1, rule->value) != DSD_RECEIVE_REJECTED;
+}
+
+int
+dsd_receive_names_unreachable(const dsd_receive_policy* policy, int tone_mode, const dsd_tone_set* tone_set, char* out,
+                              size_t capacity) {
+    static const char* const labels[] = {"Slot", "DCC", "RAN", "NAC", "CTCSS", "DCS"};
+    if (out && capacity) {
+        out[0] = '\0';
+    }
+    if (!policy) {
+        return 0;
+    }
+    int count = 0;
+    int cut = 0;
+    for (unsigned int i = 0; i < policy->names.count && i < DSD_RECEIVE_NAME_MAX; i++) {
+        const dsd_service_name* rule = &policy->names.rules[i];
+        if (rule->kind >= DSD_RECEIVE_NONE || receive_name_reachable(policy, tone_mode, tone_set, rule)) {
+            continue;
+        }
+        count++;
+        char value[16];
+        char entry[32];
+        if (!out || !capacity || cut || dsd_receive_value_format(rule->kind, rule->value, value, sizeof value) < 0) {
+            continue;
+        }
+        DSD_SNPRINTF(entry, sizeof entry, "%s%s %s", count > 1 ? ", " : "", labels[rule->kind], value);
+        const size_t used = strlen(out);
+        /* Whole entries only, keeping room to mark the ones left out. */
+        if (used + strlen(entry) + sizeof(", ...") <= capacity) {
+            DSD_SNPRINTF(out + used, capacity - used, "%s", entry);
+        } else {
+            DSD_SNPRINTF(out + used, capacity - used, "%s", count > 1 ? ", ..." : "...");
+            cut = 1;
+        }
+    }
+    return count;
+}
+
+void
+dsd_receive_note_append(char* text, size_t capacity, const char* note) {
+    if (!text || !capacity || !note) {
+        return;
+    }
+    static const char cut[] = "...";
+    const size_t note_length = strlen(note);
+    if (note_length + sizeof cut > capacity) {
+        return;
+    }
+    size_t used = strnlen(text, capacity - 1U);
+    if (used + note_length >= capacity) {
+        /* Shorten the text, on a UTF-8 character boundary, to make room for the mark and the note. */
+        used = capacity - note_length - sizeof cut;
+        while (used > 0U && ((unsigned char)text[used] & 0xC0U) == 0x80U) {
+            used--;
+        }
+        DSD_SNPRINTF(text + used, capacity - used, "%s", cut);
+        used += sizeof cut - 1U;
+    }
+    DSD_SNPRINTF(text + used, capacity - used, "%s", note);
+}
+
 const char*
 dsd_receive_service_name(const dsd_service_names* names, const dsd_receive_identity* identity) {
     const char* slot = "";
@@ -383,6 +460,25 @@ dsd_receive_name_add(dsd_service_names* names, int kind, const char* argument, c
     return receive_name_store(names, kind, value, name, error, capacity);
 }
 
+/* What a receive option does: the order of receive_option_kind()'s suffixes, then --no-service-names. */
+enum {
+    RECEIVE_ACTION_ALLOW = 0,
+    RECEIVE_ACTION_BLOCK = 1,
+    RECEIVE_ACTION_DISABLE = 2,
+    RECEIVE_ACTION_NAME = 3,
+    RECEIVE_ACTION_NO_NAMES = 4
+};
+
+/* One option scope's `seen` bookkeeping: a bit per filter kind and filter action (receive_filter_seen()), then the
+   naming table's two. */
+#define RECEIVE_SEEN_NAMES    (1U << 16)
+#define RECEIVE_SEEN_NO_NAMES (1U << 17)
+
+static unsigned int
+receive_filter_seen(int kind, int action) {
+    return 1U << (kind * 3 + action);
+}
+
 static int
 receive_option_kind(const char* option, int* action) {
     if (!option) {
@@ -391,11 +487,12 @@ receive_option_kind(const char* option, int* action) {
     for (int kind = 0; kind <= DSD_RECEIVE_CTCSS; kind++) {
         const char* suffix[] = {"allow", "block", "filter", "name"};
         for (int a = 0; a < 4; a++) {
-            if (kind == DSD_RECEIVE_CTCSS && a != 3) {
+            if (kind == DSD_RECEIVE_CTCSS && a != RECEIVE_ACTION_NAME) {
                 continue;
             }
             char name[32];
-            DSD_SNPRINTF(name, sizeof(name), "--%s%s-%s", a == 2 ? "no-" : "", dsd_receive_kind_name(kind), suffix[a]);
+            DSD_SNPRINTF(name, sizeof(name), "--%s%s-%s", a == RECEIVE_ACTION_DISABLE ? "no-" : "",
+                         dsd_receive_kind_name(kind), suffix[a]);
             if (strcmp(name, option) == 0) {
                 *action = a;
                 return kind;
@@ -403,7 +500,7 @@ receive_option_kind(const char* option, int* action) {
         }
     }
     if (strcmp(option, "--no-service-names") == 0) {
-        *action = 4;
+        *action = RECEIVE_ACTION_NO_NAMES;
         return DSD_RECEIVE_NONE;
     }
     return -1;
@@ -412,25 +509,27 @@ receive_option_kind(const char* option, int* action) {
 int
 dsd_receive_option_argument(const char* option) {
     int action = 0;
-    return receive_option_kind(option, &action) < 0 ? -1 : (action == 2 || action == 4 ? 0 : 1);
+    return receive_option_kind(option, &action) < 0
+               ? -1
+               : (action == RECEIVE_ACTION_DISABLE || action == RECEIVE_ACTION_NO_NAMES ? 0 : 1);
 }
 
 static int
 receive_names_option(dsd_receive_policy* policy, unsigned int* seen, int kind, int action, const char* argument,
                      char* error, size_t capacity) {
     dsd_service_names names = {0};
-    if (*seen & (1U << 16)) {
+    if (*seen & RECEIVE_SEEN_NAMES) {
         names = policy->names;
     }
-    if (action == 4) {
-        if (*seen & (1U << 17)) {
+    if (action == RECEIVE_ACTION_NO_NAMES) {
+        if (*seen & RECEIVE_SEEN_NO_NAMES) {
             return receive_error(error, capacity, "duplicate no-service-names");
         }
-        if (*seen & (1U << 16)) {
+        if (*seen & RECEIVE_SEEN_NAMES) {
             return receive_error(error, capacity, "cannot combine no-service-names with naming options");
         }
     } else {
-        if (*seen & (1U << 17)) {
+        if (*seen & RECEIVE_SEEN_NO_NAMES) {
             return receive_error(error, capacity, "service names explicitly disabled");
         }
         if (dsd_receive_name_add(&names, kind, argument, error, capacity)) {
@@ -438,27 +537,32 @@ receive_names_option(dsd_receive_policy* policy, unsigned int* seen, int kind, i
         }
     }
     policy->names = names;
-    *seen |= (1U << 16) | (action == 4 ? (1U << 17) : 0U);
+    *seen |= RECEIVE_SEEN_NAMES | (action == RECEIVE_ACTION_NO_NAMES ? RECEIVE_SEEN_NO_NAMES : 0U);
     return 0;
 }
 
 static int
 receive_filter_option(dsd_receive_policy* policy, unsigned int* seen, int kind, int action, const char* argument,
                       char* error, size_t capacity) {
-    unsigned int bit = 1U << (kind * 3 + action);
-    unsigned int group = 7U << (kind * 3);
-    if ((*seen & bit) || ((action == 2 || (*seen & (4U << (kind * 3)))) && (*seen & group))) {
+    unsigned int bit = receive_filter_seen(kind, action);
+    unsigned int group = receive_filter_seen(kind, RECEIVE_ACTION_ALLOW)
+                         | receive_filter_seen(kind, RECEIVE_ACTION_BLOCK)
+                         | receive_filter_seen(kind, RECEIVE_ACTION_DISABLE);
+    if ((*seen & bit)
+        || ((action == RECEIVE_ACTION_DISABLE || (*seen & receive_filter_seen(kind, RECEIVE_ACTION_DISABLE)))
+            && (*seen & group))) {
         return receive_error(error, capacity, "duplicate or conflicting receive filter option");
     }
     dsd_receive_filter filter = {0};
     if (*seen & group) {
         filter = policy->filters[kind];
     }
-    if (action != 2) {
+    if (action != RECEIVE_ACTION_DISABLE) {
         if (!argument || !argument[0]) {
             return receive_error(error, capacity, "allow and block switches need a nonempty /-separated list");
         }
-        if (dsd_receive_set_parse(kind, argument, action == 0 ? &filter.allow : &filter.block, error, capacity)) {
+        if (dsd_receive_set_parse(kind, argument, action == RECEIVE_ACTION_ALLOW ? &filter.allow : &filter.block, error,
+                                  capacity)) {
             return -1;
         }
         filter.enabled = 1;
@@ -473,10 +577,11 @@ dsd_receive_option_apply(dsd_receive_policy* policy, unsigned int* seen, const c
                          char* error, size_t capacity) {
     int action = 0;
     int kind = receive_option_kind(option, &action);
-    if (!policy || !seen || kind < 0 || ((action == 2 || action == 4) && argument && argument[0])) {
+    if (!policy || !seen || kind < 0
+        || ((action == RECEIVE_ACTION_DISABLE || action == RECEIVE_ACTION_NO_NAMES) && argument && argument[0])) {
         return receive_error(error, capacity, "invalid receive option");
     }
-    if (action >= 3) {
+    if (action >= RECEIVE_ACTION_NAME) {
         return receive_names_option(policy, seen, kind, action, argument, error, capacity);
     }
     return receive_filter_option(policy, seen, kind, action, argument, error, capacity);
@@ -529,7 +634,7 @@ dsd_receive_names_parse(const char* text, dsd_service_names* out, char* error, s
         option[length] = '\0';
         int action = 0;
         int kind = receive_option_kind(option, &action);
-        if (kind < 0 || action != 3) {
+        if (kind < 0 || action != RECEIVE_ACTION_NAME) {
             return receive_error(error, capacity, "only naming options belong in the naming table");
         }
         p += length;

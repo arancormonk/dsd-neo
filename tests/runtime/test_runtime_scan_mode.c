@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -16,6 +17,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1722,6 +1724,41 @@ test_tetra_session_survives_row_staging(void) {
     free(o);
 }
 
+/* The policies a preview or an edit notice judges service names against are the configured ones, not the scan row's
+ * on air (issue #637): a row that blocks a code the configured names name leaves the configured policies whole. */
+static void
+test_baseline_is_configured_under_a_row(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->analog_tone_filter = DSD_TONE_FILTER_BLOCK;
+    o->analog_tone_set = tone_list("67.0");
+    char error[160];
+    assert(dsd_receive_names_parse("--dcc-name 7=Hospital", &o->receive.names, error, sizeof(error)) == 0);
+    assert(dsd_scan_mode_begin(o, s) == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_options row;
+    DSD_MEMSET(&row, 0, sizeof(row));
+    assert(dsd_scan_options_parse("--dcc-block 7", DSD_SCAN_MODE_DMR, 1, &row, error, sizeof(error)) == 0);
+    assert(dsd_scan_mode_options(o, s, &row.values) == 0);
+    assert(o->receive.filters[DSD_RECEIVE_DCC].enabled);
+    dsd_scan_option_baseline baseline;
+    dsd_scan_option_baseline_configured(o, s, &baseline);
+    assert(!baseline.receive.filters[DSD_RECEIVE_DCC].enabled && baseline.receive.names.count == 1);
+    assert(baseline.tone_filter == DSD_TONE_FILTER_BLOCK);
+    char out[64];
+    assert(dsd_scan_option_unreachable_names(NULL, &baseline, out, sizeof(out)) == 0);
+    assert(dsd_receive_names_unreachable(&o->receive, DSD_TONE_FILTER_OFF, NULL, out, sizeof(out)) == 1);
+    /* The row judged over them strands the name, as on air. */
+    assert(dsd_scan_option_unreachable_names(&row.values, &baseline, out, sizeof(out)) == 1);
+    dsd_scan_mode_leave(o, s);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_tetra_session_survives_typed_rows();
@@ -1743,6 +1780,7 @@ main(void) {
     test_auto_squelch_row_and_default();
     test_tone_row_override_scope();
     test_configured_tone_policy_edit();
+    test_baseline_is_configured_under_a_row();
     test_configured_squelch_edit();
     test_row_timing_records_its_landing_decision();
     test_resume_times_the_learned_modulation();

@@ -2,6 +2,7 @@
 #ifndef DSD_NEO_RUNTIME_RECEIVE_POLICY_H
 #define DSD_NEO_RUNTIME_RECEIVE_POLICY_H
 
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/receive_types.h>
 #include <stddef.h>
 
@@ -29,6 +30,17 @@ int dsd_receive_set_contains(const dsd_receive_set* set, unsigned int value);
 dsd_receive_verdict dsd_receive_policy_match(const dsd_receive_policy* policy, const dsd_receive_identity* identity);
 /** Empty string when no rule matches. Access/tone names outrank slot names. */
 const char* dsd_receive_service_name(const dsd_service_names* names, const dsd_receive_identity* identity);
+/** The name rules only rejected traffic could carry, so they never show (issue #637): a slot, DCC, RAN or NAC name
+ * an enabled filter of its kind rejects (its block list holds the identifier, or a nonempty allow list lacks it), or
+ * a CTCSS/DCS name the analog tone filter rejects (@p tone_mode dsd_tone_filter_mode with @p tone_set; off, or a NULL
+ * set, rejects none). Returns how many; @p out (may be NULL) lists their identifiers, e.g. "DCC 7, CTCSS 141.3",
+ * ending in "..." when the rest does not fit. Such a name is kept: a service can be blocked for a while. */
+int dsd_receive_names_unreachable(const dsd_receive_policy* policy, int tone_mode, const dsd_tone_set* tone_set,
+                                  char* out, size_t capacity);
+/** Append @p note to the text @p text (@p capacity bytes). When both do not fit, the text is shortened, on a UTF-8
+ * character boundary, and marked "..." so the note still fits whole; nothing is written when the note alone does not
+ * fit. For a notice or summary that must keep an unreachable-name note (issue #637). */
+void dsd_receive_note_append(char* text, size_t capacity, const char* note);
 /** Atomic addition. A conflicting selector or oversized/CSV-unsafe name is refused. */
 int dsd_receive_name_add(dsd_service_names* names, int kind, const char* argument, char* error, size_t capacity);
 int dsd_receive_names_parse(const char* text, dsd_service_names* out, char* error, size_t capacity);

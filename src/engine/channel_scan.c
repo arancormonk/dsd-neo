@@ -7,7 +7,6 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -201,17 +200,10 @@ channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const 
     return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && scan->map_sequence == state->trunk_chan_map_seq;
 }
 
-/* End every slot's call and commit it. An NFM call ends through its own lifecycle first (issue #637), so its per-call
-   recording closes under the row it was heard as, its mode and service name included, before the commit clears it. */
+/* End every slot's call and commit it, an NFM call first (dsd_engine_end_calls()). */
 static void
 channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
-    dsd_engine_analog_call_end(opts, state);
-    const double now = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, now) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
     (void)dsd_recent_activity_clear_all(state);
     opts->trunk_is_tuned = 0;
 }
@@ -1172,11 +1164,14 @@ channel_scan_install_edit(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
         return DSD_SCAN_ROW_EDIT_REFUSED;
     }
     scan->edits_epoch++;
+    dsd_scan_option_values scratch;
+    const dsd_scan_option_values* values = channel_scan_row_values(state, row, &scratch);
+    if (values) {
+        out->options = *values;
+    }
     if (row != scan->committed_row) {
         return DSD_SCAN_ROW_EDIT_STORED;
     }
-    dsd_scan_option_values scratch;
-    const dsd_scan_option_values* values = channel_scan_row_values(state, row, &scratch);
     const int receive_changed = dsd_scan_option_receive_differs(before, values);
     const int filters_were_enabled = dsd_receive_filters_enabled(opts);
     (void)dsd_scan_mode_options(opts, state, values);

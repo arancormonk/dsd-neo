@@ -505,6 +505,11 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     if (import_rc == 0 && mapped_any && adopt_rc == 0) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
+        /* The adopted rows over the configured policies of the live state, not the scratch state's view of a row the
+           scan may be running now (issue #637). */
+        dsd_scan_option_baseline configured;
+        dsd_scan_option_baseline_configured(opts, state, &configured);
+        csvChanWarnUnreachableNames(state, &configured);
     }
     dsd_state_ext_free_all(imported);
     dsd_state_trunk_lcn_free(imported);

@@ -37,6 +37,12 @@ int csvGroupImport(const dsd_opts* opts, dsd_state* state);
 /** csvGroupImport() on an explicit path. */
 int csvGroupImportPath(const char* group_file_path, dsd_state* state);
 int csvChanImport(const dsd_opts* opts, dsd_state* state);
+struct dsd_scan_option_baseline;
+/** Warn, one line per entry, about each channel-map entry of @p rows whose service names only rejected traffic could
+ * carry: its own filters, or the configured policies @p baseline (NULL: none) it inherits, reject them (issue #637).
+ * The names are kept. Call once the map and the policies it runs over are final, with the configured ones
+ * (dsd_scan_option_baseline_configured() on the live state), never an import's scratch state. */
+void csvChanWarnUnreachableNames(const dsd_state* rows, const struct dsd_scan_option_baseline* baseline);
 int csvKeyImportDec(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportHex(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportDecPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats);

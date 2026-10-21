@@ -588,6 +588,8 @@ test_receive_set_takes_the_guard(void) {
     rc |= expect(dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
                      && strcmp(call.service_label, "Fire") == 0,
                  "a name edit relabels the admitted call and keeps it");
+    rc |= expect(strcmp(g_state.ui_msg, "Receive defaults applied; channel overrides stay in force") == 0,
+                 "a name the policy admits needs no note");
     edit.kind = DSD_RECEIVE_NAC;
     edit.enabled = 1;
     edit.allow[0] = '\0';
@@ -596,6 +598,12 @@ test_receive_set_takes_the_guard(void) {
     rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "block edit drained");
     rc |= expect(dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE,
                  "a call the policy now rejects ends");
+    /* The name is kept, and the notice says it never shows (issue #637). */
+    rc |= expect(
+        g_opts.receive.names.count == 1
+            && strcmp(g_state.ui_msg, "Receive defaults applied; channel overrides stay in force; never shown: NAC 293")
+                   == 0,
+        "a name the new policy rejects is kept and noted");
     cleanup(&row);
     return rc;
 }

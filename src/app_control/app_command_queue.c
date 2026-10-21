@@ -9,6 +9,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -1330,17 +1331,10 @@ ui_cmd_leaves_scanner_scope(const dsd_opts* opts, int was_scanner) {
 }
 
 /* End every slot's call now and commit it (dsd_event_sync_slot()), its last render reading the carrier it was heard
-   on. An analog call ends through its own lifecycle first (issue #637), so its per-call recording closes under the row
-   it was heard as, its mode and service name included, before the commit clears that row. */
+   on, the analog call first (dsd_engine_end_calls()). */
 static void
 ui_end_calls(dsd_opts* opts, dsd_state* state) {
-    dsd_engine_analog_call_end(opts, state);
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
 }
 
 #ifdef USE_RADIO
@@ -2471,6 +2465,8 @@ ui_cmd_handle_tone_filter_set(dsd_opts* opts, dsd_state* state, const struct dsd
     (void)dsd_scan_mode_set_configured_tone_policy(opts, state, (int)edit.mode, &set);
     char notice[DSD_APP_TONE_FILTER_NOTICE_SIZE];
     (void)dsd_app_tone_filter_edit_notice(opts, state, notice, sizeof notice);
+    /* A tone name the new policy rejects is kept but never shows (issue #637). */
+    dsd_app_receive_note_unreachable(opts, state, NULL, notice, sizeof notice);
     ui_set_toast(state, 3, "%s", notice);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -2494,7 +2490,10 @@ ui_cmd_handle_receive_set(dsd_opts* opts, dsd_state* state, const struct dsd_app
         return UI_CMD_APPLY_FAILED;
     }
     dsd_scan_mode_set_configured_receive(opts, state, &policy);
-    ui_set_toast(state, 3, "%s", "Receive defaults applied; channel overrides stay in force");
+    /* A name the new defaults reject is kept but never shows (issue #637). */
+    char notice[DSD_APP_SCAN_ROW_NOTICE_SIZE] = "Receive defaults applied; channel overrides stay in force";
+    dsd_app_receive_note_unreachable(opts, state, NULL, notice, sizeof notice);
+    ui_set_toast(state, 3, "%s", notice);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -6610,12 +6609,7 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     state->p25_cc_freq = 0;
     state->trunk_cc_freq = 0;
     opts->trunk_is_tuned = 0;
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    ui_end_calls(opts, state);
 }
 
 static int

@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <inttypes.h>
 #include <math.h>
@@ -2380,6 +2381,111 @@ test_bootstrap_validate_config_strict_warning_exits_two(void) {
     freeState(state);
     free(opts);
     free(state);
+    return test_rc;
+}
+
+/* Captured log text for the bootstrap warning checks (the tap is installed once, for the process). */
+static char g_unreachable_log[4096];
+
+static void
+capture_unreachable_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    const size_t used = strlen(g_unreachable_log);
+    DSD_SNPRINTF(g_unreachable_log + used, sizeof g_unreachable_log - used, "%s", text ? text : "");
+}
+
+/* Run the bootstrap on @p argv (@p argc entries); returns its rc with @p exit_rc, the log captured meanwhile. */
+static int
+bootstrap_capturing(int argc, char** argv, int* exit_rc) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+    initOpts(opts);
+    initState(state);
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    g_unreachable_log[0] = '\0';
+    int argc_effective = 0;
+    *exit_rc = -1;
+    const int rc = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, exit_rc);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/*
+ * Issue #637: a service name the filters in force reject never shows. It is kept; the session warns once at start,
+ * and --validate-config warns too, which --strict-config turns into exit 2.
+ */
+static int
+test_bootstrap_warns_unreachable_names(void) {
+    static int tapped = 0;
+    if (!tapped) {
+        dsd_neo_log_set_tap(capture_unreachable_log, NULL);
+        tapped = 1;
+    }
+    int test_rc = 0;
+    int exit_rc = -1;
+    char a0[] = "dsd-neo", a1[] = "-fr", a2[] = "--dcc-block", a3[] = "7", a4[] = "--dcc-name", a5[] = "7=Hospital";
+    char* stranded[] = {a0, a1, a2, a3, a4, a5, NULL};
+    if (bootstrap_capturing(6, stranded, &exit_rc) != DSD_BOOTSTRAP_CONTINUE
+        || !strstr(g_unreachable_log, "Service names that never show") || !strstr(g_unreachable_log, "DCC 7")) {
+        DSD_FPRINTF(stderr, "expected the unreachable-name warning at start, got:\n%s\n", g_unreachable_log);
+        test_rc = 1;
+    }
+    char* reachable[] = {a0, a1, a4, a5, NULL};
+    if (bootstrap_capturing(4, reachable, &exit_rc) != DSD_BOOTSTRAP_CONTINUE
+        || strstr(g_unreachable_log, "never show")) {
+        DSD_FPRINTF(stderr, "expected no unreachable-name warning, got:\n%s\n", g_unreachable_log);
+        test_rc = 1;
+    }
+
+    /* A -C channel map is judged once the whole command line is in force: here the block comes after it. */
+    char map_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents("channel,frequency,name,mode,options\n"
+                                                     "1,464125000,Own,dmr,--dcc-name 7=Hospital\n",
+                                                     map_path, sizeof map_path)
+        != 0) {
+        return 1;
+    }
+    char c1[] = "-C", c2[1024];
+    DSD_SNPRINTF(c2, sizeof c2, "%s", map_path);
+    char* with_map[] = {a0, a1, c1, c2, a2, a3, NULL};
+    if (bootstrap_capturing(6, with_map, &exit_rc) != DSD_BOOTSTRAP_CONTINUE
+        || !strstr(g_unreachable_log, "Channel map entry 1 (Own): service names that never show")) {
+        DSD_FPRINTF(stderr, "expected the -C map entry warning, got:\n%s\n", g_unreachable_log);
+        test_rc = 1;
+    }
+    (void)remove(map_path);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents("[receive]\n"
+                                                     "dcc_enabled = true\n"
+                                                     "dcc_block = 7\n"
+                                                     "names = --dcc-name 7=Hospital\n",
+                                                     cfg_path, sizeof cfg_path)
+        != 0) {
+        return 1;
+    }
+    char v1[] = "--validate-config", v2[1024], v3[] = "--strict-config";
+    DSD_SNPRINTF(v2, sizeof v2, "%s", cfg_path);
+    char* validate[] = {a0, v1, v2, NULL};
+    if (bootstrap_capturing(3, validate, &exit_rc) != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected the warning to validate (exit 0), got exit_rc=%d\n", exit_rc);
+        test_rc = 1;
+    }
+    char* strict[] = {a0, v1, v2, v3, NULL};
+    if (bootstrap_capturing(4, strict, &exit_rc) != DSD_BOOTSTRAP_EXIT || exit_rc != 2) {
+        DSD_FPRINTF(stderr, "expected --strict-config to exit 2 on the warning, got exit_rc=%d\n", exit_rc);
+        test_rc = 1;
+    }
+    (void)remove(cfg_path);
     return test_rc;
 }
 
@@ -9994,6 +10100,7 @@ main(void) {
     rc |= test_bootstrap_guard_rejects_invalid_arguments();
     rc |= test_bootstrap_validate_config_accepts_external_path();
     rc |= test_bootstrap_validate_config_strict_warning_exits_two();
+    rc |= test_bootstrap_warns_unreachable_names();
     rc |= test_bootstrap_validate_config_reports_trunk_scan_diagnostics();
     rc |= test_bootstrap_validate_config_rejects_invalid_included_versions();
     rc |= test_bootstrap_list_profiles_accepts_external_config_path();

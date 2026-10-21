@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <assert.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <string.h>
 
@@ -155,11 +157,67 @@ test_list_fits_as_saved(void) {
     }
 }
 
+/* A name only rejected traffic could carry never shows (issue #637): it is kept, and reported, never refused. */
+static void
+test_unreachable_names(void) {
+    dsd_receive_policy policy = {0};
+    unsigned int seen = 0;
+    char error[160];
+    char out[128];
+    assert(dsd_receive_names_parse("--dcc-name '7=Hospital' --dcc-name 14=Municipality --dcc-name 2=Mall "
+                                   "--slot-name 2=Dispatch --ran-name 12=Roads --nac-name 293=County "
+                                   "--tone-name 141.3=Traveler --tone-name D023N=Local",
+                                   &policy.names, error, sizeof(error))
+           == 0);
+    /* No filter on: every name can show. */
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_OFF, NULL, out, sizeof(out)) == 0 && !out[0]);
+    /* A block list, a nonempty allow list without the code, and a slot block. */
+    assert(dsd_receive_option_apply(&policy, &seen, "--dcc-allow", "2/14", error, sizeof(error)) == 0);
+    assert(dsd_receive_option_apply(&policy, &seen, "--dcc-block", "14", error, sizeof(error)) == 0);
+    assert(dsd_receive_option_apply(&policy, &seen, "--slot-block", "2", error, sizeof(error)) == 0);
+    assert(dsd_receive_option_apply(&policy, &seen, "--nac-allow", "293", error, sizeof(error)) == 0);
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_OFF, NULL, out, sizeof(out)) == 3);
+    assert(strcmp(out, "DCC 7, DCC 14, Slot 2") == 0);
+    /* A disabled filter keeps its lists but rejects nothing. */
+    policy.filters[DSD_RECEIVE_DCC].enabled = 0;
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_OFF, NULL, out, sizeof(out)) == 1);
+    assert(strcmp(out, "Slot 2") == 0);
+    /* The tone filter: an allow list without the tone, a block list with the DCS code in its other spelling. */
+    dsd_tone_set tones;
+    assert(dsd_tone_set_parse("97.4/D047I", &tones, NULL, 0) == 0);
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_ALLOW, &tones, out, sizeof(out)) == 2);
+    assert(strcmp(out, "Slot 2, CTCSS 141.3") == 0);
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_BLOCK, &tones, out, sizeof(out)) == 2);
+    assert(strcmp(out, "Slot 2, DCS D023N") == 0);
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_BLOCK, NULL, out, sizeof(out)) == 1);
+    /* A list that does not fit ends on whole entries and a mark; the count is complete; a NULL out counts only. */
+    policy.filters[DSD_RECEIVE_DCC].enabled = 1;
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_ALLOW, &tones, out, 20) == 4);
+    assert(strcmp(out, "DCC 7, DCC 14, ...") == 0);
+    assert(dsd_receive_names_unreachable(&policy, DSD_TONE_FILTER_ALLOW, &tones, NULL, 0) == 4);
+    assert(dsd_receive_names_unreachable(NULL, DSD_TONE_FILTER_OFF, NULL, out, sizeof(out)) == 0 && !out[0]);
+
+    /* The note is kept whole: appended when it fits, else the text before it gives way, on a UTF-8 boundary. */
+    char text[24] = "Applied";
+    dsd_receive_note_append(text, sizeof(text), "; never shown: DCC 7");
+    assert(strcmp(text, "...; never shown: DCC 7") == 0);
+    DSD_SNPRINTF(text, sizeof(text), "%s", "Applied");
+    dsd_receive_note_append(text, sizeof(text), "; DCC 7");
+    assert(strcmp(text, "Applied; DCC 7") == 0);
+    DSD_SNPRINTF(text, sizeof(text), "%s", "Caf\xC3\xA9 row is long");
+    dsd_receive_note_append(text, sizeof(text), "; never: NAC 293"); /* the cut would fall inside the é */
+    assert(strcmp(text, "Caf...; never: NAC 293") == 0);
+    DSD_SNPRINTF(text, sizeof(text), "%s", "Applied");
+    dsd_receive_note_append(text, sizeof(text), "; a note longer than the text can hold");
+    assert(strcmp(text, "Applied") == 0);
+}
+
 int
 main(void) {
     test_values();
     test_filters();
     test_names();
     test_list_fits_as_saved();
+    test_unreachable_names();
     return 0;
 }

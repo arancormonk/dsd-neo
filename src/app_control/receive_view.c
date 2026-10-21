@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/receive_policy.h>
 
 static const char*
 receive_status_name(dsd_receive_verdict verdict) {
@@ -32,13 +33,9 @@ dsd_app_receive_status_text(const dsd_opts* opts, const dsd_state* state, char* 
     if (opts->analog_only) {
         protocol = DSD_SYNC_ANALOG;
     }
-    if (protocol == DSD_SYNC_NONE) {
-        for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
-            if (opts->receive.filters[kind].enabled) {
-                DSD_SNPRINTF(out, capacity, "%s", "Checking received identifier");
-                return;
-            }
-        }
+    if (protocol == DSD_SYNC_NONE && dsd_receive_policy_filters_enabled(&opts->receive)) {
+        DSD_SNPRINTF(out, capacity, "%s", "Checking received identifier");
+        return;
     }
     dsd_receive_identity identity;
     dsd_receive_identity_current(state, protocol, 0, &identity);

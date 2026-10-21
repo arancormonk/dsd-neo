@@ -23,10 +23,12 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/scan_options.h>
 
 #include <QSaveFile>
 #include <QTemporaryFile>
@@ -692,14 +694,26 @@ appendChannelProfile(const dsd_csv_channel_profile* row, void* context) {
                     {"profileRef", QString::fromUtf8(row->profile_ref)}});
 }
 
+namespace {
+/* The configured receive and tone policies a preview judges each row's service names against (issue #637). */
+dsd_scan_option_baseline
+configuredBaseline() {
+    dsd_scan_option_baseline baseline{};
+    dsd_scan_option_baseline_configured(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &baseline);
+    return baseline;
+}
+} // namespace
+
 QVariantMap
 ImportedFilesModel::channelProfiles(int row) const {
     if (row < 0 || row >= count() || m_rows[row].type != "chan") {
         return {{"ok", false}, {"rows", QVariantList()}};
     }
     QVariantList rows;
-    const bool ok =
-        dsd_csv_inspect_channel_profiles(m_rows[row].path.toUtf8().constData(), &rows, appendChannelProfile) == 0;
+    const dsd_scan_option_baseline baseline = configuredBaseline();
+    const bool ok = dsd_csv_inspect_channel_profiles_against(m_rows[row].path.toUtf8().constData(), &baseline, &rows,
+                                                             appendChannelProfile)
+                    == 0;
     return {{"ok", ok}, {"rows", rows}};
 }
 
@@ -769,7 +783,8 @@ ImportedFilesModel::targetPreview(const QString& path) const {
     }
     QVariantList rows;
     char error[512] = {};
-    const dsd_app_scan_csv_callbacks callbacks{appendTargetPreview, nullptr, &rows};
+    const dsd_scan_option_baseline baseline = configuredBaseline();
+    const dsd_app_scan_csv_callbacks callbacks{appendTargetPreview, nullptr, &rows, &baseline};
     const bool ok =
         dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, error, sizeof error) == 0;
     return {{"ok", ok}, {"rows", rows}, {"error", QString::fromUtf8(error)}};

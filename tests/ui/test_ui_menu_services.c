@@ -1,5 +1,7 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/runtime/receive_policy.h>
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -263,6 +265,19 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
         }
     }
     return 0;
+}
+
+/* What the channel-map import last asked to be warned about (issue #637): the rows, and whether the policies they were
+   judged over had the DCC filter on. */
+static int g_chan_warn_calls;
+static const dsd_state* g_chan_warn_rows;
+static int g_chan_warn_dcc_enabled;
+
+void
+csvChanWarnUnreachableNames(const dsd_state* rows, const struct dsd_scan_option_baseline* baseline) {
+    g_chan_warn_calls++;
+    g_chan_warn_rows = rows;
+    g_chan_warn_dcc_enabled = baseline ? baseline->receive.filters[DSD_RECEIVE_DCC].enabled : -1;
 }
 
 static int g_key_import_result = -1;
@@ -2150,6 +2165,45 @@ test_udp_output_target_change_moves_analog_socket(void) {
     return rc;
 }
 
+/* Issue #637: a -Y map imported while a row runs is judged over the configured policies of the live state, not the
+   import's scratch state, which knows no scan row and would read the row's overrides in dsd_opts as the defaults. */
+static int
+test_channel_map_import_warns_over_configured_policy(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    rc |= expect_int("configured dcc block",
+                     dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_DCC, 1, "", "7", "", NULL, 0), 0);
+    rc |= expect_int("row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_DCC; /* --no-dcc-filter */
+    rc |= expect_int("row options", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("the row runs without the filter", opts.receive.filters[DSD_RECEIVE_DCC].enabled, 0);
+    g_chan_import_result = 0;
+    g_chan_import_count = 1;
+    g_chan_import_mode[0] = DSD_SCAN_MODE_DMR;
+    g_chan_import_chan[0] = 101;
+    g_chan_import_freq[0] = 851000000L;
+    g_chan_import_name[0] = NULL;
+    g_chan_warn_calls = 0;
+    rc |= expect_int("map imported", svc_import_channel_map(&opts, &state, "names.csv"), 0);
+    rc |= expect_int("adopted rows warned once", g_chan_warn_calls, 1);
+    rc |= expect_int("the live state's rows", g_chan_warn_rows == &state, 1);
+    rc |= expect_int("judged over the configured filter", g_chan_warn_dcc_enabled, 1);
+    g_chan_import_result = -1;
+    g_chan_warn_calls = 0;
+    rc |= expect_int("failed import", svc_import_channel_map(&opts, &state, "bad.csv"), -1);
+    rc |= expect_int("a failed import warns about nothing", g_chan_warn_calls, 0);
+    dsd_scan_mode_leave(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    dsd_state_trunk_lcn_free(&state);
+    return rc;
+}
+
 static int
 test_channel_map_reimport_replaces_previous_map(void) {
     int rc = 0;
@@ -2880,6 +2934,7 @@ main(void) {
     rc |= test_udp_output_analog_socket_failure();
     rc |= test_udp_output_target_change_moves_analog_socket();
     rc |= test_channel_map_reimport_replaces_previous_map();
+    rc |= test_channel_map_import_warns_over_configured_policy();
     rc |= test_channel_map_keys_adopt_and_clear();
     rc |= test_key_import_arms_keyloader();
     rc |= test_clear_services_unload_what_the_importers_loaded();

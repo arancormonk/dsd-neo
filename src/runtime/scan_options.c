@@ -2,10 +2,12 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -787,6 +789,127 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
     return rc;
 }
 
+/* Whether the @p length bytes at @p content, the inside of a cell wrapped in double quotes, are spreadsheet (RFC 4180)
+   quoting: every double quote among them is one of a doubled pair. */
+static int
+option_csv_quoting(const char* content, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+        if (content[i] == '"') {
+            if (i + 1 >= length || content[i + 1] != '"') {
+                return 0;
+            }
+            i++;
+        }
+    }
+    return 1;
+}
+
+/* Whether @p legacy parses for some row class: a cell any class accepts keeps the reading it has always had, so the
+   reading never depends on the row's mode. */
+static int
+option_legacy_reads(const char* legacy) {
+    for (unsigned int mode = 0; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        for (int conventional = 0; conventional <= 1; conventional++) {
+            dsd_scan_options parsed;
+            const int rc = dsd_scan_options_parse(legacy, mode, conventional, &parsed, NULL, 0);
+            DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+            if (rc == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+int
+dsd_scan_options_cell_csv_quoted(const char* legacy, const char* content, size_t length) {
+    return legacy && content && option_csv_quoting(content, length) && !option_legacy_reads(legacy);
+}
+
+/* A spreadsheet-quoted cell's content with each doubled quote read as one, NUL-terminated, in a new buffer of
+   @p length + 1 bytes the caller wipes and frees; when @p map is not NULL, it receives (@p length + 1 entries) the
+   content offset each decoded byte starts at, and after the last one @p length. NULL when out of memory. */
+static char*
+option_csv_decode(const char* content, size_t length, size_t* map) {
+    char* text = (char*)malloc(length + 1);
+    if (!text) {
+        return NULL;
+    }
+    size_t used = 0;
+    for (size_t i = 0; i < length; i++, used++) {
+        if (map) {
+            map[used] = i;
+        }
+        text[used] = content[i];
+        if (content[i] == '"') {
+            i++;
+        }
+    }
+    if (map) {
+        map[used] = length;
+    }
+    text[used] = '\0';
+    return text;
+}
+
+int
+dsd_scan_options_parse_cell(const char* legacy, const char* content, size_t length, unsigned int mode, int conventional,
+                            dsd_scan_options* out, char* error, size_t error_size) {
+    int rc = dsd_scan_options_parse(legacy, mode, conventional, out, error, error_size);
+    if (rc == 0 || !dsd_scan_options_cell_csv_quoted(legacy, content, length)) {
+        return rc;
+    }
+    char* text = option_csv_decode(content, length, NULL);
+    if (!text) {
+        return option_error(error, error_size, "options", "out of memory");
+    }
+    rc = dsd_scan_options_parse(text, mode, conventional, out, error, error_size);
+    DSD_SECURE_ZERO(text, length + 1);
+    free(text);
+    return rc;
+}
+
+/* A spreadsheet-quoted cell's visit: the decoded text's offsets mapped back to the cell's content. */
+typedef struct {
+    dsd_scan_option_file_cb callback;
+    void* context;
+    const size_t* map;
+} option_csv_visit;
+
+static int
+// cppcheck-suppress constParameterCallback -- signature fixed by dsd_scan_option_file_cb
+option_csv_visit_file(void* context, const char* option, const char* path, size_t offset, size_t length,
+                      int includes_option) {
+    const option_csv_visit* visit = (const option_csv_visit*)context;
+    return visit->callback(visit->context, option, path, visit->map[offset],
+                           visit->map[offset + length] - visit->map[offset], includes_option);
+}
+
+int
+dsd_scan_options_visit_cell_files(const char* legacy, const char* content, size_t length, void* context,
+                                  dsd_scan_option_file_cb callback, int* csv_quoted) {
+    const int quoted = dsd_scan_options_cell_csv_quoted(legacy, content, length);
+    if (csv_quoted) {
+        *csv_quoted = quoted;
+    }
+    if (!quoted) {
+        return dsd_scan_options_visit_files(legacy, context, callback);
+    }
+    size_t* map = (size_t*)calloc(length + 1, sizeof(*map));
+    char* text = map ? option_csv_decode(content, length, map) : NULL;
+    int rc = -1;
+    if (text && callback) {
+        option_csv_visit visit = {callback, context, map};
+        rc = dsd_scan_options_visit_files(text, &visit, option_csv_visit_file);
+    }
+    if (text) {
+        DSD_SECURE_ZERO(text, length + 1);
+        free(text);
+    }
+    free(map);
+    return rc;
+}
+
 /* The tone switch whose list is the last argument of @p text (--tone-allow or --tone-block, its list separate or after
  * '='), or NULL: none, another switch or argument after it, or text the tokenizer refuses (its parse says why). */
 static const scan_option_spec*
@@ -986,6 +1109,57 @@ dsd_scan_option_receive_summary(const dsd_scan_option_values* values, char* out,
         DSD_SNPRINTF(out + used, capacity - used, "%sService names: %u", used ? "; " : "", values->receive.names.count);
     } else if (!used) {
         DSD_SNPRINTF(out, capacity, "%s", "Receive filters and names: default");
+    }
+}
+
+void
+dsd_scan_option_baseline_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_option_baseline* out) {
+    if (!out) {
+        return;
+    }
+    dsd_scan_mode_configured_receive(opts, state, &out->receive);
+    dsd_scan_mode_configured_tone_policy(opts, state, &out->tone_filter, &out->tone_set);
+}
+
+int
+dsd_scan_option_unreachable_names(const dsd_scan_option_values* values, const dsd_scan_option_baseline* baseline,
+                                  char* out, size_t capacity) {
+    dsd_scan_option_baseline policy;
+    if (baseline) {
+        policy = *baseline;
+    } else {
+        DSD_MEMSET(&policy, 0, sizeof(policy));
+    }
+    /* As a row's options apply (dsd_scan_mode_options()): each filter kind and the naming table it sets replace the
+       configured ones, and an nfm row's tone policy the configured tone filter. */
+    for (int kind = 0; values && kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (values->present & (DSD_SCAN_OPT_SLOT << kind)) {
+            policy.receive.filters[kind] = values->receive.filters[kind];
+        }
+    }
+    if (values && (values->present & DSD_SCAN_OPT_NAMES)) {
+        policy.receive.names = values->receive.names;
+    }
+    if (values && (values->present & DSD_SCAN_OPT_TONE)) {
+        policy.tone_filter = values->tone_filter;
+        policy.tone_set = values->tone_set;
+    }
+    const int count =
+        dsd_receive_names_unreachable(&policy.receive, policy.tone_filter, &policy.tone_set, out, capacity);
+    DSD_SECURE_ZERO(&policy, sizeof(policy));
+    return count;
+}
+
+void
+dsd_scan_option_receive_summary_against(const dsd_scan_option_values* values, const dsd_scan_option_baseline* baseline,
+                                        char* out, size_t capacity) {
+    dsd_scan_option_receive_summary(values, out, capacity);
+    /* Whole identifiers, ending in "..." when more are left out; the summary gives way to the note if both do not fit. */
+    char names[96];
+    if (out && capacity && dsd_scan_option_unreachable_names(values, baseline, names, sizeof names) > 0) {
+        char note[sizeof names + 32];
+        DSD_SNPRINTF(note, sizeof note, "; never shown (filtered out): %s", names);
+        dsd_receive_note_append(out, capacity, note);
     }
 }
 

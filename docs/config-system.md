@@ -460,6 +460,8 @@ Saving while a scan row is active writes the configured defaults, not that row's
 A row replaces each filter kind it specifies in full, or its entire naming table; omitted kinds inherit.
 Explicit `--no-<kind>-filter` and `--no-service-names` override enabled/named defaults. Leaving the row
 restores configured defaults.
+A name for an identifier the `[receive]` filters or the `[analog]` tone filter reject is kept but never shows;
+`--validate-config` reports it as a warning (so `--strict-config` exits 2), for the base settings and for each profile.
 
 **[analog] section:**
 | Key | Type | Description | Default |

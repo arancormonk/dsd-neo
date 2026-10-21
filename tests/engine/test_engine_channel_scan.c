@@ -2596,9 +2596,18 @@ test_receive_row_session_edits(void) {
            == DSD_SCAN_ROW_EDIT_APPLIED);
     assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 7));
     assert(dsd_receive_names_parse("--dcc-name '7=Hospital'", &value.receive.names, NULL, 0) == 0);
+    dsd_scan_row_edit_result* result = calloc(1, sizeof(*result));
+    assert(result);
     assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET,
-                                            &value, NULL)
+                                            &value, result)
            == DSD_SCAN_ROW_EDIT_STORED);
+    /* The result carries the options the row runs from its next visit (issue #637): its new name, which the configured
+       DCC filter (allow 9) it inherits rejects. */
+    assert((result->options.present & DSD_SCAN_OPT_NAMES) && result->options.receive.names.count == 1);
+    dsd_scan_option_baseline configured;
+    dsd_scan_option_baseline_configured(opts, state, &configured);
+    assert(dsd_scan_option_unreachable_names(&result->options, &configured, NULL, 0) == 1);
+    free(result);
     assert(opts->receive.names.count == 0);
     /* An incompatible table is refused atomically, preserving the stored destination's name. */
     assert(dsd_receive_names_parse("--ran-name '7=Wrong protocol'", &value.receive.names, NULL, 0) == 0);

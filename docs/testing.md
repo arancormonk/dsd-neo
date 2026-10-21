@@ -1494,7 +1494,14 @@ EMB, embedded LC), voice LC, PI, terminator and idle bursts with their FEC built
 voice from mbelib-neo's encoder, DMRA AES-256, AES-128 and RC4 voice with the per-superframe MI advance and late-entry
 MI fragments, and faults placed on a named burst: a lost burst (the redundant-carrier copy that ends the BS frame loop
 exactly there), CACH and sync noise, a wrong colour code, a TACT miscorrected to the other slot, corrupted late-entry
-fragments, and voice superframes lost after the headers. Output is deterministic for a given seed.
+fragments, and voice superframes lost after the headers. It can also change the colour code from a given voice
+superframe on, with no new header (`--cc-change`), and start the voice at another point of its waveform
+(`--voice-t0`), so separately generated calls carry different audio. Output is deterministic for a given seed.
+
+`DMR_SYNTH_RECEIVE_NAMES` (`tests/protocol/dmr/dmr_receive_names_check.py`, issue #637) decodes three repeaters that
+share one frequency and differ only by colour code, named with `--dcc-name`: three calls with silence between them,
+the same calls back to back, and one call whose colour code changes twice. Every call must carry its own name, and each
+per-call recording must hold its own audio (normalised correlation with the expected audio).
 
 The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
 (for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry

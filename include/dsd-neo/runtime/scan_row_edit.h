@@ -104,6 +104,9 @@ typedef struct {
     int restart_gain;
     /** The row's edits before this change (dsd_engine_*_restore_*() puts them back). */
     dsd_scan_row_edit previous;
+    /** The options the row runs with the edit in, on air or from its next visit (an accepted edit only), for what the
+     * notice says of them (issue #637). */
+    dsd_scan_option_values options;
     /** Why an edit was refused; empty otherwise. */
     char err[DSD_SCAN_ROW_EDIT_ERROR_SIZE];
 } dsd_scan_row_edit_result;

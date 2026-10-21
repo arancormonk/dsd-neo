@@ -299,6 +299,12 @@ Channel,Frequency,Name,Mode,Options
 3,154430000,County repeater,nfm,--tone-name '141.3=20R Traveler'
 ```
 
+A spreadsheet that saves an `options` cell holding a double quote wraps the cell in double quotes and doubles each
+quote inside it: `"--dcc-name ""7=St Mary's"""`. Channel maps and trunk-scan targets read such a cell as the spreadsheet
+meant it, `--dcc-name "7=St Mary's"`, and a backup or bundle import that rewrites a companion path in it keeps that
+quoting. A cell is read this way only when every quote inside it is doubled and it does not already parse as written,
+so a cell that loaded before keeps its meaning.
+
 Import previews summarize the row's filters and naming-rule count. Live **This channel** edits are session-only;
 **Use default** inherits the configured value and **List value** restores the imported row. These edits never
 rewrite the imported CSV or change a permanent target ID.

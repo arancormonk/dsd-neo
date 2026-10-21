@@ -1393,6 +1393,10 @@ Naming alone never filters traffic. The channel label and permanent scan-target 
 Each scope accepts up to 32 selectors and names up to 63 UTF-8 bytes. Empty names, leading/trailing spaces,
 commas, double quotes and control characters are refused. Equivalent DCS spellings share one selector;
 conflicting names for that selector are refused. `--no-service-names` clears the inherited table.
+A name for an identifier the filters in force reject (`--dcc-block 7 --dcc-name '7=Hospital'`, or a tone name outside
+`--tone-allow`) is kept but never shows, since that traffic is never received. dsd-neo warns about it at start, when a
+scan list or channel map loads (naming the row), in `--validate-config`, in import previews and in the notice of a live
+edit, so a service can be blocked for a while without losing its name.
 
 Live editors are on the Qt/Android monitor under **Signal & site**: **Receive filters** and **Service names**.
 They offer **All channels** / **This channel**, with **Use default** and **List value** for session-only row edits.

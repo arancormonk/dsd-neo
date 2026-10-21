@@ -10490,6 +10490,55 @@ test_target_squelch_warns_once_per_target_on_pcm_input(void) {
     return test_rc;
 }
 
+/* Issue #637: a target whose service name its own filters, or the configured ones it inherits, reject warns once at
+ * load, naming the target and the identifier; the name is kept. A target whose names can show says nothing. */
+static int
+test_targets_warn_unreachable_names(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "Own,dmr-conventional,461000000,,250,,,--dcc-block 7 --dcc-name 7=Hospital\n"
+                                          "Inherits,dmr-conventional,462000000,,250,,,--dcc-name 14=Municipality\n"
+                                          "Open,dmr-conventional,463000000,,250,,,--dcc-name 2=Mall\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    char err[256] = {0};
+    if (dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_DCC, 1, "2", "", "", err, sizeof err) != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscannames") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(0.0);
+    const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    trunk_scan_test_clear_now();
+    char buf[4096];
+    const int read_rc = dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    cleanup_paths(dir, target_path, NULL);
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    if (rc != 0 || read_rc != 0
+        || !strstr(buf, "Trunk scan target 'Own': service names that never show, because the receive filters reject "
+                        "their traffic: DCC 7")
+        || !strstr(buf, "Trunk scan target 'Inherits': service names that never show") || !strstr(buf, "DCC 14")
+        || strstr(buf, "'Open'")) {
+        DSD_FPRINTF(stderr, "unreachable-name warnings (rc=%d err=%s):\n%s\n", rc, err, buf);
+        return 1;
+    }
+    return 0;
+}
+
 /* --- Issue #526: nfm-conventional targets --- */
 
 static const char k_nfm_targets_header[] =
@@ -12803,6 +12852,11 @@ test_target_edit_squelch_live_and_stored(void) {
         DSD_FPRINTF(stderr, "the scope's row options do not carry the edit\n");
         test_rc = 1;
     }
+    /* The result carries the options the target runs with the edit in (issue #637). */
+    if (!(result.options.present & DSD_SCAN_OPT_SQUELCH) || result.options.squelch_db != -45) {
+        DSD_FPRINTF(stderr, "live set: the result does not carry the target's options\n");
+        test_rc = 1;
+    }
 
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
@@ -12820,6 +12874,11 @@ test_target_edit_squelch_live_and_stored(void) {
     test_rc |= expect_target_squelch(&opts, "stored inherit", -80, 3);
     if (!(result.previous.set & DSD_SCAN_ROW_FIELD_SQUELCH) || result.previous.value.squelch_db != -45) {
         DSD_FPRINTF(stderr, "stored inherit did not return the previous edit\n");
+        test_rc = 1;
+    }
+    /* ... nor its options from the next visit: thr follows the default, so its list's squelch is gone from them. */
+    if (result.options.present & DSD_SCAN_OPT_SQUELCH) {
+        DSD_FPRINTF(stderr, "stored inherit: the result still carries the list's squelch\n");
         test_rc = 1;
     }
 
@@ -13310,6 +13369,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
     rc |= run_with_default_tune_hook(test_parser_keeps_gain_after_receive_options);
+    rc |= run_with_default_tune_hook(test_targets_warn_unreachable_names);
     rc |= run_with_default_tune_hook(test_parser_accepts_p25_conventional_target);
     rc |= run_with_default_tune_hook(test_live_target_decryption_roundtrip);
     rc |= run_with_default_tune_hook(test_parser_accepts_target_key_columns);

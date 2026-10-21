@@ -30,6 +30,11 @@
  *   --ppm X            transmitter symbol-clock offset in ppm (default 0)
  *   --snr DB           SNR in dB against the outer symbol level (default 40)
  *   --cc N             colour code 0..15 (default 1)
+ *   --cc-change SF:N   from voice superframe SF on (the first voice burst of either slot that reaches it), every burst
+ *                      carries colour code N instead: one call whose colour code changes with no new header, as when
+ *                      another repeater on the frequency takes over (issue #637); repeatable, SF ascending
+ *   --voice-t0 SEC     start the synthetic voice SEC seconds into its waveform (default 0), so calls generated
+ *                      separately carry different audio
  *   --seed N           noise / filler RNG seed (default 1); output is deterministic for a given seed
  *   --s1 voice|idle    slot 1 content (default voice)
  *   --s2 voice|idle    slot 2 content (default idle)
@@ -325,11 +330,20 @@ typedef struct {
     int slot, sf_first, sf_last, mode;
 } le_fault_t;
 
+#define MAX_CC_CHANGES 8
+
+typedef struct {
+    int sf, cc;
+} cc_change_t;
+
 typedef struct {
     const char* out;
     const char* expect;
     double secs, ppm, snr, lead, tail;
     int cc;
+    cc_change_t cc_changes[MAX_CC_CHANGES];
+    int ncc_changes;
+    double voice_t0;
     int voice[2];
     int alg;
     uint8_t key[32];
@@ -348,6 +362,18 @@ typedef struct {
 } synth_cfg;
 
 static synth_cfg cfg;
+
+/* The colour code the bursts carry now: cfg.cc until a --cc-change takes over (burst_cc_follow()). */
+static int g_cc;
+static int g_cc_next;
+
+/* Move to the next --cc-change once a voice burst of superframe @p sf is scheduled. */
+static void
+burst_cc_follow(int sf) {
+    while (g_cc_next < cfg.ncc_changes && sf >= cfg.cc_changes[g_cc_next].sf) {
+        g_cc = cfg.cc_changes[g_cc_next++].cc;
+    }
+}
 
 /* Indices of the four ambe_d bits that land in ambe_fr[3][0..3] (the late-entry nibble), found at start-up by
  * encoding single-bit words: row 3 is unscrambled, so each of its bits follows exactly one parameter bit. */
@@ -910,7 +936,7 @@ apply_fault(int mode, int slot, const uint8_t* frag, int* out) {
                 out[i] = rand_dibit();
             }
             break;
-        case CM_CC: make_emb(cfg.cc ^ 1, 1, frag, out + 66); break;
+        case CM_CC: make_emb(g_cc ^ 1, 1, frag, out + 66); break;
         default: put_flipped_cach(slot, out); break;
     }
 }
@@ -940,7 +966,7 @@ emit_voice_burst(slot_call* c, int slot, burst_desc bd, int period, FILE* ef, in
         }
     }
     const uint8_t* frag = (bd.vc >= 2 && bd.vc <= 5) ? &c->emb128[(size_t)32 * (bd.vc - 2)] : NULL;
-    build_voice_burst(slot, bd.vc, cfg.cc, fr, frag, out);
+    build_voice_burst(slot, bd.vc, g_cc, fr, frag, out);
     if (bd.sf < cfg.lose_first) {
         for (int i = 0; i < SYMBOLS_PER_SLOT; i++) {
             out[i] = rand_dibit();
@@ -1107,6 +1133,26 @@ parse_fault(const char* arg) {
 }
 
 static void
+parse_cc_change(const char* arg) {
+    if (cfg.ncc_changes >= MAX_CC_CHANGES) {
+        die("too many --cc-change");
+    }
+    char buf[64];
+    char* fld[2];
+    DSD_SNPRINTF(buf, sizeof buf, "%s", arg);
+    if (split_fields(buf, fld, 2) != 2) {
+        usage();
+    }
+    cc_change_t* c = &cfg.cc_changes[cfg.ncc_changes];
+    c->sf = parse_int_arg(fld[0], 1, 100000);
+    c->cc = parse_int_arg(fld[1], 0, 15);
+    if (cfg.ncc_changes > 0 && c->sf <= cfg.cc_changes[cfg.ncc_changes - 1].sf) {
+        die("--cc-change superframes must ascend");
+    }
+    cfg.ncc_changes++;
+}
+
+static void
 parse_le_fault(const char* arg) {
     if (cfg.nle_faults >= MAX_FAULTS) {
         die("too many --le-corrupt");
@@ -1158,6 +1204,10 @@ parse_args(int argc, char** argv, int* have_key) {
             cfg.snr = parse_double_arg(next_arg(argc, argv, &i), -20.0, 200.0);
         } else if (strcmp(a, "--cc") == 0) {
             cfg.cc = parse_int_arg(next_arg(argc, argv, &i), 0, 15);
+        } else if (strcmp(a, "--cc-change") == 0) {
+            parse_cc_change(next_arg(argc, argv, &i));
+        } else if (strcmp(a, "--voice-t0") == 0) {
+            cfg.voice_t0 = parse_double_arg(next_arg(argc, argv, &i), 0.0, 3600.0);
         } else if (strcmp(a, "--seed") == 0) {
             cfg.seed = (uint64_t)parse_u32_arg(next_arg(argc, argv, &i), 0);
         } else if (strcmp(a, "--s1") == 0 || strcmp(a, "--s2") == 0) {
@@ -1359,7 +1409,7 @@ main(int argc, char** argv) {
             die("cannot allocate the AMBE encoder");
         }
         mbe_initMbeParms(&calls[s].vs.cur, &calls[s].vs.prev, &calls[s].vs.prev_e);
-        calls[s].vs.t = s * 0.37;
+        calls[s].vs.t = s * 0.37 + cfg.voice_t0;
         calls[s].mi_cur = cfg.mi[s];
         uint8_t lc[9];
         uint8_t lcb[72];
@@ -1383,6 +1433,8 @@ main(int argc, char** argv) {
     }
     size_t kpos = (size_t)lead_sym;
     int idx[2] = {0, 0};
+    g_cc = cfg.cc;
+    g_cc_next = 0;
     for (int p = 0; p < periods; p++) {
         const int slot = p & 1;
         burst_desc bd = {B_IDLE, 0, 0};
@@ -1390,25 +1442,28 @@ main(int argc, char** argv) {
             bd = sched[slot][idx[slot]];
         }
         idx[slot]++;
+        if (bd.type == B_VOICE) {
+            burst_cc_follow(bd.sf);
+        }
         int* out = &sym[kpos];
         uint8_t d96[96];
         switch (bd.type) {
             case B_VLC:
                 lc_burst_payload(slot, 0x969696u, d96);
-                build_data_burst(slot, cfg.cc, 1, d96, out);
+                build_data_burst(slot, g_cc, 1, d96, out);
                 break;
             case B_TLC:
                 lc_burst_payload(slot, 0x999999u, d96);
-                build_data_burst(slot, cfg.cc, 2, d96, out);
+                build_data_burst(slot, g_cc, 2, d96, out);
                 break;
             case B_PI:
                 pi_burst_payload(slot, d96);
-                build_data_burst(slot, cfg.cc, 0, d96, out);
+                build_data_burst(slot, g_cc, 0, d96, out);
                 break;
             case B_VOICE: emit_voice_burst(&calls[slot], slot, bd, p, ef, out); break;
             default:
                 idle_payload(d96);
-                build_data_burst(slot, cfg.cc, 9, d96, out);
+                build_data_burst(slot, g_cc, 9, d96, out);
                 break;
         }
         kpos += SYMBOLS_PER_SLOT;

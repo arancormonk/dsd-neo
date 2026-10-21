@@ -59,6 +59,7 @@ target_sources(
         engine.c
         analog_call.c
         channel_scan.c
+        end_calls.c
         signal_search.c
         frame_sync_hooks_install.c
         p25_bandplan_export.c

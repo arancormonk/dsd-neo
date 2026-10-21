@@ -954,12 +954,14 @@ scan_copy_target_key_path(char* dest, size_t capacity, const char* resolved) {
  * for that row so nothing is derived twice or overwritten.
  */
 static int
-scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, char** fields, size_t count,
+scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, int wrapped, char** fields, size_t count,
                           const dsd_trunk_scan_row_parse* parse) {
     dsd_scan_options options = {0};
     char error[192] = "invalid row options";
-    int rc = dsd_scan_options_parse(text, (unsigned int)trunk_scan_target_mode(target->type),
-                                    trunk_scan_type_is_conventional(target->type), &options, error, sizeof(error));
+    /* A cell that was wrapped in double quotes may be a spreadsheet's quoting (dsd_scan_options_parse_cell()). */
+    int rc = dsd_scan_options_parse_cell(text, wrapped ? text : NULL, strlen(text),
+                                         (unsigned int)trunk_scan_target_mode(target->type),
+                                         trunk_scan_type_is_conventional(target->type), &options, error, sizeof(error));
     if (!rc) {
         rc = dsd_scan_options_merge_keys(&options, scan_optional_field(fields, count, parse->keys_hex_idx),
                                          scan_optional_field(fields, count, parse->keys_dec_idx),
@@ -1038,9 +1040,9 @@ scan_parse_target_key_paths(dsd_trunk_scan_target* target, char** fields, size_t
  * list owns the only surviving copy. */
 static int
 scan_parse_target_secrets(dsd_trunk_scan_target* target, char** fields, size_t count,
-                          const dsd_trunk_scan_row_parse* parse, const char* options_s) {
+                          const dsd_trunk_scan_row_parse* parse, const char* options_s, int options_wrapped) {
     if (options_s[0] != '\0') {
-        return scan_parse_target_options(target, options_s, fields, count, parse);
+        return scan_parse_target_options(target, options_s, options_wrapped, fields, count, parse);
     }
     return scan_parse_target_direct_keys(target, parse, scan_optional_field(fields, count, parse->single_key_hex_idx),
                                          scan_optional_field(fields, count, parse->single_key_dec_idx));
@@ -1066,6 +1068,18 @@ scan_check_options_split(const dsd_trunk_scan_row_parse* parse, char** fields, s
     return -1;
 }
 
+/* Whether field @p idx is wrapped in double quotes, which scan_optional_field() strips: the options cell may then be a
+   spreadsheet's quoting (dsd_scan_options_parse_cell()). */
+static int
+scan_field_wrapped(char** fields, size_t count, int idx) {
+    if (idx < 0 || (size_t)idx >= count) {
+        return 0;
+    }
+    const char* cell = scan_trim(fields[idx]);
+    const size_t length = strlen(cell);
+    return length >= 2 && cell[0] == '"' && cell[length - 1] == '"';
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -1081,6 +1095,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
 
     const char* modulation_s = scan_optional_field(fields, field_count, parse->modulation_idx);
     const char* rtl_gain_s = scan_optional_field(fields, field_count, parse->rtl_gain_idx);
+    const int options_wrapped = scan_field_wrapped(fields, field_count, parse->options_idx);
     const char* options_s = scan_optional_field(fields, field_count, parse->options_idx);
 
     dsd_trunk_scan_target target;
@@ -1124,7 +1139,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         scan_set_error(parse->err, parse->err_sz, "out of memory loading trunk scan targets");
         return -1;
     }
-    if (scan_parse_target_secrets(&target, fields, field_count, parse, options_s) != 0) {
+    if (scan_parse_target_secrets(&target, fields, field_count, parse, options_s, options_wrapped) != 0) {
         DSD_SECURE_ZERO(&target.single_key_scalars, sizeof(target.single_key_scalars));
         return -1;
     }
@@ -3277,9 +3292,18 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
     const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
     dsd_engine_scan_skipped skipped = {0};
     int nfm_targets = 0;
+    dsd_scan_option_baseline configured;
+    dsd_scan_option_baseline_configured(opts, state, &configured);
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
         nfm_targets |= trunk_scan_target_mode(target->type) == DSD_SCAN_MODE_NFM;
+        /* A service name the target's filters, or the configured ones it inherits, reject never shows (issue #637). */
+        char names[160];
+        if (dsd_scan_option_unreachable_names(&target->row_options, &configured, names, sizeof names) > 0) {
+            LOG_WARN("WARNING: Trunk scan target '%s': service names that never show, because the receive filters "
+                     "reject their traffic: %s\n",
+                     target->id, names);
+        }
         if (!trunk_scan_type_is_analog(target->type)) {
             if (opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
                 LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
@@ -4639,6 +4663,8 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     out->previous = rt->edit;
     if (index != coord->active) {
         rt->edit = *next;
+        dsd_scan_option_values stored;
+        out->options = *trunk_scan_target_values(rt, &stored);
         return DSD_SCAN_ROW_EDIT_STORED;
     }
     int gain_before = 0;
@@ -4649,6 +4675,7 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     rt->edit = *next;
     dsd_scan_option_values scratch;
     const dsd_scan_option_values* after = trunk_scan_target_values(rt, &scratch);
+    out->options = *after;
     const int receive_changed = dsd_scan_option_receive_differs(&before, after);
     const int filters_were_enabled = dsd_receive_filters_enabled(opts);
     (void)dsd_scan_mode_options(opts, state, after);
