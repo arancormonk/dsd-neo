@@ -209,6 +209,7 @@ typedef struct {
     uint8_t dmr_confidence_voice_open[2];
     uint8_t dmr_confidence_voice_count[2];
     uint8_t dmr_confidence_mismatch_count;
+    double dmr_confidence_voice_m[2];
     uint8_t p25_chan_tdma_explicit[16];
     uint8_t dmr_lcn_trust[0x1000];
     uint16_t nxdn_grant_chan;
@@ -1520,6 +1521,8 @@ trunk_scan_save_dmr_confidence_snapshot(const dsd_state* state, dsd_trunk_scan_s
     DSD_MEMCPY(snapshot->dmr_confidence_voice_count, state->dmr_confidence_voice_count,
                sizeof(snapshot->dmr_confidence_voice_count));
     snapshot->dmr_confidence_mismatch_count = state->dmr_confidence_mismatch_count;
+    snapshot->dmr_confidence_voice_m[0] = state->dmr_confidence_voice_m[0];
+    snapshot->dmr_confidence_voice_m[1] = state->dmr_confidence_voice_m[1];
 }
 
 static void
@@ -1536,6 +1539,8 @@ trunk_scan_restore_dmr_confidence_snapshot(dsd_state* state, const dsd_trunk_sca
     DSD_MEMCPY(state->dmr_confidence_voice_count, snapshot->dmr_confidence_voice_count,
                sizeof(state->dmr_confidence_voice_count));
     state->dmr_confidence_mismatch_count = snapshot->dmr_confidence_mismatch_count;
+    state->dmr_confidence_voice_m[0] = snapshot->dmr_confidence_voice_m[0];
+    state->dmr_confidence_voice_m[1] = snapshot->dmr_confidence_voice_m[1];
 }
 
 static void

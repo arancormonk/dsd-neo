@@ -463,6 +463,13 @@ dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* state
 }
 
 int
+dsd_state_trunk_dmr_hunt_eligible(const dsd_opts* opts, const dsd_state* state) {
+    return trunk_hunt_session_eligible(opts, state)
+           && (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN
+               || state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_DMR);
+}
+
+int
 dsd_state_trunk_nxdn_hunt_eligible(const dsd_opts* opts, const dsd_state* state) {
     return trunk_hunt_session_eligible(opts, state)
            && (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN

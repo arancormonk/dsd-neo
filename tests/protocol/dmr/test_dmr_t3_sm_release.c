@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -64,6 +65,15 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
     (void)state;
 }
 
+/* A voice sync on a slot whose own voice passed the colour-code gate, as an accepted voice burst leaves it: only that
+   holds a followed call (a voice sync alone never does). */
+static void
+test_accepted_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
+    state->dmr_confidence_voice_open[slot] = 1;
+    state->dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, slot);
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
@@ -102,7 +112,7 @@ main(int argc, char** argv) {
     assert(ctx->state == DMR_SM_TUNED);
 
     // Simulate voice active on slot 0
-    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    test_accepted_voice_sync(&opts, &state, 0);
     assert(ctx->slots[0].voice_active == 1);
 
     // Tick while voice active - should NOT release
@@ -140,7 +150,7 @@ main(int argc, char** argv) {
     dmr_sm_emit_group_grant(&opts, &state, vc, 0, 100, 1234);
     assert(opts.trunk_is_tuned == 1);
     assert(ctx->state == DMR_SM_TUNED);
-    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    test_accepted_voice_sync(&opts, &state, 0);
     assert(ctx->slots[0].voice_active == 1);
 
     state.trunk_sm_force_release = 1;
@@ -165,7 +175,7 @@ main(int argc, char** argv) {
     dmr_sm_emit_group_grant(&opts, &state, vc, 0, 100, 1234);
     assert(opts.trunk_is_tuned == 1);
     assert(ctx->state == DMR_SM_TUNED);
-    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    test_accepted_voice_sync(&opts, &state, 0);
     assert(ctx->slots[0].voice_active == 1);
 
     g_return_to_cc_calls = 0;

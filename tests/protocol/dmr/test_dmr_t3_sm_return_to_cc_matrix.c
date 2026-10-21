@@ -322,6 +322,15 @@ dmr_expect_rejected_return_preserved(const dmr_grant_case* grant, const dmr_flow
     return rc;
 }
 
+/* A voice sync on a slot whose own voice passed the colour-code gate, as an accepted voice burst leaves it: only that
+   holds a followed call (a voice sync alone never does). */
+static dmr_sm_event_t
+matrix_accepted_voice_sync(int slot) {
+    g_state.dmr_confidence_voice_open[slot] = 1;
+    g_state.dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
+    return dmr_sm_ev_voice_sync(slot);
+}
+
 static int
 dmr_apply_terminal_flow(const dmr_grant_case* grant, const dmr_flow_case* flow, const dmr_return_script* script) {
     dmr_sm_event_t ev;
@@ -334,7 +343,7 @@ dmr_apply_terminal_flow(const dmr_grant_case* grant, const dmr_flow_case* flow, 
             break;
 
         case DMR_FLOW_VOICE_HANGTIME:
-            ev = dmr_sm_ev_voice_sync(0);
+            ev = matrix_accepted_voice_sync(0);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
             g_ctx.slots[0].voice_active = 0;
             dmr_age_hangtime();
@@ -349,7 +358,7 @@ dmr_apply_terminal_flow(const dmr_grant_case* grant, const dmr_flow_case* flow, 
             break;
 
         case DMR_FLOW_EXPLICIT_RELEASE:
-            ev = dmr_sm_ev_voice_sync(0);
+            ev = matrix_accepted_voice_sync(0);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
             ev = dmr_sm_ev_release(-1);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
@@ -358,9 +367,9 @@ dmr_apply_terminal_flow(const dmr_grant_case* grant, const dmr_flow_case* flow, 
             break;
 
         case DMR_FLOW_DUAL_SLOT_PARTIAL_RELEASE:
-            ev = dmr_sm_ev_voice_sync(0);
+            ev = matrix_accepted_voice_sync(0);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
-            ev = dmr_sm_ev_voice_sync(1);
+            ev = matrix_accepted_voice_sync(1);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
             ev = dmr_sm_ev_release(0);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
@@ -377,7 +386,7 @@ dmr_apply_terminal_flow(const dmr_grant_case* grant, const dmr_flow_case* flow, 
             break;
 
         case DMR_FLOW_FORCED_RELEASE:
-            ev = dmr_sm_ev_voice_sync(0);
+            ev = matrix_accepted_voice_sync(0);
             dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
             g_state.trunk_sm_force_release = 1;
             dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
@@ -462,7 +471,7 @@ dmr_run_active_without_terminal_case(const dmr_grant_case* grant) {
         return rc;
     }
 
-    dmr_sm_event_t ev = dmr_sm_ev_voice_sync(0);
+    dmr_sm_event_t ev = matrix_accepted_voice_sync(0);
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
     g_ctx.t_tune_m = dsd_decode_now_mono_s() - 1.0;
     dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
@@ -723,7 +732,7 @@ dmr_run_grant_crc_provenance_case(const dmr_grant_case* grant) {
     rc |= dmr_expect(g_ctx.vc_crc_flags == DSD_CRC_RAS_UNVERIFIED, grant->name, flow, script,
                      "duplicate grant keeps provenance");
 
-    ev = dmr_sm_ev_voice_sync(1);
+    ev = matrix_accepted_voice_sync(1);
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
     uint8_t flags = 0xFFU;
     rc |= dmr_expect(dmr_call_crc_flags(1U, &flags) && flags == DSD_CRC_RAS_UNVERIFIED, grant->name, flow, script,
@@ -743,7 +752,7 @@ dmr_run_grant_crc_provenance_case(const dmr_grant_case* grant) {
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
     rc |= dmr_expect(g_ctx.state == DMR_SM_TUNED && g_ctx.vc_crc_flags == 0, grant->name, flow, script,
                      "clean grant carries no provenance");
-    ev = dmr_sm_ev_voice_sync(0);
+    ev = matrix_accepted_voice_sync(0);
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
     flags = 0xFFU;
     rc |= dmr_expect(dmr_call_crc_flags(0U, &flags) && flags == 0, grant->name, flow, script,

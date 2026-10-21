@@ -1996,9 +1996,12 @@ dmr_cspdu_cap_plus_3e_set_branding(dsd_state* state) {
 // the voice channel decodes. Group calls only: a private ID's position past bank one has no public layout.
 static void
 dmr_cspdu_cap_plus_3e_seed_carrier(const dsd_opts* opts, const dsd_state* state, const dmr_cap_plus_3e_ctx* ctx,
-                                   long freq, uint64_t generation_before) {
+                                   long freq, uint64_t generation_before, int only_unarmed) {
     dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
     for (int slot = 0; slot < 2; slot++) {
+        if (only_unarmed && sm->capplus_seed[slot].armed) {
+            continue;
+        }
         uint32_t tg = 0U;
         int lsn = 0;
         for (int j = slot; j < 16; j += 2) {
@@ -2064,13 +2067,20 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
         if (!dmr_csbk_receive_carrier_allowed(opts, grant_freq)) {
             continue;
         }
+        if (dmr_sm_follows(dmr_sm_get_ctx(), grant_freq)) {
+            /* The carrier followed already satisfies this status: no retune, and its deadlines stand. A slot whose seed
+               reconciliation dropped (another group now) is named anew, for the carrier as it is now tuned. */
+            dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, dsd_trunk_tuning_generation() - 1U, 1);
+            break;
+        }
         const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
         const uint64_t generation_before = dsd_trunk_tuning_generation();
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             break;
         }
-        dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before);
+        dmr_sm_note_status_follow(opts, state, grant_freq);
+        dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before, 0);
         if (old_rtl_center_freq != (uint32_t)grant_freq) {
             dmr_reset_blocks(opts, state);
         }
@@ -2111,8 +2121,8 @@ dmr_cspdu_cap_plus_3e_try_return_to_rest(dsd_opts* opts, dsd_state* state, const
         state->trunk_cc_freq = rest;
         return;
     }
-    if (state->trunk_cc_freq == rest) {
-        return;
+    if (dmr_sm_receiver_on(opts, rest)) {
+        return; // the receiver is there, or a tracked tune is taking it there; the saved alias alone does not say so
     }
     /* Busy status can announce a new rest channel even when every advertised
      * call is blocked or unmapped. Follow it unless a call owns the tuner. */
@@ -2651,6 +2661,9 @@ dmr_cspdu_handle_xpt(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
     UNUSED(cs_pdu);
     if (csbk_fid != 0x68) {
         return;
+    }
+    if (csbk_o == 0x0A || csbk_o == 0x0B) {
+        dmr_sm_note_xpt_site(opts, state); // a CRC-valid XPT site status or adjacent-site list: no control channel
     }
 
     dmr_cspdu_xpt_handle_site_status(opts, state, cs_pdu_bits, csbk_o);

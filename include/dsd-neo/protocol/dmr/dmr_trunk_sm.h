@@ -108,6 +108,7 @@ typedef struct {
     int vc_slot;
     int vc_is_group;
     int vc_identity_published;
+    int vc_status_follow; // a Capacity Plus status followed it: its release goes to the latest announced rest channel
     // DSD_CRC_* bits of the CSBK or MBC that granted this channel (a RAS grant under -F). The grant's identity is
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
     uint8_t vc_crc_flags;
@@ -140,6 +141,28 @@ typedef struct {
     double cold_start_armed_m;   // Monotonic time the startup window opened; 0 while unarmed
     int cold_start_hunt;         // 1 while a hunt the startup window started runs and no owner is named
     int cold_start_park_pending; // 0 none; 1 park keeping the window, 2 park unarmed, once settled
+
+    // Hytera XPT, which has no dedicated control channel: validated XPT content identified the site, so recovery never
+    // walks the map; it only listens where it is, or retunes the frequency it parks on. System-scoped: kept across a
+    // same-system re-init (dmr_sm_begin_cc_acquisition()), cleared by dmr_sm_note_system_replaced().
+    int site_without_cc;
+
+    // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
+    // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
+    // cc_tune_superseded marks until it settles.
+    double cc_moved_m;
+    int cc_tune_superseded;
+    int cc_settle_waited; // frames stayed gated past the move: the window starts when the settle released them
+
+    // HUNTING was entered because the control-channel window ran out (tick_on_cc()): validated content arriving before
+    // the next hunt step opens that window again. 0 in every other state and for any other way into HUNTING.
+    int cc_window_lost;
+
+    // The receiver frequency last read from rigctl at rx_seen_generation, so a burst does not query it again: dropped
+    // at an operator move, and stale once a trunk tune moves the generation on.
+    long rx_seen_hz;
+    uint64_t rx_seen_generation;
+    double rx_query_retry_m; // real monotonic time a failed rigctl read may be tried again (0: no failure pending)
 
     // Configuration
     double hangtime_s;      // Hangtime after voice ends (default 2.0s)
@@ -194,12 +217,40 @@ void dmr_sm_event(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr
 void dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief Note an operator move of the receiver during the startup window or hunt (issue #703).
+ * @brief Note an operator move of the receiver (issue #703).
  *
  * Restarts the startup window at the move; a running startup hunt drops its probe attribution and is marked to park
- * keeping that window once the tuning layer is settled. No-op outside the startup state. Decoder thread only.
+ * keeping that window once the tuning layer is settled. Any other machine past IDLE gives up a call it followed,
+ * forgets where the receiver was and listens on the new frequency for a full window, which starts once a tune the move
+ * superseded has settled. Decoder thread only.
  */
-void dmr_sm_cold_start_note_retune(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
+void dmr_sm_cold_start_note_retune(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
+
+/** @brief Note that validated Hytera XPT content (a CRC-valid FID 0x68 site status or adjacent-site CSBK, or a completed
+ *  XPT SLCO) identified the site: DMR owns recovery, which never walks the channel map there. */
+void dmr_sm_note_xpt_site(const dsd_opts* opts, dsd_state* state);
+
+/** @brief The session was pointed at another system (a RadioReference apply, a replaced channel map): forget what the
+ *  old one identified itself as. */
+void dmr_sm_note_system_replaced(dmr_sm_ctx_t* ctx);
+
+/** @brief The trunk hangtime option changed: the machine's own follows the edit, unless the DMR hangtime override
+ *  (DSD_NEO_DMR_HANGTIME) is in force, as dmr_sm_init_ctx() resolves it. */
+void dmr_sm_note_hangtime(dmr_sm_ctx_t* ctx, const dsd_opts* opts);
+
+/** @brief The receiver may be somewhere the machine has not seen (a rigctl connection replaced): forget where it was. */
+void dmr_sm_note_receiver_unknown(dmr_sm_ctx_t* ctx);
+
+/** @brief Whether the receiver is on @p freq_hz, or a tune the machine tracks is taking it there. Reads the tuner only
+ *  while nothing attributes the receiver frequency, at most once per tuning generation for rigctl. */
+int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
+
+/** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
+int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
+
+/** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
+ *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. */
+void dmr_sm_note_status_follow(const dsd_opts* opts, const dsd_state* state, long freq_hz);
 
 /** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
 int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);

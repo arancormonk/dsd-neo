@@ -1238,6 +1238,7 @@ ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct 
         int rc = svc_rigctl_connect(opts, state, host, port);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
+            dmr_sm_note_receiver_unknown(dmr_sm_get_ctx()); // the new peer's radio may be tuned elsewhere
             ui_set_toast(state, 3, "Rigctl connected: %s:%d", host, (int)port);
         } else {
             ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", host, (int)port);
@@ -2319,6 +2320,10 @@ ui_cmd_handle_hangtime_set(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     double s = 0.0;
     if (state && ui_cmd_parse_double_payload(c, &s)) {
         svc_set_hangtime(opts, s);
+        if (opts->trunk_scan_enabled != 1) {
+            // A followed DMR call's hangtime is the machine's (trunk-scan targets keep their own).
+            dmr_sm_note_hangtime(dmr_sm_get_ctx(), opts);
+        }
         ui_set_toast(state, 3, "Applied: Hangtime -> %.3f s", opts->trunk_hangtime);
     }
     return 1;
@@ -2681,6 +2686,9 @@ ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct 
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
             int rc = svc_import_channel_map(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
+            if (rc == 0) {
+                dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // another map may be another system than an XPT site
+            }
             char skipped[160];
             if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
                 /* The rows load; the ones the DSP rate cannot run are named with the import (issue #526). */
@@ -3094,6 +3102,31 @@ hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_r
    return of its own, and of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
    leaves it resting on the control channel, or IDLE when trunking was off as it was asked for), whose failure would
    otherwise put that call and its voice channel back onto the carrier the operator chose. */
+/* A manual return to the control channel is an operator move for the DMR machine that owns the trunk: a call it followed
+   (a grant, a Capacity Plus status) is given up, and it listens where the receiver went for a full window. Left TUNED,
+   the call's deadlines would return the receiver again later. With @p only_followed, a machine that is no longer TUNED
+   (its own deadline already returned it) is left as it is. */
+static void
+hand_dmr_sm_over(dsd_opts* opts, dsd_state* state, int only_followed, long cc_freq, uint64_t request_id) {
+    if (!dsd_trunk_dmr_recovery_allowed(opts, state)) {
+        return;
+    }
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    if (only_followed && dmr_sm_get_state(dmr) != DMR_SM_TUNED) {
+        return;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        /* The parked target's own context, which the coordinator restarts at each visit: an accepted return to its
+           control channel restarts acquisition there, as the target's own release would. */
+        // A park the coordinator still tracks keeps its request and deadline: the acquisition it starts follows.
+        if (cc_freq > 0 && dmr->cc_tune_request_id == 0U) {
+            dmr_sm_begin_cc_acquisition(dmr, opts, state, cc_freq, request_id);
+        }
+        return;
+    }
+    dmr_sm_cold_start_note_retune(dmr, opts, state);
+}
+
 static void
 hand_tetra_sm_over(const dsd_opts* opts, dsd_state* state) {
     if (tetra_sm_get_state(state) != TETRA_SM_IDLE || tetra_sm_owns_return(state)) {
@@ -3143,6 +3176,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
     if (p25_live) {
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "return-to-cc");
     }
+    hand_dmr_sm_over(opts, state, 0, freq, request_id);
     hand_tetra_sm_over(opts, state);
     LOG_INFO("User Activated Return to CC\n");
     return UI_CMD_APPLY_COMPLETED;
@@ -3190,6 +3224,10 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     if (opts->trunk_enable == 1) {
         dsd_engine_no_carrier_locked(opts, state);
         state->trunk_cc_freq = cc_freq;
+        if (cc_freq != 0) {
+            hand_dmr_sm_over(opts, state, 1, cc_freq, request_id); // after the pass, which ticks a DMR owner whose
+                                                                   // deadline returns it
+        }
     }
     /* Wall clock only: the P25 handoff below stamps the monotonic CC sync from the
      * tune boundary itself, which is what its acquisition window is measured from. */
@@ -5854,6 +5892,7 @@ static void
 rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_cc_candidates_reset(state);
     nxdn_cc_hunt_note_system_replaced(state);
+    dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // an XPT site the old system was is not the new one
     /* An owner the new decode mode no longer decodes proves nothing about the new system and would keep its startup
        hunt from running (P25 or DMR before an NXDN import, say). */
     if ((state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25 && !opts->frame_p25p1 && !opts->frame_p25p2)
@@ -5983,6 +6022,7 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
                The toasts name the host asked for: a failed reconnect keeps the old one in rigctlhostname. */
             const int rc = svc_rigctl_connect(opts, state, opts->tcp_hostname, opts->rigctlportno);
             if (rc == 0) {
+                dmr_sm_note_receiver_unknown(dmr_sm_get_ctx()); // the new peer's radio may be tuned elsewhere
                 ui_set_toast(state, 3, "Rigctl connected: %s:%d", opts->tcp_hostname, opts->rigctlportno);
             } else {
                 ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", opts->tcp_hostname, opts->rigctlportno);

@@ -1851,7 +1851,7 @@ typedef struct {
 } dmr_slco_data;
 
 static void
-dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state, int control_channel) {
+dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     if (state->trunk_cc_freq == 0) {
         return;
     }
@@ -1865,13 +1865,10 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state, int control_channel) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     dmr_reset_blocks(opts, state);
-    if (control_channel) {
-        dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, state->trunk_cc_freq, request_id);
-    } else {
-        /* XPT has no dedicated control channel. A free-channel hop must not
-         * start (or inherit) Tier III control-channel hunting. */
-        dmr_sm_init_ctx(dmr_sm_get_ctx(), opts, NULL);
-    }
+    /* XPT has no dedicated control channel: its SLCO noted the site (dmr_slco_handle_xpt()), which the acquisition keeps,
+     * so the free channel becomes where the machine parks, and a failed or unanswered hop is retried there, never by
+     * walking the map. */
+    dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, state->trunk_cc_freq, request_id);
 }
 
 static void
@@ -2021,16 +2018,17 @@ dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* 
     DSD_FPRINTF(stderr, " SLCO Capacity Plus Site: %d - Rest LSN: %d - RS: %02X", data->capsite, data->restchannel,
                 data->cap_reserved);
 
-    if (state->trunk_chan_map[data->restchannel] > 0) {
-        dmr_sm_note_cc_activity(opts, state, state->trunk_chan_map[data->restchannel]);
+    const long rest = state->trunk_chan_map[data->restchannel];
+    if (rest > 0) {
+        dmr_sm_note_cc_activity(opts, state, rest);
     }
 
-    if (state->tg_hold != 0 && opts->trunk_enable == 1 && dmr_slco_cap_plus_busy(state)
-        && dmr_slco_tg_hold_not_on_slot(state)) {
-        if (state->trunk_chan_map[data->restchannel] != 0) {
-            state->trunk_cc_freq = state->trunk_chan_map[data->restchannel];
-        }
-        dmr_slco_tune_and_reset(opts, state, 1);
+    /* Look for the held talkgroup on the announced rest channel: only one the map names (an unmapped one is no
+       destination, and the old alias is no rest channel), and not again where the receiver already listens. */
+    if (state->tg_hold != 0 && opts->trunk_enable == 1 && rest > 0 && dmr_slco_cap_plus_busy(state)
+        && dmr_slco_tg_hold_not_on_slot(state) && (opts->trunk_is_tuned == 1 || !dmr_sm_receiver_on(opts, rest))) {
+        state->trunk_cc_freq = rest;
+        dmr_slco_tune_and_reset(opts, state);
     }
 }
 
@@ -2052,16 +2050,18 @@ static void
 dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data) {
     DSD_FPRINTF(stderr, " SLCO Hytera XPT - Free LCN %d - PRI LCN %d - PRI HASH: %02X", data->xpt_free, data->xpt_pri,
                 data->xpt_hash);
+    dmr_sm_note_xpt_site(opts, state); // a completed XPT SLCO (Hamming and CRC-8): no control channel
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "Free LCN - %d ", data->xpt_free);
 
     if (state->tg_hold != 0 && opts->trunk_enable == 1 && state->dmrburstL == 16 && state->dmrburstR == 16
         && dmr_slco_tg_hold_not_on_slot(state)) {
+        // Only a free channel the map names is a destination: the old alias is not the free channel.
         uint8_t xpt_lsn = dmr_slco_xpt_lcn_to_lsn(data->xpt_free);
         if (state->trunk_chan_map[xpt_lsn] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[xpt_lsn];
+            dmr_slco_tune_and_reset(opts, state);
         }
-        dmr_slco_tune_and_reset(opts, state, 0);
     }
 }
 

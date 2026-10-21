@@ -162,7 +162,9 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   bypass target dwell or control-channel acquisition. After a followed trunked call releases, a fresh idle
   dwell starts; repeated calls can keep a busy system parked.
 - DMR allows six seconds without decoded control on a confirmed channel before hunting. Each probe gets
-  two seconds to acquire control after the backend completes its tune. An explicit channel map is tried in
+  two seconds to acquire control after the backend completes its tune. Either window runs from the last DMR content
+  that passed the colour-code check when that is later, so a target's channel carrying a call is not left
+  mid-transmission; raw sync never holds it. An explicit channel map is tried in
   file order, skipping zero frequencies, avoided rows, the current probe and adjacent duplicate frequencies.
   The known control channel is revisited between alternate probes, limiting time away during a CRC fade.
   Without a map, the known control channel and learned current-site candidates are retried. With no eligible
@@ -183,7 +185,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   announces no busy channels; its eventual return uses the announced rest channel. A followed Capacity Plus call
   shows the talkgroup the status named for its slot until a voice LC names it, so a call whose LCs never decode
   still shows its talkgroup; an LC that names another talkgroup replaces it.
-  XPT free-channel hops do not start dedicated control-channel acquisition.
+  XPT free-channel hops do not start dedicated control-channel acquisition: the free channel becomes where the
+  target parks, and a failed or unanswered hop is retried there, never by walking the target's map.
   DMR state-machine logs at verbosity 1 or higher identify `cc-lost`, `cc-probe`, `cc-listen`, `decoded-cc`,
   and failed tunes. `decoded-cc` is logged on acquisition even when the SM was already in its CC state.
 - Standalone `-T` auto decoding also retains the validated P25 or DMR recovery owner through loss of sync.

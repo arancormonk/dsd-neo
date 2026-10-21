@@ -20,6 +20,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -627,6 +628,15 @@ build_xpt_adjacent(uint8_t* bits, uint8_t* bytes, uint8_t seq, const uint8_t sit
     }
 }
 
+/* A voice sync on a slot whose own voice passed the colour-code gate, as an accepted voice burst leaves it: only that
+   holds a followed call (a voice sync alone never does). */
+static void
+test_accepted_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
+    state->dmr_confidence_voice_open[slot] = 1;
+    state->dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, slot);
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1009,8 +1019,8 @@ main(void) {
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
     rc |= expect_true("con+ termination setup tunes vc",
                       con_opts.trunk_is_tuned == 1 && dmr_sm_get_ctx()->vc_tg == 0x445566);
-    dmr_sm_emit_voice_sync(&con_opts, &con_st, 0);
-    dmr_sm_emit_voice_sync(&con_opts, &con_st, 1);
+    test_accepted_voice_sync(&con_opts, &con_st, 0);
+    test_accepted_voice_sync(&con_opts, &con_st, 1);
     rc |= expect_true("con+ termination setup marks voice active",
                       dmr_sm_get_ctx()->slots[0].voice_active == 1 && dmr_sm_get_ctx()->slots[1].voice_active == 1);
     build_con_plus_termination(bits, bytes, 0x445566U);

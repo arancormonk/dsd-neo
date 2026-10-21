@@ -29,6 +29,10 @@ void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 
 #define DMR_CC_PROBE_GRACE_S  2.0
 #define DMR_CC_TUNE_TIMEOUT_S 5.0
+/* How recent a slot's last accepted voice must be for a voice sync to hold a followed call: about three superframes. */
+#define DMR_VOICE_EVIDENCE_S  1.0
+/* How long a failed rigctl frequency read is not repeated (real time: the read itself is what blocks). */
+#define DMR_RX_QUERY_RETRY_S  2.0
 
 /* ============================================================================
  * Internal Helpers
@@ -87,6 +91,7 @@ set_state(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dmr_sm_state_e new_state, con
     }
     dmr_sm_state_e old = ctx->state;
     ctx->state = new_state;
+    ctx->cc_window_lost = 0; // only tick_on_cc()'s own transition marks it, after this
     if (new_state != DMR_SM_IDLE && !ctx->cold_start_hunt) {
         ctx->cold_start_armed_m = 0.0; // only an IDLE machine keeps a startup window (issue #703)
     }
@@ -135,7 +140,9 @@ dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_s
     if (!ctx || !state || freq_hz <= 0) {
         return;
     }
+    const int site_without_cc = ctx->site_without_cc; // the same system: what it identified itself as stays
     dmr_sm_init_ctx(ctx, opts, state);
+    ctx->site_without_cc = site_without_cc;
     ctx->cc_freq_hz = freq_hz;
     ctx->cc_probe_freq_hz = freq_hz;
     ctx->cc_acquiring = 1;
@@ -175,13 +182,38 @@ dmr_sm_return_to_cc(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long fr
     return result;
 }
 
+/* A rigctl read is a network round trip: one per tuning generation, until an operator move drops it, and a peer that
+   stopped answering is asked again only after a while, since each read can block for its timeout. */
 static long
-dmr_cc_current_frequency(const dsd_opts* opts, const dmr_sm_ctx_t* ctx) {
-    if (ctx && ctx->cc_rx_freq_hz > 0 && ctx->cc_rx_generation == dsd_trunk_tuning_generation()) {
+dmr_cc_rigctl_frequency(const dsd_opts* opts, dmr_sm_ctx_t* ctx, uint64_t generation, int use_cache) {
+    if (!ctx) {
+        return dsd_rigctl_query_hook_get_current_freq_hz(opts);
+    }
+    if (use_cache && ctx->rx_seen_hz > 0 && ctx->rx_seen_generation == generation) {
+        return ctx->rx_seen_hz;
+    }
+    if (ctx->rx_query_retry_m > 0.0 && dsd_realtime_mono_s() < ctx->rx_query_retry_m) {
+        return 0;
+    }
+    const long freq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
+    if (freq > 0) {
+        ctx->rx_seen_hz = freq;
+        ctx->rx_seen_generation = generation;
+        ctx->rx_query_retry_m = 0.0;
+    } else {
+        ctx->rx_query_retry_m = dsd_realtime_mono_s() + DMR_RX_QUERY_RETRY_S;
+    }
+    return freq;
+}
+
+static long
+dmr_cc_current_frequency(const dsd_opts* opts, dmr_sm_ctx_t* ctx) {
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    if (ctx && ctx->cc_rx_freq_hz > 0 && ctx->cc_rx_generation == generation) {
         return ctx->cc_rx_freq_hz;
     }
     if (opts->use_rigctl == 1) {
-        return dsd_rigctl_query_hook_get_current_freq_hz(opts);
+        return dmr_cc_rigctl_frequency(opts, ctx, generation, 1);
     }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         return (long)opts->rtlsdr_center_freq;
@@ -192,6 +224,36 @@ dmr_cc_current_frequency(const dsd_opts* opts, const dmr_sm_ctx_t* ctx) {
         return 0;
     }
     return ctx->cc_probe_freq_hz != 0 ? ctx->cc_probe_freq_hz : ctx->cc_freq_hz;
+}
+
+/* Where the tuner itself says it is, for a settle tune: never the attribution a tune in question may have left, nor a
+   cached reading, but still with the back-off after a failed rigctl read. 0 for an input with no tuner query. */
+static long
+dmr_cc_tuner_frequency(const dsd_opts* opts, dmr_sm_ctx_t* ctx) {
+    if (opts->use_rigctl == 1) {
+        return dmr_cc_rigctl_frequency(opts, ctx, dsd_trunk_tuning_generation(), 0);
+    }
+    return opts->audio_in_type == AUDIO_IN_RTL ? (long)opts->rtlsdr_center_freq : 0;
+}
+
+static long
+dmr_cc_anchor(const dmr_sm_ctx_t* ctx, const dsd_state* state) {
+    return ctx->cc_freq_hz > 0 ? ctx->cc_freq_hz : state->trunk_cc_freq;
+}
+
+/* Whether the control-channel window still runs: a probe's two seconds from its completion, or the grace from the last
+   control on a channel being listened to, either running from validated DMR content (the colour-code gate) instead
+   when that is later. Sync alone, which noise can produce, never holds it. A window never stamped is not running. */
+static int
+dmr_cc_window_open(const dmr_sm_ctx_t* ctx, const dsd_state* state, double now_m) {
+    double since = ctx->cc_acquiring ? ctx->cc_acquire_start_m : ctx->t_cc_sync_m;
+    if (since <= 0.0) {
+        return 0;
+    }
+    if (state && state->dmr_confidence_lock_m > since) {
+        since = state->dmr_confidence_lock_m;
+    }
+    return (now_m - since) <= (ctx->cc_acquiring ? DMR_CC_PROBE_GRACE_S : ctx->cc_grace_s);
 }
 
 /* ----------------------------------------------------------------------------
@@ -206,6 +268,21 @@ dmr_sm_cold_start_clear(dmr_sm_ctx_t* ctx) {
     ctx->cold_start_armed_m = 0.0;
     ctx->cold_start_hunt = 0;
     ctx->cold_start_park_pending = 0;
+}
+
+/* Whether this machine may run the startup hunt: an eligible session with no owner yet, or one DMR owns whose validated
+   content named the protocol without confirming a control channel here (a data preamble, a Capacity Plus status
+   naming a rest channel the map lacks, a traffic channel). A Hytera XPT site has no control channel to find. */
+static int
+dmr_sm_hunt_eligible(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (ctx->site_without_cc) {
+        return 0;
+    }
+    if (dsd_state_trunk_cold_start_eligible(opts, state)) {
+        return 1;
+    }
+    return state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_DMR && !ctx->cc_confirmed
+           && dsd_state_trunk_dmr_hunt_eligible(opts, state);
 }
 
 /* The window runs from the later of its opening and the last DMR content that passed its colour-code gate: validated
@@ -237,27 +314,26 @@ dmr_sm_cold_start_park_now(dmr_sm_ctx_t* ctx, const dsd_opts* opts, int keep_win
     set_state(ctx, opts, DMR_SM_IDLE, reason);
 }
 
-/* Park once settled: a probe in flight is resolved here (never replaced by a new probe), any other tune in flight (one
-   the hunt does not track) is waited for, and only a failure is replaced, by a settle tune to the frequency the tuner
-   reports, whose success makes radio and options agree and retires every older failure. A settle tune is tracked like a
-   probe, its deadline included: one the backend never answers is failed at the deadline, as a probe is, and replaced.
-   The hunt never disowns or completes a request. */
-static void
-dmr_sm_cold_start_settle(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, int keep_window,
-                         const char* reason) {
-    ctx->cold_start_park_pending = keep_window ? 1 : 2;
+/* One step toward a settled tuning layer: a probe in flight is resolved here (never replaced by a new probe), any other
+   tune in flight (one the machine does not track) is waited for, and only a failure is replaced, by a settle tune to
+   the frequency the tuner reports, whose success makes radio and options agree and retires every older failure. A
+   settle tune is tracked like a probe, its deadline included: one the backend never answers is failed at the deadline,
+   as a probe is, and replaced. The machine never disowns or completes a request. 1 while the layer is not settled yet,
+   0 once nothing gates frames. */
+static int
+dmr_sm_settle_step(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (ctx->cc_tune_request_id != 0U) {
         (void)dmr_cc_resolve_pending(ctx, opts, now_m);
         if (ctx->cc_tune_request_id != 0U) {
-            return;
+            return 1;
         }
     }
     const uint64_t newest = dsd_trunk_tuning_pending_request();
     if (newest != 0U) {
         if (dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
-            return;
+            return 1;
         }
-        const long freq = dmr_cc_current_frequency(opts, NULL);
+        const long freq = dmr_cc_tuner_frequency(opts, ctx);
         const long alias_before = state->trunk_cc_freq;
         uint64_t request_id = 0U;
         const dsd_trunk_tune_result result = freq > 0
@@ -265,24 +341,61 @@ dmr_sm_cold_start_settle(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, do
                                                  : DSD_TRUNK_TUNE_RESULT_FAILED;
         state->trunk_cc_freq = alias_before;
         if (dsd_trunk_tune_result_is_ok(result)) {
-            ctx->cc_probe_freq_hz = freq; // its attribution goes with the park
+            ctx->cc_probe_freq_hz = freq; // its attribution goes with the settle
             ctx->cc_tune_request_id = request_id;
             ctx->cc_tune_deadline_m = now_m + DMR_CC_TUNE_TIMEOUT_S;
         }
-        sm_recovery_log(opts, "cold-start-settle-tune");
+        sm_recovery_log(opts, "settle-tune");
+        return 1;
+    }
+    return 0;
+}
+
+/* A startup hunt parks once settled (dmr_sm_settle_step()). */
+static void
+dmr_sm_cold_start_settle(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, int keep_window,
+                         const char* reason) {
+    ctx->cold_start_park_pending = keep_window ? 1 : 2;
+    if (dmr_sm_settle_step(ctx, opts, state, now_m)) {
         return;
     }
     dmr_sm_cold_start_park_now(ctx, opts, keep_window, reason);
+}
+
+/* After an operator move: the tuning layer settles first, a failure the move left being replaced by a settle tune to
+   where the receiver now is, since a manual tune is not correlated and its success retires nothing. The new
+   frequency's listening window runs from the move, or from the settle's completion when frames stayed gated past it.
+   1 while unsettled: nothing else may run. */
+static int
+dmr_sm_settle_after_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!ctx->cc_tune_superseded) {
+        return 0;
+    }
+    if (dmr_sm_settle_step(ctx, opts, state, now_m)) {
+        ctx->cc_settle_waited = 1;
+        return 1;
+    }
+    // Frames flowed from the move, or only from now: the tune they waited for may be one no request here tracks.
+    ctx->t_cc_sync_m = ctx->cc_settle_waited ? now_m : ctx->cc_moved_m;
+    ctx->cc_tune_superseded = 0;
+    ctx->cc_settle_waited = 0;
+    ctx->cc_acquiring = 0;
+    ctx->cc_retry_after_m = 0.0;
+    set_state(ctx, opts, DMR_SM_ON_CC, "operator-move-settled");
+    return 0;
 }
 
 /* Whether a startup hunt goes on probing; otherwise it is ended, parked, or settling toward a park. At a probe
    decision point (@p decision) an unexpired window parks it too. */
 static int
 dmr_sm_cold_start_gate(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, int decision) {
-    if (state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_UNKNOWN) {
-        // Validated control named an owner without confirming a control channel here (a confirmation clears the
-        // startup hunt in dmr_cc_note_activity_ctx()): the hunt ends where it is, as an XPT site is followed today. A
-        // grant it followed stands: only the startup bookkeeping ends.
+    const int owner_named = state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_UNKNOWN
+                            && (state->trunk_recovery_protocol != (int)DSD_TRUNK_RECOVERY_DMR || ctx->site_without_cc);
+    if (owner_named) {
+        // Another protocol's validated control named the owner, or a Hytera XPT site identified itself: the hunt ends
+        // where it is, as an XPT site is followed. DMR content that named DMR without confirming a control channel
+        // here (a confirmation clears the hunt in dmr_cc_note_activity_ctx()) does not end it. A grant it followed
+        // stands: only the startup bookkeeping ends.
         if (ctx->state == DMR_SM_TUNED) {
             dmr_sm_cold_start_clear(ctx);
             sm_recovery_log(opts, "cold-start-owner-named");
@@ -297,7 +410,14 @@ dmr_sm_cold_start_gate(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, doub
         dmr_sm_cold_start_park_now(ctx, opts, 0, "cold-start-trunking-or-input-left");
         return 0;
     }
-    if (!dsd_state_trunk_cold_start_eligible(opts, state) || !dsd_trunk_dmr_recovery_allowed(opts, state)) {
+    if ((ctx->state == DMR_SM_TUNED || opts->trunk_is_tuned == 1) && !dmr_sm_hunt_eligible(ctx, opts, state)) {
+        // A call the hunt followed (a grant, a Capacity Plus status) once DMR content named DMR stands: only the
+        // startup bookkeeping ends, and the call's own deadlines return it.
+        dmr_sm_cold_start_clear(ctx);
+        sm_recovery_log(opts, "cold-start-call-followed");
+        return 0;
+    }
+    if (!dmr_sm_hunt_eligible(ctx, opts, state) || !dsd_trunk_dmr_recovery_allowed(opts, state)) {
         dmr_sm_cold_start_settle(ctx, opts, state, now_m, 0, "cold-start-not-admitted");
         return 0;
     }
@@ -442,7 +562,12 @@ dmr_cc_next_mapped_candidate(dmr_sm_ctx_t* ctx, const dsd_state* state) {
 
 static long
 dmr_cc_next_candidate(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
-    const long anchor = ctx->cc_freq_hz > 0 ? ctx->cc_freq_hz : state->trunk_cc_freq;
+    /* A startup hunt has no confirmed control channel to revisit: the shared alias a DMR message on an earlier probe
+       staged (dmr_cspdu_init_cc_anchor()) names a frequency that carried no control. */
+    const long anchor = ctx->cc_freq_hz > 0 ? ctx->cc_freq_hz : (ctx->cold_start_hunt ? 0 : state->trunk_cc_freq);
+    if (ctx->site_without_cc) {
+        return anchor; // XPT: only the frequency it parks on, retried while a failed return gates frames
+    }
     const char* scan_map = dsd_trunk_scan_hook_active_chan_csv(state);
     const int user_list = opts->chan_in_file[0] != '\0' || (scan_map && scan_map[0] != '\0');
     if (user_list && state->lcn_freq_count > 0) {
@@ -471,6 +596,13 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (ctx->cold_start_hunt && !dmr_sm_cold_start_gate(ctx, opts, state, now_m, 1)) {
         return;
     }
+    if (ctx->cc_window_lost && dmr_cc_window_open(ctx, state, now_m)) {
+        // Validated content arrived after the window ran out: the window it holds is open again, and the frequency is
+        // not left mid-transmission.
+        set_state(ctx, opts, DMR_SM_ON_CC, "content-hold");
+        return;
+    }
+    ctx->cc_window_lost = 0;
     ctx->cc_retry_after_m = now_m + 2.0;
     const long freq = dmr_cc_next_candidate(ctx, opts, state);
     if (freq <= 0) {
@@ -510,7 +642,7 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
 
 static void
 dmr_sm_tick_idle_cold_start(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
-    if (!dsd_state_trunk_cold_start_eligible(opts, state)) {
+    if (!dmr_sm_hunt_eligible(ctx, opts, state)) {
         ctx->cold_start_armed_m = 0.0;
         return;
     }
@@ -571,6 +703,7 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_slot = -1;
     ctx->vc_is_group = 0;
     ctx->vc_identity_published = 0;
+    ctx->vc_status_follow = 0;
     ctx->vc_crc_flags = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
@@ -595,6 +728,20 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     set_state(ctx, opts, next_state, reason);
 }
 
+/* Where a release returns: the control channel, or for a call a Capacity Plus status followed, the rest channel
+   announced last, by a status or a voice LC, as the no-carrier return reads it (no_carrier_select_control_channel()). */
+static long
+dmr_sm_release_destination(const dmr_sm_ctx_t* ctx, const dsd_state* state) {
+    if (!state) {
+        return ctx->cc_freq_hz;
+    }
+    if (ctx->vc_status_follow && state->dmr_rest_channel >= 1 && state->dmr_rest_channel <= 16
+        && state->trunk_chan_map[state->dmr_rest_channel] > 0) {
+        return state->trunk_chan_map[state->dmr_rest_channel];
+    }
+    return state->trunk_cc_freq > 0 ? state->trunk_cc_freq : ctx->cc_freq_hz;
+}
+
 static void
 do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
     int had_force_release = 0;
@@ -609,7 +756,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     sm_log(opts, reason);
 
-    const long cc = state && state->trunk_cc_freq > 0 ? state->trunk_cc_freq : ctx->cc_freq_hz;
+    const long cc = dmr_sm_release_destination(ctx, state);
     dsd_trunk_tune_result tune_result = cc > 0 ? dmr_sm_return_to_cc(ctx, opts, state, cc) : DSD_TRUNK_TUNE_RESULT_OK;
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "release-tune-deferred");
@@ -713,12 +860,14 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     ctx->vc_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : -1;
     ctx->vc_is_group = ev->is_group != 0;
     ctx->vc_identity_published = 0;
+    ctx->vc_status_follow = 0;
     // Grants are dispatched synchronously from inside the CSBK/MBC burst's CRC scope.
     ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
     ctx->cc_acquiring = 0;
     ctx->cc_tune_request_id = 0U;
+    ctx->cc_tune_superseded = 0; // a call followed since an operator move ends that move's listening window
     state->dmr_mono_slot = ctx->vc_slot;
 
     for (int s = 0; s < 2; s++) {
@@ -877,6 +1026,38 @@ dmr_sm_capplus_seed_apply(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, i
     state->event_crc_invalid[slot] = saved_crc_invalid;
 }
 
+/* The time of the slot's last accepted voice when it may hold a followed call: the slot's voice gate is open, and its
+   own voice passed the colour-code gate since the follow tune and within DMR_VOICE_EVIDENCE_S. 0 otherwise: a voice
+   sync alone (a burst whose EMB the gate rejected, or carried over from the carrier the call was granted on) never
+   holds a call. */
+static double
+dmr_sm_voice_evidence_m(const dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, double now_m) {
+    if (!state || slot < 0 || slot > 1 || !state->dmr_confidence_voice_open[slot]) {
+        return 0.0;
+    }
+    const double evidence_m = state->dmr_confidence_voice_m[slot];
+    if (evidence_m <= 0.0 || evidence_m < ctx->t_tune_m || (now_m - evidence_m) > DMR_VOICE_EVIDENCE_S) {
+        return 0.0;
+    }
+    return evidence_m;
+}
+
+/* The call timers run from the slot's accepted voice and only ever move forward within a call. */
+static void
+dmr_sm_note_voice_evidence(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, double now_m) {
+    const double evidence_m = dmr_sm_voice_evidence_m(ctx, state, slot, now_m);
+    if (evidence_m <= 0.0) {
+        return;
+    }
+    ctx->slots[slot].voice_active = 1;
+    if (evidence_m > ctx->slots[slot].last_active_m) {
+        ctx->slots[slot].last_active_m = evidence_m;
+    }
+    if (evidence_m > ctx->t_voice_m) {
+        ctx->t_voice_m = evidence_m;
+    }
+}
+
 static void
 handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx) {
@@ -889,10 +1070,7 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
     if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
         return;
     }
-    ctx->slots[s].voice_active = 1;
-    ctx->slots[s].last_active_m = now_m;
-    ctx->t_voice_m = now_m;
-
+    dmr_sm_note_voice_evidence(ctx, state, s, now_m);
     update_voice_sync_state(ctx, state, s, now_m);
 
     if (state && ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0
@@ -942,6 +1120,8 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
     if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, s)) {
         return;
     }
+    // Accepted data a followed call carries is activity, as accepted voice is: a zero hangtime holds while it flows.
+    ctx->slots[s].voice_active = 1;
     ctx->slots[s].last_active_m = now_m;
     ctx->t_voice_m = now_m;
 
@@ -979,14 +1159,22 @@ handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 static void
-tick_on_cc(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m, double cc_grace) {
-    const double since = ctx->cc_acquiring ? ctx->cc_acquire_start_m : ctx->t_cc_sync_m;
-    if (since <= 0.0) {
+tick_on_cc(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m) {
+    if (!ctx->cc_acquiring && ctx->t_cc_sync_m <= 0.0) {
+        ctx->t_cc_sync_m = now_m; // a carrier left without one (an abandoned call) still gets a window
         return;
     }
-    if ((now_m - since) > cc_grace) {
-        set_state(ctx, opts, DMR_SM_HUNTING, "cc-lost");
+    if (dmr_cc_window_open(ctx, state, now_m)) {
+        return;
     }
+    if (ctx->site_without_cc && ctx->cc_rx_freq_hz > 0 && ctx->cc_rx_freq_hz == dmr_cc_anchor(ctx, state)
+        && dsd_trunk_tuning_frame_is_current(ctx->cc_rx_generation)) {
+        ctx->t_cc_sync_m = now_m; // XPT, already listening where it parks: nothing to hunt for
+        ctx->cc_acquiring = 0;
+        return;
+    }
+    set_state(ctx, opts, DMR_SM_HUNTING, "cc-lost");
+    ctx->cc_window_lost = 1;
 }
 
 static void
@@ -1074,7 +1262,12 @@ tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, do
     clear_stale_voice_slots(ctx, now_m);
 
     if (has_voice_activity(ctx)) {
-        ctx->t_voice_m = now_m;
+        // Each active slot's activity is the time of its last accepted voice (handle_voice_sync()).
+        for (int s = 0; s < 2; s++) {
+            if (ctx->slots[s].voice_active && ctx->slots[s].last_active_m > ctx->t_voice_m) {
+                ctx->t_voice_m = ctx->slots[s].last_active_m;
+            }
+        }
         return;
     }
 
@@ -1176,6 +1369,19 @@ dmr_sm_tick_not_admitted(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Whether the tick's per-state work may run: a startup hunt's gate, an operator move's settle and a tracked tune's
+   resolution come first. */
+static int
+dmr_sm_tick_ready(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
+    if (ctx->cold_start_hunt && !dmr_sm_cold_start_gate(ctx, opts, state, now_m, 0)) {
+        return 0;
+    }
+    if (dmr_sm_settle_after_move(ctx, opts, state, now_m)) {
+        return 0;
+    }
+    return dmr_cc_resolve_pending(ctx, opts, now_m);
+}
+
 void
 dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
@@ -1193,11 +1399,7 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     double now_m = dsd_decode_now_mono_s();
     double hangtime = ctx->hangtime_s;
     double grant_timeout = ctx->grant_timeout_s;
-    double cc_grace = ctx->cc_acquiring ? DMR_CC_PROBE_GRACE_S : ctx->cc_grace_s;
-    if (ctx->cold_start_hunt && !dmr_sm_cold_start_gate(ctx, opts, state, now_m, 0)) {
-        return;
-    }
-    if (!dmr_cc_resolve_pending(ctx, opts, now_m)) {
+    if (!dmr_sm_tick_ready(ctx, opts, state, now_m)) {
         return;
     }
 
@@ -1206,9 +1408,9 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
         case DMR_SM_ON_CC:
             if (!opts || opts->trunk_is_tuned != 1) {
-                tick_on_cc(ctx, opts, now_m, cc_grace);
+                tick_on_cc(ctx, opts, state, now_m);
             } else if (state) {
-                /* A voice channel a CSBK path tuned itself (Cap+, Connect Plus) is judged as a followed grant's. */
+                /* A voice channel a CSBK path tuned itself (Connect Plus, Hytera XPT) is judged as a followed grant's. */
                 (void)dmr_sm_receive_check(ctx, opts, state, state->trunk_vc_freq[0], now_m, grant_timeout);
             }
             break;
@@ -1220,22 +1422,143 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dmr_sm_cold_start_note_retune(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
-    (void)opts;
-    (void)state;
+dmr_sm_cold_start_note_retune(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     if (!ctx || !ctx->initialized) {
         return;
     }
     const double now_m = dsd_decode_now_mono_s();
+    // Wherever the receiver went, it is not where the machine last saw it.
+    ctx->rx_seen_hz = 0;
+    ctx->rx_seen_generation = 0U;
+    ctx->rx_query_retry_m = 0.0;
     if (ctx->cold_start_hunt) {
         // Parks keeping a window that runs from the move, once settled; the probe is not where the receiver is.
         ctx->cold_start_armed_m = now_m;
         ctx->cold_start_park_pending = 1;
         ctx->cc_probe_freq_hz = 0;
         ctx->cc_rx_freq_hz = 0;
-    } else if (ctx->state == DMR_SM_IDLE && ctx->cold_start_armed_m > 0.0) {
-        ctx->cold_start_armed_m = now_m;
+        return;
     }
+    if (ctx->state == DMR_SM_IDLE) {
+        if (ctx->cold_start_armed_m > 0.0) {
+            ctx->cold_start_armed_m = now_m;
+        }
+        return;
+    }
+    if (opts && opts->trunk_scan_enabled == 1) {
+        return; // trunk scan moves the receiver itself and restarts each target it parks
+    }
+    if (ctx->state == DMR_SM_TUNED && opts && state) {
+        dmr_sm_abandon_carrier(ctx, opts, state, "operator-move"); // the call stays on the frequency left
+    }
+    /* Listen on the new frequency for a full window: no receiver attribution (a heartbeat or a status there names it
+       anew), no probe, and a tune still in flight or failed settles first (dmr_sm_settle_after_move()). The confirmed
+       control channel stays the anchor the window's expiry returns to. */
+    ctx->cc_rx_freq_hz = 0;
+    ctx->cc_rx_generation = 0U;
+    ctx->cc_probe_freq_hz = 0;
+    ctx->cc_acquiring = 0;
+    ctx->cc_acquire_start_m = 0.0;
+    ctx->cc_retry_after_m = 0.0;
+    ctx->cc_moved_m = now_m;
+    ctx->t_cc_sync_m = now_m;
+    ctx->cc_tune_superseded = 1;
+    ctx->cc_settle_waited = 0;
+    set_state(ctx, opts, DMR_SM_ON_CC, "operator-move");
+}
+
+void
+dmr_sm_note_xpt_site(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    ctx->site_without_cc = 1;
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
+    /* The site parks where it identified itself (a probe's completed frequency included), not on a frequency recovery
+       left: anchor-only recovery would otherwise return there and never look again. A followed call is no parking. */
+    if (opts && opts->trunk_is_tuned != 1 && ctx->state != DMR_SM_TUNED) {
+        const long freq = dmr_cc_current_frequency(opts, ctx);
+        if (freq > 0) {
+            ctx->cc_freq_hz = freq;
+            state->trunk_cc_freq = freq; // the return a trunk-scan revisit and a call's release go to
+        }
+    }
+}
+
+void
+dmr_sm_note_system_replaced(dmr_sm_ctx_t* ctx) {
+    if (ctx) {
+        ctx->site_without_cc = 0;
+    }
+}
+
+void
+dmr_sm_note_hangtime(dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!ctx || !opts || (cfg && cfg->dmr_hangtime_is_set) || opts->trunk_hangtime < 0.0) {
+        return;
+    }
+    ctx->hangtime_s = opts->trunk_hangtime;
+}
+
+void
+dmr_sm_note_receiver_unknown(dmr_sm_ctx_t* ctx) {
+    if (ctx) {
+        ctx->cc_rx_freq_hz = 0;
+        ctx->cc_rx_generation = 0U;
+        ctx->rx_seen_hz = 0;
+        ctx->rx_seen_generation = 0U;
+        ctx->rx_query_retry_m = 0.0;
+    }
+}
+
+int
+dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz) {
+    if (!opts || freq_hz <= 0) {
+        return 0;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    if (ctx->cc_tune_request_id != 0U && ctx->cc_probe_freq_hz == freq_hz) {
+        return 1;
+    }
+    return dmr_cc_current_frequency(opts, ctx) == freq_hz;
+}
+
+int
+dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz) {
+    return ctx && freq_hz > 0 && ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz == freq_hz;
+}
+
+void
+dmr_sm_note_status_follow(const dsd_opts* opts, const dsd_state* state, long freq_hz) {
+    if (!opts || !state || freq_hz <= 0) {
+        return;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    /* As handle_grant() after its tune: the call's voice deadlines and its return are the machine's. Its identity is
+       the channel status's, which the Capacity Plus seed publishes. */
+    ctx->vc_freq_hz = freq_hz;
+    ctx->vc_lpcn = 0;
+    ctx->vc_tg = 0;
+    ctx->vc_dst = 0;
+    ctx->vc_src = 0;
+    ctx->vc_slot = -1;
+    ctx->vc_is_group = 1;
+    ctx->vc_identity_published = 1;
+    ctx->vc_status_follow = 1;
+    ctx->vc_crc_flags = 0;
+    ctx->t_tune_m = dsd_decode_now_mono_s();
+    ctx->t_voice_m = 0.0;
+    ctx->cc_acquiring = 0;
+    ctx->cc_tune_request_id = 0U;
+    ctx->cc_tune_superseded = 0; // a call followed since an operator move ends that move's listening window
+    for (int s = 0; s < 2; s++) {
+        ctx->slots[s].voice_active = 0;
+        ctx->slots[s].last_active_m = 0.0;
+        ctx->slots[s].tg = 0;
+    }
+    set_state(ctx, opts, DMR_SM_TUNED, "status-follow");
 }
 
 int
@@ -1249,7 +1572,7 @@ dmr_sm_cold_start_due(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_s
         return 1;
     }
     return ctx && opts && state && ctx->state == DMR_SM_IDLE && dsd_trunk_dmr_recovery_allowed(opts, state)
-           && dsd_state_trunk_cold_start_eligible(opts, state);
+           && dmr_sm_hunt_eligible(ctx, opts, state);
 }
 
 /* ============================================================================

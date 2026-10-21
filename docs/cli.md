@@ -1825,10 +1825,22 @@ does.
   restarts the window on the new frequency.
 - Nothing is shown or used as the control channel until a searched frequency passes the CRC check, and the saved
   system is not changed. Once validated control names the system, the search ends there; losing that control channel
-  later uses the ordinary hunt (DMR hunts only after it has confirmed a control channel, as before; NXDN as above).
-  DMR recovery keeps its six-second loss grace and two-second probe windows even while data syncs continue without
+  later uses the ordinary hunt (NXDN as above).
+- DMR searches until a control channel passes its check, not until DMR is merely recognised: a valid DMR message that
+  confirms no control channel (a data preamble, a Capacity Plus status naming a rest channel the map lacks, a Tier III
+  or Connect Plus traffic channel) leaves the search running, so the receiver moves on once that frequency goes quiet.
+  Under `-fa` the search starts once validated DMR content names DMR. A Hytera XPT site, which has no control
+  channel, ends it where it is, and its recovery only ever retunes the frequency it parks on.
+- DMR recovery keeps its six-second loss grace and two-second probe windows even while data syncs continue without
   valid control, including after a Capacity Plus rest channel goes inactive. A probe's window starts when its backend
-  tune completes; accepted control on that frequency ends the hunt.
+  tune completes; accepted control on that frequency ends the hunt. Every DMR window holds while DMR content passes the
+  colour-code check (a call on the rest channel's frequency, say), so recovery never leaves mid-transmission.
+- A followed DMR call (a grant, or a call a Capacity Plus status followed) is held by its own voice that passed the
+  colour-code check, not by a voice sync alone; with no such voice it returns at the grant timeout, otherwise a
+  hangtime after the last of it. With data calls followed (`-e`), data that passed the check holds it too. Repeated statuses naming the followed call change nothing.
+- A frequency entry, **Next channel** (`L`) or **Return to CC** during DMR recovery gives a followed call up and listens
+  on the new frequency for a full window before the ordinary hunt resumes; nothing heard there is credited to the old
+  control channel.
 - The search runs on the decoder's own pass, so it needs an input that keeps delivering samples. RTL-family inputs
   always do, and a silent UDP stream gives way to it after a short pause; a TCP audio stream with rigctl that stops
   sending pauses it until audio resumes.

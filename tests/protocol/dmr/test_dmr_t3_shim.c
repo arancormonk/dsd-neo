@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -87,6 +88,15 @@ test_neighbor_candidates(void) {
     assert(cc->count >= 2);
 }
 
+/* A voice sync on a slot whose own voice passed the colour-code gate, as an accepted voice burst leaves it: only that
+   holds a followed call (a voice sync alone never does). */
+static void
+test_accepted_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
+    state->dmr_confidence_voice_open[slot] = 1;
+    state->dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, slot);
+}
+
 static void
 test_explicit_grant_and_release(void) {
     static dsd_opts opts;
@@ -108,7 +118,7 @@ test_explicit_grant_and_release(void) {
     assert(state.dmr_mono_slot == -1);
 
     // Voice active on slot 0
-    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    test_accepted_voice_sync(&opts, &state, 0);
     assert(ctx->slots[0].voice_active == 1);
     assert(ctx->vc_slot == 0);
     assert(state.dmr_mono_slot == 0);
@@ -182,12 +192,12 @@ test_grant_identity_seeds_matching_voice_slot(void) {
     assert(state.dmr_mono_slot == 1);
 
     dsd_call_snapshot call;
-    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    test_accepted_voice_sync(&opts, &state, 0);
     assert(dsd_call_state_get(&state, 0U, &call) == 0);
     assert(ctx->vc_identity_published == 0);
     assert(state.dmr_mono_slot == 1);
 
-    dmr_sm_emit_voice_sync(&opts, &state, 1);
+    test_accepted_voice_sync(&opts, &state, 1);
     assert(dsd_call_state_get(&state, 1U, &call) == 1);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE);
     assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
@@ -215,7 +225,7 @@ test_slotless_grant_selects_ts2_on_voice_sync(void) {
     assert(ctx->vc_slot == -1);
     assert(state.dmr_mono_slot == -1);
 
-    dmr_sm_emit_voice_sync(&opts, &state, 1);
+    test_accepted_voice_sync(&opts, &state, 1);
     assert(ctx->vc_slot == 1);
     assert(state.dmr_mono_slot == 1);
 
@@ -257,7 +267,7 @@ test_voice_header_and_first_sync_share_epoch(void) {
     dsd_call_snapshot before;
     assert(dsd_call_state_get(&state, 0U, &before) == 1);
 
-    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    test_accepted_voice_sync(&opts, &state, 0);
 
     dsd_call_snapshot after;
     assert(dsd_call_state_get(&state, 0U, &after) == 1);

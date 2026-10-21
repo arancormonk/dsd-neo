@@ -37,6 +37,8 @@ dmr_confidence_clear_voice(dsd_state* state) {
     DSD_MEMSET(state->dmr_confidence_voice_sync_seen, 0, sizeof(state->dmr_confidence_voice_sync_seen));
     DSD_MEMSET(state->dmr_confidence_voice_open, 0, sizeof(state->dmr_confidence_voice_open));
     DSD_MEMSET(state->dmr_confidence_voice_count, 0, sizeof(state->dmr_confidence_voice_count));
+    state->dmr_confidence_voice_m[0] = 0.0;
+    state->dmr_confidence_voice_m[1] = 0.0;
 }
 
 void
@@ -60,6 +62,7 @@ dmr_confidence_reset_slot(dsd_state* state, unsigned int slot) {
     state->dmr_confidence_voice_sync_seen[slot] = 0;
     state->dmr_confidence_voice_open[slot] = 0;
     state->dmr_confidence_voice_count[slot] = 0;
+    state->dmr_confidence_voice_m[slot] = 0.0;
 }
 
 static dmr_confidence_result
@@ -160,6 +163,7 @@ dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned in
     if (state->dmr_confidence_voice_count[slot] >= DMR_CONFIDENCE_VOICE_OBSERVES) {
         state->dmr_confidence_voice_open[slot] = 1;
         dmr_confidence_note_evidence(state);
+        state->dmr_confidence_voice_m[slot] = state->dmr_confidence_lock_m;
         return DMR_CONFIDENCE_LOCKED;
     }
 

@@ -312,6 +312,29 @@ target's `dmr_sm_ctx_t`. In single-system sessions the engine ticks admitted DMR
 including withheld frames, after startup acquisition has ended too. Data-only or unvalidated syncs need not enter a
 voice handler's internal tick and must not starve loss, probe or pending-tune deadlines. Trunk scan ticks its own
 parked context. Probes honor avoids and revisit the saved CC anchor between alternate frequencies.
+DMR's windows run from the later of their stamp and `dsd_state::dmr_confidence_lock_m`, so validated content (never raw
+sync) holds a channel; an `ON_CC` with no stamp (a call abandoned from an unconfirmed machine) gets one on its first
+tick, and a hunt step reopens the window it just lost when validated content arrived meanwhile (`cc_window_lost`).
+An operator move (`dmr_sm_cold_start_note_retune()`, outside a startup hunt) gives a followed call up, drops the
+receiver attribution (`cc_rx_freq_hz` and the per-generation rigctl reading `rx_seen_hz`) and listens for a full
+window that starts once a tune it superseded has settled (`cc_tune_superseded`, a settle tune replacing a failure,
+as a startup hunt settles): at the move when nothing gated frames, else when the settle released them, whichever tune
+it waited for. A replaced rigctl connection drops the attribution too (`dmr_sm_note_receiver_unknown()`); a rigctl
+read that failed is not repeated for `DMR_RX_QUERY_RETRY_S` of real time. Under `--trunk-scan`, Return to CC restarts
+the parked target's own acquisition on its control channel instead, unless a park the coordinator tracks is still
+pending. A Capacity Plus status follow is the machine's call (`dmr_sm_note_status_follow()`); a
+repeated status naming the followed carrier neither retunes nor moves its deadlines (it only seeds a slot whose group
+changed), a call followed after an operator move ends that move's listening window, and its release goes to the rest
+channel announced last (`dsd_state::dmr_rest_channel`, by a status or a voice LC), as the no-carrier return does. A
+hangtime edit reaches the single-system machine (`dmr_sm_note_hangtime()`), as the no-carrier return read the option. A followed call's timers run only from its slot's
+accepted voice since the follow tune (`dsd_state::dmr_confidence_voice_m`, within 1 s), never from a voice sync alone;
+with data calls followed (`trunk_tune_data_calls`), accepted data (`handle_data_sync()`) is slot activity as well, so a
+zero hangtime holds while it flows.
+A Hytera XPT site (`site_without_cc`: `dmr_sm_note_xpt_site()` from a CRC-valid FID 0x68 status or adjacent-site CSBK
+or a completed XPT SLCO, kept across `dmr_sm_begin_cc_acquisition()`, cleared by `dmr_sm_note_system_replaced()` at
+an RR apply or a channel-map import) never walks the map: recovery only retunes where it parks, which is where the site
+identified itself (`cc_freq_hz` and the shared `trunk_cc_freq` a target revisit returns to). A Capacity Plus return to an announced rest
+compares the receiver (`dmr_sm_receiver_on()`), not the shared alias.
 Probe frequency is separate from the saved anchor until control or grant evidence confirms it. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
 or retuning a newly parked target. Pending backend probes hold the target and disarm idle dwell; completion or timeout starts
 a fresh dwell. The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
@@ -4459,7 +4482,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   granted voice channel, no input switch pending (`input_boundary`), not an I/Q replay
   (`dsd_opts_input_is_iq_replay()`), a tuner the trunking hooks move (RTL family or rigctl), a user channel map with a
   nonzero row, and no owner yet. P25 runs it when recovery is admitted or `dsd_trunk_p25_cold_start_presumed()`
-  holds; DMR when its recovery is admitted.
+  holds; DMR when its recovery is admitted (`dmr_sm_hunt_eligible()`), with no owner or with a DMR owner whose machine
+  has confirmed no control channel (`dsd_state_trunk_dmr_hunt_eligible()`), and never on a Hytera XPT site.
 - Thread: decoder thread only, under the P25 SM tick guard: `p25_sm_cold_start_tick_locked()` and DMR's own tick from
   the engine's outer loop and, while the owner is unknown, a machine is armed or hunting, or DMR recovery is admitted,
   between frames in `live_scanner_process_synced_frames()`. The watchdog never ticks a P25 machine whose `cold_start_hunt` is set; the
@@ -4475,9 +4499,12 @@ control within the CC grace walks its channel map with the ordinary hunts.
   startup probe restores `trunk_cc_freq` after each probe tune, as DMR probes do, and records `cold_start_probe_hz`. With no other eligible row, DMR probes the row
   it last probed again when that tune never completed (a failed or expired probe: only a success retires the failure
   that gates every frame), and listens on one the radio is on (`dmr_cc_next_mapped_candidate()`).
-- Ending: validated control naming an owner ends the hunt in place (the owner's ordinary recovery follows; DMR hunts
-  only after a confirmed control channel; a grant either machine followed meanwhile stands, and only the startup
-  bookkeeping ends). Trunking off or an input switch parks it at once. Lost eligibility or
+- Ending: validated control naming another protocol's owner, or a Hytera XPT site identifying itself, ends the hunt
+  in place (the owner's ordinary recovery follows; a grant either machine followed meanwhile stands, and only the
+  startup bookkeeping ends). DMR content that names DMR without confirming a control channel (a data preamble, a
+  Capacity Plus status naming a rest LSN the map lacks, a traffic channel) does not end DMR's hunt, which revisits
+  only a confirmed anchor, never the alias such content staged (`dmr_cspdu_init_cc_anchor()`); a call followed
+  meanwhile ends only the bookkeeping. Trunking off or an input switch parks it at once. Lost eligibility or
   admission, an operator move (`p25_sm_cold_start_note_retune()` / `dmr_sm_cold_start_note_retune()`, from the
   carrier boundary's guard-holding kinds and the trunked cycles) or an unexpired window at a decision point parks it
   only once `dsd_trunk_tuning_pending_request()` is 0: a probe in flight is resolved first, any other tune in flight is
