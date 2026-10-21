@@ -409,7 +409,7 @@ test_heard_rows_read_history_storage_directly() {
     model.setHistorySession(history.session());
     const time_t now = time(nullptr);
     for (int i = 0; i < 200; ++i) {
-        fixture.commit(5000 + static_cast<uint32_t>(i % 50), now + 120 * i);
+        fixture.commit(5000 + static_cast<uint32_t>(i % 50), now + static_cast<time_t>(120) * i);
     }
     history.refresh(fixture.state);
     expect("the history logged the calls", history.count() >= 50);
@@ -438,7 +438,7 @@ test_overlapping_ranges_cover_heard_talkgroups() {
     const uint32_t heard[] = {50, 150, 400, 505, 650, 699, 701, 300, 850, 100, 500, 600, 700};
     int offset = 0;
     for (uint32_t tg : heard) {
-        fixture.commit(tg, now + 120 * offset++);
+        fixture.commit(tg, now + static_cast<time_t>(120) * offset++);
     }
     history.refresh(fixture.state);
     model.refresh(fixture.opts, fixture.state);

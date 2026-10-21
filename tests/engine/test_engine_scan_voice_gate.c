@@ -22,14 +22,17 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/receive_policy.h>
 
 #include <math.h>
 #include <stdint.h>
@@ -1527,10 +1530,98 @@ test_y_timing_carrier_on_analog_rows(void) {
     fixture_free(&fix);
 }
 
+static void
+test_receive_admission_bounds_acquisition(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        g_failures++;
+        return;
+    }
+    CHECK("DCC filter", dsd_receive_edit_parse(&fix.opts->receive, DSD_RECEIVE_DCC, 1, "2", "", "", NULL, 0) == 0);
+    fix.state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    fix.state->dmr_color_code = 16;
+    CHECK("checking gets bounded acquisition", !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 100.9));
+    CHECK("unknown code cannot renew acquisition", dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 101.1));
+    fix.state->dmr_color_code = 3;
+    CHECK("rejected code cannot hold", dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 101.1));
+    fix.state->dmr_color_code = 2;
+    CHECK("allowed service retains normal scan policy",
+          !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 101.1));
+    CHECK("slot filter", dsd_receive_edit_parse(&fix.opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    dsd_call_observation obs = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_source_id = 11,
+        .ota_target_id = 22,
+        .policy_target_id = 22,
+        .observed_m = 101.0,
+    };
+    (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
+    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 101.0);
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 101.25);
+    fix.state->currentslot = 1;
+    CHECK("rejected second slot cannot interrupt accepted first slot",
+          !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 101.3));
+    CHECK("other slot's stale media cannot renew hold",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
+    /* Whichever lane the decoder is on: an idle admitted TS1 does not keep a channel only rejected TS2 traffic holds,
+       and admitted media keeps it. */
+    fix.state->currentslot = 0;
+    CHECK("an idle admitted lane cannot hold rejected traffic",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 103.9);
+    CHECK("admitted media on either lane holds", !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
+    /* Issue #637: an admitted call that ended still holds through its voice hold, for the reply, and no longer. */
+    (void)dsd_call_state_end(fix.state, 0, 104.0);
+    fix.opts->scan_voice_only = 1;
+    CHECK("an ended admitted call holds through its voice hold",
+          !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.5));
+    CHECK("an ended admitted call holds no longer than its voice hold",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 110.0));
+    fix.opts->scan_voice_only = 0;
+    /* With voice-only scanning off, an admitted data call in progress keeps the channel; voice-only waits for voice. */
+    dsd_call_observation data = {.protocol = DSD_SYNC_DMR_BS_DATA_POS,
+                                 .slot = 0,
+                                 .kind = DSD_CALL_KIND_DATA,
+                                 .ota_target_id = 33,
+                                 .observed_m = 109.5};
+    (void)dsd_call_state_observe(fix.state, &data, DSD_CALL_BOUNDARY_BEGIN);
+    fix.opts->scan_voice_only = 1;
+    CHECK("voice-only scanning does not wait for data",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 110.0));
+    fix.opts->scan_voice_only = 0;
+    CHECK("an admitted data call keeps the channel", !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 110.0));
+    /* A call whose terminator was missed stays ACTIVE: once it is no longer heard it holds nothing. */
+    CHECK("a stale admitted call cannot hold rejected traffic",
+          dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 120.0));
+    /* A sync loss forgets the live colour code: the call admitted by the code it was received with keeps its voice
+       hold until the carrier proves the code again. */
+    (void)dsd_call_state_end(fix.state, 0, 110.0);
+    DSD_MEMSET(&fix.opts->receive, 0, sizeof fix.opts->receive);
+    CHECK("DCC allow", dsd_receive_edit_parse(&fix.opts->receive, DSD_RECEIVE_DCC, 1, "2", "", "", NULL, 0) == 0);
+    fix.state->dmr_color_code = 2;
+    dsd_call_observation voice2 = obs;
+    voice2.observed_m = 120.0;
+    (void)dsd_call_state_observe(fix.state, &voice2, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.0);
+    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.5);
+    fix.state->dmr_color_code = 16;
+    fix.opts->scan_voice_only = 1;
+    CHECK("an admitted call keeps its hold while the live code is unknown",
+          !dsd_scan_receive_should_leave(fix.opts, fix.state, 119.0, 121.0));
+    fix.opts->scan_voice_only = 0;
+    fixture_free(&fix);
+}
+
 int
 main(void) {
     test_tick_leaves_phase_alone_without_scanner_mode();
     test_gate_off_never_steps();
+    test_receive_admission_bounds_acquisition();
     test_idle_only_steps_at_qualify();
     test_never_synced_falls_back();
     test_voice_holds_through_tail();

@@ -10,11 +10,14 @@
 #include <assert.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -456,6 +459,50 @@ test_channel_label_does_not_confer_identity(void) {
     destroy_state(state);
 }
 
+/* Issue #637: the service a receive-policy name gives the call names it on every frontend (the Qt hero and Android
+   notification read this view), ahead of its channel, which the view keeps as where it was heard. */
+static void
+test_service_name_names_the_call_and_keeps_its_channel(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    assert(dsd_receive_names_parse("--nac-name 293=Hospital", &opts.receive.names, NULL, 0) == 0);
+    state->p2_cc = 0x293;
+    state->p2_cc_verified = 1U;
+    observe_group_call(state, 0U, 51023U, 1234567U, 10.0);
+    stage_group_name(history, 0U, 51023U, "Fire Ops");
+    stage_channel_label(history, 0U, "Fire Dispatch");
+    dsd_call_state_refresh_receive(&opts, state, 0U);
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(strcmp(view.name, "Hospital") == 0);
+    assert(strcmp(view.service, "Hospital") == 0);
+    assert(strcmp(view.channel, "Fire Dispatch") == 0);
+    assert(strcmp(view.tg_text, "51023") == 0);
+    destroy_state(state);
+}
+
+/* An NFM call no name labels is named by the channel it was heard on, else "NFM". */
+static void
+test_unnamed_nfm_call_is_named_by_its_channel(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    dsd_call_observation observation = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(strcmp(view.name, "NFM") == 0 && view.service[0] == '\0');
+    stage_channel_label(history, 0U, "20R Local");
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(strcmp(view.name, "20R Local") == 0 && strcmp(view.channel, "20R Local") == 0);
+    destroy_state(state);
+}
+
 static void
 test_staged_group_name_ignored_when_empty(void) {
     Event_History_I* history = NULL;
@@ -776,6 +823,8 @@ main(void) {
     test_staged_group_name_used_when_target_matches();
     test_staged_group_name_ignored_for_other_talkgroup();
     test_staged_group_name_ignored_when_empty();
+    test_service_name_names_the_call_and_keeps_its_channel();
+    test_unnamed_nfm_call_is_named_by_its_channel();
     test_staged_channel_label_names_a_call_with_no_name_of_its_own();
     test_staged_group_name_beats_channel_label();
     test_target_text_beats_channel_label();

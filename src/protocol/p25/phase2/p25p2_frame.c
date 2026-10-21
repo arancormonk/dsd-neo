@@ -20,7 +20,10 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/ez.h>
@@ -859,8 +862,11 @@ p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
         return;
     }
     p25_sm_emit_active(opts, state, slot);
-    state->last_vc_sync_time = dsd_decode_time();
-    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    /* Only traffic the receive policy admits holds the voice channel (issue #637). */
+    if (dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)) {
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    }
 }
 
 static int
@@ -923,6 +929,25 @@ p25p2_audio_gate_diag(dsd_opts* opts, const dsd_state* state, const char* at) {
                     cur[1], cur[2], cur[3], cur[4], cur[5], cur[6], cur[7]);
 }
 
+/* Per slot: its voice decodes, muted, while the receive policy is still checking it (p25p2_prepare_voice_crypto()). */
+static int s_receive_pending_decode[2] = {0, 0};
+
+/* The slot's audio gate for this burst from its crypto, talkgroup and receive policy. */
+static void
+p25p2_take_voice_verdict(const dsd_opts* opts, dsd_state* state, int slot) {
+    const int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    dsd_p25p2_burst_decision decision;
+    int decision_valid = 0;
+    const dsd_receive_verdict receive = dsd_receive_status(opts, state, DSD_SYNC_P25P2_POS, slot);
+    const int admitted = receive == DSD_RECEIVE_OFF || receive == DSD_RECEIVE_ALLOWED;
+    const int allowed = dsd_p25p2_decode_policy_verdict(opts, state, slot, alg, &decision, &decision_valid);
+    state->p25_p2_audio_allowed[slot] = allowed && admitted;
+    /* Checking voice keeps decoding, muted, so the cipher positions it consumes stay in step for the frames admitted
+       once its NAC is proven (issue #637). */
+    s_receive_pending_decode[slot] = allowed && receive == DSD_RECEIVE_CHECKING;
+    p25p2_note_burst_verdict(slot, decision_valid && admitted ? &decision : NULL);
+}
+
 static void
 p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -932,6 +957,7 @@ p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     if (slot < 0 || slot > 1) {
         return;
     }
+    s_receive_pending_decode[slot] = 0;
     p25_sm_touch_rejected_slot_skip(opts, state, slot);
     if (state->p25_p2_media_rejected[slot]) {
         state->p25_p2_audio_allowed[slot] = 0;
@@ -943,12 +969,7 @@ p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
         p25_sm_emit_crypto_pending(opts, state, slot);
     }
     if (p25_crypto_audio_permitted(opts, state, slot)) {
-        const int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
-        dsd_p25p2_burst_decision decision;
-        int decision_valid = 0;
-        state->p25_p2_audio_allowed[slot] =
-            dsd_p25p2_decode_audio_allowed_verdict(opts, state, slot, alg, &decision, &decision_valid);
-        p25p2_note_burst_verdict(slot, decision_valid ? &decision : NULL);
+        p25p2_take_voice_verdict(opts, state, slot);
     }
     p25p2_audio_gate_diag(opts, state, "prepare-voice");
 }
@@ -1049,7 +1070,13 @@ p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder
         return;
     }
     if (!p25_crypto_audio_permitted(opts, state, slot) || !state->p25_p2_audio_allowed[slot]) {
-        dsd_mbe_log_ambe_soft_frame(opts, state, ambe_soft);
+        if (s_receive_pending_decode[slot] && p25_crypto_audio_permitted(opts, state, slot)) {
+            /* Decoded for its vocoder and cipher state only: the vocoder mutes traffic the policy has not admitted
+               (mbe_frame_slot_muted()), and nothing is queued to play. */
+            processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_P25P2, NULL, ambe_soft, NULL);
+        } else {
+            dsd_mbe_log_ambe_soft_frame(opts, state, ambe_soft);
+        }
         dsd_p25p2_playout_note_muted(state, slot);
         return;
     }
@@ -1651,7 +1678,8 @@ p25p2_duid_clear_idle_state(const dsd_opts* opts, dsd_state* state, time_t now) 
 
 static void
 p25p2_duid_refresh_recent_voice(const dsd_opts* opts, dsd_state* state, time_t now) {
-    if (state->p25_p2_audio_allowed[state->currentslot] || opts->trunk_tune_enc_calls == 1) {
+    if ((state->p25_p2_audio_allowed[state->currentslot] || opts->trunk_tune_enc_calls == 1)
+        && dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, state->currentslot & 1)) {
         state->last_vc_sync_time = now;
         state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }

@@ -65,8 +65,8 @@ typedef struct {
                                       int is_private, int encrypted, int data_call);
     void (*nxdn_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                        int is_private, int encrypted, int data_call);
-    void (*p25_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
-                                      int is_private, int encrypted, int data_call);
+    void (*p25_conventional_activity)(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                      uint32_t target, uint32_t source, int is_private, int encrypted, int data_call);
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
@@ -135,9 +135,12 @@ void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const d
 /** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity */
 void dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                     uint32_t source, int is_private, int encrypted, int data_call);
-/** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity */
-void dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
-                                                   uint32_t source, int is_private, int encrypted, int data_call);
+/** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity
+ * P25 carries Phase 1 and Phase 2 conventional traffic, so the report names its call's protocol (a DSD_SYNC_P25*
+ * value) and slot (0 for Phase 1, 0/1 for Phase 2) for the receive policy. */
+void dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                                   uint32_t target, uint32_t source, int is_private, int encrypted,
+                                                   int data_call);
 
 /**
  * @brief Path of the channel map belonging to the currently parked scan target.

@@ -4,6 +4,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -19,6 +20,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -733,6 +735,21 @@ bootstrap_log_startup_banner(void) {
 #endif
 }
 
+/* A service name the receive or tone filters in force reject never shows (issue #637). It is kept, so a service can be
+   blocked for a while; the warning says why it will not appear. */
+static void
+bootstrap_warn_unreachable_names(const dsd_opts* opts, const dsd_state* state) {
+    dsd_scan_option_baseline configured;
+    dsd_scan_option_baseline_configured(opts, state, &configured);
+    char names[160];
+    if (dsd_scan_option_unreachable_names(NULL, &configured, names, sizeof names) > 0) {
+        LOG_WARN("WARNING: Service names that never show, because the receive filters reject their traffic: %s\n",
+                 names);
+    }
+    /* A -C channel map the command line loaded, judged once every option after it is in force. */
+    csvChanWarnUnreachableNames(state, &configured);
+}
+
 static void
 bootstrap_maybe_run_interactive(const bootstrap_cli_args* args, int argc, int user_cfg_loaded, dsd_opts* opts,
                                 dsd_state* state) {
@@ -796,6 +813,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     }
 
     bootstrap_log_startup_banner();
+    bootstrap_warn_unreachable_names(opts, state);
     bootstrap_maybe_run_interactive(&args, argc, user_cfg_loaded, opts, state);
 
     bootstrap_set_exit_rc(out_exit_rc, 0);

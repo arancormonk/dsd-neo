@@ -15,6 +15,8 @@ Item {
             siteSheet.visible = false;
             networkSheet.visible = false;
             toneFilterSheet.visible = false;
+            receiveFiltersSheet.visible = false;
+            serviceNamesSheet.visible = false;
             squelchSheet.visible = false;
             passbandSheet.visible = false;
             historyDetail.visible = false;
@@ -1038,7 +1040,9 @@ Item {
                 detail: model.detail,
                 freqHz: model.freqHz,
                 accessCode: model.accessCode,
-                accessCodeText: model.accessCodeText
+                accessCodeText: model.accessCodeText,
+                serviceName: model.serviceName || "",
+                receivedTone: model.receivedTone || ""
             })
             // Inset by the card's border, so a row's divider never paints over it.
             x: 1
@@ -1047,11 +1051,14 @@ Item {
             metaText: {
                 // A notice keeps its payload first, the pane being too
                 // narrow for its ids, then names what every row names: the
-                // access code, and the frequency last (issue #575).
+                // access code, the channel it was heard on (its title drops
+                // it), and the frequency last (issue #575).
                 if (model.kind === 1) {
                     var parts = [model.detail.length > 0 ? model.detail : qsTr("data message")];
                     if (model.accessCode.length > 0)
                         parts.push(model.accessCode);
+                    if (model.channel.length > 0 && model.channel !== model.name)
+                        parts.push(model.channel);
                     if (model.freqHz > 0)
                         parts.push(Util.fmtMhz(model.freqHz));
                     return parts.join(" · ");
@@ -1783,6 +1790,33 @@ Item {
                 }
             }
 
+            Flow {
+                width: parent.width
+                spacing: 8
+                OutlineButton {
+                    objectName: "monitorReceiveFilters"
+                    text: qsTr("Receive filters")
+                    enabled: decoderHost.running
+                    onClicked: receiveFiltersSheet.openEditor()
+                }
+                OutlineButton {
+                    objectName: "monitorServiceNames"
+                    text: qsTr("Service names")
+                    enabled: decoderHost.running
+                    onClicked: serviceNamesSheet.openEditor()
+                }
+            }
+            Text {
+                objectName: "monitorReceiveStatus"
+                width: parent.width
+                text: metrics.receiveStatus || ""
+                visible: text.length > 0
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSize(13)
+            }
+
             // The squelch on audio input (#628): a level, or the noise squelch it
             // learns from the input, read as the terminal's SQL field spells it
             // ("noise +10 dB (learning)", "-50.0 dB", "(off: no band above
@@ -1999,6 +2033,14 @@ Item {
             else if (index === 1)
                 commands.lockoutSlot(menuSlot === 2 ? 1 : 0);
         }
+    }
+
+    ReceivePolicySheet {
+        id: receiveFiltersSheet
+    }
+    ReceivePolicySheet {
+        id: serviceNamesSheet
+        namesEditor: true
     }
 
     // #527: the live tone-filter editor, over the monitor like the key sheet.

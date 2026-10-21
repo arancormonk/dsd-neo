@@ -9,6 +9,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -31,6 +32,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -42,6 +44,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -73,6 +76,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -1327,15 +1331,10 @@ ui_cmd_leaves_scanner_scope(const dsd_opts* opts, int was_scanner) {
 }
 
 /* End every slot's call now and commit it (dsd_event_sync_slot()), its last render reading the carrier it was heard
-   on. */
+   on, the analog call first (dsd_engine_end_calls()). */
 static void
 ui_end_calls(dsd_opts* opts, dsd_state* state) {
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
 }
 
 #ifdef USE_RADIO
@@ -1479,6 +1478,7 @@ ui_restore_receive_settings(dsd_opts* opts, dsd_state* state, const dsd_scan_set
     dsd_scan_settings back = *before;
     ui_restore_settings_keeping_row_policy(opts, state, &back, &now);
     opts->analog_tone_set = before->analog_tone_set;
+    opts->receive = before->receive;
     opts->analog_tone_filter = before->analog_tone_filter;
 }
 
@@ -2465,6 +2465,34 @@ ui_cmd_handle_tone_filter_set(dsd_opts* opts, dsd_state* state, const struct dsd
     (void)dsd_scan_mode_set_configured_tone_policy(opts, state, (int)edit.mode, &set);
     char notice[DSD_APP_TONE_FILTER_NOTICE_SIZE];
     (void)dsd_app_tone_filter_edit_notice(opts, state, notice, sizeof notice);
+    /* A tone name the new policy rejects is kept but never shows (issue #637). */
+    dsd_app_receive_note_unreachable(opts, state, NULL, notice, sizeof notice);
+    ui_set_toast(state, 3, "%s", notice);
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+ui_cmd_handle_receive_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || c->n != sizeof(dsd_app_receive_payload)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_app_receive_payload edit;
+    DSD_MEMCPY(&edit, c->data, sizeof edit);
+    if (!memchr(edit.allow, '\0', sizeof edit.allow) || !memchr(edit.block, '\0', sizeof edit.block)
+        || !memchr(edit.names, '\0', sizeof edit.names)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_receive_policy policy;
+    dsd_scan_mode_configured_receive(opts, state, &policy);
+    char why[160];
+    if (dsd_receive_edit_parse(&policy, edit.kind, edit.enabled, edit.allow, edit.block, edit.names, why, sizeof why)) {
+        ui_set_toast(state, 5, "Refused: %s", why);
+        return UI_CMD_APPLY_FAILED;
+    }
+    dsd_scan_mode_set_configured_receive(opts, state, &policy);
+    /* A name the new defaults reject is kept but never shows (issue #637). */
+    char notice[DSD_APP_SCAN_ROW_NOTICE_SIZE] = "Receive defaults applied; channel overrides stay in force";
+    dsd_app_receive_note_unreachable(opts, state, NULL, notice, sizeof notice);
     ui_set_toast(state, 3, "%s", notice);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -2490,6 +2518,7 @@ apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct
         {DSD_APP_CMD_NFM_BANDWIDTH_SET, ui_cmd_handle_nfm_bandwidth_set},
         {DSD_APP_CMD_AM_BANDWIDTH_SET, ui_cmd_handle_am_bandwidth_set},
         {DSD_APP_CMD_TONE_FILTER_SET, ui_cmd_handle_tone_filter_set},
+        {DSD_APP_CMD_RECEIVE_SET, ui_cmd_handle_receive_set},
         {DSD_APP_CMD_SCAN_ROW_EDIT, ui_cmd_handle_scan_row_edit},
         {DSD_APP_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
         {DSD_APP_CMD_TG_HOLD_SET, ui_cmd_handle_tg_hold_set},
@@ -4328,6 +4357,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
     {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
     {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
+    {DSD_APP_CMD_RECEIVE_SET, sizeof(dsd_app_receive_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
@@ -6579,12 +6609,7 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     state->p25_cc_freq = 0;
     state->trunk_cc_freq = 0;
     opts->trunk_is_tuned = 0;
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    ui_end_calls(opts, state);
 }
 
 static int
@@ -8163,14 +8188,15 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
 }
 
-/* A command that can change what the talkgroup policy lets an active call play: the policy store, the hold or the
-   allow list. */
+/* A command that can change what an active call may play: the talkgroup policy store, the hold or the allow list, or
+   the configured receive policy (issue #637), whose boundary ends calls, drains the playout and rotates the per-call
+   WAVs as the watchdog's release does. */
 static int
 command_changes_call_verdict(const struct dsd_app_command* c) {
     return command_writes_policy_store(c)
            || (c
                && (c->id == DSD_APP_CMD_TG_HOLD_TOGGLE || c->id == DSD_APP_CMD_TG_HOLD_SET
-                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE));
+                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE || c->id == DSD_APP_CMD_RECEIVE_SET));
 }
 
 /* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, a slot switch (with the

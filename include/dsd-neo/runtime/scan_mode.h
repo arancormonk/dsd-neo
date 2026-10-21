@@ -7,6 +7,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -57,6 +58,7 @@ typedef struct {
      * policy (DSD_SCAN_OPT_TONE) lands here. Row policy, so second (8-byte aligned) and out of the comparison. */
     dsd_tone_set analog_tone_set;
     int analog_tone_filter;
+    dsd_receive_policy receive;
     /** dsd_opts::rtl_squelch_mode and rtl_squelch_margin_db (issue #518 follow-up): with rtl_squelch_level, the squelch
      * setting. Row policy, out of the comparison. */
     int rtl_squelch_mode;
@@ -359,6 +361,9 @@ int dsd_scan_mode_take_timed_digital_family(const dsd_state* state);
  * target with no modulation, which land where an open of the mode would: @p out_cqpsk is then the decoder's
  * (state->rf_mod == 1), which DSD_NEO_CQPSK overrides at a landing when set. */
 int dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state, int* out_cqpsk);
+/** Read/update configured receive defaults without disturbing the active row's decoder. */
+void dsd_scan_mode_configured_receive(const dsd_opts* opts, const dsd_state* state, dsd_receive_policy* out);
+int dsd_scan_mode_set_configured_receive(dsd_opts* opts, dsd_state* state, const dsd_receive_policy* policy);
 #ifdef __cplusplus
 }
 #endif

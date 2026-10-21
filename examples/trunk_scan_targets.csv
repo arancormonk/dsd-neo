@@ -9,3 +9,5 @@ field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96 channel,g
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz) conventional channel,gfsk,,,,,,
 fire-nfm,nfm-conventional,154430000,,2000,3000,analog NFM channel held on carrier; the options cell carries its width and squelch and a CTCSS/DCS tone filter,,,,,,--nfm-bandwidth-hz 12500 --squelch-db -60 --tone-allow 156.7/D023N,
 tower-am,am-conventional,118300000,,2000,3000,analog AM airband channel held on carrier; the options cell carries its width and an auto squelch 6 dB over its noise floor,,,,,,--am-bandwidth-hz 8333 --squelch auto+6,
+Mall,dmr-conventional,464125000,,500,,shared DMR frequency: the row is Mall (colour code 2) and names the other repeaters on it by colour code,auto,,,,,--dcc-name 7=Hospital --dcc-name 14=Municipality,
+20R Local,nfm-conventional,462675000,,500,500,shared NFM frequency: hears two CTCSS tones and names the traveler tone,,,,,,--squelch noise+3 --nfm-bandwidth-hz 8000 --tone-allow 97.4/141.3 --tone-name '141.3=20R Traveler',

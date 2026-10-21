@@ -9,6 +9,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -26,6 +27,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1099,6 +1101,18 @@ test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     visit_strongest(o, s);
     assert(status.phase == DSD_SEARCH_IDENTIFYING && tuple_is(&status.hit, 0, 0, 0, ""));
 
+    // Issue #637: traffic the receive policy rejects names no hit and keeps the search from listening on it.
+    o->receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_DCC].block.bits[0] = UINT64_C(1) << 2;
+    s->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    s->dmr_color_code = 2;
+    dsd_signal_search_note_call(s, 0);
+    dsd_signal_search_note_evidence(s, "DMR", 100, 200, NULL);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && tuple_is(&status.hit, 0, 0, 0, ""));
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
+    s->synctype = DSD_SYNC_NONE;
+    s->dmr_color_code = 16;
+
     // A call noted before the protocol is identified shows once it is, whole: IDs, texts, slot and received crypt.
     put_crypto(a, DSD_CALL_CRYPTO_ENCRYPTED, 0x21, 0x05, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
     DSD_SNPRINTF(a->source_text, sizeof(a->source_text), "%s", "Unit 200");
@@ -1212,12 +1226,28 @@ test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     }
     assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && tuple_is(&status.hit, 0, 0, 0, ""));
     land(o, s);
+    /* Issue #637: a Phase 2 SACCH decoded on slot 1 announces a slot 2 call; with slot 2 blocked that report neither
+       confirms the hit nor names it, whatever slot the decoder is on. */
+    o->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2;
+    s->currentslot = 0;
+    dsd_trunk_scan_hook_p25_conventional_activity(o, s, DSD_SYNC_P25P2_POS, 1, 5005U, 5006U, 0, 0, 0);
+    assert(!status.hit.confirmed && tuple_is(&status.hit, 0, 0, 0, ""));
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
     dsd_signal_search_note_evidence(s, "P25", 2001, 2002, NULL);
     assert(status.hit.confirmed && tuple_is(&status.hit, 2001, 2002, 0, ""));
     // A record of the previous visit's call is not this visit's until the protocol re-publishes it.
     a = put_call(0, 4, 7.0, DSD_SYNC_P25P1_POS, 3001, 0);
     dsd_signal_search_note_call(s, 0);
     assert(tuple_is(&status.hit, 3001, 0, 0, ""));
+    // Issue #637: a newer call the receive policy rejects (its slot blocked) never becomes the tuple, while traffic it
+    // admits on the carrier still does.
+    o->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2;
+    (void)put_call(1, 5, 8.0, DSD_SYNC_P25P2_POS, 3003, 0);
+    dsd_signal_search_note_call(s, 1);
+    assert(tuple_is(&status.hit, 3001, 0, 0, ""));
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
 
     live = 0;
     act(o, s, DSD_SEARCH_ACTION_STOP);

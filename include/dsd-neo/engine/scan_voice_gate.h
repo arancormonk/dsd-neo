@@ -39,6 +39,7 @@ typedef struct {
  * Both result fields are initialized to -1. Returns -1 for invalid arguments,
  * 0 when no qualifying media exists, and 1 when retained media exists.
  */
+int dsd_scan_receive_should_leave(const dsd_opts* opts, const dsd_state* state, double arrived_m, double now_m);
 int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out);
 
 /**

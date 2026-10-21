@@ -220,15 +220,30 @@ fieldName(const Columns& columns, size_t index) {
     return {};
 }
 
+/* A row's options cell, the trimmed @p cell at @p offset, read as its loader reads it (dsd_scan_options_parse_cell()).
+   A target row's loader has always parsed it without one pair of outer quotes, a channel map's as it is. */
+int
+inspectOptions(Document& doc, const char* base, unsigned int row, char* cell, size_t offset, bool channel) {
+    const size_t length = std::strlen(cell);
+    const bool wrapped = length >= 2 && cell[0] == '"' && cell[length - 1] == '"';
+    const char* content = wrapped ? cell + 1 : nullptr;
+    const size_t content_length = wrapped ? length - 2 : 0;
+    const char* value = cell;
+    if (wrapped && !channel) {
+        cell[length - 1] = 0;
+        value = cell + 1;
+    }
+    /* Offsets are into the content of a spreadsheet-quoted cell, else into the legacy text. */
+    const char* origin = dsd_scan_options_cell_csv_quoted(value, content, content_length) ? content : value;
+    OptionsContext ctx{&doc, base, row, offset + static_cast<size_t>(origin - cell)};
+    return dsd_scan_options_visit_cell_files(value, content, content_length, &ctx, optionRef, nullptr);
+}
+
 int
 inspectField(Document& doc, const char* base, unsigned int row, const std::string& field, const char* value,
              size_t offset) {
     if (!*value) {
         return 0;
-    }
-    if (field == "options" || field == "relevant_cli_switches") {
-        OptionsContext ctx{&doc, base, row, offset};
-        return dsd_scan_options_visit_files(value, &ctx, optionRef);
     }
 
     static const struct {
@@ -277,8 +292,16 @@ inspectLine(Document& doc, const char* base, Columns& columns, char* raw, unsign
         if (inactive && field != "options") {
             continue;
         }
-        const char* value = trim(fields[col], !columns.channel);
-        if (inspectField(doc, base, row, field, value, offset + static_cast<size_t>(value - raw))) {
+        int rc;
+        if (field == "options" || field == "relevant_cli_switches") {
+            char* cell = trim(fields[col], false);
+            const size_t cell_offset = offset + static_cast<size_t>(cell - raw);
+            rc = *cell ? inspectOptions(doc, base, row, cell, cell_offset, columns.channel) : 0;
+        } else {
+            const char* value = trim(fields[col], !columns.channel);
+            rc = inspectField(doc, base, row, field, value, offset + static_cast<size_t>(value - raw));
+        }
+        if (rc) {
             if (err && size) {
                 DSD_SNPRINTF(err, size, "row %u: %s has an invalid path or option operand", row, field.c_str());
             }
@@ -340,7 +363,7 @@ targetTypeName(dsd_trunk_scan_target_type type) {
 }
 
 dsd_app_scan_csv_target
-describe(const dsd_trunk_scan_target& t) {
+describe(const dsd_trunk_scan_target& t, const dsd_scan_option_baseline* baseline) {
     dsd_app_scan_csv_target result{};
     DSD_SNPRINTF(result.id, sizeof result.id, "%s", t.id);
     DSD_SNPRINTF(result.type, sizeof result.type, "%s", targetTypeName(t.type));
@@ -365,6 +388,8 @@ describe(const dsd_trunk_scan_target& t) {
     result.squelch_margin_db = dsd_squelch_mode_is_dynamic(result.squelch_mode) ? t.row_options.squelch_margin_db : 0;
     result.bandwidth_hz = (t.row_options.present & DSD_SCAN_OPT_BANDWIDTH) ? t.row_options.channel_bw_hz : -1;
     result.tone_filter = dsd_scan_option_tone_summary(&t.row_options, result.tone_list, sizeof result.tone_list);
+    dsd_scan_option_receive_summary_against(&t.row_options, baseline, result.receive_summary,
+                                            sizeof result.receive_summary);
     return result;
 }
 
@@ -483,7 +508,7 @@ dsd_app_scan_csv_inspect(const char* path, const char* base_path, int channel_ma
         }
         if (callbacks && callbacks->target) {
             for (size_t i = 0; i < doc.targets.list.count; ++i) {
-                const auto target = describe(doc.targets.list.targets[i]);
+                const auto target = describe(doc.targets.list.targets[i], callbacks->baseline);
                 callbacks->target(&target, callbacks->context);
             }
         }

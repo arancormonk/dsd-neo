@@ -13,7 +13,8 @@
 typedef struct {
     void* trunk;
     void* search;
-    dsd_state_ext_cleanup_fn trunk_free, search_free;
+    void* analog_call;
+    dsd_state_ext_cleanup_fn trunk_free, search_free, analog_call_free;
 } dsd_engine_scan_owner;
 
 static inline void
@@ -25,6 +26,9 @@ dsd_engine_scan_owner_free(void* ptr) {
     if (p->search_free) {
         p->search_free(p->search);
     }
+    if (p->analog_call_free) {
+        p->analog_call_free(p->analog_call);
+    }
     free(p);
 }
 
@@ -32,7 +36,7 @@ static inline void*
 dsd_engine_scan_owned(const dsd_state* state, int search) {
     const dsd_engine_scan_owner* p =
         (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
-    return p ? (search ? p->search : p->trunk) : NULL;
+    return p ? (search == 2 ? p->analog_call : (search ? p->search : p->trunk)) : NULL;
 }
 
 static inline int
@@ -51,7 +55,13 @@ dsd_engine_scan_own(dsd_state* state, int search, void* value, dsd_state_ext_cle
             return -1;
         }
     }
-    if (search) {
+    if (search == 2) {
+        if (p->analog_call_free) {
+            p->analog_call_free(p->analog_call);
+        }
+        p->analog_call = value;
+        p->analog_call_free = cleanup;
+    } else if (search) {
         if (p->search_free) {
             p->search_free(p->search);
         }

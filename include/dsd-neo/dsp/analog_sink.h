@@ -44,6 +44,8 @@ typedef enum {
     DSD_ANALOG_SINK_MONITOR = 0,
     /** The -6 raw WAV: the input before the monitor's filters, every block. */
     DSD_ANALOG_SINK_RAW_WAV = 1,
+    /** Per-transmission NFM recording: always writes, including at the native rate. */
+    DSD_ANALOG_SINK_CALL_WAV = 2,
 } dsd_analog_sink;
 
 /** What dsd_analog_sink_write() did with a block. */
@@ -73,6 +75,9 @@ void dsd_analog_sink_break(const dsd_state* state);
 /** @brief A reception boundary was announced (dsd_analog_rx_reset()): the monitor starts over at its next write, as its
     audio chain does. */
 void dsd_analog_sink_note_reception(const dsd_state* state);
+
+/** @brief End a per-transmission recording. Its converter starts from silence for the next service. */
+void dsd_analog_sink_end_call(const dsd_state* state);
 
 /**
  * @brief Write @p n samples of @p sink's block, collected at @p block_hz, to a sink at @p sink_hz.

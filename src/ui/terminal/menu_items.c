@@ -384,6 +384,29 @@ static const NcMenuItem DEC_TDMA_ITEMS[] = {
      .on_select = act_dmr_reset},
 };
 
+static const NcMenuItem RECEIVE_FILTER_ITEMS[] = {
+    {.id = "receive.slot",
+     .label = "Slot filter...",
+     .help = "Slots 1/2 on TDMA; FDMA is unaffected. Block wins.",
+     .on_select = act_receive_slot},
+    {.id = "receive.dcc",
+     .label = "DCC filter...",
+     .help = "DMR color codes 0..15. Unknown codes stay muted while checking.",
+     .on_select = act_receive_dcc},
+    {.id = "receive.ran",
+     .label = "RAN filter...",
+     .help = "NXDN RANs 0..63. Unknown RANs stay muted while checking.",
+     .on_select = act_receive_ran},
+    {.id = "receive.nac",
+     .label = "NAC filter...",
+     .help = "P25 hexadecimal NACs 001..FFE. Received codes must be verified.",
+     .on_select = act_receive_nac},
+    {.id = "receive.names",
+     .label = "Service names...",
+     .help = "Name received slots, DCC, RAN, NAC or CTCSS/DCS using value=name rules. Channel edits are session only.",
+     .on_select = act_service_names},
+};
+
 const NcMenuItem DECODER_MENU_ITEMS[] = {
     {.id = "dec.mode",
      .label_fn = lbl_decode_mode,
@@ -406,6 +429,12 @@ const NcMenuItem DECODER_MENU_ITEMS[] = {
      .is_enabled = io_rtl_active,
      .on_select = act_toggle_cq},
 #endif
+    {.id = "dec.receive",
+     .label = "Receive filters and names",
+     .help =
+         "Slot and digital access allow/block lists and service names; global defaults or session channel overrides.",
+     .submenu = RECEIVE_FILTER_ITEMS,
+     .submenu_len = NC_LEN(RECEIVE_FILTER_ITEMS)},
     {.id = "dec.filters",
      .label = "Audio filters",
      .help = "Input and digital audio filters.",

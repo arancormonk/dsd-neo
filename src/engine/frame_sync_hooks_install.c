@@ -5,6 +5,9 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/analog_call.h>
+#include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
@@ -32,12 +35,18 @@ scan_visit_should_yield_from_frame(const dsd_opts* opts, dsd_state* state) {
         return dsd_engine_signal_search_should_yield(opts, state);
     }
     if (opts->trunk_scan_enabled == 1) {
-        return dsd_engine_trunk_scan_visit_expired(opts, state);
+        return dsd_engine_trunk_scan_visit_expired(opts, state) || dsd_engine_trunk_scan_receive_expired(opts, state);
+    }
+    if (dsd_engine_trunk_receive_release_due(opts, state)) {
+        return 1;
     }
     const double now_m = dsd_decode_now_mono_s();
     dsd_engine_scan_visit_tick(opts, state, now_m);
     dsd_engine_scan_y_timing_tick(opts, state, now_m, dsd_decode_now_realtime_s());
-    return dsd_engine_scan_visit_expired(opts, state, now_m);
+    return dsd_engine_scan_visit_expired(opts, state, now_m)
+           || (opts->scanner_mode == 1 && !state->lcn_scan_hold
+               && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, now_m)
+               && dsd_engine_channel_scan_has_other_row(opts, state));
 }
 
 static void
@@ -80,6 +89,9 @@ p25_sm_vc_no_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
    needs the tick that lets it go. A busy guard counts as due: leaving the wait costs one pass. */
 static int
 engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_engine_analog_call_due(state)) {
+        return 1;
+    }
     if (!opts || !state || opts->trunk_scan_enabled == 1) {
         return 0;
     }
@@ -97,6 +109,8 @@ engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
 void
 dsd_engine_frame_sync_hooks_install(void) {
     dsd_frame_sync_hooks hooks = {0};
+    hooks.receive_policy_boundary = dsd_engine_receive_policy_boundary;
+    hooks.analog_call_block = dsd_engine_analog_call_block;
     hooks.p25_sm_try_tick = p25_sm_try_tick;
     hooks.decoder_ticks_due = engine_decoder_ticks_due;
     hooks.p25_sm_release = p25_sm_release_from_frame_sync;

@@ -21,6 +21,7 @@ target_sources(
         menu_labels.c
         menu_callbacks.c
         menu_actions.c
+        menu_receive.c
         menu_items.c
         menu_prompts.c
         menu_render.c

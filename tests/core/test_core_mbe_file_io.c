@@ -13,6 +13,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -21,6 +22,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <errno.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
@@ -777,6 +779,38 @@ test_sdrtrunk_json_metadata_protocols_and_time(void) {
         dsd_state_ext_free_all(&state);
     }
 
+    return rc;
+}
+
+/* Issue #637: an SDRTrunk DMR recording carries no colour code, so playback never stands one in: an enabled DCC
+   filter stays Checking and no DCC service name is given, whatever placeholder the reader starts from. */
+static int
+test_sdrtrunk_json_dmr_has_no_colour_code(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+        "\"to\":\"1234\",\"from\":\"5678\",\"time\":\"1700000000000\"}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+    rc |= expect_true("dcc allow parsed",
+                      dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_DCC, 1, "0", "", "", NULL, 0) == 0);
+    rc |= expect_true("dcc name parsed",
+                      dsd_receive_names_parse("--dcc-name '0=Placeholder'", &opts.receive.names, NULL, 0) == 0);
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_int("sdrtrunk dmr colour code is none", (int)state.dmr_color_code, 16);
+    dsd_call_state_refresh_receive(&opts, &state, 0U);
+    dsd_call_snapshot call = {0};
+    rc |= expect_true("sdrtrunk dmr call available", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_int("sdrtrunk dmr call is checking", (int)call.receive_verdict, DSD_RECEIVE_CHECKING);
+    rc |= expect_true("sdrtrunk dmr call takes no dcc name", call.service_label[0] == '\0');
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -3570,6 +3604,7 @@ main(void) {
     rc |= test_ambe_pack_unpack_49_bits_roundtrip();
     rc |= test_parse_raw_user_string_guards_and_bounds();
     rc |= test_sdrtrunk_json_metadata_protocols_and_time();
+    rc |= test_sdrtrunk_json_dmr_has_no_colour_code();
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_settles_regardless_of_algorithm_order();

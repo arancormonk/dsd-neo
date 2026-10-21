@@ -1503,6 +1503,29 @@ export_sidecar_body(const Event_History_I* hist, int wav_seconds, time_t opened,
     return rc;
 }
 
+static int
+test_sidecar_service_name_keeps_numeric_identity(void) {
+    Event_History_I* hist = calloc(1, sizeof(*hist));
+    if (!hist) {
+        return 1;
+    }
+    Event_History* item = &hist->Event_History_Items[0];
+    item->target_id = 77;
+    item->source_id = 88;
+    item->event_time = (time_t)1700000600;
+    DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", "Hospital West");
+    DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", "Base channel");
+    DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "Numeric talkgroup name");
+    char body[4096];
+    int rc = export_sidecar_body(hist, 1, 0, body, sizeof body);
+    if (rc == 0 && (!strstr(body, "\"talkgroup_tag\": \"Hospital West\"") || !strstr(body, "\"talkgroup\": 77"))) {
+        DSD_FPRINTF(stderr, "service name must label the unchanged numeric talkgroup\n%s\n", body);
+        rc = 1;
+    }
+    free(hist);
+    return rc;
+}
+
 // The sidecar's freq is the frequency the call was heard on (Event_History::freq_hz). A row's channel is a trunk
 // channel number, an LCN or a dPMR colour code, never Hz, and must not be read as one even when it is large enough to
 // pass the 1 MHz floor. A frequency that does not fit the field, or sits below the floor, is reported as 0.
@@ -2290,6 +2313,7 @@ main(void) {
     rc |= test_duration_rejects_invalid_wav_format_values();
     rc |= test_duration_uses_zero_for_missing_or_truncated_wav();
     rc |= test_export_guards_and_invalid_mode_are_noops();
+    rc |= test_sidecar_service_name_keeps_numeric_identity();
     rc |= test_missing_talkgroup_rejects_sidecar();
     rc |= test_sidecar_escapes_strings_and_tgt_fallback();
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();

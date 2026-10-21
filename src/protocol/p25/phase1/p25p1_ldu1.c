@@ -26,7 +26,9 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h> // IWYU pragma: keep - private-source tests need the enrichment declaration
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
@@ -106,7 +108,8 @@ p25p1_ldu1_refresh_vc_hysteresis(const dsd_opts* opts, dsd_state* state) {
     if (hold_hyst < 0.75) {
         hold_hyst = 0.75; // minimum grace window
     }
-    if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
+    if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst
+        && dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 0)) {
         state->last_vc_sync_time = now;
         state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
@@ -255,10 +258,6 @@ p25p1_ldu1_apply_rs_fec(dsd_state* state, char hex_data[12][6], char hex_parity[
     }
 
     state->p25_p1_voice_fec_ok++;
-    // Passed FEC checks: mark recent voice activity for trunk hangtime
-    // tracking so we don't prematurely return to CC mid-call.
-    state->last_vc_sync_time = dsd_decode_time();
-    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
 
     return irrecoverable_errors;
 }
@@ -489,6 +488,12 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     }
     const unsigned int soft_rs_before = state->p25_p1_soft_rs_ok;
     int irrecoverable_errors = p25p1_ldu1_apply_rs_fec(state, ctx.hex_data, ctx.hex_parity, ctx.soft_dibits);
+    if (irrecoverable_errors == 0 && dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 0)) {
+        // Passed FEC checks: mark recent voice activity for trunk hangtime tracking so we don't prematurely return to
+        // CC mid-call, for traffic the receive policy admits only (issue #637).
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    }
 
     uint8_t lcformat[9];
     uint8_t mfid[9];

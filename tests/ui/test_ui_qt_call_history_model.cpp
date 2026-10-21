@@ -44,9 +44,12 @@
 #include <QtGlobal>
 #include <atomic>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <initializer_list>
 #include <memory>
 #include <stdint.h>
@@ -391,6 +394,58 @@ test_labelled_notice_name_drops_its_own_channel_prefix(void) {
            model.count() == 2
                && model.data(model.index(0), CallHistoryModel::NameRole).toString()
                       == QStringLiteral("[Not a label] SMS from 1234"));
+}
+
+/* The emitter puts a notice's CRC/RAS marker ahead of its label, so the channel prefix is found
+ * after that marker, which stays. A notice a service name labels (issue #637) carries the service
+ * there instead of the channel, and keeps it in its title, the only place the row shows it: search
+ * and the accessible name read the title. */
+void
+test_marked_and_serviced_notice_titles(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    const time_t when = 1754500350;
+    Event_History* crc = ring.commitNotice(0, when, "2026-04-30 00:00:00 [CRC ERR] [SiteA] LRRP position", "SiteA");
+    crc->crc_invalid = DSD_CRC_FAILED;
+    model.refresh(ring.state);
+    expect("a CRC-marked notice drops its channel and keeps its marker",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[CRC ERR] LRRP position"));
+
+    Event_History* ras = ring.commitNotice(0, when + 5, "2026-04-30 00:00:05 [RAS] [SiteA] SMS from 1234", "SiteA");
+    ras->crc_invalid = DSD_CRC_RAS_UNVERIFIED;
+    model.refresh(ring.state);
+    expect("a RAS-marked notice drops its channel and keeps its marker",
+           model.count() == 2
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[RAS] SMS from 1234"));
+
+    Event_History* named = ring.commitNotice(0, when + 10, "2026-04-30 00:00:10 [Hospital] LRRP position", "SiteA");
+    DSD_SNPRINTF(named->service_label, sizeof(named->service_label), "%s", "Hospital");
+    model.refresh(ring.state);
+    expect("a serviced notice keeps its service in its title",
+           model.count() == 3
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[Hospital] LRRP position")
+               && model.data(model.index(0), CallHistoryModel::ServiceNameRole).toString() == QStringLiteral("Hospital")
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == QStringLiteral("SiteA"));
+
+    Event_History* both =
+        ring.commitNotice(0, when + 15, "2026-04-30 00:00:15 [CRC ERR] [Hospital] SMS from 77", "SiteA");
+    DSD_SNPRINTF(both->service_label, sizeof(both->service_label), "%s", "Hospital");
+    both->crc_invalid = DSD_CRC_FAILED;
+    model.refresh(ring.state);
+    expect("a CRC-marked serviced notice keeps both",
+           model.count() == 4
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[CRC ERR] [Hospital] SMS from 77"));
+
+    view.setFilterText(QStringLiteral("Hospital"));
+    expect("search finds the serviced notices by their service", view.count() == 2);
 }
 
 /* The scan channel a row was heard on rides its own role. The system stays the
@@ -1823,6 +1878,223 @@ test_repeated_notice_gains_carrier(void) {
     }
 }
 
+/* Co-channel services retain separate histories even when all numeric call IDs match. */
+void
+test_receive_service_identity(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = kCaptureStart + 200;
+    {
+        CallHistoryModel model;
+        for (int code = 7; code <= 8; ++code) {
+            Event_History* item = ring.commit(0, 1001, 2001, when, when + 4, "", "", "Base channel");
+            item->receive_identity.known = 1;
+            item->receive_identity.kind = DSD_RECEIVE_DCC;
+            item->receive_identity.value = static_cast<uint16_t>(code);
+            item->receive_identity.slot = 1;
+            DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", "Hospital");
+            model.refresh(ring.state);
+        }
+        expect("different confirmed services cannot merge", model.count() == 2);
+        Event_History* analog = ring.commit(0, 0, 0, when + 10, when + 20, "", "", "Base channel");
+        analog->receive_identity = {1413, DSD_RECEIVE_CTCSS, 1, 0, 0};
+        DSD_SNPRINTF(analog->service_label, sizeof analog->service_label, "%s", "20R Traveler");
+        model.refresh(ring.state);
+        expect("service names reach display without replacing the base channel",
+               model.data(model.index(0), CallHistoryModel::NameRole) == "20R Traveler"
+                   && model.data(model.index(0), CallHistoryModel::ChannelRole) == "Base channel");
+        expect("tone is available in history",
+               model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "141.3");
+    }
+    {
+        CallHistoryModel model;
+        expect("service rows persist separately", model.count() == 3);
+        expect("service and tone survive reload",
+               model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "20R Traveler"
+                   && model.data(model.index(0), CallHistoryModel::ReceivedToneRole) == "141.3");
+    }
+}
+
+/* A fragment committed before its colour code was confirmed has no identity and no access-code name yet. It is the
+   same call as the confirmed fragment after it: the two fold into one row, named by the confirmed service. */
+void
+test_unconfirmed_fragment_joins_named_service(void) {
+    const time_t when = kCaptureStart + 300;
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 1001, 2001, when, when + 4, "", "", "Base channel");
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        Event_History* confirmed = ring.commit(0, 1001, 2001, when + 6, when + 10, "", "", "Base channel");
+        confirmed->receive_identity = {7, DSD_RECEIVE_DCC, 1, 1, 0};
+        DSD_SNPRINTF(confirmed->service_label, sizeof confirmed->service_label, "%s", "Hospital");
+        model.refresh(ring.state);
+        expect(incremental ? "an unconfirmed fragment joins the named call (incremental)"
+                           : "an unconfirmed fragment joins the named call (batched)",
+               model.count() == 1);
+        expect(incremental ? "the merged row carries the confirmed service (incremental)"
+                           : "the merged row carries the confirmed service (batched)",
+               model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Hospital");
+        expect(incremental ? "the merged row is named by the confirmed service (incremental)"
+                           : "the merged row is named by the confirmed service (batched)",
+               model.data(model.index(0), CallHistoryModel::NameRole) == "Hospital");
+    }
+}
+
+/* Issue #637: the single-slot DMR decoder proves the over-the-air slot apart from the colour code. A fragment whose slot
+   was still pending joins the fragment that proved it (and takes its slot and slot name), while fragments that proved
+   different slots stay two calls even when neither colour code was confirmed. */
+void
+test_slot_proof_merges_independently_of_code(void) {
+    const time_t when = kCaptureStart + 350;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* pending = ring.commit(0, 1001, 2001, when, when + 4, "", "", "Base channel");
+        pending->receive_identity = {7, DSD_RECEIVE_DCC, 1, 0, 1};
+        model.refresh(ring.state);
+        Event_History* proven = ring.commit(0, 1001, 2001, when + 5, when + 9, "", "", "Base channel");
+        proven->receive_identity = {7, DSD_RECEIVE_DCC, 1, 1, 0};
+        DSD_SNPRINTF(proven->service_label, sizeof proven->service_label, "%s", "Dispatch");
+        model.refresh(ring.state);
+        expect("a pending-slot fragment joins the one that proved its slot", model.count() == 1);
+        expect("the merged row takes the proven slot's name",
+               model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Dispatch");
+
+        Event_History* ts1 = ring.commit(0, 1002, 2002, when + 60, when + 64, "", "", "Base channel");
+        ts1->receive_identity = {0, DSD_RECEIVE_DCC, 0, 1, 0};
+        model.refresh(ring.state);
+        Event_History* ts2 = ring.commit(0, 1002, 2002, when + 65, when + 69, "", "", "Base channel");
+        ts2->receive_identity = {0, DSD_RECEIVE_DCC, 0, 2, 0};
+        model.refresh(ring.state);
+        expect("fragments that proved different slots stay two calls", model.count() == 3);
+        Event_History* lone = ring.commit(0, 1003, 2003, when + 120, when + 124, "", "", "Base channel");
+        lone->receive_identity = {0, DSD_RECEIVE_DCC, 0, 2, 0};
+        model.refresh(ring.state);
+        expect("a TS2 fragment with no confirmed code is a row of its own", model.count() == 4);
+
+        /* A slot name never replaces the name a confirmed code gave the row. */
+        Event_History* named = ring.commit(0, 1004, 2004, when + 200, when + 204, "", "", "Base channel");
+        named->receive_identity = {7, DSD_RECEIVE_DCC, 1, 0, 1};
+        DSD_SNPRINTF(named->service_label, sizeof named->service_label, "%s", "Hospital");
+        model.refresh(ring.state);
+        Event_History* slotted = ring.commit(0, 1004, 2004, when + 205, when + 209, "", "", "Base channel");
+        slotted->receive_identity = {0, DSD_RECEIVE_DCC, 0, 1, 0};
+        DSD_SNPRINTF(slotted->service_label, sizeof slotted->service_label, "%s", "Dispatch");
+        model.refresh(ring.state);
+        expect("a proven slot joins the code-named row", model.count() == 5);
+        expect("the code's name outranks the slot name",
+               model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Hospital");
+    }
+    {
+        /* Its slot is persisted without a confirmed code, so a TS1 fragment after the reload stays apart from it. */
+        CallHistoryModel model;
+        Event_History* ts1 = ring.commit(0, 1003, 2003, when + 125, when + 129, "", "", "Base channel");
+        ts1->receive_identity = {0, DSD_RECEIVE_DCC, 0, 1, 0};
+        model.refresh(ring.state);
+        expect("a reloaded row keeps its proven slot without a confirmed code", model.count() == 6);
+    }
+}
+
+/* Issue #637: a committed row the core refines in place with receive evidence only (a reacquired segment that proved
+   the slot and named the service, within the same second) is read again as an update. A digital row with no target
+   whose name was only its channel label joins the fragment the service names: a label is no destination. */
+void
+test_receive_only_updates_and_label_renames(void) {
+    const time_t when = kCaptureStart + 450;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* item = ring.commit(0, 1005, 2005, when, when + 4, "", "", "Base channel");
+    item->receive_identity = {7, DSD_RECEIVE_DCC, 1, 0, 1};
+    model.refresh(ring.state);
+    expect("the pending-slot row is logged", model.count() == 1);
+    item->receive_identity = {7, DSD_RECEIVE_DCC, 1, 1, 0};
+    DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", "Dispatch");
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a receive-only refinement updates the row in place",
+           model.count() == 1 && model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Dispatch");
+    /* A name added to a call already confirmed (code and slot) reaches its row in place. */
+    Event_History* unnamed = ring.commit(0, 1006, 2006, when + 30, when + 34, "", "", "Base channel");
+    unnamed->receive_identity = {9, DSD_RECEIVE_DCC, 1, 1, 0};
+    model.refresh(ring.state);
+    expect("the unnamed confirmed row is logged", model.count() == 2);
+    DSD_SNPRINTF(unnamed->service_label, sizeof unnamed->service_label, "%s", "Fire");
+    unnamed->event_time = when + 38;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("a name added to a confirmed call updates its row",
+           model.count() == 2 && model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Fire");
+
+    Event_History* labelled = ring.commit(0, 0, 0, when + 60, when + 64, "", "", "Base channel");
+    labelled->systype = DSD_SYNC_DMR_BS_VOICE_POS;
+    RingFixture::carrier(labelled, 452000000);
+    model.refresh(ring.state);
+    Event_History* serviced = ring.commit(0, 0, 0, when + 65, when + 69, "", "", "Base channel");
+    serviced->systype = DSD_SYNC_DMR_BS_VOICE_POS;
+    serviced->receive_identity = {7, DSD_RECEIVE_DCC, 1, 1, 0};
+    DSD_SNPRINTF(serviced->service_label, sizeof serviced->service_label, "%s", "Hospital");
+    RingFixture::carrier(serviced, 452000000);
+    model.refresh(ring.state);
+    expect("a label-only rename is no new destination", model.count() == 3);
+    expect("the folded row takes the service name",
+           model.data(model.index(0), CallHistoryModel::NameRole) == "Hospital");
+    /* Two different textual targets stay apart, whatever their labels. */
+    Event_History* m17a = ring.commit(0, 0, 0, when + 120, when + 124, "W1AW", "", "Base channel");
+    RingFixture::carrier(m17a, 452000000);
+    model.refresh(ring.state);
+    Event_History* m17b = ring.commit(0, 0, 0, when + 125, when + 129, "K1ABC", "", "Base channel");
+    RingFixture::carrier(m17b, 452000000);
+    model.refresh(ring.state);
+    expect("two textual targets stay two rows", model.count() == 5);
+}
+
+/* Issue #637: two anonymous transmissions (no target, no source: conventional NFM) heard on different frequencies a
+   second apart are two calls; on the same frequency they still fold. */
+void
+test_anonymous_rows_on_different_frequencies_stay_separate(void) {
+    const time_t when = kCaptureStart + 400;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    auto nfm = [&ring](time_t start, time_t end, int64_t freq_hz) {
+        Event_History* item = ring.commit(0, 0, 0, start, end);
+        item->systype = DSD_SYNC_ANALOG;
+        item->receive_identity = {0, DSD_RECEIVE_NONE, 1, 0, 0};
+        RingFixture::carrier(item, freq_hz);
+    };
+    nfm(when, when + 4, 154430000);
+    model.refresh(ring.state);
+    nfm(when + 5, when + 9, 155010000);
+    model.refresh(ring.state);
+    expect("anonymous transmissions on two frequencies stay two rows", model.count() == 2);
+    nfm(when + 10, when + 14, 155010000);
+    model.refresh(ring.state);
+    expect("anonymous fragments on one frequency still fold", model.count() == 2);
+    /* A fragment whose tone was still acquiring ("NFM") folds into the named one that confirmed it on the same
+       frequency, and the row takes the service's name. */
+    Event_History* acquiring = ring.commit(0, 0, 0, when + 40, when + 44);
+    acquiring->systype = DSD_SYNC_ANALOG;
+    acquiring->receive_identity = {0, DSD_RECEIVE_NONE, 0, 0, 0};
+    RingFixture::carrier(acquiring, 156000000);
+    model.refresh(ring.state);
+    expect("an unconfirmed fragment is a row of its own first", model.count() == 3);
+    Event_History* toned = ring.commit(0, 0, 0, when + 45, when + 49);
+    toned->systype = DSD_SYNC_ANALOG;
+    toned->receive_identity = {1413, DSD_RECEIVE_CTCSS, 1, 0, 0};
+    DSD_SNPRINTF(toned->service_label, sizeof toned->service_label, "%s", "Traveler");
+    RingFixture::carrier(toned, 156000000);
+    model.refresh(ring.state);
+    expect("a confirmed tone folds into its unconfirmed fragment", model.count() == 3);
+    expect("the folded row is named by the confirmed service",
+           model.data(model.index(0), CallHistoryModel::NameRole) == "Traveler");
+}
+
 std::atomic<int> g_storeBuildsOnGui{0};
 std::atomic<int> g_storeBuildsElsewhere{0};
 
@@ -1906,6 +2178,7 @@ main(int argc, char** argv) {
     test_alias_only_row_is_logged();
     test_channel_labelled_tg0_row_is_logged();
     test_labelled_notice_name_drops_its_own_channel_prefix();
+    test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
@@ -1941,6 +2214,11 @@ main(int argc, char** argv) {
     test_carrier_filled_in_place_reingests();
     test_fragments_on_different_frequencies_merge();
     test_repeated_notice_gains_carrier();
+    test_receive_service_identity();
+    test_slot_proof_merges_independently_of_code();
+    test_receive_only_updates_and_label_renames();
+    test_unconfirmed_fragment_joins_named_service();
+    test_anonymous_rows_on_different_frequencies_stay_separate();
     test_stores_serialise_off_the_gui_thread();
 
     QDir(dataDir).removeRecursively();

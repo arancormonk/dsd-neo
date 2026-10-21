@@ -153,7 +153,9 @@ Notes:
 - Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
   the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
   traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
-  air its id is the label instead, and the Scan Mode row shows no name.
+  air its id is the label instead, and the Scan Mode row shows no name. Traffic a service name labels
+  (`--dcc-name` and the other [naming options](cli.md#receive-filters-and-service-names)) carries that name in the
+  event-row prefix instead; the `Channel:` line still names the row.
 - Every column is positional, so an empty middle field is an empty frequency: `1,,851000000` is a row with no
   frequency and is skipped, not a channel at 851 MHz.
 - **P25 keys.** A P25 channel is a 16-bit number: the 4-bit band-plan identifier in the top nibble and the 12-bit
@@ -275,6 +277,39 @@ While a scan runs, a row's `--squelch-db`, its channel width and its tone policy
 can be changed for the rest of the session from the frontends' "this channel" editors, or made to follow the configured
 default whatever the row says; the file is never written, and Config->Save never saves such an edit. See [Live
 per-channel edits](trunk-scan.md#runtime-behavior).
+
+### Receive filters and service names
+
+The `options` cell accepts the receive switches in [CLI receive filters](cli.md#receive-filters-and-service-names).
+`--slot-*` and slot names apply to `dmr` and `p25` rows (P25 FDMA remains unaffected); `--dcc-*` and DCC names
+to `dmr`; `--ran-*` and RAN names to `nxdn48`/`nxdn96`; `--nac-*` and NAC names to `p25`; tone names to `nfm`.
+The corresponding conventional and trunked target types use the same compatibility checks. An incompatible
+switch is refused with its option name and an explanation. `--no-service-names` explicitly clears a table.
+
+Allow and block may coexist for one kind. The first switch for that kind replaces its complete inherited
+filter. A naming option replaces the complete inherited naming table, with subsequent naming options adding
+rules. Unmentioned filters and names inherit defaults, which return when the row is left. Use `/`, never a
+comma, inside a list. Quotes group an option's argument; they do not permit commas in service names. A receive list
+cut by a comma is refused when its rest lies past the header's last column, or is a `/` run (`7/9`) or a value followed
+by another row option (`7 --slot-block 2`); a lone number in the next column is that column's own (an `rtl_gain` of
+`7` after `--dcc-allow 4`).
+
+```csv
+Channel,Frequency,Name,Mode,Options
+1,461000000,Shared repeater,dmr,--dcc-allow 4/7 --dcc-block 4 --dcc-name '7=Hospital'
+2,851375000,P25 channel,p25,--nac-allow 293/A12 --slot-block 2 --nac-name '293=Public works'
+3,154430000,County repeater,nfm,--tone-name '141.3=20R Traveler'
+```
+
+A spreadsheet that saves an `options` cell holding a double quote wraps the cell in double quotes and doubles each
+quote inside it: `"--dcc-name ""7=St Mary's"""`. Channel maps and trunk-scan targets read such a cell as the spreadsheet
+meant it, `--dcc-name "7=St Mary's"`, and a backup or bundle import that rewrites a companion path in it keeps that
+quoting. A cell is read this way only when every quote inside it is doubled and it does not already parse as written,
+so a cell that loaded before keeps its meaning.
+
+Import previews summarize the row's filters and naming-rule count. Live **This channel** edits are session-only;
+**Use default** inherits the configured value and **List value** restores the imported row. These edits never
+rewrite the imported CSV or change a permanent target ID.
 
 ### Analog rows
 
@@ -507,7 +542,7 @@ Columns:
 
 | Column | Required | Behavior |
 |--------|----------|----------|
-| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Empty or too-long IDs are rejected. |
+| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists, and in log messages. Empty or too-long IDs are rejected. |
 | `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel) or `am-conventional` (one analog AM channel); see [Analog rows](#analog-rows). Exact case. |
 | `frequency_hz` | Yes | Decimal Hz only. Builds with a 64-bit `long` (Linux, macOS, Android) accept `1..4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX` (2147483647). Do not use `K`/`M`/`G` suffixes in CSV. |
 | `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |

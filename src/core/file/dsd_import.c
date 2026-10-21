@@ -876,7 +876,12 @@ chan_import_options(dsd_state* state, char** fields, dsd_scan_mode mode, const c
                     int show_keys, int store, size_t slot) {
     dsd_scan_options parsed = {0};
     char error[192] = "could not load options or companion file";
-    int rc = dsd_scan_options_parse(fields[CHAN_OPTIONS], (unsigned int)mode, 1, &parsed, error, sizeof(error));
+    /* A cell wrapped in double quotes may be a spreadsheet's quoting (dsd_scan_options_parse_cell()). */
+    const char* cell = trim_ws(fields[CHAN_OPTIONS]);
+    const size_t length = strlen(cell);
+    const int wrapped = length >= 2 && cell[0] == '"' && cell[length - 1] == '"';
+    int rc = dsd_scan_options_parse_cell(fields[CHAN_OPTIONS], wrapped ? cell + 1 : NULL, wrapped ? length - 2 : 0,
+                                         (unsigned int)mode, 1, &parsed, error, sizeof(error));
     if (!rc) {
         rc =
             dsd_scan_options_merge_keys(&parsed, chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_KEYS_HEX),
@@ -1157,6 +1162,20 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
 static int
 chan_validate_run(const char* chan_file_path, dsd_state* state, dsd_csv_validation* stats) {
     return chan_import_stats(chan_file_path, state, stats, 0);
+}
+
+void
+csvChanWarnUnreachableNames(const dsd_state* rows, const struct dsd_scan_option_baseline* baseline) {
+    for (int i = 0; rows && i < rows->lcn_freq_count; i++) {
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(rows, (size_t)i);
+        char names[160];
+        if (profile && dsd_scan_option_unreachable_names(&profile->values, baseline, names, sizeof names) > 0) {
+            const char* label = dsd_state_trunk_lcn_name_get(rows, (size_t)i);
+            LOG_WARN("WARNING: Channel map entry %d%s%s%s: service names that never show, because the receive filters "
+                     "reject their traffic: %s\n",
+                     i + 1, label && label[0] ? " (" : "", label ? label : "", label && label[0] ? ")" : "", names);
+        }
+    }
 }
 
 int
@@ -1573,7 +1592,8 @@ csv_profile_key_source(const dsd_key_set* keys) {
 }
 
 static void
-csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_profile* out) {
+csv_describe_channel_profile(const dsd_state* state, int index, const dsd_scan_option_baseline* baseline,
+                             dsd_csv_channel_profile* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->index = (size_t)index;
     const long int hz = *dsd_state_trunk_lcn_slot_const(state, index);
@@ -1595,12 +1615,19 @@ csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_
     out->squelch_margin_db = dsd_squelch_mode_is_dynamic(out->squelch_mode) ? profile->values.squelch_margin_db : 0;
     out->bandwidth_hz =
         profile && (profile->values.present & DSD_SCAN_OPT_BANDWIDTH) ? profile->values.channel_bw_hz : -1;
-    out->tone_filter =
-        dsd_scan_option_tone_summary(profile ? &profile->values : NULL, out->tone_list, sizeof(out->tone_list));
+    const dsd_scan_option_values* values = profile ? &profile->values : NULL;
+    out->tone_filter = dsd_scan_option_tone_summary(values, out->tone_list, sizeof out->tone_list);
+    dsd_scan_option_receive_summary_against(values, baseline, out->receive_summary, sizeof out->receive_summary);
 }
 
 int
 dsd_csv_inspect_channel_profiles(const char* path, void* context, dsd_csv_channel_profile_cb callback) {
+    return dsd_csv_inspect_channel_profiles_against(path, NULL, context, callback);
+}
+
+int
+dsd_csv_inspect_channel_profiles_against(const char* path, const struct dsd_scan_option_baseline* baseline,
+                                         void* context, dsd_csv_channel_profile_cb callback) {
     if (!path || !callback) {
         return -1;
     }
@@ -1613,7 +1640,7 @@ dsd_csv_inspect_channel_profiles(const char* path, void* context, dsd_csv_channe
     if (result == 0) {
         for (int i = 0; i < state->lcn_freq_count; ++i) {
             dsd_csv_channel_profile row;
-            csv_describe_channel_profile(state, i, &row);
+            csv_describe_channel_profile(state, i, baseline, &row);
             callback(&row, context);
         }
     }

@@ -2,7 +2,10 @@
 #include <assert.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdio.h>
 #include <string.h>
 #include "../../src/app_control/trunk_scan_document_internal.h"
@@ -55,7 +58,7 @@ test_target_squelch(const char* path) {
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
     assert(count == 4 && err[0] == '\0');
     squelch_targets seen = {0};
-    const dsd_app_scan_csv_callbacks callbacks = {collect_target, NULL, &seen};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_target, NULL, &seen, NULL};
     assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0);
     assert(seen.count == 4);
     assert(seen.squelch_set[0] && seen.squelch_db[0] == -60);
@@ -92,7 +95,7 @@ test_target_squelch(const char* path) {
                         "tower,am-conventional,118300000,,1500,1200,,--squelch auto+6\n");
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0 && count == 2);
     squelch_targets dynamic = {0};
-    const dsd_app_scan_csv_callbacks dynamic_callbacks = {collect_target, NULL, &dynamic};
+    const dsd_app_scan_csv_callbacks dynamic_callbacks = {collect_target, NULL, &dynamic, NULL};
     assert(dsd_app_scan_csv_inspect(path, NULL, 0, &dynamic_callbacks, err, sizeof err) == 0);
     assert(dynamic.count == 2 && dynamic.squelch_set[0] && dynamic.squelch_mode[0] == DSD_SQUELCH_MODE_NOISE
            && dynamic.squelch_margin[0] == 9);
@@ -140,7 +143,7 @@ test_nfm_targets(const char* path) {
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
     assert(count == 3 && err[0] == '\0');
     nfm_targets seen = {0};
-    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen, NULL};
     assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0);
     assert(seen.count == 3);
     assert(strcmp(seen.type[0], "nfm-conventional") == 0 && seen.bandwidth_hz[0] == 12500);
@@ -170,7 +173,7 @@ test_am_targets(const char* path) {
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
     assert(count == 4 && err[0] == '\0');
     nfm_targets seen = {0};
-    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen, NULL};
     assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0);
     assert(seen.count == 4);
     assert(strcmp(seen.type[0], "am-conventional") == 0 && seen.bandwidth_hz[0] == 8333);
@@ -233,7 +236,7 @@ test_nfm_target_tone_lists(const char* path) {
     /* The target preview names each nfm target's own policy with its list as displayed, and nothing for a target that
      * runs the configured policy, an am target's included. */
     nfm_targets seen = {0};
-    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen, NULL};
     assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0 && seen.count == 4);
     assert(seen.tone_filter[0] == DSD_TONE_FILTER_ALLOW && strcmp(seen.tone_list[0], "100.0 Hz/D023N") == 0);
     assert(seen.tone_filter[1] == DSD_TONE_FILTER_BLOCK && strcmp(seen.tone_list[1], "67.0 Hz/D047I") == 0);
@@ -366,6 +369,173 @@ test_bundle_checks_each_file_once(void) {
     assert(dsd_test_remove_temp_dir(dir, files) == 0);
 }
 
+/* --- Issue #637: options cells a spreadsheet quoted --- */
+
+typedef struct {
+    size_t count;
+    char path[4][64];
+} csv_references;
+
+static void
+collect_reference(const dsd_app_scan_csv_reference* reference, void* context) {
+    csv_references* seen = (csv_references*)context;
+    if (seen->count < 4) {
+        DSD_SNPRINTF(seen->path[seen->count], sizeof seen->path[seen->count], "%s", reference->path);
+    }
+    seen->count++;
+}
+
+static void
+read_file_in(const char* dir, const char* name, char* out, size_t size) {
+    char path[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(path, sizeof path, "%s/%s", dir, name);
+    FILE* fp = dsd_fopen_private(path, "rb");
+    assert(fp);
+    const size_t n = fread(out, 1, size - 1, fp);
+    out[n] = '\0';
+    fclose(fp);
+}
+
+/* Inspect @p name in @p dir (a channel map when @p channel_map), expect its one companion @p before, rewrite it to
+   keys.csv as @p rewritten, and expect the rewritten file to name keys.csv in place of it and to hold @p cell. */
+static void
+check_quoted_rewrite(const char* dir, const char* name, int channel_map, const char* before, const char* rewritten,
+                     const char* cell) {
+    char path[DSD_TEST_PATH_MAX];
+    char destination[DSD_TEST_PATH_MAX];
+    char err[256] = {0};
+    DSD_SNPRINTF(path, sizeof path, "%s/%s", dir, name);
+    DSD_SNPRINTF(destination, sizeof destination, "%s/%s", dir, rewritten);
+    csv_references seen = {0};
+    const dsd_app_scan_csv_callbacks callbacks = {NULL, collect_reference, &seen, NULL};
+    assert(dsd_app_scan_csv_inspect(path, NULL, channel_map, &callbacks, err, sizeof err) == 0);
+    assert(seen.count == 1 && strcmp(seen.path[0], before) == 0);
+    const dsd_app_scan_csv_replacement replacement = {0, "keys.csv"};
+    assert(dsd_app_scan_csv_rewrite(path, NULL, channel_map, destination, &replacement, 1, err, sizeof err) == 0);
+    char text[1024];
+    read_file_in(dir, rewritten, text, sizeof text);
+    if (!strstr(text, cell)) {
+        DSD_FPRINTF(stderr, "rewritten %s:\n%s\nwant cell %s\n", name, text, cell);
+        assert(0);
+    }
+    seen.count = 0;
+    assert(dsd_app_scan_csv_inspect(destination, NULL, channel_map, &callbacks, err, sizeof err) == 0);
+    assert(seen.count == 1 && strcmp(seen.path[0], "keys.csv") == 0);
+}
+
+/* A spreadsheet saves an options cell that holds a double quote wrapped in double quotes, each quote inside doubled.
+ * Both loaders take it, the preview and the companion inspector read it as the loaders do, and a companion rewrite
+ * leaves a cell both loaders still take, naming the new file. */
+static void
+test_quoted_options_cells(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "trunk-scan-quoted-"));
+    write_file_in(dir, "old keys.csv", "id,value\n01,ABCDEF0123\n");
+    write_file_in(dir, "keys.csv", "id,value\n01,ABCDEF0123\n");
+    write_file_in(dir, "targets.csv",
+                  "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                  "Mall,dmr-conventional,464125000,,500,,,\"--dcc-name \"\"7=St Mary's\"\" -K \"\"old keys.csv\"\"\"\n"
+                  "20R Local,nfm-conventional,462675000,,500,500,,"
+                  "\"--tone-allow 97.4/141.3 --tone-name \"\"141.3=20R Traveler\"\"\"\n");
+    write_file_in(dir, "map.csv",
+                  "channel,frequency,name,mode,options\n"
+                  "1,464125000,Mall,dmr,\"--dcc-name \"\"7=St Mary's\"\" -K \"\"old keys.csv\"\"\"\n");
+    char path[DSD_TEST_PATH_MAX];
+    int count = 0;
+    char err[256] = {0};
+    DSD_SNPRINTF(path, sizeof path, "%s/targets.csv", dir);
+    assert(dsd_app_trunk_scan_validate_bundle(path, &count, NULL, err, sizeof err) == 0 && count == 2);
+    DSD_SNPRINTF(path, sizeof path, "%s/map.csv", dir);
+    dsd_csv_validation stats = {0};
+    assert(dsd_csv_validate_chan_file(path, &stats) == 0 && stats.accepted == 1 && stats.skipped == 0);
+
+    check_quoted_rewrite(dir, "targets.csv", 0, "old keys.csv", "targets2.csv",
+                         "\"--dcc-name \"\"7=St Mary's\"\" -K keys.csv\"");
+    check_quoted_rewrite(dir, "map.csv", 1, "old keys.csv", "map2.csv",
+                         "\"--dcc-name \"\"7=St Mary's\"\" -K keys.csv\"");
+    DSD_SNPRINTF(path, sizeof path, "%s/targets2.csv", dir);
+    assert(dsd_app_trunk_scan_validate_bundle(path, &count, NULL, err, sizeof err) == 0 && count == 2);
+    DSD_SNPRINTF(path, sizeof path, "%s/map2.csv", dir);
+    DSD_MEMSET(&stats, 0, sizeof stats);
+    assert(dsd_csv_validate_chan_file(path, &stats) == 0 && stats.accepted == 1 && stats.skipped == 0);
+
+    const char* const files[] = {"old keys.csv", "keys.csv", "targets.csv", "map.csv",
+                                 "targets2.csv", "map2.csv", NULL};
+    assert(dsd_test_remove_temp_dir(dir, files) == 0);
+}
+
+/* --- Issue #637: previews note service names the filters reject --- */
+
+typedef struct {
+    size_t count;
+    char summary[4][256];
+} receive_summaries;
+
+static void
+collect_receive_summary(const dsd_app_scan_csv_target* target, void* context) {
+    receive_summaries* seen = (receive_summaries*)context;
+    if (seen->count < 4) {
+        DSD_SNPRINTF(seen->summary[seen->count], sizeof seen->summary[seen->count], "%s", target->receive_summary);
+    }
+    seen->count++;
+}
+
+static void
+collect_channel_summary(const dsd_csv_channel_profile* row, void* context) {
+    receive_summaries* seen = (receive_summaries*)context;
+    if (seen->count < 4) {
+        DSD_SNPRINTF(seen->summary[seen->count], sizeof seen->summary[seen->count], "%s", row->receive_summary);
+    }
+    seen->count++;
+}
+
+/* A row's names are judged over the baseline the frontend passes (the configured policies): one the configured filter
+ * rejects is noted, one the row lets through is not; without a baseline only the row's own filters count. */
+static void
+test_previews_note_unreachable_names(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "trunk-scan-names-"));
+    write_file_in(dir, "targets.csv",
+                  "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                  "Mall,dmr-conventional,464125000,,500,,,--dcc-name 7=Hospital\n"
+                  "Open,dmr-conventional,464150000,,500,,,--no-dcc-filter --dcc-name 7=Hospital\n"
+                  "Own,dmr-conventional,464175000,,500,,,--dcc-block 7 --dcc-name 7=Hospital\n");
+    write_file_in(dir, "map.csv",
+                  "channel,frequency,name,mode,options\n"
+                  "1,464125000,Mall,dmr,--dcc-name 7=Hospital\n"
+                  "2,464150000,Open,dmr,--no-dcc-filter --dcc-name 7=Hospital\n"
+                  "3,464175000,Own,dmr,--dcc-block 7 --dcc-name 7=Hospital\n");
+    dsd_scan_option_baseline configured;
+    DSD_MEMSET(&configured, 0, sizeof configured);
+    unsigned int seen_options = 0;
+    char err[256] = {0};
+    assert(dsd_receive_option_apply(&configured.receive, &seen_options, "--dcc-block", "7", err, sizeof err) == 0);
+    static const char note[] = "never shown (filtered out): DCC 7";
+    char path[DSD_TEST_PATH_MAX];
+
+    DSD_SNPRINTF(path, sizeof path, "%s/targets.csv", dir);
+    receive_summaries targets = {0};
+    dsd_app_scan_csv_callbacks callbacks = {collect_receive_summary, NULL, &targets, &configured};
+    assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0 && targets.count == 3);
+    assert(strstr(targets.summary[0], note) && !strstr(targets.summary[1], note) && strstr(targets.summary[2], note));
+    DSD_MEMSET(&targets, 0, sizeof targets);
+    callbacks.baseline = NULL;
+    assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0 && targets.count == 3);
+    assert(!strstr(targets.summary[0], note) && !strstr(targets.summary[1], note) && strstr(targets.summary[2], note));
+
+    DSD_SNPRINTF(path, sizeof path, "%s/map.csv", dir);
+    receive_summaries rows = {0};
+    assert(dsd_csv_inspect_channel_profiles_against(path, &configured, &rows, collect_channel_summary) == 0);
+    assert(rows.count == 3);
+    assert(strstr(rows.summary[0], note) && !strstr(rows.summary[1], note) && strstr(rows.summary[2], note));
+    DSD_MEMSET(&rows, 0, sizeof rows);
+    assert(dsd_csv_inspect_channel_profiles(path, &rows, collect_channel_summary) == 0 && rows.count == 3);
+    assert(!strstr(rows.summary[0], note) && !strstr(rows.summary[1], note) && strstr(rows.summary[2], note));
+
+    const char* const files[] = {"targets.csv", "map.csv", NULL};
+    assert(dsd_test_remove_temp_dir(dir, files) == 0);
+}
+
 int
 main(void) {
     int count = 99;
@@ -397,6 +567,8 @@ main(void) {
     test_nfm_target_tone_lists(path);
     test_trunk_scan_examples_validate();
     test_bundle_checks_each_file_once();
+    test_quoted_options_cells();
+    test_previews_note_unreachable_names();
     remove(path);
     puts("APP_CONTROL_TRUNK_SCAN_VALIDATE ok");
     return 0;

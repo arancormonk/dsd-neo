@@ -7,6 +7,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>
@@ -36,6 +37,17 @@ test_init_opts_clears_trunk_scan_targets_csv(void) {
     if (opts.iq_replay_center_freq != 0U) {
         DSD_FPRINTF(stderr, "initOpts did not clear iq_replay_center_freq\n");
         return 22;
+    }
+    /* Issue #637: no receive filter and an empty naming table, whatever the storage held before. */
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (opts.receive.filters[kind].enabled != 0) {
+            DSD_FPRINTF(stderr, "initOpts left receive filter %d enabled\n", kind);
+            return 23;
+        }
+    }
+    if (opts.receive.names.count != 0U) {
+        DSD_FPRINTF(stderr, "initOpts left a receive naming table\n");
+        return 24;
     }
     return 0;
 }

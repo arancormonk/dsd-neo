@@ -145,8 +145,10 @@ __wrap_getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_s
 }
 
 static void
-count_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
-                      const char* access) {
+count_search_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                      uint32_t source, const char* access) {
+    (void)sync;
+    (void)slot;
     (void)state;
     (void)target;
     (void)source;

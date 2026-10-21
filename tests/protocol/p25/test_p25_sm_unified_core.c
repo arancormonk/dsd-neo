@@ -759,8 +759,10 @@ test_raw_ptt_markers_are_slot_local(void) {
 static int g_conventional_holds;
 
 static void
-observe_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
-                              int is_private, int encrypted, int data_call) {
+observe_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot, uint32_t target,
+                              uint32_t source, int is_private, int encrypted, int data_call) {
+    (void)protocol;
+    (void)slot;
     dsd_tg_policy_decision decision;
     const int rc =
         is_private ? dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision)

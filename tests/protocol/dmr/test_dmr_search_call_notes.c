@@ -637,7 +637,10 @@ static int scan_reports;
 static uint32_t scan_target;
 
 static void
-capture_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source, const char* access) {
+capture_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target, uint32_t source,
+                 const char* access) {
+    (void)sync;
+    (void)slot;
     (void)state;
     (void)access;
     assert(strcmp(protocol, "DMR") == 0);

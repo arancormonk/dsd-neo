@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -370,6 +371,9 @@ interactive_maybe_import_channel_map(dsd_opts* opts, dsd_state* state) {
     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
     if (csvChanImport(opts, state) == 0) {
         LOG_INFO("NOTICE: Imported channel map from %s\n", opts->chan_in_file);
+        dsd_scan_option_baseline configured;
+        dsd_scan_option_baseline_configured(opts, state, &configured);
+        csvChanWarnUnreachableNames(state, &configured);
     } else {
         LOG_WARN("WARNING: Failed to import channel map from %s\n", opts->chan_in_file);
     }

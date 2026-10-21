@@ -7,6 +7,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdio.h>
@@ -48,6 +49,168 @@ check_file_spans(void) {
     spans.count = 0;
     assert(dsd_scan_options_visit_files("-K", &spans, collect_file_span) == -1 && spans.count == 0);
     assert(dsd_scan_options_visit_files("-K a.csv -K", &spans, collect_file_span) == -1 && spans.count == 1);
+}
+
+/* --- Issue #637: spreadsheet-quoted options cells --- */
+
+/* Parse a cell as a loader does: @p legacy is what the loader has always parsed, @p cell the trimmed cell. */
+static int
+parse_cell(const char* legacy, const char* cell, unsigned int mode, dsd_scan_options* out) {
+    const size_t length = strlen(cell);
+    const int wrapped = length >= 2 && cell[0] == '"' && cell[length - 1] == '"';
+    char error[192];
+    return dsd_scan_options_parse_cell(legacy, wrapped ? cell + 1 : NULL, wrapped ? length - 2 : 0, mode, 1, out, error,
+                                       sizeof(error));
+}
+
+/* A spreadsheet saves a cell holding a double quote wrapped in double quotes, each quote inside doubled. Both loaders
+ * read such a cell's content; every cell either loader accepted before keeps its meaning. */
+static void
+check_csv_quoted_cells(void) {
+    dsd_scan_options parsed;
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    /* A trunk-scan target's loader parses the cell without its outer quotes; a channel map's parses it as it is. */
+    static const char quoted[] = "\"--dcc-allow 4/7 --dcc-name \"\"7=St Mary's\"\"\"";
+    char interior[sizeof quoted];
+    DSD_SNPRINTF(interior, sizeof interior, "%s", quoted + 1);
+    interior[strlen(interior) - 1] = '\0';
+    assert(parse_cell(interior, quoted, DSD_SCAN_MODE_DMR, &parsed) == 0);
+    assert(parsed.values.receive.names.count == 1
+           && strcmp(parsed.values.receive.names.rules[0].name, "St Mary's") == 0);
+    assert(parse_cell(quoted, quoted, DSD_SCAN_MODE_DMR, &parsed) == 0);
+    assert(parsed.values.receive.names.count == 1
+           && strcmp(parsed.values.receive.names.rules[0].name, "St Mary's") == 0);
+    /* The issue's NFM row saved by a spreadsheet. */
+    static const char tone[] =
+        "\"--squelch noise+3 --nfm-bandwidth-hz 8000 --tone-allow 97.4/141.3 --tone-name \"\"141.3=20R Traveler\"\"\"";
+    assert(parse_cell(tone, tone, DSD_SCAN_MODE_NFM, &parsed) == 0);
+    assert(parsed.values.receive.names.count == 1
+           && strcmp(parsed.values.receive.names.rules[0].name, "20R Traveler") == 0);
+    /* A wrapped cell with no quote inside: the channel map took it as one token before and refused it. */
+    assert(parse_cell("\"--dcc-allow 4/7\"", "\"--dcc-allow 4/7\"", DSD_SCAN_MODE_DMR, &parsed) == 0);
+    assert(parsed.values.receive.filters[1].enabled);
+
+    /* Cells the loaders accepted before keep their reading: the channel map's one grouped token (a name with a
+     * space), and a trunk-scan target's path with two literal quotes inside single quotes. */
+    static const char grouped[] = "\"--dcc-name=7=Hospital West\"";
+    assert(!dsd_scan_options_cell_csv_quoted(grouped, grouped + 1, strlen(grouped) - 2));
+    assert(parse_cell(grouped, grouped, DSD_SCAN_MODE_DMR, &parsed) == 0);
+    assert(strcmp(parsed.values.receive.names.rules[0].name, "Hospital West") == 0);
+    static const char literal[] = "-K 'a\"\"b.csv'";
+    assert(!dsd_scan_options_cell_csv_quoted(literal, literal, strlen(literal)));
+    assert(parse_cell(literal, "\"-K 'a\"\"b.csv'\"", DSD_SCAN_MODE_DMR, &parsed) == 0);
+    assert(strcmp(parsed.hex_file, "a\"\"b.csv") == 0);
+    /* Malformed cells are still refused: an undoubled quote inside, and an unbalanced decoded quote. */
+    assert(parse_cell("\"--dcc-name \"7=A\" x\"", "\"--dcc-name \"7=A\" x\"", DSD_SCAN_MODE_DMR, &parsed) != 0);
+    assert(parse_cell("\"--dcc-name \"\"7=A\"", "\"--dcc-name \"\"7=A\"", DSD_SCAN_MODE_DMR, &parsed) != 0);
+    assert(!dsd_scan_options_cell_csv_quoted("x", NULL, 0));
+
+    /* File operands of a quoted cell are reported at their place in the cell's content, doubled quotes included. */
+    static const char keys[] = "\"--dcc-name \"\"7=A B\"\" -K \"\"old file.csv\"\" --dmr-tg-key-csv=map.csv\"";
+    const char* content = keys + 1;
+    const size_t length = strlen(keys) - 2;
+    file_spans spans = {0};
+    int quoted_cell = 0;
+    assert(dsd_scan_options_visit_cell_files(keys, content, length, &spans, collect_file_span, &quoted_cell) == 0);
+    assert(quoted_cell == 1 && spans.count == 2);
+    assert(strcmp(spans.paths[0], "old file.csv") == 0 && !spans.whole[0]);
+    assert(spans.lengths[0] == strlen("\"\"old file.csv\"\"")
+           && memcmp(content + spans.offsets[0], "\"\"old file.csv\"\"", spans.lengths[0]) == 0);
+    assert(strcmp(spans.paths[1], "map.csv") == 0 && spans.whole[1]);
+    assert(memcmp(content + spans.offsets[1], "--dmr-tg-key-csv=map.csv", spans.lengths[1]) == 0
+           && spans.offsets[1] + spans.lengths[1] == length);
+    /* Any other cell is visited as before. */
+    spans.count = 0;
+    assert(dsd_scan_options_visit_cell_files("-K a.csv", NULL, 0, &spans, collect_file_span, &quoted_cell) == 0);
+    assert(quoted_cell == 0 && spans.count == 1 && spans.offsets[0] == 3);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
+/* A row's service names judged over the configured policies (issue #637): each filter kind and the naming table the
+ * row sets replace the configured ones, and an nfm row's tone policy the configured tone filter. */
+static void
+check_unreachable_row_names(void) {
+    dsd_scan_options row;
+    char error[192];
+    char out[128];
+    dsd_scan_option_baseline configured;
+    DSD_MEMSET(&configured, 0, sizeof(configured));
+    DSD_MEMSET(&row, 0, sizeof(row));
+    unsigned int seen = 0;
+    assert(dsd_receive_option_apply(&configured.receive, &seen, "--dcc-block", "7", error, sizeof(error)) == 0);
+    /* An inherited filter strands the row's own name; alone, the row strands nothing. */
+    assert(dsd_scan_options_parse("--dcc-name 7=Hospital", DSD_SCAN_MODE_DMR, 1, &row, error, sizeof(error)) == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, &configured, out, sizeof(out)) == 1);
+    assert(strcmp(out, "DCC 7") == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, NULL, out, sizeof(out)) == 0);
+    /* The row's explicit disable lets the code, and its name, through. */
+    assert(dsd_scan_options_parse("--no-dcc-filter --dcc-name 7=Hospital", DSD_SCAN_MODE_DMR, 1, &row, error,
+                                  sizeof(error))
+           == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, &configured, out, sizeof(out)) == 0);
+    /* The row's own filter strands an inherited name. */
+    DSD_MEMSET(&configured, 0, sizeof(configured));
+    assert(dsd_receive_names_parse("--dcc-name 7=Hospital", &configured.receive.names, error, sizeof(error)) == 0);
+    assert(dsd_scan_options_parse("--dcc-allow 2/14", DSD_SCAN_MODE_DMR, 1, &row, error, sizeof(error)) == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, &configured, out, sizeof(out)) == 1);
+    assert(dsd_scan_option_unreachable_names(NULL, &configured, out, sizeof(out)) == 0);
+    /* The row's naming table replaces the inherited one whole. */
+    assert(dsd_scan_options_parse("--dcc-allow 2/14 --dcc-name 14=Municipality", DSD_SCAN_MODE_DMR, 1, &row, error,
+                                  sizeof(error))
+           == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, &configured, out, sizeof(out)) == 0);
+
+    /* Tone names: the configured tone filter, or the nfm row's own policy in its place. */
+    DSD_MEMSET(&configured, 0, sizeof(configured));
+    configured.tone_filter = DSD_TONE_FILTER_ALLOW;
+    assert(dsd_tone_set_parse("97.4", &configured.tone_set, NULL, 0) == 0);
+    assert(dsd_scan_options_parse("--tone-name '141.3=20R Traveler'", DSD_SCAN_MODE_NFM, 1, &row, error, sizeof(error))
+           == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, &configured, out, sizeof(out)) == 1);
+    assert(strcmp(out, "CTCSS 141.3") == 0);
+    assert(dsd_scan_options_parse("--tone-allow 97.4/141.3 --tone-name '141.3=20R Traveler'", DSD_SCAN_MODE_NFM, 1,
+                                  &row, error, sizeof(error))
+           == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, &configured, out, sizeof(out)) == 0);
+    assert(dsd_scan_options_parse("--no-tone-filter --tone-name '141.3=20R Traveler'", DSD_SCAN_MODE_NFM, 1, &row,
+                                  error, sizeof(error))
+           == 0);
+    assert(dsd_scan_option_unreachable_names(&row.values, &configured, out, sizeof(out)) == 0);
+
+    /* The preview summary says so; without stranded names it reads as before. */
+    assert(
+        dsd_scan_options_parse("--dcc-block 7 --dcc-name 7=Hospital", DSD_SCAN_MODE_DMR, 1, &row, error, sizeof(error))
+        == 0);
+    char summary[256];
+    char plain[256];
+    dsd_scan_option_receive_summary_against(&row.values, NULL, summary, sizeof(summary));
+    dsd_scan_option_receive_summary(&row.values, plain, sizeof(plain));
+    assert(strncmp(summary, plain, strlen(plain)) == 0
+           && strcmp(summary + strlen(plain), "; never shown (filtered out): DCC 7") == 0);
+    assert(dsd_scan_options_parse("--dcc-name 7=Hospital", DSD_SCAN_MODE_DMR, 1, &row, error, sizeof(error)) == 0);
+    dsd_scan_option_receive_summary_against(&row.values, NULL, summary, sizeof(summary));
+    dsd_scan_option_receive_summary(&row.values, plain, sizeof(plain));
+    assert(strcmp(summary, plain) == 0);
+
+    /* A long summary and a long list: the note keeps whole identifiers and its overflow mark; the summary gives way. */
+    char options[1024] =
+        "--slot-allow 1 --slot-block 2 --nac-allow 100/101/102/103/104/105/106/107/108/109/10A/10B/10C/"
+        "10D/10E/10F --nac-block 100/101/102/103/104/105/106/107/108/109/10A/10B/10C/10D/10E/10F";
+    for (unsigned int nac = 0x100; nac <= 0x10F; nac++) {
+        const size_t used = strlen(options);
+        DSD_SNPRINTF(options + used, sizeof(options) - used, " --nac-name %03X=N%03X", nac, nac);
+    }
+    assert(dsd_scan_options_parse(options, DSD_SCAN_MODE_P25, 1, &row, error, sizeof(error)) == 0);
+    dsd_scan_option_receive_summary_against(&row.values, NULL, summary, sizeof(summary));
+    const char* note = strstr(summary, "; never shown (filtered out): NAC 100, ");
+    assert(note && strlen(summary) < sizeof(summary));
+    const size_t tail = strlen(summary);
+    assert(tail > 5 && strcmp(summary + tail - 5, ", ...") == 0);
+    for (const char* entry = note + strlen("; never shown (filtered out): "); strncmp(entry, "...", 3) != 0;) {
+        assert(strncmp(entry, "NAC 10", 6) == 0 && strncmp(entry + 7, ", ", 2) == 0);
+        entry += 9;
+    }
+    DSD_SECURE_ZERO(&row, sizeof(row));
 }
 
 /* --- Issue #521: per-row and per-target squelch (--squelch-db) --- */
@@ -693,6 +856,19 @@ check_tone_list_split(void) {
         {"--tone-allow", "67.0", 1, NULL},
         {"--tone-allow 'unterminated", "67.0", 1, NULL},
         {"", "67.0", 1, NULL},
+        /* Receive filter lists (issue #637) are judged by the values their filter takes, in any column. */
+        {"--nac-allow 293", "370/371", 0, "--nac-allow: use / between entries, not commas"},
+        {"--nac-allow 293", "370", 1, "--nac-allow: use / between entries, not commas"},
+        /* A lone number within the header is the next column's own (a gain of 7 after a DCC list). */
+        {"--dcc-allow 4", "7", 0, NULL},
+        {"--dcc-allow 4", "7 --slot-block 2", 0, "--dcc-allow: use / between entries, not commas"},
+        {"--dcc-block=4", "7/9 --slot-block 2", 0, "--dcc-block: use / between entries, not commas"},
+        {"--ran-allow 1", "64", 0, NULL},
+        {"--nac-allow 293", "bandplan.csv", 0, NULL},
+        {"--dcc-allow 4", "Fire", 1, "--dcc-allow: use / between entries, not commas"},
+        /* A service name's rest cannot be told from a column's own text: only past the header. */
+        {"--dcc-name 7=Hospital", "West", 0, NULL},
+        {"--dcc-name 7=Hospital", "West", 1, "--dcc-name: commas are not supported in service names"},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -738,6 +914,8 @@ main(void) {
     check_tone_summary();
     check_tone_list_split();
     check_file_spans();
+    check_csv_quoted_cells();
+    check_unreachable_row_names();
     check_squelch_option();
     check_squelch_setting_option();
     check_nfm_row_accepts_analog_options();

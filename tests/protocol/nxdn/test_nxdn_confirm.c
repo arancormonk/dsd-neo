@@ -55,8 +55,10 @@ count_call_note(const dsd_state* state, uint8_t slot) {
 }
 
 static void
-count_search_report(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
+count_search_report(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target, uint32_t source,
                     const char* access) {
+    (void)sync;
+    (void)slot;
     (void)state;
     (void)protocol;
     (void)target;

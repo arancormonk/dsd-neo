@@ -234,6 +234,8 @@ Item {
                 detail: model.detail,
                 freqHz: model.freqHz,
                 accessCode: model.accessCode,
+                serviceName: model.serviceName,
+                receivedTone: model.receivedTone,
                 accessCodeText: model.accessCodeText
             })
         }

@@ -1497,6 +1497,7 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
 
 static inline void
 frame_sync_prepare_dmr_sync(frame_sync_match_ctx* ctx) {
+    ctx->state->dmr_dm_sync_slot = 0U;
     frame_sync_set_basic_lock(ctx);
     frame_sync_maybe_force_dmr_gfsk(ctx->opts, ctx->state);
     dmr_set_symbol_timing(ctx->opts, ctx->state);
@@ -1583,6 +1584,7 @@ frame_sync_try_dmr_dm_ts1_data(frame_sync_match_ctx* ctx) {
     }
 
     frame_sync_prepare_dmr_sync(ctx);
+    state->dmr_dm_sync_slot = 1U; /* The direct-mode sync word names the slot. */
     state->directmode = 1;
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
@@ -1610,6 +1612,7 @@ frame_sync_try_dmr_dm_ts2_data(frame_sync_match_ctx* ctx) {
     }
 
     frame_sync_prepare_dmr_sync(ctx);
+    state->dmr_dm_sync_slot = 2U; /* The direct-mode sync word names the slot. */
     state->directmode = 1;
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
@@ -1667,6 +1670,7 @@ frame_sync_try_dmr_dm_ts1_voice(frame_sync_match_ctx* ctx) {
     }
 
     frame_sync_prepare_dmr_sync(ctx);
+    state->dmr_dm_sync_slot = 1U; /* The direct-mode sync word names the slot. */
     state->directmode = 1;
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {
@@ -1693,6 +1697,7 @@ frame_sync_try_dmr_dm_ts2_voice(frame_sync_match_ctx* ctx) {
     }
 
     frame_sync_prepare_dmr_sync(ctx);
+    state->dmr_dm_sync_slot = 2U; /* The direct-mode sync word names the slot. */
     state->directmode = 1;
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR ");
     if (opts->inverted_dmr == 0) {

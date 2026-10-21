@@ -88,6 +88,10 @@ int dsd_mbe_out_enabled(const dsd_opts* opts, int slot);
  * transmission on this carrier. The caller has already applied the frame's own output and record gates.
  */
 void dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format format, const char* bits);
+/** dsd_mbe_out_write() into file slot @p slot of a frame received on @p rx_slot, which the receive policy judges
+ * (issue #637): X2-TDMA records both of its slots in the one slot-1 file. */
+void dsd_mbe_out_write_rx(dsd_opts* opts, dsd_state* state, int slot, int rx_slot, dsd_mbe_out_format format,
+                          const char* bits);
 /** Close the captures in slot_mask that belong to synctype's owner, or that a caller attached (owner 0). */
 void dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype);
 void openWavOutFileLR(dsd_opts* opts, dsd_state* state);
@@ -111,6 +115,11 @@ SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, cons
 SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                       const char* dir, const Event_History_I* event_struct, time_t opened,
                                       int export_call);
+/**
+ * Close a conventional NFM call's recording that no longer has its history row (a teardown that skipped the call's
+ * own end) and publish it under the NFM name, without a service name or an rdio export.
+ */
+SNDFILE* close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);

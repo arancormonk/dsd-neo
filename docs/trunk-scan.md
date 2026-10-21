@@ -59,7 +59,7 @@ Column behavior:
 
 | Column | Required | Meaning |
 |--------|----------|---------|
-| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Keep it under 64 bytes. |
+| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](#receive-admission-and-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists, and in log messages. Keep it under 64 bytes. |
 | `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel, held on carrier) or `am-conventional` (one analog AM channel, held on carrier); see [Analog NFM and AM targets](#analog-nfm-and-am-targets). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
 | `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |
@@ -862,3 +862,32 @@ their own keys and DMR maps. Session defaults change beneath explicit target pro
 These live changes do not rewrite the saved profile or alter talkgroup exclusions.
 Legacy `-Y` rows support their configured per-row profiles; live target replacement
 is exposed for the trunk-scan coordinator's stable target IDs only.
+
+### Receive admission and names
+
+Targets accept compatible slot/DCC/RAN/NAC filters and service-name rules in `options`; see
+[CSV receive options](csv-formats.md#receive-filters-and-service-names). A target replaces each specified filter
+kind or its naming table and otherwise inherits global `[receive]` defaults. Rejected traffic is muted and creates
+no call events or recordings, and does not refresh activity holds. Control-channel acquisition remains possible;
+voice grants lacking destination access-code evidence have a bounded acquisition window, and a new voice channel gets
+a window of its own. A grant to a voice channel whose verified NAC or colour code the policy rejects is not followed
+again: each trunking context remembers the code it last verified on up to 16 voice frequencies, judged by the policy
+in force, so an edit that admits the code makes its grants followed again. Manual conventional-channel
+hold keeps a rejected channel selected and muted. A restored target must validate its received identifier again.
+Names reflect received services without changing the target ID or base channel label.
+
+One row can carry several services that share a frequency. Name each one by the identifier that tells it apart, as
+`value=Name` on the option for that identifier: `--dcc-name`, `--ran-name`, `--nac-name`, `--slot-name` or
+`--tone-name` (CTCSS or DCS). Traffic no name matches keeps the row's own label:
+
+```csv
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,keys_hex_csv,single_key_dec,single_key_hex,options,p25_bandplan_csv
+Mall,dmr-conventional,464125000,,500,,,auto,,,,,--dcc-name 7=Hospital --dcc-name 14=Municipality,
+20R Local,nfm-conventional,462675000,,500,500,,,,,,,--squelch noise+3 --nfm-bandwidth-hz 8000 --tone-allow 97.4/141.3 --tone-name '141.3=20R Traveler',
+```
+
+Here colour code 2 traffic shows as **Mall**, colour code 7 as **Hospital** and 14 as **Municipality**, and 20R Local
+hears 97.4 Hz and 141.3 Hz, naming the 141.3 Hz traffic **20R Traveler**. The name appears in the call display,
+the event history and the per-call recording's file name (`-P`, as an `_SVC_` component). Rdio-scanner exports carry
+it as the talkgroup label; conventional NFM has no talkgroup ID, so its calls are recorded as named WAVs but are not
+exported to Rdio. The CSV file itself is never changed. Quote a name with spaces in single or double quotes.

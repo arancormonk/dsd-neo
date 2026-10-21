@@ -417,6 +417,31 @@ test_keys(void) {
 }
 
 static void
+test_receive(void) {
+    assert(ok("{\"cmd\":\"receive_set\",\"params\":{\"kind\":3,\"enabled\":1,\"allow\":\"293/0x370\","
+              "\"block\":\"370\"}}"));
+    dsd_app_receive_payload receive = {0};
+    assert(g_last_id == DSD_APP_CMD_RECEIVE_SET && g_last_n == sizeof receive);
+    DSD_MEMCPY(&receive, g_last, sizeof receive);
+    assert(receive.kind == 3 && receive.enabled == 1);
+    assert(strcmp(receive.allow, "293/0x370") == 0 && strcmp(receive.block, "370") == 0);
+
+    assert(
+        ok("{\"cmd\":\"scan_row_edit\",\"params\":{\"scanner\":2,\"session\":7,\"row\":3,\"mode\":2,"
+           "\"field\":256,\"action\":1,\"receive\":{\"kind\":4,\"names\":\"--dcc-name \\\"7=Hospital West\\\"\"}}}"));
+    dsd_app_scan_row_edit_payload edit = {0};
+    assert(g_last_id == DSD_APP_CMD_SCAN_ROW_EDIT && g_last_n == sizeof edit);
+    DSD_MEMCPY(&edit, g_last, sizeof edit);
+    assert(edit.session == 7U && edit.row == 3 && edit.field == 256 && edit.receive.kind == 4);
+    assert(strcmp(edit.receive.names, "--dcc-name \"7=Hospital West\"") == 0);
+
+    refused("{\"cmd\":\"receive_set\",\"params\":{\"kind\":3,\"allow\":293}}");
+    refused("{\"cmd\":\"receive_set\",\"params\":{\"kind\":3,\"enabled\":true}}");
+    refused("{\"cmd\":\"scan_row_edit\",\"params\":{\"scanner\":2,\"session\":7,\"row\":3,\"field\":128,"
+            "\"action\":1,\"receive\":\"293\"}}");
+}
+
+static void
 test_structured(void) {
     assert(ok("{\"cmd\":\"rtl_set_sql_setting\",\"params\":{\"mode\":2,\"margin_db\":12}}"));
     dsd_app_squelch_setting_payload sql = {0};
@@ -500,6 +525,7 @@ main(void) {
     test_strings();
     test_talkgroup_edits();
     test_keys();
+    test_receive();
     test_structured();
     test_config();
     test_response_framing();

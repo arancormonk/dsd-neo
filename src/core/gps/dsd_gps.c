@@ -18,6 +18,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -64,7 +65,8 @@ gps_lrrp_row_allowed(const dsd_opts* opts, const dsd_state* state, int slot) {
     if (opts == NULL || opts->lrrp_file_output != 1) {
         return 0;
     }
-    return state == NULL || state->event_crc_invalid[slot & 1] == 0;
+    return state == NULL
+           || (state->event_crc_invalid[slot & 1] == 0 && dsd_receive_current_allows(opts, state, slot & 1));
 }
 
 static void

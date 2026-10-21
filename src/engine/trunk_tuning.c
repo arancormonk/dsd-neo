@@ -6,11 +6,13 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/analog_call.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -162,17 +164,13 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    const double ended_m = dsd_decode_now_mono_s();
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        // The state machine is leaving this voice channel by decision, not because the carrier
-        // went away, so nothing that follows on the control channel may be read as this
-        // transmission resuming. Spelled out rather than left to the default: the counterpart
-        // cleanup in no_carrier_clear_voice_tune_state() is reached only from noCarrier() and
-        // does classify its ends as sync loss, and the two must differ deliberately.
-        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
-            dsd_event_sync_slot(opts, state, (uint8_t)slot);
-        }
-    }
+    // A conventional NFM call ends first (dsd_engine_end_calls(), issue #637), before the release commits its row and
+    // the next target's state replaces it. The state machine is leaving this voice channel by decision, not because
+    // the carrier went away, so nothing that follows on the control channel may be read as this transmission
+    // resuming. Spelled out rather than left to the default: the counterpart cleanup in
+    // no_carrier_clear_voice_tune_state() is reached only from noCarrier() and does classify its ends as sync loss,
+    // and the two must differ deliberately.
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
     (void)dsd_recent_activity_clear_all(state);
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
@@ -571,6 +569,16 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->last_cc_sync_time_m = state->last_vc_sync_time_m;
     state->p25_last_vc_tune_time = state->last_vc_sync_time;
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
+    /* The voice channel proves its own access code (issue #637): the control channel's, still held until the channel's
+       first decode replaces it, must neither admit its traffic, nor name or split its calls, nor be remembered as its
+       code (dsd_receive_carriers_note()). Under a receive filter the confirmation gates restart with it; without one
+       only the published codes go, so decoding carries on as before. */
+    if (dsd_receive_filters_enabled(opts)) {
+        dsd_engine_forget_carrier_codes(state);
+    } else {
+        dsd_engine_forget_carrier_code_values(state);
+    }
+    state->receive_codes_fresh_freq = freq;
 }
 
 /* Send the demodulator and passband a rigctl peer is asked for under the settings in force (issues #526, #621), which

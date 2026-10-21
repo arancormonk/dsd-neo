@@ -30,8 +30,14 @@ dsd_signal_search_evidence_set(dsd_signal_search_evidence_fn fn) {
 void
 dsd_signal_search_note_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                 const char* access) {
+    dsd_signal_search_note_evidence_at(state, protocol, -1, -1, target, source, access);
+}
+
+void
+dsd_signal_search_note_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                                   uint32_t source, const char* access) {
     if (evidence_fn) {
-        evidence_fn(state, protocol, target, source, access);
+        evidence_fn(state, protocol, sync, slot, target, source, access);
     }
 }
 

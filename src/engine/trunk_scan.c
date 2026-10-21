@@ -10,9 +10,11 @@
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -22,6 +24,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #ifdef USE_RADIO
@@ -951,12 +954,14 @@ scan_copy_target_key_path(char* dest, size_t capacity, const char* resolved) {
  * for that row so nothing is derived twice or overwritten.
  */
 static int
-scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, char** fields, size_t count,
+scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, int wrapped, char** fields, size_t count,
                           const dsd_trunk_scan_row_parse* parse) {
     dsd_scan_options options = {0};
     char error[192] = "invalid row options";
-    int rc = dsd_scan_options_parse(text, (unsigned int)trunk_scan_target_mode(target->type),
-                                    trunk_scan_type_is_conventional(target->type), &options, error, sizeof(error));
+    /* A cell that was wrapped in double quotes may be a spreadsheet's quoting (dsd_scan_options_parse_cell()). */
+    int rc = dsd_scan_options_parse_cell(text, wrapped ? text : NULL, strlen(text),
+                                         (unsigned int)trunk_scan_target_mode(target->type),
+                                         trunk_scan_type_is_conventional(target->type), &options, error, sizeof(error));
     if (!rc) {
         rc = dsd_scan_options_merge_keys(&options, scan_optional_field(fields, count, parse->keys_hex_idx),
                                          scan_optional_field(fields, count, parse->keys_dec_idx),
@@ -1035,9 +1040,9 @@ scan_parse_target_key_paths(dsd_trunk_scan_target* target, char** fields, size_t
  * list owns the only surviving copy. */
 static int
 scan_parse_target_secrets(dsd_trunk_scan_target* target, char** fields, size_t count,
-                          const dsd_trunk_scan_row_parse* parse, const char* options_s) {
+                          const dsd_trunk_scan_row_parse* parse, const char* options_s, int options_wrapped) {
     if (options_s[0] != '\0') {
-        return scan_parse_target_options(target, options_s, fields, count, parse);
+        return scan_parse_target_options(target, options_s, options_wrapped, fields, count, parse);
     }
     return scan_parse_target_direct_keys(target, parse, scan_optional_field(fields, count, parse->single_key_hex_idx),
                                          scan_optional_field(fields, count, parse->single_key_dec_idx));
@@ -1063,6 +1068,18 @@ scan_check_options_split(const dsd_trunk_scan_row_parse* parse, char** fields, s
     return -1;
 }
 
+/* Whether field @p idx is wrapped in double quotes, which scan_optional_field() strips: the options cell may then be a
+   spreadsheet's quoting (dsd_scan_options_parse_cell()). */
+static int
+scan_field_wrapped(char** fields, size_t count, int idx) {
+    if (idx < 0 || (size_t)idx >= count) {
+        return 0;
+    }
+    const char* cell = scan_trim(fields[idx]);
+    const size_t length = strlen(cell);
+    return length >= 2 && cell[0] == '"' && cell[length - 1] == '"';
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -1078,6 +1095,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
 
     const char* modulation_s = scan_optional_field(fields, field_count, parse->modulation_idx);
     const char* rtl_gain_s = scan_optional_field(fields, field_count, parse->rtl_gain_idx);
+    const int options_wrapped = scan_field_wrapped(fields, field_count, parse->options_idx);
     const char* options_s = scan_optional_field(fields, field_count, parse->options_idx);
 
     dsd_trunk_scan_target target;
@@ -1121,7 +1139,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         scan_set_error(parse->err, parse->err_sz, "out of memory loading trunk scan targets");
         return -1;
     }
-    if (scan_parse_target_secrets(&target, fields, field_count, parse, options_s) != 0) {
+    if (scan_parse_target_secrets(&target, fields, field_count, parse, options_s, options_wrapped) != 0) {
         DSD_SECURE_ZERO(&target.single_key_scalars, sizeof(target.single_key_scalars));
         return -1;
     }
@@ -2009,6 +2027,13 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
         return;
     }
     trunk_scan_restore_snapshot(state, &rt->snapshot);
+    state->nac = 0;
+    state->p2_cc_verified = 0;
+    state->dmr_color_code = 16;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
+    state->nxdn_last_ran = (unsigned int)-1;
+    state->nxdn_last_ran_stand_in = 0;
     // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding.
     // Keep it in the raw snapshot only for rollback to a carrier that a failed switch never left (issue #657).
     DSD_MEMSET(state->dmr_le_vendor, 0, sizeof(state->dmr_le_vendor));
@@ -2139,9 +2164,9 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
     state->scan_row_index = (int32_t)coord->active;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN;
     state->scan_row_editable =
-        (uint8_t)dsd_scan_row_edit_fields(trunk_scan_target_mode(rt->target.type), coord->gain_editable);
-    state->scan_row_edited = (uint8_t)dsd_scan_row_edit_fields_edited(&rt->edit);
-    state->scan_row_listed = (uint8_t)dsd_scan_row_edit_fields_listed(listed, rt->target.rtl_gain_is_set);
+        (uint16_t)dsd_scan_row_edit_fields(trunk_scan_target_mode(rt->target.type), coord->gain_editable);
+    state->scan_row_edited = (uint16_t)dsd_scan_row_edit_fields_edited(&rt->edit);
+    state->scan_row_listed = (uint16_t)dsd_scan_row_edit_fields_listed(listed, rt->target.rtl_gain_is_set);
 }
 
 // A user purge clears the live ledger; every parked target keeps its own copy,
@@ -3267,9 +3292,18 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
     const int check_rate_hz = trunk_scan_analog_check_rate(opts, state);
     dsd_engine_scan_skipped skipped = {0};
     int nfm_targets = 0;
+    dsd_scan_option_baseline configured;
+    dsd_scan_option_baseline_configured(opts, state, &configured);
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
         nfm_targets |= trunk_scan_target_mode(target->type) == DSD_SCAN_MODE_NFM;
+        /* A service name the target's filters, or the configured ones it inherits, reject never shows (issue #637). */
+        char names[160];
+        if (dsd_scan_option_unreachable_names(&target->row_options, &configured, names, sizeof names) > 0) {
+            LOG_WARN("WARNING: Trunk scan target '%s': service names that never show, because the receive filters "
+                     "reject their traffic: %s\n",
+                     target->id, names);
+        }
         if (!trunk_scan_type_is_analog(target->type)) {
             if (opts->audio_in_type != AUDIO_IN_RTL && (target->row_options.present & DSD_SCAN_OPT_SQUELCH)) {
                 LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
@@ -3758,11 +3792,36 @@ trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     return 1;
 }
 
+int
+dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->active >= coord->count) {
+        return 0;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    const double now_m = trunk_scan_now_m();
+    return trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
+           && !trunk_scan_activity_hold_running(opts, rt, now_m)
+           && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m)
+           && trunk_scan_rejection_has_alternate(opts, state, coord, now_m);
+}
+
 /* What may release the target on air before its holds are weighed: the per-visit cap, then a tone-policy rejection.
  * Returns 1 when the tick is spent. */
 static int
 trunk_scan_service_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                            dsd_trunk_scan_target_runtime* rt, double now_m) {
+    /* Only admitted activity stamps the target's activity hold (trunk_scan_conventional_activity(), the voice gate's
+       media), data included, so a hold still running keeps the target whatever the receive verdict on air. */
+    if (trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
+        && !trunk_scan_activity_hold_running(opts, rt, now_m)
+        && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m)) {
+        rt->last_allowed_activity_m = 0.0;
+        if (trunk_scan_rejection_has_alternate(opts, state, coord, now_m)) {
+            trunk_scan_advance(opts, state, coord);
+        }
+        return 1;
+    }
     return trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)
            || trunk_scan_service_tone_rejection(opts, state, coord, rt, now_m);
 }
@@ -4099,10 +4158,15 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
 }
 
 /* Shared body for every conventional target type: the hold decision is protocol-independent,
- * so the per-protocol entry points below differ only in which family may claim the hold. */
+ * so the per-protocol entry points below differ only in which family may claim the hold. The receive policy judges the
+ * reporting call's own protocol and slot (issue #637): only traffic it admits holds the target. */
 static void
 trunk_scan_conventional_activity(trunk_scan_conventional_family family, const dsd_opts* opts, const dsd_state* state,
-                                 uint32_t target, uint32_t source, int is_private, int encrypted, int data_call) {
+                                 int protocol, int slot, uint32_t target, uint32_t source, int is_private,
+                                 int encrypted, int data_call) {
+    if (!dsd_receive_allows(opts, state, protocol, slot)) {
+        return;
+    }
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!opts || !state || !coord || coord->count == 0) {
         return;
@@ -4133,22 +4197,24 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
 void
 dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                 uint32_t source, int is_private, int encrypted, int data_call) {
-    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR, opts, state, target, source, is_private,
-                                     encrypted, data_call);
+    /* A DMR report comes from the slot being decoded. */
+    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR, opts, state, DSD_SYNC_DMR_BS_VOICE_POS,
+                                     state ? state->currentslot : 0, target, source, is_private, encrypted, data_call);
 }
 
 void
 dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                  uint32_t source, int is_private, int encrypted, int data_call) {
-    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, opts, state, target, source, is_private,
-                                     encrypted, data_call);
+    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, opts, state, DSD_SYNC_NXDN_POS, 0, target,
+                                     source, is_private, encrypted, data_call);
 }
 
 void
-dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
-                                                uint32_t source, int is_private, int encrypted, int data_call) {
-    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_P25, opts, state, target, source, is_private,
-                                     encrypted, data_call);
+dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                                uint32_t target, uint32_t source, int is_private, int encrypted,
+                                                int data_call) {
+    trunk_scan_conventional_activity(TRUNK_SCAN_CONVENTIONAL_FAMILY_P25, opts, state, protocol, slot, target, source,
+                                     is_private, encrypted, data_call);
 }
 
 static void
@@ -4597,6 +4663,8 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     out->previous = rt->edit;
     if (index != coord->active) {
         rt->edit = *next;
+        dsd_scan_option_values stored;
+        out->options = *trunk_scan_target_values(rt, &stored);
         return DSD_SCAN_ROW_EDIT_STORED;
     }
     int gain_before = 0;
@@ -4607,7 +4675,13 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     rt->edit = *next;
     dsd_scan_option_values scratch;
     const dsd_scan_option_values* after = trunk_scan_target_values(rt, &scratch);
+    out->options = *after;
+    const int receive_changed = dsd_scan_option_receive_differs(&before, after);
+    const int filters_were_enabled = dsd_receive_filters_enabled(opts);
     (void)dsd_scan_mode_options(opts, state, after);
+    if (receive_changed) {
+        dsd_frame_sync_hook_receive_policy_boundary(opts, state, filters_were_enabled);
+    }
     /* The receiver's request changed: the width the decoder runs, or, for a rigctl peer, whether the target sets one of
        its own. Only a rollback reaches here with a retune still in flight (an edit of the width is BUSY then), which
        lands with the width now in dsd_opts (trunk_scan_reapply_analog_width()). */

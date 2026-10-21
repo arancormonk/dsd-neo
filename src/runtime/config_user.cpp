@@ -20,6 +20,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -33,6 +34,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
@@ -60,6 +62,8 @@ user_config_strip_inline_comment(char* line) {
     }
     int in_quote = 0;
     for (char* p = line; *p; ++p) {
+        /* Only double quotes protect a comment character, in every section: an apostrophe is ordinary text in a path
+           or a name ("/home/o'neil"). The [receive] names renderer double-quotes every name. */
         if (*p == '"') {
             in_quote = !in_quote;
             continue;
@@ -1238,6 +1242,28 @@ render_analog_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "\n");
 }
 
+static void
+render_receive_section(FILE* out, const dsdneoUserConfig* cfg) {
+    DSD_FPRINTF(out, "[receive]\n");
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        const dsd_receive_filter* filter = &cfg->receive.filters[kind];
+        const char* name = dsd_receive_kind_name(kind);
+        char list[DSD_RECEIVE_LIST_MAX + 1];
+        DSD_FPRINTF(out, "%s_enabled = %s\n", name, ini_bool(filter->enabled));
+        if (dsd_receive_set_format(kind, &filter->allow, list, sizeof(list)) > 0) {
+            DSD_FPRINTF(out, "%s_allow = %s\n", name, list);
+        }
+        if (dsd_receive_set_format(kind, &filter->block, list, sizeof(list)) > 0) {
+            DSD_FPRINTF(out, "%s_block = %s\n", name, list);
+        }
+    }
+    char names[DSD_RECEIVE_NAMES_TEXT_MAX + 1];
+    if (dsd_receive_names_format(&cfg->receive.names, names, sizeof(names)) > 0) {
+        DSD_FPRINTF(out, "names = %s\n", names);
+    }
+    DSD_FPRINTF(out, "\n");
+}
+
 void
 dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
     if (!cfg || !stream) {
@@ -1273,6 +1299,9 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
     }
     if (cfg->has_dsp) {
         render_dsp_section(stream, cfg);
+    }
+    if (cfg->has_receive) {
+        render_receive_section(stream, cfg);
     }
     if (cfg->has_analog) {
         render_analog_section(stream, cfg);
@@ -1855,6 +1884,9 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
     apply_recording_config(cfg, opts);
     apply_dsp_config(cfg);
     apply_analog_config(cfg, opts);
+    if (cfg->has_receive && !cfg->receive_refused) {
+        (void)dsd_scan_mode_set_configured_receive(opts, state, &cfg->receive);
+    }
     apply_file_input_symbol_timing(cfg, opts, state, old_effective_input_rate, apply_file_input_rate_now);
 }
 
@@ -2152,6 +2184,9 @@ snapshot_analog_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserC
     dsd_scan_mode_configured_tone_policy(opts, state, &cfg->analog_tone_filter, &cfg->analog_tone_set);
     cfg->analog_tone_list_refused = 0;
     cfg->has_analog = 1;
+    cfg->has_receive = 1;
+    cfg->receive_refused = 0;
+    dsd_scan_mode_configured_receive(opts, state, &cfg->receive);
 }
 
 void

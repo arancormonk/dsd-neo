@@ -12,6 +12,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -33,6 +34,7 @@
 #include <stdio.h>
 #include <time.h>
 #include "dmr_confidence.h"
+#include "dmr_mono_slot.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -584,6 +586,80 @@ int
 dmr_confidence_any_voice_open(const dsd_state* state) {
     (void)state;
     return g_any_voice_open;
+}
+
+/* The receive policy's verdict for the burst's slot (issue #637): admitted unless a test rejects it. */
+static int g_receive_rejects;
+
+int
+dsd_receive_allows(const dsd_opts* opts, const dsd_state* state, int protocol, int slot) {
+    (void)opts;
+    (void)state;
+    (void)protocol;
+    (void)slot;
+    return !g_receive_rejects;
+}
+
+/* Issue #637: the single-slot lane's over-the-air slot. A repeater's is proven by two bursts in a row naming it and
+   stays proven; a direct-mode sync word names its own; any other burst names none and stays Checking. */
+static void
+test_mono_lane_slot_proof(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_mono_slot_begin(&state);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_PENDING);
+    dmr_mono_slot_note(&state, 1, 0U); /* A corrupted TACT can name the other slot once. */
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_PENDING);
+    dmr_mono_slot_note(&state, 1, 1U);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_PENDING);
+    dmr_mono_slot_note(&state, 1, 1U);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS2);
+    dmr_mono_slot_note(&state, 0, 0U); /* A failed TACT changes nothing. */
+    dmr_mono_slot_begin(&state);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS2);
+    /* A later call on the other timeslot: Checking at the first burst naming it, proven at the second. */
+    dmr_mono_slot_note(&state, 1, 0U);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_PENDING);
+    dmr_mono_slot_note(&state, 1, 0U);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS1);
+
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    state.dmr_dm_sync_slot = 2U;
+    dmr_mono_slot_begin(&state);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS2);
+    dmr_mono_slot_note(&state, 1, 0U); /* No CACH on a direct-mode carrier: nothing to note. */
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS2);
+    state.dmr_dm_sync_slot = 1U;
+    dmr_mono_slot_begin(&state);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS1);
+    state.dmr_dm_sync_slot = 0U;
+    dmr_mono_slot_begin(&state);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_PENDING);
+    dmr_mono_slot_forget(&state);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_NONE);
+}
+
+/* Issue #637: rejected voice keeps the carrier alive but does not hold the voice channel, so a channel only rejected
+   traffic holds is let go at its hangtime, a CSBK-followed one included. */
+static void
+test_bs_rejected_voice_does_not_hold_the_channel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_is_tuned = 1;
+    state.currentslot = 0;
+    state.dmr_color_code = 16;
+    load_voice_burst_stream();
+    g_receive_rejects = 1;
+
+    dmrBS(&opts, &state);
+
+    g_receive_rejects = 0;
+    assert(state.last_vc_sync_time == 0 && state.last_vc_sync_time_m == 0.0);
+    assert(state.last_cc_sync_time > 0 && state.last_cc_sync_time_m > 0.0);
 }
 
 static void
@@ -1155,6 +1231,8 @@ main(void) {
     dsd_decode_clock_use_test(1234567890ULL);
     test_continuous_voice_yields_at_burst_boundary();
     test_bs_voice_sync_refreshes_when_trunk_tuned();
+    test_bs_rejected_voice_does_not_hold_the_channel();
+    test_mono_lane_slot_proof();
     test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks();
     test_bs_slot2_voice_integer_output_uses_ss3_playback();
     test_bs_data_sync_closes_slot_file_and_resets_error_state();

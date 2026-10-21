@@ -297,7 +297,8 @@ Windows console runs:
   event's own stamp rather than reading the clock again; a voice transmission reacquired after a sync loss
   appends a `Reacquired:` continuation carrying the stamp of the row it extends. While scanning a `-Y` list
   or rotating `--trunk-scan` targets, each line names the channel it was heard on in brackets between the
-  timestamp and the protocol token; lines from a receiver that is not scanning a named channel are unchanged.
+  timestamp and the protocol token. A [service name](#receive-filters-and-service-names) that labels the traffic
+  takes that place, scanning or not; other lines from a receiver that is not scanning a named channel are unchanged.
   In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
   P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]`, while FDMA rows carry no slot tag.
   DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`
@@ -1353,6 +1354,68 @@ code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
   520 ms), so prefer a DC-coupled input or one with a low corner. The audio's polarity matters: an inverted audio path
   (some receivers' discriminator outputs, some sound cards) turns every code into the other signal of the same number,
   so a D023N transmitter reads as `DCS D047N / D023I`.
+
+### Receive filters and service names
+
+Receive filters apply to decoded output, call/data/location publication, per-call WAV/MBE recordings,
+and scan activity. They leave raw input WAV, I/Q and symbol captures available for diagnostics.
+
+| Kind | Allow / block | Values | Disable |
+| --- | --- | --- | --- |
+| Slot | `--slot-allow`, `--slot-block` | `1`, `2`; DMR, P25 Phase 2 and X2-TDMA only | `--no-slot-filter` |
+| DCC | `--dcc-allow`, `--dcc-block` | DMR color codes `0..15` | `--no-dcc-filter` |
+| RAN | `--ran-allow`, `--ran-block` | NXDN48/96 RANs `0..63` | `--no-ran-filter` |
+| NAC | `--nac-allow`, `--nac-block` | P25 Phase 1/2 hexadecimal `001..FFE`, optional `0x` | `--no-nac-filter` |
+
+Use `/` between values, for example `--dcc-allow 4/6/8 --dcc-block 6`. Allow and block may coexist;
+block wins, and every applicable dimension must pass. Slot filters do not affect FDMA. An enabled
+access filter stays **Checking** until reception supplies a validated identifier, including a block-only
+filter. A configured Phase 2 descrambler seed is not proof of a received NAC. Existing CRC/FEC,
+talkgroup, encryption and synthesis gates still apply. Control-channel acquisition remains available;
+a grant without destination access-code evidence receives the existing bounded acquisition window. A trunking
+receiver remembers the code it verified on each voice channel (up to 16), so it stops following grants to a channel
+whose code the policy rejects; a policy edit that admits that code takes effect at the next grant. Only codes a voice
+channel proved after its tune are remembered: a tune forgets the control channel's codes (with a filter on, their
+confirmation locks too), so they never name, split or admit the voice channel's calls. A slot
+filter judges the over-the-air slot even on the single-slot DMR decoder (`-fr`, `-nm`): a repeater's slot is proven
+by two consecutive bursts' CACH, a direct-mode one by its sync word, and the first bursts stay Checking. A proven
+move to the other slot starts a new call there, even with the same colour code.
+Rejected traffic does not refresh an activity hold. A manually held conventional channel stays selected and muted.
+
+Names use repeatable `--slot-name`, `--dcc-name`, `--ran-name`, `--nac-name` and `--tone-name` options:
+
+```sh
+dsd-neo -i rtl:0:461.0M -fr --dcc-allow 4/7 --slot-name '1=Dispatch' --dcc-name '7=Hospital'
+dsd-neo -i rtl:0:154.43M -fA -P --tone-name '141.3=20R Traveler' --tone-name 'D023N=County fire'
+```
+
+A matching access-code or tone name wins over a slot name, followed by the existing channel label.
+Naming alone never filters traffic. The channel label and permanent scan-target ID remain unchanged.
+Each scope accepts up to 32 selectors and names up to 63 UTF-8 bytes. Empty names, leading/trailing spaces,
+commas, double quotes and control characters are refused. Equivalent DCS spellings share one selector;
+conflicting names for that selector are refused. `--no-service-names` clears the inherited table.
+A name for an identifier the filters in force reject (`--dcc-block 7 --dcc-name '7=Hospital'`, or a tone name outside
+`--tone-allow`) is kept but never shows, since that traffic is never received. dsd-neo warns about it at start, when a
+scan list or channel map loads (naming the row), in `--validate-config`, in import previews and in the notice of a live
+edit, so a service can be blocked for a while without losing its name.
+
+Live editors are on the Qt/Android monitor under **Signal & site**: **Receive filters** and **Service names**.
+They offer **All channels** / **This channel**, with **Use default** and **List value** for session-only row edits.
+The terminal equivalents are under **Decoder → Receive filters and names**.
+Edits are validated and applied as a whole on the decoder thread; a stale destination is refused.
+A policy change ends only an active call it now rejects; a call it still admits, or is checking, carries on, and a
+name edit relabels it. Completed history retains its service
+identity and label, and different confirmed identifiers do not merge into one call.
+
+`-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
+History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions.
+Carrier end, rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
+include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
+`<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
+`<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. Rdio exports use the service name in their talkgroup label field
+while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
+named WAVs without fabricated talkgroup IDs. See [receive configuration](config-system.md) and
+[row options](csv-formats.md).
 
 ### Tone filter (CTCSS/DCS receive policy)
 

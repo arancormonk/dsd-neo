@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -33,10 +34,19 @@ typedef struct {
     void (*no_carrier)(dsd_opts* opts, dsd_state* state);
     int (*scan_visit_should_yield)(const dsd_opts* opts, dsd_state* state);
     int (*signal_search_should_yield)(const dsd_opts* opts, dsd_state* state);
+    void (*analog_call_block)(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int rate,
+                              int accepted);
+    void (*receive_policy_boundary)(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
     void (*replay_retune)(dsd_opts* opts, dsd_state* state);
     int (*decoder_ticks_due)(const dsd_opts* opts, const dsd_state* state);
 } dsd_frame_sync_hooks;
 
+/** The engine's conventional NFM lifecycle sees accepted processed blocks even with muted speakers. */
+void dsd_frame_sync_hook_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count,
+                                           int rate, int accepted);
+/** The effective receive policy has just changed (issue #637); @p filters_were_enabled says whether any filter was on
+ * before. */
+void dsd_frame_sync_hook_receive_policy_boundary(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
 int dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);
 
 /** Whether decoder-thread trunking timers are due (a startup control-channel hunt armed or running, or DMR recovery

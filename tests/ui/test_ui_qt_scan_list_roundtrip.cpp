@@ -64,7 +64,7 @@ static InspectedTargets
 inspectTargets(const QString& path) {
     InspectedTargets seen;
     char error[256] = {};
-    const dsd_app_scan_csv_callbacks callbacks{collectTarget, nullptr, &seen};
+    const dsd_app_scan_csv_callbacks callbacks{collectTarget, nullptr, &seen, nullptr};
     check(dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, error, sizeof error) == 0);
     return seen;
 }

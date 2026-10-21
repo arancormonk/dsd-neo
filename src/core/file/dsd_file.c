@@ -30,6 +30,8 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -819,6 +821,15 @@ mbe_out_slot_ready(dsd_opts* opts, dsd_state* state, int slot, int owner, dsd_mb
 
 void
 dsd_mbe_out_write(dsd_opts* opts, dsd_state* state, int slot, dsd_mbe_out_format format, const char* bits) {
+    dsd_mbe_out_write_rx(opts, state, slot, slot, format, bits);
+}
+
+void
+dsd_mbe_out_write_rx(dsd_opts* opts, dsd_state* state, int slot, int rx_slot, dsd_mbe_out_format format,
+                     const char* bits) {
+    if (!dsd_receive_current_allows(opts, state, rx_slot)) {
+        return;
+    }
     if (!opts || !state || !bits) {
         return;
     }
@@ -942,7 +953,9 @@ typedef struct {
     char src_str[200];
     char tgt_str[200];
     char gi_str[10];
+    char service[DSD_SERVICE_LABEL_SIZE + 5];
     uint8_t is_string;
+    uint8_t is_analog; /* A conventional NFM call: no talkgroup, source or call type to name it by (issue #637). */
 } wav_rename_metadata;
 
 static const Event_History*
@@ -954,10 +967,25 @@ wav_rename_get_event_item(const Event_History_I* event_struct) {
 }
 
 static void
-wav_rename_build_metadata(const Event_History* event_item, wav_rename_metadata* metadata) {
+wav_rename_service(const Event_History* event_item, wav_rename_metadata* metadata) {
+    metadata->service[0] = '\0';
+    if (event_item && event_item->service_label[0]) {
+        DSD_SNPRINTF(metadata->service, sizeof(metadata->service), "_SVC_%s", event_item->service_label);
+        for (char* p = metadata->service + 5; *p; p++) {
+            const unsigned char c = (unsigned char)*p;
+            if (c < 32 || c == 127 || strchr("/\\:*?\"<>|. ", c)) {
+                *p = '_';
+            }
+        }
+    }
+}
+
+static void
+wav_rename_build_metadata(const Event_History* event_item, int analog, wav_rename_metadata* metadata) {
     if (!metadata) {
         return;
     }
+    metadata->is_analog = (uint8_t)(analog || (event_item && event_item->systype == DSD_SYNC_ANALOG));
 
     time_t event_time = dsd_decode_time();
     if (event_item && event_item->event_time > 0) {
@@ -975,6 +1003,7 @@ wav_rename_build_metadata(const Event_History* event_item, wav_rename_metadata* 
     DSD_MEMSET(metadata->tgt_str, 0, sizeof(metadata->tgt_str));
     DSD_MEMSET(metadata->gi_str, 0, sizeof(metadata->gi_str));
 
+    wav_rename_service(event_item, metadata);
     int8_t gi = event_item ? event_item->gi : 0;
     if (event_item) {
         DSD_SNPRINTF(metadata->sys_str, sizeof(metadata->sys_str), "%s", event_item->sysid_string);
@@ -994,14 +1023,17 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
     if (!out || out_cap == 0 || !dir || !metadata) {
         return;
     }
-    if (metadata->is_string == 1) {
-        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s_%s_TGT_%s_SRC_%s.wav", dir, metadata->datestr, metadata->timestr,
-                     metadata->random_number, metadata->sys_str, metadata->gi_str, metadata->tgt_str,
+    if (metadata->is_analog) {
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_NFM%s.wav", dir, metadata->datestr, metadata->timestr,
+                     metadata->random_number, metadata->service);
+    } else if (metadata->is_string == 1) {
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%s_SRC_%s.wav", dir, metadata->datestr, metadata->timestr,
+                     metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str, metadata->tgt_str,
                      metadata->src_str);
     } else {
-        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s_%s_TGT_%d_SRC_%d.wav", dir, metadata->datestr, metadata->timestr,
-                     metadata->random_number, metadata->sys_str, metadata->gi_str, metadata->target_id,
-                     metadata->source_id);
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%d_SRC_%d.wav", dir, metadata->datestr, metadata->timestr,
+                     metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str,
+                     metadata->target_id, metadata->source_id);
     }
 }
 
@@ -1048,9 +1080,9 @@ wav_publish_noreplace(const char* from, char* to, size_t to_size, const char* di
     return 0;
 }
 
-SNDFILE*
-close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call) {
+static SNDFILE*
+wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                      const Event_History_I* event_struct, time_t opened, int export_call, int analog) {
     if (wav_file != NULL) {
         sf_close(wav_file);
     }
@@ -1062,7 +1094,7 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
     const Event_History* event_item = wav_rename_get_event_item(event_struct);
     wav_rename_metadata metadata;
     DSD_MEMSET(&metadata, 0, sizeof(metadata));
-    wav_rename_build_metadata(event_item, &metadata);
+    wav_rename_build_metadata(event_item, analog, &metadata);
 
     char new_filename[2000];
     DSD_MEMSET(new_filename, 0, sizeof(new_filename));
@@ -1096,6 +1128,17 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
 
     wav_file = NULL;
     return wav_file;
+}
+
+SNDFILE*
+close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                             const Event_History_I* event_struct, time_t opened, int export_call) {
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, export_call, 0);
+}
+
+SNDFILE*
+close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir) {
+    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 1);
 }
 
 SNDFILE*
@@ -1871,7 +1914,9 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
 
 static void
 sdrtrunk_json_reset_event_state(dsd_state* state) {
-    state->dmr_color_code = 0;
+    /* The recording carries no colour code: 16 is "none decoded" (issue #637), so no access filter or service name
+       takes a placeholder for a received one. */
+    state->dmr_color_code = 16U;
     (void)dsd_call_state_end(state, 0U, 0.0);
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;

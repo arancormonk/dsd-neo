@@ -15,6 +15,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -157,6 +158,19 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
     (void)state;
     ++g_chan_import_calls;
     return g_chan_import_rc;
+}
+
+void
+dsd_scan_option_baseline_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_option_baseline* out) {
+    (void)opts;
+    (void)state;
+    DSD_MEMSET(out, 0, sizeof(*out));
+}
+
+void
+csvChanWarnUnreachableNames(const dsd_state* rows, const struct dsd_scan_option_baseline* baseline) {
+    (void)rows;
+    (void)baseline;
 }
 
 int

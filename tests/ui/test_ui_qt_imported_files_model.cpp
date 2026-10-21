@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -55,6 +56,7 @@ extern "C" {
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include "csv_bundle_import.h"
 #include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
@@ -874,6 +876,46 @@ test_channel_bundle() {
     expect("removing bundle frees companions", !QDir(root).exists());
 }
 
+/* Issue #637: a spreadsheet saves an options cell holding a double quote wrapped in double quotes, each quote inside
+   doubled. The bundle import finds the companion the loader reads in it and rewrites it in place, leaving a cell the
+   channel-map loader still takes, with its service name intact. */
+static void
+test_channel_bundle_quoted_options() {
+    QTemporaryDir source;
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const auto write = [&](const QString& name, const QByteArray& bytes) {
+        QFile file(source.filePath(name));
+        expect("write quoted bundle fixture", file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
+        return source.filePath(name);
+    };
+    (void)write("my keys.csv", "keyid,value\n02,ABCDE\n");
+    const QByteArray text = "channel,frequency_hz,mode,options\n"
+                            "1,464125000,dmr,\"--dcc-name \"\"7=St Mary's\"\" -K \"\"my keys.csv\"\"\"\n";
+    const QString channels = write("quoted.csv", text);
+    expect("quoted cell names its companion",
+           dsd_qt::csv_companion_references(QString::fromUtf8(text)) == QStringList{"my keys.csv"});
+    const auto result = model.importBundle(channels, "Quoted.csv", "chan", {});
+    expect("quoted bundle imports", result.value("ok").toBool());
+    const QString stored = result.value("path").toString();
+    const int row = model.rowForPath(stored);
+    expect("quoted bundle registered", row >= 0);
+    if (row < 0) {
+        return;
+    }
+    QFile primary(stored);
+    expect("open stored quoted bundle", primary.open(QIODevice::ReadOnly));
+    const QByteArray rewritten = primary.readAll();
+    primary.close();
+    expect("the cell keeps its quoting and service name", rewritten.contains(",\"--dcc-name \"\"7=St Mary's\"\" -K ")
+                                                              && !rewritten.contains("my keys.csv")
+                                                              && rewritten.trimmed().endsWith("\""));
+    dsd_csv_validation stats{};
+    expect("the rewritten map still loads", dsd_csv_validate_chan_file(stored.toUtf8().constData(), &stats) == 0
+                                                && stats.accepted == 1 && stats.skipped == 0);
+    model.remove(row);
+}
+
 static void
 test_target_bundle() {
     QTemporaryDir source;
@@ -1496,7 +1538,7 @@ test_example_targets() {
     const auto result = model.importFile(QStringLiteral(DSD_NEO_TEST_EXAMPLES_DIR "/trunk_scan_targets.csv"),
                                          "Examples.csv", "trunkTargets");
     expect("shipped example imports all targets",
-           result.value("ok").toBool() && result.value("accepted").toInt() == 10);
+           result.value("ok").toBool() && result.value("accepted").toInt() == 12);
     if (!result.value("ok").toBool()) {
         return;
     }
@@ -1505,11 +1547,12 @@ test_example_targets() {
     /* Issue #526: the analog nfm-conventional and am-conventional targets preview with their canonical types and their
        own channel widths and squelch, which the import's copy keeps; a digital target carries no width. */
     expect("shipped row order retained",
-           rows.size() == 10 && rows[0].toMap().value("id") == "county-p25"
+           rows.size() == 12 && rows[0].toMap().value("id") == "county-p25"
                && rows[7].toMap().value("id") == "field-nxdn48" && rows[8].toMap().value("id") == "fire-nfm"
                && rows[8].toMap().value("type") == "nfm-conventional" && rows[9].toMap().value("id") == "tower-am"
-               && rows[9].toMap().value("type") == "am-conventional");
-    if (rows.size() == 10) {
+               && rows[9].toMap().value("type") == "am-conventional" && rows[10].toMap().value("id") == "Mall"
+               && rows[11].toMap().value("id") == "20R Local");
+    if (rows.size() == 12) {
         expect("previews the nfm target's own width", rows[8].toMap().value("bandwidthHz").toInt() == 12500);
         expect("previews the am target's own width and auto squelch",
                rows[9].toMap().value("bandwidthHz").toInt() == 8333
@@ -1523,6 +1566,11 @@ test_example_targets() {
                    && rows[8].toMap().value("toneList") == "156.7 Hz/D023N");
         expect("the am and digital targets carry no tone policy",
                !rows[9].toMap().value("toneFilter").isValid() && !rows[0].toMap().value("toneFilter").isValid());
+        /* Issue #637: the reporter's shared-frequency rows preview their naming rules and the NFM row's tone list. */
+        expect("the shared DMR row previews its names", !rows[10].toMap().value("receiveSummary").toString().isEmpty());
+        expect("the shared NFM row previews its tones and name",
+               rows[11].toMap().value("toneList") == "97.4 Hz/141.3 Hz"
+                   && !rows[11].toMap().value("receiveSummary").toString().isEmpty());
     }
     auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
     auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
@@ -1548,7 +1596,7 @@ test_example_targets() {
     const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
     expect("imported example initializes", initialized);
     if (initialized) {
-        expect("engine owns all ten imported targets", dsd_engine_trunk_scan_target_count(state) == 10);
+        expect("engine owns all twelve imported targets", dsd_engine_trunk_scan_target_count(state) == 12);
         expect("first target visit limit applies", opts->scan_max_visit_ms == 20000);
         expect("advance imported target",
                dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
@@ -1596,6 +1644,7 @@ main(int argc, char** argv) {
     }
     test_metadata_failure_keeps_file();
     test_channel_bundle();
+    test_channel_bundle_quoted_options();
     test_channel_review_bandwidth();
     test_channel_review_tone_filter();
     test_target_bundle();

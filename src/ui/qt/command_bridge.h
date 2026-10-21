@@ -68,6 +68,12 @@ class CommandBridge : public QObject {
      * refused once that scan has ended. Empty-handed ({active: false}) with no row on air.
      */
     Q_INVOKABLE QVariantMap scanRowContext() const;
+    Q_INVOKABLE QVariantMap receiveContext() const;
+    Q_INVOKABLE QString receiveError(int kind, bool enabled, const QString& allow, const QString& block,
+                                     const QVariantList& names) const;
+    Q_INVOKABLE bool setReceive(int kind, bool enabled, const QString& allow, const QString& block,
+                                const QVariantList& names, const QVariantMap& row, int action) const;
+    Q_INVOKABLE int receiveField(int kind) const;
     /**
      * @brief Submit a session edit of one @p field (a scanRowField*) of the row @p context names, with @p action (a
      * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -100..0; 0 = off) or

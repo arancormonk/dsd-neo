@@ -28,6 +28,7 @@ struct StubState {
     int register_calls;
     int unregister_calls;
     dsd_opts* last_open_opts;
+    const dsd_opts* last_live_opts;
     dsd_opts* last_registered_active;
     dsd_opts* last_registered_caller;
     dsd_opts* last_unregistered_active;
@@ -96,12 +97,14 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 }
 
 extern "C" int
-dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_state* state) {
+dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
+                       const dsd_state* state) {
     (void)out;
     (void)flags;
     (void)state;
     g_stub.read_calls++;
     g_stub.last_open_opts = opts;
+    g_stub.last_live_opts = live_opts;
     g_stub.last_read_count = count;
     if (g_stub.invalidate_first_read && g_stub.read_calls == 1) {
         g_stub.output_generation++;
@@ -249,6 +252,8 @@ test_tune_and_read_error_propagation(void) {
     rc |= expect_int_eq("read success", stream.read(samples, 4U, got), 0);
     rc |= expect_int_eq("read returns got count", got, 3);
     rc |= expect_int_eq("read records count", (int)g_stub.last_read_count, 4);
+    /* Issue #637: the read judges the receive mode in force by the caller's live options, not the started copy. */
+    rc |= expect_ptr_eq("read passes the caller's live opts", g_stub.last_live_opts, opts.get());
 
     g_stub.read_calls = 0;
     g_stub.invalidate_first_read = 1;

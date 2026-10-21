@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -12,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -21,6 +23,7 @@
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -30,6 +33,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -193,6 +197,19 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
         dsd_trunk_tuning_request_complete(request, tune_result);
     }
     return tune_result;
+}
+
+/* The conventional NFM call's end (issue #637): when it ran, and whether slot 0's call was still open for it to close
+   its recording against. */
+static int analog_call_end_calls;
+static int analog_call_end_saw_open_call;
+
+void
+dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    dsd_call_snapshot call;
+    analog_call_end_calls++;
+    analog_call_end_saw_open_call += dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
 }
 
 void
@@ -2411,7 +2428,8 @@ test_row_session_edits(void) {
     assert(state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN && state->scan_row_index == 0);
     assert(state->scan_row_session != 0U && state->scan_row_edited == 0U);
     assert(state->scan_row_editable
-           == (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE));
+           == (uint16_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
+                         | DSD_SCAN_ROW_FIELD_NAMES));
     assert(state->scan_row_listed == (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH));
     const uint32_t session = state->scan_row_session;
 
@@ -2538,10 +2556,156 @@ test_row_session_edits(void) {
     tunes = reset_count = 0;
 }
 
+static void
+test_receive_row_session_edits(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+        assert(dsd_channel_mode_set(state, row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    assert(dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "9", "", "", NULL, 0) == 0);
+    const dsd_receive_policy defaults = opts->receive;
+    dsd_scan_row_profile* listed = calloc(1, sizeof(*listed));
+    assert(listed);
+    listed->values.present = DSD_SCAN_OPT_DCC;
+    assert(dsd_receive_edit_parse(&listed->values.receive, DSD_RECEIVE_DCC, 1, "7", "", "", NULL, 0) == 0);
+    assert(dsd_channel_profile_set(state, 0, listed) == 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    const uint32_t session = state->scan_row_session;
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 7));
+    dsd_scan_row_edit_value value = {0};
+    assert(dsd_receive_edit_parse(&value.receive, DSD_RECEIVE_DCC, 1, "8", "", "", NULL, 0) == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 8));
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_INHERIT,
+                                            NULL, NULL)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 9));
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_RESET,
+                                            NULL, NULL)
+           == DSD_SCAN_ROW_EDIT_APPLIED);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 7));
+    assert(dsd_receive_names_parse("--dcc-name '7=Hospital'", &value.receive.names, NULL, 0) == 0);
+    dsd_scan_row_edit_result* result = calloc(1, sizeof(*result));
+    assert(result);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, result)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    /* The result carries the options the row runs from its next visit (issue #637): its new name, which the configured
+       DCC filter (allow 9) it inherits rejects. */
+    assert((result->options.present & DSD_SCAN_OPT_NAMES) && result->options.receive.names.count == 1);
+    dsd_scan_option_baseline configured;
+    dsd_scan_option_baseline_configured(opts, state, &configured);
+    assert(dsd_scan_option_unreachable_names(&result->options, &configured, NULL, 0) == 1);
+    free(result);
+    assert(opts->receive.names.count == 0);
+    /* An incompatible table is refused atomically, preserving the stored destination's name. */
+    assert(dsd_receive_names_parse("--ran-name '7=Wrong protocol'", &value.receive.names, NULL, 0) == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 1, DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_REFUSED);
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(strcmp(opts->receive.names.rules[0].name, "Hospital") == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session + 1U, 0, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STALE);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(dsd_receive_policy_equal(&opts->receive, &defaults));
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* Issue #637: a committed -Y row is the channel calls are heard on (its name the label every event row falls back to),
+   and its own options cell's names become the live naming table for the visit: a matching colour code names the call
+   by its service, another keeps the row's label. Leaving puts the configured table back. */
+static void
+test_committed_row_names_its_services(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
+    assert(dsd_state_trunk_lcn_name_set(state, 0, "Mall") == 0);
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_receive_names_parse("--dcc-name 3=Configured", &opts->receive.names, NULL, 0) == 0);
+    dsd_scan_row_profile* listed = calloc(1, sizeof(*listed));
+    assert(listed);
+    char error[160];
+    dsd_scan_options row;
+    DSD_MEMSET(&row, 0, sizeof(row));
+    assert(dsd_scan_options_parse("--dcc-name 7=Hospital --dcc-name 14=Municipality", DSD_SCAN_MODE_DMR, 1, &row, error,
+                                  sizeof(error))
+           == 0);
+    listed->values = row.values;
+    assert(dsd_channel_profile_set(state, 0, listed) == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    char label[64];
+    assert(dsd_channel_label_current(opts, state, label, sizeof(label)) > 0 && strcmp(label, "Mall") == 0);
+    dsd_receive_identity identity = {.value = 7, .kind = DSD_RECEIVE_DCC, .known = 1};
+    assert(strcmp(dsd_receive_service_name(&opts->receive.names, &identity), "Hospital") == 0);
+    identity.value = 14;
+    assert(strcmp(dsd_receive_service_name(&opts->receive.names, &identity), "Municipality") == 0);
+    identity.value = 2; /* The row's own repeater: no name, so its calls keep the row's label. */
+    assert(dsd_receive_service_name(&opts->receive.names, &identity)[0] == '\0');
+    identity.value = 3; /* The row's table replaces the configured one rather than adding to it. */
+    assert(dsd_receive_service_name(&opts->receive.names, &identity)[0] == '\0');
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(strcmp(dsd_receive_service_name(&opts->receive.names, &identity), "Configured") == 0);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* Issue #637: leaving the scanner ends an open NFM call through its own lifecycle before the slots' calls are ended
+   and committed, so its per-call recording closes under the row it was heard as, never the emptied one. */
+static void
+test_leave_ends_the_nfm_call_before_its_row_commits(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    state->samplesPerSymbol = 10;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_call_observation observation = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    analog_call_end_calls = analog_call_end_saw_open_call = 0;
+    (void)dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_call_end_calls == 1 && analog_call_end_saw_open_call == 1);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
     test_leave_restores_configured_receive_family();
+    test_leave_ends_the_nfm_call_before_its_row_commits();
+    test_committed_row_names_its_services();
     test_leave_retimes_the_digital_landing();
     test_leave_lands_where_it_times_the_configured_decoder();
     test_leave_keeps_the_rows_recorded_landing();
@@ -2569,6 +2733,7 @@ main(void) {
     test_am_row_warnings_for_its_widths();
     test_row_widths_on_audio_input();
     test_row_session_edits();
+    test_receive_row_session_edits();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

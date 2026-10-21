@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/utf16.h>
@@ -1555,7 +1556,9 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, cons
     dmr_lrrp_scaled s = dmr_lrrp_compute_scaled(best);
     DSD_FPRINTF(stderr, "%s", KYEL);
     dmr_lrrp_print_details(best, &s, pdu_crc_ok, ctx->suppressed_label);
-    dmr_lrrp_write_file_if_needed(opts, best, &s, pdu_crc_ok, ctx->source);
+    if (dsd_receive_current_allows(opts, state, slot)) {
+        dmr_lrrp_write_file_if_needed(opts, best, &s, pdu_crc_ok, ctx->source);
+    }
 
     char lrrpstr[100];
     char velstr[20];
@@ -1747,7 +1750,8 @@ dmr_locn_compute_lat_lon(dmr_locn_data* d, double* latitude, double* longitude) 
 
 static void DSD_ATTR_USED
 dmr_locn_write_file(const dsd_opts* opts, const dsd_state* state, double latitude, double longitude) {
-    if (opts->lrrp_file_output != 1 || state->event_crc_invalid[state->currentslot & 1]) {
+    if (opts->lrrp_file_output != 1 || state->event_crc_invalid[state->currentslot & 1]
+        || !dsd_receive_current_allows(opts, state, state->currentslot)) {
         return;
     }
     char timestr[9];

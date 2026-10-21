@@ -2559,6 +2559,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("rxToneCarrier")] = false;
         metrics[QStringLiteral("rxToneConfiguredText")] = QStringLiteral("off");
         // The Tone filter row (#527): hidden with no policy in force, and no verdict.
+        metrics[QStringLiteral("receiveStatus")] = QString();
         metrics[QStringLiteral("toneFilterVisible")] = false;
         metrics[QStringLiteral("toneFilterGate")] = 0;
         metrics[QStringLiteral("toneFilterStatusText")] = QString();

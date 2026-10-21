@@ -11,6 +11,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -19,6 +20,8 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -532,6 +535,66 @@ write_text_file(const char* path, const char* text) {
         return -1;
     }
     return fclose(fp) == 0 ? 0 : -1;
+}
+
+/* Issue #637: a channel map row whose service name its own filters, or the configured ones it inherits, reject warns
+ * once the map has loaded, naming the entry and the identifier; the map loads and the name is kept. */
+static int
+test_channel_import_warns_unreachable_names(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-names-XXXXXX";
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    const int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    if (write_text_file(tmpl, "channel,frequency,name,mode,options\n"
+                              "1,464125000,Own,dmr,--dcc-block 7 --dcc-name 7=Hospital\n"
+                              "2,464150000,Inherits,dmr,--dcc-name 14=Municipality\n"
+                              "3,464175000,Open,dmr,--dcc-name 2=Mall\n")
+            != 0
+        || dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "2", "", "", NULL, 0) != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "chanmapnames") != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    const int rc = csvChanImport(opts, state);
+    dsd_scan_option_baseline configured;
+    dsd_scan_option_baseline_configured(opts, state, &configured);
+    csvChanWarnUnreachableNames(state, &configured);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char buf[4096];
+    failed |= dsd_test_capture_stderr_read(&cap, buf, sizeof buf) != 0;
+    failed |= rc != 0 || state->lcn_freq_count != 3;
+    failed |= !strstr(buf, "Channel map entry 1 (Own): service names that never show, because the receive filters "
+                           "reject their traffic: DCC 7");
+    failed |= !strstr(buf, "Channel map entry 2 (Inherits): service names that never show") || !strstr(buf, "DCC 14");
+    failed |= strstr(buf, "(Open)") != NULL;
+    if (failed) {
+        DSD_FPRINTF(stderr, "channel map unreachable-name warnings (rc=%d):\n%s\n", rc, buf);
+    }
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
 }
 
 static int
@@ -2904,6 +2967,9 @@ main(void) {
         return 1;
     }
     if (test_channel_map_examples_import_cleanly() != 0) {
+        return 1;
+    }
+    if (test_channel_import_warns_unreachable_names() != 0) {
         return 1;
     }
     if (test_nfm_channel_map_rows() != 0) {

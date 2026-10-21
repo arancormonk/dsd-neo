@@ -71,12 +71,18 @@ typedef struct {
     /* Its list as displayed (dsd_tone_set_format_display(): "100.0 Hz/D023N", the entries past the room counted); ""
        without one. */
     char tone_list[96];
+    char receive_summary[256];
 } dsd_csv_channel_profile;
 
 typedef void (*dsd_csv_channel_profile_cb)(const dsd_csv_channel_profile* row, void* context);
 /** Validate and inspect configured channel rows using temporary owned state.
  * Callbacks run synchronously only after parsing succeeds; row expires on return. */
 int dsd_csv_inspect_channel_profiles(const char* path, void* context, dsd_csv_channel_profile_cb callback);
+/** dsd_csv_inspect_channel_profiles(), each row's receive_summary noting the service names it leaves unreachable over
+ * the configured policies @p baseline (dsd_scan_option_receive_summary_against(); NULL judges each row alone). */
+struct dsd_scan_option_baseline;
+int dsd_csv_inspect_channel_profiles_against(const char* path, const struct dsd_scan_option_baseline* baseline,
+                                             void* context, dsd_csv_channel_profile_cb callback);
 int dsd_csv_validate_key_file_dec(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_key_file_hex(const char* path, dsd_csv_validation* out);
 /** Strict, atomic Vertex key to keystream validation. */

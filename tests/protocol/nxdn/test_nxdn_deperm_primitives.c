@@ -919,8 +919,10 @@ static struct {
 static int g_search_other_protocol;
 
 static void
-capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
-                        const char* access) {
+capture_search_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                        uint32_t source, const char* access) {
+    (void)sync;
+    (void)slot;
     (void)target;
     (void)source;
     (void)access;

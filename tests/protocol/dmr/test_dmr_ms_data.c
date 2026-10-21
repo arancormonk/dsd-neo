@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -529,6 +530,30 @@ test_ms_voice_cycle_processes_frames_and_cleans_mode_state(void) {
     assert(state.vertex_ks_warned[0] == 0);
 }
 
+/* Issue #637: a CACH an input interruption cut is erasures: it never completes the two TACTs that prove the lane's
+   over-the-air slot. */
+static void
+test_interrupted_cach_proves_no_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    /* Whichever slot the cut CACH would name, an earlier burst naming it must not be completed by it. */
+    for (int candidate = DSD_DMR_MONO_RX_TS1; candidate <= DSD_DMR_MONO_RX_TS2; candidate++) {
+        reset_fixture();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        load_voice_stream();
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+        state.dmr_mono_rx_candidate = (uint8_t)candidate;
+        g_interrupt_at = g_stream_index + 5U;
+
+        dmrMS(&opts, &state);
+
+        assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_PENDING);
+        g_interrupt_at = SIZE_MAX;
+    }
+}
+
 /* Float output (-y) plays through the same DMR stereo mix as 16-bit output (#652). */
 static void
 test_ms_voice_cycle_plays_float_on_one_channel(void) {
@@ -789,6 +814,7 @@ main(void) {
     test_ms_data_applies_inversion_to_cached_and_live_halves();
     test_ms_voice_cycle_processes_frames_and_cleans_mode_state();
     test_ms_voice_cycle_plays_float_on_one_channel();
+    test_interrupted_cach_proves_no_slot();
     test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle();
     test_ms_bootstrap_plays_short_on_one_channel();
     test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes();

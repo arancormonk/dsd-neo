@@ -30,6 +30,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -556,8 +557,10 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
      * channel. Synthesize only once the frame body has passed a CRC; a real call confirms
      * on its first FACCH, or within two frames of SACCH (issue #398). */
     if (ctx->voice && nxdn_confirm_is_confirmed(state)) {
-        state->last_vc_sync_time = dsd_decode_time();
-        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+        if (dsd_receive_allows(opts, state, DSD_SYNC_NXDN_POS, 0)) {
+            state->last_vc_sync_time = dsd_decode_time();
+            state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+        }
         if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
             nxdn_cipher_force(state, 0x1);
         }

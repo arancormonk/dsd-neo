@@ -282,7 +282,7 @@ class Stager {
                 listed.append(entry);
             }
         }
-        m_files = listed;
+        m_files = std::move(listed);
         return true;
     }
 

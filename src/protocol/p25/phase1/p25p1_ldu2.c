@@ -28,7 +28,9 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -115,7 +117,8 @@ ldu2_refresh_hold_hysteresis(const dsd_opts* opts, dsd_state* state) {
     if (hold_hyst < 0.75) {
         hold_hyst = 0.75;
     }
-    if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst) {
+    if (state->last_vc_sync_time != 0 && (double)(now - state->last_vc_sync_time) <= hold_hyst
+        && dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 0)) {
         state->last_vc_sync_time = now;
         state->last_vc_sync_time_m = dsd_decode_now_mono_s();
     }
@@ -279,8 +282,6 @@ ldu2_run_fec(dsd_state* state, char hex_data[16][6], char hex_parity[8][6],
     }
 
     state->p25_p1_voice_fec_ok++;
-    state->last_vc_sync_time = dsd_decode_time();
-    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
 
     return 0;
 }
@@ -513,6 +514,11 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     }
     const unsigned int soft_rs_before = state->p25_p1_soft_rs_ok;
     frame.irrecoverable_errors = ldu2_run_fec(state, frame.hex_data, frame.hex_parity, frame.soft_dibits);
+    if (frame.irrecoverable_errors == 0 && dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 0)) {
+        /* Only traffic the receive policy admits holds the voice channel (issue #637). */
+        state->last_vc_sync_time = dsd_decode_time();
+        state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    }
     frame.hard_checked = state->p25_p1_soft_rs_ok == soft_rs_before; // ldu2_run_fec() counts each soft recovery
 
     ldu2_decode_post_fec_fields(state, &frame);

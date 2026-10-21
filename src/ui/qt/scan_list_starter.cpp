@@ -188,7 +188,7 @@ manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
 QStringList
 csvAnalogRateWarnings(const QVariantMap& list, const QString& path, const SessionArgPrefs& prefs) {
     QList<AnalogTarget> analog;
-    const dsd_app_scan_csv_callbacks callbacks{collectCsvAnalogTarget, nullptr, &analog};
+    const dsd_app_scan_csv_callbacks callbacks{collectCsvAnalogTarget, nullptr, &analog, nullptr};
     char detail[512] = {};
     if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, detail, sizeof detail) != 0) {
         return {};

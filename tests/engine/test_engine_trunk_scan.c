@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -43,6 +45,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -921,6 +924,49 @@ test_parser_accepts_optional_modulation_and_gain_columns(void) {
 
     dsd_trunk_scan_target_list_reset(&list);
     cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #637: a receive filter list in the options cell followed by a numeric column keeps that column's value: a DCC
+   list's lone last-looking number is the column's own (an RTL gain of 7), in either column order. */
+static int
+test_parser_keeps_gain_after_receive_options(void) {
+    static const struct {
+        const char* header;
+        const char* body;
+    } cases[] = {
+        {"id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,rtl_gain\n",
+         "dmr,dmr-conventional,461000000,,250,,base,--dcc-allow 4,7\n"},
+        {"id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain,options\n",
+         "dmr,dmr-conventional,461000000,,250,,base,7,--dcc-allow 4\n"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        if (make_temp_dir(dir, sizeof dir) != 0) {
+            return 1;
+        }
+        char target_path[DSD_TEST_PATH_MAX];
+        if (write_targets_file_with_header(dir, cases[i].header, cases[i].body, target_path, sizeof target_path) != 0) {
+            cleanup_paths(dir, NULL, NULL);
+            return 1;
+        }
+        static dsd_opts opts;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        opts.trunk_scan_idle_dwell_ms = 3000;
+        opts.trunk_scan_activity_hold_ms = 1200;
+        dsd_trunk_scan_target_list list;
+        DSD_MEMSET(&list, 0, sizeof list);
+        char err[256] = {0};
+        const int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+        if (rc != 0 || list.count != 1 || list.targets[0].rtl_gain_is_set != 1 || list.targets[0].rtl_gain_db != 7) {
+            DSD_FPRINTF(stderr, "receive options gain case %zu rc=%d count=%zu err=%s\n", i, rc, list.count, err);
+            test_rc = 1;
+        }
+        dsd_trunk_scan_target_list_reset(&list);
+        cleanup_paths(dir, target_path, NULL);
+    }
     return test_rc;
 }
 
@@ -2205,7 +2251,7 @@ seed_dmr_confidence(dsd_state* state, unsigned int cc) {
 
 static int
 expect_dmr_confidence(const char* label, const dsd_state* state, unsigned int cc, uint8_t locked) {
-    if (state->dmr_color_code != cc || state->dmr_confidence_locked != locked || state->dmr_confidence_color_code != cc
+    if (state->dmr_color_code != 16U || state->dmr_confidence_locked != locked || state->dmr_confidence_color_code != cc
         || state->dmr_confidence_candidate_cc != cc) {
         DSD_FPRINTF(stderr, "%s DMR confidence mismatch cc=%u locked=%u conf_cc=%u candidate=%u\n", label,
                     state->dmr_color_code, state->dmr_confidence_locked, state->dmr_confidence_color_code,
@@ -2465,13 +2511,14 @@ test_p25_nac_state_isolated_per_target(void) {
     state.p2_cc_verified = 0U; /* the second target's seed was never proven */
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.nac != 0x2A1) {
-        DSD_FPRINTF(stderr, "P25 scan target did not restore its own NAC active=%zu nac=0x%03X\n",
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.nac != 0) {
+        DSD_FPRINTF(stderr, "P25 scan target reused a stale received NAC active=%zu nac=0x%03X\n",
                     dsd_engine_trunk_scan_active_index(&state), state.nac);
         test_rc = 1;
     }
-    if (state.p2_cc != 0x2A1ULL || state.p2_cc_verified != 1U) {
-        DSD_FPRINTF(stderr, "P25 scan target did not restore its Phase 2 seed and its proof cc=0x%03llX verified=%u\n",
+    if (state.p2_cc != 0x2A1ULL || state.p2_cc_verified != 0U) {
+        DSD_FPRINTF(stderr,
+                    "P25 scan target did not restore its Phase 2 seed without stale proof cc=0x%03llX verified=%u\n",
                     state.p2_cc, (unsigned)state.p2_cc_verified);
         test_rc = 1;
     }
@@ -3283,6 +3330,164 @@ test_nxdn_conventional_activity_hold(void) {
     return test_rc;
 }
 
+/* Issue #637: the receive policy judges a P25 conventional report by its own call's protocol and slot. A Phase 2 call
+   is admitted by its verified Phase 2 NAC (p2_cc), never by the Phase 1 NID's state->nac, and a slot filter applies to
+   its slot; traffic the policy checks or rejects never holds the target. */
+static int
+test_p25_conventional_activity_receive_policy(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-conventional,851500000,,250,250,\n"
+                             "b,dmr-conventional,461000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    static const struct {
+        const char* label;
+        const char* allow;
+        const char* block;
+        int kind;
+        int protocol;
+        int slot;
+        int holds;
+    } cases[] = {
+        {"phase 2 nac allowed", "293", "", DSD_RECEIVE_NAC, DSD_SYNC_P25P2_POS, 0, 1},
+        {"phase 1 nac checking", "293", "", DSD_RECEIVE_NAC, DSD_SYNC_P25P1_POS, 0, 0},
+        {"phase 2 nac blocked", "", "293", DSD_RECEIVE_NAC, DSD_SYNC_P25P2_POS, 1, 0},
+        {"phase 2 slot 2 blocked", "", "2", DSD_RECEIVE_SLOT, DSD_SYNC_P25P2_POS, 1, 0},
+        {"phase 2 slot 1 open", "", "2", DSD_RECEIVE_SLOT, DSD_SYNC_P25P2_POS, 0, 1},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_scan_opts_state(opts, state);
+        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "P25 conventional receive %s init failed: %s\n", cases[i].label, err);
+            test_rc = 1;
+            goto cleanup;
+        }
+        dsd_receive_filter* filter = &opts->receive.filters[cases[i].kind];
+        DSD_MEMSET(filter, 0, sizeof(*filter));
+        filter->enabled = 1;
+        if (dsd_receive_set_parse(cases[i].kind, cases[i].allow, &filter->allow, err, sizeof err) != 0
+            || dsd_receive_set_parse(cases[i].kind, cases[i].block, &filter->block, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "P25 conventional receive %s policy failed: %s\n", cases[i].label, err);
+            test_rc = 1;
+            goto cleanup;
+        }
+        /* A Phase 2 carrier: no Phase 1 NID, a verified Phase 2 NAC. */
+        state->nac = 0;
+        state->p2_cc = 0x293;
+        state->p2_cc_verified = 1;
+        trunk_scan_test_set_now(0.10);
+        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, cases[i].protocol, cases[i].slot, 1001, 2002, 0, 0,
+                                                        0);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (dsd_engine_trunk_scan_active_index(state) != (cases[i].holds ? 0U : 1U)) {
+            DSD_FPRINTF(stderr, "P25 conventional receive %s: hold %s\n", cases[i].label,
+                        cases[i].holds ? "missing" : "taken by traffic the policy does not admit");
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+
+cleanup:
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #637: a conventional target whose traffic the receive policy rejects lets the frame loop yield once the
+   acquisition window has run and another target can take the receiver; never while it is still acquiring. */
+static int
+test_receive_expiry_yields_conventional_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,250,\n"
+                             "b,dmr-conventional,462000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = 0;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "receive expiry init failed: %s\n", err);
+        test_rc = 1;
+    } else {
+        dsd_receive_filter* dcc = &opts->receive.filters[DSD_RECEIVE_DCC];
+        dcc->enabled = 1;
+        test_rc |= dsd_receive_set_parse(DSD_RECEIVE_DCC, "2", &dcc->block, err, sizeof err) != 0;
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmr_color_code = 2;
+        trunk_scan_test_set_now(0.10);
+        if (dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: yielded while still acquiring\n");
+            test_rc = 1;
+        }
+        trunk_scan_test_set_now(5.0);
+        if (!dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: rejected traffic kept the frame loop\n");
+            test_rc = 1;
+        }
+        /* Admitted data on the other slot (DCC 3 allowed there) stamps the activity hold, which keeps the target. */
+        state->dmr_color_code = 3;
+        state->currentslot = 1;
+        opts->trunk_tune_group_calls = 1;
+        opts->trunk_tune_data_calls = 1;
+        opts->scan_voice_only = 0;
+        dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 1);
+        state->dmr_color_code = 2;
+        if (dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: dropped a target admitted data holds\n");
+            test_rc = 1;
+        }
+        dcc->enabled = 0;
+        if (dsd_engine_trunk_scan_receive_expired(opts, state)) {
+            DSD_FPRINTF(stderr, "receive expiry: yielded with no filter on\n");
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_p25_conventional_activity_hold(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -3344,8 +3549,8 @@ test_p25_conventional_activity_hold(void) {
             test_rc = 1;
         }
         trunk_scan_test_set_now(0.10);
-        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, 1001, 2002, cases[i].is_private,
-                                                        cases[i].encrypted, 0);
+        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, DSD_SYNC_P25P1_POS, 0, 1001, 2002,
+                                                        cases[i].is_private, cases[i].encrypted, 0);
         trunk_scan_test_set_now(0.30);
         dsd_engine_trunk_scan_tick(opts, state);
         if (dsd_engine_trunk_scan_active_index(state) != (cases[i].holds ? 0U : 1U)) {
@@ -3834,7 +4039,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
         }
         trunk_scan_test_set_now(0.10);
         if (!has_media) {
-            dsd_engine_trunk_scan_p25_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+            dsd_engine_trunk_scan_p25_conventional_activity(opts, state, DSD_SYNC_P25P1_POS, 0, 1001, 2002, 0, 0, 0);
         } else {
             // No activity report: the canonical P25 media alone must hold the park.
             dsd_call_observation obs = {0};
@@ -4231,9 +4436,10 @@ test_nxdn_state_isolated_per_target(void) {
         DSD_FPRINTF(stderr, "nxdn identity scan did not rotate back to first target\n");
         test_rc = 1;
     }
-    test_rc |= expect_nxdn_identity("restored target", &state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
-    if (state.nxdn_last_ran_stand_in != 1U) {
-        DSD_FPRINTF(stderr, "restored target lost its stand-in mark, so its value would read as a RAN\n");
+    test_rc |= expect_nxdn_identity("restored target", &state, 12, 461012500, (unsigned int)-1, 0x25U, 3, "Type-C", 1,
+                                    96, 12, 4);
+    if (state.nxdn_last_ran_stand_in != 0U) {
+        DSD_FPRINTF(stderr, "restored target retained a stale stand-in mark\n");
         test_rc = 1;
     }
 
@@ -8130,6 +8336,109 @@ test_target_policy_options_rotate_and_restore(void) {
     return failed;
 }
 
+/* The service a target's own row names traffic by, from the live naming table. */
+static const char*
+live_service_name(const dsd_opts* opts, uint8_t kind, uint16_t value) {
+    const dsd_receive_identity identity = {.value = value, .kind = kind, .known = 1};
+    return dsd_receive_service_name(&opts->receive.names, &identity);
+}
+
+/* The targets file's bytes, so a test can show the session never wrote to it. */
+static int
+read_targets_file(const char* path, char* out, size_t cap) {
+    DSD_MEMSET(out, 0, cap);
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    const size_t n = fread(out, 1U, cap - 1U, fp);
+    (void)fclose(fp);
+    return n < cap - 1U ? 0 : -1;
+}
+
+/* Issue #637, end to end from the reporter's own trunk_scan_targets.csv rows: each target's options cell becomes the
+   live naming table (and the NFM target's tone filter) while it is on air, replacing the configured table and never
+   merged with the other target's; rotating back reinstalls it, a live "this channel" names edit relabels the parked
+   target without touching the file, and shutdown puts the configured table back. */
+static int
+test_target_receive_names_rotate_and_restore(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,"
+                         "keys_hex_csv,single_key_dec,single_key_hex,options,p25_bandplan_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "Mall,dmr-conventional,464125000,,500,,,auto,,,,,"
+                                       "--dcc-name 7=Hospital --dcc-name 14=Municipality,\n"
+                                       "20R Local,nfm-conventional,462675000,,500,500,,,,,,,--squelch noise+3 "
+                                       "--nfm-bandwidth-hz 8000 --tone-allow 97.4/141.3 "
+                                       "--tone-name '141.3=20R Traveler',\n",
+                                       path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static char written[8192];
+    static char reread[8192];
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_nfm_bandwidth_hz = 20000;
+    char error[256] = {0};
+    int failed = read_targets_file(path, written, sizeof(written)) != 0
+                 || dsd_receive_names_parse("--dcc-name 3=Configured", &opts.receive.names, error, sizeof(error)) != 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof(opts.trunk_scan_targets_csv), "%s", path);
+    trunk_scan_test_set_now(0.0);
+    if (!failed) {
+        failed = dsd_engine_trunk_scan_init(&opts, &state, error, sizeof(error)) != 0;
+    }
+    if (!failed) {
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0;
+        failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 7), "Hospital") != 0
+                  || strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 14), "Municipality") != 0
+                  || live_service_name(&opts, DSD_RECEIVE_DCC, 2)[0] != '\0'
+                  || live_service_name(&opts, DSD_RECEIVE_DCC, 3)[0] != '\0';
+        trunk_scan_test_set_now(0.51);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 1;
+        failed |= opts.receive.names.count != 1
+                  || strcmp(live_service_name(&opts, DSD_RECEIVE_CTCSS, 1413), "20R Traveler") != 0
+                  || live_service_name(&opts, DSD_RECEIVE_DCC, 7)[0] != '\0';
+        failed |= opts.analog_tone_filter != DSD_TONE_FILTER_ALLOW
+                  || !dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 974)
+                  || !dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 1413)
+                  || dsd_tone_set_contains_ctcss(&opts.analog_tone_set, 1000);
+        trunk_scan_test_set_now(1.02);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0;
+        failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 7), "Hospital") != 0
+                  || opts.analog_tone_filter != DSD_TONE_FILTER_OFF;
+        dsd_scan_row_edit_value value;
+        DSD_MEMSET(&value, 0, sizeof(value));
+        failed |= dsd_receive_names_parse("--dcc-name 7=ER", &value.receive.names, error, sizeof(error)) != 0;
+        failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "Mall",
+                                                    DSD_SCAN_ROW_FIELD_NAMES, DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+                  != DSD_SCAN_ROW_EDIT_APPLIED;
+        failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 7), "ER") != 0;
+        failed |= read_targets_file(path, reread, sizeof(reread)) != 0 || strcmp(written, reread) != 0;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    failed |= strcmp(live_service_name(&opts, DSD_RECEIVE_DCC, 3), "Configured") != 0
+              || live_service_name(&opts, DSD_RECEIVE_DCC, 7)[0] != '\0';
+    failed |= read_targets_file(path, reread, sizeof(reread)) != 0 || strcmp(written, reread) != 0;
+    if (failed) {
+        DSD_FPRINTF(stderr, "target receive names rotation regression: %s\n", error);
+    }
+    dsd_state_trunk_lcn_free(&state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    return failed;
+}
+
 static int
 test_target_options_rotate_and_restore(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -10282,6 +10591,55 @@ test_target_squelch_warns_once_per_target_on_pcm_input(void) {
         test_rc = 1;
     }
     return test_rc;
+}
+
+/* Issue #637: a target whose service name its own filters, or the configured ones it inherits, reject warns once at
+ * load, naming the target and the identifier; the name is kept. A target whose names can show says nothing. */
+static int
+test_targets_warn_unreachable_names(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "Own,dmr-conventional,461000000,,250,,,--dcc-block 7 --dcc-name 7=Hospital\n"
+                                          "Inherits,dmr-conventional,462000000,,250,,,--dcc-name 14=Municipality\n"
+                                          "Open,dmr-conventional,463000000,,250,,,--dcc-name 2=Mall\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    char err[256] = {0};
+    if (dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_DCC, 1, "2", "", "", err, sizeof err) != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscannames") != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(0.0);
+    const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    trunk_scan_test_clear_now();
+    char buf[4096];
+    const int read_rc = dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    cleanup_paths(dir, target_path, NULL);
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+    if (rc != 0 || read_rc != 0
+        || !strstr(buf, "Trunk scan target 'Own': service names that never show, because the receive filters reject "
+                        "their traffic: DCC 7")
+        || !strstr(buf, "Trunk scan target 'Inherits': service names that never show") || !strstr(buf, "DCC 14")
+        || strstr(buf, "'Open'")) {
+        DSD_FPRINTF(stderr, "unreachable-name warnings (rc=%d err=%s):\n%s\n", rc, err, buf);
+        return 1;
+    }
+    return 0;
 }
 
 /* --- Issue #526: nfm-conventional targets --- */
@@ -12569,7 +12927,9 @@ test_target_edit_squelch_live_and_stored(void) {
     int test_rc = expect_target_squelch(&opts, "edit init", -60, 1);
     if (state.scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_TRUNK_SCAN || state.scan_row_session == 0U
         || state.scan_row_index != 0
-        || state.scan_row_editable != (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_GAIN)
+        || state.scan_row_editable
+               != (uint16_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_GAIN | DSD_SCAN_ROW_FIELD_SLOT
+                             | DSD_SCAN_ROW_FIELD_NAC | DSD_SCAN_ROW_FIELD_NAMES)
         || state.scan_row_listed != (uint8_t)DSD_SCAN_ROW_FIELD_SQUELCH || state.scan_row_edited != 0U) {
         DSD_FPRINTF(stderr, "published row scanner=%u session=%u index=%d editable=%#x listed=%#x edited=%#x\n",
                     (unsigned)state.scan_row_scanner, (unsigned)state.scan_row_session, (int)state.scan_row_index,
@@ -12595,6 +12955,11 @@ test_target_edit_squelch_live_and_stored(void) {
         DSD_FPRINTF(stderr, "the scope's row options do not carry the edit\n");
         test_rc = 1;
     }
+    /* The result carries the options the target runs with the edit in (issue #637). */
+    if (!(result.options.present & DSD_SCAN_OPT_SQUELCH) || result.options.squelch_db != -45) {
+        DSD_FPRINTF(stderr, "live set: the result does not carry the target's options\n");
+        test_rc = 1;
+    }
 
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
@@ -12612,6 +12977,11 @@ test_target_edit_squelch_live_and_stored(void) {
     test_rc |= expect_target_squelch(&opts, "stored inherit", -80, 3);
     if (!(result.previous.set & DSD_SCAN_ROW_FIELD_SQUELCH) || result.previous.value.squelch_db != -45) {
         DSD_FPRINTF(stderr, "stored inherit did not return the previous edit\n");
+        test_rc = 1;
+    }
+    /* ... nor its options from the next visit: thr follows the default, so its list's squelch is gone from them. */
+    if (result.options.present & DSD_SCAN_OPT_SQUELCH) {
+        DSD_FPRINTF(stderr, "stored inherit: the result still carries the list's squelch\n");
         test_rc = 1;
     }
 
@@ -12843,8 +13213,8 @@ test_target_edit_width_and_tone(void) {
     g_scan_dsp_rate_hz = 24000;
     int test_rc = expect_nfm_front(&opts, "width edit init", 1, 12500, 0);
     if (state.scan_row_editable
-            != (uint8_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
-                         | DSD_SCAN_ROW_FIELD_GAIN)
+            != (uint16_t)(DSD_SCAN_ROW_FIELD_SQUELCH | DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_TONE
+                          | DSD_SCAN_ROW_FIELD_GAIN | DSD_SCAN_ROW_FIELD_NAMES)
         || state.scan_row_listed != (uint8_t)DSD_SCAN_ROW_FIELD_WIDTH) {
         DSD_FPRINTF(stderr, "nfm target editable=%#x listed=%#x\n", (unsigned)state.scan_row_editable,
                     (unsigned)state.scan_row_listed);
@@ -13101,6 +13471,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
+    rc |= run_with_default_tune_hook(test_parser_keeps_gain_after_receive_options);
+    rc |= run_with_default_tune_hook(test_targets_warn_unreachable_names);
     rc |= run_with_default_tune_hook(test_parser_accepts_p25_conventional_target);
     rc |= run_with_default_tune_hook(test_live_target_decryption_roundtrip);
     rc |= run_with_default_tune_hook(test_parser_accepts_target_key_columns);
@@ -13120,6 +13492,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_initial_key_allocation_failure);
     rc |= run_with_default_tune_hook(test_target_options_rotate_and_restore);
     rc |= run_with_default_tune_hook(test_target_policy_options_rotate_and_restore);
+    rc |= run_with_default_tune_hook(test_target_receive_names_rotate_and_restore);
     rc |= run_with_default_tune_hook(test_prepare_failure_keeps_outgoing_snapshot);
     rc |= run_with_default_tune_hook(test_target_voice_gate_options_apply);
     rc |= run_with_default_tune_hook(test_parser_optional_headers_are_case_insensitive);
@@ -13149,6 +13522,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_classes_enable_missing_decoders);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_p25_conventional_activity_hold);
+    rc |= run_with_default_tune_hook(test_p25_conventional_activity_receive_policy);
+    rc |= run_with_default_tune_hook(test_receive_expiry_yields_conventional_target);
     rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);
     rc |= run_with_default_tune_hook(test_conventional_activity_families_do_not_cross);
     rc |= run_with_default_tune_hook(test_nxdn48_conventional_activity_hold);
@@ -13279,6 +13654,13 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_edit_waits_for_its_retune);
     rc |= run_with_default_tune_hook(test_target_edit_survives_decryption_apply);
     return rc;
+}
+
+/* The conventional NFM call's end, which the scanner runs before it ends the slots' calls (issue #637). */
+void
+dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 void

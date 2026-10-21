@@ -127,6 +127,12 @@ Main Menu
 │   ├── Modulation [C4FM]                        m
 │   ├── P25 Phase 2 modulation lock [Off]        M
 │   ├── CQPSK path [On]                              (RTL-SDR input only)
+│   ├── Receive filters and names
+│   │   ├── Slot filter...
+│   │   ├── DCC filter...
+│   │   ├── RAN filter...
+│   │   ├── NAC filter...
+│   │   └── Service names...
 │   ├── Audio filters
 │   │   ├── Low-pass filter (960 Hz) [Off]       V
 │   │   ├── High-pass filter (960 Hz) [Off]      B
@@ -505,6 +511,27 @@ rows' chooser is titled `NFM passband` or `AM passband`, and their `This channel
 channel (8000..25000)`) opens on the passband the row runs: its own width, the configured one it follows, or `-B`
 standing in for an unset NFM width. See [Live per-channel edits](trunk-scan.md#runtime-behavior).
 
+`Decoder > Receive filters and names` edits slot, DMR DCC, NXDN RAN and P25 NAC filters.
+Each filter has separate allow and block lists and an enabled state. Enter identifiers
+separated by `/`; NACs are hexadecimal (`293/370`). Block wins when a value appears
+in both lists. An enabled filter waits in `Checking` until a validated identifier
+arrives. Rejected traffic stays muted and creates no call history, per-call recording
+or activity hold. Slot filters apply only to supported two-slot protocols. A manual
+scan hold keeps the channel selected even when its traffic is rejected.
+
+Its `Service names...` row edits a naming table using options
+such as `--dcc-name "7=Hospital" --tone-name "141.3=Traveler"`. A matching access-code
+or tone name takes precedence over a slot name; otherwise the existing channel label
+is used. Naming does not enable filtering. Names appear in live calls, completed
+history and named per-call WAVs; NFM calls include their received CTCSS/DCS tone.
+
+Both editors offer `All channels` and, for a compatible active scan row, `This channel`.
+`Use default` removes that field's override; `List value` restores its imported value.
+Channel edits last for the session and leave the source CSV unchanged. The editor
+captures its destination before prompting, so a scan move cannot redirect an edit to
+another row. See [Receive filters and service names](cli.md#receive-filters-and-service-names)
+for limits and identifier syntax.
+
 `DSP bandwidth...` prompts with the selectable bandwidths (4, 6, 8, 12, 16, 24, 48 or 72 kHz; 72 is TETRA's) and snaps
 another value to the nearest of them, the narrower of two as near. On an Airspy it refuses 72 kHz, since no Airspy
 sample rate halves to it.
@@ -799,7 +826,8 @@ Call Info repeats the answer on its own first line, because compact view hides t
 It reads `Target:` for the active `--trunk-scan` target, `Channel:` for the name of the `-Y` row on air when trunk
 scan is not running, and nothing at all when neither scanner is running or the row has no name. The word matches the
 Input Output row it repeats: a target is a whole system, and "channel" already means a channel number lower in Call
-Info. Event history rows carry the same label as a bracketed prefix — see "Event History Rows" below.
+Info. Event history rows carry the same label as a bracketed prefix, or the service name that labels the traffic —
+see "Event History Rows" below.
 
 ## Received Tone
 
@@ -913,8 +941,10 @@ While scanning, an event history row names the channel it was heard on: the chan
 `-Y` scan list, or the active `--trunk-scan` target's id, in brackets between the row's timestamp
 and its protocol token — `2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; ...`. It answers
 the question a bare `TGT: 00000000` row cannot, which is where encrypted traffic was heard. Data
-notices (SMS, LRRP, registrations) carry the same prefix. A receiver that is not scanning a named
-channel renders exactly what it always did, and Short mode (`h`) still drops only the date, so the
+notices (SMS, LRRP, registrations) carry the same prefix. Traffic a service name labels (`--dcc-name 7=Hospital`
+and the other [naming options](cli.md#receive-filters-and-service-names)) carries that name in the brackets instead,
+scanning or not: `2026-04-30 09:12:04 [Hospital] DMR TGT: ...`. Any other row from a receiver that is not scanning a
+named channel renders exactly what it always did, and Short mode (`h`) still drops only the date, so the
 prefix survives into the compact row. The channel is resolved once, when the transmission's first
 row renders, so a call that outlives a scan step keeps the channel it was actually heard on — and a
 call heard on a scan-list row with no name stays unlabelled rather than picking up the name of the

@@ -2,11 +2,15 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -99,6 +103,24 @@ static int option_set_path(const scan_option_spec* spec, const char* argument, u
     "expects whole Hz from " OPTION_HZ(DSD_ANALOG_AM_WIDTH_MIN_HZ) " to " OPTION_HZ(DSD_ANALOG_AM_WIDTH_MAX_HZ)
 
 static const scan_option_spec specifications[] = {
+    {"--slot-allow", DSD_SCAN_OPT_SLOT, DMR | P25, 1, 0, 0, 0, NULL, NULL},
+    {"--slot-block", DSD_SCAN_OPT_SLOT, DMR | P25, 1, 0, 0, 0, NULL, NULL},
+    {"--no-slot-filter", DSD_SCAN_OPT_SLOT, DMR | P25, 0, 0, 0, 0, NULL, NULL},
+    {"--dcc-allow", DSD_SCAN_OPT_DCC, DMR, 1, 0, 0, 0, NULL, NULL},
+    {"--dcc-block", DSD_SCAN_OPT_DCC, DMR, 1, 0, 0, 0, NULL, NULL},
+    {"--no-dcc-filter", DSD_SCAN_OPT_DCC, DMR, 0, 0, 0, 0, NULL, NULL},
+    {"--ran-allow", DSD_SCAN_OPT_RAN, NXDN, 1, 0, 0, 0, NULL, NULL},
+    {"--ran-block", DSD_SCAN_OPT_RAN, NXDN, 1, 0, 0, 0, NULL, NULL},
+    {"--no-ran-filter", DSD_SCAN_OPT_RAN, NXDN, 0, 0, 0, 0, NULL, NULL},
+    {"--nac-allow", DSD_SCAN_OPT_NAC, P25, 1, 0, 0, 0, NULL, NULL},
+    {"--nac-block", DSD_SCAN_OPT_NAC, P25, 1, 0, 0, 0, NULL, NULL},
+    {"--no-nac-filter", DSD_SCAN_OPT_NAC, P25, 0, 0, 0, 0, NULL, NULL},
+    {"--slot-name", DSD_SCAN_OPT_NAMES, DMR | P25, 1, 0, 0, 0, NULL, NULL},
+    {"--dcc-name", DSD_SCAN_OPT_NAMES, DMR, 1, 0, 0, 0, NULL, NULL},
+    {"--ran-name", DSD_SCAN_OPT_NAMES, NXDN, 1, 0, 0, 0, NULL, NULL},
+    {"--nac-name", DSD_SCAN_OPT_NAMES, P25, 1, 0, 0, 0, NULL, NULL},
+    {"--tone-name", DSD_SCAN_OPT_NAMES, NFM, 1, 0, 0, 0, NULL, NULL},
+    {"--no-service-names", DSD_SCAN_OPT_NAMES, ANY_MODES, 0, 0, 0, 0, NULL, NULL},
     {"-b", DSD_SCAN_OPT_BP, DMR, 1, 0, 0, 0, NULL, option_set_bp},
     {"-H", DSD_SCAN_OPT_HYTERA, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_hex},
     {"-1", DSD_SCAN_OPT_SCALAR, DMR | P25 | NXDN, 1, 0, 0, 0, NULL, option_set_hex},
@@ -538,6 +560,15 @@ option_invalid(const scan_option_spec* spec, const char* argument, char* error, 
 static int
 option_apply(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed,
              scan_force_options* forces, char* error, size_t error_size) {
+    if (spec->field & DSD_SCAN_OPT_RECEIVE) {
+        if (dsd_receive_option_apply(&parsed->values.receive, &parsed->receive_seen, spec->name, argument, error,
+                                     error_size)
+            != 0) {
+            return -1;
+        }
+        parsed->values.present |= spec->field;
+        return 1;
+    }
     const int old_force = parsed->values.force;
     if ((parsed->values.present & spec->field) && spec->field != DSD_SCAN_OPT_FORCE) {
         return option_error(error, error_size, spec->name, "duplicate option");
@@ -627,7 +658,7 @@ dsd_scan_options_fields_for_mode(unsigned int mode, int conventional) {
 static int
 option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_options* parsed,
             scan_force_options* forces, char* error, size_t error_size) {
-    char token[1024] = {0};
+    char token[DSD_RECEIVE_LIST_MAX + 33] = {0};
     char argument[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
     int rc = option_token(cursor, token, sizeof(token));
     if (rc <= 0) {
@@ -668,7 +699,7 @@ static int
 option_file_read(const char* text, const char** cursor, dsd_scan_option_file_cb callback, void* context) {
     *cursor = option_skip_space(*cursor);
     const char* start = *cursor;
-    char token[1024] = {0};
+    char token[DSD_RECEIVE_LIST_MAX + 33] = {0};
     char argument[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
     int rc = option_token(cursor, token, sizeof(token));
     if (rc <= 0) {
@@ -758,6 +789,129 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
     return rc;
 }
 
+/* Whether the @p length bytes at @p content, the inside of a cell wrapped in double quotes, are spreadsheet (RFC 4180)
+   quoting: every double quote among them is one of a doubled pair. */
+static int
+option_csv_quoting(const char* content, size_t length) {
+    size_t i = 0;
+    while (i < length) {
+        if (content[i] != '"') {
+            i++;
+        } else if (i + 1 < length && content[i + 1] == '"') {
+            i += 2;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Whether @p legacy parses for some row class: a cell any class accepts keeps the reading it has always had, so the
+   reading never depends on the row's mode. */
+static int
+option_legacy_reads(const char* legacy) {
+    for (unsigned int mode = 0; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        for (int conventional = 0; conventional <= 1; conventional++) {
+            dsd_scan_options parsed;
+            const int rc = dsd_scan_options_parse(legacy, mode, conventional, &parsed, NULL, 0);
+            DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+            if (rc == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+int
+dsd_scan_options_cell_csv_quoted(const char* legacy, const char* content, size_t length) {
+    return legacy && content && option_csv_quoting(content, length) && !option_legacy_reads(legacy);
+}
+
+/* A spreadsheet-quoted cell's content with each doubled quote read as one, NUL-terminated, in a new buffer of
+   @p length + 1 bytes the caller wipes and frees; when @p map is not NULL, it receives (@p length + 1 entries) the
+   content offset each decoded byte starts at, and after the last one @p length. NULL when out of memory. */
+static char*
+option_csv_decode(const char* content, size_t length, size_t* map) {
+    char* text = (char*)malloc(length + 1);
+    if (!text) {
+        return NULL;
+    }
+    size_t used = 0;
+    size_t i = 0;
+    while (i < length) {
+        if (map) {
+            map[used] = i;
+        }
+        text[used++] = content[i];
+        /* A doubled quote is one quote: its second half is skipped. */
+        i += content[i] == '"' ? 2U : 1U;
+    }
+    if (map) {
+        map[used] = length;
+    }
+    text[used] = '\0';
+    return text;
+}
+
+int
+dsd_scan_options_parse_cell(const char* legacy, const char* content, size_t length, unsigned int mode, int conventional,
+                            dsd_scan_options* out, char* error, size_t error_size) {
+    int rc = dsd_scan_options_parse(legacy, mode, conventional, out, error, error_size);
+    if (rc == 0 || !dsd_scan_options_cell_csv_quoted(legacy, content, length)) {
+        return rc;
+    }
+    char* text = option_csv_decode(content, length, NULL);
+    if (!text) {
+        return option_error(error, error_size, "options", "out of memory");
+    }
+    rc = dsd_scan_options_parse(text, mode, conventional, out, error, error_size);
+    DSD_SECURE_ZERO(text, length + 1);
+    free(text);
+    return rc;
+}
+
+/* A spreadsheet-quoted cell's visit: the decoded text's offsets mapped back to the cell's content. */
+typedef struct {
+    dsd_scan_option_file_cb callback;
+    void* context;
+    const size_t* map;
+} option_csv_visit;
+
+static int
+// cppcheck-suppress constParameterCallback -- signature fixed by dsd_scan_option_file_cb
+option_csv_visit_file(void* context, const char* option, const char* path, size_t offset, size_t length,
+                      int includes_option) {
+    const option_csv_visit* visit = (const option_csv_visit*)context;
+    return visit->callback(visit->context, option, path, visit->map[offset],
+                           visit->map[offset + length] - visit->map[offset], includes_option);
+}
+
+int
+dsd_scan_options_visit_cell_files(const char* legacy, const char* content, size_t length, void* context,
+                                  dsd_scan_option_file_cb callback, int* csv_quoted) {
+    const int quoted = dsd_scan_options_cell_csv_quoted(legacy, content, length);
+    if (csv_quoted) {
+        *csv_quoted = quoted;
+    }
+    if (!quoted) {
+        return dsd_scan_options_visit_files(legacy, context, callback);
+    }
+    size_t* map = (size_t*)calloc(length + 1, sizeof(*map));
+    char* text = map ? option_csv_decode(content, length, map) : NULL;
+    int rc = -1;
+    if (text && callback) {
+        option_csv_visit visit = {callback, context, map};
+        rc = dsd_scan_options_visit_files(text, &visit, option_csv_visit_file);
+    }
+    if (text) {
+        DSD_SECURE_ZERO(text, length + 1);
+        free(text);
+    }
+    free(map);
+    return rc;
+}
+
 /* The tone switch whose list is the last argument of @p text (--tone-allow or --tone-block, its list separate or after
  * '='), or NULL: none, another switch or argument after it, or text the tokenizer refuses (its parse says why). */
 static const scan_option_spec*
@@ -765,7 +919,7 @@ option_trailing_tone_list(const char* text) {
     const scan_option_spec* last = NULL;
     const scan_option_spec* awaiting = NULL;
     const char* cursor = text;
-    char token[1024];
+    char token[DSD_RECEIVE_LIST_MAX + 33];
     int rc;
     while ((rc = option_token(&cursor, token, sizeof(token))) == 1) {
         if (awaiting) {
@@ -780,7 +934,7 @@ option_trailing_tone_list(const char* text) {
             *equals = '\0';
         }
         const scan_option_spec* spec = option_find(token);
-        if (spec && spec->field == DSD_SCAN_OPT_TONE && spec->argument) {
+        if (spec && (spec->field & (DSD_SCAN_OPT_TONE | DSD_SCAN_OPT_RECEIVE)) && spec->argument) {
             if (equals) {
                 last = spec;
             } else {
@@ -808,13 +962,25 @@ option_starts_switch(const char* text) {
     return option_find(name) != NULL;
 }
 
-/* Whether @p text, a field of the file's own columns, can only be the rest of a tone list a comma cut off: one run of
- * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/161.0"), the first a supported CTCSS tone or
- * DCS code, alone or followed by a row option's switch, the rest of the options cell the same comma cut off
- * ("67.0 --squelch-db -60"). A column's own text is left alone: a value no list takes (an RTL gain) and anything else
- * with a space in it, such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
+/* The receive filter kind (DSD_RECEIVE_SLOT..NAC) a switch's list names, or -1 for any other switch. */
 static int
-option_is_tone_list_rest(const char* text) {
+option_receive_filter_kind(const scan_option_spec* spec) {
+    for (int kind = 0; spec && kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (spec->field == ((uint32_t)DSD_SCAN_OPT_SLOT << kind)) {
+            return kind;
+        }
+    }
+    return -1;
+}
+
+/* Whether @p text, a field of the file's own columns, can only be the rest of @p spec's list a comma cut off: one run of
+ * '/'-separated entries with no space in it ("67.0", "100/D023N", "d047i/161.0" for a tone list; "370", "4/7" for a
+ * receive filter), the first an entry that list takes, alone or followed by a row option's switch, the rest of the
+ * options cell the same comma cut off ("67.0 --squelch-db -60"). A column's own text is left alone: a value no list
+ * takes (an RTL gain), a lone number after a receive filter's list (a gain of 7 after "--dcc-allow 4"), and anything
+ * else with a space in it, such as a name that starts with a number or a code ("100 Main St", "D023 Repeater"). */
+static int
+option_is_list_rest(const scan_option_spec* spec, const char* text) {
     size_t len = strlen(text);
     while (len > 0U && option_space((unsigned char)text[len - 1U])) {
         len--;
@@ -827,8 +993,18 @@ option_is_tone_list_rest(const char* text) {
     }
     DSD_MEMCPY(entry, text, first);
     entry[first] = '\0';
-    dsd_tone_set unused;
-    return dsd_tone_set_parse(entry, &unused, NULL, 0) == 0;
+    if (spec->field == DSD_SCAN_OPT_TONE) {
+        dsd_tone_set unused;
+        return dsd_tone_set_parse(entry, &unused, NULL, 0) == 0;
+    }
+    const int kind = option_receive_filter_kind(spec);
+    /* A receive filter's entries are bare numbers, which a numeric column (an RTL gain) takes too: a lone one is that
+       column's own value (issue #637). Only a '/' run or the rest of the options cell after it shows the cut list. */
+    if (kind >= 0 && first == len) {
+        return 0;
+    }
+    unsigned int unused = 0;
+    return kind >= 0 && dsd_receive_value_parse(kind, entry, &unused) == 0;
 }
 
 int
@@ -838,14 +1014,18 @@ dsd_scan_options_tone_list_split(const char* options, const char* next, int next
         return 0;
     }
     const char* rest = option_skip_space(next);
-    if (rest[0] == '\0' || (!next_past_header && !option_is_tone_list_rest(rest))) {
+    if (rest[0] == '\0') {
         return 0;
     }
     const scan_option_spec* spec = option_trailing_tone_list(options);
-    if (!spec) {
+    /* Past the header any field is the comma's doing; within it only text the cut list takes (a service name's rest
+       cannot be told from a column's own text). */
+    if (!spec || (!next_past_header && !option_is_list_rest(spec, rest))) {
         return 0;
     }
-    (void)option_error(error, error_size, spec->name, "use / between entries, not commas");
+    (void)option_error(error, error_size, spec->name,
+                       spec->field == DSD_SCAN_OPT_NAMES ? "commas are not supported in service names"
+                                                         : "use / between entries, not commas");
     return 1;
 }
 
@@ -875,4 +1055,131 @@ dsd_scan_option_tone_summary(const dsd_scan_option_values* values, char* list, s
         (void)dsd_tone_set_format_display(&values->tone_set, list, list_size);
     }
     return values->tone_filter;
+}
+
+static void
+receive_summary_set(int kind, const dsd_receive_set* set, const char* empty, char* out, size_t capacity) {
+    unsigned int count = 0;
+    size_t used = 0;
+    out[0] = '\0';
+    for (unsigned int v = 0; v < 4096; v++) {
+        if (!dsd_receive_set_contains(set, v)) {
+            continue;
+        }
+        count++;
+        if (count <= 6) {
+            char value[16];
+            (void)dsd_receive_value_format(kind, v, value, sizeof value);
+            int n = DSD_SNPRINTF(out + used, capacity - used, "%s%s", used ? "/" : "", value);
+            if (n < 0 || (size_t)n >= capacity - used) {
+                return;
+            }
+            used += (size_t)n;
+        }
+    }
+    if (count > 6) {
+        DSD_SNPRINTF(out + used, capacity - used, " (+%u more)", count - 6);
+    } else if (!count) {
+        DSD_SNPRINTF(out, capacity, "%s", empty);
+    }
+}
+
+void
+dsd_scan_option_receive_summary(const dsd_scan_option_values* values, char* out, size_t capacity) {
+    if (!out || !capacity) {
+        return;
+    }
+    out[0] = '\0';
+    size_t used = 0;
+    static const char* const names[] = {"Slot", "DCC", "RAN", "NAC"};
+    for (int kind = 0; values && kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (!(values->present & (DSD_SCAN_OPT_SLOT << kind))) {
+            continue;
+        }
+        const dsd_receive_filter* filter = &values->receive.filters[kind];
+        char allowed[64], blocked[64];
+        receive_summary_set(kind, &filter->allow, "all known", allowed, sizeof allowed);
+        receive_summary_set(kind, &filter->block, "none", blocked, sizeof blocked);
+        const int written = DSD_SNPRINTF(out + used, capacity - used, "%s%s %s (allow %s; block %s)", used ? "; " : "",
+                                         names[kind], filter->enabled ? "on" : "off", allowed, blocked);
+        if (written < 0 || (size_t)written >= capacity - used) {
+            return;
+        }
+        used += (size_t)written;
+    }
+    if (values && (values->present & DSD_SCAN_OPT_NAMES)) {
+        DSD_SNPRINTF(out + used, capacity - used, "%sService names: %u", used ? "; " : "", values->receive.names.count);
+    } else if (!used) {
+        DSD_SNPRINTF(out, capacity, "%s", "Receive filters and names: default");
+    }
+}
+
+void
+dsd_scan_option_baseline_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_option_baseline* out) {
+    if (!out) {
+        return;
+    }
+    dsd_scan_mode_configured_receive(opts, state, &out->receive);
+    dsd_scan_mode_configured_tone_policy(opts, state, &out->tone_filter, &out->tone_set);
+}
+
+int
+dsd_scan_option_unreachable_names(const dsd_scan_option_values* values, const dsd_scan_option_baseline* baseline,
+                                  char* out, size_t capacity) {
+    dsd_scan_option_baseline policy;
+    if (baseline) {
+        policy = *baseline;
+    } else {
+        DSD_MEMSET(&policy, 0, sizeof(policy));
+    }
+    /* As a row's options apply (dsd_scan_mode_options()): each filter kind and the naming table it sets replace the
+       configured ones, and an nfm row's tone policy the configured tone filter. */
+    for (int kind = 0; values && kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if (values->present & (DSD_SCAN_OPT_SLOT << kind)) {
+            policy.receive.filters[kind] = values->receive.filters[kind];
+        }
+    }
+    if (values && (values->present & DSD_SCAN_OPT_NAMES)) {
+        policy.receive.names = values->receive.names;
+    }
+    if (values && (values->present & DSD_SCAN_OPT_TONE)) {
+        policy.tone_filter = values->tone_filter;
+        policy.tone_set = values->tone_set;
+    }
+    const int count =
+        dsd_receive_names_unreachable(&policy.receive, policy.tone_filter, &policy.tone_set, out, capacity);
+    DSD_SECURE_ZERO(&policy, sizeof(policy));
+    return count;
+}
+
+void
+dsd_scan_option_receive_summary_against(const dsd_scan_option_values* values, const dsd_scan_option_baseline* baseline,
+                                        char* out, size_t capacity) {
+    dsd_scan_option_receive_summary(values, out, capacity);
+    /* Whole identifiers, ending in "..." when more are left out; the summary gives way to the note if both do not fit. */
+    char names[96];
+    if (out && capacity && dsd_scan_option_unreachable_names(values, baseline, names, sizeof names) > 0) {
+        char note[sizeof names + 32];
+        DSD_SNPRINTF(note, sizeof note, "; never shown (filtered out): %s", names);
+        dsd_receive_note_append(out, capacity, note);
+    }
+}
+
+int
+dsd_scan_option_receive_differs(const dsd_scan_option_values* before, const dsd_scan_option_values* after) {
+    const unsigned int b = before ? (before->present & DSD_SCAN_OPT_RECEIVE) : 0U;
+    const unsigned int a = after ? (after->present & DSD_SCAN_OPT_RECEIVE) : 0U;
+    if (a != b) {
+        return 1;
+    }
+    if (!a) {
+        return 0;
+    }
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        if ((a & (DSD_SCAN_OPT_SLOT << kind))
+            && !dsd_receive_filter_equal(&before->receive.filters[kind], &after->receive.filters[kind])) {
+            return 1;
+        }
+    }
+    return (a & DSD_SCAN_OPT_NAMES) && !dsd_receive_names_equal(&before->receive.names, &after->receive.names);
 }

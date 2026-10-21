@@ -31,6 +31,8 @@ int dsd_engine_signal_search_active(const dsd_state* state);
 int dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);
 void dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state);
 /** Only call with protocol-confirmed observations from runtime evidence hooks. */
+void dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot,
+                                          uint32_t target, uint32_t source, const char* access);
 void dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
                                        const char* access);
 /** Runtime site hook: joins a CRC/FEC-checked site note to the visit's site record and publishes the hit when its shown

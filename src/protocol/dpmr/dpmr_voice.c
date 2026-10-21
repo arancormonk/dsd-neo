@@ -27,6 +27,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
@@ -468,10 +469,13 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
                 DSD_FPRINTF(stderr, "\n FN %d/4", state->dPMRVoiceFS2Frame.FrameNumbering[o] + 1);
             }
 
+            /* A scrambled half plays through NXDN's decoder under its synctype; the receive policy judges dPMR's. */
+            const dsd_receive_context receive = dsd_receive_context_begin(state, DSD_SYNC_DPMR_FS2_POS);
             for (uint32_t i = start; i < end; i++) {
                 processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DPMR, NULL, ambe_fr[i], NULL);
                 playSynthesizedVoiceMS(opts, state);
             }
+            dsd_receive_context_end(state, receive);
             state->synctype = realsynctype;
             state->nxdn_cipher_type = 0;
         }

@@ -36,6 +36,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -65,6 +66,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -2878,6 +2880,14 @@ test_tone_filter_set_edits_the_configured_policy(void) {
     rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_OFF, "", "tone set: off without a list");
     rc |= expect_tone_policy("tone set: off clears the list", opts.analog_tone_filter, &opts.analog_tone_set,
                              DSD_TONE_FILTER_OFF, "");
+    /* A tone name the new policy rejects is kept and noted (issue #637). */
+    rc |= expect_int("tone set: a tone name",
+                     dsd_receive_names_parse("--tone-name '100.0=Traveler'", &opts.receive.names, NULL, 0), 0);
+    rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_BLOCK, "100.0", "tone set: block the named tone");
+    rc |= expect_str("tone set: the stranded name is noted", state.ui_msg,
+                     "Applied: Tone filter -> block 100.0 Hz; never shown: CTCSS 100.0");
+    rc |= expect_int("tone set: the name is kept", (int)opts.receive.names.count, 1);
+    DSD_MEMSET(&opts.receive.names, 0, sizeof opts.receive.names);
     rc |= submit_tone_filter(&opts, &state, DSD_TONE_FILTER_ALLOW, "67.0/100.0", "tone set: allow again");
 
     static const struct {
@@ -8658,6 +8668,101 @@ test_decode_mode_set_ensures_family_sink(void) {
     rc |= expect_int("digital mode leaves the raw sink", g_ensure_analog_calls, 0);
     freeState(&state);
     return rc;
+}
+
+typedef struct {
+    int files;
+    int named;
+} nfm_recording_names;
+
+static int
+count_nfm_recording(const char* name, void* user) {
+    nfm_recording_names* names = (nfm_recording_names*)user;
+    names->files++;
+    names->named += strstr(name, "_NFM_") != NULL && strstr(name, "_SVC_Traveler") != NULL && !strstr(name, "TEMP");
+    return 0;
+}
+
+static int
+remove_nfm_recording(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof path, (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+/* Open a per-call NFM recording in @p dir, its CTCSS 141.3 Hz named "Traveler" (issue #637). */
+static int
+start_named_nfm_recording(dsd_opts* opts, dsd_state* state, const char* dir) {
+    init_decode_mode_context(opts, state);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->dmr_stereo_wav = 1;
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", dir);
+    int rc = expect_int("nfm names parsed",
+                        dsd_receive_names_parse("--tone-name '141.3=Traveler'", &opts->receive.names, NULL, 0), 0);
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1413;
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = 2000.0f;
+    }
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    rc |= expect_true("nfm call recording", dsd_engine_analog_call_active(state));
+    return rc;
+}
+
+/* The recording @p dir holds kept its mode and service name: the call ended before its history row was committed. */
+static int
+expect_named_nfm_recording(const char* what, dsd_state* state, const char* dir) {
+    int rc = expect_true(what, !dsd_engine_analog_call_active(state));
+    nfm_recording_names names = {0, 0};
+    rc |= expect_int("nfm recordings listed", dsd_dir_list(dir, count_nfm_recording, &names), 0);
+    rc |= expect_true("the recording keeps its mode and service name", names.files == 1 && names.named == 1);
+    freeState(state);
+    (void)dsd_dir_list(dir, remove_nfm_recording, (void*)dir);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
+/*
+ * Issue #637: a decode-mode change during a per-call NFM recording ends the analog call through its own lifecycle
+ * before the call tracking reset commits and clears the history row, so the recording keeps its mode and service name.
+ */
+static int
+test_decode_mode_set_closes_nfm_recording_named(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char dir[DSD_TEST_PATH_MAX];
+    int rc = expect_true("nfm recording dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_nfm_mode") != NULL);
+    rc |= start_named_nfm_recording(&opts, &state, dir);
+    rc |= expect_int("digital mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("digital mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    return rc | expect_named_nfm_recording("nfm call ended", &state, dir);
+}
+
+/* The ProVoice mode toggle ends every call like the other end-all paths (dsd_engine_end_calls()): an NFM call first,
+   so its recording keeps its mode and service name. */
+static int
+test_provoice_toggle_closes_nfm_recording_named(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char dir[DSD_TEST_PATH_MAX];
+    int rc = expect_true("nfm recording dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_nfm_provoice") != NULL);
+    rc |= start_named_nfm_recording(&opts, &state, dir);
+    opts.frame_provoice = 1; /* the toggle acts only in ProVoice mode */
+    state.ea_mode = 0;
+    post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+    rc |= expect_int("provoice toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("provoice mode toggled", state.ea_mode, 1);
+    return rc | expect_named_nfm_recording("nfm call ended by the provoice toggle", &state, dir);
 }
 
 /*
@@ -19004,6 +19109,8 @@ main(void) {
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= test_decode_mode_set_ensures_family_sink();
+    rc |= test_decode_mode_set_closes_nfm_recording_named();
+    rc |= test_provoice_toggle_closes_nfm_recording_named();
     rc |= test_config_apply_keeps_session_output_layout();
 #endif
     rc |= test_family_change_discards_partial_analog_block();

@@ -6,6 +6,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -62,7 +63,8 @@ call_reads_encrypted(const dsd_call_snapshot* call) {
  */
 static int
 call_has_no_identity(const dsd_call_snapshot* call) {
-    if (DSD_SYNC_IS_X2TDMA(call->protocol) || DSD_SYNC_IS_PROVOICE(call->protocol)) {
+    if (DSD_SYNC_IS_X2TDMA(call->protocol) || DSD_SYNC_IS_PROVOICE(call->protocol)
+        || call->protocol == DSD_SYNC_ANALOG) {
         return 0;
     }
     return call->ota_target_id == 0U && call->policy_target_id == 0U && call->target_text[0] == '\0'
@@ -146,6 +148,16 @@ staged_channel_label(const dsd_state* state, uint8_t slot, char* out, size_t out
 static void
 slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, dsd_app_slot_call* out) {
     staged_channel_label(state, slot, out->channel, sizeof(out->channel));
+    DSD_SNPRINTF(out->service, sizeof(out->service), "%s", call->service_label);
+    out->receive_identity = call->receive_identity;
+    if (call->service_label[0]) {
+        DSD_SNPRINTF(out->name, sizeof(out->name), "%s", call->service_label);
+        return;
+    }
+    if (call->protocol == DSD_SYNC_ANALOG) {
+        DSD_SNPRINTF(out->name, sizeof(out->name), "%s", out->channel[0] ? out->channel : "NFM");
+        return;
+    }
     if (staged_group_name(state, slot, out->tg_id, out->name, sizeof(out->name))) {
         return;
     }
@@ -157,6 +169,9 @@ int
 dsd_app_call_line_state(int lookup, const dsd_call_snapshot* call, double now_m, double hold_s) {
     if (lookup <= 0 || call == NULL) {
         return DSD_APP_CALL_LINE_NONE;
+    }
+    if (call->receive_verdict == DSD_RECEIVE_CHECKING || call->receive_verdict == DSD_RECEIVE_REJECTED) {
+        return DSD_APP_CALL_LINE_IDLE;
     }
     if (call->phase == DSD_CALL_PHASE_ACTIVE) {
         return DSD_APP_CALL_LINE_ACTIVE;

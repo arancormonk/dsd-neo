@@ -26,9 +26,11 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -390,6 +392,47 @@ test_a_lost_tcp_input_is_no_socket(void) {
     assert(g_cleanup_calls == 0);
 }
 
+#ifdef USE_RADIO
+static int g_rtl_read_result;
+
+static int
+fake_idle_rtl_read(void* context, float* out, uint8_t* flags, size_t count, int* got) {
+    (void)context;
+    (void)out;
+    (void)flags;
+    (void)count;
+    *got = 0;
+    return g_rtl_read_result;
+}
+
+static void
+test_idle_nfm_radio_yields_without_shutdown(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    state->samplesPerSymbol = 1;
+    state->rtl_ctx = (void*)&g_rtl_read_result; /* Opaque to the fake. */
+    const dsd_rtl_stream_io_hooks hooks = {.read_ex = fake_idle_rtl_read};
+    dsd_rtl_stream_io_hooks_set(hooks);
+    exitflag = 0;
+    g_cleanup_calls = 0;
+    g_rtl_read_result = 0;
+    assert(getSymbol(opts, state, 0) == 0.0f);
+    assert(state->input_interrupted == 1 && g_cleanup_calls == 0 && exitflag == 0);
+    assert(state->symbolcnt == 0U);
+    state->input_interrupted = 0;
+    g_rtl_read_result = -1;
+    (void)getSymbol(opts, state, 0);
+    assert(g_cleanup_calls == 1); /* A stopped stream still stops the decoder. */
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    free(state);
+    free(opts);
+}
+#endif
+
 int
 main(void) {
     dsd_runtime_set_controls_pending(fake_controls_pending);
@@ -401,6 +444,9 @@ main(void) {
     test_the_m17_tcp_retry_leaves_for_a_queued_command();
     test_a_cancelled_reconnect_is_no_lost_input();
     test_a_lost_tcp_input_is_no_socket();
+#ifdef USE_RADIO
+    test_idle_nfm_radio_yields_without_shutdown();
+#endif
     dsd_runtime_set_controls_pending(NULL);
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
     printf("DSP_INPUT_INTERRUPT: OK\n");

@@ -443,21 +443,57 @@ submit_tone_filter(const api_command_desc* d, const dsd_json_node* params, uint6
 }
 
 static int
+receive_params(const dsd_json_node* params, dsd_app_receive_payload* p) {
+    return param_i32(params, "kind", &p->kind) || param_i32_opt(params, "enabled", &p->enabled)
+           || param_str_opt(params, "allow", p->allow, sizeof p->allow)
+           || param_str_opt(params, "block", p->block, sizeof p->block)
+           || param_str_opt(params, "names", p->names, sizeof p->names);
+}
+
+static int
+submit_receive(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
+    (void)d;
+    (void)request_id;
+    dsd_app_receive_payload p = {0};
+    if (receive_params(params, &p)) {
+        return API_INVALID_PARAMS;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_RECEIVE_SET, &p, sizeof p);
+}
+
+static int
+scan_row_receive_params(const dsd_json_node* params, dsd_app_receive_payload* out) {
+    const dsd_json_node* receive = dsd_json_obj_get(params, "receive");
+    return receive && (receive->type != DSD_JSON_OBJECT || receive_params(receive, out));
+}
+
+static int
+scan_row_base_params(const dsd_json_node* params, dsd_app_scan_row_edit_payload* p) {
+    if (param_u32(params, "session", &p->session) != 0 || param_i32(params, "scanner", &p->scanner) != 0
+        || param_i32(params, "row", &p->row) != 0 || param_i32(params, "field", &p->field) != 0
+        || param_i32(params, "action", &p->action) != 0 || param_i32_opt(params, "mode", &p->mode) != 0
+        || param_i32_opt(params, "squelch_db", &p->squelch_db) != 0
+        || param_i32_opt(params, "squelch_mode", &p->squelch_mode) != 0
+        || param_i32_opt(params, "squelch_margin_db", &p->squelch_margin_db) != 0
+        || param_i32_opt(params, "width_hz", &p->width_hz) != 0
+        || param_i32_opt(params, "tone_mode", &p->tone_mode) != 0 || param_i32_opt(params, "gain_db", &p->gain_db) != 0
+        || param_str_opt(params, "target_id", p->target_id, sizeof p->target_id) != 0
+        || param_str_opt(params, "tone_list", p->tone_list, sizeof p->tone_list) != 0) {
+        return API_INVALID_PARAMS;
+    }
+    return 0;
+}
+
+static int
 submit_scan_row_edit(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)d;
     (void)request_id;
     dsd_app_scan_row_edit_payload p;
     DSD_MEMSET(&p, 0, sizeof p);
-    if (param_u32(params, "session", &p.session) != 0 || param_i32(params, "scanner", &p.scanner) != 0
-        || param_i32(params, "row", &p.row) != 0 || param_i32(params, "field", &p.field) != 0
-        || param_i32(params, "action", &p.action) != 0 || param_i32_opt(params, "mode", &p.mode) != 0
-        || param_i32_opt(params, "squelch_db", &p.squelch_db) != 0
-        || param_i32_opt(params, "squelch_mode", &p.squelch_mode) != 0
-        || param_i32_opt(params, "squelch_margin_db", &p.squelch_margin_db) != 0
-        || param_i32_opt(params, "width_hz", &p.width_hz) != 0 || param_i32_opt(params, "tone_mode", &p.tone_mode) != 0
-        || param_i32_opt(params, "gain_db", &p.gain_db) != 0
-        || param_str_opt(params, "target_id", p.target_id, sizeof p.target_id) != 0
-        || param_str_opt(params, "tone_list", p.tone_list, sizeof p.tone_list) != 0) {
+    if (scan_row_base_params(params, &p)) {
+        return API_INVALID_PARAMS;
+    }
+    if (scan_row_receive_params(params, &p.receive)) {
         return API_INVALID_PARAMS;
     }
     return dsd_app_command_scan_row_edit(&p);
@@ -909,9 +945,11 @@ static const api_command_desc k_commands[] = {
     API_I32("nfm_bandwidth_set", DSD_APP_CMD_NFM_BANDWIDTH_SET, "{value:Hz 8000..25000, 0=default}"),
     API_I32("am_bandwidth_set", DSD_APP_CMD_AM_BANDWIDTH_SET, "{value:Hz 5000..20000, 0=default}"),
     API_KIND("tone_filter_set", DSD_APP_CMD_TONE_FILTER_SET, submit_tone_filter, "{mode:0|1|2,list,keep_list}"),
+    API_KIND("receive_set", DSD_APP_CMD_RECEIVE_SET, submit_receive,
+             "{kind:0=slot|1=dcc|2=ran|3=nac|4=names,enabled,allow,block,names}"),
     API_KIND("scan_row_edit", DSD_APP_CMD_SCAN_ROW_EDIT, submit_scan_row_edit,
              "{scanner,session,row,mode,target_id,field,action,squelch_db,squelch_mode,squelch_margin_db,width_hz,"
-             "tone_mode,tone_list,gain_db}"),
+             "tone_mode,tone_list,gain_db,receive:{kind,enabled,allow,block,names}}"),
 
     API_STR("pulse_out_set", DSD_APP_CMD_PULSE_OUT_SET, 99, "{value:name, <=99 bytes}"),
     API_STR("pulse_in_set", DSD_APP_CMD_PULSE_IN_SET, 99, "{value:name, <=99 bytes}"),

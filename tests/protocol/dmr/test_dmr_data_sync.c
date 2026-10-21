@@ -9,9 +9,11 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -32,6 +34,9 @@ static int g_sm_last_slot;
 static int g_reset_calls;
 static int g_skip_calls;
 static int g_handler_slot;
+static int g_handler_mono_slot;
+static int g_handler_moves_carrier;
+static int g_handler_writes_fix;
 static int g_live_dibit_index;
 static int g_live_dibits[64];
 static uint8_t g_live_reliability[64];
@@ -145,7 +150,14 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     (void)opts;
     g_handler_calls++;
     g_handler_slot = state->currentslot;
+    g_handler_mono_slot = state->dmr_mono_rx_slot;
+    if (g_handler_moves_carrier) {
+        state->carrier_seq++;
+    }
     g_handler_burst = databurst;
+    if (g_handler_writes_fix) {
+        DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s", "lrrp-fix");
+    }
     DSD_MEMCPY(g_handler_info, info, sizeof(g_handler_info));
     DSD_MEMCPY(g_handler_reliab, reliab98, sizeof(g_handler_reliab));
 }
@@ -290,6 +302,82 @@ test_ms_data_sync_bypasses_confidence_and_cach(void) {
     assert(g_reset_calls == 0);
     assert(g_cach_calls == 0);
     assert(state.dmr_color_code == 5);
+}
+
+/* Issue #637: a standalone data burst is judged by its own CACH slot, not by the slot the single-slot decoder proved
+   for its voice lane, which is back for the voice that follows; a data burst the single-slot decoder reads with no
+   slot evidence (an MS-sourced one) stays Checking rather than being taken for TS1. */
+static void
+test_data_burst_receive_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    dmr_data_sync(&opts, &state);
+    assert(g_handler_calls == 1 && g_handler_mono_slot == DSD_DMR_MONO_RX_NONE);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS1);
+
+    /* A carrier boundary during the burst forgets the proof for good: it is not put back onto the next carrier. */
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    g_handler_moves_carrier = 1; /* A replay retune while the burst dispatches. */
+    dmr_data_sync(&opts, &state);
+    g_handler_moves_carrier = 0;
+    assert(g_handler_calls == 1 && state.carrier_seq == 1U);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_NONE);
+
+    /* A standalone TS2 burst the receive policy rejects leaves no position in its lane's cache, though the voice
+       lane's proven TS1 (admitted) comes back after it: the terminal judges the lane by that proof. */
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    opts.receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2; /* --slot-block 2 */
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    g_decoded_slot = 1;
+    g_handler_writes_fix = 1;
+    dmr_data_sync(&opts, &state);
+    assert(g_handler_calls == 1 && state.dmr_lrrp_gps[1][0] == '\0');
+    g_decoded_slot = 0;
+    reset_fixture();
+    prepare_state(&state, payload, reliab);
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    g_decoded_slot = 0;
+    dmr_data_sync(&opts, &state);
+    assert(strcmp(state.dmr_lrrp_gps[0], "lrrp-fix") == 0); /* An admitted TS1 fix stays. */
+    g_handler_writes_fix = 0;
+    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
+
+    /* The single-slot output (-nm) folds a standalone burst onto lane 0 (dmr_flco_ctx_init()): it is judged by its own
+       CACH slot while it dispatches, never as the voice lane's proven TS1, and the proof is put back after. */
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    opts.dmr_mono = 1;
+    state.dmr_stereo = 0;
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    g_decoded_slot = 1;
+    dmr_data_sync(&opts, &state);
+    assert(g_handler_calls == 1 && g_handler_mono_slot == DSD_DMR_MONO_RX_TS2);
+    assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS1);
+    opts.dmr_mono = 0;
+
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    opts.dmr_mono = 1;
+    state.dmr_ms_mode = 1;
+    state.synctype = DSD_SYNC_DMR_MS_DATA;
+    dmr_data_sync(&opts, &state);
+    assert(g_handler_calls == 1 && g_handler_mono_slot == DSD_DMR_MONO_RX_PENDING);
+    opts.dmr_mono = 0;
 }
 
 static void
@@ -606,6 +694,7 @@ int
 main(void) {
     test_data_sync_dispatches_burst_and_reliability();
     test_ms_data_sync_bypasses_confidence_and_cach();
+    test_data_burst_receive_slot();
     test_mono_option_keeps_bs_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();

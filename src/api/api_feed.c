@@ -23,11 +23,13 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -35,6 +37,8 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <stddef.h>
@@ -204,6 +208,11 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_strn(w, "t_mode", e->t_mode, sizeof e->t_mode);
     (void)dsd_json_kv_strn(w, "s_mode", e->s_mode, sizeof e->s_mode);
     (void)dsd_json_kv_strn(w, "channel_label", e->channel_label, sizeof e->channel_label);
+    (void)dsd_json_kv_strn(w, "service_label", e->service_label, sizeof e->service_label);
+    (void)dsd_json_kv_u64(w, "receive_kind", e->receive_identity.kind);
+    (void)dsd_json_kv_u64(w, "receive_value", e->receive_identity.value);
+    (void)dsd_json_kv_bool(w, "receive_known", e->receive_identity.known);
+    (void)dsd_json_kv_u64(w, "receive_slot", e->receive_identity.slot);
     (void)dsd_json_kv_u64(w, "channel", e->channel);
     (void)dsd_json_kv_i64(w, "freq_hz", e->freq_hz);
     (void)dsd_json_kv_u64(w, "access_code_kind", e->access_code_kind);
@@ -287,6 +296,12 @@ row_fingerprint(const Event_History* e) {
     h = fnv1a_str(h, e->t_mode, sizeof e->t_mode);
     h = fnv1a_str(h, e->s_mode, sizeof e->s_mode);
     h = fnv1a_str(h, e->channel_label, sizeof e->channel_label);
+    h = fnv1a_str(h, e->service_label, sizeof e->service_label);
+    h = fnv1a_byte(h, e->receive_identity.kind);
+    h = fnv1a_byte(h, e->receive_identity.known);
+    h = fnv1a_byte(h, e->receive_identity.slot);
+    h = fnv1a_byte(h, (unsigned char)e->receive_identity.value);
+    h = fnv1a_byte(h, (unsigned char)(e->receive_identity.value >> 8));
     h = fnv1a_str(h, e->alias, sizeof e->alias);
     h = fnv1a_str(h, e->gps_s, sizeof e->gps_s);
     h = fnv1a_str(h, e->text_message, sizeof e->text_message);
@@ -305,6 +320,7 @@ eh_init_empty_fingerprint(void) {
     blank.subtype = -1;
     blank.severity = DSD_EVENT_SEVERITY_UNKNOWN;
     blank.category = DSD_EVENT_CATEGORY_UNKNOWN;
+    blank.receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE; /* Kind "none", never kind 0 (slot) (issue #637). */
     g_eh_empty_fp = row_fingerprint(&blank);
 }
 
@@ -401,6 +417,10 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_strn(w, "tg_text", view.tg_text, sizeof view.tg_text);
     (void)dsd_json_kv_strn(w, "src_text", view.src_text, sizeof view.src_text);
     (void)dsd_json_kv_strn(w, "channel", view.channel, sizeof view.channel);
+    (void)dsd_json_kv_strn(w, "service_label", view.service, sizeof view.service);
+    (void)dsd_json_kv_u64(w, "receive_kind", view.receive_identity.kind);
+    (void)dsd_json_kv_u64(w, "receive_value", view.receive_identity.value);
+    (void)dsd_json_kv_bool(w, "receive_known", view.receive_identity.known);
     (void)dsd_json_kv_u64(w, "tg_id", view.tg_id);
     (void)dsd_json_kv_u64(w, "elapsed_ms", view.elapsed_ms);
     (void)dsd_json_kv_u64(w, "kid", view.kid);
@@ -409,7 +429,8 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_u64(w, "priority", view.priority);
     (void)dsd_json_kv_bool(w, "enc", view.enc);
     dsd_call_snapshot snap;
-    if (dsd_call_state_get(state, (uint8_t)slot, &snap) > 0) {
+    if ((view.state == DSD_APP_CALL_LINE_ACTIVE || view.state == DSD_APP_CALL_LINE_ENDED)
+        && dsd_call_state_get(state, (uint8_t)slot, &snap) > 0) {
         (void)dsd_json_kv_i64(w, "frequency_hz", snap.frequency_hz);
         (void)dsd_json_kv_i64(w, "protocol", snap.protocol);
         (void)dsd_json_kv_i64(w, "kind", snap.kind);
@@ -430,6 +451,39 @@ build_call(const dsd_state* state, dsd_json_buf* b) {
     }
     (void)dsd_json_arr_end(&w);
     return end_line(b, &w);
+}
+
+/* The receive policy (issue #637): its verdict on current reception, and the configured filters and naming table that
+   receive_set edits, in receive_set's own spelling, so a client can read a filter or the table before it replaces it. */
+static void
+encode_receive(dsd_json_writer* w, const dsd_opts* opts, const dsd_state* state) {
+    char status[128];
+    dsd_app_receive_status_text(opts, state, status, sizeof status);
+    dsd_receive_policy policy;
+    dsd_scan_mode_configured_receive(opts, state, &policy);
+    (void)dsd_json_key(w, "receive");
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_kv_strn(w, "status", status, sizeof status);
+    (void)dsd_json_key(w, "filters");
+    (void)dsd_json_arr_begin(w);
+    for (int kind = 0; kind < DSD_RECEIVE_FILTER_COUNT; kind++) {
+        char allow[DSD_RECEIVE_LIST_MAX + 1];
+        char block[DSD_RECEIVE_LIST_MAX + 1];
+        (void)dsd_receive_set_format(kind, &policy.filters[kind].allow, allow, sizeof allow);
+        (void)dsd_receive_set_format(kind, &policy.filters[kind].block, block, sizeof block);
+        (void)dsd_json_obj_begin(w);
+        (void)dsd_json_kv_i64(w, "kind", kind);
+        /* 0/1, as receive_set takes it, so a client can send a filter back as it read it. */
+        (void)dsd_json_kv_i64(w, "enabled", policy.filters[kind].enabled ? 1 : 0);
+        (void)dsd_json_kv_strn(w, "allow", allow, sizeof allow);
+        (void)dsd_json_kv_strn(w, "block", block, sizeof block);
+        (void)dsd_json_obj_end(w);
+    }
+    (void)dsd_json_arr_end(w);
+    char names[DSD_RECEIVE_NAMES_TEXT_MAX + 1];
+    (void)dsd_receive_names_format(&policy.names, names, sizeof names);
+    (void)dsd_json_kv_strn(w, "names", names, sizeof names);
+    (void)dsd_json_obj_end(w);
 }
 
 /* What the stateful commands must quote back: the talkgroup list version, the decryption context, the scan row. */
@@ -468,6 +522,11 @@ encode_control_context(dsd_json_writer* w, const dsd_state* state) {
         (void)dsd_json_obj_end(w);
     } else {
         (void)dsd_json_kv_null(w, "scan_row");
+    }
+    if (g_live_opts != NULL) {
+        encode_receive(w, g_live_opts, state);
+    } else {
+        (void)dsd_json_kv_null(w, "receive");
     }
 }
 

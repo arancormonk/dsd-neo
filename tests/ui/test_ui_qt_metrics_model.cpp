@@ -20,6 +20,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cmath>
+#include <dsd-neo/core/receive_types.h>
 #include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,10 +44,12 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <memory>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -1020,6 +1023,32 @@ test_scan_timing() {
  * takes on stop, not something the QML fixture can prove.
  */
 static void
+test_receive_filter_status() {
+    auto opts = std::make_unique<dsd_opts>();
+    auto state = std::make_unique<dsd_state>();
+    initOpts(opts.get());
+    initState(state.get());
+    dsd_qt::MetricsModel model;
+    expect("receive filter parses",
+           dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "7", "", "", nullptr, 0) == 0);
+    state->synctype = state->lastsynctype = DSD_SYNC_NONE;
+    model.refresh(opts.get(), state.get());
+    expect("unidentified digital traffic checks", model.receiveStatus().contains(QStringLiteral("Checking")));
+    opts->analog_only = 1;
+    model.refresh(opts.get(), state.get());
+    expect("NFM never waits for a digital code", model.receiveStatus() == QStringLiteral("Filters off"));
+    opts->analog_only = 0;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->dmr_color_code = 8;
+    model.refresh(opts.get(), state.get());
+    expect("confirmed blocked code rejects", model.receiveStatus().contains(QStringLiteral("Rejected")));
+    state->dmr_color_code = 7;
+    model.refresh(opts.get(), state.get());
+    expect("confirmed allowed code admits", model.receiveStatus().contains(QStringLiteral("Allowed")));
+    freeState(state.get());
+}
+
+static void
 test_rx_tone() {
     static dsd_opts opts;
     static dsd_state state;
@@ -1640,6 +1669,7 @@ main(int argc, char** argv) {
     test_call_skip_metrics();
     test_scan_timing();
     test_rx_tone();
+    test_receive_filter_status();
     test_tone_filter();
     test_tone_filter_editor_setting();
     test_direct_key_presence();

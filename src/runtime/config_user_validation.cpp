@@ -11,6 +11,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -18,6 +19,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -226,6 +229,14 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
     if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
         || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+        return;
+    }
+    if (strcmp(entry->section, "receive") == 0) {
+        dsd_receive_policy policy = {};
+        char error[160];
+        if (dsd_receive_config_set(&policy, entry->key, val, error, sizeof(error)) != 0) {
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, error);
+        }
         return;
     }
     if (strcmp(entry->section, "input") == 0 && strncmp(entry->key, "airspy_", 7) == 0) {
@@ -537,6 +548,28 @@ validate_composed_tone_policy(const dsdneoUserConfig* cfg, const char* section, 
     dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "analog", key ? key : "tone_filter", msg);
 }
 
+/* A service name the receive or tone filters reject never shows (issue #637): kept, so a service can be blocked for a
+   while, and warned about. */
+static void
+validate_composed_receive_names(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->has_receive || cfg->receive_refused) {
+        return;
+    }
+    dsd_scan_option_baseline configured = {};
+    configured.receive = cfg->receive;
+    if (cfg->has_analog && !cfg->analog_tone_list_refused) {
+        configured.tone_filter = cfg->analog_tone_filter;
+        configured.tone_set = cfg->analog_tone_set;
+    }
+    char names[128];
+    if (dsd_scan_option_unreachable_names(nullptr, &configured, names, sizeof names) > 0) {
+        char msg[192];
+        DSD_SNPRINTF(msg, sizeof msg, "service names never shown, the filters reject them: %s", names);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, 0, section ? section : "receive", key ? key : "names", msg);
+    }
+}
+
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
@@ -547,6 +580,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_analog_width(cfg, "analog", "nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, "analog", "am_bandwidth_hz", diags);
     validate_composed_tone_policy(cfg, "analog", "tone_filter", diags);
+    validate_composed_receive_names(cfg, "receive", "names", diags);
 }
 
 static void
@@ -562,6 +596,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_analog_width(cfg, section, "analog.nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, section, "analog.am_bandwidth_hz", diags);
     validate_composed_tone_policy(cfg, section, "analog.tone_filter", diags);
+    validate_composed_receive_names(cfg, section, "receive.names", diags);
 }
 
 static void
@@ -760,7 +795,7 @@ validate_config_stream_syntax_append(FILE* stream, const char* source_path, int 
         return -1;
     }
 
-    char line[1024];
+    char line[8192];
     config_validation_scan_t scan = {};
     scan.source_path = source_path;
     scan.depth = depth;

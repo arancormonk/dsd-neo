@@ -5,6 +5,8 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -114,6 +116,11 @@ scan_voice_snapshot_is_voice(const dsd_call_snapshot* call) {
 
 static int
 scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call) {
+    /* By the identity the call was received with (issue #637): a retained call keeps the hold it earned while a sync
+       loss has the live code unknown again. */
+    if (!dsd_receive_identity_admitted(opts, &call->receive_identity)) {
+        return 0;
+    }
     const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
     if (target == 0U) {
         /* Unknown identity (LC never decoded) counts as voice. */
@@ -177,7 +184,8 @@ dsd_scan_tg_hold_call_active(const dsd_state* state) {
         if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
             continue;
         }
-        if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA) {
+        if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA
+            || call.receive_verdict == DSD_RECEIVE_CHECKING || call.receive_verdict == DSD_RECEIVE_REJECTED) {
             continue;
         }
         /* The remapped policy target is the identity the hold is compared against everywhere
@@ -568,4 +576,49 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
      * hold the deadline function returns < 0, so MANUAL_HOLD reports the cap as paused. */
     report.visit_deadline_m = dsd_engine_scan_visit_deadline_m(opts, state);
     dsd_scan_timing_publish(state, &report);
+}
+
+/* An admitted call of any kind heard on this visit within the hold (issue #637): a call whose terminator was missed
+   stays ACTIVE, so only its latest observation counts, never its phase alone. */
+static int
+scan_admitted_call_recent(const dsd_opts* opts, const dsd_state* state, double arrived_m, double now_m, double hold_s) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && call.updated_m >= arrived_m && now_m - call.updated_m < hold_s
+            && dsd_receive_allows(opts, state, call.protocol, slot)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+dsd_scan_receive_should_leave(const dsd_opts* opts, const dsd_state* state, double arrived_m, double now_m) {
+    if (!opts || !state || arrived_m < 0.0 || !dsd_receive_filters_enabled(opts)) {
+        return 0;
+    }
+    /* A two-slot carrier is judged on both lanes, not the one the decoder happens to be on: an idle lane the policy
+       admits does not keep a channel whose traffic it rejects or is still checking (issue #637). Then, as for any
+       carrier the policy does not wholly admit, only admitted media holds it past the acquisition window. */
+    if (dsd_receive_carrier_allows(opts, state)) {
+        return 0;
+    }
+    const double hold_s =
+        (double)scan_voice_resolve_ms(opts->scan_voice_hold_ms, DSD_SCAN_VOICE_DEFAULT_HOLD_MS) / 1000.0;
+    /* With voice-only scanning off, an admitted call of any kind in progress (a data transfer, which the voice probe
+       below never sees) keeps the channel as it would without a filter, while it is still heard. */
+    if (opts->scan_voice_only != 1 && scan_admitted_call_recent(opts, state, arrived_m, now_m, hold_s)) {
+        return 0;
+    }
+    dsd_scan_voice_probe_result media;
+    (void)dsd_scan_voice_probe(opts, state, &media);
+    /* Admitted media heard on this visit holds through its voice hold, after its call ended too (the reply a hold
+       waits for), as the voice gate's own hold does. */
+    if (media.retained_media_m >= arrived_m && now_m - media.retained_media_m < hold_s) {
+        return 0;
+    }
+    const double acquire_s =
+        (double)scan_voice_resolve_ms(opts->scan_voice_qualify_ms, DSD_SCAN_VOICE_DEFAULT_QUALIFY_MS) / 1000.0;
+    return now_m - arrived_m >= acquire_s;
 }

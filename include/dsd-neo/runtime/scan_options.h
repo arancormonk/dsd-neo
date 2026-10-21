@@ -5,6 +5,9 @@
 #ifndef DSD_NEO_RUNTIME_SCAN_OPTIONS_H
 #define DSD_NEO_RUNTIME_SCAN_OPTIONS_H
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -45,6 +48,13 @@ enum {
     /** The nfm row sets its own CTCSS/DCS receive policy (--tone-allow, --tone-block or --no-tone-filter: one
      * option in three spellings, issue #527). */
     DSD_SCAN_OPT_TONE = 1U << 23,
+    DSD_SCAN_OPT_SLOT = 1U << 24,
+    DSD_SCAN_OPT_DCC = 1U << 25,
+    DSD_SCAN_OPT_RAN = 1U << 26,
+    DSD_SCAN_OPT_NAC = 1U << 27,
+    DSD_SCAN_OPT_NAMES = 1U << 28,
+    DSD_SCAN_OPT_RECEIVE = DSD_SCAN_OPT_SLOT | DSD_SCAN_OPT_DCC | DSD_SCAN_OPT_RAN | DSD_SCAN_OPT_NAC
+        | DSD_SCAN_OPT_NAMES,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -82,6 +92,7 @@ typedef struct {
     int tone_filter;
     /** Its list: every entry a standard tone or code, held once (core/analog_tone.h); empty with --no-tone-filter. */
     dsd_tone_set tone_set;
+    dsd_receive_policy receive;
     int mute_dmr;
     int tune_data_calls;
     int tune_enc_calls;
@@ -91,9 +102,33 @@ typedef struct {
     char key_profile_ref[64];
 } dsd_scan_option_values;
 
+/** Compact display summary of row-local receive filters and names. */
+void dsd_scan_option_receive_summary(const dsd_scan_option_values* values, char* out, size_t capacity);
+int dsd_scan_option_receive_differs(const dsd_scan_option_values* before, const dsd_scan_option_values* after);
+
+/** The configured policies a row's options run over: the receive policy and the analog tone filter (issue #637). */
+typedef struct dsd_scan_option_baseline {
+    dsd_receive_policy receive;
+    int tone_filter; /* dsd_tone_filter_mode */
+    dsd_tone_set tone_set;
+} dsd_scan_option_baseline;
+
+/** The configured policies, not a scan row's (dsd_scan_mode_configured_receive(), _configured_tone_policy()). */
+void dsd_scan_option_baseline_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_option_baseline* out);
+/** The name rules a row leaves unreachable (dsd_receive_names_unreachable()) when its options @p values (NULL: none)
+ * run over @p baseline (NULL: none, judging the row's own alone): each filter kind and the naming table the row sets
+ * replace the configured ones, and its tone policy the configured tone filter, as the row's options apply. */
+int dsd_scan_option_unreachable_names(const dsd_scan_option_values* values, const dsd_scan_option_baseline* baseline,
+                                      char* out, size_t capacity);
+/** dsd_scan_option_receive_summary(), with "; never shown (filtered out): DCC 7" when the row leaves names
+ * unreachable over @p baseline (dsd_scan_option_unreachable_names()). */
+void dsd_scan_option_receive_summary_against(const dsd_scan_option_values* values,
+                                             const dsd_scan_option_baseline* baseline, char* out, size_t capacity);
+
 /** Parsed import metadata. Wipe after materializing; never publish this object to a frontend. */
 typedef struct {
     dsd_scan_option_values values;
+    unsigned int receive_seen; /* parser bookkeeping, never part of the live policy */
     uint64_t bp;
     uint64_t scalar;
     uint64_t hytera[4];
@@ -118,6 +153,23 @@ typedef int (*dsd_scan_option_file_cb)(void* context, const char* option, const 
                                        size_t length, int includes_option);
 int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_option_file_cb callback);
 
+/** Spreadsheet-quoted options cells (issue #637). A spreadsheet saves a cell that holds a double quote wrapped in
+ * double quotes, each quote inside doubled (RFC 4180): `"--dcc-name ""7=St Mary's"""`. @p legacy is the cell as its
+ * loader has always read it (a trunk-scan target's without one pair of outer quotes, a channel-map row's as split);
+ * @p content (@p length bytes), when not NULL, is the inside of a cell wrapped in double quotes. The cell reads as
+ * spreadsheet quoting, its content with each doubled quote read as one, only when every quote in @p content is doubled
+ * and @p legacy parses for no row class; any other cell keeps its legacy reading, so a cell accepted before keeps its
+ * meaning and the reading never depends on the row's mode. */
+int dsd_scan_options_cell_csv_quoted(const char* legacy, const char* content, size_t length);
+/** dsd_scan_options_parse() of the cell as it reads (dsd_scan_options_cell_csv_quoted()). */
+int dsd_scan_options_parse_cell(const char* legacy, const char* content, size_t length, unsigned int mode,
+                                int conventional, dsd_scan_options* out, char* error, size_t error_size);
+/** dsd_scan_options_visit_files() of the cell as it reads. Offsets are into @p content when the cell reads as
+ * spreadsheet quoting (@p csv_quoted, when not NULL, says which) and cover the operand's doubled quotes; otherwise
+ * into @p legacy. */
+int dsd_scan_options_visit_cell_files(const char* legacy, const char* content, size_t length, void* context,
+                                      dsd_scan_option_file_cb callback, int* csv_quoted);
+
 /** Whether a row's options cell lost the rest of a tone list to a comma (issue #527). The CSV splitters end a cell at
  * every unquoted comma, so `--tone-allow 100.0,67.0` reaches dsd_scan_options_parse() as `--tone-allow 100.0` and
  * leaves `67.0` in the field after the cell. @p options is the cell, @p next the raw field after it (NULL when the row
@@ -128,6 +180,9 @@ int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_optio
  * "67.0/D023N"), alone or followed by a row option's switch, the rest of the cell the comma cut off too ("67.0
  * --squelch-db -60"). An RTL gain, and any other name with a space in it ("100 Main St", "D023 Repeater"), are that
  * column's own; a one-word name that is itself a standard tone or code ("100") reads as the list's rest.
+ * A receive filter list (--slot/dcc/ran/nac-allow or -block, issue #637) is judged the same way, by the values that
+ * filter takes ("370", "4/7"); a service name (--*-name) only past the header, since the rest of a name cannot be told
+ * from a column's own text.
  * Returns 1 with "--tone-allow: use / between entries, not commas" in @p error when refused, else 0. Never echoes the
  * cell or the field. */
 int dsd_scan_options_tone_list_split(const char* options, const char* next, int next_past_header, char* error,

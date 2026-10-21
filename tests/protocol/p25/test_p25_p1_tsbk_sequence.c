@@ -21,7 +21,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -112,7 +111,10 @@ static int g_evidence = 0;
 static char g_evidence_protocol[16];
 
 static void
-capture_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source, const char* access) {
+capture_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target, uint32_t source,
+                 const char* access) {
+    (void)sync;
+    (void)slot;
     (void)state;
     (void)target;
     (void)source;
@@ -446,12 +448,6 @@ void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-}
-
-void
-dsd_rtl_stream_metrics_hook_p25p1_ber_update(int ok_delta, int err_delta) {
-    (void)ok_delta;
-    (void)err_delta;
 }
 
 static int

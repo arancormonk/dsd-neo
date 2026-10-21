@@ -70,6 +70,8 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
 
     if (state->dmr_confidence_locked) {
         if (state->dmr_confidence_color_code == color_code) {
+            /* A restored target retains its acquisition hint, but must receive matching evidence again. */
+            state->dmr_color_code = color_code;
             // Matching evidence restarts any pending re-lock streak so sporadic
             // co-channel interference never accumulates into a re-lock.
             state->dmr_confidence_candidate_cc = DMR_CONFIDENCE_UNKNOWN_CC;

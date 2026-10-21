@@ -14,12 +14,16 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -41,6 +45,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -87,7 +92,6 @@ fake_rtl_fsk_output_kind(void) {
 }
 #endif
 
-#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int g_p25p2_blocks = 0;
 
 static void
@@ -127,6 +131,7 @@ stage_p25p2_frame(dsd_opts* opts, dsd_state* state) {
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = count_p25p2_block});
 }
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int g_check_p25_tick_guard = 0;
 
 static int
@@ -3780,6 +3785,89 @@ test_replay_leave_exports_recordings_on_the_capture_clock(void) {
     return rc;
 }
 
+/* The per-call recordings a WAV directory holds: the newest published one's name, and how many are still TEMP_. */
+typedef struct {
+    char name[DSD_TEST_PATH_MAX];
+    int published;
+    int temp;
+} replay_leave_recordings;
+
+static int
+replay_leave_find_recording(const char* name, void* user) {
+    replay_leave_recordings* found = (replay_leave_recordings*)user;
+    if (strstr(name, "TEMP") != NULL) {
+        found->temp++;
+    } else if (strstr(name, ".wav") != NULL) {
+        found->published++;
+        DSD_SNPRINTF(found->name, sizeof found->name, "%s", name);
+    }
+    return 0;
+}
+
+/*
+ * Issue #637: leaving a replay mid-run closes an NFM call's per-call recording with the call, against the row it is
+ * committing and on the capture's clock. Left open, the next carrier boundary closed it against the slot's emptied
+ * row: the recording lost the capture's date, its NFM system and its service name.
+ */
+static int
+test_replay_leave_closes_the_nfm_recording(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_replay_leave_nfm")) {
+        DSD_FPRINTF(stderr, "replay leave nfm: dsd_test_mkdtemp failed\n");
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", dir);
+    opts->dmr_stereo_wav = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    int rc = expect_true("replay leave nfm: the tone-name rule parses",
+                         dsd_receive_names_parse("--tone-name '141.3=Traveler'", &opts->receive.names, NULL, 0) == 0);
+    rc |= expect_true("replay leave nfm: tone detection runs", dsd_analog_tone_detection_active(opts));
+    const time_t capture_s = (time_t)4102444800LL; /* 2100-01-01T00:00:00Z, ahead of any device clock */
+    dsd_decode_clock_use_replay((int64_t)capture_s);
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1413;
+    float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = 2000.0f; /* Monitor blocks use signed-16 PCM units in floats. */
+    }
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    rc |= expect_true("replay leave nfm: the call is on", dsd_engine_analog_call_active(state));
+
+    /* The stream is stopped to restart it; the carrier boundary after it finds nothing left to close. */
+    dsd_engine_decode_clock_leave_replay(opts, state);
+    rc |= expect_true("replay leave nfm: the call ended with the replay", !dsd_engine_analog_call_active(state));
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
+    rc |= expect_true("replay leave nfm: the row is committed on the capture's clock and named",
+                      row->event_start_time == capture_s && strcmp(row->service_label, "Traveler") == 0);
+
+    replay_leave_recordings found;
+    DSD_MEMSET(&found, 0, sizeof found);
+    (void)dsd_dir_list(dir, replay_leave_find_recording, &found);
+    char date[16];
+    (void)dsd_format_local_datetime(capture_s, DSD_LOCAL_DATETIME_DATE_COMPACT, date, sizeof date);
+    rc |= expect_true("replay leave nfm: one recording is published", found.published == 1 && found.temp == 0);
+    rc |= expect_true("replay leave nfm: under the capture's date", strncmp(found.name, date, strlen(date)) == 0);
+    rc |= expect_true("replay leave nfm: as NFM, named by its tone",
+                      dsd_test_nfm_recording_name_is(found.name, "Traveler"));
+
+    (void)dsd_dir_list(dir, replay_leave_remove_file, dir);
+    (void)dsd_test_rmdir(dir);
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
 static void
 seed_xpt_identity(dsd_state* state) {
@@ -4016,6 +4104,114 @@ test_carrier_boundary_closes_mbe_captures(void) {
         (void)fclose(opts->mbe_out_fR);
         opts->mbe_out_fR = NULL;
     }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #637: a receive policy edit leaves the P25 Phase 2 playout of the calls it still admits alone, so their queued
+   frames keep their pairing: a names-only edit drains nothing, and rejecting slot 2 discards slot 2's queue only. */
+static int
+test_receive_boundary_keeps_admitted_p25p2_playout(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    stage_p25p2_frame(opts, state);
+    dsd_p25p2_playout_stage(opts, state, 0, 1, 2U, NULL);
+    const dsd_call_observation slot2 = {.protocol = DSD_SYNC_P25P2_POS,
+                                        .slot = 1U,
+                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                        .ota_target_id = 200U,
+                                        .policy_target_id = 200U};
+    (void)dsd_call_state_observe(state, &slot2, DSD_CALL_BOUNDARY_BEGIN);
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    state->p25_p2_audio_allowed[1] = 1;
+    state->currentslot = 1;
+    dsd_p25p2_playout_stage(opts, state, 1, 0, 3U, NULL);
+    state->currentslot = 0;
+    const int level0 = dsd_p25p2_playout_level(state, 0);
+    const int level1 = dsd_p25p2_playout_level(state, 1);
+    rc |= expect_true("p2-boundary: both slots queue audio", level0 > level1 && level1 > 0);
+
+    rc |= expect_true("p2-boundary: names parsed",
+                      dsd_receive_names_parse("--slot-name '1=Dispatch'", &opts->receive.names, NULL, 0) == 0);
+    dsd_engine_receive_policy_boundary(opts, state, 0);
+    rc |= expect_true("p2-boundary: a names-only edit drains nothing",
+                      g_p25p2_blocks == 0 && dsd_p25p2_playout_level(state, 0) == level0
+                          && dsd_p25p2_playout_level(state, 1) == level1);
+
+    opts->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2; /* --slot-block 2 */
+    dsd_engine_receive_policy_boundary(opts, state, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("p2-boundary: the rejected slot 2 call ends with its queue",
+                      dsd_call_state_get(state, 1U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE
+                          && dsd_p25p2_playout_level(state, 1) == 0);
+    rc |= expect_true("p2-boundary: the admitted slot 1 keeps its queue",
+                      g_p25p2_blocks == 0 && dsd_p25p2_playout_level(state, 0) == level0
+                          && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    dsd_p25p2_playout_reset(state, -1);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #637: a receive policy edit that rejects one DMR slot's call closes that call's MBE capture only: the other
+   slot's admitted call carries on, so its recording is not split by the unrelated slot's policy change. */
+static int
+test_receive_boundary_closes_only_rejected_capture(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    FILE* left = tmpfile();
+    FILE* right = tmpfile();
+    if (!left || !right) {
+        if (left) {
+            (void)fclose(left);
+        }
+        if (right) {
+            (void)fclose(right);
+        }
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    state->dmr_color_code = 7U;
+    for (uint8_t slot = 0; slot < 2U; slot++) {
+        const dsd_call_observation voice = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS, .slot = slot, .kind = DSD_CALL_KIND_GROUP_VOICE, .ota_target_id = 9};
+        (void)dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN);
+    }
+    opts->mbe_out_f = left;
+    opts->mbe_out = 1;
+    opts->mbe_out_fR = right;
+    opts->mbe_outR = 1;
+    opts->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2; /* --slot-block 2 */
+
+    dsd_engine_receive_policy_boundary(opts, state, 0);
+
+    dsd_call_snapshot call;
+    rc |= expect_true("capture: the rejected slot 2 call ends",
+                      dsd_call_state_get(state, 1U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_true("capture: the admitted slot 1 call carries on",
+                      dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_true("capture: slot 1's capture stays open", opts->mbe_out_f == left && opts->mbe_out == 1);
+    rc |= expect_true("capture: slot 2's capture closes", opts->mbe_out_fR == NULL && opts->mbe_outR == 0);
+    if (opts->mbe_out_f != NULL) {
+        (void)fclose(opts->mbe_out_f);
+        opts->mbe_out_f = NULL;
+    }
+    if (opts->mbe_out_fR != NULL) {
+        (void)fclose(opts->mbe_out_fR);
+        opts->mbe_out_fR = NULL;
+    }
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
     free_test_runtime(opts, state);
     return rc;
 }
@@ -4284,13 +4480,24 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->nxdn_last_ran = 21U;
     state->p2_cc_verified = 1U;
     noCarrier(opts, state);
-    rc |= expect_true("access-codes: trunk scan keeps the Phase 2 seed's proof its target snapshot carries",
-                      state->p2_cc_verified == 1U);
-    rc |= expect_true("access-codes: trunk scan keeps the DMR colour code with its lock",
-                      state->dmr_color_code == 5U && state->dmr_confidence_locked == 1
+    /* Issue #637: trunk scan keeps the DMR confidence lock, the target's acquisition hint, but no published code
+       outlives its transmission: the next one proves its own before an access filter admits it. */
+    rc |= expect_true("access-codes: trunk scan forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
+    rc |= expect_true("access-codes: trunk scan forgets the DMR colour code and keeps its lock",
+                      state->dmr_color_code == 16U && state->dmr_confidence_locked == 1
                           && state->dmr_confidence_color_code == 5);
-    rc |= expect_true("access-codes: trunk scan keeps the NXDN RAN its target snapshot carries",
-                      state->nxdn_last_ran == 21U);
+    rc |= expect_true("access-codes: trunk scan forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
+    /* With --ran-allow 21 on a trunk-scan NXDN target, the next transmission after a carrier loss is Checking until its
+       own SACCH proves the RAN, never admitted by the previous one's. */
+    opts->receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_RAN].allow.bits[0] = UINT64_C(1) << 21;
+    state->nxdn_last_ran = 21U;
+    rc |= expect_true("access-codes: the RAN admits its transmission",
+                      dsd_receive_status(opts, state, DSD_SYNC_NXDN_POS, 0) == DSD_RECEIVE_ALLOWED);
+    noCarrier(opts, state);
+    rc |= expect_true("access-codes: after a carrier loss the next transmission is checking",
+                      dsd_receive_status(opts, state, DSD_SYNC_NXDN_POS, 0) == DSD_RECEIVE_CHECKING);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
     rc |= expect_true("access-codes: trunk scan still forgets the dPMR colour code", state->dpmr_color_code == -1);
     opts->trunk_scan_enabled = 0;
 
@@ -4316,6 +4523,28 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     rc |= expect_true("access-codes: the forget drops the seed's proof and keeps the seed",
                       state->p2_cc_verified == 0U && state->p2_cc == 0x293ULL);
     dsd_engine_forget_carrier_codes(NULL);
+
+    /* A trunk voice-channel tune with every receive filter off (issue #637) forgets the published codes, so the control
+       channel's never stand for the voice channel's identity, but keeps the DMR confidence lock: a matching burst
+       republishes the colour code at once, so call start is not delayed. */
+    state->dmr_color_code = 4U;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 4;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    state->nxdn_last_ran = 21U;
+    state->nac = 0x293;
+    state->p2_cc = 0x293ULL;
+    state->p2_cc_verified = 1U;
+    dsd_engine_forget_carrier_code_values(state);
+    rc |= expect_true("access-codes: the value forget drops the colour code and keeps its lock",
+                      state->dmr_color_code == 16U && state->dmr_confidence_locked == 1
+                          && state->dmr_confidence_color_code == 4);
+    rc |= expect_true("access-codes: the value forget drops the mono slot proof",
+                      state->dmr_mono_rx_slot == DSD_DMR_MONO_RX_NONE);
+    rc |= expect_true("access-codes: the value forget drops the RAN, the NAC and the seed's proof",
+                      state->nxdn_last_ran == (unsigned int)-1 && state->nac == 0 && state->p2_cc_verified == 0U
+                          && state->p2_cc == 0x293ULL);
+    dsd_engine_forget_carrier_code_values(NULL);
 
     /* With trunking off a retune also forgets the voice frequencies the carrier's grants named, as the trunking-off
        no-carrier pass does, and the DMR grants'; with trunking on they are the followed system's and stay. */
@@ -6358,7 +6587,8 @@ main(void) {
 
     rc |=
         expect_true("trunk-scan-preserves-dmr-confidence",
-                    state->dmr_color_code == 5 && state->dmr_confidence_locked == 1
+                    /* The published code goes (issue #637); the lock republishes it at the next matching burst. */
+                    state->dmr_color_code == 16 && state->dmr_confidence_locked == 1
                         && state->dmr_confidence_color_code == 5 && state->dmr_confidence_candidate_cc == 5
                         && state->dmr_confidence_candidate_count == 2 && state->dmr_confidence_voice_sync_seen[0] == 1);
     rc |= expect_true("trunk-scan-preserves-p25-cache", state->p25_cc_cache_loaded == 1 && cc != NULL && cc->count == 2
@@ -6557,6 +6787,8 @@ main(void) {
     rc |= test_carrier_boundary_forgets_the_access_codes();
     rc |= test_carrier_boundary_restarts_the_evidence();
     rc |= test_carrier_boundary_closes_mbe_captures();
+    rc |= test_receive_boundary_closes_only_rejected_capture();
+    rc |= test_receive_boundary_keeps_admitted_p25p2_playout();
     rc |= test_carrier_boundary_discards_partial_assemblies();
     rc |= test_no_carrier_reset_discards_the_dmr_mix_media();
     rc |= test_no_carrier_keeps_the_digital_gain_in_either_format();
@@ -6575,6 +6807,7 @@ main(void) {
     rc |= test_tone_check_leaves_no_hangtime_tail();
 #endif
     rc |= test_replay_leave_exports_recordings_on_the_capture_clock();
+    rc |= test_replay_leave_closes_the_nfm_recording();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();

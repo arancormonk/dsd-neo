@@ -17,6 +17,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -112,9 +113,13 @@ typedef struct {
     uint8_t vc_crc_flags;
 
     // Timing (monotonic only)
-    double t_tune_m;    // Time of last VC tune
-    double t_voice_m;   // Time of last voice activity
-    double t_cc_sync_m; // Time of last CC sync
+    double t_tune_m;                       // Time of last VC tune
+    double receive_check_started_m;        // Bounded acquisition while receive admission is pending/rejected
+    dsd_receive_carriers receive_carriers; // Colour code last verified on each voice channel
+    long receive_check_freq_hz;            // The voice channel that window belongs to (a new one starts its own)
+    int receive_codes_fresh;               // Its codes were forgotten at its tune: what it holds now it proved
+    double t_voice_m;                      // Time of last voice activity
+    double t_cc_sync_m;                    // Time of last CC sync
 
     /* CC probes do not replace the confirmed/configured return destination.
      * These fields live in each scan target's existing DMR context. */

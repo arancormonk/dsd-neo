@@ -81,15 +81,17 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,      // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole,      // "12:04"
-        KindRole,          // RowKind: voice call or data/control notice
-        DetailRole,        // notice payload: decoded text message or GPS string
-        ChannelRole,       // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
-        SourceNameRole,    // resolved source label, falling back to the OTA source text
-        SessionRole,       // decode session that logged the row, or last extended it (see session())
-        FreqHzRole,        // frequency in Hz the call was heard on (qint64), 0 when unknown
-        AccessCodeRole,    // "CC 1", "NAC 293", "RAN 5", "CAN 0" (app_control/access_code_view.h), else empty
+        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
+        TimeTextRole,   // "12:04"
+        KindRole,       // RowKind: voice call or data/control notice
+        DetailRole,     // notice payload: decoded text message or GPS string
+        ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SourceNameRole, // resolved source label, falling back to the OTA source text
+        SessionRole,    // decode session that logged the row, or last extended it (see session())
+        FreqHzRole,     // frequency in Hz the call was heard on (qint64), 0 when unknown
+        AccessCodeRole, // "CC 1", "NAC 293", "RAN 5", "CAN 0" (app_control/access_code_view.h), else empty
+        ServiceNameRole,
+        ReceivedToneRole,
         AccessCodeTextRole // "Color code 1", "Network access code 293", ..., else empty
     };
 
@@ -242,6 +244,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * system: the system is the saved entry the session runs, and stays so
          * for every row of that session. */
         QString channel;
+        QString service;
+        /* A conventional analog (NFM) transmission (issue #637): its name is only a label (the channel, "NFM" or a
+           tone's service name), never its destination. Persisted; older rows read false. */
+        bool analog = false;
+        int receiveKind = 6;
+        int receiveValue = 0;
+        bool receiveKnown = false;
+        int receiveSlot = 0;
         /* Ring identity, persisted with the row so keyFor() can reproduce the key
          * the ring scan used. slot is the TDMA slot; seq is the push-sequence stamp
          * the row was committed at (push_seq - index + 1), which is stable for the
@@ -295,6 +305,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 freqHz = 0;
         int acKind = 0;
         int ac = 0;
+        /* The receive evidence and service name last read (issue #637). The core only adds to them in place (a
+         * reacquired segment that confirmed the code, proved the slot or named the service), so a gain is an advance. */
+        bool receiveKnown = false;
+        int receiveSlot = 0;
+        QString service;
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;
@@ -347,6 +362,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
     int noteSeen(const QString& key, quint64 ring, const SeenState& read, bool voice);
+    static bool absorbSeenReceive(SeenState& seen, const SeenState& read);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);

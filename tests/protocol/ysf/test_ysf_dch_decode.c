@@ -770,8 +770,10 @@ static struct {
 } g_search_evidence;
 
 static void
-capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
-                        const char* access) {
+capture_search_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                        uint32_t source, const char* access) {
+    (void)sync;
+    (void)slot;
     (void)target;
     (void)source;
     (void)access;
@@ -1006,8 +1008,10 @@ test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing(void) {
 static int g_ysf_search_evidence;
 
 static void
-count_ysf_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
-                          const char* access) {
+count_ysf_search_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                          uint32_t source, const char* access) {
+    (void)sync;
+    (void)slot;
     (void)state;
     (void)target;
     (void)source;

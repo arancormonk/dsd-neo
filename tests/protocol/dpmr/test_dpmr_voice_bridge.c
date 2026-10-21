@@ -12,6 +12,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -111,10 +112,26 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
     g_mbe_calls++;
 }
 
+/* As core/receive.c does: the owner generic output paths judge while dPMR plays through NXDN's decoder. */
+dsd_receive_context
+dsd_receive_context_begin(dsd_state* state, int protocol) {
+    const dsd_receive_context saved = {state->receive_context_protocol, state->receive_context_active};
+    state->receive_context_protocol = protocol;
+    state->receive_context_active = 1;
+    return saved;
+}
+
+void
+dsd_receive_context_end(dsd_state* state, dsd_receive_context saved) {
+    state->receive_context_protocol = saved.protocol;
+    state->receive_context_active = saved.active;
+}
+
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    /* Issue #637: playback is judged as dPMR's, scrambled halves included (they play under NXDN's synctype). */
+    assert(state->receive_context_active && state->receive_context_protocol == DSD_SYNC_DPMR_FS2_POS);
     g_ms_calls++;
 }
 
@@ -716,8 +733,10 @@ static struct {
 } g_search_evidence;
 
 static void
-capture_search_evidence(const dsd_state* state, const char* protocol, uint32_t target, uint32_t source,
-                        const char* access) {
+capture_search_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
+                        uint32_t source, const char* access) {
+    (void)sync;
+    (void)slot;
     (void)target;
     (void)source;
     (void)access;

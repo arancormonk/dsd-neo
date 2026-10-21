@@ -20,6 +20,7 @@
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -50,6 +51,13 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
     *out = request;
     dsd_trunk_tuning_request_complete(request, DSD_TRUNK_TUNE_RESULT_OK);
     return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* The conventional NFM call's end, which the scanner runs before it ends the slots' calls (issue #637). */
+void
+dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 void

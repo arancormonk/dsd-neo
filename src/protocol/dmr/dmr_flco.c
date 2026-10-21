@@ -24,6 +24,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -672,7 +673,11 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
         ctx->state->dmr_soR = ctx->so;
     }
     if (ctx->opts->trunk_is_tuned == 1) {
-        dsd_mark_vc_sync(ctx->state);
+        /* The LC keeps the carrier alive; it holds the voice channel only for a slot the receive policy admits
+           (issue #637), as the voice bursts do. */
+        if (dsd_receive_allows(ctx->opts, ctx->state, DSD_SYNC_DMR_BS_VOICE_POS, ctx->state->currentslot)) {
+            dsd_mark_vc_sync(ctx->state);
+        }
         dsd_mark_cc_sync(ctx->state);
     }
 }

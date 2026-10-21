@@ -19,6 +19,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -239,6 +240,8 @@ typedef struct {
     // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
     // rendered as a bracketed prefix between the row's timestamp and its protocol token.
     char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    char service_label[DSD_SERVICE_LABEL_SIZE];
+    dsd_receive_identity receive_identity;
     // Whether channel_label above has been resolved for this row. An unnamed channel resolves to
     // an empty label, which is an answer and not a missing one -- a -Y list with only some rows
     // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
@@ -539,6 +542,9 @@ typedef enum {
     DSD_ANALOG_TONE_KIND_DCS = 2,
 } dsd_analog_tone_kind;
 
+/* dsd_state::dmr_mono_rx_slot (issue #637). */
+enum { DSD_DMR_MONO_RX_NONE = 0, DSD_DMR_MONO_RX_PENDING = 1, DSD_DMR_MONO_RX_TS1 = 2, DSD_DMR_MONO_RX_TS2 = 3 };
+
 /** Where received-tone detection stands (issue #522).
  * INACTIVE: nothing has been processed since the last reset (a retune, row or target change,
  * input switch, mode change or stop), or detection is not running at all. It does not by
@@ -832,6 +838,11 @@ struct dsd_state {
        read it with the sample, and the monitor sink's gain, which ramps between closed and open samples. */
     uint8_t analog_out_flags[960];
     float analog_sink_gain;
+    /* The speaker's own fade-in after blocks the monitor processed only for a per-transmission NFM recording (issue
+       #637): the sink gain kept running for the recording, so the speaker ramps in from analog_speaker_gain when it
+       opens mid-transmission. Off (0) otherwise, when the sink gain's own ramp is the speaker's. */
+    uint8_t analog_speaker_ramp;
+    float analog_speaker_gain;
     /* The rate the analog block being collected runs at, and what it started under: the PCM input rate and stream
        generations and, on RTL input, the stream generation of its samples (issue #633). A sample collected at another
        rate marks the block mixed: it neither plays nor goes to the -6 WAV. */
@@ -868,6 +879,9 @@ struct dsd_state {
     float center;
     int jitter;
     int synctype;
+    /* The protocol that owns a shared vocoder invocation; synctype may temporarily select another decoder. */
+    int receive_context_protocol;
+    uint8_t receive_context_active;
     float min;
     float max;
     float lmid;
@@ -1387,6 +1401,18 @@ struct dsd_state {
     short int dmr_stereo;    //need state variable for upsample function
     short int dmr_mono_slot; //mono output slot: -1=unknown, 0=TS1/left, 1=TS2/right
     short int dmr_ms_mode;
+    /* The over-the-air slot of the repeater carrier the single-slot DMR decoder (dmrMS(), -fr/-nm conventional)
+       follows on its one lane (issue #637), from a CACH TACT that passed its Hamming check: DSD_DMR_MONO_RX_NONE when
+       that decoder follows no two-slot carrier (two-slot decoding, direct mode), PENDING until two bursts in a row name
+       it. dmr_mono_rx_candidate is the slot the last checked TACT named. */
+    uint8_t dmr_mono_rx_slot;
+    uint8_t dmr_mono_rx_candidate;
+    /* 1/2 when the DMR sync word just matched is direct mode's TS1/TS2 one, which names the burst's slot; 0 for any
+       other DMR sync (issue #637). */
+    uint8_t dmr_dm_sync_slot;
+    /* The voice channel whose tune forgot the control channel's codes, so that the codes it holds now it proved itself
+       (dsd_engine_update_vc_tune_state(), issue #637); 0 when the last tune kept them. */
+    long receive_codes_fresh_freq;
     unsigned int dmrburstL;
     unsigned int dmrburstR;
     int dropL;
@@ -2129,9 +2155,9 @@ struct dsd_state {
     uint32_t scan_row_session;
     int32_t scan_row_index;
     uint8_t scan_row_scanner;
-    uint8_t scan_row_editable;
-    uint8_t scan_row_edited;
-    uint8_t scan_row_listed;
+    uint16_t scan_row_editable;
+    uint16_t scan_row_edited;
+    uint16_t scan_row_listed;
     /* The number dsd_opts::scan_row_scope_seq took when the row's options were installed (dsd_scan_mode_options()). */
     uint32_t scan_row_scope_seq;
     /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice

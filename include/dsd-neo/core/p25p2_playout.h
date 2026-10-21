@@ -266,6 +266,14 @@ int dsd_p25p2_playout_policy_key(const dsd_opts* opts, const dsd_state* state, i
 int dsd_p25p2_decode_audio_allowed_verdict(const dsd_opts* opts, const dsd_state* state, int slot, int alg,
                                            dsd_p25p2_burst_decision* burst, int* burst_valid);
 
+/**
+ * @brief dsd_p25p2_decode_audio_allowed_verdict() without the receive policy (issue #637): whether the slot's crypto
+ * and talkgroup policy would let its voice decode. A slot the receive policy is still checking keeps decoding by it, so
+ * its vocoder and cipher positions advance, while the vocoder mutes what it decodes until the slot is admitted.
+ */
+int dsd_p25p2_decode_policy_verdict(const dsd_opts* opts, const dsd_state* state, int slot, int alg,
+                                    dsd_p25p2_burst_decision* burst, int* burst_valid);
+
 #ifdef __cplusplus
 }
 #endif

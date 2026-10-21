@@ -24,6 +24,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -76,6 +77,21 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
     (void)ambe_fr;
     (void)imbe7100_fr;
     g_mbe_calls++;
+}
+
+/* As core/receive.c does: the owner generic output paths judge while dPMR plays through NXDN's decoder. */
+dsd_receive_context
+dsd_receive_context_begin(dsd_state* state, int protocol) {
+    const dsd_receive_context saved = {state->receive_context_protocol, state->receive_context_active};
+    state->receive_context_protocol = protocol;
+    state->receive_context_active = 1;
+    return saved;
+}
+
+void
+dsd_receive_context_end(dsd_state* state, dsd_receive_context saved) {
+    state->receive_context_protocol = saved.protocol;
+    state->receive_context_active = saved.active;
 }
 
 void

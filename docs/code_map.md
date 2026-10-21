@@ -7056,3 +7056,131 @@ keeps a passband per mode and takes 0 as "unchanged"): the analog targets instal
 for its demodulator and passband, the targets after the one with its own passband run the peer's own again, a peer that
 refuses AM makes the advance move past the am target, and shutdown returns the peer to FM with its own FM and AM
 passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LISTS`.
+
+### Receive admission and service identity (#637)
+
+- `core/receive_types.h` owns bounded filter bitsets, naming rules and received identities. Runtime's
+  `receive_policy.h` parses/validates CLI, INI, CSV and command edits; the frame path only matches pre-parsed data.
+  `core/receive.h` supplies explicit protocol/slot admission from validated DCC/RAN/NAC/tone evidence. A P25 Phase 2
+  seed without proof and NXDN stand-in values stay unknown. Shared-vocoder invocations carry their owning protocol
+  through `dsd_state::receive_context_*`, since YSF/dPMR temporarily borrow another protocol's decoder.
+- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
+  acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into
+  a hold. Restoring a scan target preserves acquisition hints but clears its current received-code proof. The P25 and
+  DMR trunk state machines keep `dsd_receive_carriers` (the code last verified on each voice frequency, 16 entries) and
+  skip a grant whose remembered code the current policy rejects; a channel never verified still gets the acquisition
+  window. Receive admission gates only holds and output: decode-progress evidence (the P25 reacquire watchdog, CQPSK
+  timing memory, the CQPSK retry) runs whatever the verdict. The P25 conventional-activity hook carries its call's
+  protocol and slot. `RECEIVE_SET` takes the P25 SM tick guard (its boundary ends calls and rotates WAVs). The
+  single-slot DMR decoder (`dmrMS()`, `-fr`/`-nm` conventional on a repeater) decodes every burst on lane 0, so
+  `dsd_state::dmr_mono_rx_slot` keeps the over-the-air slot its CACH TACT proved; receive identity uses it for that lane
+  (Checking while unproven) and two-slot decoding, direct mode and a carrier boundary clear it. CSBK-tuned DMR carriers
+  (Cap+, Connect Plus) get the same remembered code and bounded receive window as followed grants, and DMR BS voice, PI
+  and P_Clear stamp `last_vc_sync_time` only for admitted slots, so rejected traffic never holds a channel. A trunk
+  voice-channel tune forgets the carrier codes, so the control channel's code neither admits, names or splits the voice
+  channel's calls nor is remembered as its code: while any receive filter is enabled with their confirmation gates
+  (`dsd_engine_forget_carrier_codes()`), otherwise only the published values
+  (`dsd_engine_forget_carrier_code_values()`), keeping the DMR confidence lock so call start is not delayed. YSF and
+  scrambled dPMR play through NXDN's decoder under its synctype; they judge playback as their own through
+  `dsd_receive_context_begin()/end()`. A call first seen while Checking withholds VOICE_START until it is admitted
+  (`dsd_call_event_lifecycle::start_alert_pending`). The terminal hides a Checking/rejected call's identity, alias and
+  location like the shared call view (the NXDN line's decoder alias too, by the live verdict when no call is held), and
+  names NXDN and NFM calls by their service label on the NXDN and Rx tone lines. Two identities differ when their
+  verified codes or their proven over-the-air slots differ (`dsd_receive_identity_changed()`), so a single-slot DMR move
+  from TS1 to TS2 ends the call; a call keeps its proven slot while the next one is pending
+  (`dsd_receive_identity_merge()`). A vocoder frame the policy has not admitted opens no call and marks no media, but
+  the call already held still selects its key (`mark_vocoder_call_media()`), and a policy edit closes only the ended
+  slots' MBE captures. A tuned release (`dsd_engine_release_tuned_call_state()`) ends the NFM call first, so its WAV is
+  named against its own row. The trunk state machines remember a voice channel's code only when its tune forgot the
+  control channel's (`receive_codes_fresh`, set by every tune through `dsd_engine_update_vc_tune_state()`). A P25 voice
+  start while Checking is accepted for its PTT crypto fields but marks no activity; a followed TDMA slot the policy
+  rejects is retired (grant, Phase 2 audio permission) and starts the hangtime. A direct-mode DMR sync word names its
+  slot (`dsd_state::dmr_dm_sync_slot`); other MS-sourced bursts stay Checking under a slot filter. Legacy `-Y` judges a
+  two-slot carrier on both lanes, and `dsd_engine_trunk_scan_receive_expired()` lets the frame loop yield on a
+  conventional trunk-scan target the policy rejects. A standalone DMR data burst is judged by its own CACH slot
+  (`dmr_data_sync()` sets the mono proof aside for it), an MS-mode data burst takes its lane's slot as its voice does,
+  the LC path holds the voice channel only for admitted slots, and enrichment (`dsd_event_enrich_epoch()`) skips a
+  Checking/rejected call. Anonymous history rows (no target or source) heard on different frequencies never merge;
+  analog rows (`Row::analog`) are not told apart by their label, so a confirmed tone folds into its fragment. Code
+  freshness is decided at the tune (`dsd_state::receive_codes_fresh_freq`), a mono-slot proof survives a standalone data
+  burst only on the same carrier, an interrupted CACH proves no slot, and a trunk-scan conventional target whose
+  admitted activity hold (data included) still runs is never released by the receive check. The receive policy boundary
+  runs after the new policy is in force: it ends only calls it rejects, relabels the rest, and forgets codes a voice
+  channel inherited when filters come on. It drains no Phase 2 playout: a rejected slot's queue is discarded with its
+  call, and an admitted slot keeps its queue and 4V/2V pairing. SDRTrunk JSON playback carries no colour code
+  (`dmr_color_code` 16), and the Qt call history compares a proven over-the-air slot apart from the access code
+  (`receiveSlot`, persisted on its own; a pending slot's fragment joins the one that proved it), as the core history
+  merge does (`dsd_receive_identity_merge()`). `-Y` carrier-wide admission (`dsd_receive_carrier_allows()`) judges both
+  over-the-air slots whatever the single-slot decoder proved for its lane. The RTL live read bounds an idle NFM
+  monitor's read by the decoder's live options (`dsd_rtl_stream_read_ex()` `live_opts`), not the orchestrator's
+  start-time copy, so a live AM/NFM switch takes effect. A call reacquired after a sync loss keeps its confirmed receive
+  identity (`dsd_call_state_observe()`), so a different code decoded next ends it. P25 Phase 2 voice the policy is still
+  checking keeps decoding, muted and unqueued (`dsd_p25p2_decode_policy_verdict()`), so cipher positions stay in step
+  for the frames admitted once the NAC is proven. A `-Y` scan is held by an admitted call only while it is still heard
+  (its latest observation within the voice hold). A decode-mode change ends an NFM call through its own lifecycle
+  (`ui_end_calls()`), so its recording keeps its name. Hytera XPT grant selection skips candidates the receive policy
+  rejects. The API's empty-row fingerprint has receive kind "none"; the Qt seen map tracks receive evidence and the
+  service name, and a tg-0 row's name that is only a label (service, channel) is no destination of its own
+  (`row_textual_destination()`). Holds from an admitted call (`dsd_call_state_admitted_call_active()`, the `-Y` receive
+  leave) need it still heard within the hangtime or voice hold; followed DMR data's monotonic stamp counts too. A
+  retained `-Y` call is judged by the identity it was received with (`dsd_receive_identity_admitted()`), so a sync loss
+  that forgets the live code keeps its hold. Signal search judges P25 evidence by the reporting synctype and voice slot
+  (`dsd_signal_search_note_evidence_at()`). P25 Phase 1 HDU/LDU/TDULC and Phase 2 voice stamp `last_vc_sync_time` only
+  for admitted traffic. Trunk scan's no-carrier pass keeps a target's DMR confidence lock but forgets the published
+  codes (`dsd_engine_forget_carrier_code_values()`), so the next transmission proves its own. X2-TDMA MBE capture judges
+  each frame by its received slot (`dsd_mbe_out_write_rx()`). Under `-nm` a standalone burst the single-slot output
+  folds onto lane 0 is judged by its own CACH slot (`dmr_data_collect_cach()`), and a standalone burst the policy does
+  not admit leaves nothing in its lane's position cache (`dmr_lrrp_gps`). `dsd_engine_trunk_receive_release_due()` lets
+  the frame loops hand a trunk voice channel only rejected traffic holds to noCarrier()'s control-channel return (it
+  needs a REJECTED verdict: traffic still Checking is left to the P25/DMR trunk state machine's acquisition window, or
+  on other trunked protocols (NXDN) gets a 4 s window from the tune, and admitted traffic or one no filter judges keeps
+  the channel); an admitted call in progress (`dsd_call_state_admitted_call_active()`, data included) keeps it, as it
+  keeps a `-Y` channel with voice-only off. The single-slot DMR lane is re-proven when a burst names the other slot. A
+  rejected Phase 2 call's queued audio never plays under a talkgroup hold. A P25 start while Checking keeps its identity
+  and epoch (its PTT crypto fields survive the NAC proof). A segment staged while admitted commits when a live edit
+  rejects its call. A suspended scan scope (CONFIG_APPLY) defers the boundary to `dsd_scan_mode_resume()`. Signal search
+  ignores rejected or checking traffic, and the terminal names an admitted call by its service.
+- Canonical calls carry a separate service label, received identity and admission verdict. A confirmed identity
+  change starts another epoch; completed event/history rows retain their labels. Frontend/API history merging checks
+  confirmed service identities. Channel labels, numeric IDs and imported files keep their existing meaning.
+- `engine/analog_call.c` owns conventional NFM call/recording lifecycle in the engine scan-owner extension. Runtime's
+  frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency. Speaker output is independent
+  of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
+  `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
+  An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup, source or call type;
+  `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer has the row publishes
+  it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no service, no rdio export), so it
+  is never left under its temp name nor given the digital shape.
+  A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption,
+  and the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing
+  received-tone freshness deadline closes stalled calls and WAVs on the decoder thread. Replay reads keep their
+  sample-driven behavior. `IO_RTL_RETUNE_PREPARE`, `DSP_INPUT_INTERRUPT` and `ENGINE_INPUT_BOUNDARY` cover the handoff.
+- App-control receive commands validate complete edits before application. Row commands retain scanner session and
+  row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.
+  The Qt ReceivePolicySheet uses existing modal/keyboard/discard behavior; terminal menu_receive uses one captured
+  destination per prompt chain. Global defaults live in `[receive]`; `scan_mode` restores them after row overrides.
+  Recording publication sanitizes service-name filename components; Rdio uses its supported talkgroup label without
+  changing the numeric target.
+- A service name only rejected traffic could carry (`dsd_receive_names_unreachable()`: an enabled filter of its kind, or
+  the analog tone filter for a CTCSS/DCS name, rejects its identifier) is kept and reported, never refused, so a service
+  can be blocked for a while. `dsd_scan_option_unreachable_names()` judges a row's options over the configured policies
+  (`dsd_scan_option_baseline`, from `dsd_scan_option_baseline_configured()`, never the live `opts->receive` a row may be
+  overriding), as the row's options apply. Reported at start (bootstrap), in composed config validation (a WARNING), per
+  target or channel-map entry when a scan list loads (`csvChanWarnUnreachableNames()`, called once the map and its
+  policies are final: after the command line, after the engine's or the interactive import, after a live reimport is
+  adopted, never on an import's scratch state), in import previews (`dsd_scan_option_receive_summary_against()` through
+  the inspectors' explicit baseline: `dsd_app_scan_csv_callbacks` `baseline`,
+  `dsd_csv_inspect_channel_profiles_against()`), and in the decoder-thread notice of a receive, tone-filter or row edit
+  (`dsd_app_receive_note_unreachable()` in `app_control/receive_note.c`; the note lists whole identifiers and the notice
+  or summary before it gives way, `dsd_receive_note_append()`; a row edit's `dsd_scan_row_edit_result::options` are the
+  options the row runs with the edit in, on air or from its next visit).
+- An `options` cell a spreadsheet quoted (wrapped in double quotes, each quote inside doubled) reads as its content when
+  it does not parse as written for any row class (`dsd_scan_options_parse_cell()`,
+  `dsd_scan_options_cell_csv_quoted()`), so the reading never depends on the row's mode and every cell that loaded
+  before keeps its meaning. The trunk-scan loader, the channel-map loader, the scan document's companion visitor
+  (`dsd_scan_options_visit_cell_files()`, offsets into the cell's content) and the Qt channel-map bundle rewrite read it
+  the same way; a rewritten companion path is bare or grouped by doubled quotes.
+- `dsd_engine_end_calls()` (`engine/end_calls.c`) ends every call the way every end-all path must: the analog call
+  through its own lifecycle first, so its per-call recording closes under the row it was heard as, then each slot's
+  call, committing it. The UI end-all and ProVoice toggle, the `-Y` leave and step, the trunk release, the replay leave
+  and the voice-tune clear use it.

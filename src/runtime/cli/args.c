@@ -44,6 +44,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/tetra_rate.h>
@@ -1546,6 +1547,29 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        {                                                                                                              \
+            char receive_option[32];                                                                                   \
+            size_t receive_length = strcspn(argv[i], "=");                                                             \
+            if (receive_length < sizeof(receive_option)) {                                                             \
+                DSD_MEMCPY(receive_option, argv[i], receive_length);                                                   \
+                receive_option[receive_length] = '\0';                                                                 \
+                int receive_argument = dsd_receive_option_argument(receive_option);                                    \
+                if (receive_argument >= 0) {                                                                           \
+                    const char* value = argv[i][receive_length] == '='                                                 \
+                                            ? argv[i] + receive_length + 1                                             \
+                                            : (receive_argument && i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL);   \
+                    char error[160];                                                                                   \
+                    if (dsd_receive_option_apply(&opts->receive, &receive_cli_seen, receive_option, value, error,      \
+                                                 sizeof(error))                                                        \
+                        != 0) {                                                                                        \
+                        LOG_ERROR("%s: %s\n", receive_option, error);                                                  \
+                        cli_set_exit_rc(out_exit_rc, 1);                                                               \
+                        return DSD_PARSE_ERROR;                                                                        \
+                    }                                                                                                  \
+                    continue;                                                                                          \
+                }                                                                                                      \
+            }                                                                                                          \
+        }                                                                                                              \
         if (strcmp(argv[i], "--tone-allow") == 0 || strncmp(argv[i], "--tone-allow=", 13) == 0) {                      \
             const char* value = argv[i][12] == '=' ? argv[i] + 13 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
             if (!cli_parse_tone_filter_option("--tone-allow", DSD_TONE_FILTER_ALLOW, value, opts, &analog_cli_seen,    \
@@ -2470,6 +2494,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
+    unsigned int receive_cli_seen = 0;
     int analog_cli_seen = 0; /* bit 1 << dsd_analog_demod per analog width option given, CLI_TONE_FILTER_SEEN too */
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
     DSD_PARSE_ARGS_PRESCAN_BLOCK();

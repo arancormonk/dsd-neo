@@ -9,10 +9,12 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -21,6 +23,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
 #ifdef USE_RADIO
@@ -74,6 +77,15 @@ scan_row_edit_value(const dsd_opts* opts, const dsd_app_scan_row_edit_payload* p
     value->width_hz = p->width_hz;
     value->gain_db = p->gain_db;
     value->tone_filter = p->tone_mode;
+    if (p->action == DSD_SCAN_ROW_EDIT_SET && (p->field & DSD_SCAN_ROW_FIELDS_RECEIVE)) {
+        if (p->receive.kind < 0 || p->receive.kind > DSD_RECEIVE_FILTER_COUNT
+            || p->field != (DSD_SCAN_ROW_FIELD_SLOT << p->receive.kind)) {
+            DSD_SNPRINTF(why, why_size, "%s", "receive setting does not match the field");
+            return -1;
+        }
+        return dsd_receive_edit_parse(&value->receive, p->receive.kind, p->receive.enabled, p->receive.allow,
+                                      p->receive.block, p->receive.names, why, why_size);
+    }
     if (p->action == DSD_SCAN_ROW_EDIT_SET && p->field == (int32_t)DSD_SCAN_ROW_FIELD_TONE
         && dsd_tone_filter_check(p->tone_mode, p->tone_list, &value->tone_set, why, why_size) != 0) {
         return -1;
@@ -303,7 +315,10 @@ scan_row_edit_read_payload(const struct dsd_app_command* command, dsd_app_scan_r
     }
     DSD_MEMCPY(p, command->data, sizeof(*p));
     if (!scan_row_edit_terminated(p->target_id, sizeof p->target_id)
-        || !scan_row_edit_terminated(p->tone_list, sizeof p->tone_list) || p->action < DSD_SCAN_ROW_EDIT_SET
+        || !scan_row_edit_terminated(p->tone_list, sizeof p->tone_list)
+        || !scan_row_edit_terminated(p->receive.allow, sizeof p->receive.allow)
+        || !scan_row_edit_terminated(p->receive.block, sizeof p->receive.block)
+        || !scan_row_edit_terminated(p->receive.names, sizeof p->receive.names) || p->action < DSD_SCAN_ROW_EDIT_SET
         || p->action > DSD_SCAN_ROW_EDIT_RESET) {
         return -1;
     }
@@ -332,9 +347,9 @@ scan_row_edit_follow_up(dsd_opts* opts, dsd_state* state, const dsd_app_scan_row
 
 /* The notice for the engine's @p status, and what the command reports. */
 static int
-scan_row_edit_outcome(const char* label, const dsd_app_scan_row_edit_payload* p, const dsd_scan_row_edit_value* value,
-                      int status, const dsd_scan_row_edit_result* result, char* notice, size_t notice_size,
-                      int* ttl_s) {
+scan_row_edit_outcome(const dsd_opts* opts, const dsd_state* state, const char* label,
+                      const dsd_app_scan_row_edit_payload* p, const dsd_scan_row_edit_value* value, int status,
+                      const dsd_scan_row_edit_result* result, char* notice, size_t notice_size, int* ttl_s) {
     char value_text[64] = {0};
     if (p->action == DSD_SCAN_ROW_EDIT_SET) {
         (void)dsd_app_scan_row_value_text((uint32_t)p->field, value, value_text, sizeof value_text);
@@ -342,6 +357,11 @@ scan_row_edit_outcome(const char* label, const dsd_app_scan_row_edit_payload* p,
     (void)dsd_app_scan_row_notice(label, (uint32_t)p->field, (unsigned int)p->mode, p->action, value_text, status,
                                   status == DSD_SCAN_ROW_EDIT_REFUSED ? result->err : NULL, notice, notice_size);
     if (status == DSD_SCAN_ROW_EDIT_APPLIED || status == DSD_SCAN_ROW_EDIT_STORED) {
+        /* A name the row's filters, or the configured ones it inherits, now reject is kept but never shows (issue
+           #637). */
+        if ((uint32_t)p->field & (DSD_SCAN_ROW_FIELDS_RECEIVE | DSD_SCAN_ROW_FIELD_TONE)) {
+            dsd_app_receive_note_unreachable(opts, state, &result->options, notice, notice_size);
+        }
         return DSD_APP_SCAN_ROW_EDIT_DONE;
     }
     *ttl_s = 5;
@@ -387,5 +407,5 @@ dsd_app_apply_scan_row_edit(dsd_opts* opts, dsd_state* state, const struct dsd_a
     if (status == DSD_SCAN_ROW_EDIT_APPLIED || status == DSD_SCAN_ROW_EDIT_STORED) {
         scan_row_edit_note_width_superseded(&p, records_before);
     }
-    return scan_row_edit_outcome(label, &p, &value, status, &result, notice, notice_size, ttl_s);
+    return scan_row_edit_outcome(opts, state, label, &p, &value, status, &result, notice, notice_size, ttl_s);
 }
