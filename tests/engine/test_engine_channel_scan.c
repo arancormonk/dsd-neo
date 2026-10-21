@@ -22,6 +22,7 @@
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -195,6 +196,19 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
         dsd_trunk_tuning_request_complete(request, tune_result);
     }
     return tune_result;
+}
+
+/* The conventional NFM call's end (issue #637): when it ran, and whether slot 0's call was still open for it to close
+   its recording against. */
+static int analog_call_end_calls;
+static int analog_call_end_saw_open_call;
+
+void
+dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    dsd_call_snapshot call;
+    analog_call_end_calls++;
+    analog_call_end_saw_open_call += dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
 }
 
 void
@@ -2605,10 +2619,34 @@ test_receive_row_session_edits(void) {
     tunes = reset_count = 0;
 }
 
+/* Issue #637: leaving the scanner ends an open NFM call through its own lifecycle before the slots' calls are ended
+   and committed, so its per-call recording closes under the row it was heard as, never the emptied one. */
+static void
+test_leave_ends_the_nfm_call_before_its_row_commits(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    state->samplesPerSymbol = 10;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_call_observation observation = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    analog_call_end_calls = analog_call_end_saw_open_call = 0;
+    (void)dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_call_end_calls == 1 && analog_call_end_saw_open_call == 1);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
     test_leave_restores_configured_receive_family();
+    test_leave_ends_the_nfm_call_before_its_row_commits();
     test_leave_retimes_the_digital_landing();
     test_leave_lands_where_it_times_the_configured_decoder();
     test_leave_keeps_the_rows_recorded_landing();

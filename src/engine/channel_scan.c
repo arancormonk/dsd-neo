@@ -21,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -200,8 +201,11 @@ channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const 
     return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && scan->map_sequence == state->trunk_chan_map_seq;
 }
 
+/* End every slot's call and commit it. An NFM call ends through its own lifecycle first (issue #637), so its per-call
+   recording closes under the row it was heard as, its mode and service name included, before the commit clears it. */
 static void
 channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_analog_call_end(opts, state);
     const double now = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end(state, (uint8_t)slot, now) > 0) {

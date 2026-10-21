@@ -1411,8 +1411,13 @@ dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint8_t s
         dsd_receive_identity identity;
         dsd_receive_identity_current(state, call->protocol, slot, &identity);
         if (dsd_receive_identity_changed(&call->receive_identity, &identity)) {
+            const int analog = call->protocol == DSD_SYNC_ANALOG;
             dsd_call_state_ext_unlock(ext);
-            (void)dsd_call_state_end_ex(state, slot, 0.0, DSD_CALL_END_EXPLICIT);
+            /* An NFM call's tone change is its own lifecycle's boundary (dsd_engine_analog_call_block()), which closes
+               its per-call recording against the call's row before that row is committed (issue #637). */
+            if (!analog) {
+                (void)dsd_call_state_end_ex(state, slot, 0.0, DSD_CALL_END_EXPLICIT);
+            }
             return;
         }
         call->receive_verdict = (uint8_t)dsd_receive_policy_match(&opts->receive, &identity);

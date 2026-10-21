@@ -476,6 +476,64 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     assert(dsd_test_rmdir(directory) == 0);
 }
 
+typedef struct {
+    const char* dir;
+    int files;
+    int traveler;
+    int dispatch;
+} tone_sync_recordings;
+
+static int
+check_tone_sync_recording(const char* name, void* user) {
+    tone_sync_recordings* found = user;
+    assert(!strstr(name, "TEMP"));
+    found->traveler += strstr(name, "_NFM_SVC_Traveler_") != NULL;
+    found->dispatch += strstr(name, "_NFM_SVC_Dispatch_") != NULL;
+    found->files++;
+    char path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);
+    assert(remove(path) == 0);
+    return 0;
+}
+
+/* A tone change the decoder's own sync of the slot sees first (the frame sync's partial tone tap runs ahead of the next
+   output block) is the analog call's lifecycle boundary, not the call state's: the recording still closes against the
+   call's own row, named and as NFM, never against the row the sync had already committed and cleared. */
+static void
+test_analog_tone_change_seen_first_by_a_sync(dsd_opts* opts, dsd_state* state) {
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_out = 0;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    char directory[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(directory, sizeof directory, "dsdneo_receive_tone_sync"));
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", directory);
+    opts->dmr_stereo_wav = 1;
+    assert(dsd_receive_names_parse("--tone-name '100.0=Traveler' --tone-name '141.3=Dispatch'", &opts->receive.names,
+                                   NULL, 0)
+           == 0);
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+    float block[960];
+    for (int i = 0; i < 960; ++i) {
+        block[i] = 2000.0f;
+    }
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    assert(dsd_engine_analog_call_active(state));
+    state->analog_rx.ctcss_tenths_hz = 1413;
+    dsd_event_sync_slot(opts, state, 0);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    assert(!dsd_engine_analog_call_active(state));
+    tone_sync_recordings found = {.dir = directory};
+    assert(dsd_dir_list(directory, check_tone_sync_recording, &found) == 0);
+    assert(found.files == 2 && found.traveler == 1 && found.dispatch == 1);
+    assert(dsd_test_rmdir(directory) == 0);
+}
+
 /* A trunking context remembers the access code verified on each voice channel and refuses a grant to one the policy in
    force rejects; a channel never verified, or one the policy admits again after an edit, is followed. */
 static void
@@ -534,6 +592,13 @@ main(void) {
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
     test_analog(opts, state);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    state->event_history_s = history;
+    init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
+    init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
+    test_analog_tone_change_seen_first_by_a_sync(opts, state);
     dsd_state_ext_free_all(state);
     free(history);
     free(state);

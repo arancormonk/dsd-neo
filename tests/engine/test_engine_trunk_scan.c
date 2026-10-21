@@ -26,6 +26,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -13489,6 +13490,13 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_edit_waits_for_its_retune);
     rc |= run_with_default_tune_hook(test_target_edit_survives_decryption_apply);
     return rc;
+}
+
+/* The conventional NFM call's end, which the scanner runs before it ends the slots' calls (issue #637). */
+void
+dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 void
