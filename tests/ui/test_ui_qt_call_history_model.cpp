@@ -44,6 +44,7 @@
 #include <QtGlobal>
 #include <atomic>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
@@ -393,6 +394,58 @@ test_labelled_notice_name_drops_its_own_channel_prefix(void) {
            model.count() == 2
                && model.data(model.index(0), CallHistoryModel::NameRole).toString()
                       == QStringLiteral("[Not a label] SMS from 1234"));
+}
+
+/* The emitter puts a notice's CRC/RAS marker ahead of its label, so the channel prefix is found
+ * after that marker, which stays. A notice a service name labels (issue #637) carries the service
+ * there instead of the channel, and keeps it in its title, the only place the row shows it: search
+ * and the accessible name read the title. */
+void
+test_marked_and_serviced_notice_titles(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    const time_t when = 1754500350;
+    Event_History* crc = ring.commitNotice(0, when, "2026-04-30 00:00:00 [CRC ERR] [SiteA] LRRP position", "SiteA");
+    crc->crc_invalid = DSD_CRC_FAILED;
+    model.refresh(ring.state);
+    expect("a CRC-marked notice drops its channel and keeps its marker",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[CRC ERR] LRRP position"));
+
+    Event_History* ras = ring.commitNotice(0, when + 5, "2026-04-30 00:00:05 [RAS] [SiteA] SMS from 1234", "SiteA");
+    ras->crc_invalid = DSD_CRC_RAS_UNVERIFIED;
+    model.refresh(ring.state);
+    expect("a RAS-marked notice drops its channel and keeps its marker",
+           model.count() == 2
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[RAS] SMS from 1234"));
+
+    Event_History* named = ring.commitNotice(0, when + 10, "2026-04-30 00:00:10 [Hospital] LRRP position", "SiteA");
+    DSD_SNPRINTF(named->service_label, sizeof(named->service_label), "%s", "Hospital");
+    model.refresh(ring.state);
+    expect("a serviced notice keeps its service in its title",
+           model.count() == 3
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[Hospital] LRRP position")
+               && model.data(model.index(0), CallHistoryModel::ServiceNameRole).toString() == QStringLiteral("Hospital")
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == QStringLiteral("SiteA"));
+
+    Event_History* both =
+        ring.commitNotice(0, when + 15, "2026-04-30 00:00:15 [CRC ERR] [Hospital] SMS from 77", "SiteA");
+    DSD_SNPRINTF(both->service_label, sizeof(both->service_label), "%s", "Hospital");
+    both->crc_invalid = DSD_CRC_FAILED;
+    model.refresh(ring.state);
+    expect("a CRC-marked serviced notice keeps both",
+           model.count() == 4
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[CRC ERR] [Hospital] SMS from 77"));
+
+    view.setFilterText(QStringLiteral("Hospital"));
+    expect("search finds the serviced notices by their service", view.count() == 2);
 }
 
 /* The scan channel a row was heard on rides its own role. The system stays the
@@ -2125,6 +2178,7 @@ main(int argc, char** argv) {
     test_alias_only_row_is_logged();
     test_channel_labelled_tg0_row_is_logged();
     test_labelled_notice_name_drops_its_own_channel_prefix();
+    test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();

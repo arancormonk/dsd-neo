@@ -1051,11 +1051,14 @@ Item {
             metaText: {
                 // A notice keeps its payload first, the pane being too
                 // narrow for its ids, then names what every row names: the
-                // access code, and the frequency last (issue #575).
+                // access code, the channel it was heard on (its title drops
+                // it), and the frequency last (issue #575).
                 if (model.kind === 1) {
                     var parts = [model.detail.length > 0 ? model.detail : qsTr("data message")];
                     if (model.accessCode.length > 0)
                         parts.push(model.accessCode);
+                    if (model.channel.length > 0 && model.channel !== model.name)
+                        parts.push(model.channel);
                     if (model.freqHz > 0)
                         parts.push(Util.fmtMhz(model.freqHz));
                     return parts.join(" · ");

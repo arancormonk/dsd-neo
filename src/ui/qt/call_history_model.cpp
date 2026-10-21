@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -487,15 +488,21 @@ ring_item_display_kind(const Event_History* item) {
 /** @brief The notice text minus the "YYYY-MM-DD HH:MM:SS " prefix the emitter stamps,
  *  and minus the "[label] " the emitter adds for the scan channel the row was heard on.
  *  That label rides the row's own channel_label (and the system column), so only that
- *  exact prefix is removed: a summary that merely starts with a bracket keeps it. */
+ *  exact prefix is removed: a summary that merely starts with a bracket keeps it. The
+ *  row's own CRC/RAS marker, which the emitter puts ahead of the label, stays where it is.
+ *  A notice a service name labels (issue #637) carries the service there instead, and
+ *  keeps it: nothing else on the row shows it, and the title is what search, an elided
+ *  row and the accessible name read. */
 QString
 notice_summary(const Event_History* item) {
     static const QRegularExpression datePrefix(QStringLiteral("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} "));
     QString text = QString::fromUtf8(item->event_string).remove(datePrefix);
-    if (item->channel_label[0] != '\0') {
+    if (item->channel_label[0] != '\0' && item->service_label[0] == '\0') {
+        const QString marker = QString::fromUtf8(dsd_crc_marker(item->crc_invalid));
+        const qsizetype at = text.startsWith(marker) ? marker.size() : 0;
         const QString labelPrefix = QLatin1Char('[') + QString::fromUtf8(item->channel_label) + QLatin1String("] ");
-        if (text.startsWith(labelPrefix)) {
-            text.remove(0, labelPrefix.size());
+        if (text.mid(at).startsWith(labelPrefix)) {
+            text.remove(at, labelPrefix.size());
         }
     }
     return text.trimmed();
