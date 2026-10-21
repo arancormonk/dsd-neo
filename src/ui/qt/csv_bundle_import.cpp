@@ -62,7 +62,7 @@ optionType(const QString& option) {
    doubled quote, or by single quotes when it holds a double quote. */
 QByteArray
 csvQuotedOperand(const QString& value) {
-    const QByteArray bytes = value.toUtf8();
+    QByteArray bytes = value.toUtf8();
     const bool plain = !bytes.isEmpty() && std::none_of(bytes.begin(), bytes.end(), [](char c) {
         return c == ' ' || c == '\t' || c == '"' || c == '\'';
     });
@@ -101,7 +101,7 @@ rewriteQuotedOptions(const QString& options, const std::function<QString(const Q
     const char* content = cell.constData() + 1;
     const size_t length = static_cast<size_t>(cell.size()) - 2;
     QList<QuotedOperand> operands;
-    if (!dsd_scan_options_cell_csv_quoted(cell.constData(), content, length)
+    if (dsd_scan_options_cell_csv_quoted(cell.constData(), content, length) == 0
         || dsd_scan_options_visit_cell_files(cell.constData(), content, length, &operands, collectQuotedOperand,
                                              nullptr)
                != 0) {
