@@ -793,12 +793,14 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
    quoting: every double quote among them is one of a doubled pair. */
 static int
 option_csv_quoting(const char* content, size_t length) {
-    for (size_t i = 0; i < length; i++) {
-        if (content[i] == '"') {
-            if (i + 1 >= length || content[i + 1] != '"') {
-                return 0;
-            }
+    size_t i = 0;
+    while (i < length) {
+        if (content[i] != '"') {
             i++;
+        } else if (i + 1 < length && content[i + 1] == '"') {
+            i += 2;
+        } else {
+            return 0;
         }
     }
     return 1;
@@ -836,14 +838,14 @@ option_csv_decode(const char* content, size_t length, size_t* map) {
         return NULL;
     }
     size_t used = 0;
-    for (size_t i = 0; i < length; i++, used++) {
+    size_t i = 0;
+    while (i < length) {
         if (map) {
             map[used] = i;
         }
-        text[used] = content[i];
-        if (content[i] == '"') {
-            i++;
-        }
+        text[used++] = content[i];
+        /* A doubled quote is one quote: its second half is skipped. */
+        i += content[i] == '"' ? 2U : 1U;
     }
     if (map) {
         map[used] = length;
