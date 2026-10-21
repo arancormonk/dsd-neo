@@ -3984,8 +3984,10 @@ dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
     /* The replay no longer feeds the decoder, so the calls decoded on it are over. End and commit them while decode
        time is still the capture's (issue #673): their rows, and the per-call recordings and rdio-scanner sidecars a
        commit closes, are then stamped on the clock they were decoded on, and each slot's WAV reopens empty. A call the
-       run's end already finalized, or a slot with none, has nothing left to end. */
+       run's end already finalized, or a slot with none, has nothing left to end. An NFM call's recording closes with
+       it, against the row being committed (issue #637). */
     if (opts && state && state->event_history_s) {
+        dsd_engine_analog_call_end(opts, state);
         const double ended_m = dsd_decode_now_mono_s();
         for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
             (void)dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT);

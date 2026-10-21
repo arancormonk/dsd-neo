@@ -20,8 +20,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -3783,6 +3785,88 @@ test_replay_leave_exports_recordings_on_the_capture_clock(void) {
     return rc;
 }
 
+/* The per-call recordings a WAV directory holds: the newest published one's name, and how many are still TEMP_. */
+typedef struct {
+    char name[DSD_TEST_PATH_MAX];
+    int published;
+    int temp;
+} replay_leave_recordings;
+
+static int
+replay_leave_find_recording(const char* name, void* user) {
+    replay_leave_recordings* found = (replay_leave_recordings*)user;
+    if (strstr(name, "TEMP") != NULL) {
+        found->temp++;
+    } else if (strstr(name, ".wav") != NULL) {
+        found->published++;
+        DSD_SNPRINTF(found->name, sizeof found->name, "%s", name);
+    }
+    return 0;
+}
+
+/*
+ * Issue #637: leaving a replay mid-run closes an NFM call's per-call recording with the call, against the row it is
+ * committing and on the capture's clock. Left open, the next carrier boundary closed it against the slot's emptied
+ * row: the recording lost the capture's date, its NFM system and its service name.
+ */
+static int
+test_replay_leave_closes_the_nfm_recording(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_replay_leave_nfm")) {
+        DSD_FPRINTF(stderr, "replay leave nfm: dsd_test_mkdtemp failed\n");
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", dir);
+    opts->dmr_stereo_wav = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    int rc = expect_true("replay leave nfm: the tone-name rule parses",
+                         dsd_receive_names_parse("--tone-name '141.3=Traveler'", &opts->receive.names, NULL, 0) == 0);
+    rc |= expect_true("replay leave nfm: tone detection runs", dsd_analog_tone_detection_active(opts));
+    const time_t capture_s = (time_t)4102444800LL; /* 2100-01-01T00:00:00Z, ahead of any device clock */
+    dsd_decode_clock_use_replay((int64_t)capture_s);
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1413;
+    float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = 2000.0f; /* Monitor blocks use signed-16 PCM units in floats. */
+    }
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    rc |= expect_true("replay leave nfm: the call is on", dsd_engine_analog_call_active(state));
+
+    /* The stream is stopped to restart it; the carrier boundary after it finds nothing left to close. */
+    dsd_engine_decode_clock_leave_replay(opts, state);
+    rc |= expect_true("replay leave nfm: the call ended with the replay", !dsd_engine_analog_call_active(state));
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[1];
+    rc |= expect_true("replay leave nfm: the row is committed on the capture's clock and named",
+                      row->event_start_time == capture_s && strcmp(row->service_label, "Traveler") == 0);
+
+    replay_leave_recordings found;
+    DSD_MEMSET(&found, 0, sizeof found);
+    (void)dsd_dir_list(dir, replay_leave_find_recording, &found);
+    char date[16];
+    (void)dsd_format_local_datetime(capture_s, DSD_LOCAL_DATETIME_DATE_COMPACT, date, sizeof date);
+    rc |= expect_true("replay leave nfm: one recording is published", found.published == 1 && found.temp == 0);
+    rc |= expect_true("replay leave nfm: under the capture's date", strncmp(found.name, date, strlen(date)) == 0);
+    rc |= expect_true("replay leave nfm: as NFM, named by its tone", strstr(found.name, "_NFM_SVC_Traveler_") != NULL);
+
+    (void)dsd_dir_list(dir, replay_leave_remove_file, dir);
+    (void)dsd_test_rmdir(dir);
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
 static void
 seed_xpt_identity(dsd_state* state) {
@@ -6722,6 +6806,7 @@ main(void) {
     rc |= test_tone_check_leaves_no_hangtime_tail();
 #endif
     rc |= test_replay_leave_exports_recordings_on_the_capture_clock();
+    rc |= test_replay_leave_closes_the_nfm_recording();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();
