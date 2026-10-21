@@ -7147,6 +7147,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency. Speaker output is independent
   of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
   `dsd_analog_sink_end_call()` clears that lane at a service boundary without changing diagnostic raw capture.
+  An NFM recording is published as `<date>_<time>_<nnnnn>_NFM[_SVC_<name>].wav` (no talkgroup, source or call type;
+  `wav_rename_build_final_filename()`), chosen by the row's `systype`; a teardown that no longer has the row publishes
+  it through `close_and_rename_analog_wav_file()` (`<dsd-neo/core/file_io.h>`, no service, no rdio export), so it
+  is never left under its temp name nor given the digital shape.
   A live radio NFM read yields with zero samples after 100 ms without output; DSP marks that as an interruption,
   and the engine ticks the analog lifecycle even when the interrupted pass skips `noCarrier()`. The existing
   received-tone freshness deadline closes stalled calls and WAVs on the decoder thread. Replay reads keep their

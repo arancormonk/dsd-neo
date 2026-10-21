@@ -37,7 +37,7 @@ static void
 analog_call_free(void* ptr) {
     analog_call* call = (analog_call*)ptr;
     if (call->wav) {
-        call->wav = close_and_rename_wav_file_ex(call->wav, NULL, call->path, call->dir, NULL, call->opened, 0);
+        call->wav = close_and_rename_analog_wav_file(call->wav, call->path, call->dir);
     }
     free(call);
 }

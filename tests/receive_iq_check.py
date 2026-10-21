@@ -54,7 +54,8 @@ def main():
             if service:
                 assert "[" + service + "] " + mode_word(mode) in history, history
                 if per_call:
-                    label = "_SVC_" + service.replace(" ", "_") + "_"
+                    # A conventional NFM call has no talkgroup, source or call type, so its service ends the name.
+                    label = "_SVC_" + service.replace(" ", "_") + ("_" if mode != "-fA" else ".wav")
                     assert label in calls[0].name, f"{name}: {calls[0].name} lacks {label}"
             if unnamed:
                 # Traffic no rule names is still received, under no service label.

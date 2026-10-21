@@ -115,6 +115,11 @@ SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, cons
 SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                       const char* dir, const Event_History_I* event_struct, time_t opened,
                                       int export_call);
+/**
+ * Close a conventional NFM call's recording that no longer has its history row (a teardown that skipped the call's
+ * own end) and publish it under the NFM name, without a service name or an rdio export.
+ */
+SNDFILE* close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);

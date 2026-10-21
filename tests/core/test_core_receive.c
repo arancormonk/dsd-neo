@@ -102,16 +102,22 @@ typedef struct {
     int files;
     int traveler;
     int dispatch;
+    int unnamed;
 } recording_check;
 
 static int
 check_recording(const char* name, void* user) {
     recording_check* check = user;
     assert(strstr(name, ".wav")); /* NFM's zero target must not fabricate an Rdio sidecar. */
-    assert(strstr(name, "_NFM_"));
     assert(!strstr(name, "TEMP"));
-    check->traveler += strstr(name, "_SVC_Traveler__West_") != NULL;
-    check->dispatch += strstr(name, "_SVC_Dispatch") != NULL;
+    /* The NFM name: no talkgroup, source or call type, and the sanitized service last (issue #637). */
+    const int traveler = dsd_test_nfm_recording_name_is(name, "Traveler__West_");
+    const int dispatch = dsd_test_nfm_recording_name_is(name, "Dispatch");
+    const int unnamed = dsd_test_nfm_recording_name_is(name, NULL);
+    assert(traveler || dispatch || unnamed);
+    check->traveler += traveler;
+    check->dispatch += dispatch;
+    check->unnamed += unnamed;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
     SF_INFO info = {0};
@@ -144,8 +150,8 @@ typedef struct {
 static int
 count_service_files(const char* name, void* user) {
     service_files* check = user;
-    check->traveler += strstr(name, "_SVC_Traveler__West_") != NULL;
-    check->dispatch += strstr(name, "_SVC_Dispatch") != NULL;
+    check->traveler += dsd_test_nfm_recording_name_is(name, "Traveler__West_");
+    check->dispatch += dsd_test_nfm_recording_name_is(name, "Dispatch");
     check->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
@@ -178,12 +184,14 @@ typedef struct {
     const char* dir;
     int files;
     int temp;
+    int unnamed;
 } teardown_check;
 
 static int
 check_teardown_recording(const char* name, void* user) {
     teardown_check* check = user;
     check->temp += strstr(name, "TEMP") != NULL;
+    check->unnamed += dsd_test_nfm_recording_name_is(name, NULL);
     check->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, check->dir, name) == 0);
@@ -443,7 +451,7 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     assert(history[0].Event_History_Items[3].receive_identity.value == 1413);
     recording_check check = {.dir = directory};
     assert(dsd_dir_list(directory, check_recording, &check) == 0);
-    assert(check.files == 3 && check.traveler == 1 && check.dispatch == 1);
+    assert(check.files == 3 && check.traveler == 1 && check.dispatch == 1 && check.unnamed == 1);
     /* A tone still being acquired between two confirmed ones does not hide the change: each service gets its own
        recording, never one under the later name. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
@@ -472,7 +480,8 @@ test_analog(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
     teardown_check teardown = {.dir = directory};
     assert(dsd_dir_list(directory, check_teardown_recording, &teardown) == 0);
-    assert(teardown.files == 1 && teardown.temp == 0);
+    /* With no history row left it is published as an unnamed NFM recording, not under the digital name. */
+    assert(teardown.files == 1 && teardown.temp == 0 && teardown.unnamed == 1);
     assert(dsd_test_rmdir(directory) == 0);
 }
 
@@ -487,8 +496,8 @@ static int
 check_tone_sync_recording(const char* name, void* user) {
     tone_sync_recordings* found = user;
     assert(!strstr(name, "TEMP"));
-    found->traveler += strstr(name, "_NFM_SVC_Traveler_") != NULL;
-    found->dispatch += strstr(name, "_NFM_SVC_Dispatch_") != NULL;
+    found->traveler += dsd_test_nfm_recording_name_is(name, "Traveler");
+    found->dispatch += dsd_test_nfm_recording_name_is(name, "Dispatch");
     found->files++;
     char path[DSD_TEST_PATH_MAX * 2];
     assert(dsd_test_path_join(path, sizeof path, found->dir, name) == 0);

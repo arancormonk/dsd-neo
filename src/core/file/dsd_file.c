@@ -955,6 +955,7 @@ typedef struct {
     char gi_str[10];
     char service[DSD_SERVICE_LABEL_SIZE + 5];
     uint8_t is_string;
+    uint8_t is_analog; /* A conventional NFM call: no talkgroup, source or call type to name it by (issue #637). */
 } wav_rename_metadata;
 
 static const Event_History*
@@ -980,10 +981,11 @@ wav_rename_service(const Event_History* event_item, wav_rename_metadata* metadat
 }
 
 static void
-wav_rename_build_metadata(const Event_History* event_item, wav_rename_metadata* metadata) {
+wav_rename_build_metadata(const Event_History* event_item, int analog, wav_rename_metadata* metadata) {
     if (!metadata) {
         return;
     }
+    metadata->is_analog = (uint8_t)(analog || (event_item && event_item->systype == DSD_SYNC_ANALOG));
 
     time_t event_time = dsd_decode_time();
     if (event_item && event_item->event_time > 0) {
@@ -1021,7 +1023,10 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
     if (!out || out_cap == 0 || !dir || !metadata) {
         return;
     }
-    if (metadata->is_string == 1) {
+    if (metadata->is_analog) {
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_NFM%s.wav", dir, metadata->datestr, metadata->timestr,
+                     metadata->random_number, metadata->service);
+    } else if (metadata->is_string == 1) {
         DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%s_SRC_%s.wav", dir, metadata->datestr, metadata->timestr,
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str, metadata->tgt_str,
                      metadata->src_str);
@@ -1075,9 +1080,9 @@ wav_publish_noreplace(const char* from, char* to, size_t to_size, const char* di
     return 0;
 }
 
-SNDFILE*
-close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call) {
+static SNDFILE*
+wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                      const Event_History_I* event_struct, time_t opened, int export_call, int analog) {
     if (wav_file != NULL) {
         sf_close(wav_file);
     }
@@ -1089,7 +1094,7 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
     const Event_History* event_item = wav_rename_get_event_item(event_struct);
     wav_rename_metadata metadata;
     DSD_MEMSET(&metadata, 0, sizeof(metadata));
-    wav_rename_build_metadata(event_item, &metadata);
+    wav_rename_build_metadata(event_item, analog, &metadata);
 
     char new_filename[2000];
     DSD_MEMSET(new_filename, 0, sizeof(new_filename));
@@ -1123,6 +1128,17 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
 
     wav_file = NULL;
     return wav_file;
+}
+
+SNDFILE*
+close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                             const Event_History_I* event_struct, time_t opened, int export_call) {
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, export_call, 0);
+}
+
+SNDFILE*
+close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir) {
+    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 1);
 }
 
 SNDFILE*

@@ -1409,7 +1409,9 @@ identity and label, and different confirmed identifiers do not merge into one ca
 `-P` also records conventional NFM transmissions, independently of speaker muting or null playback.
 History includes the received CTCSS/DCS identity; a confirmed tone change separates transmissions.
 Carrier end, rejection, retuning, an input discontinuity or stop closes the recording. Named per-call WAVs
-include a sanitized `_SVC_` component. Rdio exports use the service name in their talkgroup label field
+include a sanitized `_SVC_` component. An NFM recording has no talkgroup, source or call type, so it is named
+`<date>_<time>_<nnnnn>_NFM_SVC_<name>.wav` (`20261021_142839_51828_NFM_SVC_20R_Traveler.wav`), or
+`<date>_<time>_<nnnnn>_NFM.wav` when no name labels it. Rdio exports use the service name in their talkgroup label field
 while preserving numeric IDs. Rdio still requires a nonzero target ID, so anonymous NFM produces ordinary
 named WAVs without fabricated talkgroup IDs. See [receive configuration](config-system.md) and
 [row options](csv-formats.md).
