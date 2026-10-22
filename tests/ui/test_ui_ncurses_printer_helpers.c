@@ -2396,6 +2396,25 @@ test_sync_tree_follows_scan_class(void) {
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("IDAS - Area: 01;");
+    /* An IDAS site shows its own System ID and Site Code, never a Type-C location left in the state. */
+    state->nxdn_location_site_code = 3U;
+    state->nxdn_location_sys_code = 12U;
+    state->nxdn_idas_site_code = 200U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 1);
+    assert_capture_contains("IDAS - Area: 01; Site Code: 200;");
+    assert(strstr(g_printw_capture, "Sys") == NULL);
+    state->nxdn_idas_system_id = 0x5A5A5U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 1);
+    assert_capture_contains("Sys ID: 370085; Site Code: 200;");
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("Sys Code: 12; Site Code: 3;");
+    state->nxdn_location_site_code = 0U;
+    state->nxdn_location_sys_code = 0U;
+    state->nxdn_idas_site_code = 0U;
+    state->nxdn_idas_system_id = 0U;
     state->nxdn_last_ran = 7U;
     state->nxdn_last_ran_stand_in = 0U;
     reset_printw_capture();

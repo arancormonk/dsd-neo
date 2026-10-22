@@ -23,9 +23,9 @@
  *   it. A call carried by unscrambled FACCH/SACCH never tests the seed, so a value -X or another carrier left is no NAC
  *   until then; the mark goes at every carrier boundary.
  * - NXDN `nxdn_last_ran`: the CRC-checked CAC, FACCH2/UDCH or SACCH, or a CRC-checked site information message's site
- *   code (Table 6.3-4); (unsigned)-1 until one decodes, and between transmissions. The field also holds values that
- *   are not a RAN, which the terminal shows in its place: an IDAS (Type-D) carrier's SCCH area bit or site type (the
- *   site type behind the SCCH's 7-bit CRC alone), and the fixed 7 a DCR transmission is given. The protocol marks
+ *   code (Table 6.3-4) of a confirmed transmission; (unsigned)-1 until one decodes, and between transmissions. The
+ *   field also holds values that are not a RAN, which the terminal shows in its place: an IDAS (Type-D) carrier's SCCH
+ *   area bit, and the fixed 7 a DCR transmission is given. The protocol marks
  *   those with `nxdn_last_ran_stand_in`, and the reader takes none of them: neither carrier has an access code.
  * - dPMR `dpmr_color_code`: the channel code's exact match in the colour-code table, set only once the transmission
  *   is confirmed; -1 between carriers.

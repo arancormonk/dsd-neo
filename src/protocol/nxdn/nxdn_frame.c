@@ -503,6 +503,20 @@ nxdn_update_sacch_mode(dsd_state* state, uint8_t lich) {
     }
 }
 
+/* The channel the frame's LICH names, which the element parsers read while its channels decode: a CAC is the Type-C
+ * control channel, an RTCH2 profile (the IDAS column) a Type-D traffic channel, anything else a traffic or data
+ * channel. */
+static uint8_t
+nxdn_frame_channel_of(const nxdn_frame_ctx* ctx) {
+    if (ctx->cac) {
+        return (uint8_t)NXDN_FRAME_CHANNEL_CONTROL;
+    }
+    if (ctx->idas) {
+        return (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
+    }
+    return (uint8_t)NXDN_FRAME_CHANNEL_TRAFFIC;
+}
+
 static void
 nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->scch) {
@@ -661,7 +675,9 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_confirm_begin_frame(state);
     nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
     nxdn_update_sacch_mode(state, ctx.lich);
+    state->nxdn_frame_channel = nxdn_frame_channel_of(&ctx);
     nxdn_decode_control_channels(opts, state, &ctx);
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     nxdn_confirm_end_frame(state);
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
@@ -685,6 +701,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 END:
     if (!frame_read) {
         nxdn_confirm_frame_rejected(state);
+        state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     }
     nxdn_finalize_sync_reject(state);
     /* The sticky flag, not this frame's evidence: a confirmed transmission whose current

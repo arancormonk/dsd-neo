@@ -509,12 +509,19 @@ test_site() {
     state.nxdn_last_ran_stand_in = 1; // the IDAS area below is a stand-in too, shown under its own label
     state.nxdn_last_ran = 0;
     DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "%s", "Type-D");
+    // A Type-C location an earlier carrier left is no IDAS site's identity, which has fields of its own.
     state.nxdn_location_sys_code = 12;
     state.nxdn_location_site_code = 3;
+    state.nxdn_idas_site_code = 7;
     model.refresh(&opts, &state);
-    expect("IDAS area and location", model.siteProtocol() == "IDAS" && model.nxdnRan() == 0
-                                         && model.nxdnLocationCategory() == "Type-D" && model.nxdnSysCode() == 12
-                                         && model.nxdnSiteCode() == 3 && model.siteLine().contains("Area 0"));
+    expect("IDAS area and site code", model.siteProtocol() == "IDAS" && model.nxdnRan() == 0
+                                          && model.nxdnLocationCategory() == "Type-D" && model.nxdnSysCode() == 0
+                                          && model.nxdnSiteCode() == 7 && model.siteLine().contains("Area 0")
+                                          && model.siteLine().contains("SITE 7") && !model.siteLine().contains("SYS"));
+    state.nxdn_idas_system_id = 0x5A5A5;
+    model.refresh(&opts, &state);
+    expect("IDAS system and site", model.nxdnSysCode() == 0x5A5A5 && model.nxdnSiteCode() == 7
+                                       && model.siteLine().contains(QStringLiteral("SYS %1").arg(0x5A5A5)));
     state.synctype = DSD_SYNC_EDACS_POS;
     state.edacs_site_id = 7;
     model.refresh(&opts, &state);

@@ -245,13 +245,27 @@ MetricsModel::fillNxdnSite(SiteView& site, const dsd_state* snapshot) {
     const bool ran_stand_in = !idas && snapshot->nxdn_last_ran_stand_in != 0U;
     site.nxdnRan = (snapshot->nxdn_last_ran <= 63 && !ran_stand_in) ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
     site.siteProtocol = idas ? QStringLiteral("IDAS") : QStringLiteral("NXDN");
-    site.nxdnSiteCode = snapshot->nxdn_location_site_code;
-    // As in the terminal, a decoded site code establishes location validity.
-    site.nxdnSysCode = site.nxdnSiteCode ? static_cast<int>(snapshot->nxdn_location_sys_code) : 0;
+    if (idas) {
+        // An IDAS site has its own System ID and Site Code, each received on its own (a Type-D SRV_INFO carries both,
+        // an SCCH site ID message the code alone), which no Type-C location category describes.
+        site.nxdnSiteCode = snapshot->nxdn_idas_site_code;
+        site.nxdnSysCode = static_cast<int>(snapshot->nxdn_idas_system_id);
+    } else {
+        site.nxdnSiteCode = snapshot->nxdn_location_site_code;
+        // As in the terminal, a decoded site code establishes location validity.
+        site.nxdnSysCode = site.nxdnSiteCode ? static_cast<int>(snapshot->nxdn_location_sys_code) : 0;
+    }
     if (site.nxdnRan >= 0) {
         appendSiteDecimal(parts, idas ? QStringLiteral("Area") : QStringLiteral("RAN"), site.nxdnRan);
     }
-    if (site.nxdnSiteCode) {
+    if (idas) {
+        if (site.nxdnSysCode) {
+            appendSiteDecimal(parts, QStringLiteral("SYS"), site.nxdnSysCode);
+        }
+        if (site.nxdnSiteCode) {
+            appendSiteDecimal(parts, QStringLiteral("SITE"), site.nxdnSiteCode);
+        }
+    } else if (site.nxdnSiteCode) {
         if (!site.nxdnLocationCategory.isEmpty()) {
             parts << site.nxdnLocationCategory;
         }

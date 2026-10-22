@@ -215,7 +215,9 @@ typedef struct {
     uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
     unsigned int nxdn_last_ran;
+    uint32_t nxdn_idas_system_id;
     uint8_t nxdn_last_ran_stand_in;
+    uint8_t nxdn_idas_site_code;
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;
     char nxdn_location_category[14];
@@ -1899,6 +1901,8 @@ trunk_scan_save_nxdn_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
     snapshot->nxdn_location_site_code = state->nxdn_location_site_code;
     DSD_MEMCPY(snapshot->nxdn_location_category, state->nxdn_location_category,
                sizeof(snapshot->nxdn_location_category));
+    snapshot->nxdn_idas_system_id = state->nxdn_idas_system_id;
+    snapshot->nxdn_idas_site_code = state->nxdn_idas_site_code;
     snapshot->nxdn_rcn = state->nxdn_rcn;
     snapshot->nxdn_base_freq = state->nxdn_base_freq;
     snapshot->nxdn_step = state->nxdn_step;
@@ -1917,6 +1921,8 @@ trunk_scan_restore_nxdn_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     state->nxdn_location_sys_code = snapshot->nxdn_location_sys_code;
     state->nxdn_location_site_code = snapshot->nxdn_location_site_code;
     DSD_MEMCPY(state->nxdn_location_category, snapshot->nxdn_location_category, sizeof(state->nxdn_location_category));
+    state->nxdn_idas_system_id = snapshot->nxdn_idas_system_id;
+    state->nxdn_idas_site_code = snapshot->nxdn_idas_site_code;
     state->nxdn_rcn = snapshot->nxdn_rcn;
     state->nxdn_base_freq = snapshot->nxdn_base_freq;
     state->nxdn_step = snapshot->nxdn_step;

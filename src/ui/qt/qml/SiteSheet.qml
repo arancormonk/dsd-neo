@@ -162,7 +162,7 @@ ModalSheet {
             {
                 label: qsTr("System"),
                 name: "siteNxdnSys",
-                valid: metrics.nxdnSiteCode > 0,
+                valid: metrics.siteProtocol === "IDAS" ? metrics.nxdnSysCode > 0 : metrics.nxdnSiteCode > 0,
                 value: metrics.nxdnSysCode
             },
             {

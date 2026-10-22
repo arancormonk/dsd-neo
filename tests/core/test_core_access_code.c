@@ -177,7 +177,7 @@ test_nxdn_ran(dsd_state* state) {
 }
 
 /* nxdn_last_ran also holds values that are not a RAN, which the terminal shows in its place: an IDAS (Type-D)
- * carrier's SCCH area bit or site type, and the 7 a DCR transmission is given. The protocol marks them with
+ * carrier's SCCH area bit, and the 7 a DCR transmission is given. The protocol marks them with
  * nxdn_last_ran_stand_in, and neither carrier has an access code; a conventional NXDN carrier's RAN still reads. */
 static int
 test_nxdn_stand_ins_are_not_rans(dsd_state* state) {
@@ -186,8 +186,8 @@ test_nxdn_stand_ins_are_not_rans(dsd_state* state) {
     state->nxdn_last_ran = 1U;
     state->nxdn_last_ran_stand_in = 1U;
     rc |= expect_none("IDAS area bit", state, DSD_SYNC_NXDN_POS, 0U, 0U);
-    state->nxdn_last_ran = 3U;
-    rc |= expect_none("IDAS site type", state, DSD_SYNC_NXDN_NEG, 0U, 0U);
+    state->nxdn_last_ran = 0U;
+    rc |= expect_none("IDAS area bit, negative polarity", state, DSD_SYNC_NXDN_NEG, 0U, 0U);
 
     reset_sources(state);
     state->nxdn_last_ran = 7U;

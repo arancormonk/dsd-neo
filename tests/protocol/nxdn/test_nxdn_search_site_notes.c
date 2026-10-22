@@ -6,7 +6,8 @@
 /*
  * Signal search site notes from NXDN: the current-site location ID of a SITE_INFO, SRV_INFO or CCH_INFO, which the
  * channel decoders pass on only after its CRC, notes the site and system once the transmission is confirmed (a short
- * SACCH CRC alone does not confirm it). An adjacent site notes nothing.
+ * SACCH CRC alone does not confirm it). An adjacent site notes nothing. The decoder keeps the location (category,
+ * system, site and the RAN the site code gives) under the same rule, and never for the reserved category.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -94,6 +95,30 @@ put_bits(uint8_t* bits, int at, uint32_t value, int width) {
 /* Global category: system code 3, site code 12. */
 enum { LOCATION_SYS3_SITE12 = (3 << 12) | 12 };
 
+/* Global category: 10-bit system code 5, 12-bit site code 0xABC (NXDN TS 1-A 6.5.2). */
+enum { LOCATION_SYS5_SITE_ABC = (5 << 12) | 0xABC };
+
+static void
+clear_state(dsd_state* state) {
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->nxdn_last_ran = (unsigned int)-1;
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
+}
+
+static int
+expect_nothing_kept(const char* tag, const dsd_state* state) {
+    int rc = 0;
+    if (state->nxdn_last_ran != (unsigned int)-1 || state->nxdn_location_site_code != 0U
+        || state->nxdn_location_sys_code != 0U || state->nxdn_location_category[0] != ' '
+        || state->nxdn_location_category[1] != '\0') {
+        DSD_FPRINTF(stderr, "%s: kept RAN %u site %u sys %u category '%s'\n", tag, state->nxdn_last_ran,
+                    (unsigned)state->nxdn_location_site_code, (unsigned)state->nxdn_location_sys_code,
+                    state->nxdn_location_category);
+        rc = 1;
+    }
+    return rc;
+}
+
 static void
 message(dsd_opts* opts, dsd_state* state, uint8_t type, uint32_t location) {
     uint8_t bits[200];
@@ -118,7 +143,7 @@ main(void) {
     static const uint8_t types[3] = {0x18, 0x19, 0x1A}; // SITE_INFO, SRV_INFO, CCH_INFO
     for (int i = 0; i < 3; ++i) {
         // A confirmed transmission's checked message names the site.
-        DSD_MEMSET(state, 0, sizeof(*state));
+        clear_state(state);
         state->nxdn_confirmed = 1;
         g_notes = 0;
         message(opts, state, types[i], LOCATION_SYS3_SITE12);
@@ -126,24 +151,38 @@ main(void) {
         rc |= expect_int("location note kind", g_note.kind, DSD_SEARCH_SITE_NOTE_NXDN);
         rc |= expect_int("location note site", g_note.nxdn_site, 12);
         rc |= expect_int("location note system", (long)g_note.nxdn_sys, 3);
+        rc |= expect_int("confirmed location site", state->nxdn_location_site_code, 12);
+        rc |= expect_int("confirmed location system", (long)state->nxdn_location_sys_code, 3);
+        rc |= expect_int("confirmed location RAN", (long)state->nxdn_last_ran, 12);
 
-        // One short SACCH CRC has not confirmed it: decoded, not shown.
-        DSD_MEMSET(state, 0, sizeof(*state));
+        // The Global site code is 12 bits wide.
+        clear_state(state);
+        state->nxdn_confirmed = 1;
+        g_notes = 0;
+        message(opts, state, types[i], LOCATION_SYS5_SITE_ABC);
+        rc |= expect_int("global 12-bit site note", g_note.nxdn_site, 0xABC);
+        rc |= expect_int("global 12-bit site system note", (long)g_note.nxdn_sys, 5);
+        rc |= expect_int("global 12-bit site", state->nxdn_location_site_code, 0xABC);
+        rc |= expect_int("global 12-bit site RAN", (long)state->nxdn_last_ran, 0xABC % 64);
+
+        // One short SACCH CRC has not confirmed it: decoded, neither kept nor shown.
+        clear_state(state);
         g_notes = 0;
         message(opts, state, types[i], LOCATION_SYS3_SITE12);
-        rc |= expect_int("unconfirmed location is decoded", state->nxdn_location_site_code, 12);
+        rc |= expect_nothing_kept("unconfirmed location", state);
         rc |= expect_int("unconfirmed location notes nothing", g_notes, 0);
     }
 
-    // A reserved category names no site.
-    DSD_MEMSET(state, 0, sizeof(*state));
+    // A reserved category names no site, and gives no RAN.
+    clear_state(state);
     state->nxdn_confirmed = 1;
     g_notes = 0;
     message(opts, state, 0x18, (3U << 22) | LOCATION_SYS3_SITE12);
     rc |= expect_int("reserved category notes nothing", g_notes, 0);
+    rc |= expect_nothing_kept("reserved category", state);
 
     // An adjacent site is another site.
-    DSD_MEMSET(state, 0, sizeof(*state));
+    clear_state(state);
     state->nxdn_confirmed = 1;
     g_notes = 0;
     message(opts, state, 0x1B, LOCATION_SYS3_SITE12);

@@ -3775,7 +3775,7 @@ render_code_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[
 
 // A code the decoder never decoded reads as its sentinel -- DMR 16, NXDN (unsigned)-1, dPMR -1, which every carrier
 // boundary now leaves (issue #575) -- and the system identity string and the event line print "--" for it, as the
-// terminal does, rather than the sentinel. NXDN's stand-ins (an IDAS area bit or site type, DCR's fixed 7) are no RAN
+// terminal does, rather than the sentinel. NXDN's stand-ins (an IDAS area bit, DCR's fixed 7) are no RAN
 // either. The numeric sys ids keep the raw value: 0 is a code.
 static int
 test_unknown_access_codes_render_as_dashes(void) {

@@ -655,8 +655,8 @@ watchdog_event_code_sys_id_index(int systype) {
     return -1;
 }
 
-// Whether a value in that slot is the sentinel rather than a value. An NXDN stand-in (an IDAS area bit or site type, or
-// DCR's fixed 7) is a value here, kept for the structured consumers; the text prints the row's access code, which a
+// Whether a value in that slot is the sentinel rather than a value. An NXDN stand-in (an IDAS area bit, or DCR's fixed
+// 7) is a value here, kept for the structured consumers; the text prints the row's access code, which a
 // stand-in never is.
 static int
 watchdog_event_code_sys_id_is_sentinel(int systype, uint32_t value) {

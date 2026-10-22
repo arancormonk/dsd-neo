@@ -1164,7 +1164,7 @@ struct dsd_state {
     unsigned int dmr_t3_syscode;
     unsigned int nxdn_last_ran;
     /* 1 while nxdn_last_ran holds a value that is not a decoded RAN, which the terminal shows in its place: an IDAS
-     * (Type-D) carrier's SCCH area bit or site type, or the fixed 7 a DCR transmission is given. 0 once a RAN field
+     * (Type-D) carrier's SCCH area bit, or the fixed 7 a DCR transmission is given. 0 once a RAN field
      * (CAC, FACCH2/UDCH, SACCH, site information) writes it. Every write of a value sets it (the (unsigned)-1 resets
      * need not), and only a RAN is read as the carrier's access code (issue #575). */
     uint8_t nxdn_last_ran_stand_in;
@@ -1913,6 +1913,10 @@ struct dsd_state {
     int nxdn_sf;
     uint8_t
         nxdn_sacch_non_superframe; //flag to indicate whether or not a sacch is a part of a superframe, or an individual piece
+    /* The channel the NXDN frame being decoded is on, from its LICH (nxdn_frame(), one of nxdn_frame_channel in
+     * <dsd-neo/protocol/nxdn/nxdn.h>), set only while that frame's channels decode: element parsers whose layout or
+     * meaning depends on the channel read it, never anything retained from an earlier frame. */
+    uint8_t nxdn_frame_channel;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
     uint8_t nxdn_alias_block_number;
@@ -1927,6 +1931,12 @@ struct dsd_state {
     char nxdn_location_category[14];
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;
+    /* An IDAS (Type-D) site's identity, kept apart from the Type-C location ID above, whose categories it does not
+     * share (NXDN TS 1-E §6.6.2, §6.6.5): the 19-bit System ID of a Type-D SRV_INFO, and the 8-bit Site Code (1-250)
+     * of that message or of an SCCH site ID message. 0 is "not received" for both (System ID 0 is the null ID, Site
+     * Code 0 is reserved). Written only from confirmed content. */
+    uint32_t nxdn_idas_system_id;
+    uint8_t nxdn_idas_site_code;
 
     //channel access information
     uint8_t nxdn_rcn;

@@ -40,6 +40,20 @@ extern "C" {
  */
 int nxdn_frame(dsd_opts* opts, dsd_state* state);
 
+/**
+ * @brief The channel an NXDN frame's LICH names, which dsd_state::nxdn_frame_channel holds while its channels decode.
+ *
+ * Messages that share a type code across channels do not share a layout: a Type-D (IDAS) SRV_INFO on an RTCH2 is not
+ * the Type-C one on a control channel (NXDN TS 1-E §6.4.3.1), and only a control channel's site messages say where
+ * the control channel is.
+ */
+typedef enum {
+    NXDN_FRAME_CHANNEL_NONE = 0,    /**< No frame's channels are decoding. */
+    NXDN_FRAME_CHANNEL_CONTROL = 1, /**< A Type-C control channel (RCCH, its CAC). */
+    NXDN_FRAME_CHANNEL_TRAFFIC = 2, /**< A Type-C or conventional traffic or data channel (RTCH, RDCH), or DCR. */
+    NXDN_FRAME_CHANNEL_TYPE_D = 3,  /**< A Type-D (IDAS) traffic channel (RTCH2). */
+} nxdn_frame_channel;
+
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
 uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);

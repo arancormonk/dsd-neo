@@ -526,6 +526,23 @@ test_sacch_state_update(void) {
 
     nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
     rc |= expect_u8_at("sacch-nsf-good-message-type", 0U, state.NxdnElementsContent.MessageType, 0x10U);
+
+    /* The 26 elements a non-superframe SACCH carries hold no SRV_INFO (72 elements), and one passing 6-bit CRC has
+     * not confirmed the transmission: the decoder keeps no location and no RAN from it. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.nxdn_sacch_non_superframe = 1;
+    state.nxdn_last_ran = (unsigned int)-1;
+    DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "%s", " ");
+    make_sacch_trellis(trellis, 3U, 0x3FU);
+    write_bits_msb(trellis, 10U, 6U, 0x19U);
+    write_bits_msb(trellis, 16U, 16U, 0x1234U);
+
+    nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    rc |= expect_u8_at("sacch-nsf-srv-info-message-type", 0U, state.NxdnElementsContent.MessageType, 0x19U);
+    rc |= expect_int("sacch-nsf-srv-info-no-ran", (int)state.nxdn_last_ran, -1);
+    rc |= expect_int("sacch-nsf-srv-info-no-site", state.nxdn_location_site_code, 0);
+    rc |= expect_int("sacch-nsf-srv-info-no-sys", (int)state.nxdn_location_sys_code, 0);
+    rc |= expect_int("sacch-nsf-srv-info-no-category", state.nxdn_location_category[0] == ' ' ? 1 : 0, 1);
     return rc;
 }
 

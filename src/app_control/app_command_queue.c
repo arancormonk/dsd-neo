@@ -6004,6 +6004,8 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             state->nxdn_location_site_code = 0;
             state->nxdn_location_sys_code = 0;
             DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
+            state->nxdn_idas_system_id = 0;
+            state->nxdn_idas_site_code = 0;
             state->nxdn_last_ran = -1;
             state->nxdn_ran = 0;
             state->nxdn_rcn = 0;

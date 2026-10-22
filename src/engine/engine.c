@@ -2191,6 +2191,8 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     state->nxdn_location_site_code = 0;
     state->nxdn_location_sys_code = 0;
     set_spaces(state->nxdn_location_category, 1);
+    state->nxdn_idas_system_id = 0;
+    state->nxdn_idas_site_code = 0;
     state->nxdn_rcn = 0;
     state->nxdn_base_freq = 0;
     state->nxdn_step = 0;

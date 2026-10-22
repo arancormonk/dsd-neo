@@ -2452,7 +2452,15 @@ ui_render_nxdn_site_line(const dsd_state* state, int idas) {
     } else {
         printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
     }
-    if (state->nxdn_location_site_code != 0) {
+    if (idas) {
+        /* An IDAS site's own identity, which no Type-C location category describes. */
+        if (state->nxdn_idas_system_id != 0U) {
+            printw("Sys ID: %u; ", (unsigned)state->nxdn_idas_system_id);
+        }
+        if (state->nxdn_idas_site_code != 0U) {
+            printw("Site Code: %u; ", (unsigned)state->nxdn_idas_site_code);
+        }
+    } else if (state->nxdn_location_site_code != 0) {
         printw("Cat: %s; ", state->nxdn_location_category);
         printw("Sys Code: %d; ", state->nxdn_location_sys_code);
         printw("Site Code: %d; ", state->nxdn_location_site_code);

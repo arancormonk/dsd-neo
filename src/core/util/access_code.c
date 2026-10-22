@@ -74,8 +74,8 @@ access_code_read_p25(const dsd_state* state, int protocol, uint16_t* value) {
 
 static int
 access_code_read_nxdn(const dsd_state* state, uint16_t* value) {
-    /* (unsigned)-1 is "no RAN decoded yet"; a RAN is six bits. An IDAS (Type-D) carrier's area bit or site type,
-     * or DCR's fixed 7, stands in for one and is no access code. */
+    /* (unsigned)-1 is "no RAN decoded yet"; a RAN is six bits. An IDAS (Type-D) carrier's area bit, or DCR's fixed 7,
+     * stands in for one and is no access code. */
     if (state->nxdn_last_ran >= 64U || state->nxdn_last_ran_stand_in != 0U) {
         return 0;
     }

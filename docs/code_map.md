@@ -913,7 +913,7 @@ suite runs under this compiler.
   DMR `dmr_color_code` 0..15, P25 Phase 1 `nac` only and Phase 2 `p2_cc` only (0x001..0xFFE; no fallback between them,
   since a Phase 1 NID of 0x000/0xFFF leaves `nac` 0 beside a stale `p2_cc`), and `p2_cc` only while `p2_cc_verified`
   says this carrier proved it (see Protocols), NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in` marks it as a
-  value the terminal shows where the RAN goes but that is none (an IDAS area bit or site type, DCR's fixed 7; see
+  value the terminal shows where the RAN goes but that is none (an IDAS area bit or DCR's fixed 7; see
   Protocols), dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata,
   TETRA the 6-bit colour code of `tetra_pub` once a CRC-passed block gave a trunked mode and the network is known
   (direct mode has none).
@@ -4661,19 +4661,38 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   call opening on its FACCH1 VCALL read the previous transmission's RAN; on a control channel the CRC-gated CAC sets
   it again at once. The `LIMAZULUTWEAKS` reset in `noCarrier()` and the legacy `-Y` step's reset remain.
 - `nxdn_last_ran` also holds values that are not a RAN, which the terminal shows in its place: the IDAS (Type-D) SCCH's
-  area bit (`nxdn_scch_prepare_type_d()`, confirmed transmissions only) and a site ID message's site type
-  (`nxdn_scch_handle_site_id()`, behind the SCCH's 7-bit CRC alone), and the fixed 7 the DCR SACCH2 gives a confirmed
+  area bit (`nxdn_scch_prepare_type_d()`, confirmed transmissions only) and the fixed 7 the DCR SACCH2 gives a confirmed
   transmission (`nxdn_update_sacch2_identity_state()`). Every write of a value sets `nxdn_last_ran_stand_in` beside it
-  (the `(unsigned)-1` resets need not, since no reader takes -1): 1 for those three, 0 for the RAN fields (CAC,
+  (the `(unsigned)-1` resets need not, since no reader takes -1): 1 for those two, 0 for the RAN fields (CAC,
   FACCH2/UDCH, SACCH, and the site information message's site code), so `dsd_access_code_current()` gives an IDAS or DCR
   call no access code, and a RAN decoded afterwards reads again. The flag marks the value rather than the carrier:
   `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC,
   noise included, and kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
   carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
-  site ID write stays ungated, since gating it on confirmation would change what the terminal shows on an unconfirmed
-  IDAS carrier and no access code reads it now. The live displays follow the mark too: outside IDAS, whose area keeps
-  its own label, the terminal's NXDN line prints `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which
-  there is DCR's 7 (`ui_render_nxdn_site_line()`, `MetricsModel::fillNxdnSite()`).
+  live displays follow the mark too: outside IDAS, whose area keeps its own label, the terminal's NXDN line prints
+  `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which there is DCR's 7 (`ui_render_nxdn_site_line()`,
+  `MetricsModel::fillNxdnSite()`).
+- NXDN site identity (`nxdn_element.c`). `NXDN_Elements_Content_decode()` is handed buffers of every channel's size,
+  down to the 26 elements of a non-superframe SACCH whose 6-bit CRC passes noise one time in 64, so each parser checks
+  the length it was given before reading (`nxdn_element_has_bits()`: SRV_INFO 72, 80 on Type-D; VCALL/TX_REL/DISC 64;
+  assignments 72, 80 for the DFA; VCALL_IV 72, 30 on Type-D; the ARIB VCALL and alias and the standard alias 72).
+  The Type-C location ID (`nxdn_location_id_handler()`, NXDN TS 1-A 6.5.2: Global 10-bit system and 12-bit site,
+  Regional 14/8, Local 17/5, category 3 reserved) is printed whenever it decodes but written to
+  `nxdn_location_category`/`_sys_code`/`_site_code` and `nxdn_last_ran` (the site code's low six bits) only once the
+  transmission is confirmed, as the SACCH's own RAN is, and never for the reserved category; a zero system or site
+  code leaves the stored one. A Type-D (IDAS) site's identity has fields of its own, `nxdn_idas_system_id` (19 bits,
+  TS 1-E §6.6.2) and `nxdn_idas_site_code` (1-250, §6.6.5), 0 for not received, reset and snapshotted with the
+  location: a Type-D SRV_INFO (§6.4.3.1, spare 5 + System ID 19 + Site Code 8) writes both once confirmed, and the
+  SCCH site ID message (§6.5.3.1 Fig 6.5-8: Site Type 2 bits, Site Code 8) the code once
+  `nxdn_confirm_scch_confirmed()`; neither writes a RAN or the Type-C fields. Which SRV_INFO layout applies, and
+  whether it places the control channel here, comes from the frame's own LICH, which `nxdn_frame()` holds in
+  `dsd_state::nxdn_frame_channel` while the frame's channels decode (`nxdn_frame_channel` in
+  `<dsd-neo/protocol/nxdn/nxdn.h>`: a CAC is the control channel, an RTCH2 profile Type-D, anything else traffic), never
+  from the retained "Type-D" category: only a control channel's SRV_INFO refreshes the control-channel sync and anchors
+  the CC to the tuner. An outbound SCCH INFO2 has the INFO4 format (§6.5.3.3), so its idle, halt, free repeater and site
+  ID messages (IDs 2046, 2045, 2044, 2041) go through the INFO4 handling (`nxdn_scch_handle_repeater_status()`) and never
+  become the call's target; its busy repeater message keeps the target handling of `nxdn_scch_handle_info2()`. The
+  terminal's IDAS line and the Qt site view show the IDAS fields, the NXDN ones the Type-C location.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
   received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
   scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
@@ -5059,8 +5078,8 @@ Private per-protocol modules worth knowing about:
   C_SYS_PARMS / P_SYS_PARMS short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8 (no RAS path); a
   C_BCAST vote/adjacent syscode names another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in
   `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
-  `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites and the Type-D SCCH
-  site ID (7-bit CRC) are not notes (`NXDN_SEARCH_SITE_NOTES`).
+  `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites, the reserved
+  category and the Type-D site identity (`nxdn_idas_*`) are not notes (`NXDN_SEARCH_SITE_NOTES`).
 - Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
   writer passes the slot of a canonical call record it just published after its check, and the engine reads that
   record (see Signal search under Engine). DMR: `dmr_flco_publish_voice()` (a CRC-checked voice LC, after the call and

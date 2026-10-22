@@ -96,6 +96,10 @@ Item {
             tryCompare(item("siteRan"), "visible", true);
             compare(item("siteRan").text, "0");
             compare(item("siteNxdnSys").text, "12");
+            // An SCCH site ID message names an IDAS site's code without its System ID.
+            testContext.setMetric("nxdnSysCode", 0);
+            tryCompare(item("siteNxdnSys"), "visible", false);
+            verify(item("siteNxdnSite").visible);
             testContext.setMetric("siteProtocol", "EDACS");
             testContext.setMetric("edacsSiteText", "SITE 007 [07]");
             tryCompare(item("siteEdacs"), "visible", true);

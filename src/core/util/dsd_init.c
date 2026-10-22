@@ -1232,6 +1232,8 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     state->nxdn_location_site_code = 0;
     state->nxdn_location_sys_code = 0;
     set_spaces(state->nxdn_location_category, 1);
+    state->nxdn_idas_system_id = 0;
+    state->nxdn_idas_site_code = 0;
 
     //channel access information
     state->nxdn_rcn = 0;

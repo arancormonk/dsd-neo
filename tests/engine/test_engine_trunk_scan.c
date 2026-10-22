@@ -2917,6 +2917,9 @@ seed_nxdn_identity(dsd_state* state, uint16_t grant_chan, long int grant_freq, u
     state->nxdn_location_sys_code = sys_code;
     state->nxdn_location_site_code = site_code;
     DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", category);
+    /* An IDAS site's own identity travels with the target too; derived from the location so each target differs. */
+    state->nxdn_idas_system_id = sys_code * 3U;
+    state->nxdn_idas_site_code = (uint8_t)(site_code * 2U);
     state->nxdn_rcn = rcn;
     state->nxdn_base_freq = base_freq;
     state->nxdn_step = step;
@@ -2929,14 +2932,16 @@ expect_nxdn_identity(const char* label, const dsd_state* state, uint16_t grant_c
                      uint8_t base_freq, uint8_t step, uint8_t bw) {
     if (state->nxdn_grant_chan != grant_chan || state->nxdn_grant_freq != grant_freq || state->nxdn_last_ran != ran
         || state->nxdn_location_sys_code != sys_code || state->nxdn_location_site_code != site_code
-        || strcmp(state->nxdn_location_category, category) != 0 || state->nxdn_rcn != rcn
+        || strcmp(state->nxdn_location_category, category) != 0 || state->nxdn_idas_system_id != sys_code * 3U
+        || state->nxdn_idas_site_code != (uint8_t)(site_code * 2U) || state->nxdn_rcn != rcn
         || state->nxdn_base_freq != base_freq || state->nxdn_step != step || state->nxdn_bw != bw) {
         DSD_FPRINTF(stderr,
-                    "%s NXDN identity mismatch chan=%u freq=%ld ran=%u sys=%u site=%u cat='%s' rcn=%u "
+                    "%s NXDN identity mismatch chan=%u freq=%ld ran=%u sys=%u site=%u cat='%s' idas=%u/%u rcn=%u "
                     "base=%u step=%u bw=%u\n",
                     label, state->nxdn_grant_chan, state->nxdn_grant_freq, state->nxdn_last_ran,
                     state->nxdn_location_sys_code, state->nxdn_location_site_code, state->nxdn_location_category,
-                    state->nxdn_rcn, state->nxdn_base_freq, state->nxdn_step, state->nxdn_bw);
+                    state->nxdn_idas_system_id, state->nxdn_idas_site_code, state->nxdn_rcn, state->nxdn_base_freq,
+                    state->nxdn_step, state->nxdn_bw);
         return 1;
     }
     return 0;
