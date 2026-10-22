@@ -2883,6 +2883,8 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     /* What the carrier left sent is not the next one's identity: the received identity starts over. */
     dsd_rxid_reset(state);
     state->carrier_seq++;
+    /* Nor is a frame whose sync the hunt finds next, while what it reads back was buffered on the carrier left. */
+    dsd_state_note_carrier_change(state);
     if (take_guard || guard_held) {
         /* An operator move restarts a startup control-channel window on the new carrier (issue #703). */
         p25_sm_cold_start_note_retune(p25_sm_get_ctx(), opts, state);

@@ -1120,11 +1120,11 @@ checked block proved, a control channel the decoder returns to, or a value
 another carrier left. P25 NAC, WACN, SYS, RFSS/SITE and LRA each appear once
 received; a conventional Phase 1 NAC alone is useful identity even without the
 complete Phase 2 parameter set. The sheet also shows DMR color code/site
-text/rest LSN/Hytera XPT free LCN, NXDN RAN and location codes (Area, site code
-and Type-D system for IDAS), EDACS site information, the control channel
-frequency where this receiver heard the control channel, and the voice frequency
-being followed. dPMR and M17 show their access code and TETRA its network on the
-row.
+text/rest LSN/Hytera XPT free LCN/trunking type/Tier III system code, NXDN RAN
+and location codes (Area, site code and Type-D system for IDAS), EDACS site,
+system, area and control channel LCN, the dPMR color code or M17 CAN, TETRA
+MCC, MNC, color code and location area, the control channel frequency where
+this receiver heard the control channel, and the voice frequency being followed.
 
 The sheet's **Phase 2 seed** row shows the WACN.SYS.NAC triple the Phase 2
 descrambler runs on (for example `BEE00.348.293`), marked "(set)" when `-X` or

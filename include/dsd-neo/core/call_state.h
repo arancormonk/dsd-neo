@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -287,6 +288,16 @@ typedef struct {
     dsd_receive_identity receive_identity;
     uint8_t receive_verdict;
     char service_label[DSD_SERVICE_LABEL_SIZE];
+    /** dsd_received_identity::epoch of dsd_state::rx_id when this epoch began: the carrier the call was heard on. */
+    uint32_t rx_id_epoch;
+    /**
+     * The received identity record (dsd_state::rx_id) as it stood when this epoch ended, captured at that transition
+     * while the record was still the one of the carrier the call began on (rx_id_epoch); otherwise, and while the
+     * call is active, empty (family DSD_RXID_FAMILY_NONE). Call history freezes an ended call's system and site at it,
+     * so identity received after the last render and before the end counts, and identity received after the end, or
+     * on another carrier, does not.
+     */
+    dsd_received_identity ended_rx_id;
 } dsd_call_snapshot;
 
 typedef struct {

@@ -222,6 +222,16 @@ test_sysinfo_received_identity(void) {
     tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
     ok &= check((id->valid & DSD_RXID_CC_FREQ) != 0U && id->cc_freq_hz == 401243750U,
                 "rx-id: on the main carrier the SYSINFO names the control channel");
+
+    /* A SYSINFO of another cell with the same network and colour code (another main carrier): the last cell's control
+       channel goes with it, and its location area is the new SYSINFO's. */
+    ttb_block other = {0};
+    ttb_sysinfo(&other, 60, 4, 2, 988);
+    tetra_mac_parse_schd(other.bits, other.n, 0, opts, state);
+    ok &= check((id->valid & DSD_RXID_CC_FREQ) == 0U, "rx-id: another cell's SYSINFO drops the last control channel");
+    ok &= check((id->valid & DSD_RXID_TETRA_LA) != 0U && id->tetra_la == 988U, "rx-id: another cell's area");
+    ok &= check((id->valid & (DSD_RXID_TETRA_NET | DSD_RXID_ACCESS)) == (DSD_RXID_TETRA_NET | DSD_RXID_ACCESS),
+                "rx-id: another cell's SYSINFO keeps the network and colour code");
     free_state(state);
     free(opts);
     return ok;

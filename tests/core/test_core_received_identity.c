@@ -210,6 +210,114 @@ test_dependent_invalidation(void) {
     free(state);
 }
 
+/* A checked access code that changes on the same carrier names another system sharing the channel (co-channel DMR
+   colour codes, P25 NACs, NXDN RANs): what the old one sent is dropped with its control channel. An unchanged repeat,
+   or the first code after a trunk tune dropped the carrier's, keeps the system. An M17 CAN is per transmission and
+   drops nothing. */
+static void
+test_access_change(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site_text(state, "Net 3 \xC2\xB7 Site 7");
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    dsd_rxid_note_dmr_rest_lsn(state, 4U);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_dmr_xpt_free_lcn(state, 2U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    const uint32_t dmr_system = DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_REST_LSN
+                                | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_CC_FREQ;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    expect_u("dmr same cc keeps the system", id->valid, DSD_RXID_ACCESS | dmr_system);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_u("dmr cc change drops the system", id->valid, DSD_RXID_ACCESS);
+    expect_u("dmr cc change value", id->access, 2U);
+
+    /* A followed voice channel: the tune dropped the code, so the channel's code is the first, not a change. */
+    dsd_rxid_note_dmr_site_text(state, "Net 3 \xC2\xB7 Site 7");
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    dsd_rxid_trunk_tune(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 5U);
+    expect_u("dmr follow keeps the system", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_CC_FREQ);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_p25_site(state, 0x348U, 3U, 21U);
+    dsd_rxid_note_p25_lra(state, 0x348U, 7U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_P25, 851012500U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x294U);
+    expect_u("p25 nac change drops the system", id->valid, DSD_RXID_ACCESS);
+    /* The new system's network status binds as on a fresh carrier. */
+    dsd_rxid_note_p25_site(state, 0x1A3U, 1U, 2U);
+    expect_u("p25 new system's site", id->valid, DSD_RXID_ACCESS | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    dsd_rxid_note_nxdn_location(state, 2U, 17U, 3U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 6U);
+    expect_u("nxdn ran change drops the system", id->valid, DSD_RXID_ACCESS);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 9U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 9U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 7U);
+    expect_u("nxdn ran change drops the idas parts", id->valid, DSD_RXID_ACCESS);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DPMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DPMR, DSD_ACCESS_CODE_COLOR_CODE, 9U);
+    expect_u("dpmr cc change", id->access, 9U);
+    expect_u("dpmr cc change valid", id->valid, DSD_RXID_ACCESS);
+
+    /* M17: every transmission carries its own CAN; a change names no other system. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, DSD_ACCESS_CODE_CAN, 1U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_M17, 433000000U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, DSD_ACCESS_CODE_CAN, 2U);
+    expect_u("m17 can change drops nothing", id->valid, DSD_RXID_ACCESS | DSD_RXID_CC_FREQ);
+    expect_u("m17 can change value", id->access, 2U);
+    free(state);
+}
+
+/* An IDAS carrier names its site twice: the SCCH site ID and a Type-D SRV_INFO (system and site code). The newer of the
+   two wins when they disagree, and another system drops the control channel. */
+static void
+test_nxdn_idas_site_reconcile(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 5U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 5U);
+    expect_u("typed same site keeps the scch site", id->valid,
+             DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 7U);
+    expect_u("typed other site drops the scch site", id->valid, DSD_RXID_NXDN_TYPED_SYSTEM);
+    expect_u("typed other site", id->nxdn_typed_site, 7U);
+
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_nxdn_idas_site(state, 2U, 7U);
+    expect_u("scch same site keeps the typed system", id->valid,
+             DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
+    dsd_rxid_note_nxdn_idas_site(state, 2U, 8U);
+    expect_u("scch other site drops the typed system", id->valid, DSD_RXID_NXDN_IDAS_SITE);
+
+    /* Another system: its control channel is not the old one's, and the old system's SCCH area and site go with it. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 7U);
+    dsd_rxid_note_nxdn_idas_site(state, 2U, 7U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 7U);
+    expect_u("typed repeat keeps the control channel", id->valid & DSD_RXID_CC_FREQ, DSD_RXID_CC_FREQ);
+    dsd_rxid_note_nxdn_typed_system(state, 0x54321U, 7U);
+    expect_u("typed other system", id->valid, DSD_RXID_NXDN_TYPED_SYSTEM);
+    expect_u("typed other system value", id->nxdn_typed_sys, 0x54321U);
+    free(state);
+}
+
 static void
 test_trunk_tune(void) {
     dsd_state* state = new_state();
@@ -234,6 +342,17 @@ test_trunk_tune(void) {
     expect_u("tetra tune", id->valid, DSD_RXID_TETRA_NET | DSD_RXID_TETRA_LA);
     dsd_rxid_note_tetra_cell(state, 262U, 1001U, 25U);
     expect_u("tetra same cell after tune keeps la", id->valid & DSD_RXID_TETRA_LA, DSD_RXID_TETRA_LA);
+    /* The tune dropped the colour from display, not the cell's binding: another colour is another cell. */
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_TETRA, 390012500U);
+    dsd_rxid_trunk_tune(state);
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 26U);
+    expect_u("tetra other colour after tune drops la and cc", id->valid, DSD_RXID_TETRA_NET | DSD_RXID_ACCESS);
+    expect_u("tetra other colour after tune", id->access, 26U);
+    /* A SYSINFO of another cell with the same network and colour: the last cell's area and control channel go. */
+    dsd_rxid_note_tetra_la(state, 4243U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_TETRA, 390012500U);
+    dsd_rxid_note_tetra_other_cell(state);
+    expect_u("tetra other cell", id->valid, DSD_RXID_TETRA_NET | DSD_RXID_ACCESS);
     free(state);
 }
 
@@ -264,6 +383,58 @@ test_dmr_xpt_free_lcn(void) {
     free(state);
 }
 
+/* A frame read across a carrier boundary (or cut by an input interruption) is no carrier's: whatever its decoder notes
+   while it is dispatched, before the decoder's own carrier check, goes nowhere -- least of all into the record the
+   boundary reset for the next carrier. */
+static void
+test_lost_frame_notes_nothing(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    state->carrier_seq = 4U;
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = 4U;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_TETRA, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 25U);
+    dsd_rxid_note_tetra_la(state, 4242U);
+    expect_u("dispatched frame notes", id->valid, DSD_RXID_TETRA_NET | DSD_RXID_ACCESS | DSD_RXID_TETRA_LA);
+
+    /* The boundary inside the frame: it reset the record and moved the count. */
+    dsd_rxid_reset(state);
+    state->carrier_seq = 5U;
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 26U);
+    dsd_rxid_note_tetra_la(state, 4243U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    dsd_rxid_note_dmr_site_text(state, "Net 1 Â· Site 2");
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_nxdn_location(state, 0U, 1U, 1U);
+    dsd_rxid_note_edacs_site(state, 4U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_P25, 851012500U);
+    expect_u("split frame notes nothing", id->valid, 0U);
+    expect_u("split frame family", id->family, DSD_RXID_FAMILY_NONE);
+
+    /* Nor does it drop anything: the next carrier's record is not the split frame's to change. */
+    state->frame_dispatch_active = 0;
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 26U);
+    dsd_rxid_note_tetra_la(state, 4243U);
+    state->frame_dispatch_active = 1;
+    dsd_rxid_note_tetra_other_cell(state);
+    dsd_rxid_note_tetra_direct_mode(state);
+    expect_u("split frame drops nothing", id->valid, DSD_RXID_TETRA_NET | DSD_RXID_ACCESS | DSD_RXID_TETRA_LA);
+
+    /* An input interruption cut the frame. */
+    dsd_rxid_reset(state);
+    state->frame_dispatch_carrier_seq = 5U;
+    state->input_interrupted = 1;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, DSD_ACCESS_CODE_CAN, 3U);
+    expect_u("cut frame notes nothing", id->valid, 0U);
+
+    /* Outside a dispatch (an engine call, a test) nothing is gated. */
+    state->frame_dispatch_active = 0;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, DSD_ACCESS_CODE_CAN, 3U);
+    expect_u("outside a dispatch", id->valid, DSD_RXID_ACCESS);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -273,6 +444,9 @@ main(void) {
     test_p25_merge();
     test_dependent_invalidation();
     test_trunk_tune();
+    test_access_change();
+    test_nxdn_idas_site_reconcile();
+    test_lost_frame_notes_nothing();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {

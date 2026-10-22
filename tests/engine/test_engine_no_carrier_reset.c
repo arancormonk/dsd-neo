@@ -4460,10 +4460,19 @@ test_received_identity_lifetime(void) {
     rc |= expect_true("rx-id: the no-carrier pass marks them stale", state->rx_id.fresh == 0U);
 
     const uint32_t epoch = state->rx_id.epoch;
+    state->symbol_clock = 5000U;
+    rc |= expect_true("rx-id: no carrier left yet", !dsd_state_carrier_settling(state, 144U));
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
     rc |= expect_true("rx-id: a carrier boundary forgets the record",
                       state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE && state->rx_id.valid == 0U
                           && state->rx_id.epoch != epoch);
+    /* And what the frame sync and the decoders hold buffered is the carrier left's until the new one refills it. */
+    rc |= expect_true("rx-id: the boundary marks the symbol clock", state->carrier_change_seen == 1U
+                                                                        && state->carrier_change_symbol_clock == 5000U
+                                                                        && dsd_state_carrier_settling(state, 144U));
+    state->symbol_clock += 145U;
+    rc |=
+        expect_true("rx-id: settled once the lookback is the new carrier's", !dsd_state_carrier_settling(state, 144U));
 
     /* Carrier B sends only its NAC: none of A's system reads as B's. */
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x5A5U);

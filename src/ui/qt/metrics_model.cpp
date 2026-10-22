@@ -158,14 +158,17 @@ MetricsModel::SiteView::operator==(const SiteView& other) const {
     return std::tie(siteProtocol, p25NacValid, p25Nac, p25WacnValid, p25Wacn, p25SysIdValid, p25SysId, p25Rfss, p25Site,
                     p25LraValid, p25Lra, p25Phase2ParamsReady, p25Phase2Seed, p25Phase2SeedSet, dmrColorCode,
                     dmrSiteText, dmrRestLsn, dmrXptFreeLcn, nxdnRan, nxdnLocationCategory, nxdnSysCode, nxdnSiteCode,
-                    edacsSiteText, ccFreqHz, vcFreqHz, siteLine, siteConfirmed, carrierIdentityTokens,
-                    carrierIdentityProtocol, carrierIdentityText, carrierIdentityLive)
+                    edacsSiteText, edacsSystem, edacsArea, edacsCcLcn, dmrBrand, dmrT3Syscode, siteAccessCode,
+                    tetraSiteMcc, tetraSiteMnc, tetraSiteLa, ccFreqHz, vcFreqHz, siteLine, siteConfirmed,
+                    carrierIdentityTokens, carrierIdentityProtocol, carrierIdentityText, carrierIdentityLive)
            == std::tie(other.siteProtocol, other.p25NacValid, other.p25Nac, other.p25WacnValid, other.p25Wacn,
                        other.p25SysIdValid, other.p25SysId, other.p25Rfss, other.p25Site, other.p25LraValid,
                        other.p25Lra, other.p25Phase2ParamsReady, other.p25Phase2Seed, other.p25Phase2SeedSet,
                        other.dmrColorCode, other.dmrSiteText, other.dmrRestLsn, other.dmrXptFreeLcn, other.nxdnRan,
                        other.nxdnLocationCategory, other.nxdnSysCode, other.nxdnSiteCode, other.edacsSiteText,
-                       other.ccFreqHz, other.vcFreqHz, other.siteLine, other.siteConfirmed, other.carrierIdentityTokens,
+                       other.edacsSystem, other.edacsArea, other.edacsCcLcn, other.dmrBrand, other.dmrT3Syscode,
+                       other.siteAccessCode, other.tetraSiteMcc, other.tetraSiteMnc, other.tetraSiteLa, other.ccFreqHz,
+                       other.vcFreqHz, other.siteLine, other.siteConfirmed, other.carrierIdentityTokens,
                        other.carrierIdentityProtocol, other.carrierIdentityText, other.carrierIdentityLive);
 }
 
@@ -217,6 +220,12 @@ MetricsModel::fillDmrSite(SiteView& site, const dsd_received_identity& id) {
     }
     site.dmrRestLsn = rxidHas(id, DSD_RXID_DMR_REST_LSN) ? static_cast<int>(id.dmr_rest_lsn) : 0;
     site.dmrXptFreeLcn = rxidHas(id, DSD_RXID_DMR_XPT_FREE_LCN) ? static_cast<int>(id.dmr_xpt_free_lcn) : -1;
+    if (rxidHas(id, DSD_RXID_DMR_BRAND)) {
+        site.dmrBrand = siteText(id.dmr_brand);
+    }
+    /* A Tier III site text names its system code itself, as the shared view's tokens do. */
+    const bool syscode = rxidHas(id, DSD_RXID_DMR_T3_SYSCODE) && !rxidHas(id, DSD_RXID_DMR_SITE_TEXT);
+    site.dmrT3Syscode = syscode ? static_cast<int>(id.dmr_t3_syscode) : -1;
 }
 
 /* Type-C: the RAN and a location ID. IDAS: the SCCH area, and its own site code and Type-D system ID, which no Type-C
@@ -244,8 +253,22 @@ MetricsModel::fillNxdnSite(SiteView& site, const dsd_received_identity& id, bool
     }
 }
 
+/* The network, the cell's colour code (the access code a trunk tune drops) and the location area. */
+void
+MetricsModel::fillTetraSite(SiteView& site, const dsd_received_identity& id) {
+    site.siteAccessCode = rxidHas(id, DSD_RXID_ACCESS) ? static_cast<int>(id.access) : -1;
+    if (rxidHas(id, DSD_RXID_TETRA_NET)) {
+        site.tetraSiteMcc = id.tetra_mcc;
+        site.tetraSiteMnc = id.tetra_mnc;
+    }
+    site.tetraSiteLa = rxidHas(id, DSD_RXID_TETRA_LA) ? static_cast<int>(id.tetra_la) : -1;
+}
+
 void
 MetricsModel::fillEdacsSite(SiteView& site, const dsd_received_identity& id, const dsd_state* snapshot) {
+    site.edacsSystem = rxidHas(id, DSD_RXID_EDACS_SYSTEM) ? static_cast<int>(id.edacs_system) : -1;
+    site.edacsArea = rxidHas(id, DSD_RXID_EDACS_AREA) ? static_cast<int>(id.edacs_area) : -1;
+    site.edacsCcLcn = rxidHas(id, DSD_RXID_EDACS_CC_LCN) ? static_cast<int>(id.edacs_cc_lcn) : -1;
     if (!rxidHas(id, DSD_RXID_EDACS_SITE)) {
         return;
     }
@@ -255,6 +278,25 @@ MetricsModel::fillEdacsSite(SiteView& site, const dsd_received_identity& id, con
             .arg(QStringLiteral("%1").arg(id.edacs_site, 2, 16, QLatin1Char('0')).toUpper())
             .arg(snapshot->ea_mode == 1 ? QStringLiteral("Extended Addressing") : QStringLiteral("Standard/Networked"))
             .arg(snapshot->esk_mask == 0xA0 ? QStringLiteral("ESK") : QStringLiteral("No ESK"));
+}
+
+/* The SiteSheet fields of the record's protocol family. */
+void
+MetricsModel::fillFamilySite(SiteView& site, uint8_t family, const dsd_state* snapshot) {
+    const dsd_received_identity& id = snapshot->rx_id;
+    switch (family) {
+        case DSD_RXID_FAMILY_P25: fillP25Site(site, id); break;
+        case DSD_RXID_FAMILY_DMR: fillDmrSite(site, id); break;
+        case DSD_RXID_FAMILY_NXDN: fillNxdnSite(site, id, site.siteProtocol == QStringLiteral("IDAS")); break;
+        case DSD_RXID_FAMILY_EDACS: fillEdacsSite(site, id, snapshot); break;
+        case DSD_RXID_FAMILY_DPMR:
+        case DSD_RXID_FAMILY_M17:
+            /* An access code alone: the colour code or the CAN. */
+            site.siteAccessCode = rxidHas(id, DSD_RXID_ACCESS) ? static_cast<int>(id.access) : -1;
+            break;
+        case DSD_RXID_FAMILY_TETRA: fillTetraSite(site, id); break;
+        default: break;
+    }
 }
 
 /* Everything here reads the received identity record (the shared view and its parts), never decoder state a seed, a
@@ -271,15 +313,8 @@ MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) {
     if (view.protocol[0] == '\0') {
         return;
     }
-    const dsd_received_identity& id = snapshot->rx_id;
     site.siteProtocol = QString::fromUtf8(view.protocol);
-    switch (view.family) {
-        case DSD_RXID_FAMILY_P25: fillP25Site(site, id); break;
-        case DSD_RXID_FAMILY_DMR: fillDmrSite(site, id); break;
-        case DSD_RXID_FAMILY_NXDN: fillNxdnSite(site, id, site.siteProtocol == QStringLiteral("IDAS")); break;
-        case DSD_RXID_FAMILY_EDACS: fillEdacsSite(site, id, snapshot); break;
-        default: break;
-    }
+    fillFamilySite(site, view.family, snapshot);
     site.ccFreqHz = static_cast<double>(view.cc_freq_hz);
     site.vcFreqHz = qMax(0L, snapshot->trunk_vc_freq[0] != 0 ? snapshot->trunk_vc_freq[0] : snapshot->p25_vc_freq[0]);
     char text[512];

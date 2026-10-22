@@ -245,6 +245,8 @@ tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, 
                           "[TETRA SYSINFO] main carrier %ld Hz, location area %u: another cell than %ld Hz, %u\n",
                           main_carrier_hz, (unsigned)la, ts->dl_carrier_hz, (unsigned)ts->la);
         bsch_forget_cell(opts, state, ts);
+        /* The received identity forgets the last cell's location area and control channel too. */
+        dsd_rxid_note_tetra_other_cell(state);
     }
 }
 

@@ -66,6 +66,15 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int nxdnSysCode READ nxdnSysCode NOTIFY siteChanged)
     Q_PROPERTY(int nxdnSiteCode READ nxdnSiteCode NOTIFY siteChanged)
     Q_PROPERTY(QString edacsSiteText READ edacsSiteText NOTIFY siteChanged)
+    Q_PROPERTY(int edacsSystem READ edacsSystem NOTIFY siteChanged)
+    Q_PROPERTY(int edacsArea READ edacsArea NOTIFY siteChanged)
+    Q_PROPERTY(int edacsCcLcn READ edacsCcLcn NOTIFY siteChanged)
+    Q_PROPERTY(QString dmrBrand READ dmrBrand NOTIFY siteChanged)
+    Q_PROPERTY(int dmrT3Syscode READ dmrT3Syscode NOTIFY siteChanged)
+    Q_PROPERTY(int siteAccessCode READ siteAccessCode NOTIFY siteChanged)
+    Q_PROPERTY(int tetraSiteMcc READ tetraSiteMcc NOTIFY siteChanged)
+    Q_PROPERTY(int tetraSiteMnc READ tetraSiteMnc NOTIFY siteChanged)
+    Q_PROPERTY(int tetraSiteLa READ tetraSiteLa NOTIFY siteChanged)
     Q_PROPERTY(double ccFreqHz READ ccFreqHz NOTIFY siteChanged)
     Q_PROPERTY(double vcFreqHz READ vcFreqHz NOTIFY siteChanged)
     Q_PROPERTY(QString siteLine READ siteLine NOTIFY siteChanged)
@@ -426,6 +435,56 @@ class MetricsModel : public QObject {
     QString
     edacsSiteText() const {
         return m_view.site.edacsSiteText;
+    }
+
+    /* The record's EDACS system, area and control channel LCN, each -1 until received. */
+    int
+    edacsSystem() const {
+        return m_view.site.edacsSystem;
+    }
+
+    int
+    edacsArea() const {
+        return m_view.site.edacsArea;
+    }
+
+    int
+    edacsCcLcn() const {
+        return m_view.site.edacsCcLcn;
+    }
+
+    /* The DMR trunking brand a checked message named ("Capacity Plus", "Connect Plus", "Hytera XPT"), or empty. */
+    QString
+    dmrBrand() const {
+        return m_view.site.dmrBrand;
+    }
+
+    /* The Tier III system code when no site text carries it, or -1. */
+    int
+    dmrT3Syscode() const {
+        return m_view.site.dmrT3Syscode;
+    }
+
+    /* The access code of a dPMR (colour code), M17 (CAN) or TETRA (the cell's colour code) carrier, or -1. */
+    int
+    siteAccessCode() const {
+        return m_view.site.siteAccessCode;
+    }
+
+    /* The TETRA network (MCC, MNC) and location area the carrier sent, each -1 until received. */
+    int
+    tetraSiteMcc() const {
+        return m_view.site.tetraSiteMcc;
+    }
+
+    int
+    tetraSiteMnc() const {
+        return m_view.site.tetraSiteMnc;
+    }
+
+    int
+    tetraSiteLa() const {
+        return m_view.site.tetraSiteLa;
     }
 
     double
@@ -1921,6 +1980,7 @@ class MetricsModel : public QObject {
         QString dmrSiteText = {};
         QString nxdnLocationCategory = {};
         QString edacsSiteText = {};
+        QString dmrBrand = {};
         QString siteLine = {};
         QStringList carrierIdentityTokens = {};
         QString carrierIdentityProtocol = {};
@@ -1937,6 +1997,14 @@ class MetricsModel : public QObject {
         int nxdnRan = -1;
         int nxdnSysCode = 0;
         int nxdnSiteCode = 0;
+        int edacsSystem = -1;
+        int edacsArea = -1;
+        int edacsCcLcn = -1;
+        int dmrT3Syscode = -1;
+        int siteAccessCode = -1;
+        int tetraSiteMcc = -1;
+        int tetraSiteMnc = -1;
+        int tetraSiteLa = -1;
         bool p25NacValid = false;
         bool p25WacnValid = false;
         bool p25SysIdValid = false;
@@ -2291,6 +2359,8 @@ class MetricsModel : public QObject {
     static void fillDmrSite(SiteView& site, const dsd_received_identity& id);
     static void fillNxdnSite(SiteView& site, const dsd_received_identity& id, bool idas);
     static void fillEdacsSite(SiteView& site, const dsd_received_identity& id, const dsd_state* snapshot);
+    static void fillTetraSite(SiteView& site, const dsd_received_identity& id);
+    static void fillFamilySite(SiteView& site, uint8_t family, const dsd_state* snapshot);
     static void fillSiteView(View& next, const dsd_state* snapshot);
     static void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m);
     static void fillQualityView(View& next, const dsd_state* snapshot);

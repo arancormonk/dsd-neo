@@ -22,7 +22,19 @@
  *
  * A note naming another system than the record's (another P25 WACN or SYSID, Tier III system code, Connect Plus or
  * XPT site, NXDN location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one:
- * the parts that bind to it and the control-channel frequency.
+ * the parts that bind to it and the control-channel frequency. An IDAS carrier names its site twice, in the SCCH site
+ * ID and in a Type-D SRV_INFO: when the two disagree the newer one stays and the other is dropped.
+ *
+ * Another access code on the same carrier is another system sharing the channel (co-channel DMR or dPMR colour codes,
+ * P25 NACs, NXDN RANs): a valid access code that changes drops every other part of the family with the
+ * control-channel frequency, so the new system's code never shows with the old one's site. An accepted trunk tune
+ * drops the access code first, so the code a followed channel carries is the first, not a change. An M17 CAN belongs
+ * to each transmission and names no system, so its change drops nothing (M17 sends no other part). A note that carries
+ * both the access code and system parts notes the access code first.
+ *
+ * A frame read across a carrier boundary, or cut by an input interruption, is no carrier's: while such a frame is
+ * dispatched (dsd_state::frame_dispatch_active, dsd_state_frame_read_lost() against frame_dispatch_carrier_seq) every
+ * note is refused, whichever decoder's own carrier check comes after it.
  *
  * Lifetime: dsd_rxid_reset() at every carrier boundary and trunk-scan target switch; dsd_rxid_note_sync() at frame
  * sync drops a record of another protocol family; dsd_rxid_trunk_tune() on every accepted trunking retune drops the
@@ -112,8 +124,11 @@ typedef struct dsd_received_identity {
     uint16_t dmr_rest_lsn;
     uint16_t dmr_t3_syscode;
     uint8_t dmr_xpt_free_lcn; /**< 0..15, as the XPT message sends it. */
-    char dmr_site_text[64];   /**< Display text, e.g. "TIII Small · Net 12 · Site 3.1 · SYS 0A3F"; NUL-terminated. */
-    char dmr_brand[32];       /**< e.g. "Capacity Plus"; NUL-terminated. */
+    /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 12 · Site 3.1 · SYS 0A3F",
+     * "Cap+ · Site 2", "Con+ · Net 3 · Site 5"; NUL-terminated. The view shows each part as a token, the "Net n" and
+     * "Site n" parts on the compact line. */
+    char dmr_site_text[64];
+    char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated. */
 
     uint16_t edacs_site;
     uint16_t edacs_area;
@@ -123,6 +138,9 @@ typedef struct dsd_received_identity {
     uint16_t tetra_mcc; /**< 10 bits. */
     uint16_t tetra_mnc; /**< 14 bits. */
     uint16_t tetra_la;  /**< 14 bits. */
+    /** The colour code of the cell tetra_mcc/tetra_mnc came with (6 bits), valid with DSD_RXID_TETRA_NET. A trunk tune
+     * drops the access code from display; the cell stays bound to this colour. */
+    uint8_t tetra_colour;
 
     uint32_t cc_freq_hz;
 } dsd_received_identity;
@@ -140,7 +158,8 @@ void dsd_rxid_mark_stale(dsd_state* state);
  * the carrier left; the system stays. A refused retune must not call this. */
 void dsd_rxid_trunk_tune(dsd_state* state);
 
-/** The access code of @p kind (dsd_access_code_kind) a checked message of @p family carried on this carrier. */
+/** The access code of @p kind (dsd_access_code_kind) a checked message of @p family carried on this carrier. Another
+ * value than a valid one drops the family's other parts (another system shares the carrier); M17 drops nothing. */
 void dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uint16_t value);
 
 /** A checked P25 network status: WACN and SYSID (SYSID 0 is ignored). Another WACN or SYSID than the record's
@@ -164,8 +183,11 @@ void dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn);
 /** A confirmed Type-C location ID of category 0..2 (3 is reserved and ignored). */
 void dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, uint16_t site);
 void dsd_rxid_note_nxdn_idas_area(dsd_state* state, uint8_t area);
-/** A confirmed IDAS SCCH site ID: site type 1..3 and site code 1..250 (anything else is ignored). */
+/** A confirmed IDAS SCCH site ID: site type 1..3 and site code 1..250 (anything else is ignored). A Type-D system ID
+ * of another site code is dropped with the control-channel frequency. */
 void dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t site_code);
+/** A confirmed Type-D SRV_INFO: the 19-bit system ID and site code. Another system drops the SCCH area and site ID and
+ * the control-channel frequency; another site code than the SCCH site ID's drops that site ID. */
 void dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site);
 
 void dsd_rxid_note_edacs_site(dsd_state* state, uint16_t site);
@@ -175,9 +197,13 @@ void dsd_rxid_note_edacs_cc_lcn(dsd_state* state, uint16_t lcn);
 
 /** A CRC-checked trunked mode BSCH, or a CRC-checked downlink block descrambled with the network's extended colour
  * code (every carrier of a cell scrambles with it): the network and the cell's colour code (the access code). Another
- * network or colour drops the location area. */
+ * network or colour than the cell's (tetra_colour, kept across a trunk tune) drops the location area and the
+ * control-channel frequency. */
 void dsd_rxid_note_tetra_cell(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t colour);
 void dsd_rxid_note_tetra_la(dsd_state* state, uint16_t la);
+/** A checked SYSINFO named another cell of the same network and colour code (another main carrier or location area):
+ * the last cell's location area and control-channel frequency are dropped, before the SYSINFO's own are noted. */
+void dsd_rxid_note_tetra_other_cell(dsd_state* state);
 /** A checked direct mode burst: the carrier belongs to no trunked network, so a TETRA record is dropped. */
 void dsd_rxid_note_tetra_direct_mode(dsd_state* state);
 

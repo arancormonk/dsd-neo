@@ -685,6 +685,29 @@ test_ms_voice_superframe_split_by_a_carrier_boundary_is_dropped(void) {
     }
 }
 
+/* The carrier boundary moved while the first burst's EMB was read: the EMB straddles two carriers, so its colour code is
+   neither the carrier's (dmr_color_code) nor the new carrier's received identity, and the superframe plays nothing. */
+static void
+test_ms_voice_emb_split_by_a_carrier_boundary_notes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    load_voice_stream();
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    state.dmr_color_code = 16;
+    g_boundary_at = 70U;
+
+    dmrMS(&opts, &state);
+
+    assert(state.carrier_seq == 1U);
+    assert(state.dmr_color_code == 16);
+    assert(state.rx_id.valid == 0U);
+    assert(g_process_mbe_calls == 0);
+}
+
 /* The burst the frame sync found: its live second half comes after the move, so nothing in it decodes and the voice
    cycle does not start on it. */
 static void
@@ -819,6 +842,7 @@ main(void) {
     test_ms_bootstrap_plays_short_on_one_channel();
     test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes();
     test_ms_voice_superframe_split_by_a_carrier_boundary_is_dropped();
+    test_ms_voice_emb_split_by_a_carrier_boundary_notes_nothing();
     test_ms_bootstrap_split_by_a_carrier_boundary_is_dropped();
     test_ms_data_split_by_a_carrier_boundary_is_dropped();
     test_ms_voice_superframe_cut_by_an_input_interruption_is_dropped();

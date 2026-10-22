@@ -32,6 +32,15 @@ Item {
             testContext.setMetric("nxdnSiteCode", 0);
             testContext.setMetric("nxdnSysCode", 0);
             testContext.setMetric("edacsSiteText", "");
+            testContext.setMetric("edacsSystem", -1);
+            testContext.setMetric("edacsArea", -1);
+            testContext.setMetric("edacsCcLcn", -1);
+            testContext.setMetric("dmrBrand", "");
+            testContext.setMetric("dmrT3Syscode", -1);
+            testContext.setMetric("siteAccessCode", -1);
+            testContext.setMetric("tetraSiteMcc", -1);
+            testContext.setMetric("tetraSiteMnc", -1);
+            testContext.setMetric("tetraSiteLa", -1);
             testContext.setMetric("p25Phase2Seed", "");
             testContext.setMetric("p25Phase2SeedSet", false);
             Ui.Theme.resetFontScale();
@@ -131,6 +140,61 @@ Item {
             testContext.setMetric("edacsSiteText", "SITE 007 [07]");
             tryCompare(item("siteEdacs"), "visible", true);
             compare(item("siteEdacs").text, "SITE 007 [07]");
+        }
+        // Every protocol whose site row opens the sheet shows there what the carrier sent: dPMR's colour code, M17's
+        // CAN, TETRA's network, colour code and location area, and the parts of a DMR or EDACS site with no site text.
+        function test_access_tetra_and_part_rows() {
+            testContext.setMetric("siteProtocol", "M17");
+            testContext.setMetric("siteLine", "M17 · CAN 3");
+            testContext.setMetric("siteAccessCode", 3);
+            item("siteSheet").visible = true;
+            tryCompare(item("siteAccess"), "visible", true);
+            compare(item("siteAccess").text, "3");
+            compare(item("siteAccess").parent.children[0].text, "CAN");
+            testContext.setMetric("siteProtocol", "dPMR");
+            testContext.setMetric("siteLine", "dPMR · CC 0");
+            testContext.setMetric("siteAccessCode", 0);
+            tryCompare(item("siteAccess"), "text", "0");
+            compare(item("siteAccess").parent.children[0].text, "Color code");
+            verify(item("siteAccess").visible);
+            testContext.setMetric("siteAccessCode", -1);
+            tryCompare(item("siteAccess"), "visible", false);
+
+            testContext.setMetric("siteProtocol", "TETRA");
+            testContext.setMetric("siteLine", "TETRA · MCC 262 · MNC 1001 · CC 25 · LA 4242");
+            testContext.setMetric("tetraSiteMcc", 262);
+            testContext.setMetric("tetraSiteMnc", 1001);
+            testContext.setMetric("siteAccessCode", 25);
+            testContext.setMetric("tetraSiteLa", 4242);
+            tryCompare(item("siteTetraMcc"), "visible", true);
+            verify(!item("siteAccess").visible);
+            compare(item("siteTetraMcc").text, "262");
+            compare(item("siteTetraMnc").text, "1001");
+            compare(item("siteTetraColor").text, "25");
+            compare(item("siteTetraLa").text, "4242");
+            testContext.setMetric("tetraSiteLa", -1);
+            tryCompare(item("siteTetraLa"), "visible", false);
+
+            testContext.setMetric("siteProtocol", "DMR");
+            testContext.setMetric("siteLine", "DMR · Hytera XPT · SYS 0A3F");
+            testContext.setMetric("dmrBrand", "Hytera XPT");
+            testContext.setMetric("dmrT3Syscode", 0x0A3F);
+            tryCompare(item("siteDmrBrand"), "visible", true);
+            verify(!item("siteTetraMcc").visible);
+            compare(item("siteDmrBrand").text, "Hytera XPT");
+            compare(item("siteDmrSyscode").text, "0A3F");
+
+            testContext.setMetric("siteProtocol", "EDACS");
+            testContext.setMetric("siteLine", "EDACS · SYS 3 · Area 0 · CC LCN 12");
+            testContext.setMetric("edacsSystem", 3);
+            testContext.setMetric("edacsArea", 0);
+            testContext.setMetric("edacsCcLcn", 12);
+            tryCompare(item("siteEdacsSystem"), "visible", true);
+            verify(!item("siteEdacs").visible);
+            compare(item("siteEdacsSystem").text, "3");
+            compare(item("siteEdacsArea").text, "0");
+            compare(item("siteEdacsCcLcn").text, "12");
+            item("siteSheet").visible = false;
         }
         function test_compact_site_reachable() {
             root.width = 320;

@@ -434,6 +434,21 @@ test_received_identity(void) {
     rc |= expect_int("rx-id seed: B's sysid", id->p25_sysid, 0x1A3);
     rc |= expect_int("rx-id seed: the nac carried", id->access, 0x293);
 
+    // Another system on the same carrier (co-channel, another NAC): its network status carries the NAC that drops the
+    // old system, and its own WACN and SYSID stay.
+    reset();
+    dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x111U);
+    dsd_rxid_note_p25_network(&g_state, 0xAAAAAU, 0x222U);
+    for (int i = 0; i < 2; ++i) {
+        network_mac(mac, i == 0 ? 0x7B : 0xFB, 0xBEE00, 0x1A3);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("rx-id co-channel system parts", (long)id->valid,
+                         DSD_RXID_ACCESS | DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_LRA);
+        rc |= expect_int("rx-id co-channel wacn", (long)id->p25_wacn, 0xBEE00);
+        rc |= expect_int("rx-id co-channel nac", id->access, 0x293);
+        dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x111U);
+    }
+
     // -F: broadcasts that failed their CRC note nothing.
     reset();
     network_mac(mac, 0x7B, 0xBEE00, 0x1A3);

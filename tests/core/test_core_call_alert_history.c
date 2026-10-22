@@ -4050,9 +4050,9 @@ test_system_identity_fills_while_live(void) {
     return rc;
 }
 
-// Once the call has ended its system and site are frozen at what its last active render captured, known or unknown:
-// the finalize pass, and every render of a row whose keep-or-drop verdict is held, can run after the record already
-// describes the next carrier.
+// Once the call has ended its system and site are frozen at what the received identity record held when it ended,
+// known or unknown: the finalize pass, and every render of a row whose keep-or-drop verdict is held, can run after the
+// record already describes the next carrier.
 static int
 test_system_identity_freezes_at_the_end(void) {
     static dsd_opts opts;
@@ -4090,7 +4090,8 @@ test_system_identity_freezes_at_the_end(void) {
     rc |= expect_str_eq("unknown at the end stays unknown", row->sysid_string, "P25_293");
     rc |= expect_int("unknown at the end keeps no ids", row->sys_id1 == 0U && row->sys_id2 == 0U, 1);
 
-    /* A call first rendered after its end takes no system either. */
+    /* A call first rendered after its end takes the system the carrier had named when it ended; one the record
+       received after the end is not the call's. */
     reset_fixture(&opts, &state, event_history);
     state.edacs_site_id = 5;
     dsd_rxid_note_edacs_site(&state, 12U);
@@ -4098,9 +4099,42 @@ test_system_identity_freezes_at_the_end(void) {
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_rxid_note_edacs_site(&state, 13U);
     dsd_event_sync_slot(&opts, &state, 0U);
-    rc |= expect_has_substr("ended first render takes no site", event_history[0].Event_History_Items[1].sysid_string,
-                            "EDACS_SITE_000");
+    rc |= expect_has_substr("ended first render takes the site at the end",
+                            event_history[0].Event_History_Items[1].sysid_string, "EDACS_SITE_012");
+
+    /* Identity received after the last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast
+       before the call ends): the end takes it. */
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_rxid_note_p25_site(&state, 0x006U, 10U, 11U);
+    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_str_eq("identity just before the end", row->sysid_string, "P25_45564006293_10_11");
+
+    /* The carrier the call began on: a record reset (a boundary) before the end is another carrier's, and the end
+       takes none of it. */
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_str_eq("another carrier's record at the end", row->sysid_string, "P25_293");
 
     /* Held-ended rendering: an identity-less audible row whose verdict waits on a late terminator is rendered on every
        pass while it waits, and each of those renders keeps the system the call ended with. */

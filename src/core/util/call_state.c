@@ -638,6 +638,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
         snapshot->started_m = now_m;
+        snapshot->rx_id_epoch = state->rx_id.epoch;
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
             snapshot->crc_invalid = previous.crc_invalid;
@@ -933,6 +934,17 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
     return 1;
 }
 
+/* The system and site the call's carrier had named when the call ended, while the record is still that carrier's (not
+   reset or replaced since the call began); none otherwise. */
+static void
+call_state_capture_ended_identity(const dsd_state* state, dsd_call_snapshot* snapshot) {
+    if (state->rx_id.epoch == snapshot->rx_id_epoch) {
+        snapshot->ended_rx_id = state->rx_id;
+    } else {
+        DSD_MEMSET(&snapshot->ended_rx_id, 0, sizeof(snapshot->ended_rx_id));
+    }
+}
+
 int
 dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
     if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -979,6 +991,7 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
         return 0;
     }
     snapshot->phase = DSD_CALL_PHASE_ENDED;
+    call_state_capture_ended_identity(state, snapshot);
     snapshot->end_reason = (uint8_t)reason;
     snapshot->media_active = 0U;
     snapshot->audio_permitted = 0U;

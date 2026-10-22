@@ -54,13 +54,28 @@ rxid_clear(dsd_received_identity* id) {
     id->epoch = epoch;
 }
 
+/* The record a note changes, or NULL when the frame being dispatched was read across a carrier boundary or cut by an
+   input interruption (dsd_state_frame_read_lost()): its decoder drops it at its own carrier check, which may come after
+   a note, and a frame of no carrier names none. Outside a dispatch nothing is gated. */
+static dsd_received_identity*
+rxid_record(dsd_state* state) {
+    if (state == NULL
+        || (state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq))) {
+        return NULL;
+    }
+    return &state->rx_id;
+}
+
 /* The record @p family's note goes into: a record of another family is dropped first. */
 static dsd_received_identity*
 rxid_for(dsd_state* state, dsd_rxid_family family) {
-    if (state == NULL || family == DSD_RXID_FAMILY_NONE || family == DSD_RXID_FAMILY_OTHER) {
+    if (family == DSD_RXID_FAMILY_NONE || family == DSD_RXID_FAMILY_OTHER) {
         return NULL;
     }
-    dsd_received_identity* const id = &state->rx_id;
+    dsd_received_identity* const id = rxid_record(state);
+    if (id == NULL) {
+        return NULL;
+    }
     if (id->family != (uint8_t)family) {
         if (id->family != (uint8_t)DSD_RXID_FAMILY_NONE) {
             rxid_clear(id);
@@ -125,6 +140,28 @@ dsd_rxid_trunk_tune(dsd_state* state) {
     }
 }
 
+/* The P25 parts that belong to the system the record's SYSID names. */
+#define RXID_P25_SYSTEM                                                                                                \
+    (DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA | DSD_RXID_CC_FREQ)
+
+/* The parts a system of @p family sends besides the carrier's access code: what another access code on the same
+   carrier (another system sharing the channel) did not send. An M17 CAN is per transmission and names no system. */
+static uint32_t
+rxid_system_parts(uint8_t family) {
+    switch (family) {
+        case DSD_RXID_FAMILY_DMR:
+            return DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE
+                   | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_CC_FREQ;
+        case DSD_RXID_FAMILY_P25: return RXID_P25_SYSTEM;
+        case DSD_RXID_FAMILY_NXDN:
+            return DSD_RXID_NXDN_LOCATION | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE
+                   | DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ;
+        case DSD_RXID_FAMILY_DPMR: return DSD_RXID_CC_FREQ;
+        case DSD_RXID_FAMILY_TETRA: return DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ;
+        default: return 0U;
+    }
+}
+
 void
 dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uint16_t value) {
     if (kind == (uint8_t)DSD_ACCESS_CODE_NONE) {
@@ -134,14 +171,13 @@ dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uin
     if (id == NULL) {
         return;
     }
+    if (rxid_has(id, DSD_RXID_ACCESS) && (id->access_kind != kind || id->access != value)) {
+        rxid_drop(id, rxid_system_parts(id->family)); /* another system on this carrier */
+    }
     id->access_kind = kind;
     id->access = value;
     rxid_set(id, DSD_RXID_ACCESS);
 }
-
-/* The P25 parts that belong to the system the record's SYSID names. */
-#define RXID_P25_SYSTEM                                                                                                \
-    (DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA | DSD_RXID_CC_FREQ)
 
 void
 dsd_rxid_note_p25_network(dsd_state* state, uint32_t wacn, uint16_t sysid) {
@@ -313,6 +349,10 @@ dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t site_c
         && (id->nxdn_idas_site_type != site_type || id->nxdn_idas_site_code != site_code)) {
         rxid_drop(id, DSD_RXID_CC_FREQ); /* another site */
     }
+    if (rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM) && id->nxdn_typed_site != site_code) {
+        /* A Type-D SRV_INFO named another site: the newer site ID replaces it, with its system. */
+        rxid_drop(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
+    }
     id->nxdn_idas_site_type = site_type;
     id->nxdn_idas_site_code = site_code;
     rxid_set(id, DSD_RXID_NXDN_IDAS_SITE);
@@ -324,7 +364,18 @@ dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
     if (id == NULL) {
         return;
     }
-    id->nxdn_typed_sys = sys & 0x7FFFFU;
+    sys &= 0x7FFFFU;
+    if (rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM) && id->nxdn_typed_sys != sys) {
+        /* Another system: the old one's SCCH area and site ID and its control channel. */
+        rxid_drop(id, DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_CC_FREQ);
+    } else if (rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM) && id->nxdn_typed_site != site) {
+        rxid_drop(id, DSD_RXID_CC_FREQ); /* another site */
+    }
+    if (rxid_has(id, DSD_RXID_NXDN_IDAS_SITE) && id->nxdn_idas_site_code != site) {
+        /* The SCCH site ID named another site: the newer system ID replaces it. */
+        rxid_drop(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_CC_FREQ);
+    }
+    id->nxdn_typed_sys = sys;
     id->nxdn_typed_site = site;
     rxid_set(id, DSD_RXID_NXDN_TYPED_SYSTEM);
 }
@@ -384,32 +435,50 @@ dsd_rxid_note_tetra_cell(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t c
     if (id == NULL) {
         return;
     }
-    const int same_cell = rxid_has(id, DSD_RXID_TETRA_NET) && id->tetra_mcc == mcc && id->tetra_mnc == mnc
-                          && (!rxid_has(id, DSD_RXID_ACCESS) || id->access == colour);
+    /* The cell's colour binding, not the access code a trunk tune drops from display. */
+    const int same_cell =
+        rxid_has(id, DSD_RXID_TETRA_NET) && id->tetra_mcc == mcc && id->tetra_mnc == mnc && id->tetra_colour == colour;
     if (!same_cell) {
         rxid_drop(id, DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ); /* as a BSCH identity change clears SYSINFO */
     }
     id->tetra_mcc = mcc;
     id->tetra_mnc = mnc;
+    id->tetra_colour = colour;
     id->access_kind = (uint8_t)DSD_ACCESS_CODE_COLOR_CODE;
     id->access = colour;
     rxid_set(id, DSD_RXID_TETRA_NET | DSD_RXID_ACCESS);
 }
 
+/* The TETRA record a note changes without starting one, or NULL. */
+static dsd_received_identity*
+rxid_tetra(dsd_state* state) {
+    dsd_received_identity* const id = rxid_record(state);
+    return (id != NULL && id->family == (uint8_t)DSD_RXID_FAMILY_TETRA) ? id : NULL;
+}
+
 void
 dsd_rxid_note_tetra_la(dsd_state* state, uint16_t la) {
-    if (state == NULL || state->rx_id.family != (uint8_t)DSD_RXID_FAMILY_TETRA
-        || !rxid_has(&state->rx_id, DSD_RXID_TETRA_NET)) {
+    dsd_received_identity* const id = rxid_tetra(state);
+    if (id == NULL || !rxid_has(id, DSD_RXID_TETRA_NET)) {
         return; /* a location area of no network this record holds */
     }
-    state->rx_id.tetra_la = (uint16_t)(la & 0x3FFFU);
-    rxid_set(&state->rx_id, DSD_RXID_TETRA_LA);
+    id->tetra_la = (uint16_t)(la & 0x3FFFU);
+    rxid_set(id, DSD_RXID_TETRA_LA);
+}
+
+void
+dsd_rxid_note_tetra_other_cell(dsd_state* state) {
+    dsd_received_identity* const id = rxid_tetra(state);
+    if (id != NULL) {
+        rxid_drop(id, DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ);
+    }
 }
 
 void
 dsd_rxid_note_tetra_direct_mode(dsd_state* state) {
-    if (state != NULL && state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_TETRA) {
-        rxid_clear(&state->rx_id);
+    dsd_received_identity* const id = rxid_tetra(state);
+    if (id != NULL) {
+        rxid_clear(id);
     }
 }
 

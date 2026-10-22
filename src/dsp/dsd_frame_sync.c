@@ -3966,6 +3966,14 @@ frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state)
     }
 }
 
+/* The most symbols a frame reads back from the symbol its sync ends on: the sync word and what a decoder takes from the
+   hunt's history or a rolling buffer before it (X2-TDMA voice 144 dibits from dibit_buf_p, DMR 90 from dmr_payload_p,
+   a TETRA burst's block 1 from the 128-symbol history). After a carrier boundary or a trunk-scan target switch no
+   window is matched until that much is the new carrier's: a frame that began on the carrier left, its sync found after
+   the change, would otherwise decode, and note identity, from the carrier left's dibits on the new carrier, past every
+   decoder's own carrier check, which starts at dispatch. */
+#define FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS 144U
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -4010,7 +4018,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.dibit = frame_sync_process_dibit_and_payload(opts, state, rt.symbol);
         frame_sync_history_push(&rt, (char)('0' + (rt.dibit & 0x3)));
 
-        if (rt.history_count >= 8) {
+        if (rt.history_count >= 8 && !dsd_state_carrier_settling(state, FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS)) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
                 g_unsynced_dmr_dump_symbols = 0;

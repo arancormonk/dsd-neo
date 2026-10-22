@@ -1525,9 +1525,11 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 // preset, a control-channel anchor or another carrier writes. While the call is active, a part the record holds
 // replaces the staged row's and a part it lacks keeps the staged row's (unknown never erases known); a part of
 // another system (another P25 SYSID or WACN) replaces the staged system whole. Once the call has ended the parts are
-// frozen at what its last active render captured, known or unknown, like the access code
-// (watchdog_event_current_load_tuning()): a held drop-verdict or the finalize pass may run after a retune, a -Y hop or
-// a trunk-scan switch, when the record already describes the next carrier.
+// frozen at the record the canonical layer captured at the end transition (dsd_call_snapshot::ended_rx_id), merged
+// the same way, so a part received after the last active render and before the end (a Phase 2 MAC_IDLE handles its
+// broadcast before the call ends) counts: a held drop-verdict or the finalize pass may run after a retune, a -Y hop or
+// a trunk-scan switch, when the record already describes the next carrier. A record reset since the call began (a
+// carrier boundary) is captured as none.
 static void
 watchdog_event_system_from_p25(const dsd_received_identity* id, uint32_t sys[5]) {
     const uint32_t valid = id->valid;
@@ -1582,19 +1584,9 @@ watchdog_event_system_from_edacs(const dsd_received_identity* id, uint32_t sys[5
     }
 }
 
+/* The parts @p id holds of @p family's system, over @p sys. */
 static void
-watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid_family family, uint32_t sys[5]) {
-    const dsd_received_identity* const id = &state->rx_id;
-    if (DSD_SYNC_IS_TETRA(protocol)) {
-        const uint8_t mode = state->tetra_pub.mode;
-        if (mode >= DSD_TETRA_MODE_DMO_DIRECT && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
-            sys[0] = 0U;
-            sys[1] = 0U;
-            sys[2] = 1U; /* a direct mode carrier belongs to no network */
-            return;
-        }
-        sys[2] = 0U;
-    }
+watchdog_event_system_merge(const dsd_received_identity* id, dsd_rxid_family family, uint32_t sys[5]) {
     if (id->family != (uint8_t)family) {
         return;
     }
@@ -1618,6 +1610,21 @@ watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid
 }
 
 static void
+watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid_family family, uint32_t sys[5]) {
+    if (DSD_SYNC_IS_TETRA(protocol)) {
+        const uint8_t mode = state->tetra_pub.mode;
+        if (mode >= DSD_TETRA_MODE_DMO_DIRECT && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
+            sys[0] = 0U;
+            sys[1] = 0U;
+            sys[2] = 1U; /* a direct mode carrier belongs to no network */
+            return;
+        }
+        sys[2] = 0U;
+    }
+    watchdog_event_system_merge(&state->rx_id, family, sys);
+}
+
+static void
 watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
                                    const Event_History* staged, int staged_is_own, watchdog_event_current_ctx* ctx) {
     if (call == NULL || call->epoch == 0U) {
@@ -1638,6 +1645,8 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
     }
     if (call->phase == DSD_CALL_PHASE_ACTIVE && opts->playfiles == 0) {
         watchdog_event_system_from_record(state, call->protocol, family, sys);
+    } else if (call->phase == DSD_CALL_PHASE_ENDED && opts->playfiles == 0) {
+        watchdog_event_system_merge(&call->ended_rx_id, family, sys); /* the record when it ended */
     }
     ctx->sys_id1 = sys[0];
     ctx->sys_id2 = sys[1];

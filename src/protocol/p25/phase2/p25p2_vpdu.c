@@ -3744,8 +3744,9 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
             } else {
                 p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
             }
-            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
+            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
             p25_search_note_network_nac(state, (uint16_t)lcolorcode);
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
         }
     }
 
@@ -3800,8 +3801,9 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
             } else {
                 p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
             }
-            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
+            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
             p25_search_note_network_nac(state, (uint16_t)lcolorcode);
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
         }
     }
 

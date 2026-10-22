@@ -77,12 +77,15 @@ Item {
                 root.width = widths[w]
                 for (var s = 0; s < scales.length; s++) {
                     Ui.Theme.fontScale = scales[s]
-                    wait(0)
+                    // The strip's rows move over more than one polish pass after a
+                    // width or text-size change: judge the layout once it settles.
+                    tryVerify(function () {
+                        var r = readout.mapToItem(screen, 0, 0)
+                        var p = pill.mapToItem(screen, 0, 0)
+                        return r.x + readout.width <= p.x || p.y >= r.y + readout.height
+                    }, 2000, "the pill covers the readout at " + widths[w] + " px, scale " + scales[s])
                     var r = readout.mapToItem(screen, 0, 0)
                     var p = pill.mapToItem(screen, 0, 0)
-                    var beside = r.x + readout.width <= p.x
-                    var below = p.y >= r.y + readout.height
-                    verify(beside || below, "the pill covers the readout at " + widths[w] + " px, scale " + scales[s])
                     verify(p.x + pill.width <= screen.width, "the pill runs off screen at " + widths[w] + " px, scale " + scales[s])
                     verify(r.x + readout.width <= screen.width, "the readout runs off screen")
                 }

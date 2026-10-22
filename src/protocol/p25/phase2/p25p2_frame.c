@@ -439,12 +439,12 @@ p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
         const int newly_proven = state->p2_cc_verified == 0U;
         state->p2_cc_verified = 1U;
         /* The burst decoded under the whole seed, so the carrier sends with this WACN, SYSID and NAC: the received
-           identity, however the seed was set. */
-        dsd_rxid_note_p25_network(state, (uint32_t)s_descramble_seed.wacn, (uint16_t)s_descramble_seed.sysid);
+           identity, however the seed was set. The NAC first: another NAC drops the old system, not this one. */
         if (s_descramble_seed.nac != 0U && s_descramble_seed.nac < 0xFFFU) {
             dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC,
                                  (uint16_t)s_descramble_seed.nac);
         }
+        dsd_rxid_note_p25_network(state, (uint32_t)s_descramble_seed.wacn, (uint16_t)s_descramble_seed.sysid);
         if (newly_proven) {
             dsd_event_sync_slot(opts, state, 0U);
             dsd_event_sync_slot(opts, state, 1U);

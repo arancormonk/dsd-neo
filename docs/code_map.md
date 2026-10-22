@@ -999,10 +999,13 @@ suite runs under this compiler.
   not received takes the value a row had before one was decoded (0, so `P25_<NAC>` without a WACN and
   `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and X2-TDMA rows carry none. While the call is ACTIVE a part the record
   holds replaces the staged row's and a part it lacks keeps it (unknown never erases known); a P25 SYSID or WACN of
-  another system replaces the staged system whole. Once the call has ENDED the parts are frozen at its last active
-  render, like the access code, known or unknown: a held drop verdict or the finalize pass may run after a retune, a
-  `-Y` hop or a trunk-scan switch, when the record already describes the next carrier, and a call first rendered after
-  its end takes none. Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
+  another system replaces the staged system whole. Once the call has ENDED the parts are frozen at the record the
+  canonical layer captured at the end transition (`dsd_call_state_end_ex()` copies `dsd_state::rx_id` into
+  `dsd_call_snapshot::ended_rx_id` while its epoch is still the `rx_id_epoch` the call began with, else captures none),
+  merged over the staged row the same way: identity received after the last active render and before the end (a
+  Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends the call) counts, identity received after
+  the end does not, and a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
+  switch never takes the next carrier's. Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -1456,19 +1459,33 @@ suite runs under this compiler.
   following but is never noted. Each part has a valid and a fresh bit. Lifetime, all on the decoder thread:
   `dsd_engine_carrier_boundary()` resets it (every boundary kind); `trunk_scan_switch_to()` resets it on every target
   switch, and no target snapshot holds one (a revisited target is last known, not received), while a rollback after
-  every retune of an advance failed puts back the record the advance started with (the coordinator's
-  `rollback_rx_id`, taken with the scratch snapshot, again after a forced release); `processFrame()` calls
-  `dsd_rxid_note_sync()` before each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA
-  included, which note nothing) drops the record; the no-carrier pass (`dsd_engine_reset_no_carrier_state()`) marks
-  every part stale and keeps the values; every accepted trunk retune, a voice channel grant
-  (`dsd_engine_update_vc_tune_state()`) or a control channel return or hunt step
-  (`dsd_engine_trunk_tune_to_cc_request()`), calls `dsd_rxid_trunk_tune()`, which drops the access code and keeps the
-  system (the protocols reach both through the trunk tuning hooks, so a refused tune changes nothing). The control
-  channel frequency part (`cc_freq_hz`) is the tuner's frequency (`dsd_opts_tuned_freq_hz()`, so none off a radio input,
-  a rigctl peer on audio input included) at a checked message that confirms this carrier as the control channel, noted
-  before the message's handlers can retune. Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
-  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end
-  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
+  every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
+  taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
+  each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
+  the record; the no-carrier pass (`dsd_engine_reset_no_carrier_state()`) marks every part stale and keeps the values;
+  every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel return
+  or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), calls `dsd_rxid_trunk_tune()`, which drops the access code and
+  keeps the system (the protocols reach both through the trunk tuning hooks, so a refused tune changes nothing). The
+  control channel frequency part (`cc_freq_hz`) is the tuner's frequency (`dsd_opts_tuned_freq_hz()`, so none off a
+  radio input, a rigctl peer on audio input included) at a checked message that confirms this carrier as the control
+  channel, noted before the message's handlers can retune. A note made while a dispatched frame is lost
+  (`frame_dispatch_active` and `dsd_state_frame_read_lost()` against `frame_dispatch_carrier_seq`: a carrier boundary
+  moved the count while the frame was read, or an input interruption cut it) is refused, so a frame split by an I/Q
+  replay retune never notes into the record the boundary reset, whichever decoder's own carrier check comes later. That
+  gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
+  TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
+  mark the symbol clock (`dsd_state_note_carrier_change()`), and `getFrameSync()` matches no window until
+  `FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS` (144) symbols of the new carrier are in (`dsd_state_carrier_settling()`;
+  `FRAME_SYNC_DMR_WAV_RATE`). Another value of a valid access code on the same carrier is another system sharing it
+  (co-channel DMR/dPMR colour codes, P25 NACs, NXDN RANs): the family's other parts and the control channel frequency go
+  (an M17 CAN, per transmission, drops nothing; a trunk tune drops the code first, so a followed channel's is no
+  change), and a note carrying both notes the code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep
+  the newer; another Type-D system drops the SCCH area and site. The TETRA cell keeps its colour (`tetra_colour`) apart
+  from the displayed access code, so after a trunk tune another colour is still another cell; a SYSINFO of another cell
+  with the same network and colour (`tetra_bsch_sysinfo_cell()`) drops the last cell's area and control channel
+  (`dsd_rxid_note_tetra_other_cell()`). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
+  `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25
+  control channel replayed, then a conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -2691,7 +2708,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `src/app_control/site_identity_view.c`. `dsd_app_site_identity_view()` turns the received identity record
   (`dsd_state::rx_id`, `core/received_identity.h`) of a snapshot into the display-ready identity every frontend shows:
   the protocol label (`DMR`, `P25`, `NXDN`, `IDAS`, `dPMR`, `M17`, `TETRA`, `EDACS`; none for YSF, D-STAR, ProVoice,
-  X2-TDMA), ordered tokens with the access code first, each flagged compact or full-only, `live` (synced on the
+  X2-TDMA), ordered tokens with the access code first, each flagged compact or full-only (the DMR site text is one
+  token per ` · ` part: `Net n` and `Site n` are compact, the Tier III model, `Cap+`/`Con+` and `SYS` full-only), `live` (synced on the
   record's family and some part received since the last no-carrier pass), the record's `epoch`, and `cc_freq_hz`, the
   only control-channel frequency a frontend shows. `dsd_app_site_identity_format()` joins the tokens with ` · `,
   compact or full, optionally led by the protocol. It reads nothing but the record (and the EDACS addressing flags),
@@ -2828,7 +2846,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   go), DMR recovery under way, issue #703, or the NXDN control-channel hunt armed, running or due,
   `nxdn_cc_hunt_due()`), it leaves with no sample and sets
   `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and returns on at once, with no SPS hunt
-  step and no no-sync hooks. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
+  step and no no-sync hooks. After a carrier boundary or a trunk-scan target switch (`dsd_state_note_carrier_change()`)
+  the hunt matches no sync window until the 144 symbols a frame can read back from before its sync
+  (`FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS`) are all the new carrier's (`dsd_state_carrier_settling()`), so no frame
+  decodes the carrier left's buffered dibits on the new carrier. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
   gives up the same way between attempts, which connect within a bound to the address the connection was made to
   (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices; "no socket" is `DSD_INVALID_SOCKET`.
   A file or TCP input that ends marks `dsd_state::input_fallback_pending`: frame decoding reads zeros until its frame
@@ -4956,7 +4977,10 @@ the message passed its own check, with that message's values, an unchanged repea
   CSBKs; Capacity Plus rest LSN and brand from the channel status CSBK 0x3E and the voice LC, and site text, rest LSN
   and brand from its short LC; the Hytera XPT brand from its CSBKs, LC and short LC (XPT sends no site number of its
   own), and the site's free channel (`dsd_rxid_note_dmr_xpt_free_lcn()`, the view's `Free LCN n` and the terminal's
-  `Free LCN: n;`) from its site status CSBK 0x0A, call alert LC 0x09 and short LC 0x8. A CSBK or full LC counts as checked only when the slot's `event_crc_invalid` is clear, so one RAS accepted
+  `Free LCN: n;`) from its site status CSBK 0x0A, call alert LC 0x09 and short LC 0x8. The site text is its parts
+  joined by ` · ` ("TIII Small · Net 12 · Site 3.1 · SYS 0A3F", "Cap+ · Site 2", "Con+ · Net 3 · Site 5"). The colour
+  code a slot type or EMB split by a carrier boundary would carry is neither noted nor fed to the confidence lock
+  (`dmr_data_carrier_left()`, `dsd_state_frame_read_lost()` before the decode). A CSBK or full LC counts as checked only when the slot's `event_crc_invalid` is clear, so one RAS accepted
   under `-F` (and an MBC whose header CRC failed) is decoded and followed but names nothing (`dmr_csbk_crc_checked()`,
   `dmr_flco_crc_checked()`); a short LC reaches its handler only after Hamming(17,12,3) and its CRC-8.
 - NXDN: the RAN of a CRC-passed CAC (with the control channel, before its elements can retune), FACCH2/UDCH, and a SACCH
@@ -6285,7 +6309,11 @@ Qt Quick frontend (`src/ui/qt`):
 - Site identity (Monitor and Spectrum): `MetricsModel::fillSiteView()` builds the `siteChanged` group from
   `app_control/site_identity_view` over the snapshot: `siteProtocol`, `siteLine` (the full form with its protocol),
   `siteConfirmed` (the view's `live`), the SiteSheet fields (P25 NAC/WACN/SYS/RFSS/SITE/LRA, DMR colour code/site
-  text/rest LSN/XPT free LCN (`dmrXptFreeLcn`, -1 before one), NXDN RAN or IDAS area and location codes, EDACS site),
+  text/rest LSN/XPT free LCN (`dmrXptFreeLcn`, -1 before one)/trunking brand (`dmrBrand`)/Tier III system code with no
+  site text (`dmrT3Syscode`), NXDN RAN or IDAS area and location codes, EDACS site/system/area/CC LCN
+  (`edacsSystem`, `edacsArea`, `edacsCcLcn`), the dPMR colour code or M17 CAN (`siteAccessCode`), TETRA MCC, MNC,
+  colour code and LA (`tetraSiteMcc`, `tetraSiteMnc`, `siteAccessCode`, `tetraSiteLa`); each int is -1 until received),
+  so every protocol whose site row opens the sheet has its rows there,
   each only once received, and `ccFreqHz` from the view's `cc_freq_hz` only. There is no Qt latch: the record keeps the
   last heard values on its carrier and is reset at every carrier boundary and trunk-scan target switch, so no visit
   generation is needed. The Spectrum-facing

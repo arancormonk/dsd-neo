@@ -12,6 +12,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* U+00B7 MIDDLE DOT between parts, as the frontends separate details. */
 static const char k_dot[] = " \xC2\xB7 ";
@@ -48,11 +49,38 @@ site_access(dsd_app_site_identity* out, const dsd_received_identity* id) {
     }
 }
 
+static int
+site_starts_with(const char* text, size_t len, const char* prefix) {
+    const size_t n = strlen(prefix);
+    return len >= n && strncmp(text, prefix, n) == 0;
+}
+
+/* The DMR site text, one token per " · " part (dsd_received_identity::dmr_site_text): the network ("Net n") and site
+   ("Site n", "Site n.m") identify it on a short line; the Tier III model, the Capacity Plus and Connect Plus tags and
+   the system code are details. */
+static void
+site_dmr_text(dsd_app_site_identity* out, const char* text) {
+    const size_t dot_len = sizeof(k_dot) - 1U;
+    const char* part = text;
+    while (part[0] != '\0') {
+        const char* const end = strstr(part, k_dot);
+        const size_t len = end != NULL ? (size_t)(end - part) : strlen(part);
+        if (len > 0U) {
+            const int compact = site_starts_with(part, len, "Net ") || site_starts_with(part, len, "Site ");
+            site_token(out, compact, "%.*s", (int)len, part);
+        }
+        if (end == NULL) {
+            break;
+        }
+        part = end + dot_len;
+    }
+}
+
 static void
 site_dmr(dsd_app_site_identity* out, const dsd_received_identity* id) {
     site_access(out, id);
     if (has(id, DSD_RXID_DMR_SITE_TEXT)) {
-        site_token(out, 1, "%s", id->dmr_site_text);
+        site_dmr_text(out, id->dmr_site_text);
     }
     if (has(id, DSD_RXID_DMR_REST_LSN)) {
         site_token(out, 1, "Rest LSN %u", (unsigned)id->dmr_rest_lsn);

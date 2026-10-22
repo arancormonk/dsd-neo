@@ -531,19 +531,26 @@ test_site() {
     /* Another protocol replaces the identity. */
     state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
     dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 7U);
-    dsd_rxid_note_dmr_site_text(&state, "Net 12 · Site 3");
+    dsd_rxid_note_dmr_site_text(&state, "TIII Small · Net 12 · Site 3");
     dsd_rxid_note_dmr_rest_lsn(&state, 4U);
     dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
     DSD_SNPRINTF(state.dmr_site_parms, sizeof(state.dmr_site_parms), "%s", "stale; ");
     state.dmr_rest_channel = 9;
     model.refresh(&opts, &state);
     expect("DMR site", model.siteProtocol() == "DMR" && model.dmrColorCode() == 7
-                           && model.dmrSiteText() == QStringLiteral("Net 12 · Site 3") && model.dmrRestLsn() == 4
-                           && !model.p25NacValid() && model.carrierIdentityProtocol() == QStringLiteral("DMR"));
-    expect("DMR line", model.siteLine() == QStringLiteral("DMR · CC 7 · Net 12 · Site 3 · Rest LSN 4 · Capacity Plus")
-                           && model.carrierIdentityTokens()
-                                  == QStringList({QStringLiteral("CC 7"), QStringLiteral("Net 12 · Site 3"),
-                                                  QStringLiteral("Rest LSN 4")}));
+                           && model.dmrSiteText() == QStringLiteral("TIII Small · Net 12 · Site 3")
+                           && model.dmrRestLsn() == 4 && !model.p25NacValid()
+                           && model.carrierIdentityProtocol() == QStringLiteral("DMR"));
+    /* The site text is one compact token per network and site part, so a narrow line keeps the parts that fit. */
+    expect("DMR line",
+           model.siteLine() == QStringLiteral("DMR · CC 7 · TIII Small · Net 12 · Site 3 · Rest LSN 4 · Capacity Plus")
+               && model.carrierIdentityTokens()
+                      == QStringList({
+                          QStringLiteral("CC 7"),
+                          QStringLiteral("Net 12"),
+                          QStringLiteral("Site 3"),
+                          QStringLiteral("Rest LSN 4"),
+                      }));
     expect("no XPT free channel", model.dmrXptFreeLcn() == -1);
     /* A Hytera XPT site's free channel: its own SiteSheet field and a compact token. */
     dsd_rxid_reset(&state);
@@ -593,12 +600,54 @@ test_site() {
     model.refresh(&opts, &state);
     expect("EDACS site", model.siteProtocol() == "EDACS" && model.edacsSiteText().contains("007")
                              && model.carrierIdentityTokens() == QStringList{QStringLiteral("SITE 007 [07]")});
+    /* Extended addressing names the system apart from the site: each part the record holds has a SiteSheet field. */
+    dsd_rxid_reset(&state);
+    expect("EDACS parts unset", model.edacsSystem() == -1 && model.edacsArea() == -1 && model.edacsCcLcn() == -1);
+    dsd_rxid_note_edacs_system(&state, 3U);
+    dsd_rxid_note_edacs_area(&state, 0U);
+    dsd_rxid_note_edacs_cc_lcn(&state, 12U);
+    model.refresh(&opts, &state);
+    expect("EDACS system, area and CC LCN", model.edacsSiteText().isEmpty() && model.edacsSystem() == 3
+                                                && model.edacsArea() == 0 && model.edacsCcLcn() == 12);
+
+    /* dPMR and M17 send an access code alone; TETRA its network, the cell's colour code and the location area. */
+    dsd_rxid_reset(&state);
+    state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DPMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 0U);
+    model.refresh(&opts, &state);
+    expect("dPMR colour code", model.siteProtocol() == "dPMR" && model.siteAccessCode() == 0);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, 9U);
+    model.refresh(&opts, &state);
+    expect("M17 CAN", model.siteProtocol() == "M17" && model.siteAccessCode() == 9);
+    dsd_rxid_note_tetra_cell(&state, 262U, 1001U, 25U);
+    model.refresh(&opts, &state);
+    expect("TETRA network", model.siteProtocol() == "TETRA" && model.tetraSiteMcc() == 262
+                                && model.tetraSiteMnc() == 1001 && model.siteAccessCode() == 25
+                                && model.tetraSiteLa() == -1);
+    dsd_rxid_note_tetra_la(&state, 4242U);
+    dsd_rxid_trunk_tune(&state);
+    model.refresh(&opts, &state);
+    expect("TETRA area, colour dropped by a tune", model.tetraSiteLa() == 4242 && model.siteAccessCode() == -1);
+
+    /* A DMR carrier that named only its brand, or only its Tier III system code. */
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_dmr_brand(&state, "Hytera XPT");
+    model.refresh(&opts, &state);
+    expect("DMR brand", model.siteProtocol() == "DMR" && model.dmrBrand() == QStringLiteral("Hytera XPT")
+                            && model.dmrT3Syscode() == -1);
+    dsd_rxid_note_dmr_t3_syscode(&state, 0x0A3FU);
+    model.refresh(&opts, &state);
+    expect("DMR system code", model.dmrT3Syscode() == 0x0A3F);
+    dsd_rxid_note_dmr_site_text(&state, "TIII Small · Net 1 · Site 2 · SYS 0A3F");
+    model.refresh(&opts, &state);
+    expect("DMR system code in the site text", model.dmrT3Syscode() == -1);
 
     model.clear();
     expect("stop clears every site group",
            model.siteLine().isEmpty() && model.siteProtocol().isEmpty() && !model.siteConfirmed()
                && model.ccFreqHz() == 0 && model.vcFreqHz() == 0 && model.dmrSiteText().isEmpty()
                && model.edacsSiteText().isEmpty() && model.nxdnRan() == -1 && model.carrierIdentityTokens().isEmpty()
+               && model.siteAccessCode() == -1 && model.tetraSiteMcc() == -1 && model.dmrBrand().isEmpty()
                && model.carrierIdentityProtocol().isEmpty() && model.carrierIdentityText().isEmpty()
                && !model.carrierIdentityLive() && model.p25Phase2Seed().isEmpty());
     const int cleared = signals;

@@ -395,8 +395,9 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18, 0);
         dmr_ms_collect_sync_bits(opts, state, syncdata, vc, internalslot);
         /* The EMB decodes as soon as it is read, before the check below: one an input interruption cut is erasures,
-           and all-zero bits are a valid QR(16,7,6) codeword, so it would publish colour code 0. */
-        if (state->input_interrupted) {
+           and all-zero bits are a valid QR(16,7,6) codeword, so it would publish colour code 0; one the carrier boundary
+           split is half another carrier's, and its colour code would be noted as the new carrier's. */
+        if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }
         voice_syncs_after_a = dmr_ms_sync_is_voice(syncdata) ? voice_syncs_after_a + 1 : 0;

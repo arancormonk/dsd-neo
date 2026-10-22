@@ -2940,8 +2940,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
        decoders gathered on that carrier (confirmation evidence, half-built assemblies such as an NXDN SACCH superframe)
        is in none of them, and the incoming carrier's pieces would complete it, so it goes. */
     dsd_engine_forget_carrier_decoding(opts, state);
-    /* So does the identity it received: the incoming target's carrier names its own. */
+    /* So does the identity it received: the incoming target's carrier names its own. And the dibits the frame sync and
+       the decoders hold buffered from the outgoing carrier head no frame of the incoming one. */
     dsd_rxid_reset(state);
+    dsd_state_note_carrier_change(state);
 
     coord->active = next;
     coord->gain_editable = trunk_scan_gain_editable(opts);

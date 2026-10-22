@@ -44,12 +44,16 @@ static int g_nid_decode_calls;
 /* The NID read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there
    and stands erasures in for that symbol and every one after it; -1 for none. */
 static int g_interrupt_at_dibit = -1;
+/* The NID read a carrier boundary splits (a replay read adopting a recorded retune moves state->carrier_seq); -1 for
+   none. */
+static int g_boundary_at_dibit = -1;
 
 static void
 reset_stub_state(void) {
     g_dibit_reads = 0;
     g_nid_decode_calls = 0;
     g_interrupt_at_dibit = -1;
+    g_boundary_at_dibit = -1;
     g_test_duid = 0x3U;
     g_check_result = NID_OK;
     g_new_nac = 0x293;
@@ -65,6 +69,9 @@ reset_stub_state(void) {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
+    if (g_dibit_reads == g_boundary_at_dibit && state != NULL) {
+        state->carrier_seq++;
+    }
     if (g_dibit_reads++ == g_interrupt_at_dibit && state != NULL) {
         state->input_interrupted = 1;
     }
@@ -675,6 +682,27 @@ test_p25p1_nid_cut_by_an_input_interruption_decodes_nothing(void) {
     }
 }
 
+/* A carrier boundary while the NID is read (the frame dispatched on the carrier left): the BCH may still accept the
+   split word, but its NAC is no carrier's, so the received identity the boundary reset for the next carrier takes
+   nothing from it. */
+static void
+test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_new_nac = 0x293;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    g_boundary_at_dibit = 10;
+
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.carrier_seq == 1U);
+    assert(state.rx_id.valid == 0U && state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE);
+}
+
 /* A trunked system's return from a Phase 2 voice channel to its Phase 1 control channel crosses no carrier boundary:
    the decoded NID is what says the carrier is FDMA again, so the Monitor's second-slot strip goes. A NID that failed
    (inside the evidence window or not) or that an input interruption cut says nothing about the carrier. */
@@ -725,6 +753,7 @@ main(void) {
     test_p25p1_valid_nid_learns_modulation();
     test_p25p1_verdict_follows_the_nid_evidence_window();
     test_p25p1_nid_cut_by_an_input_interruption_decodes_nothing();
+    test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac();
     test_p25p1_decoded_nid_ends_the_two_slot_carrier();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;

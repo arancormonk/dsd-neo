@@ -94,7 +94,48 @@ test_dmr(void) {
     dsd_rxid_note_dmr_site_text(state, "TIII Small \xC2\xB7 Net 1 \xC2\xB7 Site 2");
     dsd_rxid_note_dmr_rest_lsn(state, 5U);
     expect_text("free lcn after the site and rest tokens", state, DSD_APP_SITE_IDENTITY_COMPACT, 0,
-                "CC 2" DOT "TIII Small" DOT "Net 1" DOT "Site 2" DOT "Rest LSN 5" DOT "Free LCN 4");
+                "CC 2" DOT "Net 1" DOT "Site 2" DOT "Rest LSN 5" DOT "Free LCN 4");
+    free(state);
+}
+
+/* The DMR site text is one token per part, so a narrow line keeps the network and site that fit: those two are
+   compact; the Tier III model, the Capacity Plus and Connect Plus tags and the Tier III system code are full form. */
+static void
+test_dmr_site_parts(void) {
+    dsd_state* state = new_state();
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_dmr_site_text(state, "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 0A3F");
+    dsd_app_site_identity view;
+    dsd_app_site_identity_view(state, &view);
+    static const char* const texts[] = {"CC 1", "TIII Small", "Net 12", "Site 3.1", "SYS 0A3F"};
+    static const uint8_t compact[] = {1U, 0U, 1U, 1U, 0U};
+    expect_u("tier iii tokens", view.token_count, 5U);
+    for (size_t i = 0U; i < 5U && i < view.token_count; i++) {
+        if (strcmp(view.tokens[i].text, texts[i]) != 0 || view.tokens[i].compact != compact[i]) {
+            DSD_FPRINTF(stderr, "FAIL tier iii token %zu: got \"%s\" (%u)\n", i, view.tokens[i].text,
+                        (unsigned)view.tokens[i].compact);
+            g_fail = 1;
+        }
+    }
+    expect_text("tier iii compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0, "CC 1" DOT "Net 12" DOT "Site 3.1");
+    expect_text("tier iii full", state, DSD_APP_SITE_IDENTITY_FULL, 0,
+                "CC 1" DOT "TIII Small" DOT "Net 12" DOT "Site 3.1" DOT "SYS 0A3F");
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site_text(state, "Cap+" DOT "Site 2");
+    dsd_rxid_note_dmr_rest_lsn(state, 3U);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    expect_text("cap+ compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0, "CC 1" DOT "Site 2" DOT "Rest LSN 3");
+    expect_text("cap+ full", state, DSD_APP_SITE_IDENTITY_FULL, 0,
+                "CC 1" DOT "Cap+" DOT "Site 2" DOT "Rest LSN 3" DOT "Capacity Plus");
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_site_text(state, "Con+" DOT "Net 3" DOT "Site 5");
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    expect_text("con+ compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0, "Net 3" DOT "Site 5");
+    expect_text("con+ full", state, DSD_APP_SITE_IDENTITY_FULL, 0, "Con+" DOT "Net 3" DOT "Site 5" DOT "Connect Plus");
     free(state);
 }
 
@@ -171,6 +212,7 @@ test_others(void) {
 int
 main(void) {
     test_dmr();
+    test_dmr_site_parts();
     test_p25();
     test_others();
     dsd_app_site_identity_view(NULL, NULL);

@@ -247,10 +247,11 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
         ctx->SlotType[(i * 2) + 11] = (unsigned char)(1 & dibit);
     }
     /* An input interruption cut the slot type (a Signal search left the burst): its live half is erasures the reader
-       stood in, so nothing of it decodes, neither the colour code nor the confidence and search evidence it would
-       feed. dmr_data_sync() reads on and drops the burst at its carrier check, which the interruption fails too; a cut
-       burst is no FEC error, so the slot type does not report one. */
-    if (ctx->state->input_interrupted) {
+       stood in. Or the carrier boundary moved while it was read (a replay read adopting a recorded retune), so it
+       straddles two carriers. Either way nothing of it decodes, neither the colour code (the received identity) nor
+       the confidence and search evidence it would feed. dmr_data_sync() reads on and drops the burst at its carrier
+       check, which this fails too; a cut burst is no FEC error, so the slot type does not report one. */
+    if (dmr_data_carrier_left(ctx)) {
         ctx->SlotTypeOk = 1;
         return 1;
     }

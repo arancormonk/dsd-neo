@@ -1842,6 +1842,11 @@ struct dsd_state {
        and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left.
        It drops them as well when an input interruption cut them (dsd_state_frame_read_lost()). */
     uint32_t carrier_seq;
+    /* symbol_clock when the receiver last left a carrier (dsd_state_note_carrier_change(): a carrier boundary or a
+       trunk-scan target switch), valid once carrier_change_seen is set. What the frame sync's history and the
+       decoders' rolling buffers hold from before it is the carrier left's (dsd_state_carrier_settling()). */
+    uint64_t carrier_change_symbol_clock;
+    uint8_t carrier_change_seen;
     /* The frame processFrame() is dispatching (issue #661): its synctype, which a decoder borrowing another protocol's
        vocoder (YSF, scrambled dPMR) leaves alone while it changes synctype, and carrier_seq when dispatch began.
        frame_dispatch_active is 0 outside a dispatch. MBE capture attributes a frame to this protocol, and refuses one
@@ -2263,6 +2268,24 @@ struct dsd_state {
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
+
+/* The receiver leaves a carrier: dibits read from here on are the next carrier's. */
+static inline void
+dsd_state_note_carrier_change(dsd_state* state) {
+    state->carrier_change_symbol_clock = state->symbol_clock;
+    state->carrier_change_seen = 1U;
+}
+
+/* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word
+   and what a decoder takes from the hunt's history or a rolling buffer before it) may hold a symbol of the carrier left:
+   the symbol the change happened inside counts as the carrier left's. */
+static inline int
+dsd_state_carrier_settling(const dsd_state* state, uint64_t lookback) {
+    if (state->carrier_change_seen == 0U) {
+        return 0;
+    }
+    return (state->symbol_clock - state->carrier_change_symbol_clock <= lookback) ? 1 : 0;
 }
 
 static inline int

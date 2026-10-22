@@ -2450,6 +2450,15 @@ class Setup : public QObject {
         metrics[QStringLiteral("nxdnSysCode")] = 0;
         metrics[QStringLiteral("nxdnSiteCode")] = 0;
         metrics[QStringLiteral("edacsSiteText")] = QString();
+        metrics[QStringLiteral("edacsSystem")] = -1;
+        metrics[QStringLiteral("edacsArea")] = -1;
+        metrics[QStringLiteral("edacsCcLcn")] = -1;
+        metrics[QStringLiteral("dmrBrand")] = QString();
+        metrics[QStringLiteral("dmrT3Syscode")] = -1;
+        metrics[QStringLiteral("siteAccessCode")] = -1;
+        metrics[QStringLiteral("tetraSiteMcc")] = -1;
+        metrics[QStringLiteral("tetraSiteMnc")] = -1;
+        metrics[QStringLiteral("tetraSiteLa")] = -1;
         metrics[QStringLiteral("ccFreqHz")] = 0;
         metrics[QStringLiteral("vcFreqHz")] = 0;
         metrics[QStringLiteral("siteLine")] = QString();

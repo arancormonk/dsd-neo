@@ -9,6 +9,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -23,6 +24,9 @@
 
 static size_t g_symbol_index;
 static const char* g_sync_pattern = DMR_BS_DATA_SYNC;
+/* The symbol a carrier boundary (an I/Q replay retune) runs inside, as the real reader runs it while that symbol's
+   samples are read; SIZE_MAX for none. */
+static size_t g_boundary_at = SIZE_MAX;
 
 static float
 symbol_level_for_dibit(char dibit) {
@@ -38,8 +42,13 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     char dibit = (g_symbol_index < pattern_len) ? g_sync_pattern[g_symbol_index] : '1';
     g_symbol_index++;
 
+    if (g_symbol_index - 1U == g_boundary_at) {
+        dsd_state_note_carrier_change(state);
+    }
+
     float symbol = symbol_level_for_dibit(dibit);
     dsd_symbol_history_push(state, symbol);
+    state->symbol_clock++;
     return symbol;
 }
 
@@ -551,6 +560,48 @@ run_nxdn_sync_confirmation_matrix(void) {
     return rc;
 }
 
+/* A carrier boundary while the hunt reads (an I/Q replay retune inside getSymbol()): a sync word that ends soon after
+   it heads a frame whose buffered part (DMR's 66 dibits before the sync, X2-TDMA's 144, TETRA's block 1) the carrier
+   left sent, so no sync is taken until everything a decoder reads back is the new carrier's. The next sync is. */
+static int
+run_sync_after_carrier_boundary_case(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char pattern[24 + 200 + 24 + 1];
+    const size_t sync_len = strlen(DMR_BS_DATA_SYNC);
+    DSD_MEMCPY(pattern, DMR_BS_DATA_SYNC, sync_len);
+    DSD_MEMSET(pattern + sync_len, '1', 200U);
+    DSD_MEMCPY(pattern + sync_len + 200U, DMR_BS_DATA_SYNC, sync_len);
+    pattern[(2U * sync_len) + 200U] = '\0';
+    int rc = 0;
+    for (int boundary = 0; boundary < 2; boundary++) {
+        init_common_wav_opts_state(&opts, &state);
+        if (!init_state_buffers(&state)) {
+            DSD_FPRINTF(stderr, "failed to allocate frame-sync state buffers\n");
+            return 1;
+        }
+        opts.frame_dstar = opts.frame_x2tdma = opts.frame_p25p1 = opts.frame_p25p2 = 0;
+        opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_dpmr = opts.frame_provoice = 0;
+        opts.frame_ysf = opts.frame_m17 = 0;
+        g_symbol_index = 0U;
+        g_sync_pattern = pattern;
+        g_boundary_at = boundary ? 10U : SIZE_MAX;
+        dsd_frame_sync_reset_mod_state();
+
+        const int sync = getFrameSync(&opts, &state);
+        const size_t want_at = boundary ? strlen(pattern) : 24U;
+        if (sync != DSD_SYNC_DMR_BS_DATA_POS || g_symbol_index != want_at) {
+            DSD_FPRINTF(stderr, "%s: sync %d after %zu symbols, expected %d after %zu\n",
+                        boundary ? "boundary inside the first sync" : "no boundary", sync, g_symbol_index,
+                        DSD_SYNC_DMR_BS_DATA_POS, want_at);
+            rc = 1;
+        }
+        free_state_buffers(&state);
+    }
+    g_boundary_at = SIZE_MAX;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -559,6 +610,7 @@ main(void) {
     rc |= run_wav_protocol_sync_matrix();
     rc |= run_wav_protocol_extended_sync_matrix();
     rc |= run_nxdn_sync_confirmation_matrix();
+    rc |= run_sync_after_carrier_boundary_case();
     return rc;
 }
 
