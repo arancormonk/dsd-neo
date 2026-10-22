@@ -5329,6 +5329,110 @@ stage_dmr_data_burst(dsd_state* state, unsigned int cc, unsigned int burst) {
 }
 
 /*
+ * Manual moves from a call the DMR machine followed on a Capacity Plus status: Return to CC hands the machine back to
+ * the control channel's acquisition, and a trunked channel cycle gives the call up and listens on the new frequency.
+ * Left TUNED, the call's deadlines would later return the receiver to the old control channel.
+ */
+static dmr_sm_ctx_t g_scan_dmr_ctx;
+
+static void*
+scan_dmr_ctx(void) {
+    return &g_scan_dmr_ctx;
+}
+
+static int
+test_manual_moves_hand_a_dmr_follow_over(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int cycle = 0; cycle <= 1; cycle++) {
+        init_test_context(&opts, &state);
+        opts.trunk_enable = 1;
+        opts.trunk_scan_enabled = 0;
+        opts.use_rigctl = 1; // a tuner the trunking moves (the tune itself is stubbed)
+        opts.frame_dmr = 1;
+        opts.frame_p25p1 = opts.frame_p25p2 = 0;
+        opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_provoice = 0;
+        state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR;
+        state.trunk_cc_freq = 851000000L;
+        state.lcn_freq_count = 1;
+        state.trunk_lcn_freq[0] = 853000000L;
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        dmr_sm_init_ctx(dmr, &opts, &state);
+        dmr_sm_note_status_follow(&opts, &state, 852000000L);
+        opts.trunk_is_tuned = 1;
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        const int cmd = cycle ? DSD_APP_CMD_CHANNEL_CYCLE : DSD_APP_CMD_RETURN_CC;
+        rc |= expect_int("manual move queued", dsd_app_command_action(cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("manual move drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true("manual move tunes", g_io_control_tune_freq == (cycle ? 853000000L : 851000000L));
+        rc |= expect_true(cycle ? "a channel cycle gives the followed call up and listens on the new frequency"
+                                : "Return to CC gives the followed call up and listens on the control channel",
+                          dmr->state == DMR_SM_ON_CC && !dmr->cc_acquiring && dmr->cc_tune_superseded);
+        rc |= expect_true("the followed call's deadlines are gone", dmr->vc_freq_hz == 0 && dmr->t_tune_m <= 0.0);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        // A rigctl connection replaced: the new peer's radio may be tuned elsewhere, so nothing is attributed to it.
+        dmr->cc_rx_freq_hz = dmr->rx_seen_hz = 851000000L;
+        dmr->cc_rx_generation = dmr->rx_seen_generation = dsd_trunk_tuning_generation();
+        arm_rigctl_connect_stub(1, 0);
+        rc |= expect_int("rigctl reconnect queued", post_empty(DSD_APP_CMD_RIGCTL_CONNECT),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("rigctl reconnect drained", dsd_app_drain_cmds(&opts, &state), 1);
+        arm_rigctl_connect_stub(0, 0);
+        rc |= expect_true("a rigctl reconnect forgets where the receiver was",
+                          dmr->cc_rx_freq_hz == 0 && dmr->rx_seen_hz == 0);
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        dmr_sm_init_ctx(dmr, NULL, NULL);
+        freeState(&state);
+    }
+
+    // A hangtime edit after the machine was initialized reaches a call it follows (Cap+ status follows included).
+    init_test_context(&opts, &state);
+    dmr_sm_ctx_t* live = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(live, &opts, &state);
+    rc |= expect_int("hangtime edit queued", dsd_app_command_set_double(DSD_APP_CMD_HANGTIME_SET, 10.0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("hangtime edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("the DMR machine's hangtime follows the edit", fabs(live->hangtime_s - 10.0) < 1e-9);
+    dmr_sm_init_ctx(live, NULL, NULL);
+    freeState(&state);
+
+    // Under --trunk-scan, Return to CC hands the parked target's own context to its control channel's acquisition.
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 1;
+    opts.trunk_scan_enabled = 1;
+    opts.use_rigctl = 1;
+    opts.frame_dmr = 1;
+    opts.frame_p25p1 = opts.frame_p25p2 = 0;
+    state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR;
+    state.trunk_cc_freq = 851000000L;
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.dmr_ctx = scan_dmr_ctx;
+    dsd_trunk_scan_hooks_set(&hooks);
+    dmr_sm_init_ctx(&g_scan_dmr_ctx, &opts, &state);
+    dmr_sm_note_status_follow(&opts, &state, 852000000L);
+    opts.trunk_is_tuned = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |=
+        expect_int("scan return queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scan return drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("a scan target's followed call is handed to its control channel's acquisition",
+                      g_scan_dmr_ctx.state == DMR_SM_ON_CC && g_scan_dmr_ctx.cc_acquiring
+                          && g_scan_dmr_ctx.cc_freq_hz == 851000000L && g_scan_dmr_ctx.vc_freq_hz == 0);
+    // A park the coordinator still tracks keeps its request (and so its deadline) through Return to CC.
+    dmr_sm_begin_cc_acquisition(&g_scan_dmr_ctx, &opts, &state, 851000000L, 0U);
+    g_scan_dmr_ctx.cc_tune_request_id = 77U;
+    rc |= expect_int("scan return with a park pending queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scan return with a park pending drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("the pending park keeps its request", g_scan_dmr_ctx.cc_tune_request_id == 77U);
+    dsd_trunk_scan_hooks_set(NULL);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #575: a return to the control channel stays on the system, so it keeps the DMR decode gate the system's bursts
  * locked, as automatic trunk following does. The first CSBK after the return is dispatched; forgetting the gate there
  * left it pending, and dmr_data_dispatch_burst() dropped it, so a channel grant could be missed until it repeated. The
@@ -19330,6 +19434,7 @@ main(void) {
     rc |= test_trunked_tune_away_flushes_the_followed_tail_first();
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
+    rc |= test_manual_moves_hand_a_dmr_follow_over();
     rc |= test_return_cc_and_mode_change_hand_tetra_over();
     rc |= test_manual_tunes_hand_a_tetra_return_over();
     rc |= test_scan_row_keys_commands();

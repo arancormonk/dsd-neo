@@ -226,6 +226,15 @@ expire_acquisition(dmr_sm_ctx_t* ctx) {
     dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
 }
 
+/* A voice sync on a slot whose own voice passed the colour-code gate, as an accepted voice burst leaves it: only that
+   holds a followed call (a voice sync alone never does). */
+static void
+test_accepted_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
+    state->dmr_confidence_voice_open[slot] = 1;
+    state->dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, slot);
+}
+
 static int
 held_call_return(float hangtime) {
     if (setup(hangtime)) {
@@ -243,7 +252,7 @@ held_call_return(float hangtime) {
     dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 452000000L, 2, 0, 1001, 2001);
     aloha(1);
     rc |= expect(g_state.trunk_cc_freq == 451000000L, "control-like messages on a followed VC cannot replace CC");
-    dmr_sm_emit_voice_sync(&g_opts, &g_state, 0);
+    test_accepted_voice_sync(&g_opts, &g_state, 0);
     ctx->slots[0].last_active_m -= 1.0;
     ctx->t_voice_m -= 1.0;
     g_state.is_con_plus = 1;
@@ -925,7 +934,7 @@ probe_grant_and_missing_anchor(void) {
                  "release recovers a cleared shared anchor from the DMR context");
     aloha(1);
     dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 453000000L, 4, 0, 1001, 2001);
-    dmr_sm_emit_voice_sync(&g_opts, &g_state, 0);
+    test_accepted_voice_sync(&g_opts, &g_state, 0);
     dsd_call_snapshot call;
     rc |= expect(dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE,
                  "missing-anchor release starts with an active canonical call");
@@ -955,7 +964,7 @@ cap_plus_idle_preserves_hangtime(void) {
     cap_plus_idle(1U);
     dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
     dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 452000000L, 2, 0, 1001, 2001);
-    dmr_sm_emit_voice_sync(&g_opts, &g_state, 0);
+    test_accepted_voice_sync(&g_opts, &g_state, 0);
     ctx->slots[0].last_active_m -= 1.0;
     ctx->t_voice_m -= 1.0;
     cap_plus_idle(1U);
@@ -1257,30 +1266,6 @@ dmr_cold_start_holds_validated_content(void) {
     g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
     dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
     rc |= expect(g_cc_tunes == base + 1, "the window runs out once the content is older than the grace");
-    cleanup();
-    return rc;
-}
-
-static int
-dmr_owner_named_without_confirmation_stops_in_place(void) {
-    if (setup(0.0f)) {
-        cleanup();
-        return 1;
-    }
-    single_system_cold_start(0);
-    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
-    dmr_cold_start_first_probe(dmr);
-    const int tunes = g_cc_tunes;
-    uint8_t bits[196] = {0};
-    uint8_t bytes[24] = {0};
-    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0); // CRC-good, but no control-channel proof (an XPT status, say)
-    int rc = expect(g_state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && !dmr->cc_confirmed,
-                    "a valid CSBK names DMR without confirming a control channel");
-    expire_acquisition(dmr);
-    rc |= expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0 && g_cc_tunes == tunes,
-                 "a named owner ends the startup hunt where it is");
-    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
-    rc |= expect(g_cc_tunes == tunes, "an unconfirmed DMR site is not hunted again");
     cleanup();
     return rc;
 }
@@ -1594,6 +1579,722 @@ ft_cold_start_hands_dmr_over(void) {
     return rc;
 }
 
+/* ---- Recovery that does not stall where no control channel is (Cap+ "won't move on without a rest channel") ---- */
+
+/* A CRC-valid CSBK with no control-channel proof (opcode 0x3D, a data preamble) names DMR the owner. */
+static void
+dmr_preamble(void) {
+    uint8_t bits[196] = {0};
+    uint8_t bytes[24] = {0};
+    bytes[0] = 0x3d;
+    for (int i = 0; i < 80; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
+    }
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
+}
+
+/* A CRC-valid Hytera XPT CSBK (FID 0x68) of @p opcode: 0x0A site status, 0x0B adjacent sites. */
+static void
+xpt_csbk(uint8_t opcode) {
+    uint8_t bits[196] = {0};
+    uint8_t bytes[24] = {0};
+    bytes[0] = opcode;
+    bytes[1] = 0x68;
+    for (int i = 0; i < 80; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
+    }
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
+}
+
+/* A Capacity Plus status whose bank one shows LSN 1 (@p tg1) and LSN 2 (TG 43) busy, rest on @p rest. */
+static void
+cap_plus_calls(unsigned int rest, uint8_t tg1) {
+    uint8_t bits[196] = {0};
+    uint8_t bytes[24] = {0};
+    bytes[0] = 0x3e;
+    bytes[1] = 0x10;
+    bytes[2] = (uint8_t)(0xc0U | rest);
+    bytes[3] = 0xc0; // LSNs 1 and 2
+    bytes[4] = tg1;
+    bytes[5] = 43;
+    for (int i = 0; i < 80; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
+    }
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
+}
+
+static void
+cap_plus_two_calls(unsigned int rest) {
+    cap_plus_calls(rest, 42U);
+}
+
+/* The LSN map of the harness's channels.csv, as an RR import doubles each repeater's rows. */
+static void
+cap_plus_map(void) {
+    g_state.trunk_chan_map[1] = 451000000L;
+    g_state.trunk_chan_map[2] = 452000000L;
+    g_state.trunk_chan_map[3] = 452000000L;
+    g_state.trunk_chan_map[4] = 453000000L;
+}
+
+static int
+close_to(double a, double b) {
+    return fabs(a - b) < 1e-6;
+}
+
+/* The report: validated DMR content named the protocol without confirming a control channel (a preamble on a rest
+   channel Cap+ moved away from), then the frequency went quiet. The hunt holds while that content runs, then goes on
+   down the map; it never stays there for good. */
+static int
+dmr_owner_named_without_confirmation_keeps_hunting(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_cold_start_first_probe(dmr);
+    const int tunes = g_cc_tunes;
+    dmr_preamble();
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s(); // the burst passed the colour-code gate
+    int rc = expect(g_state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && !dmr->cc_confirmed,
+                    "a valid CSBK names DMR without confirming a control channel");
+    expire_acquisition(dmr);
+    rc |= expect(g_cc_tunes == tunes, "validated content holds the frequency");
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes + 1 && g_frequency == 452000000L,
+                 "once quiet, the hunt goes on to the next row instead of revisiting the unconfirmed frequency");
+    rc |= expect(dsd_frame_sync_hook_decoder_ticks_due(&g_opts, &g_state), "the hunt is a decoder timer");
+    cleanup();
+    return rc;
+}
+
+/* A Hytera XPT site has no control channel: once identified it parks in place, by CSBK or by SLCO alone (an SLCO names
+   DMR the owner too), and its identity is the system's. */
+static int
+dmr_xpt_site_stays_in_place(void) {
+    int rc = 0;
+    for (int opcode = 0x0A; opcode <= 0x0B; ++opcode) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        single_system_cold_start(0);
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        dmr_cold_start_first_probe(dmr);
+        g_opts.trunk_is_tuned = 0;
+        xpt_csbk((uint8_t)opcode);
+        g_opts.trunk_is_tuned = 0; // the site status marks the carrier tuned, which would mask the exemption
+        const int tunes = g_cc_tunes;
+        rc |= expect(g_state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && dmr->site_without_cc,
+                     "a valid XPT CSBK identifies the site");
+        expire_acquisition(dmr);
+        rc |= expect(dmr->state == DMR_SM_IDLE && dmr->cold_start_hunt == 0 && g_cc_tunes == tunes,
+                     "an XPT site ends the startup hunt where it is");
+        dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        rc |= expect(g_cc_tunes == tunes, "an XPT site is not hunted again");
+        dmr_sm_begin_cc_acquisition(dmr, &g_opts, &g_state, 451000000L, 0U);
+        rc |= expect(dmr->site_without_cc, "a call's return on the same system keeps the identity");
+        dmr_sm_note_system_replaced(dmr);
+        rc |= expect(!dmr->site_without_cc, "another system forgets it");
+        cleanup();
+    }
+    return rc;
+}
+
+/* With DMR named and a probe in flight, losing eligibility (the map cleared) still settles the probe. */
+static int
+dmr_named_owner_settles_a_probe_in_flight(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    g_hw_model = 1;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr->cold_start_armed_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    const uint64_t probe = g_request;
+    dmr_preamble();
+    g_opts.chan_in_file[0] = '\0';
+    const int tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(dmr->cc_tune_request_id == probe && g_cc_tunes == tunes, "the probe in flight is waited for");
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes + 1, "its failure is replaced by a settle tune");
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dsd_trunk_tuning_pending_request() == 0U && dmr->cold_start_hunt == 0,
+                 "the hunt parks once settled, with nothing gating frames");
+    cleanup();
+    return rc;
+}
+
+/* A call followed from a machine that never confirmed control, then given up at a carrier boundary: ON_CC has a window
+   that runs out. After a long call on a confirmed one, the window is a fresh one from the move. */
+static int
+dmr_abandoned_carrier_gets_a_window(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR;
+    g_state.trunk_cc_freq = 451000000L;
+    dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 452000000L, 2, 0, 1001, 2001);
+    int rc = expect(dmr->state == DMR_SM_TUNED && dmr->t_cc_sync_m <= 0.0, "a grant followed without a CC stamp");
+    dmr_sm_abandon_carrier(dmr, &g_opts, &g_state, "carrier-boundary");
+    const int tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_ON_CC && dmr->t_cc_sync_m > 0.0, "an unstamped ON_CC gets a window");
+    dmr->t_cc_sync_m -= dmr->cc_grace_s + 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes + 1, "and the window runs out into the hunt");
+    cleanup();
+
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    aloha(1);
+    dmr = dmr_sm_get_ctx();
+    dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 452000000L, 2, 0, 1001, 2001);
+    dmr->t_cc_sync_m -= 30.0; // a long call
+    g_opts.trunk_scan_enabled = 0;
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state); // an operator move gives the call up
+    const int returns = g_returns;
+    const int cc_tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_ON_CC && g_returns == returns && g_cc_tunes == cc_tunes,
+                 "the move gives the new frequency a fresh window, never an expired one");
+    cleanup();
+    return rc;
+}
+
+/* Every DMR window holds on validated content and only on it: a call on the parked control/rest frequency is not left
+   after six seconds without control, nor while content keeps arriving just after the window ran out. */
+static int
+dmr_windows_hold_on_validated_content(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    aloha(1);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    const int tunes = g_cc_tunes;
+    const double now = dsd_decode_now_mono_s();
+    dmr->t_cc_sync_m = now - dmr->cc_grace_s - 1.0;
+    g_state.dmr_confidence_lock_m = now - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(dmr->state == DMR_SM_ON_CC && g_cc_tunes == tunes, "validated content holds a confirmed CC");
+    g_state.dmr_confidence_lock_m = now - dmr->cc_grace_s - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_HUNTING && dmr->cc_window_lost, "the window runs out once content stops");
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s(); // content arrives before the hunt step
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_ON_CC && g_cc_tunes == tunes, "content before the hunt step reopens the window");
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s() - 3.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_ON_CC && g_cc_tunes == tunes, "for the full grace, not a probe's two seconds");
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s() - dmr->cc_grace_s - 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_cc_tunes == tunes + 1, "then the hunt probes");
+    cleanup();
+    return rc;
+}
+
+/* An operator move from a confirmed rest channel A to B: nothing heard on B is credited to A, a status there naming A
+   returns to A, and B gets a full window that ends in the ordinary hunt. */
+static int
+dmr_operator_move_drops_attribution(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(1U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    int rc = expect(dmr->cc_confirmed && dmr->cc_freq_hz == 451000000L, "rest channel A confirmed");
+    g_opts.trunk_scan_enabled = 0;
+    g_frequency = 453000000L; // the operator's tune
+    g_opts.rtlsdr_center_freq = 453000000U;
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    const double window = dmr->t_cc_sync_m;
+    dmr_preamble(); // a CSBK heard on B
+    rc |= expect(close_to(dmr->t_cc_sync_m, window), "a CSBK on B never refreshes A");
+    const int returns = g_returns;
+    cap_plus_idle(1U); // a status on B naming rest A
+    rc |= expect(!(dmr->cc_rx_freq_hz == 451000000L && g_frequency == 453000000L), "A is never confirmed from B");
+    rc |= expect(g_returns == returns + 1 && g_frequency == 451000000L, "the status takes the receiver back to A");
+    cleanup();
+    return rc;
+}
+
+/* A probe on B hears a status naming rest A, which the shared alias already names: the receiver goes to A at once. */
+static int
+dmr_status_naming_the_alias_returns_at_once(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(1U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    expire_acquisition(dmr);
+    int rc = expect(dmr->cc_acquiring && g_frequency == 452000000L && g_state.trunk_cc_freq == 451000000L,
+                    "probing B while the alias still names A");
+    const int returns = g_returns;
+    cap_plus_idle(1U);
+    rc |= expect(g_returns == returns + 1 && g_frequency == 451000000L, "the status naming A returns there at once");
+    cleanup();
+    return rc;
+}
+
+/* The machine owns a call a Capacity Plus status followed: repeated statuses neither retune it nor push its deadlines
+   back, a voice sync alone (rejected bursts, or evidence from the carrier it was granted on) never holds it, and
+   accepted voice holds it until a hangtime after the newest of either slot's. */
+static int
+dmr_status_follow_is_owned(void) {
+    if (setup(2.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(3U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_state.last_vc_sync_time = 0;
+    g_state.dmr_confidence_voice_open[0] = 1;
+    g_state.dmr_confidence_voice_m[0] = dsd_decode_now_mono_s(); // the rest channel's own voice, before the follow
+    cap_plus_two_calls(3U);
+    int rc = expect(dmr->state == DMR_SM_TUNED && dmr->vc_freq_hz == 451000000L && g_opts.trunk_is_tuned,
+                    "the status follow is the machine's call");
+    const double tuned_m = dmr->t_tune_m;
+    for (int i = 0; i < 3; ++i) {
+        g_state.last_vc_sync_time = 0;
+        cap_plus_two_calls(3U);
+    }
+    rc |= expect(dmr->vc_freq_hz == 451000000L && g_frequency == 451000000L && close_to(dmr->t_tune_m, tuned_m),
+                 "repeated statuses keep the followed carrier and its deadline");
+    dmr_sm_emit_voice_sync(&g_opts, &g_state, 0); // evidence from before the follow tune
+    rc |= expect(dmr->t_voice_m <= 0.0, "voice evidence from before the follow holds nothing");
+    const int returns = g_returns;
+    dmr->t_tune_m -= dmr->grant_timeout_s + 0.5;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_returns == returns + 1 && g_frequency == 452000000L, "without accepted voice the grant times out");
+    cleanup();
+
+    if (setup(2.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(3U);
+    dmr = dmr_sm_get_ctx();
+    g_state.last_vc_sync_time = 0;
+    cap_plus_two_calls(3U);
+    dmr->t_tune_m -= 1.0; // the follow tune, a second ago
+    const double now = dsd_decode_now_mono_s();
+    g_state.dmr_confidence_voice_open[0] = g_state.dmr_confidence_voice_open[1] = 1;
+    g_state.dmr_confidence_voice_m[1] = now - 0.6;
+    g_state.dmr_confidence_voice_m[0] = now - 0.1;
+    dmr_sm_emit_voice_sync(&g_opts, &g_state, 0);
+    dmr_sm_emit_voice_sync(&g_opts, &g_state, 1);
+    rc |= expect(close_to(dmr->t_voice_m, now - 0.1), "the call timer is the newest accepted voice");
+    dmr_sm_emit_voice_sync(&g_opts, &g_state, 1);
+    rc |= expect(close_to(dmr->t_voice_m, now - 0.1), "an older slot's evidence never moves it back");
+    // Accepted voice stops; sync-only bursts and accepted data carry on.
+    g_state.dmr_confidence_voice_m[0] -= 1.5;
+    g_state.dmr_confidence_voice_m[1] -= 1.5;
+    dmr->t_voice_m -= 2.5;
+    dmr->slots[0].last_active_m -= 2.5;
+    dmr->slots[1].last_active_m -= 2.5;
+    g_state.dmr_confidence_lock_m = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(&g_opts, &g_state, 0);
+    dmr_sm_emit_data_sync(&g_opts, &g_state, 1);
+    const int returns2 = g_returns;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_returns == returns2 + 1 && g_frequency == 452000000L,
+                 "the call releases a hangtime after its last accepted voice, to the announced rest");
+    cleanup();
+    return rc;
+}
+
+/* An identified XPT site whose return fails, or is never answered, retunes only where it parks, until frames flow. */
+static int
+dmr_xpt_retries_its_own_frequency(void) {
+    int rc = 0;
+    for (int timeout = 0; timeout <= 1; ++timeout) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        single_system_cold_start(0);
+        g_hw_model = 1;
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        dmr_preamble();
+        xpt_csbk(0x0B);
+        g_opts.trunk_is_tuned = 0;
+        g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        uint64_t request = 0U;
+        g_state.trunk_cc_freq = 452000000L;
+        (void)dsd_trunk_tuning_hook_tune_to_cc(&g_opts, &g_state, 452000000L, 0, &request);
+        dmr_sm_begin_cc_acquisition(dmr, &g_opts, &g_state, 452000000L, request);
+        g_result = DSD_TRUNK_TUNE_RESULT_OK;
+        if (timeout) {
+            dmr->cc_tune_deadline_m = dsd_decode_now_mono_s() - 0.1;
+        } else {
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        }
+        const int tunes = g_cc_tunes;
+        for (int i = 0; i < 4; ++i) {
+            dmr->cc_retry_after_m = 0.0;
+            dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        }
+        rc |= expect(g_cc_tunes == tunes + 1 && g_frequency == 452000000L,
+                     timeout ? "an unanswered XPT return is retried where it parks"
+                             : "a failed XPT return is retried where it parks");
+        rc |= expect(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()), "and frames flow again");
+        dmr->t_cc_sync_m = dmr->cc_acquire_start_m = dsd_decode_now_mono_s() - 30.0;
+        for (int i = 0; i < 4; ++i) {
+            dmr->cc_retry_after_m = 0.0;
+            dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        }
+        rc |= expect(g_cc_tunes == tunes + 1, "a quiet XPT site never walks the map");
+        cleanup();
+    }
+    return rc;
+}
+
+/* An operator move while a probe is in flight: its failure is settled where the receiver now is, and the new
+   frequency's window starts when frames flow, never before the move. */
+static int
+dmr_operator_move_settles_a_superseded_probe(void) {
+    int rc = 0;
+    for (int done_before = 0; done_before <= 1; ++done_before) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        aloha(1);
+        g_opts.trunk_scan_enabled = 0;
+        g_hw_model = 1;
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        dmr->t_cc_sync_m -= dmr->cc_grace_s + 1.0;
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        const uint64_t probe = g_request;
+        g_result = DSD_TRUNK_TUNE_RESULT_OK;
+        if (done_before) {
+            dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        g_frequency = 453000000L; // the operator's tune
+        g_opts.rtlsdr_center_freq = 453000000U;
+        dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+        const double moved_m = dmr->cc_moved_m;
+        const int tunes = g_cc_tunes;
+        if (!done_before) {
+            dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_FAILED);
+            dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+            rc |= expect(g_cc_tunes == tunes + 1 && g_frequency == 453000000L,
+                         "the superseded probe's failure is settled where the receiver is");
+            dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        rc |= expect(dmr->state == DMR_SM_ON_CC && !dmr->cc_tune_superseded && dmr->t_cc_sync_m >= moved_m
+                         && dsd_trunk_tuning_pending_request() == 0U,
+                     done_before ? "a completion from before the move never backdates the window"
+                                 : "the window starts once the settle released frames");
+        cleanup();
+    }
+    return rc;
+}
+
+/* A call followed after an operator move but before the machine's next tick (the synced-frame loop dispatches a frame
+   first) stands: the move's settle never overwrites it, and its own deadline returns it. A channel-map import, which
+   may load another system, forgets that the old one was an XPT site. */
+static int
+dmr_follow_after_a_move_stands(void) {
+    int rc = 0;
+    for (int status = 0; status <= 1; ++status) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        cap_plus_map();
+        aloha(1);
+        dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+        g_opts.trunk_scan_enabled = 0;
+        g_frequency = 453000000L;
+        dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+        if (status) {
+            g_state.last_vc_sync_time = 0;
+            cap_plus_two_calls(3U);
+        } else {
+            dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 452000000L, 2, 0, 1001, 2001);
+        }
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        rc |= expect(dmr->state == DMR_SM_TUNED && g_opts.trunk_is_tuned && !dmr->cc_tune_superseded,
+                     status ? "a status follow after a move stands" : "a grant followed after a move stands");
+        const int returns = g_returns;
+        dmr->t_tune_m -= dmr->grant_timeout_s + 0.5;
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+        rc |= expect(g_returns == returns + 1 && !g_opts.trunk_is_tuned, "and its own deadline returns it");
+        cleanup();
+    }
+
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr->site_without_cc = 1;
+    dsd_app_frontend_runtime_start(&g_opts, &g_state);
+    rc |= expect(dsd_app_command_set_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, g_channels) > 0, "map import queued");
+    rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1, "map import drained");
+    rc |= expect(!dmr->site_without_cc, "a channel-map import forgets the XPT identity");
+    dsd_app_frontend_runtime_stop();
+    cleanup();
+    return rc;
+}
+
+/* A later status naming another group on the carrier already followed: no retune, but the slot is named anew. An
+   operator move whose settle had to wait for a tune nothing here tracks: the window starts when frames flowed. */
+static int
+dmr_followed_carrier_and_untracked_settle(void) {
+    if (setup(2.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(3U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_state.last_vc_sync_time = 0;
+    cap_plus_two_calls(3U);
+    int rc = expect(dmr->state == DMR_SM_TUNED && dmr->capplus_seed[0].armed && dmr->capplus_seed[0].tg == 42U,
+                    "the follow seeds the slot's group");
+    g_state.last_vc_sync_time = 0;
+    cap_plus_calls(3U, 44U);
+    rc |= expect(dmr->vc_freq_hz == 451000000L && dmr->capplus_seed[0].armed && dmr->capplus_seed[0].tg == 44U,
+                 "another group on the followed carrier is seeded without a retune");
+    cleanup();
+
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    aloha(1);
+    g_opts.trunk_scan_enabled = 0;
+    dmr = dmr_sm_get_ctx();
+    const uint64_t untracked = dsd_trunk_tuning_request_begin(); // a follow tune still in flight
+    dsd_trunk_tuning_request_mark_ready(untracked);
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dmr->cc_moved_m -= 7.0; // the move was seven seconds ago
+    dmr->t_cc_sync_m -= 7.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->cc_tune_superseded && dmr->cc_settle_waited, "the move waits for the tune in flight");
+    dsd_trunk_tuning_request_publish(untracked, DSD_TRUNK_TUNE_RESULT_OK);
+    const int tunes = g_cc_tunes;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->state == DMR_SM_ON_CC && !dmr->cc_tune_superseded && g_cc_tunes == tunes
+                     && dsd_decode_now_mono_s() - dmr->t_cc_sync_m < 1.0,
+                 "the window starts when frames flowed, not at the move");
+    cleanup();
+    return rc;
+}
+
+/* Ordinary recovery from a confirmed control channel A probes B, where valid XPT content identifies the site: it parks
+   on B, where it identified itself, and never returns to A. */
+static int
+dmr_xpt_identified_on_a_probe_parks_there(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    single_system_cold_start(0);
+    aloha(1);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    int rc = expect(dmr->cc_confirmed && dmr->cc_freq_hz == 450000000L, "control channel A confirmed");
+    dmr->t_cc_sync_m -= dmr->cc_grace_s + 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(dmr->cc_acquiring && g_frequency == 451000000L, "the hunt probes B");
+    xpt_csbk(0x0B);
+    g_opts.trunk_is_tuned = 0;
+    rc |= expect(dmr->site_without_cc && dmr->cc_freq_hz == 451000000L && g_state.trunk_cc_freq == 451000000L,
+                 "the XPT site parks where it identified itself, the shared return included");
+    const int tunes = g_cc_tunes;
+    for (int i = 0; i < 4; ++i) {
+        dmr->cc_acquire_start_m = dmr->t_cc_sync_m = dsd_decode_now_mono_s() - 30.0;
+        dmr->cc_retry_after_m = 0.0;
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    }
+    rc |= expect(g_cc_tunes == tunes && g_frequency == 451000000L, "and never returns to A");
+    // A trunk-scan revisit restarts acquisition on the target's shared return.
+    dmr_sm_begin_cc_acquisition(dmr, &g_opts, &g_state, g_state.trunk_cc_freq, 0U);
+    rc |= expect(dmr->site_without_cc && dmr->cc_freq_hz == 451000000L, "a revisit parks where the site was found");
+    cleanup();
+    return rc;
+}
+
+/* A clean Capacity Plus group voice LC header (FID 0x10, FLCO 0x04) on slot 0 for TG 42 announcing @p rest. */
+static void
+cap_plus_voice_lc(unsigned int rest) {
+    uint8_t bits[96] = {0};
+    const uint32_t fields[][3] = {{2U, 6U, 0x04U}, {8U, 8U, 0x10U}, {40U, 8U, 42U}, {51U, 5U, 0U}, {56U, 16U, 2001U}};
+    for (size_t f = 0; f < sizeof fields / sizeof fields[0]; ++f) {
+        const uint32_t value = f == 3 ? rest : fields[f][2];
+        for (uint32_t i = 0U; i < fields[f][1]; ++i) {
+            bits[fields[f][0] + i] = (uint8_t)((value >> (fields[f][1] - 1U - i)) & 1U);
+        }
+    }
+    uint32_t errors = 0U;
+    g_state.currentslot = 0;
+    g_state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(&g_opts, &g_state, bits, 1U, &errors, 1U);
+}
+
+/* A call a Capacity Plus status followed, whose voice LC announces a new rest channel no later status repeats: its
+   release goes there, as the no-carrier return would. */
+static int
+dmr_status_follow_releases_to_the_announced_rest(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(3U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_state.last_vc_sync_time = 0;
+    cap_plus_two_calls(3U);
+    cap_plus_voice_lc(4U);
+    int rc = expect(dmr->state == DMR_SM_TUNED && g_state.dmr_rest_channel == 4, "the voice LC announces rest LSN 4");
+    const int returns = g_returns;
+    dmr->t_tune_m -= dmr->grant_timeout_s + 0.5;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_returns == returns + 1 && g_frequency == 453000000L, "the release goes to the announced rest");
+    cleanup();
+    return rc;
+}
+
+/* A settle after an operator move whose superseded probe failed, under a rigctl peer that no longer answers frequency
+   reads: the read is not repeated on every tick. */
+static int
+dmr_settle_read_backs_off(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    aloha(1);
+    g_opts.trunk_scan_enabled = 0;
+    g_hw_model = 1;
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dmr->t_cc_sync_m -= dmr->cc_grace_s + 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    const uint64_t probe = g_request;
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_query_failed = 1;
+    const int queries = g_queries;
+    for (int i = 0; i < 5; ++i) {
+        dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    }
+    int rc = expect(g_queries - queries <= 1 && dmr->cc_tune_superseded, "a failed read is not repeated per tick");
+    cleanup();
+    return rc;
+}
+
+/* A data call a Capacity Plus status followed with data calls followed and a zero hangtime: accepted data holds it
+   while it flows. */
+static int
+dmr_status_followed_data_holds(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    g_opts.trunk_tune_data_calls = 1;
+    cap_plus_map();
+    cap_plus_idle(3U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_state.last_vc_sync_time = 0;
+    cap_plus_two_calls(3U);
+    const int returns = g_returns;
+    dmr_sm_emit_data_sync(&g_opts, &g_state, 0);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    int rc = expect(dmr->state == DMR_SM_TUNED && g_returns == returns, "accepted data holds a zero-hangtime follow");
+    dmr->slots[0].last_active_m -= 1.0;
+    dmr->t_voice_m -= 1.0;
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    rc |= expect(g_returns == returns + 1, "and the call returns once the data stops");
+    cleanup();
+    return rc;
+}
+
+/* After an operator move under rigctl, repeated statuses naming a rest elsewhere whose return is refused read the
+   radio once, not per burst. */
+static int
+dmr_rigctl_read_once_per_generation(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(1U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    g_opts.trunk_scan_enabled = 0;
+    g_frequency = 453000000L;
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    g_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    const int queries = g_queries;
+    for (int i = 0; i < 5; ++i) {
+        cap_plus_idle(1U);
+    }
+    int rc = expect(g_queries - queries <= 1, "the radio is read once per tuning generation");
+    cleanup();
+
+    // A peer that stops answering frequency reads is not asked again on every burst.
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_map();
+    cap_plus_idle(1U);
+    dmr = dmr_sm_get_ctx();
+    g_opts.trunk_scan_enabled = 0;
+    dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
+    dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
+    g_query_failed = 1;
+    const int failed_queries = g_queries;
+    for (int i = 0; i < 5; ++i) {
+        xpt_csbk(0x0B);
+        g_opts.trunk_is_tuned = 0;
+    }
+    rc |= expect(g_queries - failed_queries <= 1, "a failed read is not repeated per burst");
+    cleanup();
+    return rc;
+}
+
 int
 main(void) {
     (void)dsd_test_unsetenv("DSD_NEO_DMR_HANGTIME");
@@ -1621,7 +2322,23 @@ main(void) {
     rc |= dmr_cold_start_hunts_the_map();
     rc |= dmr_live_cc_at_start_never_hunts();
     rc |= dmr_cold_start_holds_validated_content();
-    rc |= dmr_owner_named_without_confirmation_stops_in_place();
+    rc |= dmr_owner_named_without_confirmation_keeps_hunting();
+    rc |= dmr_xpt_site_stays_in_place();
+    rc |= dmr_named_owner_settles_a_probe_in_flight();
+    rc |= dmr_abandoned_carrier_gets_a_window();
+    rc |= dmr_windows_hold_on_validated_content();
+    rc |= dmr_operator_move_drops_attribution();
+    rc |= dmr_status_naming_the_alias_returns_at_once();
+    rc |= dmr_status_follow_is_owned();
+    rc |= dmr_xpt_retries_its_own_frequency();
+    rc |= dmr_operator_move_settles_a_superseded_probe();
+    rc |= dmr_rigctl_read_once_per_generation();
+    rc |= dmr_follow_after_a_move_stands();
+    rc |= dmr_followed_carrier_and_untracked_settle();
+    rc |= dmr_xpt_identified_on_a_probe_parks_there();
+    rc |= dmr_status_followed_data_holds();
+    rc |= dmr_status_follow_releases_to_the_announced_rest();
+    rc |= dmr_settle_read_backs_off();
     rc |= dmr_stop_with_probe_in_flight();
     rc |= dmr_stop_after_deadline_then_late_success();
     rc |= dmr_one_row_map_retries_a_failed_probe();

@@ -8,7 +8,8 @@
  * outer loop and between frames of a continuous sync, an input switch pending its boundary holds it, a mode change
  * reaches DMR even while another protocol keeps syncing, and a hunt whose owner validated control named is finished
  * between frames. CAP+ recovery must keep running between frames after startup ends: loss and probe deadlines,
- * pending backend tunes, and reacquisition on a new rest channel.
+ * pending backend tunes, and reacquisition on a new rest channel. Validated DMR content that names DMR without
+ * confirming a control channel there (a data preamble, a CAP+ status naming an unmapped rest) never stops the hunt.
  *
  * getFrameSync() and processFrame() are fakes. The first fake sync, after the engine set its input up, turns rigctl on
  * (a peer no request reaches: the trunk tuning and rigctl query hooks are replaced) and loads a three-row channel map;
@@ -64,6 +65,8 @@ enum scenario {
     SC_CAPPLUS_LOST_REST,
     SC_CAPPLUS_PENDING_PROBE,
     SC_CAPPLUS_LIVE_REST,
+    SC_DMR_NAMED_UNCONFIRMED,
+    SC_CAPPLUS_UNMAPPED_REST,
 };
 
 static enum scenario g_scenario;
@@ -82,6 +85,7 @@ static int g_new_request_kept;
 static long g_probe_freqs[8];
 static uint64_t g_probe_times_ms[8];
 static uint64_t g_probe_completed_ms;
+static uint64_t g_last_content_ms;
 
 static int
 capplus_scenario(void) {
@@ -218,6 +222,18 @@ capplus_status(dsd_opts* opts, dsd_state* state, uint8_t rest) {
     g_validated_sent = 1;
 }
 
+/* A CRC-valid data preamble CSBK (0x3D): it names DMR the owner and confirms no control channel. */
+static void
+dmr_preamble(dsd_opts* opts, dsd_state* state) {
+    uint8_t bytes[12] = {0x3d, 0x00};
+    uint8_t bits[196] = {0};
+    for (int i = 0; i < 80; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
+    }
+    dmr_cspdu(opts, state, bits, bytes, 1, 0);
+    g_validated_sent = 1;
+}
+
 /* Frames otherwise decode to nothing: in particular, a repeated raw data sync or a discarded frame does not run a
    DMR voice handler's internal tick. Recovery must still advance once the startup hunt has ended on valid control. */
 void
@@ -229,6 +245,16 @@ processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
     if ((g_scenario == SC_NXDN_LOST_CC || g_scenario == SC_NXDN_CALL_RETURN) && g_now_ms <= 2000U) {
         nxdn_cc_hunt_note_control(opts, state);
         g_validated_sent = 1;
+    }
+    // The reported CAP+ stall: validated DMR content on the start frequency that names no rest channel, then silence.
+    if ((g_scenario == SC_DMR_NAMED_UNCONFIRMED || g_scenario == SC_CAPPLUS_UNMAPPED_REST) && g_now_ms <= 1000U) {
+        state->dmr_confidence_lock_m = dsd_decode_now_mono_s(); // the burst passed the colour-code gate
+        if (g_scenario == SC_DMR_NAMED_UNCONFIRMED) {
+            dmr_preamble(opts, state);
+        } else {
+            capplus_status(opts, state, 7U); // rest LSN 7, which the map lacks
+        }
+        g_last_content_ms = g_now_ms;
     }
     if (capplus_scenario()) {
         if (g_now_ms <= 2000U || g_scenario == SC_CAPPLUS_LIVE_REST) {
@@ -386,6 +412,12 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         case SC_CAPPLUS_LOST_REST:
         case SC_CAPPLUS_PENDING_PROBE:
         case SC_CAPPLUS_LIVE_REST: return capplus_sync(opts, state);
+        case SC_DMR_NAMED_UNCONFIRMED:
+        case SC_CAPPLUS_UNMAPPED_REST:
+            if (g_now_ms > 14000U) {
+                return finish();
+            }
+            return g_now_ms <= 1000U ? DSD_SYNC_DMR_BS_DATA_POS : DSD_SYNC_NONE;
         case SC_MODE_CHANGE_DMR:
             if (g_now_ms == 2750U) {
                 g_dmr_armed_seen = dmr_sm_cold_start_active(dmr_sm_get_ctx());
@@ -429,6 +461,7 @@ run_scenario(enum scenario sc, int ft) {
     DSD_MEMSET(g_probe_freqs, 0, sizeof(g_probe_freqs));
     DSD_MEMSET(g_probe_times_ms, 0, sizeof(g_probe_times_ms));
     g_probe_completed_ms = 0U;
+    g_last_content_ms = 0U;
     dsd_decode_clock_use_test(T0_NS);
     dsd_exitflag_store(0);
     dsd_trunk_tuning_requests_reset();
@@ -521,6 +554,15 @@ run_scenario(enum scenario sc, int ft) {
             expect(g_tunes == 0 && dmr->cc_confirmed && state->trunk_cc_freq == ROW0_HZ,
                    "continuous validated CAP+ rest status keeps the receiver parked");
             break;
+        case SC_DMR_NAMED_UNCONFIRMED:
+        case SC_CAPPLUS_UNMAPPED_REST:
+            expect(g_validated_sent && state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && !dmr->cc_confirmed,
+                   "validated DMR content named DMR without confirming a control channel");
+            expect(g_tunes >= 2 && g_probe_freqs[0] == ROW0_HZ && g_probe_freqs[1] == ROW1_HZ,
+                   "the session goes on down the map instead of staying where no rest channel is");
+            expect(g_probe_times_ms[0] > g_last_content_ms + 6000U && g_probe_times_ms[0] <= g_last_content_ms + 6500U,
+                   "six seconds after the last validated content, not before");
+            break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
             expect(g_tunes == 0 && dmr->cold_start_armed_m <= 0.0 && dmr->cold_start_hunt == 0,
@@ -582,6 +624,8 @@ main(void) {
     run_scenario(SC_CAPPLUS_LOST_REST, 3);
     run_scenario(SC_CAPPLUS_PENDING_PROBE, 0);
     run_scenario(SC_CAPPLUS_LIVE_REST, 0);
+    run_scenario(SC_DMR_NAMED_UNCONFIRMED, 0);
+    run_scenario(SC_CAPPLUS_UNMAPPED_REST, 0);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");
     }

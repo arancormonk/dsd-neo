@@ -1225,6 +1225,10 @@ struct dsd_state {
        only from processFrame() under the P25 SM tick guard and never cleared, not even by a carrier boundary: a startup
        control-channel hunt restarts its window from it (issue #703). */
     double dmr_confidence_lock_m;
+    /* Decode-clock seconds the slot's own voice last passed the confidence gate with the slot's voice gate open
+       (dmr_confidence_note_voice_burst()), 0 never; cleared with the slot's voice gate. A followed call's hangtime runs
+       from it: a voice sync alone, which a rejected burst can carry, never holds the call. */
+    double dmr_confidence_voice_m[2];
     /* Decode-clock seconds an NXDN frame's own CRCs last confirmed its transmission (nxdn_confirm_end_frame()), 0
        never. Decoder thread only, never cleared: the NXDN control-channel hunt restarts its window from it. */
     double nxdn_confirm_lock_m;
@@ -2515,6 +2519,14 @@ int dsd_state_trunk_cold_start_eligible(const dsd_opts* opts, const dsd_state* s
  * a lost control channel). Whether NXDN may own the trunk is the caller's (dsd_trunk_nxdn_recovery_allowed()).
  */
 int dsd_state_trunk_nxdn_hunt_eligible(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * Whether a single-system trunked DMR session may hunt its channel map for a control channel: every condition of
+ * dsd_state_trunk_cold_start_eligible() except the owner, which may be unknown (a startup hunt) or DMR (validated DMR
+ * content named the protocol without confirming a control channel here). Whether the DMR machine has confirmed one is
+ * the caller's (dmr_trunk_sm.c).
+ */
+int dsd_state_trunk_dmr_hunt_eligible(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_state_minmax_window_size(int requested) {

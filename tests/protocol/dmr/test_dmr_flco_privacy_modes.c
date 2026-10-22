@@ -3305,6 +3305,91 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* A held TG absent from an idle carrier, and an SLCO naming a rest LSN the map lacks: there is no destination, so the
+   old alias, which is no rest channel, is never tuned to. */
+static void
+test_completed_slco_capacity_plus_hold_needs_a_mapped_rest(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.tg_hold = 99U;
+    state.dmrburstL = state.dmrburstR = 16;
+    state.trunk_cc_freq = 851000000L; // the old alias
+    s_tune_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = capture_tune_to_cc});
+    write_bits_u64(slco, 0U, 0xFU, 4U);
+    write_bits_u64(slco, 16U, 4U, 4U); // rest LSN 4, unmapped
+    write_bits_u64(slco, 22U, 5U, 3U);
+    run_completed_slco(&opts, &state, slco);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    assert(s_tune_to_cc_calls == 0);
+    assert(opts.trunk_is_tuned == 1 && state.trunk_cc_freq == 851000000L);
+    dsd_state_ext_free_all(&state);
+}
+
+/* The same hold on the rest channel the receiver already listens to: the SLCO confirms it, and nothing retunes or
+   restarts the machine's acquisition there on every SLCO. */
+static void
+test_completed_slco_capacity_plus_hold_on_the_rest_keeps_it(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851250000U;
+    state.tg_hold = 99U;
+    state.dmrburstL = state.dmrburstR = 16;
+    state.trunk_cc_freq = 851250000L;
+    state.trunk_chan_map[4] = 851250000L;
+    dmr_sm_init(&opts, &state);
+    s_tune_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = capture_tune_to_cc});
+    write_bits_u64(slco, 0U, 0xFU, 4U);
+    write_bits_u64(slco, 16U, 4U, 4U);
+    write_bits_u64(slco, 22U, 5U, 3U);
+    for (int i = 0; i < 3; ++i) {
+        run_completed_slco(&opts, &state, slco);
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(s_tune_to_cc_calls == 0);
+    assert(ctx->cc_confirmed && !ctx->cc_acquiring && ctx->cc_freq_hz == 851250000L);
+    dsd_state_ext_free_all(&state);
+}
+
+/* A completed XPT SLCO alone identifies the site and names DMR the owner: an eligible session's startup hunt never
+   arms there, as an XPT CSBK would leave it. */
+static void
+test_completed_slco_xpt_identifies_the_site(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 852000000U;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof(opts.chan_in_file), "%s", "site.csv");
+    state.trunk_lcn_freq[0] = 852000000L;
+    state.lcn_freq_count = 1;
+    state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+    dmr_sm_init(&opts, &state);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(dmr_sm_cold_start_due(ctx, &opts, &state));
+    write_bits_u64(slco, 0U, 0x8U, 4U);
+    write_bits_u64(slco, 12U, 1U, 4U);
+    run_completed_slco(&opts, &state, slco);
+    assert(state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR && ctx->site_without_cc);
+    assert(!dmr_sm_cold_start_due(ctx, &opts, &state));
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_completed_slco_xpt_hold_does_not_start_cc_hunt(void) {
     static dsd_opts opts;
@@ -3327,11 +3412,13 @@ test_completed_slco_xpt_hold_does_not_start_cc_hunt(void) {
     run_completed_slco(&opts, &state, slco);
     assert(s_tune_to_cc_calls == 1 && s_tune_to_cc_freq == 852000000L);
     dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-    assert(ctx->state == DMR_SM_IDLE && !ctx->cc_acquiring && !ctx->cc_freq_hz);
+    // The hop is a tracked acquisition of the free channel, which an XPT site parks on: no control channel to hunt for.
+    assert(ctx->site_without_cc && ctx->cc_freq_hz == 852000000L);
+    assert(state.trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR);
     ctx->cc_acquire_start_m = ctx->t_cc_sync_m = dsd_decode_now_mono_s() - 10.0;
     dmr_sm_tick_ctx(ctx, &opts, &state);
     dmr_sm_tick_ctx(ctx, &opts, &state);
-    assert(s_tune_to_cc_calls == 1 && ctx->state == DMR_SM_IDLE);
+    assert(s_tune_to_cc_calls == 1 && ctx->cc_freq_hz == 852000000L);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);
 }
@@ -3604,6 +3691,9 @@ main(void) {
     test_completed_slco_connect_plus_and_xpt_update_site_state();
     test_completed_slco_capacity_plus_hold_returns_to_rest_channel();
     test_completed_slco_xpt_hold_does_not_start_cc_hunt();
+    test_completed_slco_capacity_plus_hold_needs_a_mapped_rest();
+    test_completed_slco_capacity_plus_hold_on_the_rest_keeps_it();
+    test_completed_slco_xpt_identifies_the_site();
     printf("DMR FLCO privacy modes: OK\n");
     return 0;
 }
