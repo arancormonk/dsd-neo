@@ -216,9 +216,10 @@ dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
     }
 }
 
+// The XPT branding changes how later LCs, preamble CSBKs and data headers are read, so only a checked LC sets it.
 static void
-dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx) {
-    if (*ctx->IrrecoverableErrors == 0 && ctx->flco == 0x09 && ctx->fid == 0x68) {
+dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx, int crc_ok) {
+    if (crc_ok && ctx->flco == 0x09 && ctx->fid == 0x68) {
         DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
         DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
     }
@@ -236,7 +237,7 @@ dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
     const int crc_ok = (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1);
     dmr_flco_detect_kenwood_sc(ctx, crc_ok);
     dmr_flco_detect_kirisun_le(ctx, crc_ok);
-    dmr_flco_detect_hytera_xpt(ctx);
+    dmr_flco_detect_hytera_xpt(ctx, crc_ok);
     dmr_flco_detect_invalid_hytera_enhanced(ctx);
     if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
         ctx->is_xpt = 1;
@@ -480,7 +481,9 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
         DSD_FPRINTF(stderr, "Free LCN %d; ", ctx->xpt_free);
     }
     DSD_FPRINTF(stderr, "%s ", KNRM);
-    DSD_SNPRINTF(ctx->state->dmr_site_parms, sizeof(ctx->state->dmr_site_parms), "Free LCN - %d ", ctx->xpt_free);
+    if (ctx->CRCCorrect == 1U) { // the site's free channel, from a checked LC only
+        DSD_SNPRINTF(ctx->state->dmr_site_parms, sizeof(ctx->state->dmr_site_parms), "Free LCN - %d ", ctx->xpt_free);
+    }
     return 1;
 }
 
@@ -1119,7 +1122,7 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
         return 0;
     }
 
-    if (ctx->fid != 0) {
+    if (ctx->fid != 0 && ctx->CRCCorrect == 1U) { // the vendor (shown as the branding) only from a checked LC
         ctx->state->dmr_mfid = ctx->fid;
     }
 
@@ -1131,7 +1134,10 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
         dmr_flco_sync_active_call_state(ctx);
     }
 
-    if (ctx->restchannel != ctx->state->dmr_rest_channel && ctx->restchannel != -1) {
+    // The rest LSN steers Cap+ following (the release destination, the no-carrier return), so it is taken only from an
+    // LC whose own check passed; clean FEC does not vouch for the payload. Under -F a RAS-accepted LC counts as checked,
+    // as a RAS-accepted channel-status CSBK does in dmr_cspdu().
+    if (ctx->CRCCorrect == 1U && ctx->restchannel != ctx->state->dmr_rest_channel && ctx->restchannel != -1) {
         ctx->state->dmr_rest_channel = ctx->restchannel;
     }
 

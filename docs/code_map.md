@@ -325,8 +325,8 @@ the parked target's own acquisition on its control channel instead, unless a par
 pending. A Capacity Plus status follow is the machine's call (`dmr_sm_note_status_follow()`); a
 repeated status naming the followed carrier neither retunes nor moves its deadlines (it only seeds a slot whose group
 changed), a call followed after an operator move ends that move's listening window, and its release goes to the rest
-channel announced last (`dsd_state::dmr_rest_channel`, by a status or a voice LC), as the no-carrier return does. A
-hangtime edit reaches the single-system machine (`dmr_sm_note_hangtime()`), as the no-carrier return read the option. A followed call's timers run only from its slot's
+channel announced last (`dsd_state::dmr_rest_channel`, by a status or a checked voice LC), as the no-carrier return
+does. A hangtime edit reaches the single-system machine (`dmr_sm_note_hangtime()`), as the no-carrier return read the option. A followed call's timers run only from its slot's
 accepted voice since the follow tune (`dsd_state::dmr_confidence_voice_m`, within 1 s), never from a voice sync alone;
 with data calls followed (`trunk_tune_data_calls`), accepted data (`handle_data_sync()`) is slot activity as well, so a
 zero hangtime holds while it flows.
@@ -4943,7 +4943,11 @@ Private per-protocol modules worth knowing about:
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
   51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the
   talkgroup. FLCO 0x07, the private call header, has no published layout and keeps its standard 24-bit target, with
-  the 16-bit source and 4-bit rest LSN read from the header only. A rest LSN outside 1..16 announces none. The 0x3E
+  the 16-bit source and 4-bit rest LSN read from the header only. A rest LSN outside 1..16 announces none, and an LC
+  announces one only when its own check passed (`CRCCorrect`: the RS check of a header or terminator, the 5-bit
+  checksum of an embedded LC); clean FEC alone does not. Under `-F` a RAS-accepted LC counts as checked, as a
+  RAS-accepted 0x3E status does. The LC's vendor ID (`dmr_mfid`, shown as the branding), the Hytera XPT branding and
+  an XPT alert's free channel take the same gate. The 0x3E
   channel status reads its rest LSN as 5 bits (19..23) and decodes each active LSN's ID in the parser, one byte per
   active group LSN and one 16-bit word per active private LSN, so which LSNs the display window shows never moves an
   offset. Cap+ follows a call already in progress on that status alone, outside the DMR SM grant path, so the voice
