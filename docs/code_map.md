@@ -998,10 +998,11 @@ suite runs under this compiler.
   MCC and MNC (`sys_id1`, `_2`; a direct mode carrier marks `sys_id3` 1 instead). A part not received takes the value a
   row had before one was decoded (0, so `P25_<NAC>` without a WACN and `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and
   X2-TDMA rows carry none. The row takes the parts whole from the record of the carrier the call began on (the record's
-  epoch is the call's `dsd_call_snapshot::rx_id_epoch`): the record keeps them one consistent observation, so a part a
-  newer one invalidated there (an IDAS SCCH site ID that disagreed with the Type-D system ID, another EDACS or P25
-  system) goes from the row too. While the call is ACTIVE it takes the live record; once it has ENDED, the record the
-  canonical layer captured at the end transition (`dsd_call_state_end_ex()` copies `dsd_state::rx_id` into
+  epoch is the call's `dsd_call_snapshot::rx_id_epoch`): the record keeps them one consistent observation, and a note
+  naming another system, site or access code (an IDAS SCCH site ID that disagrees with the Type-D system ID, another
+  EDACS or P25 system, another NAC on the carrier) moves the record's epoch, so the row keeps the identity it was heard
+  under, never a mix. While the call is ACTIVE it takes the live record; once it has ENDED, the record the canonical
+  layer captured at the end transition (`dsd_call_state_end_ex()` copies `dsd_state::rx_id` into
   `dsd_call_snapshot::ended_rx_id` while its epoch is still the call's, else captures none): identity received after the
   last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends
   the call) counts, identity received after the end does not. A record of another carrier, or no capture, leaves the row
@@ -1493,27 +1494,32 @@ suite runs under this compiler.
   named by a brand, a site text prefix, a rest LSN, a system code or a free LCN; the colour code stays. The TETRA cell
   keeps its colour (`tetra_colour`) apart from the displayed access code, so after a trunk tune another colour is still
   another cell; a SYSINFO of another cell with the same network and colour (`tetra_bsch_sysinfo_cell()`) drops the last
-  cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). A tune the user asked for while trunking, which
-  keeps the decoder's trunking state and so is no carrier boundary, forgets the record too (D4: any user move), after
-  the calls it ended took theirs: a frequency entry that selects a P25 control channel
-  (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to CC, and a channel or candidate cycle
-  (`ui_user_move_forgets_identity()`, which also marks the carrier change for the frame sync). A trunking follow keeps
-  it, a lockout's or skip's return to the control channel included (the decoder leaves the call as at its end); every
-  other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y` step, a trunk-scan target, a
-  signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site forget it in the record too:
-  the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the colour code the reset
-  keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a decode mode change, once the calls it
-  ended froze their identity and once a switch onto the analog monitor the front end has queued is taken
-  (`ui_commit_mode_identity()`: refused where it lands, the session goes back with its identity), an `[edacs]`
-  addressing mode a config apply sets without a `[mode]`, a RadioReference import's EDACS variant and the EDACS
-  addressing mode toggle (after its calls ended, which keep their site) run `dsd_rxid_note_decoder_settings()`, which
-  drops a record of a protocol the settings no longer decode and an EDACS record read under the other addressing mode
-  (`edacs_ea_mode`; an EDACS note under the other mode drops it as well). The no-carrier pass, a SIM no-carrier, the ESK
-  toggle, inversion and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change no
-  received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
-  Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
-  `ENGINE_PROTOCOL_DISPATCH`, and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
-  conventional carrier of another system).
+  cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). A note that invalidates parts because it names
+  another system, site, cell or subtype (another access code on the carrier, another P25 network or site, a Capacity
+  Plus site change, which also drops the old site's rest LSN and free LCN, an IDAS area) moves the record's epoch
+  (`rxid_invalidate()`), so a call's history row, which takes the record only under the epoch it was heard on, keeps
+  that identity and is never mixed with the next one. The DMR vendor (`dsd_rxid_note_dmr_vendor()`, the feature set ID
+  of a genuinely checked LC or CSBK) is a part of its own, apart from the trunking brand; the terminal header shows its
+  name (Hytera, Tait, Motorola). A tune the user asked for while trunking, which keeps the decoder's trunking state and
+  so is no carrier boundary, forgets the record too (D4: any user move), after the calls it ended took theirs: a
+  frequency entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to
+  CC, and a channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks the carrier change for the
+  frame sync). A trunking follow keeps it, a lockout's or skip's return to the control channel included (the decoder
+  leaves the call as at its end); every other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y`
+  step, a trunk-scan target, a signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site
+  forget it in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts
+  (keeping the colour code the reset keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a
+  decode mode change, once the calls it ended froze their identity and once a switch onto the analog monitor the front
+  end has queued is taken (`ui_commit_mode_identity()`: refused where it lands, the session goes back with its
+  identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference import's EDACS
+  variant and the EDACS addressing mode toggle (after its calls ended, which keep their site) run
+  `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an EDACS
+  record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as well).
+  The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the
+  tuner release and the scan resets change no received identity: the carrier and the reading of its messages stay (a
+  carrier boundary resets the record anyway). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end
+  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

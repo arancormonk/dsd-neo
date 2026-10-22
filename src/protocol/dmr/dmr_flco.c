@@ -1149,6 +1149,9 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
 
     if (ctx->fid != 0 && ctx->CRCCorrect == 1U) { // the vendor (shown as the branding) only from a checked LC
         ctx->state->dmr_mfid = ctx->fid;
+        if (dmr_flco_crc_checked(ctx)) {
+            dsd_rxid_note_dmr_vendor(ctx->state, ctx->fid); // and as identity only from a genuine check
+        }
     }
 
     if (ctx->protected_lc) {

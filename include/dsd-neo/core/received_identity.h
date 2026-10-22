@@ -112,11 +112,15 @@ enum {
     DSD_RXID_TETRA_LA = 1U << 18,          /**< tetra_la (a D-MLE-SYSINFO). */
     DSD_RXID_CC_FREQ = 1U << 19,           /**< cc_freq_hz: this system's control channel, where it was received. */
     DSD_RXID_DMR_XPT_FREE_LCN = 1U << 20,  /**< dmr_xpt_free_lcn: the Hytera XPT site's free channel (LCN). */
+    DSD_RXID_DMR_VENDOR = 1U << 21, /**< dmr_vendor: the manufacturer's feature set ID a checked LC or CSBK carried. */
 };
 
 /** The system identity received on the carrier being decoded. Read a value only while its valid bit is set. */
 typedef struct dsd_received_identity {
-    /** Bumped by every dsd_rxid_reset() and family replacement, so a reader can tell one record from the next. */
+    /** Bumped by every dsd_rxid_reset() and family replacement, and whenever a note invalidates parts because it names
+     * another system, site, cell or subtype (another access code on the carrier included): a reader can tell one
+     * identity from the next, and a call's history row keeps the one it was heard under. A note that only adds or
+     * repeats, the no-carrier pass and a trunk follow's dropped access code keep it. */
     uint32_t epoch;
     uint32_t valid; /**< DSD_RXID_* parts that hold a received value. */
     uint32_t fresh; /**< DSD_RXID_* parts noted since the last no-carrier pass; a subset of valid. */
@@ -151,6 +155,9 @@ typedef struct dsd_received_identity {
     /** dsd_rxid_dmr_trunk the DMR trunking parts (rest LSN, site text, brand, system code, free LCN) belong to;
      * meaningful while one of them is valid. */
     uint8_t dmr_trunk;
+    /** The manufacturer's feature set ID (FID) a checked LC or CSBK carried, e.g. 0x68 Hytera, 0x58 Tait, 0x10 or 0x06
+     * Motorola; no trunking type rule touches it. */
+    uint8_t dmr_vendor;
 
     uint16_t edacs_site;
     uint16_t edacs_area;
@@ -198,6 +205,8 @@ void dsd_rxid_note_dmr_rest_lsn(dsd_state* state, uint16_t lsn);
 /** @p text is display text for the site (copied, truncated to the record's capacity). */
 void dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text);
 void dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand);
+/** The manufacturer's feature set ID @p mfid of a checked full LC or CSBK (0, the standard set, names none). */
+void dsd_rxid_note_dmr_vendor(dsd_state* state, uint8_t mfid);
 void dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode);
 /** A checked Hytera XPT site status, call alert or short LC: the logical channel number the site names free now (its
  * 4-bit field as sent). It changes with the site's traffic, so each note replaces the last. */

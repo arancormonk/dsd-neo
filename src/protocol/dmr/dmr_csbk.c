@@ -1611,6 +1611,9 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
         //set overarching manufacturer in use when non-standard feature id set is up
         if (csbk_fid != 0) {
             state->dmr_mfid = csbk_fid;
+            if (dmr_csbk_crc_checked(state)) {
+                dsd_rxid_note_dmr_vendor(state, (uint8_t)csbk_fid);
+            }
         }
 
         DSD_FPRINTF(stderr, "%s", KYEL);

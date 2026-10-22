@@ -3095,12 +3095,28 @@ ui_print_dmr_dcc(const char* mode, const dsd_state* state) {
     }
 }
 
-/* The trunking brand, site, Hytera XPT free channel and Capacity Plus rest channel this carrier sent; the rest LSN's
-   frequency is the channel map's. */
+/* The vendor, trunking brand, site, Hytera XPT free channel and Capacity Plus rest channel this carrier sent; the rest
+   LSN's frequency is the channel map's. */
+/* The vendor a feature set ID names, as the header has long shown it: NULL for one this table does not know. */
+static const char*
+ui_dmr_vendor_name(uint8_t mfid) {
+    switch (mfid) {
+        case 0x68U: return "Hytera";
+        case 0x58U: return "Tait";
+        case 0x10U:
+        case 0x06U: return "Motorola";
+        default: return NULL;
+    }
+}
+
 static void
 ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     ui_print_dmr_dcc("BS", state);
     const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_DMR);
+    const char* const vendor = ui_rxid_has(id, DSD_RXID_DMR_VENDOR) ? ui_dmr_vendor_name(id->dmr_vendor) : NULL;
+    if (vendor != NULL) {
+        printw("%s; ", vendor);
+    }
     if (ui_rxid_has(id, DSD_RXID_DMR_BRAND)) {
         ui_print_rxid_text(id->dmr_brand);
         printw("; ");

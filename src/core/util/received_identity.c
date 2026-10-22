@@ -100,6 +100,17 @@ rxid_drop(dsd_received_identity* id, uint32_t parts) {
     id->fresh &= ~parts;
 }
 
+/* Drop @p parts because a note named another system, site, cell or subtype than the one they belong to: what the record
+   holds from here is another identity, so its epoch moves (a reader that took the old one, a call's history row, keeps
+   it). Nothing held, nothing moves. */
+static void
+rxid_invalidate(dsd_received_identity* id, uint32_t parts) {
+    if ((id->valid & parts) != 0U) {
+        rxid_drop(id, parts);
+        id->epoch++;
+    }
+}
+
 static int
 rxid_has(const dsd_received_identity* id, uint32_t part) {
     return (id->valid & part) != 0U;
@@ -154,7 +165,7 @@ rxid_system_parts(uint8_t family) {
     switch (family) {
         case DSD_RXID_FAMILY_DMR:
             return DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE
-                   | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_CC_FREQ;
+                   | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_DMR_VENDOR | DSD_RXID_CC_FREQ;
         case DSD_RXID_FAMILY_P25: return RXID_P25_SYSTEM;
         case DSD_RXID_FAMILY_NXDN:
             return DSD_RXID_NXDN_LOCATION | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE
@@ -181,7 +192,7 @@ dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uin
         return;
     }
     if (rxid_has(id, DSD_RXID_ACCESS) && (id->access_kind != kind || id->access != value)) {
-        rxid_drop(id, rxid_system_parts(id->family)); /* another system on this carrier */
+        rxid_invalidate(id, rxid_system_parts(id->family)); /* another system on this carrier */
     }
     id->access_kind = kind;
     id->access = value;
@@ -202,7 +213,7 @@ dsd_rxid_note_p25_network(dsd_state* state, uint32_t wacn, uint16_t sysid) {
     const int same_system = rxid_has(id, DSD_RXID_P25_SYSID) && id->p25_sysid == sysid
                             && (!rxid_has(id, DSD_RXID_P25_WACN) || id->p25_wacn == wacn);
     if (!same_system) {
-        rxid_drop(id, RXID_P25_SYSTEM);
+        rxid_invalidate(id, RXID_P25_SYSTEM);
     }
     id->p25_wacn = wacn;
     id->p25_sysid = sysid;
@@ -237,6 +248,9 @@ dsd_rxid_note_p25_site(dsd_state* state, uint16_t sysid, uint8_t rfss, uint8_t s
     if (id == NULL) {
         return;
     }
+    if (rxid_has(id, DSD_RXID_P25_SITE) && (id->p25_rfss != rfss || id->p25_site != site)) {
+        rxid_invalidate(id, DSD_RXID_P25_SITE | DSD_RXID_P25_LRA | DSD_RXID_CC_FREQ); /* another site */
+    }
     id->p25_rfss = rfss;
     id->p25_site = site;
     rxid_set(id, DSD_RXID_P25_SITE);
@@ -267,7 +281,7 @@ rxid_dmr(dsd_state* state, uint8_t trunk) {
         return id;
     }
     if ((id->valid & RXID_DMR_TRUNK_PARTS) != 0U && id->dmr_trunk != trunk) {
-        rxid_drop(id, RXID_DMR_TRUNK_PARTS | DSD_RXID_CC_FREQ); /* another trunking system on this carrier */
+        rxid_invalidate(id, RXID_DMR_TRUNK_PARTS | DSD_RXID_CC_FREQ); /* another trunking system on this carrier */
     }
     id->dmr_trunk = trunk;
     return id;
@@ -322,7 +336,9 @@ dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text) {
     char next[sizeof(id->dmr_site_text)];
     rxid_copy_text(next, sizeof(next), text);
     if (rxid_has(id, DSD_RXID_DMR_SITE_TEXT) && strcmp(id->dmr_site_text, next) != 0) {
-        rxid_drop(id, DSD_RXID_CC_FREQ); /* another site */
+        /* Another site: the rest channel and free channel it named and its control channel go with it. */
+        rxid_invalidate(id,
+                        DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_CC_FREQ);
     }
     DSD_MEMCPY(id->dmr_site_text, next, sizeof(next));
     rxid_set(id, DSD_RXID_DMR_SITE_TEXT);
@@ -342,13 +358,26 @@ dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand) {
 }
 
 void
+dsd_rxid_note_dmr_vendor(dsd_state* state, uint8_t mfid) {
+    if (mfid == 0U) {
+        return;
+    }
+    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    if (id == NULL) {
+        return;
+    }
+    id->dmr_vendor = mfid;
+    rxid_set(id, DSD_RXID_DMR_VENDOR);
+}
+
+void
 dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode) {
     dsd_received_identity* const id = rxid_dmr(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3);
     if (id == NULL) {
         return;
     }
     if (rxid_has(id, DSD_RXID_DMR_T3_SYSCODE) && id->dmr_t3_syscode != syscode) {
-        rxid_drop(id, DSD_RXID_DMR_SITE_TEXT | DSD_RXID_CC_FREQ); /* another system */
+        rxid_invalidate(id, DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_CC_FREQ); /* another system */
     }
     id->dmr_t3_syscode = syscode;
     rxid_set(id, DSD_RXID_DMR_T3_SYSCODE);
@@ -379,9 +408,9 @@ rxid_nxdn(dsd_state* state, int type_d) {
         return NULL;
     }
     if (type_d && rxid_has(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_ACCESS)) {
-        rxid_drop(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_ACCESS | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_ACCESS | DSD_RXID_CC_FREQ);
     } else if (!type_d && rxid_has(id, RXID_NXDN_TYPE_D)) {
-        rxid_drop(id, RXID_NXDN_TYPE_D | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, RXID_NXDN_TYPE_D | DSD_RXID_CC_FREQ);
     }
     return id;
 }
@@ -397,7 +426,7 @@ dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, ui
     }
     if (rxid_has(id, DSD_RXID_NXDN_LOCATION)
         && (id->nxdn_category != category || id->nxdn_sys != sys || id->nxdn_site != site)) {
-        rxid_drop(id, DSD_RXID_CC_FREQ); /* another site */
+        rxid_invalidate(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_CC_FREQ); /* another site */
     }
     id->nxdn_category = category;
     id->nxdn_sys = sys;
@@ -414,7 +443,8 @@ dsd_rxid_note_nxdn_idas_area(dsd_state* state, uint8_t area) {
     area &= 1U;
     if (rxid_has(id, DSD_RXID_NXDN_IDAS_AREA) && id->nxdn_idas_area != area) {
         /* The Area bit tells adjacent co-channel sites apart (NXDN TS 1-E 6.6.3): another one is another site. */
-        rxid_drop(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM
+                                | DSD_RXID_CC_FREQ);
     }
     id->nxdn_idas_area = area;
     rxid_set(id, DSD_RXID_NXDN_IDAS_AREA);
@@ -431,11 +461,11 @@ dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t site_c
     }
     if (rxid_has(id, DSD_RXID_NXDN_IDAS_SITE)
         && (id->nxdn_idas_site_type != site_type || id->nxdn_idas_site_code != site_code)) {
-        rxid_drop(id, DSD_RXID_CC_FREQ); /* another site */
+        rxid_invalidate(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_CC_FREQ); /* another site */
     }
     if (rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM) && id->nxdn_typed_site != site_code) {
         /* A Type-D SRV_INFO named another site: the newer site ID replaces it, with its system. */
-        rxid_drop(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
     }
     id->nxdn_idas_site_type = site_type;
     id->nxdn_idas_site_code = site_code;
@@ -451,13 +481,14 @@ dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
     sys &= 0x7FFFFU;
     if (rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM) && id->nxdn_typed_sys != sys) {
         /* Another system: the old one's SCCH area and site ID and its control channel. */
-        rxid_drop(id, DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE
+                                | DSD_RXID_CC_FREQ);
     } else if (rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM) && id->nxdn_typed_site != site) {
-        rxid_drop(id, DSD_RXID_CC_FREQ); /* another site */
+        rxid_invalidate(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ); /* another site */
     }
     if (rxid_has(id, DSD_RXID_NXDN_IDAS_SITE) && id->nxdn_idas_site_code != site) {
         /* The SCCH site ID named another site: the newer system ID replaces it. */
-        rxid_drop(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_CC_FREQ);
     }
     id->nxdn_typed_sys = sys;
     id->nxdn_typed_site = site;
@@ -476,7 +507,7 @@ rxid_edacs(dsd_state* state) {
         return NULL;
     }
     if (rxid_has(id, RXID_EDACS_PARTS) && id->edacs_ea_mode != (int8_t)state->ea_mode) {
-        rxid_drop(id, RXID_EDACS_PARTS | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, RXID_EDACS_PARTS | DSD_RXID_CC_FREQ);
     }
     id->edacs_ea_mode = (int8_t)state->ea_mode;
     return id;
@@ -489,7 +520,7 @@ dsd_rxid_note_edacs_site(dsd_state* state, uint16_t site) {
         return;
     }
     if (rxid_has(id, DSD_RXID_EDACS_SITE) && id->edacs_site != site) {
-        rxid_drop(id, DSD_RXID_EDACS_CC_LCN | DSD_RXID_CC_FREQ); /* another site */
+        rxid_invalidate(id, DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_CC_LCN | DSD_RXID_CC_FREQ); /* another site */
     }
     id->edacs_site = site;
     rxid_set(id, DSD_RXID_EDACS_SITE);
@@ -512,7 +543,8 @@ dsd_rxid_note_edacs_system(dsd_state* state, uint16_t system) {
         return;
     }
     if (rxid_has(id, DSD_RXID_EDACS_SYSTEM) && id->edacs_system != system) {
-        rxid_drop(id, DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_CC_LCN | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, DSD_RXID_EDACS_SYSTEM | DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_CC_LCN
+                                | DSD_RXID_CC_FREQ);
     }
     id->edacs_system = system;
     rxid_set(id, DSD_RXID_EDACS_SYSTEM);
@@ -541,7 +573,8 @@ dsd_rxid_note_tetra_cell(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t c
     const int same_cell =
         rxid_has(id, DSD_RXID_TETRA_NET) && id->tetra_mcc == mcc && id->tetra_mnc == mnc && id->tetra_colour == colour;
     if (!same_cell) {
-        rxid_drop(id, DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ); /* as a BSCH identity change clears SYSINFO */
+        /* As a BSCH identity change clears SYSINFO. */
+        rxid_invalidate(id, DSD_RXID_TETRA_NET | DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ);
     }
     id->tetra_mcc = mcc;
     id->tetra_mnc = mnc;
@@ -572,7 +605,7 @@ void
 dsd_rxid_note_tetra_other_cell(dsd_state* state) {
     dsd_received_identity* const id = rxid_tetra(state);
     if (id != NULL) {
-        rxid_drop(id, DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ);
+        rxid_invalidate(id, DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ);
     }
 }
 
@@ -600,7 +633,7 @@ dsd_rxid_note_cc_freq(dsd_state* state, dsd_rxid_family family, uint32_t freq_hz
 void
 dsd_rxid_forget_system(dsd_state* state, dsd_rxid_family family, int with_access) {
     if (state != NULL && family != DSD_RXID_FAMILY_NONE && state->rx_id.family == (uint8_t)family) {
-        rxid_drop(&state->rx_id, rxid_system_parts(state->rx_id.family) | (with_access ? DSD_RXID_ACCESS : 0U));
+        rxid_invalidate(&state->rx_id, rxid_system_parts(state->rx_id.family) | (with_access ? DSD_RXID_ACCESS : 0U));
     }
 }
 

@@ -589,6 +589,52 @@ test_decoder_settings(void) {
     free(state);
 }
 
+/* A note that invalidates parts (another system, site, cell or subtype on the carrier) starts another record identity:
+   the epoch moves, so a reader holding the old one (a call's history row) keeps what it took. Notes that only add or
+   repeat, the no-carrier pass and a trunk follow's dropped access code keep the epoch. */
+static void
+test_invalidation_moves_the_epoch(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_note_p25_site(state, 0x348U, 3U, 21U);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    const uint32_t epoch = id->epoch;
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    dsd_rxid_mark_stale(state);
+    dsd_rxid_trunk_tune(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    expect_u("adding, repeating, a follow keep the epoch", id->epoch, epoch);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x294U);
+    expect_u("another nac moves the epoch", id->epoch, epoch + 1U);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x111U);
+    expect_u("a system note after it adds", id->epoch, epoch + 1U);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x222U);
+    expect_u("another system moves the epoch", id->epoch, epoch + 2U);
+
+    /* A Capacity Plus site change: the rest channel the old site named goes with it. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 1");
+    dsd_rxid_note_dmr_rest_lsn(state, 5U);
+    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 2");
+    expect_u("another cap+ site drops its rest lsn", id->valid & DSD_RXID_DMR_REST_LSN, 0U);
+
+    /* The vendor a checked LC or CSBK names: a part of its own, which no trunking type rule touches; another system on
+       the carrier drops it. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_vendor(state, 0U);
+    expect_u("feature id 0 names no vendor", id->valid, 0U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_vendor(state, 0x68U);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
+    expect_u("the vendor stays through a trunking type change", id->valid & DSD_RXID_DMR_VENDOR, DSD_RXID_DMR_VENDOR);
+    expect_u("vendor", id->dmr_vendor, 0x68U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_u("another colour code drops the vendor", id->valid & DSD_RXID_DMR_VENDOR, 0U);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -604,6 +650,7 @@ main(void) {
     test_nxdn_subtypes_exclusive();
     test_dmr_trunking_types_exclusive();
     test_decoder_settings();
+    test_invalidation_moves_the_epoch();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {

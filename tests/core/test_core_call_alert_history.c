@@ -4023,9 +4023,10 @@ test_system_identity_comes_from_the_received_record(void) {
     return rc;
 }
 
-// While the call is active a part received after it opened lands, and a part of another P25 system replaces the row's
-// system whole (the record dropped the old site with it). A reset record is another carrier's (a boundary, which ends
-// the call anyway): it erases nothing of the row, and what it receives next is not the row's.
+// While the call is active a part received after it opened lands. A network status of another P25 system starts
+// another record identity (the record drops the old site with it), and a reset record is another carrier's (a
+// boundary, which ends the call anyway): neither erases nor replaces what the row took, and nothing received under them
+// is the row's.
 static int
 test_system_identity_fills_while_live(void) {
     static dsd_opts opts;
@@ -4043,13 +4044,16 @@ test_system_identity_fills_while_live(void) {
     rc |= expect_str_eq("unknown to known sysid", item->sysid_string, "P25_45564006293_10_11");
     dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
     watchdog_event_current(&opts, &state, 0);
-    rc |= expect_str_eq("another system replaces the row's", item->sysid_string, "P25_BEE00348293_0_0");
+    rc |= expect_str_eq("another system keeps the row's", item->sysid_string, "P25_45564006293_10_11");
+    dsd_rxid_note_p25_site(&state, 0x348U, 1U, 2U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("nor does the other system's site land", item->sysid_string, "P25_45564006293_10_11");
     dsd_rxid_reset(&state);
     watchdog_event_current(&opts, &state, 0);
-    rc |= expect_str_eq("a reset record erases nothing", item->sysid_string, "P25_BEE00348293_0_0");
-    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    rc |= expect_str_eq("a reset record erases nothing", item->sysid_string, "P25_45564006293_10_11");
+    dsd_rxid_note_p25_network(&state, 0x12345U, 0x111U);
     watchdog_event_current(&opts, &state, 0);
-    rc |= expect_str_eq("another carrier's record is not the row's", item->sysid_string, "P25_BEE00348293_0_0");
+    rc |= expect_str_eq("another carrier's record is not the row's", item->sysid_string, "P25_45564006293_10_11");
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -4170,10 +4174,10 @@ test_system_identity_freezes_at_the_end(void) {
     return rc;
 }
 
-// The row takes the system and site whole from the record of the carrier the call began on: the record keeps them one
-// consistent observation, so a part the record dropped because a newer one named another site or system (an IDAS SCCH
-// site ID that disagreed with the Type-D system ID, an EDACS system change) goes from the row too, while the call is
-// active and at its end.
+// The row takes the system and site whole from the record the call was heard under. A note naming another site or
+// system (an IDAS SCCH site ID that disagrees with the Type-D system ID, an EDACS system change, another NAC on the
+// carrier) starts another record identity (its epoch), so the row keeps the consistent observation it took last, never
+// a mix of the two, while the call is active and at its end.
 static int
 test_system_identity_takes_dependent_invalidations(void) {
     static dsd_opts opts;
@@ -4195,7 +4199,7 @@ test_system_identity_takes_dependent_invalidations(void) {
             watchdog_event_current(&opts, &state, 0);
         }
         rc |= expect_has_substr(at_end ? "idas other site at the end" : "idas other site", item->sysid_string,
-                                "NXDN_0_43_RAN");
+                                "NXDN_1234_42_RAN");
 
         reset_fixture(&opts, &state, event_history);
         dsd_rxid_note_edacs_site(&state, 12U);
@@ -4213,8 +4217,28 @@ test_system_identity_takes_dependent_invalidations(void) {
             watchdog_event_current(&opts, &state, 0);
         }
         rc |= expect_int(at_end ? "edacs system change at the end" : "edacs system change",
-                         item->sys_id1 == 0U && item->sys_id2 == 0U && item->sys_id3 == 0x46U, 1);
-        rc |= expect_has_substr("edacs system change site", item->sysid_string, "EDACS_SITE_000");
+                         item->sys_id1 == 12U && item->sys_id2 == 3U && item->sys_id3 == 0x45U, 1);
+        rc |= expect_has_substr("edacs system change site", item->sysid_string, "EDACS_SITE_012");
+
+        /* Another NAC on the carrier during a P25 call (a co-channel system): the record drops the old system, and the
+           refresh that ends the call finds a record that is no longer the call's. */
+        reset_fixture(&opts, &state, event_history);
+        state.nac = 0x293;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+        dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+        dsd_rxid_note_p25_site(&state, 0x348U, 3U, 21U);
+        item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+        rc |= expect_str_eq("p25 system", item->sysid_string, "P25_BEE00348293_3_21");
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x294U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_str_eq(at_end ? "another nac: the ended call keeps its system" : "another nac: the row keeps it",
+                            item->sysid_string, "P25_BEE00348293_3_21");
     }
     dsd_state_ext_free_all(&state);
     return rc;

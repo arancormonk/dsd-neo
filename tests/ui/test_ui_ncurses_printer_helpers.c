@@ -3788,6 +3788,31 @@ test_identity_lines_read_the_received_record(void) {
     ui_render_p25_dmr_header(opts, state);
     assert_capture_equals("| DMR BS - DCC: 01; Hytera XPT; Free LCN: 4; ");
 
+    /* A conventional Hytera or Tait carrier names its vendor, not a trunking brand: shown as the header always showed
+       it, from the record (a feature set ID no vendor name is known for shows nothing). */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_vendor(state, 0x68U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; Hytera; ");
+    dsd_rxid_note_dmr_vendor(state, 0x58U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; Tait; ");
+    dsd_rxid_note_dmr_vendor(state, 0x10U);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dsd_rxid_note_dmr_rest_lsn(state, 3U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; Motorola; Capacity Plus; Rest LSN: 03; Freq: 451.000000 MHz");
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_vendor(state, 0x99U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; ");
+
     /* EDACS: the site header only once this carrier named a site. */
     dsd_rxid_reset(state);
     state->edacs_site_id = 9;

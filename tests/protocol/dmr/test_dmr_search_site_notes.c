@@ -241,6 +241,19 @@ cap_plus_lc(dsd_opts* opts, dsd_state* state, int rest, uint32_t crc_correct) {
     dmr_flco(opts, state, lc, crc_correct, &irrecoverable, 1);
 }
 
+/* A conventional group voice LC (FLCO 0x00) under the vendor feature set @p fid, its check passed or not. */
+static void
+vendor_group_lc(dsd_opts* opts, dsd_state* state, int fid, uint32_t crc_correct) {
+    uint8_t lc[96];
+    DSD_MEMSET(lc, 0, sizeof(lc));
+    put_bits(lc, 2, 0x00, 6);
+    put_bits(lc, 8, (uint32_t)fid, 8);
+    put_bits(lc, 24, 100, 24);
+    put_bits(lc, 48, 1234, 24);
+    uint32_t irrecoverable = 0;
+    dmr_flco(opts, state, lc, crc_correct, &irrecoverable, 1);
+}
+
 /* A Hytera XPT site status CSBK (opcode 0x0A, FID 0x68) naming free LCN @p free_lcn. */
 static void
 xpt_site_status(dsd_opts* opts, dsd_state* state, int free_lcn) {
@@ -341,7 +354,8 @@ test_received_identity(dsd_opts* opts, dsd_state* state) {
     state->dmr_rest_channel = 5;
     cap_plus_status(opts, state, 5);
     rc |= expect_int("rx-id cap+ status rest lsn (unchanged repeat)", id->dmr_rest_lsn, 5);
-    rc |= expect_int("rx-id cap+ status parts", (long)id->valid, DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_BRAND);
+    rc |= expect_int("rx-id cap+ status parts", (long)id->valid,
+                     DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_VENDOR);
     rc |= expect_text("rx-id cap+ brand", id->dmr_brand, "Capacity Plus");
     clear_record(state);
     cap_plus_lc(opts, state, 9, 0U);
@@ -362,6 +376,30 @@ test_received_identity(dsd_opts* opts, dsd_state* state) {
                      DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND);
     rc |= expect_int("rx-id cap+ short lc rest lsn", id->dmr_rest_lsn, 4);
     rc |= expect_text("rx-id cap+ short lc site", id->dmr_site_text, "Cap+ \xC2\xB7 Site 2");
+    // Another Capacity Plus site whose short LC names no rest channel: the rest channel the old site named goes.
+    clear_record(state);
+    slco_cap_plus(opts, state, 5, 1, 0);
+    slco_cap_plus(opts, state, 0, 2, 0);
+    rc |= expect_text("rx-id cap+ other site", id->dmr_site_text, "Cap+ \xC2\xB7 Site 2");
+    rc |= expect_int("rx-id cap+ other site drops the old rest lsn", (long)(id->valid & DSD_RXID_DMR_REST_LSN), 0);
+
+    // The vendor a checked LC or CSBK names (its feature set ID), apart from any trunking brand; one RAS accepted or one
+    // that failed its check names none.
+    clear_record(state);
+    vendor_group_lc(opts, state, 0x68, 0U);
+    state->currentslot = 0;
+    state->event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    vendor_group_lc(opts, state, 0x68, 1U);
+    state->event_crc_invalid[0] = 0;
+    rc |= expect_int("rx-id unchecked lc names no vendor", (long)(id->valid & DSD_RXID_DMR_VENDOR), 0);
+    vendor_group_lc(opts, state, 0x68, 1U);
+    rc |=
+        expect_int("rx-id checked lc vendor", (long)(id->valid & DSD_RXID_DMR_VENDOR) != 0 ? id->dmr_vendor : -1, 0x68);
+    rc |= expect_int("rx-id a vendor is no trunking brand", (long)(id->valid & DSD_RXID_DMR_BRAND), 0);
+    clear_record(state);
+    cap_plus_status(opts, state, 5);
+    rc |= expect_int("rx-id checked csbk vendor", (long)(id->valid & DSD_RXID_DMR_VENDOR) != 0 ? id->dmr_vendor : -1,
+                     0x10);
 
     // Hytera XPT: the site status CSBK, the call alert LC and the short LC each name the site's free channel, which the
     // record takes from a checked message only.
