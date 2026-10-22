@@ -581,8 +581,9 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     }
     state->receive_codes_fresh_freq = freq;
     /* The voice channel belongs to the control channel's system: the received identity keeps the system and drops the
-       control channel's access code. */
-    dsd_rxid_trunk_tune(state);
+       control channel's access code. The P25 watchdog's tick runs this too, on its own thread: the decoder thread
+       applies the drop (dsd_rxid_apply_trunk_tune()). */
+    dsd_rxid_request_trunk_tune(state);
 }
 
 /* Send the demodulator and passband a rigctl peer is asked for under the settings in force (issues #526, #621), which
@@ -1039,8 +1040,9 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     // Do not set trunk_is_tuned here; this is a CC hunt action.
     state->trunk_cc_freq = (long int)freq;
     /* Back to (or on to) the system's control channel: the received identity keeps the system, and the voice channel's
-       access code goes with the voice channel. */
-    dsd_rxid_trunk_tune(state);
+       access code goes with the voice channel, once the decoder thread applies the drop (the P25 watchdog's returns
+       run here on its thread). */
+    dsd_rxid_request_trunk_tune(state);
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     return result;

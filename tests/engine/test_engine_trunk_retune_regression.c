@@ -2053,8 +2053,9 @@ main(void) {
     opts->receive.filters[DSD_RECEIVE_NAC].enabled = 0;
 
     /* The received identity across a trunk follow: the voice channel belongs to the control channel's system, so the
-       record keeps the system and drops the carrier's access code, in both directions. A refused tune leaves the
-       receiver, and the record, where they were. */
+       record keeps the system and drops the carrier's access code, in both directions. The P25 watchdog's tick runs
+       these tunes on its own thread, so an accepted one only requests the drop, which the decoder thread applies
+       (dsd_rxid_apply_trunk_tune()). A refused tune leaves the receiver, and the record, where they were. */
     const uint32_t rxid_system = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
     dsd_rxid_reset(state);
     dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
@@ -2064,13 +2065,43 @@ main(void) {
     g_setfreq_result = false;
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->rx_id_trunk_tune_pending == 0U);
+    dsd_rxid_apply_trunk_tune(state);
     assert(state->rx_id.valid == (rxid_system | DSD_RXID_ACCESS) && state->rx_id.access == 0x293U);
     g_setfreq_result = true;
+    const dsd_received_identity before_follow = state->rx_id;
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id.valid == before_follow.valid && state->rx_id.fresh == before_follow.fresh
+           && state->rx_id.epoch == before_follow.epoch && state->rx_id.access == 0x293U);
+    assert(state->rx_id_trunk_tune_pending == 1U);
+    dsd_rxid_apply_trunk_tune(state);
     assert(state->rx_id.valid == rxid_system && state->rx_id.p25_wacn == 0xBEE00U && state->rx_id.p25_site == 3U);
+    assert(state->rx_id_trunk_tune_pending == 0U);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_rxid_apply_trunk_tune(state);
     assert(state->rx_id.valid == rxid_system && state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25);
+    opts->trunk_is_tuned = 0;
+
+    /* The watchdog's return to the control channel (the return-to-CC hook): a refused one keeps the voice channel's
+       access code, an accepted one drops it once the decoder applies it, and writes nothing of the record itself. */
+    opts->trunk_enable = 1;
+    state->p25_cc_freq = 851000000;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    opts->trunk_is_tuned = 1;
+    g_setfreq_result = false;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_rxid_apply_trunk_tune(state);
+    assert(state->rx_id.valid == (rxid_system | DSD_RXID_ACCESS) && state->rx_id.access == 0x293U);
+    g_setfreq_result = true;
+    const dsd_received_identity before_return = state->rx_id;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id.valid == before_return.valid && state->rx_id.fresh == before_return.fresh
+           && state->rx_id.epoch == before_return.epoch && state->rx_id.access == 0x293U);
+    dsd_rxid_apply_trunk_tune(state);
+    assert(state->rx_id.valid == rxid_system && state->rx_id.p25_sysid == 0x1A3U);
+    opts->trunk_enable = 0;
+    state->p25_cc_freq = 0;
     opts->trunk_is_tuned = 0;
 
     /* RTL input driven by rigctl still needs the generic output drain because

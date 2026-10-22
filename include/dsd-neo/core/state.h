@@ -2245,6 +2245,11 @@ struct dsd_state {
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
+    /* 1 while an accepted trunking retune's drop of the access code waits for the decoder thread to apply it to rx_id
+       (dsd_rxid_request_trunk_tune(), dsd_rxid_apply_trunk_tune()): the P25 watchdog's retunes run on its thread.
+       Written and read under the P25 SM tick guard, or on the decoder thread where no watchdog tick runs; outside every
+       snapshot copy range (ui_snapshot.c pins it), so no frontend copy reads it. */
+    uint8_t rx_id_trunk_tune_pending;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];

@@ -177,6 +177,9 @@ _Static_assert(offsetof(dsd_state, tetra_pub) >= offsetof(dsd_state, vertex_ks_c
 _Static_assert(offsetof(dsd_state, rx_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(rx_id) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "rx_id must ride the vertex_ks_count..ui_msg range");
+/* The P25 watchdog's retunes write it under the tick guard; the publication copies without the guard. */
+_Static_assert(offsetof(dsd_state, rx_id_trunk_tune_pending) >= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "rx_id_trunk_tune_pending must stay outside every snapshot copy range");
 
 /* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
  * above; the scan-list heap tail past it needs an explicit deep copy.

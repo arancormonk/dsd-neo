@@ -31,6 +31,11 @@ void dsd_engine_tetra_trunk_tick_locked(dsd_opts* opts, dsd_state* state);
 /** Reset decoder buffers and protocol state after calls have been finalized.
  * Performs no scanner step or return-to-control-channel tuning. */
 void dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state);
+/** The no-carrier pass's step for the received identity (dsd_state::rx_id): a trunking retune's drop still pending is
+ * applied and the record goes stale, under the P25 SM tick guard, which the watchdog's call ends read the record under:
+ * taken here unless @p guard_held, and when another holder has it the step is left to the next pass. noCarrier() runs
+ * it last. */
+void dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held);
 /** Forget the codes the carrier on air decoded (issue #575): the DMR colour code with the confidence lock it pairs with,
  * the NXDN RAN with its stand-in mark, the dPMR colour code, the Phase 1 NAC and the proof of the Phase 2 seed, never
  * `p2_cc` itself. The no-carrier reset runs it outside trunk scan, whose per-target snapshots keep these, and the

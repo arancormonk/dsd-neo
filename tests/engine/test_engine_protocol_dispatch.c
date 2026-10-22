@@ -53,6 +53,9 @@ static int g_seen_dispatch_synctype = -2;
 static uint32_t g_seen_dispatch_carrier_seq = 0xFFFFFFFFU;
 /* The handler borrows another protocol's decoder, as YSF and scrambled dPMR do. */
 static int g_borrow_synctype_during_handler = 0;
+/* The handler notes a P25 NAC (its frame's checked note), then, when set, follows a grant (an accepted retune). */
+static int g_note_nac_during_handler = 0;
+static int g_tune_during_handler = 0;
 
 static dsd_frame_verdict
 record_handler(int handler_id) {
@@ -71,6 +74,12 @@ record_handler(int handler_id) {
     }
     if (g_boundary_during_handler && g_dispatch_state != NULL) {
         g_dispatch_state->carrier_seq++;
+    }
+    if (g_note_nac_during_handler && g_dispatch_state != NULL) {
+        dsd_rxid_note_access(g_dispatch_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x5A5U);
+    }
+    if (g_tune_during_handler && g_dispatch_state != NULL) {
+        dsd_rxid_request_trunk_tune(g_dispatch_state);
     }
     if (g_interrupt_during_handler && g_dispatch_state != NULL) {
         g_dispatch_state->input_interrupted = 1;
@@ -351,9 +360,48 @@ check_received_identity_follows_the_protocol(void) {
     free(opts);
 }
 
+/* An accepted retune made between frames (the P25 watchdog's return to the control channel, on its thread) only
+   requests the access code's drop: processFrame() applies it before the frame notes anything, so the code the carrier
+   it reached sends is kept and is that carrier's first, not a change that drops the system. One the frame makes itself
+   (a grant followed) is applied when it ends: what the frame noted came from the carrier left. */
+static void
+check_trunk_tune_drop_applied_around_the_frame(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    const uint32_t system = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID;
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_request_trunk_tune(state);
+    assert(state->rx_id.valid == (system | DSD_RXID_ACCESS) && state->rx_id.access == 0x293U);
+
+    state->synctype = DSD_SYNC_P25P1_POS;
+    g_dispatch_state = state;
+    g_note_nac_during_handler = 1;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_called_handler == TEST_HANDLER_P25P1);
+    assert(state->rx_id_trunk_tune_pending == 0U);
+    assert(state->rx_id.valid == (system | DSD_RXID_ACCESS) && state->rx_id.access == 0x5A5U);
+    assert(state->rx_id.p25_wacn == 0xBEE00U);
+
+    g_tune_during_handler = 1;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    g_tune_during_handler = 0;
+    g_note_nac_during_handler = 0;
+    g_dispatch_state = NULL;
+    assert(state->rx_id_trunk_tune_pending == 0U);
+    assert(state->rx_id.valid == system && state->rx_id.p25_sysid == 0x1A3U);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     check_received_identity_follows_the_protocol();
+    check_trunk_tune_drop_applied_around_the_frame();
     check_public_handler_table();
     check_dispatch_context();
     check_verdict_default_is_productive();

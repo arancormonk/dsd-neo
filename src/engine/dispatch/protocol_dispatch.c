@@ -44,6 +44,9 @@ processFrame(dsd_opts* opts, dsd_state* state) {
      * consumed nothing, so crediting it changes nothing either way. */
     state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
 
+    /* An accepted retune made since the last frame, the P25 watchdog's included, drops the carrier's access code before
+       this frame notes anything of the carrier it reached. */
+    dsd_rxid_apply_trunk_tune(state);
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
         /* A frame of another protocol family replaces the identity the last one left, also when the new protocol
@@ -71,6 +74,8 @@ processFrame(dsd_opts* opts, dsd_state* state) {
             state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
         }
     }
+    /* And one the frame made (a grant followed): what the frame noted after it came from the carrier left. */
+    dsd_rxid_apply_trunk_tune(state);
 }
 
 const dsd_protocol_handler dsd_protocol_handlers[] = {

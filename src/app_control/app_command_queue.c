@@ -1339,13 +1339,40 @@ ui_end_calls(dsd_opts* opts, dsd_state* state) {
     dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
 }
 
+/* Whether the command being applied holds the P25 SM tick guard (apply_cmd()): a replay re-plan from a mode change
+   (decode_mode_replan_replay()) restarts the stream under it, and a change of the received identity
+   (ui_rxid_guard_enter()) is made under it, each taking it only when the command does not. */
+static int g_apply_cmd_guard_held;
+
+/* The received identity (dsd_state::rx_id) changes under the P25 SM tick guard: the watchdog's releases end calls, which
+   keep the record as it stood (dsd_call_snapshot::ended_rx_id), under it. Taken unless @p guard_held; returns whether it
+   was, for ui_rxid_guard_leave(). */
+static int
+ui_rxid_guard_enter(int guard_held) {
+    if (guard_held) {
+        return 0;
+    }
+    p25_sm_tick_guard_enter();
+    return 1;
+}
+
+static void
+ui_rxid_guard_leave(int taken) {
+    if (taken) {
+        p25_sm_tick_guard_leave();
+    }
+}
+
 /* A tune the user asked for while trunking keeps the decoder's trunking state (it is not a carrier boundary), but the
    identity received before it is no longer this carrier's (D4: any user move clears it): the record starts over, after
-   the calls the move ended took theirs, and what the frame sync holds buffered from the channel left heads no frame. */
+   the calls the move ended took theirs, and what the frame sync holds buffered from the channel left heads no frame.
+   Under the tick guard, which the caller holds when @p guard_held. */
 static void
-ui_user_move_forgets_identity(dsd_state* state) {
+ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
+    const int taken = ui_rxid_guard_enter(guard_held);
     dsd_rxid_reset(state);
     dsd_state_note_carrier_change(state);
+    ui_rxid_guard_leave(taken);
 }
 
 #ifdef USE_RADIO
@@ -1850,7 +1877,7 @@ static int
 ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
     if (dsd_trunk_tune_result_is_ok(result)) {
-        ui_user_move_forgets_identity(state); /* the selection ended the calls on the channel left */
+        ui_user_move_forgets_identity(state, g_apply_cmd_guard_held); /* the selection ended the calls left */
         ui_set_toast(state, 3, "%s: P25 control channel -> %u Hz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", hz);
         return UI_CMD_APPLY_COMPLETED;
@@ -3182,7 +3209,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
         return UI_CMD_APPLY_FAILED;
     }
     reset_call_tracking(opts, state, 1);
-    ui_user_move_forgets_identity(state);
+    ui_user_move_forgets_identity(state, p25_live);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
     if (p25_live) {
@@ -3301,7 +3328,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
            (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
-        ui_user_move_forgets_identity(state);
+        ui_user_move_forgets_identity(state, p25_live);
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
@@ -3359,7 +3386,7 @@ apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_
            (issue #575), but the user moved, so what was received before is not this channel's identity. */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
-        ui_user_move_forgets_identity(state);
+        ui_user_move_forgets_identity(state, p25_live);
     }
     hand_tetra_sm_over(opts, state);
     cycle_rearms_cold_start_window(opts, state, p25_live);
@@ -5053,7 +5080,9 @@ ui_forget_undecoded_identity(dsd_opts* opts, dsd_state* state) {
     }
     dsd_event_sync_slot(opts, state, 0U);
     dsd_event_sync_slot(opts, state, 1U);
+    const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
     dsd_rxid_note_decoder_settings(opts, state);
+    ui_rxid_guard_leave(taken);
 }
 
 /*
@@ -5472,10 +5501,6 @@ decode_mode_drop_old_analog_block(const dsd_opts* opts, dsd_state* state, int wa
         dsd_symbol_analog_block_reset(state);
     }
 }
-
-/* Whether the command being applied holds the P25 SM tick guard (apply_cmd()): a replay re-plan from a mode change
-   (decode_mode_replan_replay()) restarts the stream under it, taking it only when the command does not. */
-static int g_apply_cmd_guard_held;
 
 #ifdef USE_RADIO
 /* What a mode change's replay re-plan reopened at (decode_mode_replan_replay()), for its toast. */
@@ -6074,8 +6099,12 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             state->nxdn_bw = 0;
             /* And what the received identity holds of them: the DMR trunking site, keeping the colour code the reset
                keeps, and the NXDN location and IDAS site with the RAN. */
-            dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
-            dsd_rxid_forget_system(state, DSD_RXID_FAMILY_NXDN, 1);
+            {
+                const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
+                dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+                dsd_rxid_forget_system(state, DSD_RXID_FAMILY_NXDN, 1);
+                ui_rxid_guard_leave(taken);
+            }
             return 1;
         case DSD_APP_CMD_TCP_CONNECT_AUDIO: {
             /* A copy: the switch rewrites tcp_hostname once it connects. */
@@ -6718,7 +6747,9 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     ui_end_calls(opts, state);
     /* The site and control channel LCN the received identity holds were read under the other addressing mode; the
        calls just ended keep the site they ended with. */
+    const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
     dsd_rxid_note_decoder_settings(opts, state);
+    ui_rxid_guard_leave(taken);
 }
 
 static int

@@ -125,6 +125,7 @@ void
 dsd_rxid_reset(dsd_state* state) {
     if (state != NULL) {
         rxid_clear(&state->rx_id);
+        state->rx_id_trunk_tune_pending = 0U; /* a retune of the carrier left, whose code is gone with the rest */
     }
 }
 
@@ -151,6 +152,21 @@ void
 dsd_rxid_trunk_tune(dsd_state* state) {
     if (state != NULL) {
         rxid_drop(&state->rx_id, DSD_RXID_ACCESS);
+    }
+}
+
+void
+dsd_rxid_request_trunk_tune(dsd_state* state) {
+    if (state != NULL) {
+        state->rx_id_trunk_tune_pending = 1U;
+    }
+}
+
+void
+dsd_rxid_apply_trunk_tune(dsd_state* state) {
+    if (state != NULL && state->rx_id_trunk_tune_pending != 0U) {
+        state->rx_id_trunk_tune_pending = 0U;
+        dsd_rxid_trunk_tune(state);
     }
 }
 

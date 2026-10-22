@@ -3054,6 +3054,7 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     }
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
+    dsd_engine_no_carrier_identity_stale(state, guard_held);
 }
 
 void
@@ -3092,8 +3093,26 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
     no_carrier_reset_m17_and_sample_buffers(state);
-    /* The received identity outlives the gap, as the last one heard, but no longer reads as live. */
+}
+
+void
+dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
+    if (!state) {
+        return;
+    }
+    /* The P25 watchdog's call ends read the record under the tick guard. A pass that finds it taken leaves the step to
+       the next one, as it leaves the playout's drain (no_carrier_drain_playout()): the record stays as the last frame
+       left it, and a retune's drop is applied before the next frame's notes all the same. */
+    if (!guard_held && !p25_sm_tick_guard_try_enter()) {
+        return;
+    }
+    /* The received identity outlives the gap, as the last one heard, but no longer reads as live; a retune accepted
+       since the last frame drops the access code of the carrier it left. */
+    dsd_rxid_apply_trunk_tune(state);
     dsd_rxid_mark_stale(state);
+    if (!guard_held) {
+        p25_sm_tick_guard_leave();
+    }
 }
 
 // One voice chain gain serves both output formats (issue #653), so its setting and starting level do too.
@@ -3263,6 +3282,8 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
         || nxdn_cc_hunt_due(opts, state)) {
         dsd_engine_cold_start_tick_locked(opts, state);
     }
+    /* A retune these ticks accepted, before the next frame's first read. */
+    dsd_rxid_apply_trunk_tune(state);
     return frame_dispatchable;
 }
 

@@ -7429,6 +7429,37 @@ add_test(
 )
 set_tests_properties(ENGINE_P25_POLICY_STORE_GUARD PROPERTIES TIMEOUT 180)
 
+# The received identity across the P25 watchdog's retunes and the decoder's passes, run on two threads at once (a
+# ThreadSanitizer build checks them). The rigctl peer is replaced through the linker, so GNU ld and lld only.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_rxid_watchdog_race
+        engine/test_engine_rxid_watchdog_race.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_rxid_watchdog_race
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_rxid_watchdog_race
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            ${LIBS}
+            dsd-neo_feature_radio
+    )
+    add_test(
+        NAME ENGINE_RXID_WATCHDOG_RACE
+        COMMAND dsd-neo_test_engine_rxid_watchdog_race
+    )
+endif()
+
 # Compile the queue here to enable private storage-erasure probes without adding
 # diagnostic accessors to the production library or public frontend API.
 add_executable(

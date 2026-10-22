@@ -2931,6 +2931,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
+            dsd_rxid_apply_trunk_tune(state);
             coord->rollback_rx_id = state->rx_id;
             coord->forced_visit_release = 0;
         }
@@ -3011,6 +3012,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     double now_m = trunk_scan_now_m();
     dsd_trunk_scan_snapshot* original_snapshot = &coord->scratch_snapshot;
     trunk_scan_save_snapshot(state, original_snapshot);
+    dsd_rxid_apply_trunk_tune(state);
     coord->rollback_rx_id = state->rx_id;
     size_t original_active = coord->active;
     int save_current = 1;
@@ -3064,6 +3066,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(coord->targets[coord->active].target.type));
     trunk_scan_restore_snapshot(state, original_snapshot);
     state->rx_id = coord->rollback_rx_id;
+    state->rx_id_trunk_tune_pending = 0U; /* a retune of the switches undone, whose carriers the receiver left */
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active]);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
     (void)dsd_scan_key_change_commit(state, &rollback);

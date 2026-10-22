@@ -44,13 +44,20 @@
  * note is refused, whichever decoder's own carrier check comes after it.
  *
  * Lifetime: dsd_rxid_reset() at every carrier boundary and trunk-scan target switch; dsd_rxid_note_sync() at frame
- * sync drops a record of another protocol family; dsd_rxid_trunk_tune() on every accepted trunking retune drops the
- * carrier's access code and keeps the system (a voice channel belongs to its control channel's system).
+ * sync drops a record of another protocol family; every accepted trunking retune drops the carrier's access code and
+ * keeps the system (a voice channel belongs to its control channel's system), requested by the engine's trunk tuning
+ * (dsd_rxid_request_trunk_tune()) and applied by the decoder thread (dsd_rxid_apply_trunk_tune()).
  * Commands that forget or reinterpret a site forget it here too: the DMR reset (dsd_rxid_forget_system()), and a
  * committed change of the decode mode or the EDACS addressing mode (dsd_rxid_note_decoder_settings()).
  *
  * Plain integers and characters only: the record rides the dsd_state snapshot copy range (ui_snapshot.c pins it).
- * Written on the decoder thread only. The type stays out of state.h so app-control's public views can name it.
+ *
+ * Threading: written on the decoder thread only, and wherever the P25 watchdog's tick could run beside it, under the
+ * P25 SM tick guard: a frame's notes run in processFrame() under it, and the no-carrier pass, the trunk-scan switches
+ * and the commands that reset or forget take it. The watchdog's tick reads the record under the guard (the calls its
+ * release ends keep it, dsd_call_snapshot::ended_rx_id) and writes nothing of it: its accepted retunes request the
+ * access code's drop, which the decoder thread applies (dsd_rxid_apply_trunk_tune()). The decoder thread reads it
+ * anywhere (frontend publication included). The type stays out of state.h so app-control's public views can name it.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_RECEIVED_IDENTITY_H_
@@ -185,8 +192,18 @@ void dsd_rxid_note_sync(dsd_state* state, int synctype);
 /** The no-carrier pass: every part goes stale; the values stay. */
 void dsd_rxid_mark_stale(dsd_state* state);
 /** An accepted trunking retune (to a voice channel, or back to the control channel): the access code belonged to
- * the carrier left; the system stays. A refused retune must not call this. */
+ * the carrier left; the system stays. A refused retune must not call this. Decoder thread only: the engine's trunk
+ * tuning, which the P25 watchdog also runs, requests it instead (dsd_rxid_request_trunk_tune()). */
 void dsd_rxid_trunk_tune(dsd_state* state);
+/** An accepted trunking retune made under the P25 SM tick guard, on the decoder thread or the P25 watchdog's: records
+ * the drop dsd_rxid_trunk_tune() makes (dsd_state::rx_id_trunk_tune_pending) and writes nothing of the record, which
+ * the decoder thread applies (dsd_rxid_apply_trunk_tune()). A refused retune must not call this. */
+void dsd_rxid_request_trunk_tune(dsd_state* state);
+/** Decoder thread, under the P25 SM tick guard: applies a requested retune's drop (dsd_rxid_trunk_tune()) once. The
+ * decode loop applies it before a frame's first note and after its handler and ticks, the no-carrier pass before the
+ * record goes stale, and a trunk-scan rollback before it keeps the record; a retune completed between frames is
+ * applied before anything the carrier it reached sends is noted. dsd_rxid_reset() forgets a request. */
+void dsd_rxid_apply_trunk_tune(dsd_state* state);
 
 /** The access code of @p kind (dsd_access_code_kind) a checked message of @p family carried on this carrier. Another
  * value than a valid one drops the family's other parts (another system shares the carrier); M17 drops nothing. */

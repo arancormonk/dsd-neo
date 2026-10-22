@@ -1462,19 +1462,34 @@ suite runs under this compiler.
   another carrier left), so every frontend shows the same identity and none of another carrier's. Protocol code fills it
   through `dsd_rxid_note_*()` only where a message passed its own check, with that message's own values (Protocols,
   "Received identity note points"); content accepted only because `-F` or RAS relaxed a check keeps decoding and
-  following but is never noted. Each part has a valid and a fresh bit. Lifetime, all on the decoder thread:
+  following but is never noted. Each part has a valid and a fresh bit. Threading: the decoder thread owns the record
+  and is its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
+  guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
+  user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because
+  the watchdog's tick reads the record under that guard (the calls its release ends keep it as
+  `dsd_call_snapshot::ended_rx_id`). The watchdog writes nothing of it: an accepted retune it makes through the trunk
+  tuning hooks only requests the access code's drop (`dsd_rxid_request_trunk_tune()`, the guard-held
+  `dsd_state::rx_id_trunk_tune_pending`, outside every snapshot copy range), which the decoder thread applies
+  (`dsd_rxid_apply_trunk_tune()`). Frontend publication reads the record on the decoder thread without the guard.
+  Lifetime, all on the decoder thread:
   `dsd_engine_carrier_boundary()` resets it (every boundary kind); `trunk_scan_switch_to()` resets it on every target
   switch, and no target snapshot holds one (a revisited target is last known, not received), while a rollback after
   every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
   taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
-  the record; the no-carrier pass (`dsd_engine_reset_no_carrier_state()`) marks every part stale and keeps the values;
-  every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel return
-  or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), calls `dsd_rxid_trunk_tune()`, which drops the access code and
-  keeps the system (the protocols reach both through the trunk tuning hooks, so a refused tune changes nothing). The
-  control channel frequency part (`cc_freq_hz`) is the tuner's frequency (`dsd_opts_tuned_freq_hz()`, so none off a
-  radio input, a rigctl peer on audio input included) at a checked message that confirms this carrier as the control
-  channel, noted before the message's handlers can retune. A note made while a dispatched frame is lost
+  the record; the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
+  values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control
+  channel return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops
+  the access code and keeps the system (the protocols and the P25 watchdog reach both through the trunk tuning hooks, so
+  a refused tune changes nothing). The decoder applies the request, under the guard, at the start of `processFrame()` (before the frame's first
+  note, so a code the carrier the retune reached sends is that carrier's first and never erased by the drop), at its end
+  and after the ticks of the synced-frame dispatch (a grant the frame followed: what it noted after it came from the
+  carrier left), in the no-carrier step before the record goes stale, and before a trunk-scan advance or forced release
+  keeps `rollback_rx_id`; a reset forgets it, and a rollback's restore clears it (the switches undone left those
+  carriers). The control channel frequency part (`cc_freq_hz`) is the tuner's frequency (`dsd_opts_tuned_freq_hz()`,
+  so none off a radio input, a rigctl peer on audio input included) at a checked message that confirms this carrier as
+  the control channel, noted before the message's handlers can retune. A note made while a dispatched frame is lost
   (`frame_dispatch_active` and `dsd_state_frame_read_lost()` against `frame_dispatch_carrier_seq`: a carrier boundary
   moved the count while the frame was read, or an input interruption cut it) is refused, so a frame split by an I/Q
   replay retune never notes into the record the boundary reset, whichever decoder's own carrier check comes later. That
@@ -1522,8 +1537,9 @@ suite runs under this compiler.
   the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change
   no received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
   Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
-  `ENGINE_PROTOCOL_DISPATCH`, and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
-  conventional carrier of another system).
+  `ENGINE_PROTOCOL_DISPATCH`, `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's
+  notes, no-carrier step and reads, race-free under the `tsan-debug` preset), and end to end
+  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -5024,7 +5040,10 @@ the message passed its own check, with that message's values, an unchanged repea
   code a slot type or EMB split by a carrier boundary would carry is neither noted nor fed to the confidence lock
   (`dmr_data_carrier_left()`, `dsd_state_frame_read_lost()` before the decode). A CSBK or full LC counts as checked only when the slot's `event_crc_invalid` is clear, so one RAS accepted
   under `-F` (and an MBC whose header CRC failed) is decoded and followed but names nothing (`dmr_csbk_crc_checked()`,
-  `dmr_flco_crc_checked()`); a short LC reaches its handler only after Hamming(17,12,3) and its CRC-8.
+  `dmr_flco_crc_checked()`); a short LC reaches its handler only after Hamming(17,12,3) and its CRC-8. Nor does the
+  P_CLEAR the encryption lockout synthesizes to release the channel (`dmr_cspdu_release_channel()`, FID 0xFF, handled as
+  a checked CSBK): it releases as a received one would, and `dmr_csbk_crc_checked()` refuses every note while it runs.
+  NXDN's synthesized lockout DISC reaches no note point (its handler notes nothing), and P25 synthesizes no message.
 - NXDN: the RAN of a CRC-passed CAC (with the control channel, before its elements can retune), FACCH2/UDCH, and a SACCH
   once the transmission is confirmed (`nxdn_deperm.c`), never the RAN a site code implies; the Type-C location at the
   location handler's own gate (confirmed, category not reserved); the IDAS area bit and site ID under
