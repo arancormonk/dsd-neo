@@ -46,17 +46,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_crc_provenance.h"
 #include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* 1 while dmr_cspdu() handles the P_CLEAR the decoder synthesized itself (dmr_cspdu_release_channel()). Decoder thread
+   only. */
+static int s_dmr_cspdu_synthesized;
+
 /* Whether the CSBK being handled passed its own CRC. dmr_cspdu() also handles one -F accepted by RAS and an MBC whose
-   header CRC failed, which the burst handler flags for the slot: they keep decoding and following, but name no identity
-   in the received identity record. */
+   header CRC failed, which the burst handler flags for the slot, and a P_CLEAR the encryption lockout synthesized,
+   which was never received: they keep decoding, following and releasing, but name no identity in the received
+   identity record. */
 static int
 dmr_csbk_crc_checked(const dsd_state* state) {
-    return state->event_crc_invalid[state->currentslot & 1] == 0U;
+    return !s_dmr_cspdu_synthesized && state->event_crc_invalid[state->currentslot & 1] == 0U;
 }
 
 /* The trunking brand a checked CSBK names, to the received identity record. */
@@ -2801,6 +2807,20 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+void
+dmr_cspdu_release_channel(dsd_opts* opts, dsd_state* state) {
+    // The bit buffer must span the full 12-octet CSPDU: handlers may read bits ahead of their opcode check.
+    uint8_t pdu[12];
+    uint8_t pdu_bits[96];
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    DSD_MEMSET(pdu_bits, 0, sizeof(pdu_bits));
+    pdu[0] = 46; // P_CLEAR
+    pdu[1] = 255;
+    s_dmr_cspdu_synthesized = 1;
+    dmr_cspdu(opts, state, pdu_bits, pdu, 1, 0);
+    s_dmr_cspdu_synthesized = 0;
 }
 
 //translate special gateway identifier addresses

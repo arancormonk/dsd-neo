@@ -1479,19 +1479,19 @@ suite runs under this compiler.
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
   the record; the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
-  values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control
-  channel return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops
-  the access code and keeps the system (the protocols and the P25 watchdog reach both through the trunk tuning hooks, so
-  a refused tune changes nothing). The decoder applies the request, under the guard, at the start of `processFrame()` (before the frame's first
-  note, so a code the carrier the retune reached sends is that carrier's first and never erased by the drop), at its end
-  and after the ticks of the synced-frame dispatch (a grant the frame followed: what it noted after it came from the
-  carrier left), in the no-carrier step before the record goes stale, and before a trunk-scan advance or forced release
-  keeps `rollback_rx_id`; a reset forgets it, and a rollback's restore clears it (the switches undone left those
-  carriers). The control channel frequency part (`cc_freq_hz`) is the tuner's frequency (`dsd_opts_tuned_freq_hz()`,
-  so none off a radio input, a rigctl peer on audio input included) at a checked message that confirms this carrier as
-  the control channel, noted before the message's handlers can retune. A note made while a dispatched frame is lost
-  (`frame_dispatch_active` and `dsd_state_frame_read_lost()` against `frame_dispatch_carrier_seq`: a carrier boundary
-  moved the count while the frame was read, or an input interruption cut it) is refused, so a frame split by an I/Q
+  values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
+  return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
+  access code and keeps the system (the protocols and the P25 watchdog reach both through the trunk tuning hooks, so a
+  refused tune changes nothing). The decoder applies the request, under the guard, at the start of `processFrame()`
+  (before the frame's first note, so a code the carrier the retune reached sends is that carrier's first and never
+  erased by the drop), at its end and after the ticks of the synced-frame dispatch (a grant the frame followed: what it
+  noted after it came from the carrier left), in the no-carrier step before the record goes stale, and before a
+  trunk-scan advance or forced release keeps `rollback_rx_id`; a reset forgets it, and a rollback's restore clears it
+  (the switches undone left those carriers). The control channel frequency part (`cc_freq_hz`) is the tuner's frequency
+  (`dsd_opts_tuned_freq_hz()`, so none off a radio input, a rigctl peer on audio input included) at a checked message
+  that confirms this carrier as the control channel, noted before the message's handlers can retune. A note made while a
+  dispatched frame is lost (`frame_dispatch_active` and `dsd_state_frame_read_lost()` against
+  `frame_dispatch_carrier_seq`: a carrier boundary moved the count while the frame was read, or an input interruption cut it) is refused, so a frame split by an I/Q
   replay retune never notes into the record the boundary reset, whichever decoder's own carrier check comes later. That
   gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also

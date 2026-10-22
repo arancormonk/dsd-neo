@@ -28,4 +28,11 @@ enum { DMR_DATA_BLOCK_CRC_RAS = 2 };
 void dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8_t* dheader_bits,
                             uint8_t crc_flags, uint32_t IrrecoverableErrors);
 
+/*
+ * The P_CLEAR the encryption lockout synthesizes to release the voice channel: dmr_cspdu() handles it as a checked CSBK
+ * (FID 0xFF), so the release runs as a received one's would, but nothing in it was received, and it names nothing in
+ * the received identity record (dsd_state::rx_id).
+ */
+void dmr_cspdu_release_channel(dsd_opts* opts, dsd_state* state);
+
 #endif /* DSD_NEO_SRC_PROTOCOL_DMR_DMR_CRC_PROVENANCE_H_ */

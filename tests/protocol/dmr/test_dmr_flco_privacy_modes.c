@@ -9,12 +9,14 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -2734,6 +2736,57 @@ test_encrypted_flco_lockout_return_keeps_canonical_calls_ended(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// The P_CLEAR the lockout synthesizes to release the channel carries FID 0xFF and passes as CRC-checked, but nothing in
+// it was received: it still releases the channel, and names nothing in the received identity record, where the vendor a
+// checked message noted stays.
+static void
+test_encrypted_flco_lockout_release_names_no_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    opts.trunk_is_tuned = 1;
+    state.currentslot = 0;
+    state.trunk_cc_freq = 851250000L;
+    state.trunk_vc_freq[0] = 852000000L;
+    state.trunk_vc_freq[1] = 852000000L;
+    state.dmrburstL = 16;
+    state.dmrburstR = 9;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    dsd_rxid_note_dmr_vendor(&state, 0x68U);
+    const dsd_received_identity before = state.rx_id;
+
+    dmr_sm_init(&opts, &state);
+    dmr_sm_get_ctx()->state = DMR_SM_TUNED;
+    s_return_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .return_to_cc_request = capture_return_to_cc_ending_calls,
+    });
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+    assert(irr == 0U);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    assert(s_return_to_cc_calls == 1);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.rx_id.dmr_vendor == 0x68U);
+    assert(state.rx_id.valid == before.valid && state.rx_id.fresh == before.fresh && state.rx_id.epoch == before.epoch);
+    assert(state.rx_id.access == 3U && state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR);
+    dsd_state_ext_free_all(&state);
+}
+
 // The lockout's stay-or-release decision must read the companion's canonical
 // call state, not its burst hint: a clear call keeps the canonical epoch
 // ACTIVE while the hint walks through PI (0), VLC (1), TLC (2), DATA (6),
@@ -3815,6 +3868,7 @@ main(void) {
     test_cach_fragment_counter_overflow_resets_fragments();
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
     test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
+    test_encrypted_flco_lockout_release_names_no_identity();
     test_encrypted_flco_lockout_preserves_active_companion_call();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_embedded_lc_enc_requires_corroboration_for_lockout();

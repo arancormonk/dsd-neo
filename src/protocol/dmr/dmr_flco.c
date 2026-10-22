@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
 #include "dmr_tiii_site.h"
 #include "dmr_vcrypt.h"
@@ -1242,15 +1243,7 @@ dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
     }
     if (!other_voice) {
         // Synthesize a P_CLEAR so the trunking layer releases the channel.
-        // The bit buffer must span the full 12-octet CSPDU: handlers may read
-        // bits ahead of their opcode check.
-        uint8_t dummy[12];
-        uint8_t dbits_local[96];
-        DSD_MEMSET(dummy, 0, sizeof(dummy));
-        DSD_MEMSET(dbits_local, 0, sizeof(dbits_local));
-        dummy[0] = 46;
-        dummy[1] = 255;
-        dmr_cspdu(ctx->opts, ctx->state, dbits_local, dummy, 1, 0);
+        dmr_cspdu_release_channel(ctx->opts, ctx->state);
     } else if (ctx->opts->verbose > 0) {
         DSD_FPRINTF(stderr, " ENC lockout: other slot active with clear voice; stay on VC, mute enc slot. ");
     }
