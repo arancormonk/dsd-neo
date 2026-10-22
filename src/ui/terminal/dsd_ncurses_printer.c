@@ -27,7 +27,6 @@
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
-#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/call_state.h>
@@ -2469,6 +2468,21 @@ ui_nxdn_is_idas(const dsd_state* state) {
     return strcmp(state->nxdn_location_category, "Type-D") == 0;
 }
 
+/* Which site line shows: the kind of site the received identity names (IDAS parts, or a Type-C location), as the
+   shared view's "IDAS"/"NXDN" label does, whatever the decoder's location category says; the decoder's kind only while
+   the record names neither. */
+static int
+ui_nxdn_site_is_idas(const dsd_state* state) {
+    const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_NXDN);
+    if (ui_rxid_has(id, DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM)) {
+        return 1;
+    }
+    if (ui_rxid_has(id, DSD_RXID_NXDN_LOCATION)) {
+        return 0;
+    }
+    return ui_nxdn_is_idas(state);
+}
+
 static void
 ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int idas) {
     if (opts->trunk_enable != 1) {
@@ -2669,9 +2683,9 @@ ui_render_call_info_nxdn(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
 
-    int idas = ui_nxdn_is_idas(state);
-    ui_render_nxdn_monitor_line(opts, state, idas);
-    ui_render_nxdn_site_line(state, idas);
+    /* The channel the decoder monitors is its own mode; the site line names the site the record holds. */
+    ui_render_nxdn_monitor_line(opts, state, ui_nxdn_is_idas(state));
+    ui_render_nxdn_site_line(state, ui_nxdn_site_is_idas(state));
     ui_render_nxdn_tgt_src_line(opts, state);
     ui_render_nxdn_encryption_line(opts, state);
     ui_render_nxdn_active_channels_and_tg_hold(opts, state);

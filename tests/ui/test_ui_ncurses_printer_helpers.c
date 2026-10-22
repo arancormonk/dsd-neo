@@ -715,6 +715,9 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/analog_channel.h"
 #include "dsd-neo/runtime/analog_tones.h"
+#include "dsd-neo/ui/ncurses_snr.h"
+#include "dsd-neo/ui/ncurses_visualizers.h"
+#include "ui_snr_readout.h"
 
 static int g_requested_ppm;
 /* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, its output, and whether
@@ -2437,6 +2440,22 @@ test_sync_tree_follows_scan_class(void) {
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 0);
     assert_capture_contains("NXDN - RAN: 07;");
+    /* The record, not the decoder's location category, says which kind of NXDN site this is: a checked Type-D
+       SRV_INFO shows on the IDAS line with no category set (an SCCH that failed, a cleanup that cleared it), and a
+       Type-C location on the NXDN line whatever category the decoder last wrote. */
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
+    dsd_rxid_note_nxdn_typed_system(state, 0x5A5A5U, 200U);
+    reset_printw_capture();
+    ui_render_call_info_nxdn(opts, state);
+    assert_capture_contains("Sys ID: 370085; Site Code: 200;");
+    dsd_rxid_reset(state);
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", "Type-D");
+    dsd_rxid_note_nxdn_location(state, 1U, 12U, 3U);
+    reset_printw_capture();
+    ui_render_call_info_nxdn(opts, state);
+    assert_capture_contains("Cat: Regional; Sys Code: 12; Site Code: 3;");
+    dsd_rxid_reset(state);
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
     state->nxdn_last_ran = (unsigned int)-1;
     /* Issue #526: an analog row has no frame sync, so the last digital sync type is dropped
        rather than shown beside an nfm row. */

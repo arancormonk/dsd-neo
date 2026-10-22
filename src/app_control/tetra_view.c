@@ -2,7 +2,6 @@
 
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
-#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>

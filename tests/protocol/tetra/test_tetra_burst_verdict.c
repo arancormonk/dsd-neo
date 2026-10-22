@@ -13,6 +13,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -657,8 +658,16 @@ test_uplink_signalling_proves_the_carrier(void) {
         uint8_t block2[BLOCK_DIBITS];
         encode_sch_hd(b.bits, seed, block2);
         const uint8_t zeros[BLOCK_DIBITS] = {0};
+        assert(s.state->rx_id.valid == 0U); /* the preset alone names no cell */
         const dsd_frame_verdict verdict = nub ? uplink_nts2_burst(&s, zeros, block2) : control_burst(&s, coded, 0);
         assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && tetra_confirm_carrier_proven(s.state));
+        /* The uplink scrambles with the cell's extended colour code too (EN 300 392-2 clause 8.2.5.2), and no BSCH
+           comes to name it: the CRC-passed block descrambled with the preset proves the cell, for every frontend. */
+        assert(rxid_names_cell(s.state, 17U));
+        uint8_t code_kind = 0U;
+        uint16_t code = 0U;
+        assert(dsd_access_code_current(s.state, s.state->lastsynctype, 0U, 0U, &code_kind, &code) == 1
+               && code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE && code == 17U);
 
         const uint8_t speech[TETRA_SPEECH_FULL_BITS] = {0};
         tetra_voice_full_slot(s.opts, s.state, speech, 1);

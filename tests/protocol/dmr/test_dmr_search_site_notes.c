@@ -11,6 +11,7 @@
 
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/fec/block_codes.h>

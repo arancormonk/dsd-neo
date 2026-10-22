@@ -88,6 +88,8 @@ static int test_init_pair(short pair, short f, short b);
 #include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/ui/ncurses_internal.h"
 #include "dsd-neo/ui/ui_prims.h"

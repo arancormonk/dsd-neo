@@ -23,7 +23,13 @@
  * A note naming another system than the record's (another P25 WACN or SYSID, Tier III system code, Connect Plus or
  * XPT site, NXDN location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one:
  * the parts that bind to it and the control-channel frequency. An IDAS carrier names its site twice, in the SCCH site
- * ID and in a Type-D SRV_INFO: when the two disagree the newer one stays and the other is dropped.
+ * ID and in a Type-D SRV_INFO: when the two disagree the newer one stays and the other is dropped. NXDN Type-C (a
+ * location ID) and IDAS Type-D (area, site ID, SRV_INFO system ID) are two kinds of system: a checked note of one drops
+ * what the other sent and the control channel (a Type-D note drops a Type-C location with its RAN; a Type-C location
+ * keeps the RAN its own channel's check noted just before). So are the DMR trunking systems (Tier III, Capacity Plus,
+ * Connect Plus, Hytera XPT): a note that names another one than the record's parts belong to (its brand, site text
+ * prefix, rest LSN, system code or free LCN; dsd_rxid_dmr_trunk) drops those parts and the control channel; the colour
+ * code is the carrier's and stays.
  *
  * Another access code on the same carrier is another system sharing the channel (co-channel DMR or dPMR colour codes,
  * P25 NACs, NXDN RANs): a valid access code that changes drops every other part of the family with the
@@ -69,6 +75,15 @@ typedef enum {
      * record of another family. Never stored. */
     DSD_RXID_FAMILY_OTHER = 8,
 } dsd_rxid_family;
+
+/** The DMR trunking system a record's DMR parts belong to (dsd_received_identity::dmr_trunk). The values are stable. */
+typedef enum {
+    DSD_RXID_DMR_TRUNK_NONE = 0,          /**< None named. */
+    DSD_RXID_DMR_TRUNK_TIER3 = 1,         /**< Tier III: a system code, a "TIII" site text. */
+    DSD_RXID_DMR_TRUNK_CAPACITY_PLUS = 2, /**< Capacity Plus: a rest LSN, a "Cap+" site text, its brand. */
+    DSD_RXID_DMR_TRUNK_CONNECT_PLUS = 3,  /**< Connect Plus: a "Con+" site text, its brand. */
+    DSD_RXID_DMR_TRUNK_XPT = 4,           /**< Hytera XPT: a free LCN, its brand. */
+} dsd_rxid_dmr_trunk;
 
 /** dsd_received_identity::valid and ::fresh bits, one per part a message can send on its own. */
 enum {
@@ -129,6 +144,9 @@ typedef struct dsd_received_identity {
      * "Site n" parts on the compact line. */
     char dmr_site_text[64];
     char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated. */
+    /** dsd_rxid_dmr_trunk the DMR trunking parts (rest LSN, site text, brand, system code, free LCN) belong to;
+     * meaningful while one of them is valid. */
+    uint8_t dmr_trunk;
 
     uint16_t edacs_site;
     uint16_t edacs_area;

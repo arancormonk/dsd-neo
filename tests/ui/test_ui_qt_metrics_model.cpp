@@ -531,26 +531,24 @@ test_site() {
     /* Another protocol replaces the identity. */
     state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
     dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 7U);
-    dsd_rxid_note_dmr_site_text(&state, "TIII Small · Net 12 · Site 3");
+    dsd_rxid_note_dmr_site_text(&state, "Cap+ · Site 3");
     dsd_rxid_note_dmr_rest_lsn(&state, 4U);
     dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
     DSD_SNPRINTF(state.dmr_site_parms, sizeof(state.dmr_site_parms), "%s", "stale; ");
     state.dmr_rest_channel = 9;
     model.refresh(&opts, &state);
     expect("DMR site", model.siteProtocol() == "DMR" && model.dmrColorCode() == 7
-                           && model.dmrSiteText() == QStringLiteral("TIII Small · Net 12 · Site 3")
-                           && model.dmrRestLsn() == 4 && !model.p25NacValid()
-                           && model.carrierIdentityProtocol() == QStringLiteral("DMR"));
-    /* The site text is one compact token per network and site part, so a narrow line keeps the parts that fit. */
-    expect("DMR line",
-           model.siteLine() == QStringLiteral("DMR · CC 7 · TIII Small · Net 12 · Site 3 · Rest LSN 4 · Capacity Plus")
-               && model.carrierIdentityTokens()
-                      == QStringList({
-                          QStringLiteral("CC 7"),
-                          QStringLiteral("Net 12"),
-                          QStringLiteral("Site 3"),
-                          QStringLiteral("Rest LSN 4"),
-                      }));
+                           && model.dmrSiteText() == QStringLiteral("Cap+ · Site 3") && model.dmrRestLsn() == 4
+                           && !model.p25NacValid() && model.carrierIdentityProtocol() == QStringLiteral("DMR"));
+    /* The site text is one token per part, the site compact and the Cap+ tag full form only, so a narrow line keeps the
+       parts that fit. */
+    expect("DMR line", model.siteLine() == QStringLiteral("DMR · CC 7 · Cap+ · Site 3 · Rest LSN 4 · Capacity Plus")
+                           && model.carrierIdentityTokens()
+                                  == QStringList({
+                                      QStringLiteral("CC 7"),
+                                      QStringLiteral("Site 3"),
+                                      QStringLiteral("Rest LSN 4"),
+                                  }));
     expect("no XPT free channel", model.dmrXptFreeLcn() == -1);
     /* A Hytera XPT site's free channel: its own SiteSheet field and a compact token. */
     dsd_rxid_reset(&state);

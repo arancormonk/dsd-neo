@@ -289,15 +289,16 @@ tetra_nb_subtype(dsd_state* state, const tetra_nb_ctx* ctx, const char* what) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", text);
 }
 
-/* A trunked downlink block whose CRC passed once descrambled with the network's extended colour code proves that
-   network and colour code on this carrier, as a BSCH does: every carrier of a cell scrambles with them (EN 300 392-2
-   clause 8.2.5.2), and the seed names all three. So a followed traffic carrier, whose access code the trunk tune dropped,
-   names its colour code again, and a --tetra-net preset is received identity once a block descrambled with it passed
-   (never before). Noted before the MAC acts on the block, which may move the receiver. */
+/* A trunked mode block whose CRC passed once descrambled with the network's extended colour code @p seed proves that
+   network and colour code on this carrier, as a BSCH does: every carrier of a cell, downlink and uplink, scrambles with
+   them (EN 300 392-2 clause 8.2.5.2), and the seed names all three. So a followed traffic carrier, whose access code the
+   trunk tune dropped, names its colour code again, an uplink carrier, which has no BSCH, names its cell at all, and a
+   --tetra-net preset is received identity once a block descrambled with it passed (never before). Noted before the MAC
+   acts on the block, which may move the receiver. */
 static void
-tetra_nb_note_cell(dsd_state* state, const tetra_nb_ctx* ctx) {
+tetra_note_proven_cell(dsd_state* state, uint32_t seed) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (ts == NULL || ctx->direct || ts->dmo || ts->uplink || !ts->net_known || ts->lfsr_seed != ctx->seed) {
+    if (ts == NULL || ts->dmo || !ts->net_known || ts->lfsr_seed != seed) {
         return;
     }
     dsd_rxid_note_tetra_cell(state, ts->mcc, ts->mnc, ts->colour);
@@ -315,7 +316,7 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
         tetra_confirm_note_block(state);
         return;
     }
-    tetra_nb_note_cell(state, ctx);
+    tetra_note_proven_cell(state, ctx->seed);
     tetra_mac_parse_schd(decoded, len, ctx->cc, opts, state);
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (ts && ts->uplink) {
@@ -550,6 +551,8 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     ts->decode_ok++;
     tetra_confirm_note_uplink_signalling(state);
     tetra_dmo_leave(opts, state);
+    /* Descrambled with the cell's extended colour code: the cell, out of direct mode now. */
+    tetra_note_proven_cell(state, ts->lfsr_seed);
     /* MAC-ACCESS (EN 300 392-2 clause 21.4.2.1): PDU type 0, fill bit, encryption mode, address type and address. */
     tetra_bit_reader r = tetra_bits_reader(mac, SCHHU_TYPE1, 0);
     if (tetra_bits_read(&r, 1) != 0) {

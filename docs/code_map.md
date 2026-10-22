@@ -1480,12 +1480,16 @@ suite runs under this compiler.
   (co-channel DMR/dPMR colour codes, P25 NACs, NXDN RANs): the family's other parts and the control channel frequency go
   (an M17 CAN, per transmission, drops nothing; a trunk tune drops the code first, so a followed channel's is no
   change), and a note carrying both notes the code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep
-  the newer; another Type-D system drops the SCCH area and site. The TETRA cell keeps its colour (`tetra_colour`) apart
-  from the displayed access code, so after a trunk tune another colour is still another cell; a SYSINFO of another cell
-  with the same network and colour (`tetra_bsch_sysinfo_cell()`) drops the last cell's area and control channel
-  (`dsd_rxid_note_tetra_other_cell()`). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
-  `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25
-  control channel replayed, then a conventional carrier of another system).
+  the newer; another Type-D system drops the SCCH area and site. NXDN Type-C (a location ID) and IDAS Type-D parts
+  exclude each other: a checked note of one drops the other kind's parts and the control channel (a Type-D note drops a
+  location with its RAN). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`: Tier III, Capacity Plus, Connect Plus,
+  Hytera XPT), named by a brand, a site text prefix, a rest LSN, a system code or a free LCN; the colour code stays. The
+  TETRA cell keeps its colour (`tetra_colour`) apart from the displayed access code, so after a trunk tune another
+  colour is still another cell; a SYSINFO of another cell with the same network and colour (`tetra_bsch_sysinfo_cell()`)
+  drops the last cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). Tests: `CORE_RECEIVED_IDENTITY`,
+  `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end
+  to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another
+  system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -2708,19 +2712,20 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `src/app_control/site_identity_view.c`. `dsd_app_site_identity_view()` turns the received identity record
   (`dsd_state::rx_id`, `core/received_identity.h`) of a snapshot into the display-ready identity every frontend shows:
   the protocol label (`DMR`, `P25`, `NXDN`, `IDAS`, `dPMR`, `M17`, `TETRA`, `EDACS`; none for YSF, D-STAR, ProVoice,
-  X2-TDMA), ordered tokens with the access code first, each flagged compact or full-only (the DMR site text is one
-  token per ` · ` part: `Net n` and `Site n` are compact, the Tier III model, `Cap+`/`Con+` and `SYS` full-only), `live` (synced on the
-  record's family and some part received since the last no-carrier pass), the record's `epoch`, and `cc_freq_hz`, the
-  only control-channel frequency a frontend shows. `dsd_app_site_identity_format()` joins the tokens with ` · `,
-  compact or full, optionally led by the protocol. It reads nothing but the record (and the EDACS addressing flags),
-  so a Phase 2 seed, a preset, a control-channel anchor or another carrier's value never reaches a display. Its
+  X2-TDMA), ordered tokens with the access code first, each flagged compact or full-only (the DMR site text is one token
+  per ` · ` part: `Net n` and `Site n` are compact, the Tier III model, `Cap+`/`Con+` and `SYS` full-only), `live`
+  (synced on the record's family and some part received since the last no-carrier pass), the record's `epoch`, and
+  `cc_freq_hz`, the only control-channel frequency a frontend shows. `dsd_app_site_identity_format()` joins the tokens
+  with ` · `, compact or full, optionally led by the protocol. It reads nothing but the record (and the EDACS addressing
+  flags), so a Phase 2 seed, a preset, a control-channel anchor or another carrier's value never reaches a display. Its
   consumers: Qt `MetricsModel` (`siteLine`, the SiteSheet fields, `ccFreqHz`, the `carrierIdentity*` group), the
   terminal spectrum legend's `System:` line (`spectrum_format_system_line()` in `ncurses_visualizers.c`). The terminal
-  Call Info lines (`dsd_ncurses_printer.c`: P25 NAC/WACN/SYS/RFSS/SITE, the `Site:` LRA in `ncurses_p25_display.c`,
-  DMR brand/site/XPT free LCN/rest LSN/system code, NXDN location and IDAS fields, the EDACS site header, M17 CAN, `Freq:`) keep
-  their own column formats and read the record's parts directly, each only while the record is of that section's
-  family, so a section the `ncurses_last_synctype` latch still picks after a boundary prints dashes. A hand-set Phase
-  2 seed prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`,
+  Call Info lines (`dsd_ncurses_printer.c`: P25 NAC/WACN/SYS/RFSS/SITE, the `Site:` LRA in `ncurses_p25_display.c`, DMR
+  brand/site/XPT free LCN/rest LSN/system code, NXDN location and IDAS fields (which of the two lines shows is the kind
+  of site the record names, the decoder's location category only while it names none), the EDACS site header, M17 CAN,
+  `Freq:`) keep their own column formats and read the record's parts directly, each only while the record is of that
+  section's family, so a section the `ncurses_last_synctype` latch still picks after a boundary prints dashes. A
+  hand-set Phase 2 seed prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`,
   `UI_NCURSES_PRINTER_HELPERS`, `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`,
   `UI_QT_METRICS_MODEL`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
@@ -4993,14 +4998,16 @@ the message passed its own check, with that message's values, an unchanged repea
 - EDACS (`edacs_process_valid_frame()`, both messages' BCH re-derived): a standard site ID notes the site and, unless
   auxiliary, the control channel LCN and the control channel; an extended system information message the system and
   LCN and the control channel; an extended site ID the site and the area.
-- TETRA: a CRC-passed BSCH the network and colour code (`tetra_bsch_parse()`), and so does a trunked downlink block
-  whose CRC passed once descrambled with the network's extended colour code (`tetra_nb_note_cell()` in `tetra.c`,
-  before the MAC acts on it): every carrier of a cell scrambles with its MCC, MNC and colour code, so such a block
-  proves all three on this carrier. A followed traffic carrier, whose colour code the trunk tune dropped, names it again
-  with its next checked block. A SYSINFO notes the location area, and the control channel only when the tuner is on the
-  main carrier it names; a checked direct mode burst (`tetra_dmo_apply_sync()`) drops a TETRA record. A `--tetra-net`
-  preset notes nothing by itself: it becomes received identity only once a downlink block descrambled with it passed its
-  CRC on this carrier (one that never descrambles anything stays configuration). Uplink blocks never note.
+- TETRA: a CRC-passed BSCH the network and colour code (`tetra_bsch_parse()`), and so does a trunked mode block,
+  downlink or uplink (a NUB's MAC block, a control uplink burst's SCH/HU), whose CRC passed once descrambled with the
+  network's extended colour code (`tetra_note_proven_cell()` in `tetra.c`, before the MAC acts on it): every carrier of
+  a cell, uplink included, scrambles with its MCC, MNC and colour code, so such a block proves all three on this
+  carrier, and an uplink carrier, which has no BSCH, names its cell this way only. A followed traffic carrier, whose
+  colour code the trunk tune dropped, names it again with its next checked block. A SYSINFO notes the location area,
+  and the control channel only when the tuner is on the main carrier it names; a checked direct mode burst
+  (`tetra_dmo_apply_sync()`) drops a TETRA record. A `--tetra-net` preset notes nothing by itself: it becomes received
+  identity only once a block descrambled with it passed its CRC on this carrier (one that never descrambles anything
+  stays configuration).
 
 Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `DMR_SEARCH_SITE_NOTES`,
 `DMR_CONFIDENCE_GATE`, `DMR_DATA_SYNC`, `NXDN_SEARCH_SITE_NOTES`, `NXDN_ELEMENT_BOUNDS`, `DPMR_VOICE_BRIDGE`,

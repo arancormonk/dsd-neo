@@ -17,6 +17,7 @@
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -220,22 +221,26 @@ test_access_change(void) {
     const dsd_received_identity* id = &state->rx_id;
 
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
-    dsd_rxid_note_dmr_site_text(state, "Net 3 \xC2\xB7 Site 7");
-    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 7");
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
     dsd_rxid_note_dmr_rest_lsn(state, 4U);
-    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
-    dsd_rxid_note_dmr_xpt_free_lcn(state, 2U);
     dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
-    const uint32_t dmr_system = DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_REST_LSN
-                                | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN | DSD_RXID_CC_FREQ;
+    const uint32_t dmr_system = DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_REST_LSN | DSD_RXID_CC_FREQ;
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
     expect_u("dmr same cc keeps the system", id->valid, DSD_RXID_ACCESS | dmr_system);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
     expect_u("dmr cc change drops the system", id->valid, DSD_RXID_ACCESS);
+    /* As it drops a Tier III or XPT site's parts. */
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
+    dsd_rxid_note_dmr_xpt_free_lcn(state, 2U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_u("dmr cc change drops the tier iii and xpt parts", id->valid, DSD_RXID_ACCESS);
     expect_u("dmr cc change value", id->access, 2U);
 
     /* A followed voice channel: the tune dropped the code, so the channel's code is the first, not a change. */
-    dsd_rxid_note_dmr_site_text(state, "Net 3 \xC2\xB7 Site 7");
+    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 7");
     dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
     dsd_rxid_trunk_tune(state);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 5U);
@@ -435,6 +440,88 @@ test_lost_frame_notes_nothing(void) {
     free(state);
 }
 
+/* NXDN Type-C (a location ID with its RAN) and IDAS Type-D (the SCCH area and site ID, a Type-D SRV_INFO system ID) are
+   two kinds of system: checked content of one on the carrier drops what the other sent, and its control channel. The
+   message that carries a Type-C location noted its own RAN at its channel's check just before, so that RAN stays. */
+static void
+test_nxdn_subtypes_exclusive(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    dsd_rxid_note_nxdn_location(state, 1U, 12U, 3U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    expect_u("idas area drops type-c", id->valid, DSD_RXID_NXDN_IDAS_AREA);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    dsd_rxid_note_nxdn_location(state, 1U, 12U, 3U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 9U);
+    expect_u("typed system drops type-c", id->valid, DSD_RXID_NXDN_TYPED_SYSTEM);
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_location(state, 1U, 12U, 3U);
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 9U);
+    expect_u("idas site drops type-c", id->valid, DSD_RXID_NXDN_IDAS_SITE);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 9U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 9U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    dsd_rxid_note_nxdn_location(state, 0U, 1U, 2U);
+    expect_u("type-c location drops idas", id->valid, DSD_RXID_ACCESS | DSD_RXID_NXDN_LOCATION);
+
+    /* A RAN an IDAS carrier's traffic channel sent is no Type-C part: the IDAS notes keep it. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 3U);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    expect_u("idas keeps a ran with no type-c", id->valid, DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_ACCESS);
+    free(state);
+}
+
+/* Capacity Plus, Connect Plus, Hytera XPT and Tier III are different DMR trunking systems: checked content naming
+   another one than the record's drops the old one's parts and its control channel; the colour code is the carrier's
+   and stays. */
+static void
+test_dmr_trunking_types_exclusive(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 2");
+    dsd_rxid_note_dmr_rest_lsn(state, 3U);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 451000000U);
+    expect_u("cap+ parts", id->valid,
+             DSD_RXID_ACCESS | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_BRAND | DSD_RXID_CC_FREQ);
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
+    expect_u("xpt brand drops cap+", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_BRAND);
+    dsd_rxid_note_dmr_xpt_free_lcn(state, 4U);
+    expect_u("xpt free lcn joins xpt", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_XPT_FREE_LCN);
+    dsd_rxid_note_dmr_rest_lsn(state, 5U);
+    expect_u("cap+ rest drops xpt", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_REST_LSN);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_site_text(state, "Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5");
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    expect_u("tier iii drops con+", id->valid, DSD_RXID_DMR_T3_SYSCODE);
+    dsd_rxid_note_dmr_site_text(state, "TIII Small \xC2\xB7 Net 1 \xC2\xB7 Site 2 \xC2\xB7 SYS 0A3F");
+    expect_u("tier iii site joins", id->valid, DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_SITE_TEXT);
+    dsd_rxid_note_dmr_site_text(state, "Con+ \xC2\xB7 Net 3 \xC2\xB7 Site 5");
+    expect_u("con+ site drops tier iii", id->valid, DSD_RXID_DMR_SITE_TEXT);
+
+    /* A part of no trunking type keeps the record's. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dsd_rxid_note_dmr_brand(state, "Other");
+    expect_u("unknown brand", id->valid, DSD_RXID_DMR_BRAND);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -447,6 +534,8 @@ main(void) {
     test_access_change();
     test_nxdn_idas_site_reconcile();
     test_lost_frame_notes_nothing();
+    test_nxdn_subtypes_exclusive();
+    test_dmr_trunking_types_exclusive();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {

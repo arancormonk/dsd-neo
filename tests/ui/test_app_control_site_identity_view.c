@@ -14,7 +14,9 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,7 +85,7 @@ test_dmr(void) {
     expect_u("not live when stale", view.live, 0U);
     expect_u("stale keeps tokens", view.token_count, 3U);
 
-    /* A Hytera XPT site's free channel, after the site and rest tokens: it identifies the site's state on the compact
+    /* A Hytera XPT site's free channel, after the access code: it identifies the site's state on the compact
        line as the terminal's "Free LCN" always did. */
     dsd_rxid_reset(state);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
@@ -91,10 +93,11 @@ test_dmr(void) {
     dsd_rxid_note_dmr_xpt_free_lcn(state, 4U);
     expect_text("xpt compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 1, "DMR" DOT "CC 2" DOT "Free LCN 4");
     expect_text("xpt full", state, DSD_APP_SITE_IDENTITY_FULL, 0, "CC 2" DOT "Free LCN 4" DOT "Hytera XPT");
-    dsd_rxid_note_dmr_site_text(state, "TIII Small \xC2\xB7 Net 1 \xC2\xB7 Site 2");
+    /* A Capacity Plus site on the same carrier is another system: the XPT site's free channel goes. */
+    dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 2");
     dsd_rxid_note_dmr_rest_lsn(state, 5U);
-    expect_text("free lcn after the site and rest tokens", state, DSD_APP_SITE_IDENTITY_COMPACT, 0,
-                "CC 2" DOT "Net 1" DOT "Site 2" DOT "Rest LSN 5" DOT "Free LCN 4");
+    expect_text("another trunking system replaces the xpt site", state, DSD_APP_SITE_IDENTITY_COMPACT, 0,
+                "CC 2" DOT "Site 2" DOT "Rest LSN 5");
     free(state);
 }
 

@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>

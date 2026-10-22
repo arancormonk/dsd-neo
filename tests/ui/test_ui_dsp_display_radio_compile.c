@@ -20,7 +20,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 

@@ -8,14 +8,17 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/platform.h>
 
 #include <stdarg.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
 /* U+00B7 MIDDLE DOT between parts, as the frontends separate details. */
 static const char k_dot[] = " \xC2\xB7 ";
+
+static void site_token(dsd_app_site_identity* out, int compact, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
 
 static void
 site_token(dsd_app_site_identity* out, int compact, const char* fmt, ...) {

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 
 #include <stddef.h>
@@ -243,9 +244,57 @@ dsd_rxid_note_p25_lra(dsd_state* state, uint16_t sysid, uint8_t lra) {
     rxid_set(id, DSD_RXID_P25_LRA);
 }
 
+/* The parts one DMR trunking system sends, apart from the carrier's colour code. */
+#define RXID_DMR_TRUNK_PARTS                                                                                           \
+    (DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE                     \
+     | DSD_RXID_DMR_XPT_FREE_LCN)
+
+/* The DMR record a note of @p trunk (dsd_rxid_dmr_trunk) goes into: a note of another trunking system than the one
+   the record's parts belong to drops them and the control channel first. A note of no known system (an unknown brand)
+   changes nothing. */
+static dsd_received_identity*
+rxid_dmr(dsd_state* state, uint8_t trunk) {
+    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    if (id == NULL || trunk == (uint8_t)DSD_RXID_DMR_TRUNK_NONE) {
+        return id;
+    }
+    if ((id->valid & RXID_DMR_TRUNK_PARTS) != 0U && id->dmr_trunk != trunk) {
+        rxid_drop(id, RXID_DMR_TRUNK_PARTS | DSD_RXID_CC_FREQ); /* another trunking system on this carrier */
+    }
+    id->dmr_trunk = trunk;
+    return id;
+}
+
+/* The trunking system a brand or a site text's first part names. */
+static uint8_t
+rxid_dmr_trunk_named(const char* text, int site_text) {
+    static const struct {
+        const char* brand;
+        const char* site_prefix;
+        uint8_t trunk;
+    } k_names[] = {
+        {"Capacity Plus", "Cap+", (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS},
+        {"Connect Plus", "Con+", (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS},
+        {"Hytera XPT", NULL, (uint8_t)DSD_RXID_DMR_TRUNK_XPT},
+        {NULL, "TIII", (uint8_t)DSD_RXID_DMR_TRUNK_TIER3},
+    };
+
+    for (size_t i = 0U; i < sizeof(k_names) / sizeof(k_names[0]); i++) {
+        const char* const name = site_text ? k_names[i].site_prefix : k_names[i].brand;
+        if (name == NULL) {
+            continue;
+        }
+        const int match = site_text ? strncmp(text, name, strlen(name)) == 0 : strcmp(text, name) == 0;
+        if (match) {
+            return k_names[i].trunk;
+        }
+    }
+    return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+}
+
 void
 dsd_rxid_note_dmr_rest_lsn(dsd_state* state, uint16_t lsn) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    dsd_received_identity* const id = rxid_dmr(state, (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
     if (id == NULL) {
         return;
     }
@@ -258,7 +307,7 @@ dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text) {
     if (text == NULL || text[0] == '\0') {
         return;
     }
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(text, 1));
     if (id == NULL) {
         return;
     }
@@ -276,7 +325,7 @@ dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand) {
     if (brand == NULL || brand[0] == '\0') {
         return;
     }
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    dsd_received_identity* const id = rxid_dmr(state, rxid_dmr_trunk_named(brand, 0));
     if (id == NULL) {
         return;
     }
@@ -286,7 +335,7 @@ dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand) {
 
 void
 dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    dsd_received_identity* const id = rxid_dmr(state, (uint8_t)DSD_RXID_DMR_TRUNK_TIER3);
     if (id == NULL) {
         return;
     }
@@ -299,7 +348,7 @@ dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode) {
 
 void
 dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    dsd_received_identity* const id = rxid_dmr(state, (uint8_t)DSD_RXID_DMR_TRUNK_XPT);
     if (id == NULL) {
         return;
     }
@@ -307,12 +356,32 @@ dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn) {
     rxid_set(id, DSD_RXID_DMR_XPT_FREE_LCN);
 }
 
+/* The parts an IDAS (Type-D) site sends. */
+#define RXID_NXDN_TYPE_D (DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM)
+
+/* The NXDN record a Type-C (@p type_d 0) or Type-D note goes into: checked content of one kind of system drops what the
+   other kind sent on the carrier, and its control channel. A Type-D note drops a Type-C location with its RAN; a
+   Type-C location keeps the RAN, which its own channel's check noted just before. */
+static dsd_received_identity*
+rxid_nxdn(dsd_state* state, int type_d) {
+    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_NXDN);
+    if (id == NULL) {
+        return NULL;
+    }
+    if (type_d && rxid_has(id, DSD_RXID_NXDN_LOCATION)) {
+        rxid_drop(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_ACCESS | DSD_RXID_CC_FREQ);
+    } else if (!type_d && rxid_has(id, RXID_NXDN_TYPE_D)) {
+        rxid_drop(id, RXID_NXDN_TYPE_D | DSD_RXID_CC_FREQ);
+    }
+    return id;
+}
+
 void
 dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, uint16_t site) {
     if (category > 2U) {
         return; /* 3 is reserved */
     }
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_NXDN);
+    dsd_received_identity* const id = rxid_nxdn(state, 0);
     if (id == NULL) {
         return;
     }
@@ -328,7 +397,7 @@ dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, ui
 
 void
 dsd_rxid_note_nxdn_idas_area(dsd_state* state, uint8_t area) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_NXDN);
+    dsd_received_identity* const id = rxid_nxdn(state, 1);
     if (id == NULL) {
         return;
     }
@@ -341,7 +410,7 @@ dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t site_c
     if (site_type < 1U || site_type > 3U || site_code < 1U || site_code > 250U) {
         return; /* reserved (NXDN TS 1-E 6.6.4, 6.6.5) */
     }
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_NXDN);
+    dsd_received_identity* const id = rxid_nxdn(state, 1);
     if (id == NULL) {
         return;
     }
@@ -360,7 +429,7 @@ dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t site_c
 
 void
 dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_NXDN);
+    dsd_received_identity* const id = rxid_nxdn(state, 1);
     if (id == NULL) {
         return;
     }
