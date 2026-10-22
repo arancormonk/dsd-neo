@@ -4,6 +4,10 @@
 // NOLINTBEGIN(bugprone-suspicious-include)
 /*
  * Pure-helper checks for the ncurses dashboard printer.
+ *
+ * Built twice (tests/CMakeLists.txt): as a radio-off build compiles the
+ * printer, and with USE_RADIO as any radio build does, which adds the Visual
+ * Aids checks.
  */
 
 #include <assert.h>
@@ -608,9 +612,11 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
     (void)state;
 }
 
+static char g_last_header[64];
+
 void
 ui_print_header(const char* title) {
-    (void)title;
+    DSD_SNPRINTF(g_last_header, sizeof(g_last_header), "%s", title ? title : "");
 } // NOLINT(misc-use-internal-linkage)
 
 void
@@ -734,6 +740,81 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-int
     out->channel_analog_kind = g_channel_analog_kind;
     return 0;
 }
+
+#ifdef USE_RADIO
+void
+print_constellation_view(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+print_eye_view(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+print_fsk_hist_view(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+print_spectrum_view(const dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+}
+
+void
+print_snr_meter(const dsd_opts* opts, double snr_db, int mod) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)snr_db;
+    (void)mod;
+}
+
+ui_snr_readout
+ui_snr_readout_for_mod(int rf_mod) { // NOLINT(misc-use-internal-linkage)
+    (void)rf_mod;
+    ui_snr_readout readout = {0};
+    readout.mod_label = "C4FM";
+    return readout;
+}
+
+/* The Visual Aids section shows for every radio input and its title names the backend that runs. */
+static void
+test_visual_aids_title_names_the_backend(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+
+    static const struct {
+        const char* dev;
+        const char* title;
+    } k_cases[] = {
+        {"rtl", "RTL-SDR Visual Aids"},    {"rtltcp:127.0.0.1:1234", "RTL-SDR Visual Aids"},
+        {"soapy", "SoapySDR Visual Aids"}, {"soapy:driver=airspy", "SoapySDR Visual Aids"},
+        {"airspy", "Airspy Visual Aids"},  {"airspy:0123456789abcdef", "Airspy Visual Aids"},
+    };
+
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", k_cases[i].dev);
+        g_last_header[0] = '\0';
+        reset_printw_capture();
+        ui_render_rtl_visual_aids(&opts, &state);
+        assert(strcmp(g_last_header, k_cases[i].title) == 0);
+        assert_capture_contains("| Const View:");
+    }
+
+    /* An audio input draws no Visual Aids section. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "pulse");
+    g_last_header[0] = '\0';
+    reset_printw_capture();
+    ui_render_rtl_visual_aids(&opts, &state);
+    assert(g_last_header[0] == '\0');
+    assert(strstr(g_printw_capture, "Const View") == NULL);
+}
+#endif
 
 static void
 test_input_source_helpers(void) {
@@ -3540,6 +3621,9 @@ main(void) {
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();
+#ifdef USE_RADIO
+    test_visual_aids_title_names_the_backend();
+#endif
     test_dmr_mono_override_terminal_reporting();
     test_basic_input_source_rendering();
     test_peer_passband_status_rendering();

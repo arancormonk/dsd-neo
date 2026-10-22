@@ -2713,9 +2713,7 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
         if (opts->use_rigctl == 1) {
             ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
         } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
             ccfreq = (long int)opts->rtlsdr_center_freq;
-#endif
         }
         if (ccfreq != 0) {
             state->trunk_cc_freq = ccfreq;

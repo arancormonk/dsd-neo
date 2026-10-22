@@ -261,6 +261,16 @@ target_link_libraries(
     PUBLIC $<LINK_ONLY:dsd-neo_runtime>
 )
 
+# Links dsd-neo_runtime without its usage requirements, so a test can compile
+# decoder sources with its own feature macros: a SoapySDR-only or Airspy-only
+# build's USE_RADIO without USE_RTLSDR, whatever backends this configure found.
+# $<LINK_ONLY:> strips them only for consumers, hence the interface target.
+add_library(dsd-neo_test_runtime_link_only INTERFACE)
+target_link_libraries(
+    dsd-neo_test_runtime_link_only
+    INTERFACE $<LINK_ONLY:dsd-neo_runtime>
+)
+
 add_library(
     dsd-neo_test_call_state_support
     STATIC
@@ -3087,50 +3097,62 @@ if(DSD_ENABLE_TERMINAL_UI)
     # The shared scan-timing, squelch, received-tone and TETRA views come in as sources rather
     # than stubs: the Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything if they
     # run through the real display rules.
-    add_executable(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        ui/test_ui_ncurses_printer_helpers.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
-    )
-    target_compile_definitions(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE NCURSES_REENTRANT=0
-    )
-    target_include_directories(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE
-            ${PROJECT_SOURCE_DIR}/include
-            ${PROJECT_SOURCE_DIR}/src/ui/terminal
-            ${CURSES_INCLUDE_DIRS}
-    )
-    target_link_libraries(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE
-            dsd-neo_test_call_state_support
-            ${CURSES_LIBRARIES}
-            ${DSD_NEO_TEST_MATH_LIB}
-    )
-    if(MSVC)
-        target_compile_definitions(
+    # Built twice: as a radio-off build compiles the printer, and as a radio build
+    # does (USE_RADIO, whichever SDR backend), which draws the Visual Aids section.
+    foreach(
+        _target
+        IN
+        ITEMS
             dsd-neo_test_ui_ncurses_printer_helpers
-            PRIVATE CURSES_LIBRARY
+            dsd-neo_test_ui_ncurses_printer_helpers_radio
+    )
+        add_executable(
+            ${_target}
+            ui/test_ui_ncurses_printer_helpers.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         )
-    endif()
+        target_compile_definitions(${_target} PRIVATE NCURSES_REENTRANT=0)
+        target_include_directories(
+            ${_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/terminal
+                ${CURSES_INCLUDE_DIRS}
+        )
+        target_link_libraries(
+            ${_target}
+            PRIVATE
+                dsd-neo_test_call_state_support
+                ${CURSES_LIBRARIES}
+                ${DSD_NEO_TEST_MATH_LIB}
+        )
+        if(MSVC)
+            target_compile_definitions(${_target} PRIVATE CURSES_LIBRARY)
+        endif()
+    endforeach()
+    target_compile_definitions(
+        dsd-neo_test_ui_ncurses_printer_helpers_radio
+        PRIVATE USE_RADIO
+    )
     add_test(
         NAME UI_NCURSES_PRINTER_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_printer_helpers
+    )
+    add_test(
+        NAME UI_NCURSES_PRINTER_HELPERS_RADIO
+        COMMAND dsd-neo_test_ui_ncurses_printer_helpers_radio
     )
 
     add_executable(
@@ -3206,6 +3228,11 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(
         dsd-neo_test_ui_hotkeys_regression
         PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    )
+    # A radio build without librtlsdr (SoapySDR or Airspy only).
+    target_compile_definitions(
+        dsd-neo_test_ui_hotkeys_regression
+        PRIVATE USE_RADIO
     )
     add_test(
         NAME UI_HOTKEYS_REGRESSION
@@ -8378,7 +8405,12 @@ target_link_libraries(
     PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME P25_P1_TSBK_SEQUENCE COMMAND dsd-neo_test_p25_p1_tsbk_sequence)
-target_link_libraries(dsd-neo_test_p25_p1_tsbk_sequence PRIVATE dsd-neo_runtime)
+# Compiled as a SoapySDR-only or Airspy-only build compiles the decoder.
+target_link_libraries(
+    dsd-neo_test_p25_p1_tsbk_sequence
+    PRIVATE dsd-neo_test_runtime_link_only
+)
+target_compile_definitions(dsd-neo_test_p25_p1_tsbk_sequence PRIVATE USE_RADIO)
 
 # P25 P1 TDU state cleanup and status-symbol handoff
 add_executable(
@@ -9430,13 +9462,14 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/tests/protocol/dmr
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
+# dmr_csbk.c compiles as in a SoapySDR-only or Airspy-only build (no USE_RTLSDR).
 target_link_libraries(
     dsd-neo_test_dmr_t3_cmove
     PRIVATE
         dsd-neo_test_call_state_support
         dsd-neo_test_event_sync_stub
         dsd-neo_platform
-        dsd-neo_runtime
+        dsd-neo_test_runtime_link_only
         ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)

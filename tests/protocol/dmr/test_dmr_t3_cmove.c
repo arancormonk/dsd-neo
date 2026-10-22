@@ -5,6 +5,8 @@
 
 /*
  * Verify C_MOVE handling: retunes only while on VC and updates to new VC.
+ * Also verify that a CRC-valid CSBK anchors an unknown control channel at the
+ * radio's tuned frequency in a build without librtlsdr (SoapySDR or Airspy only).
  */
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -21,6 +23,10 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef USE_RTLSDR
+#error "This test must compile dmr_csbk.c without USE_RTLSDR."
+#endif
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -183,6 +189,16 @@ main(int argc, char** argv) {
     // Expect no tune while on CC
     assert(opts.trunk_is_tuned == 0);
     assert(state.trunk_vc_freq[0] == 0);
+
+    // Step 4: with no CC known yet, a CRC-valid CSBK received on a radio input anchors the CC at the tuned frequency
+    init_env(&opts, &state);
+    state.trunk_cc_freq = 0;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851012500U;
+    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0);
+    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.trunk_cc_freq == 851012500);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     printf("DMR_T3_CMOVE: OK\n");

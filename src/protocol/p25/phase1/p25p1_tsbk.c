@@ -163,12 +163,12 @@ tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     if (err == 0) {
         p25_sm_note_validated_cc(opts, state);
         state->p25_p1_fec_ok++;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
     } else {
         state->p25_p1_fec_err++;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
 #endif
     }

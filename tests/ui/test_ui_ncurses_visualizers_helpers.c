@@ -3,11 +3,19 @@
 // invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
 // NOLINTBEGIN(bugprone-suspicious-include)
 /*
- * Pure-helper checks for RTL ncurses visualizer math and bucketing.
+ * Pure-helper checks for the ncurses radio visualizer math and bucketing.
+ *
+ * Compiled the way a SoapySDR-only or Airspy-only build compiles the panels:
+ * USE_RADIO without USE_RTLSDR. The visualizers serve every radio backend, so
+ * none of them may sit behind the librtlsdr macro.
  */
 
-#define USE_RTLSDR    1
+#define USE_RADIO     1
 #define PRETTY_COLORS 1
+
+#ifdef USE_RTLSDR
+#error "This test must compile the visualizers with USE_RADIO only."
+#endif
 
 #include <assert.h>
 #include <curses.h>
@@ -682,12 +690,24 @@ test_histogram_and_spectrum_helpers(void) {
     g_has_colors = 0;
 
     render_reset();
+    print_constellation_view(&opts, NULL);
+    assert(strstr(g_render_out, "(no samples yet)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
+
+    render_reset();
+    print_eye_view(&opts, NULL);
+    assert(strstr(g_render_out, "(no samples or SPS)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
+
+    render_reset();
     print_fsk_hist_view();
     assert(strstr(g_render_out, "(no samples)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
 
     render_reset();
     print_spectrum_view(&opts);
     assert(strstr(g_render_out, "(no spectrum yet)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
 }
 
 int

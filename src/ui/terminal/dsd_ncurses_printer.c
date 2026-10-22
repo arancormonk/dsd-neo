@@ -1264,9 +1264,15 @@ ui_render_rtl_visual_aid_panels(dsd_opts* opts, dsd_state* state) {
 static void
 ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
-    /* Only show RTL-SDR section and render visualizers when RTL input is active */
+    /* Only show the section and render visualizers while a radio is the input; the title names its backend */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        ui_print_header(ui_audio_in_is_soapy(opts) ? "SoapySDR Visual Aids" : "RTL-SDR Visual Aids");
+        const char* title = "RTL-SDR Visual Aids";
+        if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+            title = "Airspy Visual Aids";
+        } else if (ui_audio_in_is_soapy(opts)) {
+            title = "SoapySDR Visual Aids";
+        }
+        ui_print_header(title);
         dsd_frontend_metrics metrics;
         (void)dsd_app_frontend_get_metrics(&metrics);
         ui_print_rtl_visual_aids_controls(opts, metrics.spectrum_size);

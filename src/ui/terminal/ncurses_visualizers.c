@@ -4,7 +4,7 @@
  */
 /*
  * ncurses_visualizers.c
- * RTL-SDR visualization panels: constellation, eye diagram, histogram, spectrum
+ * Radio visualization panels: constellation, eye diagram, histogram, spectrum
  */
 
 #include <curses.h>
@@ -16,7 +16,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ncurses_internal.h>
@@ -24,9 +24,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
-#endif
 
-#ifdef USE_RTLSDR
 static int
 clamp_int_local(int value, int lo, int hi) {
     if (value < lo) {
@@ -983,7 +981,7 @@ void
 print_constellation_view(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
     UNUSED(state);
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     enum { MAXP = 4096 };
 
     float buf[(size_t)MAXP * 2];
@@ -1028,7 +1026,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     attroff(COLOR_PAIR(4));
 #else
     ui_print_header("Constellation");
-    printw("| (RTL disabled in this build)\n");
+    printw("| (no radio support in this build)\n");
     ui_print_hr();
 #endif
 }
@@ -1036,7 +1034,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
 void
 print_eye_view(dsd_opts* opts, dsd_state* state) {
     UNUSED2(opts, state);
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     enum { MAXS = 16384 };
 
     static float buf[(size_t)MAXS];
@@ -1106,13 +1104,11 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     if (state) {
         is_c4fm = is_c4fm && (state->rf_mod == 0);
     }
-#ifdef USE_RTLSDR
     if (is_c4fm) {
         dsd_frontend_metrics metrics;
         (void)dsd_app_frontend_get_metrics(&metrics);
         snr_db = metrics.snr_c4fm_db;
     }
-#endif
     if (is_c4fm && snr_db < -20.0) {
         snr_db = eye_estimate_snr_fallback(buf, n, sps, two_sps, q1, q2, q3, snr_db);
     }
@@ -1128,12 +1124,12 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     attroff(COLOR_PAIR(4));
 #else
     ui_print_header("Eye Diagram");
-    printw("| (RTL disabled in this build)\n");
+    printw("| (no radio support in this build)\n");
     ui_print_hr();
 #endif
 }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 static int
 fsk_hist_bucket_for_value(int v, int q1, int q2, int q3) {
     if (v <= q1) {
@@ -1315,16 +1311,16 @@ print_fsk_hist_view_rtlsdr(void) {
 
 void
 print_fsk_hist_view(void) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     print_fsk_hist_view_rtlsdr();
 #else
     ui_print_header("FSK 4-Level Histogram");
-    printw("| (RTL disabled in this build)\n");
+    printw("| (no radio support in this build)\n");
     ui_print_hr();
 #endif
 }
 
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
 static int
 spectrum_nfft_clamped(void) {
     dsd_frontend_metrics metrics;
@@ -1546,12 +1542,12 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts) {
 
 void
 print_spectrum_view(const dsd_opts* opts) {
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     print_spectrum_view_rtlsdr(opts);
 #else
     UNUSED(opts);
     ui_print_header("Spectrum Analyzer");
-    printw("| (RTL disabled in this build)\n");
+    printw("| (no radio support in this build)\n");
     ui_print_hr();
 #endif
 }

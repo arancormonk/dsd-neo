@@ -4,10 +4,20 @@
 // NOLINTBEGIN(bugprone-suspicious-include)
 /*
  * Pure-helper checks for ncurses P25 display state.
+ *
+ * The display is compiled as a SoapySDR-only or Airspy-only build compiles it:
+ * USE_RADIO without USE_RTLSDR.
  */
+
+#define USE_RADIO 1
+
+#ifdef USE_RTLSDR
+#error "This test must compile the P25 display with USE_RADIO only."
+#endif
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -33,6 +43,7 @@
 int ncurses_last_synctype;
 
 static dsd_trunk_cc_candidates g_cc_candidates;
+static dsd_frontend_metrics g_frontend_metrics;
 static dsdneoRuntimeConfig g_runtime_config;
 static char g_printw_capture[4096];
 static size_t g_printw_capture_len;
@@ -105,6 +116,12 @@ assert_capture_lines_fit(int max_cols) {
         col++;
     }
     assert(col <= max_cols);
+}
+
+int
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+    *out = g_frontend_metrics;
+    return 0;
 }
 
 const dsdneoRuntimeConfig*
@@ -890,6 +907,32 @@ run_soft_fec_and_nid_display_cases(void) {
     return 0;
 }
 
+static void
+run_radio_health_cases(void) {
+    DSD_MEMSET(&g_frontend_metrics, 0, sizeof(g_frontend_metrics));
+    reset_printw_capture();
+    assert(ui_print_p25_radio_health(1, 0) == 0);
+    assert(g_printw_capture_len == 0U);
+
+    /* The radio stream keeps these counters for every SDR backend, not only RTL-SDR. */
+    g_frontend_metrics.decode_health.valid = 1;
+    g_frontend_metrics.decode_health.p25p1_fec_ok = 7U;
+    g_frontend_metrics.decode_health.p25p1_fec_err = 2U;
+    g_frontend_metrics.decode_health.p25p2_facch_ok = 5U;
+    g_frontend_metrics.decode_health.p25p2_facch_err = 1U;
+    g_frontend_metrics.decode_health.p25p2_sacch_ok = 4U;
+    g_frontend_metrics.decode_health.p25p2_sacch_err = 3U;
+    g_frontend_metrics.decode_health.p25p2_voice_err = 6U;
+    reset_printw_capture();
+    assert(ui_print_p25_radio_health(1, 0) == 1);
+    assert_capture_contains("| Radio Health: P1 FEC 7/2 P2 FACCH 5/1 SACCH 4/3 VERR 6\n");
+
+    reset_printw_capture();
+    assert(ui_print_p25_radio_health(0, 0) == 0);
+    assert(g_printw_capture_len == 0U);
+    DSD_MEMSET(&g_frontend_metrics, 0, sizeof(g_frontend_metrics));
+}
+
 int
 main(void) {
     run_iden_match_cases();
@@ -904,6 +947,7 @@ main(void) {
     run_service_metric_display_cases();
     run_p2_gate_helper_cases();
     run_soft_fec_and_nid_display_cases();
+    run_radio_health_cases();
     printf("UI_NCURSES_P25_DISPLAY_HELPERS: OK\n");
     return 0;
 }
