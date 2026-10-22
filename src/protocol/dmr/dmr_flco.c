@@ -435,6 +435,42 @@ dmr_flco_set_xpt_targets(dmr_flco_ctx* ctx) {
     ctx->tg_hash = crc8(ctx->target_hash, 16);
 }
 
+static void
+dmr_flco_print_hytera_xpt_alert_kind(const dmr_flco_ctx* ctx) {
+    if (ctx->reserved == 1) {
+        DSD_FPRINTF(stderr, "Group ");
+        if (ctx->target > 248 && ctx->target < 255) {
+            DSD_FPRINTF(stderr, "Emergency ");
+        }
+        if (ctx->target == 255) {
+            DSD_FPRINTF(stderr, "All ");
+        }
+    } else {
+        DSD_FPRINTF(stderr, "Private ");
+    }
+    DSD_FPRINTF(stderr, "Call Alert ");
+}
+
+static void
+dmr_flco_print_hytera_xpt_alert_payload(const dmr_flco_ctx* ctx) {
+    if (ctx->reserved == 0) {
+        DSD_FPRINTF(stderr, "TGT Hash=%d; ", ctx->tg_hash);
+    }
+    DSD_FPRINTF(stderr, "HSK=%X; ", ctx->xpt_hand);
+    DSD_FPRINTF(stderr, "Handshake - ");
+    if (ctx->xpt_hand == 0) {
+        DSD_FPRINTF(stderr, "Ordinary; ");
+    } else if (ctx->xpt_hand == 1) {
+        DSD_FPRINTF(stderr, "Callback/Alarm Interrupt; ");
+    } else if (ctx->xpt_hand == 2) {
+        DSD_FPRINTF(stderr, "Release Channel Interrupt; ");
+    } else {
+        DSD_FPRINTF(stderr, "Reserved; ");
+    }
+    DSD_FPRINTF(stderr, "Call on LCN %d; ", ctx->xpt_int);
+    DSD_FPRINTF(stderr, "Free LCN %d; ", ctx->xpt_free);
+}
+
 static int
 dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     if (!(ctx->fid == 0x68 && ctx->flco == 0x09)) {
@@ -456,41 +492,15 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "TGT=%u SRC=%u ", ctx->target, ctx->source);
     DSD_FPRINTF(stderr, "Hytera XPT ");
-    if (ctx->reserved == 1) {
-        DSD_FPRINTF(stderr, "Group ");
-        if (ctx->target > 248 && ctx->target < 255) {
-            DSD_FPRINTF(stderr, "Emergency ");
-        }
-        if (ctx->target == 255) {
-            DSD_FPRINTF(stderr, "All ");
-        }
-    } else {
-        DSD_FPRINTF(stderr, "Private ");
-    }
-    DSD_FPRINTF(stderr, "Call Alert ");
+    dmr_flco_print_hytera_xpt_alert_kind(ctx);
 
     if (ctx->opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n  ");
         DSD_FPRINTF(stderr, "%s", KYEL);
     }
 
-    if (ctx->reserved == 0 && ctx->opts->payload == 1) {
-        DSD_FPRINTF(stderr, "TGT Hash=%d; ", ctx->tg_hash);
-    }
     if (ctx->opts->payload == 1) {
-        DSD_FPRINTF(stderr, "HSK=%X; ", ctx->xpt_hand);
-        DSD_FPRINTF(stderr, "Handshake - ");
-        if (ctx->xpt_hand == 0) {
-            DSD_FPRINTF(stderr, "Ordinary; ");
-        } else if (ctx->xpt_hand == 1) {
-            DSD_FPRINTF(stderr, "Callback/Alarm Interrupt; ");
-        } else if (ctx->xpt_hand == 2) {
-            DSD_FPRINTF(stderr, "Release Channel Interrupt; ");
-        } else {
-            DSD_FPRINTF(stderr, "Reserved; ");
-        }
-        DSD_FPRINTF(stderr, "Call on LCN %d; ", ctx->xpt_int);
-        DSD_FPRINTF(stderr, "Free LCN %d; ", ctx->xpt_free);
+        dmr_flco_print_hytera_xpt_alert_payload(ctx);
     }
     DSD_FPRINTF(stderr, "%s ", KNRM);
     if (ctx->CRCCorrect == 1U) { // the site's free channel, from a checked LC only

@@ -4222,6 +4222,64 @@ p25p2_vpdu_lto_offset_minutes(int valid, int sign, int magnitude) {
     return sign ? -magnitude : magnitude;
 }
 
+/* A Time and Date Announcement's fields (0x75): which parts are valid, the local date and time, and the local time
+   offset's sign and magnitude in minutes. */
+typedef struct {
+    int vd, vt, vl;
+    int year, month, day;
+    int hours, minutes, seconds;
+    int lto_sign, lto_mag;
+} p25p2_vpdu_time_fields;
+
+static void
+p25p2_vpdu_parse_time(const unsigned long long int* MAC, int len_a, p25p2_vpdu_time_fields* f) {
+    DSD_MEMSET(f, 0, sizeof(*f));
+    const int bridged_p1 = (MAC[len_a] == 0x07);
+    f->vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
+    f->vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
+    f->vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
+    if (f->vd) {
+        f->month = (int)p25_mac_get_bits(MAC, len_a, 24, 4);
+        f->day = (int)p25_mac_get_bits(MAC, len_a, 28, 5);
+        f->year = (int)p25_mac_get_bits(MAC, len_a, 33, 13);
+    }
+    if (f->vt) {
+        f->hours = (int)p25_mac_get_bits(MAC, len_a, 48, 5);
+        f->minutes = (int)p25_mac_get_bits(MAC, len_a, 53, 6);
+        f->seconds = (int)p25_mac_get_bits(MAC, len_a, 59, 6);
+    }
+    if (f->vl) {
+        if (bridged_p1) {
+            int raw_lto = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
+            f->lto_sign = (raw_lto >> 11) & 0x1;
+            f->lto_mag = raw_lto & 0x7FF;
+        } else {
+            f->lto_sign = (int)p25_mac_get_bits(MAC, len_a, 11, 1);
+            f->lto_mag = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
+        }
+    }
+}
+
+static void
+p25p2_vpdu_print_time(const p25p2_vpdu_time_fields* f) {
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Time and Date Announcement");
+    DSD_FPRINTF(stderr, "\n  ");
+    if (f->vd) {
+        DSD_FPRINTF(stderr, "%04d-%02d-%02d ", f->year, f->month, f->day);
+    }
+    if (f->vt) {
+        DSD_FPRINTF(stderr, "%02d:%02d:%02d ", f->hours, f->minutes, f->seconds);
+    }
+    if (f->vl) {
+        int lto_total_minutes = f->lto_mag;
+        int lto_hours = lto_total_minutes / 60;
+        int lto_mins = lto_total_minutes % 60;
+        DSD_FPRINTF(stderr, "UTC%c%02d:%02d", f->lto_sign ? '-' : '+', lto_hours, lto_mins);
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
 static void
 p25p2_vpdu_iter_block_56(p25p2_vpdu_ctx* ctx) {
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -4236,66 +4294,24 @@ p25p2_vpdu_iter_block_56(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x75) {
-        int bridged_p1 = (MAC[len_a] == 0x07);
-        int vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
-        int vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
-        int vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
+        p25p2_vpdu_time_fields f;
+        p25p2_vpdu_parse_time(MAC, len_a, &f);
+        p25p2_vpdu_print_time(&f);
 
-        int year = 0, month = 0, day = 0;
-        int hours = 0, minutes = 0, seconds = 0;
-        int lto_sign = 0, lto_mag = 0;
-
-        if (vd) {
-            month = (int)p25_mac_get_bits(MAC, len_a, 24, 4);
-            day = (int)p25_mac_get_bits(MAC, len_a, 28, 5);
-            year = (int)p25_mac_get_bits(MAC, len_a, 33, 13);
-        }
-        if (vt) {
-            hours = (int)p25_mac_get_bits(MAC, len_a, 48, 5);
-            minutes = (int)p25_mac_get_bits(MAC, len_a, 53, 6);
-            seconds = (int)p25_mac_get_bits(MAC, len_a, 59, 6);
-        }
-        if (vl) {
-            if (bridged_p1) {
-                int raw_lto = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
-                lto_sign = (raw_lto >> 11) & 0x1;
-                lto_mag = raw_lto & 0x7FF;
-            } else {
-                lto_sign = (int)p25_mac_get_bits(MAC, len_a, 11, 1);
-                lto_mag = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
-            }
-        }
-
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "\n Time and Date Announcement");
-        DSD_FPRINTF(stderr, "\n  ");
-        if (vd) {
-            DSD_FPRINTF(stderr, "%04d-%02d-%02d ", year, month, day);
-        }
-        if (vt) {
-            DSD_FPRINTF(stderr, "%02d:%02d:%02d ", hours, minutes, seconds);
-        }
-        if (vl) {
-            int lto_total_minutes = lto_mag;
-            int lto_hours = lto_total_minutes / 60;
-            int lto_mins = lto_total_minutes % 60;
-            DSD_FPRINTF(stderr, "UTC%c%02d:%02d", lto_sign ? '-' : '+', lto_hours, lto_mins);
-        }
-        DSD_FPRINTF(stderr, "%s", KNRM);
-
-        const int offset_minutes = p25p2_vpdu_lto_offset_minutes(vl, lto_sign, lto_mag);
+        const int offset_minutes = p25p2_vpdu_lto_offset_minutes(f.vl, f.lto_sign, f.lto_mag);
         const int writable = p25p2_vpdu_system_tables_writable(ctx);
 
         // Store UTC time_t if both date and time are valid.
-        if (writable && vd && vt) {
-            time_t t = p25_utc_time_from_local_fields(year, month, day, hours, minutes, seconds, offset_minutes);
+        if (writable && f.vd && f.vt) {
+            time_t t =
+                p25_utc_time_from_local_fields(f.year, f.month, f.day, f.hours, f.minutes, f.seconds, offset_minutes);
             if (t != (time_t)-1) {
                 state->p25_sys_time = t;
                 state->p25_sys_time_valid = 1;
             }
         }
 
-        if (writable && vl) {
+        if (writable && f.vl) {
             state->p25_sys_time_offset = (int16_t)offset_minutes;
             state->p25_sys_time_offset_valid = 1;
         }

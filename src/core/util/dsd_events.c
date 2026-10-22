@@ -1529,6 +1529,60 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 // (watchdog_event_current_load_tuning()): a held drop-verdict or the finalize pass may run after a retune, a -Y hop or
 // a trunk-scan switch, when the record already describes the next carrier.
 static void
+watchdog_event_system_from_p25(const dsd_received_identity* id, uint32_t sys[5]) {
+    const uint32_t valid = id->valid;
+    if ((valid & DSD_RXID_P25_SYSID) == 0U) {
+        return; /* a WACN or site is noted with its SYSID */
+    }
+    if ((sys[1] != 0U && sys[1] != id->p25_sysid)
+        || ((valid & DSD_RXID_P25_WACN) != 0U && sys[0] != 0U && sys[0] != id->p25_wacn)) {
+        sys[0] = 0U; /* another system: none of the staged one belongs with it */
+        sys[3] = 0U;
+        sys[4] = 0U;
+    }
+    sys[1] = id->p25_sysid;
+    if ((valid & DSD_RXID_P25_WACN) != 0U) {
+        sys[0] = id->p25_wacn;
+    }
+    if ((valid & DSD_RXID_P25_SITE) != 0U) {
+        sys[3] = id->p25_rfss;
+        sys[4] = id->p25_site;
+    }
+}
+
+static void
+watchdog_event_system_from_nxdn(const dsd_received_identity* id, uint32_t sys[5]) {
+    const uint32_t valid = id->valid;
+    if ((valid & DSD_RXID_NXDN_LOCATION) != 0U) {
+        sys[0] = id->nxdn_site;
+        sys[1] = id->nxdn_sys;
+        return;
+    }
+    if ((valid & DSD_RXID_NXDN_IDAS_SITE) != 0U) {
+        sys[0] = id->nxdn_idas_site_code;
+    } else if ((valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U) {
+        sys[0] = id->nxdn_typed_site;
+    }
+    if ((valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U) {
+        sys[1] = id->nxdn_typed_sys;
+    }
+}
+
+static void
+watchdog_event_system_from_edacs(const dsd_received_identity* id, uint32_t sys[5]) {
+    const uint32_t valid = id->valid;
+    if ((valid & DSD_RXID_EDACS_SITE) != 0U) {
+        sys[0] = id->edacs_site;
+    }
+    if ((valid & DSD_RXID_EDACS_AREA) != 0U) {
+        sys[1] = id->edacs_area;
+    }
+    if ((valid & DSD_RXID_EDACS_SYSTEM) != 0U) {
+        sys[2] = id->edacs_system;
+    }
+}
+
+static void
 watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid_family family, uint32_t sys[5]) {
     const dsd_received_identity* const id = &state->rx_id;
     if (DSD_SYNC_IS_TETRA(protocol)) {
@@ -1544,60 +1598,17 @@ watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid
     if (id->family != (uint8_t)family) {
         return;
     }
-    const uint32_t valid = id->valid;
     switch (family) {
-        case DSD_RXID_FAMILY_P25:
-            if ((valid & DSD_RXID_P25_SYSID) != 0U
-                && ((sys[1] != 0U && sys[1] != id->p25_sysid)
-                    || ((valid & DSD_RXID_P25_WACN) != 0U && sys[0] != 0U && sys[0] != id->p25_wacn))) {
-                sys[0] = 0U; /* another system: none of the staged one belongs with it */
-                sys[3] = 0U;
-                sys[4] = 0U;
-            }
-            if ((valid & DSD_RXID_P25_SYSID) != 0U) {
-                sys[1] = id->p25_sysid;
-            }
-            if ((valid & DSD_RXID_P25_WACN) != 0U) {
-                sys[0] = id->p25_wacn;
-            }
-            if ((valid & DSD_RXID_P25_SITE) != 0U) {
-                sys[3] = id->p25_rfss;
-                sys[4] = id->p25_site;
-            }
-            break;
+        case DSD_RXID_FAMILY_P25: watchdog_event_system_from_p25(id, sys); break;
+        case DSD_RXID_FAMILY_NXDN: watchdog_event_system_from_nxdn(id, sys); break;
+        case DSD_RXID_FAMILY_EDACS: watchdog_event_system_from_edacs(id, sys); break;
         case DSD_RXID_FAMILY_DMR:
-            if ((valid & DSD_RXID_DMR_T3_SYSCODE) != 0U) {
+            if ((id->valid & DSD_RXID_DMR_T3_SYSCODE) != 0U) {
                 sys[0] = id->dmr_t3_syscode;
             }
             break;
-        case DSD_RXID_FAMILY_NXDN:
-            if ((valid & DSD_RXID_NXDN_LOCATION) != 0U) {
-                sys[0] = id->nxdn_site;
-                sys[1] = id->nxdn_sys;
-                break;
-            }
-            if ((valid & DSD_RXID_NXDN_IDAS_SITE) != 0U) {
-                sys[0] = id->nxdn_idas_site_code;
-            } else if ((valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U) {
-                sys[0] = id->nxdn_typed_site;
-            }
-            if ((valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U) {
-                sys[1] = id->nxdn_typed_sys;
-            }
-            break;
-        case DSD_RXID_FAMILY_EDACS:
-            if ((valid & DSD_RXID_EDACS_SITE) != 0U) {
-                sys[0] = id->edacs_site;
-            }
-            if ((valid & DSD_RXID_EDACS_AREA) != 0U) {
-                sys[1] = id->edacs_area;
-            }
-            if ((valid & DSD_RXID_EDACS_SYSTEM) != 0U) {
-                sys[2] = id->edacs_system;
-            }
-            break;
         case DSD_RXID_FAMILY_TETRA:
-            if ((valid & DSD_RXID_TETRA_NET) != 0U) {
+            if ((id->valid & DSD_RXID_TETRA_NET) != 0U) {
                 sys[0] = id->tetra_mcc;
                 sys[1] = id->tetra_mnc;
             }

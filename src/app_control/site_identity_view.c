@@ -195,6 +195,14 @@ dsd_app_site_identity_view(const dsd_state* state, dsd_app_site_identity* out) {
     out->live = (id->fresh != 0U && dsd_rxid_family_for_sync(state->synctype) == (dsd_rxid_family)id->family) ? 1U : 0U;
 }
 
+/* Append @p lead and @p text at @p len; a text that does not fit is cut short. Returns the new length. */
+static size_t
+site_append(char* out, size_t out_size, size_t len, const char* lead, const char* text) {
+    const int n = DSD_SNPRINTF(out + len, out_size - len, "%s%s", lead, text);
+    len += (n > 0) ? (size_t)n : 0U;
+    return len < out_size ? len : out_size - 1U;
+}
+
 size_t
 dsd_app_site_identity_format(const dsd_app_site_identity* view, int form, int with_protocol, char* out,
                              size_t out_size) {
@@ -212,25 +220,12 @@ dsd_app_site_identity_format(const dsd_app_site_identity* view, int form, int wi
         if (form == DSD_APP_SITE_IDENTITY_COMPACT && !token->compact) {
             continue;
         }
-        const char* lead = "";
         if (shown == 0 && with_protocol && view->protocol[0] != '\0') {
-            const int n = DSD_SNPRINTF(out + len, out_size - len, "%s", view->protocol);
-            len += (n > 0) ? (size_t)n : 0U;
-            if (len >= out_size) {
-                len = out_size - 1U;
-                break;
-            }
-            lead = k_dot;
-        } else if (shown > 0) {
-            lead = k_dot;
+            len = site_append(out, out_size, len, "", view->protocol);
+            shown++;
         }
-        const int n = DSD_SNPRINTF(out + len, out_size - len, "%s%s", lead, token->text);
-        len += (n > 0) ? (size_t)n : 0U;
+        len = site_append(out, out_size, len, shown > 0 ? k_dot : "", token->text);
         shown++;
-        if (len >= out_size) {
-            len = out_size - 1U;
-            break;
-        }
     }
     return len;
 }
