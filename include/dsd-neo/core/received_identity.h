@@ -45,6 +45,8 @@
  * Lifetime: dsd_rxid_reset() at every carrier boundary and trunk-scan target switch; dsd_rxid_note_sync() at frame
  * sync drops a record of another protocol family; dsd_rxid_trunk_tune() on every accepted trunking retune drops the
  * carrier's access code and keeps the system (a voice channel belongs to its control channel's system).
+ * Commands that forget or reinterpret a site forget it here too: the DMR reset (dsd_rxid_forget_system()), and a
+ * committed change of the decode mode or the EDACS addressing mode (dsd_rxid_note_decoder_settings()).
  *
  * Plain integers and characters only: the record rides the dsd_state snapshot copy range (ui_snapshot.c pins it).
  * Written on the decoder thread only. The type stays out of state.h so app-control's public views can name it.
@@ -53,6 +55,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_RECEIVED_IDENTITY_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_RECEIVED_IDENTITY_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
@@ -152,6 +155,7 @@ typedef struct dsd_received_identity {
     uint16_t edacs_area;
     uint16_t edacs_system;
     uint16_t edacs_cc_lcn;
+    int8_t edacs_ea_mode; /**< dsd_state::ea_mode the EDACS parts were read under; meaningful while one is valid. */
 
     uint16_t tetra_mcc; /**< 10 bits. */
     uint16_t tetra_mnc; /**< 14 bits. */
@@ -224,6 +228,14 @@ void dsd_rxid_note_tetra_la(dsd_state* state, uint16_t la);
 void dsd_rxid_note_tetra_other_cell(dsd_state* state);
 /** A checked direct mode burst: the carrier belongs to no trunked network, so a TETRA record is dropped. */
 void dsd_rxid_note_tetra_direct_mode(dsd_state* state);
+
+/** The operator forgot @p family's site (the DMR reset command): a record of that family drops every part but the
+ * access code, and the access code too when @p with_access is set. */
+void dsd_rxid_forget_system(dsd_state* state, dsd_rxid_family family, int with_access);
+/** The decoder settings changed (a decode mode, the EDACS addressing mode): a record of a protocol @p opts no longer
+ * decodes, or an EDACS record read under the other addressing mode, is dropped. Call it once the change commits, after
+ * the calls it ends were ended (they keep the identity they ended with). */
+void dsd_rxid_note_decoder_settings(const dsd_opts* opts, dsd_state* state);
 
 /** A checked message of @p family confirmed this carrier, at @p freq_hz, as the control channel of the system the
  * record names. 0 Hz (an unknown tuner frequency) is ignored. */

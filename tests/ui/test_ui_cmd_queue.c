@@ -27,6 +27,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -8872,6 +8873,65 @@ test_provoice_toggle_closes_nfm_recording_named(void) {
     rc |= expect_int("provoice toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("provoice mode toggled", state.ea_mode, 1);
     return rc | expect_named_nfm_recording("nfm call ended by the provoice toggle", &state, dir);
+}
+
+/* The commands that forget or reinterpret a site's identity forget the received identity record with it, so no frontend
+   keeps showing what they dropped: the DMR reset (the DMR trunking site and the NXDN location and RAN; the DMR colour
+   code, which the reset keeps, stays), the EDACS addressing mode toggle (the site, area, system and control channel LCN
+   were read under the other mode; the calls it ends keep the site they ended with), and a decode mode change onto
+   settings that no longer decode the record's protocol. */
+static int
+test_identity_forgetting_commands_clear_the_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site_text(&state, "Cap+ \xC2\xB7 Site 2");
+    dsd_rxid_note_dmr_rest_lsn(&state, 3U);
+    dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
+    dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_DMR, 451000000U);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("dmr reset forgets the dmr site", (int)state.rx_id.valid, DSD_RXID_ACCESS);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    dsd_rxid_note_nxdn_location(&state, 1U, 12U, 3U);
+    dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained again", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("dmr reset forgets the nxdn location and ran", (int)state.rx_id.valid, 0);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    opts.frame_provoice = 1;
+    state.ea_mode = 0;
+    dsd_rxid_note_edacs_site(&state, 12U);
+    dsd_rxid_note_edacs_area(&state, 3U);
+    dsd_rxid_note_edacs_cc_lcn(&state, 7U);
+    post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+    rc |= expect_int("addressing toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("addressing toggled", state.ea_mode, 1);
+    rc |= expect_int("addressing toggle forgets the edacs site", (int)state.rx_id.valid, 0);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("dmr session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    rc |= expect_int("mode change to p25 queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mode change to p25 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a mode that decodes no dmr forgets it", (int)state.rx_id.valid, 0);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    rc |= expect_int("mode change to auto queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AUTO),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mode change to auto drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a mode that still decodes p25 keeps it", (int)state.rx_id.valid, DSD_RXID_ACCESS);
+    freeState(&state);
+    return rc;
 }
 
 /*
@@ -19220,6 +19280,7 @@ main(void) {
     rc |= test_decode_mode_set_ensures_family_sink();
     rc |= test_decode_mode_set_closes_nfm_recording_named();
     rc |= test_provoice_toggle_closes_nfm_recording_named();
+    rc |= test_identity_forgetting_commands_clear_the_record();
     rc |= test_config_apply_keeps_session_output_layout();
 #endif
     rc |= test_family_change_discards_partial_analog_block();

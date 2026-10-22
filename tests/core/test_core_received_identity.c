@@ -9,6 +9,8 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -522,6 +524,47 @@ test_dmr_trunking_types_exclusive(void) {
     free(state);
 }
 
+/* EDACS parts are read under the addressing mode the decoder runs: a note under the other mode drops the parts read
+   under the first, and so does a settings change, which also drops a record of a protocol no longer decoded. */
+static void
+test_decoder_settings(void) {
+    dsd_state* state = new_state();
+    static dsd_opts opts;
+    const dsd_received_identity* id = &state->rx_id;
+    state->ea_mode = 0;
+    dsd_rxid_note_edacs_site(state, 12U);
+    dsd_rxid_note_edacs_cc_lcn(state, 7U);
+    state->ea_mode = 1;
+    dsd_rxid_note_edacs_system(state, 3U);
+    expect_u("edacs note under the other addressing mode", id->valid, DSD_RXID_EDACS_SYSTEM);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.frame_provoice = 1;
+    dsd_rxid_note_decoder_settings(&opts, state);
+    expect_u("same addressing mode keeps the record", id->valid, DSD_RXID_EDACS_SYSTEM);
+    state->ea_mode = 0;
+    dsd_rxid_note_decoder_settings(&opts, state);
+    expect_u("other addressing mode drops the record", id->valid, 0U);
+
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_rest_lsn(state, 3U);
+    dsd_rxid_note_decoder_settings(&opts, state);
+    expect_u("dmr not decoded", id->valid, 0U);
+    opts.frame_dmr = 1;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_rest_lsn(state, 3U);
+    dsd_rxid_note_decoder_settings(&opts, state);
+    expect_u("dmr decoded", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_REST_LSN);
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_NXDN, 1);
+    expect_u("forget another family", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_REST_LSN);
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+    expect_u("forget the dmr site", id->valid, DSD_RXID_ACCESS);
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 1);
+    expect_u("forget with the access code", id->valid, 0U);
+    dsd_rxid_note_decoder_settings(NULL, state);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -536,6 +579,7 @@ main(void) {
     test_lost_frame_notes_nothing();
     test_nxdn_subtypes_exclusive();
     test_dmr_trunking_types_exclusive();
+    test_decoder_settings();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {

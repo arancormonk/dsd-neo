@@ -33,6 +33,7 @@
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -5023,6 +5024,7 @@ ui_commit_mode_change(dsd_opts* opts, dsd_state* state) {
     }
     g_analog_entry.commit_tetra = 0;
     dsd_decode_mode_commit_tetra(opts, state);
+    dsd_rxid_note_decoder_settings(opts, state);
 }
 
 /* The armed switch has settled (taken, refused or dropped): nothing can put the settings from before it back any more,
@@ -5033,6 +5035,7 @@ ui_analog_entry_settled(dsd_opts* opts, dsd_state* state) {
     if (g_analog_entry.commit_tetra) {
         g_analog_entry.commit_tetra = 0;
         dsd_decode_mode_commit_tetra(opts, state);
+        dsd_rxid_note_decoder_settings(opts, state);
     }
 }
 
@@ -5946,6 +5949,9 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
         return UI_CMD_APPLY_FAILED;
     }
     rr_apply_edacs_variants(state, &p, mode);
+    if (mode == DSDCFG_MODE_EDACS_PV) {
+        dsd_rxid_note_decoder_settings(opts, state); /* the EDACS addressing mode the import restated */
+    }
     rr_apply_simulcast(opts, state, &p);
     opts->p25_prefer_candidates = p.p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
     rr_apply_tuner_owner(opts, state, &p);
@@ -6012,6 +6018,10 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             state->nxdn_base_freq = 0;
             state->nxdn_step = 0;
             state->nxdn_bw = 0;
+            /* And what the received identity holds of them: the DMR trunking site, keeping the colour code the reset
+               keeps, and the NXDN location and IDAS site with the RAN. */
+            dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+            dsd_rxid_forget_system(state, DSD_RXID_FAMILY_NXDN, 1);
             return 1;
         case DSD_APP_CMD_TCP_CONNECT_AUDIO: {
             /* A copy: the switch rewrites tcp_hostname once it connects. */
@@ -6652,6 +6662,9 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     state->trunk_cc_freq = 0;
     opts->trunk_is_tuned = 0;
     ui_end_calls(opts, state);
+    /* The site and control channel LCN the received identity holds were read under the other addressing mode; the
+       calls just ended keep the site they ended with. */
+    dsd_rxid_note_decoder_settings(opts, state);
 }
 
 static int
@@ -7707,6 +7720,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
        (dsd_stage_user_config_to_opts()). */
     if (cfg.has_mode) {
         ui_commit_mode_change(opts, state);
+    } else {
+        /* An EDACS addressing mode the config set without a [mode]: the mode change's commit covers one with it. */
+        dsd_rxid_note_decoder_settings(opts, state);
     }
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);

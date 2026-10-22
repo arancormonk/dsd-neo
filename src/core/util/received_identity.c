@@ -9,6 +9,8 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -159,6 +161,9 @@ rxid_system_parts(uint8_t family) {
                    | DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ;
         case DSD_RXID_FAMILY_DPMR: return DSD_RXID_CC_FREQ;
         case DSD_RXID_FAMILY_TETRA: return DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ;
+        case DSD_RXID_FAMILY_EDACS:
+            return DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_SYSTEM | DSD_RXID_EDACS_CC_LCN
+                   | DSD_RXID_CC_FREQ;
         default: return 0U;
     }
 }
@@ -449,9 +454,27 @@ dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
     rxid_set(id, DSD_RXID_NXDN_TYPED_SYSTEM);
 }
 
+/* The EDACS parts, which every EDACS message carries. */
+#define RXID_EDACS_PARTS (DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_SYSTEM | DSD_RXID_EDACS_CC_LCN)
+
+/* The EDACS record a note goes into: the parts are read under the addressing mode the decoder runs
+   (dsd_state::ea_mode), so a record of the other mode's reading is dropped first. */
+static dsd_received_identity*
+rxid_edacs(dsd_state* state) {
+    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_EDACS);
+    if (id == NULL) {
+        return NULL;
+    }
+    if (rxid_has(id, RXID_EDACS_PARTS) && id->edacs_ea_mode != (int8_t)state->ea_mode) {
+        rxid_drop(id, RXID_EDACS_PARTS | DSD_RXID_CC_FREQ);
+    }
+    id->edacs_ea_mode = (int8_t)state->ea_mode;
+    return id;
+}
+
 void
 dsd_rxid_note_edacs_site(dsd_state* state, uint16_t site) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_EDACS);
+    dsd_received_identity* const id = rxid_edacs(state);
     if (id == NULL) {
         return;
     }
@@ -464,7 +487,7 @@ dsd_rxid_note_edacs_site(dsd_state* state, uint16_t site) {
 
 void
 dsd_rxid_note_edacs_area(dsd_state* state, uint16_t area) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_EDACS);
+    dsd_received_identity* const id = rxid_edacs(state);
     if (id == NULL) {
         return;
     }
@@ -474,7 +497,7 @@ dsd_rxid_note_edacs_area(dsd_state* state, uint16_t area) {
 
 void
 dsd_rxid_note_edacs_system(dsd_state* state, uint16_t system) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_EDACS);
+    dsd_received_identity* const id = rxid_edacs(state);
     if (id == NULL) {
         return;
     }
@@ -487,7 +510,7 @@ dsd_rxid_note_edacs_system(dsd_state* state, uint16_t system) {
 
 void
 dsd_rxid_note_edacs_cc_lcn(dsd_state* state, uint16_t lcn) {
-    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_EDACS);
+    dsd_received_identity* const id = rxid_edacs(state);
     if (id == NULL) {
         return;
     }
@@ -562,4 +585,43 @@ dsd_rxid_note_cc_freq(dsd_state* state, dsd_rxid_family family, uint32_t freq_hz
     }
     id->cc_freq_hz = freq_hz;
     rxid_set(id, DSD_RXID_CC_FREQ);
+}
+
+void
+dsd_rxid_forget_system(dsd_state* state, dsd_rxid_family family, int with_access) {
+    if (state != NULL && family != DSD_RXID_FAMILY_NONE && state->rx_id.family == (uint8_t)family) {
+        rxid_drop(&state->rx_id, rxid_system_parts(state->rx_id.family) | (with_access ? DSD_RXID_ACCESS : 0U));
+    }
+}
+
+/* Whether @p opts decode @p family at all. */
+static int
+rxid_family_decoded(const dsd_opts* opts, uint8_t family) {
+    switch (family) {
+        case DSD_RXID_FAMILY_DMR: return opts->frame_dmr == 1;
+        case DSD_RXID_FAMILY_P25: return opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1;
+        case DSD_RXID_FAMILY_NXDN: return opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1;
+        case DSD_RXID_FAMILY_DPMR: return opts->frame_dpmr == 1;
+        case DSD_RXID_FAMILY_M17: return opts->frame_m17 == 1;
+        case DSD_RXID_FAMILY_TETRA: return opts->frame_tetra == 1;
+        case DSD_RXID_FAMILY_EDACS: return opts->frame_provoice == 1;
+        default: return 1;
+    }
+}
+
+void
+dsd_rxid_note_decoder_settings(const dsd_opts* opts, dsd_state* state) {
+    if (opts == NULL || state == NULL) {
+        return;
+    }
+    dsd_received_identity* const id = &state->rx_id;
+    if (id->family == (uint8_t)DSD_RXID_FAMILY_NONE) {
+        return;
+    }
+    /* A protocol the decoder no longer runs names nothing; EDACS parts read under the other addressing mode neither. */
+    const int other_reading =
+        id->family == (uint8_t)DSD_RXID_FAMILY_EDACS && id->edacs_ea_mode != (int8_t)state->ea_mode;
+    if (!rxid_family_decoded(opts, id->family) || other_reading) {
+        rxid_clear(id);
+    }
 }

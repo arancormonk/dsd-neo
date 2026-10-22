@@ -3166,7 +3166,7 @@ ui_render_p25_hand_set_seed(const dsd_state* state) {
 }
 
 static void
-ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
+ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, const dsd_state* state) {
     const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_P25);
     printw("P25p1  - ");
     ui_render_p25_identity(opts, id);
@@ -3193,7 +3193,7 @@ ui_render_p25p2_parameter_status(const dsd_state* state) {
 }
 
 static void
-ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
+ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, const dsd_state* state) {
     printw("P25p2  - ");
     ui_render_p25_identity(opts, ui_rxid(state, DSD_RXID_FAMILY_P25));
     ui_render_p25_hand_set_seed(state);
@@ -3201,7 +3201,7 @@ ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-ui_render_p25_dmr_header(const dsd_opts* opts, dsd_state* state) {
+ui_render_p25_dmr_header(const dsd_opts* opts, const dsd_state* state) {
     printw("| ");
     if (DSD_SYNC_IS_DMR_BS(ncurses_last_synctype)) {
         ui_render_p25_dmr_header_dmr_bs(state);
@@ -3591,7 +3591,7 @@ ui_render_p25_dmr_tuned_freq_line(const dsd_opts* opts, const dsd_state* state) 
 }
 
 static void
-ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
+ui_render_call_info_p25_dmr(const dsd_opts* opts, const dsd_state* state) {
     if (!(DSD_SYNC_IS_P25(ncurses_last_synctype) || DSD_SYNC_IS_DMR(ncurses_last_synctype))) {
         return;
     }
