@@ -298,7 +298,11 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
-        height: 48
+        // The readout is never elided, so where large text leaves no room for
+        // the status pill beside it, the pill takes a line of its own under it.
+        readonly property bool pillBeside: backButton.width + 6 + readoutRow.implicitWidth + 12 + statusPill.width <= width
+        readonly property real titleHeight: Math.max(48, titleColumn.implicitHeight)
+        height: pillBeside ? titleHeight : titleHeight + 6 + statusPill.height
         // Same shield the picture carries, for the same reason: the sheets are
         // siblings anchored over the whole screen, so their scrim covers this
         // strip too, and a TapHandler never takes an exclusive grab. Without
@@ -312,16 +316,18 @@ Item {
             icon: "back"
             objectName: "spectrumBack"
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            y: (header.titleHeight - height) / 2
             onClicked: screen.closed()
         }
 
         Column {
+            id: titleColumn
+
             anchors.left: backButton.right
             anchors.leftMargin: 6
-            anchors.right: statusPill.left
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: header.pillBeside ? statusPill.left : parent.right
+            anchors.rightMargin: header.pillBeside ? 12 : 0
+            y: (header.titleHeight - height) / 2
             spacing: 2
 
             MicroLabel {
@@ -337,6 +343,8 @@ Item {
             }
 
             Row {
+                id: readoutRow
+
                 spacing: 6
 
                 Text {
@@ -374,7 +382,7 @@ Item {
 
             objectName: "spectrumStatusPill"
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.pillBeside ? (header.titleHeight - height) / 2 : header.titleHeight + 6
             width: statusLabel.implicitWidth + 22
             height: 30
             radius: Theme.radiusButton

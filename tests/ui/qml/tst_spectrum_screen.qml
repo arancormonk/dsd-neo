@@ -65,6 +65,32 @@ Item {
             compare(readout.text, (spectrum.centerFreqHz / 1.0e6).toFixed(4) + " MHz")
         }
 
+        // The readout is never elided, so at large text on a narrow phone the
+        // status pill has to make room rather than sit on top of the digits.
+        function test_01b_the_status_pill_never_covers_the_readout() {
+            var screen = screenLoader.item
+            var readout = findChild(screen, "spectrumCenterReadout")
+            var pill = findChild(screen, "spectrumStatusPill")
+            var widths = [360, 420]
+            var scales = [1.0, 1.3, 1.6]
+            for (var w = 0; w < widths.length; w++) {
+                root.width = widths[w]
+                for (var s = 0; s < scales.length; s++) {
+                    Ui.Theme.fontScale = scales[s]
+                    wait(0)
+                    var r = readout.mapToItem(screen, 0, 0)
+                    var p = pill.mapToItem(screen, 0, 0)
+                    var beside = r.x + readout.width <= p.x
+                    var below = p.y >= r.y + readout.height
+                    verify(beside || below, "the pill covers the readout at " + widths[w] + " px, scale " + scales[s])
+                    verify(p.x + pill.width <= screen.width, "the pill runs off screen at " + widths[w] + " px, scale " + scales[s])
+                    verify(r.x + readout.width <= screen.width, "the readout runs off screen")
+                }
+            }
+            root.width = 420
+            Ui.Theme.resetFontScale()
+        }
+
         // A fingertip is far wider than a channel, so a tap that lands near a
         // signal has to mean that signal. 18 kHz off is well inside the 25 kHz
         // snap window at 1x, and far enough out that a tap taken literally would
