@@ -8,6 +8,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
@@ -587,11 +588,24 @@ test_confirmed_target_only_call_publishes_the_color_code(void) {
     rc |= expect_int("target-only-call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
     rc |= expect_int("target-only-no-caller", call.source_text[0] == '\0', 1);
     rc |= expect_int("target-only-color-code", state.dpmr_color_code, 12);
+    /* The carrier's received identity: the colour code of the confirmed transmission. */
+    rc |= expect_int("target-only-identity-family", state.rx_id.family, DSD_RXID_FAMILY_DPMR);
+    rc |= expect_int("target-only-identity-parts", (int)state.rx_id.valid, (int)DSD_RXID_ACCESS);
+    rc |= expect_int("target-only-identity-colour", state.rx_id.access, 12);
+    rc |= expect_int("target-only-identity-kind", state.rx_id.access_kind, DSD_ACCESS_CODE_COLOR_CODE);
 
     /* A later superframe whose channel code did not decode keeps the code the call already published. */
     state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     dpmr_publish_call(&opts, &state);
     rc |= expect_int("undecoded-channel-code-keeps-color", state.dpmr_color_code, 12);
+    rc |= expect_int("undecoded-channel-code-keeps-identity", state.rx_id.access, 12);
+
+    /* An unconfirmed transmission names nothing. */
+    dsd_rxid_reset(&state);
+    state.dpmr_confirmed = 0;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = 33U;
+    dpmr_publish_call(&opts, &state);
+    rc |= expect_int("unconfirmed-no-identity", (int)state.rx_id.valid, 0);
     return rc;
 }
 

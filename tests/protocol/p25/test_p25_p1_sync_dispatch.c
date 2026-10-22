@@ -8,6 +8,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
@@ -342,6 +343,15 @@ test_p25p1_nid_correction_and_failure_state(void) {
     assert(state.p2_cc == 0x321ULL);
     assert(state.debug_header_errors == 2U);
     assert(state.nid_failures_total == 0U);
+    /* The NAC a BCH-accepted NID carries is the carrier's received access code. */
+    assert(state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25 && state.rx_id.valid == DSD_RXID_ACCESS);
+    assert(state.rx_id.access_kind == (uint8_t)DSD_ACCESS_CODE_NAC && state.rx_id.access == 0x321U);
+    /* An unchanged repeat proves it again: a stale record is fresh once more. */
+    dsd_rxid_mark_stale(&state);
+    reset_stub_state();
+    g_new_nac = 0x321;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.rx_id.fresh == DSD_RXID_ACCESS && state.rx_id.access == 0x321U);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -359,6 +369,7 @@ test_p25p1_nid_correction_and_failure_state(void) {
     assert(state.lastp25type == 0);
     assert(strcmp(state.fsubtype, "              ") == 0);
     assert(g_status_classify_calls == 1);
+    assert(state.rx_id.valid == 0U); /* a failed NID names no NAC */
 }
 
 static void
@@ -387,6 +398,7 @@ test_p25p1_nac_update_guards(void) {
         assert(state.nid_corrections_total == 2U);
         assert(state.debug_header_errors == 1U);
         assert(state.nid_failures_total == 0U);
+        assert(state.rx_id.valid == 0U); /* the reserved NACs name no carrier */
     }
 
     static dsd_opts opts;
@@ -408,6 +420,8 @@ test_p25p1_nac_update_guards(void) {
     assert(g_last_observed_nac == 0x123);
     assert(state.nac == 0x321);
     assert(state.p2_cc == 0x123ULL);
+    /* The record names the NAC received, never the hand-set seed's. */
+    assert(state.rx_id.valid == DSD_RXID_ACCESS && state.rx_id.access == 0x321U);
     assert(state.nid_corrections_total == 1U);
     assert(state.debug_header_errors == 1U);
     assert(state.nid_failures_total == 0U);

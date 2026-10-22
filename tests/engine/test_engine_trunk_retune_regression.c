@@ -15,6 +15,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/opts.h>
@@ -2049,6 +2050,27 @@ main(void) {
     assert(g_forget_codes_calls == 1 && g_forget_code_values_calls == 1);
     assert(state->receive_codes_fresh_freq == 853012500);
     opts->receive.filters[DSD_RECEIVE_NAC].enabled = 0;
+
+    /* The received identity across a trunk follow: the voice channel belongs to the control channel's system, so the
+       record keeps the system and drops the carrier's access code, in both directions. A refused tune leaves the
+       receiver, and the record, where they were. */
+    const uint32_t rxid_system = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+    dsd_rxid_reset(state);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+    dsd_rxid_note_p25_site(state, 0x1A3U, 2U, 3U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    opts->trunk_is_tuned = 0;
+    g_setfreq_result = false;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->rx_id.valid == (rxid_system | DSD_RXID_ACCESS) && state->rx_id.access == 0x293U);
+    g_setfreq_result = true;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id.valid == rxid_system && state->rx_id.p25_wacn == 0xBEE00U && state->rx_id.p25_site == 3U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id.valid == rxid_system && state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25);
+    opts->trunk_is_tuned = 0;
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */

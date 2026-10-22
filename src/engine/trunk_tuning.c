@@ -8,6 +8,7 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -579,6 +580,9 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
         dsd_engine_forget_carrier_code_values(state);
     }
     state->receive_codes_fresh_freq = freq;
+    /* The voice channel belongs to the control channel's system: the received identity keeps the system and drops the
+       control channel's access code. */
+    dsd_rxid_trunk_tune(state);
 }
 
 /* Send the demodulator and passband a rigctl peer is asked for under the settings in force (issues #526, #621), which
@@ -1034,6 +1038,9 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     dsd_frame_sync_reset_mod_state();
     // Do not set trunk_is_tuned here; this is a CC hunt action.
     state->trunk_cc_freq = (long int)freq;
+    /* Back to (or on to) the system's control channel: the received identity keeps the system, and the voice channel's
+       access code goes with the voice channel. */
+    dsd_rxid_trunk_tune(state);
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     return result;

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -2879,6 +2880,8 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
            (dsd_engine_note_input_replaced()), here at the stream's start (issue #703). */
         dsd_trunk_tuning_requests_reset();
     }
+    /* What the carrier left sent is not the next one's identity: the received identity starts over. */
+    dsd_rxid_reset(state);
     state->carrier_seq++;
     if (take_guard || guard_held) {
         /* An operator move restarts a startup control-channel window on the new carrier (issue #703). */
@@ -3087,6 +3090,8 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
     no_carrier_reset_m17_and_sample_buffers(state);
+    /* The received identity outlives the gap, as the last one heard, but no longer reads as live. */
+    dsd_rxid_mark_stale(state);
 }
 
 // One voice chain gain serves both output formats (issue #653), so its setting and starting level do too.

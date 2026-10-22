@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -221,7 +222,8 @@ test_security(void) {
     fixture_close(&f);
 }
 
-/* The network names its colour code as the call history does ("CC 25", decimal), whatever --tetra-net spelled. */
+/* The network a CRC-checked BSCH on this carrier sent (the received identity record), its colour code named as the call
+ * history does ("CC 25", decimal). A --tetra-net preset or a network the decoder kept is configuration: no row. */
 static void
 test_network(void) {
     fixture f = fixture_open();
@@ -230,34 +232,44 @@ test_network(void) {
     pub->mode = DSD_TETRA_MODE_DMO_DIRECT;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(view.network_known == 0U && view.network_text[0] == '\0');
+    /* What a --tetra-net preset leaves in the publication. */
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
     pub->net_known = 1U;
     pub->mcc = 262U;
     pub->mnc = 1001U;
     pub->colour = 0x19U;
+    pub->la_known = 1U;
+    pub->la = 77U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(view.network_known == 0U && view.network_text[0] == '\0');
+    dsd_rxid_note_tetra_cell(f.state, 262U, 1001U, 0x19U);
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(view.network_known == 1U);
     assert(strcmp(view.network_text, "MCC 262" MID "MNC 1001" MID "CC 25") == 0);
     assert(dsd_app_tetra_view(f.opts, f.state, DSD_APP_TETRA_ASCII, &view) == 1);
     assert(strcmp(view.network_text, "MCC 262 - MNC 1001 - CC 25") == 0);
-    pub->mcc = 1023U;
-    pub->mnc = 16383U;
-    pub->colour = 63U;
+    dsd_rxid_note_tetra_cell(f.state, 1023U, 16383U, 63U);
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.network_text, "MCC 1023" MID "MNC 16383" MID "CC 63") == 0);
     /* The location area and the carrier being received, once known: every field a TEA1 reduced key is bound to. */
-    pub->la_known = 1U;
-    pub->la = 16383U;
+    dsd_rxid_note_tetra_la(f.state, 16383U);
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.network_text, "MCC 1023" MID "MNC 16383" MID "LA 16383" MID "CC 63") == 0);
     pub->rx_carrier_known = 1U;
     pub->rx_carrier = 4095U;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.network_text, "MCC 1023" MID "MNC 16383" MID "LA 16383" MID "CC 63" MID "carrier 4095") == 0);
-    pub->la_known = 0U;
+    /* An accepted trunking retune keeps the network and drops the colour code until this carrier's BSCH. */
+    dsd_rxid_trunk_tune(f.state);
     assert(dsd_app_tetra_view(f.opts, f.state, DSD_APP_TETRA_ASCII, &view) == 1);
-    assert(strcmp(view.network_text, "MCC 1023 - MNC 16383 - CC 63 - carrier 4095") == 0);
-    pub->rx_carrier_known = 0U;
-    pub->colour = 64U; /* not a colour code: no network row rather than a wrong one */
+    assert(strcmp(view.network_text, "MCC 1023 - MNC 16383 - LA 16383 - carrier 4095") == 0);
+    /* A checked direct mode burst: no trunked network. */
+    dsd_rxid_note_tetra_direct_mode(f.state);
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(view.network_known == 0U && view.network_text[0] == '\0');
+    /* A carrier boundary forgets the network. */
+    dsd_rxid_note_tetra_cell(f.state, 262U, 1001U, 0x19U);
+    dsd_rxid_reset(f.state);
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(view.network_known == 0U && view.network_text[0] == '\0');
     fixture_close(&f);

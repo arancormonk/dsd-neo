@@ -2439,9 +2439,12 @@ class Setup : public QObject {
         metrics[QStringLiteral("p25LraValid")] = false;
         metrics[QStringLiteral("p25Lra")] = 0;
         metrics[QStringLiteral("p25Phase2ParamsReady")] = false;
+        metrics[QStringLiteral("p25Phase2Seed")] = QString();
+        metrics[QStringLiteral("p25Phase2SeedSet")] = false;
         metrics[QStringLiteral("dmrColorCode")] = -1;
         metrics[QStringLiteral("dmrSiteText")] = QString();
         metrics[QStringLiteral("dmrRestLsn")] = 0;
+        metrics[QStringLiteral("dmrXptFreeLcn")] = -1;
         metrics[QStringLiteral("nxdnRan")] = -1;
         metrics[QStringLiteral("nxdnLocationCategory")] = QString();
         metrics[QStringLiteral("nxdnSysCode")] = 0;
@@ -2451,6 +2454,10 @@ class Setup : public QObject {
         metrics[QStringLiteral("vcFreqHz")] = 0;
         metrics[QStringLiteral("siteLine")] = QString();
         metrics[QStringLiteral("siteConfirmed")] = false;
+        metrics[QStringLiteral("carrierIdentityTokens")] = QStringList();
+        metrics[QStringLiteral("carrierIdentityProtocol")] = QString();
+        metrics[QStringLiteral("carrierIdentityText")] = QString();
+        metrics[QStringLiteral("carrierIdentityLive")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
         // The decode clock's wall-clock now that recent-call ages read: the fixture's decoder is

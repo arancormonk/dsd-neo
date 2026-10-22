@@ -16,6 +16,7 @@
 #include <QMap>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
@@ -29,11 +30,13 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -421,6 +424,10 @@ test_two_slot_carrier_mirrors_the_decoder() {
     freeState(&state);
 }
 
+/* The Monitor site identity and the Spectrum carrier identity read the received identity record through the shared
+   view: only what this carrier sent, never the Phase 2 seed or decoder state another carrier left, with no latch of
+   their own. The record keeps the last heard values (dimmed: siteConfirmed and carrierIdentityLive false) until a
+   carrier boundary resets it. */
 static void
 test_site() {
     static dsd_opts opts;
@@ -430,107 +437,170 @@ test_site() {
     dsd_qt::MetricsModel model;
     int signals = 0;
     QObject::connect(&model, &dsd_qt::MetricsModel::siteChanged, [&]() { ++signals; });
-    state.synctype = DSD_SYNC_P25P1_POS;
+
+    /* A hand-set seed and another carrier's control channel, nothing received: no identity, and the seed reads as
+       configuration. */
+    state.synctype = DSD_SYNC_P25P2_POS;
+    state.p2_wacn = 0xBEE00;
+    state.p2_sysid = 0x348;
     state.p2_cc = 0x293;
+    state.p2_hardset = 1U;
+    state.p2_rfssid = 3;
+    state.p2_siteid = 21;
+    state.p25_site_lra_valid = 1;
+    state.trunk_cc_freq = 851000000;
+    state.p25_cc_freq = 851000000;
     model.refresh(&opts, &state);
-    expect("NAC-only P1 identity", model.p25NacValid() && model.p25Nac() == 0x293 && !model.p25WacnValid()
-                                       && !model.p25SysIdValid() && !model.p25Phase2ParamsReady()
-                                       && model.siteLine() == QStringLiteral("P25 · NAC 293") && model.siteConfirmed());
+    expect("a seed is no received identity",
+           model.siteLine().isEmpty() && model.siteProtocol().isEmpty() && !model.p25NacValid() && !model.p25WacnValid()
+               && !model.p25SysIdValid() && model.p25Rfss() == 0 && !model.p25LraValid() && model.ccFreqHz() == 0
+               && model.carrierIdentityTokens().isEmpty() && model.carrierIdentityProtocol().isEmpty()
+               && model.carrierIdentityText().isEmpty() && !model.carrierIdentityLive());
+    expect("Phase 2 readiness reads the seed", model.p25Phase2ParamsReady()
+                                                   && model.p25Phase2Seed() == QStringLiteral("BEE00.348.293")
+                                                   && model.p25Phase2SeedSet());
+    state.p2_hardset = 0U;
+    state.p2_cc = 0;
+    model.refresh(&opts, &state);
+    expect("an incomplete learned seed", !model.p25Phase2ParamsReady()
+                                             && model.p25Phase2Seed() == QStringLiteral("BEE00.348.000")
+                                             && !model.p25Phase2SeedSet());
+
+    /* The NAC this carrier sent, not the seed's. */
+    state.synctype = DSD_SYNC_P25P1_POS;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2A1U);
+    model.refresh(&opts, &state);
+    expect("NAC-only P1 identity", model.siteProtocol() == QStringLiteral("P25") && model.p25NacValid()
+                                       && model.p25Nac() == 0x2A1 && !model.p25WacnValid() && !model.p25SysIdValid()
+                                       && model.siteLine() == QStringLiteral("P25 · NAC 2A1") && model.siteConfirmed());
+    expect("carrier identity", model.carrierIdentityTokens() == QStringList{QStringLiteral("NAC 2A1")}
+                                   && model.carrierIdentityProtocol() == QStringLiteral("P25")
+                                   && model.carrierIdentityText() == QStringLiteral("P25 · NAC 2A1")
+                                   && model.carrierIdentityLive());
     const int first = signals;
     model.refresh(&opts, &state);
     expect("identical site does not notify", signals == first);
-    state.p2_wacn = 0xBEE00;
-    state.p2_sysid = 0x123;
-    state.p2_rfssid = 2;
-    state.p2_siteid = 3;
-    state.p25_site_lra_valid = 1;
-    state.p25_site_lra = 0;
-    state.trunk_cc_freq = 851000000;
+
+    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    dsd_rxid_note_p25_site(&state, 0x006U, 10U, 11U);
+    dsd_rxid_note_p25_lra(&state, 0x006U, 0x1AU);
+    dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_P25, 769031250U);
     state.trunk_vc_freq[0] = 852000000;
     model.refresh(&opts, &state);
-    expect("full P25", model.p25WacnValid() && model.p25Wacn() == 0xBEE00 && model.p25SysIdValid()
-                           && model.p25SysId() == 0x123 && model.p25Rfss() == 2 && model.p25Site() == 3
-                           && model.p25LraValid() && model.p25Lra() == 0 && model.p25Phase2ParamsReady()
-                           && model.ccFreqHz() == 851000000 && model.vcFreqHz() == 852000000);
-    const int beforeFrequency = signals;
-    state.trunk_cc_freq += 12500;
-    model.refresh(&opts, &state);
-    expect("frequency-only site change notifies", signals == beforeFrequency + 1 && model.ccFreqHz() == 851012500);
-    state.synctype = DSD_SYNC_P25P2_POS;
-    model.refresh(&opts, &state);
-    expect("full P2 parameters ready", model.p25Phase2ParamsReady());
-    state.p2_wacn = 0xFFFFF;
-    state.p2_sysid = 0xFFF;
-    model.refresh(&opts, &state);
-    expect("invalid system fields do not hide NAC", !model.p25WacnValid() && !model.p25SysIdValid()
-                                                        && model.p25NacValid() && model.siteLine().contains("NAC 293")
-                                                        && !model.p25Phase2ParamsReady());
-    state.p2_wacn = 0xBEE00;
-    state.p2_sysid = 0x123;
-    state.p25_site_lra_valid = 0;
-    model.refresh(&opts, &state);
-    expect("LRA validity alone updates", !model.p25LraValid() && !model.siteLine().contains("LRA"));
-    for (auto nac : {0ULL, 0xFFFULL, 0x1000ULL}) {
-        state.p2_cc = nac;
-        model.refresh(&opts, &state);
-        expect("invalid NAC omitted independently", !model.p25NacValid() && !model.p25Phase2ParamsReady()
-                                                        && model.p25WacnValid() && !model.siteLine().contains("NAC"));
-    }
+    expect("full P25", model.p25WacnValid() && model.p25Wacn() == 0x45564 && model.p25SysIdValid()
+                           && model.p25SysId() == 0x006 && model.p25Rfss() == 10 && model.p25Site() == 11
+                           && model.p25LraValid() && model.p25Lra() == 0x1A && model.ccFreqHz() == 769031250
+                           && model.vcFreqHz() == 852000000);
+    expect("full P25 line",
+           model.siteLine() == QStringLiteral("P25 · NAC 2A1 · SYS 006 · RFSS 10 · SITE 11 · WACN 45564 · LRA 1A"));
+    expect("compact tokens",
+           model.carrierIdentityTokens()
+               == QStringList({QStringLiteral("NAC 2A1"), QStringLiteral("SYS 006"), QStringLiteral("RFSS 10"),
+                               QStringLiteral("SITE 11"), QStringLiteral("WACN 45564")}));
+
+    /* The sync hold has expired and the no-carrier pass marked the record stale: the values stay, dimmed. A change of
+       liveness alone notifies. */
     const QString retained = model.siteLine();
+    const QStringList retainedTokens = model.carrierIdentityTokens();
+    int beforeLoss = signals;
     state.synctype = DSD_SYNC_NONE;
-    state.p2_wacn = 0;
+    dsd_rxid_mark_stale(&state);
     model.refresh(&opts, &state);
-    expect("loss retains copied identity but withdraws confirmation",
-           model.siteLine() == retained && !model.siteConfirmed());
+    expect("retained after the hold", model.siteLine() == retained && !model.siteConfirmed()
+                                          && model.carrierIdentityTokens() == retainedTokens
+                                          && !model.carrierIdentityLive() && model.p25Nac() == 0x2A1);
+    expect("liveness alone notifies", signals == beforeLoss + 1);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    model.refresh(&opts, &state);
+    expect("sync without a reception stays retained", !model.carrierIdentityLive() && signals == beforeLoss + 1);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2A1U);
+    model.refresh(&opts, &state);
+    expect("a reception is live again", model.carrierIdentityLive() && model.siteConfirmed()
+                                            && model.siteLine() == retained && signals == beforeLoss + 2);
+
+    /* A carrier boundary resets the record; conventional carrier B shows only its own NAC, no control channel. */
+    dsd_rxid_reset(&state);
+    model.refresh(&opts, &state);
+    expect("a reset record shows nothing", model.siteLine().isEmpty() && model.siteProtocol().isEmpty()
+                                               && model.ccFreqHz() == 0 && model.carrierIdentityTokens().isEmpty());
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x3B2U);
+    model.refresh(&opts, &state);
+    expect("carrier B", model.siteLine() == QStringLiteral("P25 · NAC 3B2") && model.ccFreqHz() == 0
+                            && !model.p25WacnValid() && model.p25Rfss() == 0);
+
+    /* Another protocol replaces the identity. */
     state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
-    state.dmr_color_code = 7;
-    DSD_SNPRINTF(state.dmr_site_parms, sizeof(state.dmr_site_parms), "%s", "Net 12 Site 3; ");
-    state.dmr_rest_channel = 4;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 7U);
+    dsd_rxid_note_dmr_site_text(&state, "Net 12 · Site 3");
+    dsd_rxid_note_dmr_rest_lsn(&state, 4U);
+    dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
+    DSD_SNPRINTF(state.dmr_site_parms, sizeof(state.dmr_site_parms), "%s", "stale; ");
+    state.dmr_rest_channel = 9;
     model.refresh(&opts, &state);
-    expect("DMR verbatim site", model.siteProtocol() == "DMR" && model.dmrColorCode() == 7
-                                    && model.dmrSiteText() == "Net 12 Site 3; " && model.dmrRestLsn() == 4
-                                    && !model.p25WacnValid());
-    // 16 is "not decoded", which every carrier boundary now leaves (issue #575): no CC 16 on the site line.
-    state.dmr_color_code = 16;
+    expect("DMR site", model.siteProtocol() == "DMR" && model.dmrColorCode() == 7
+                           && model.dmrSiteText() == QStringLiteral("Net 12 · Site 3") && model.dmrRestLsn() == 4
+                           && !model.p25NacValid() && model.carrierIdentityProtocol() == QStringLiteral("DMR"));
+    expect("DMR line", model.siteLine() == QStringLiteral("DMR · CC 7 · Net 12 · Site 3 · Rest LSN 4 · Capacity Plus")
+                           && model.carrierIdentityTokens()
+                                  == QStringList({QStringLiteral("CC 7"), QStringLiteral("Net 12 · Site 3"),
+                                                  QStringLiteral("Rest LSN 4")}));
+    expect("no XPT free channel", model.dmrXptFreeLcn() == -1);
+    /* A Hytera XPT site's free channel: its own SiteSheet field and a compact token. */
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_dmr_brand(&state, "Hytera XPT");
+    dsd_rxid_note_dmr_xpt_free_lcn(&state, 0U);
     model.refresh(&opts, &state);
-    expect("unknown DMR colour code hidden", model.dmrColorCode() == -1 && !model.siteLine().contains("CC"));
+    expect("XPT free channel 0", model.dmrXptFreeLcn() == 0);
+    dsd_rxid_note_dmr_xpt_free_lcn(&state, 3U);
+    model.refresh(&opts, &state);
+    expect("XPT free channel",
+           model.dmrXptFreeLcn() == 3 && model.carrierIdentityTokens() == QStringList({QStringLiteral("Free LCN 3")}));
+
+    /* NXDN Type-C and IDAS. */
+    dsd_rxid_reset(&state);
     state.synctype = DSD_SYNC_NXDN_POS;
-    state.nxdn_last_ran = 64;
+    state.nxdn_last_ran = 5;
+    state.nxdn_location_sys_code = 99;
+    state.nxdn_location_site_code = 98;
     model.refresh(&opts, &state);
-    expect("unknown NXDN RAN hidden", model.nxdnRan() == -1 && model.siteLine().isEmpty());
-    // DCR's fixed 7 stands in for a RAN it does not carry (issue #575).
-    state.nxdn_last_ran = 7;
-    state.nxdn_last_ran_stand_in = 1;
+    expect("NXDN decoder state is no identity", model.siteLine().isEmpty() && model.nxdnRan() == -1);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_NXDN, (uint8_t)DSD_ACCESS_CODE_RAN, 7U);
+    dsd_rxid_note_nxdn_location(&state, 0U, 12U, 3U);
     model.refresh(&opts, &state);
-    expect("DCR stand-in is no RAN", model.nxdnRan() == -1 && !model.siteLine().contains("RAN"));
-    state.nxdn_last_ran_stand_in = 0;
-    model.refresh(&opts, &state);
-    expect("NXDN RAN 7 shown", model.nxdnRan() == 7 && model.siteLine().contains("RAN 7"));
-    state.nxdn_last_ran_stand_in = 1; // the IDAS area below is a stand-in too, shown under its own label
-    state.nxdn_last_ran = 0;
-    DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "%s", "Type-D");
-    // A Type-C location an earlier carrier left is no IDAS site's identity, which has fields of its own.
-    state.nxdn_location_sys_code = 12;
-    state.nxdn_location_site_code = 3;
-    state.nxdn_idas_site_code = 7;
+    expect("NXDN location", model.siteProtocol() == "NXDN" && model.nxdnRan() == 7
+                                && model.nxdnLocationCategory() == QStringLiteral("Global") && model.nxdnSysCode() == 12
+                                && model.nxdnSiteCode() == 3 && model.siteLine().contains("RAN 7"));
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_nxdn_idas_area(&state, 0U);
+    dsd_rxid_note_nxdn_idas_site(&state, 1U, 7U);
     model.refresh(&opts, &state);
     expect("IDAS area and site code", model.siteProtocol() == "IDAS" && model.nxdnRan() == 0
                                           && model.nxdnLocationCategory() == "Type-D" && model.nxdnSysCode() == 0
                                           && model.nxdnSiteCode() == 7 && model.siteLine().contains("Area 0")
                                           && model.siteLine().contains("SITE 7") && !model.siteLine().contains("SYS"));
-    state.nxdn_idas_system_id = 0x5A5A5;
+    dsd_rxid_note_nxdn_typed_system(&state, 0x5A5A5U, 7U);
     model.refresh(&opts, &state);
     expect("IDAS system and site", model.nxdnSysCode() == 0x5A5A5 && model.nxdnSiteCode() == 7
                                        && model.siteLine().contains(QStringLiteral("SYS %1").arg(0x5A5A5)));
+
+    /* EDACS. */
+    dsd_rxid_reset(&state);
     state.synctype = DSD_SYNC_EDACS_POS;
-    state.edacs_site_id = 7;
+    state.edacs_site_id = 9;
     model.refresh(&opts, &state);
-    expect("EDACS site", model.siteProtocol() == "EDACS" && model.edacsSiteText().contains("007"));
+    expect("EDACS decoder state is no identity", model.edacsSiteText().isEmpty() && model.siteLine().isEmpty());
+    dsd_rxid_note_edacs_site(&state, 7U);
+    model.refresh(&opts, &state);
+    expect("EDACS site", model.siteProtocol() == "EDACS" && model.edacsSiteText().contains("007")
+                             && model.carrierIdentityTokens() == QStringList{QStringLiteral("SITE 007 [07]")});
+
     model.clear();
-    expect("stop clears every site group", model.siteLine().isEmpty() && model.siteProtocol().isEmpty()
-                                               && !model.siteConfirmed() && model.ccFreqHz() == 0
-                                               && model.vcFreqHz() == 0 && model.dmrSiteText().isEmpty()
-                                               && model.edacsSiteText().isEmpty() && model.nxdnRan() == -1);
+    expect("stop clears every site group",
+           model.siteLine().isEmpty() && model.siteProtocol().isEmpty() && !model.siteConfirmed()
+               && model.ccFreqHz() == 0 && model.vcFreqHz() == 0 && model.dmrSiteText().isEmpty()
+               && model.edacsSiteText().isEmpty() && model.nxdnRan() == -1 && model.carrierIdentityTokens().isEmpty()
+               && model.carrierIdentityProtocol().isEmpty() && model.carrierIdentityText().isEmpty()
+               && !model.carrierIdentityLive() && model.p25Phase2Seed().isEmpty());
     const int cleared = signals;
     model.clear();
     expect("repeated site clear silent", signals == cleared);
@@ -1583,6 +1653,7 @@ test_tetra_rows() {
     pub->mcc = 262U;
     pub->mnc = 1001U;
     pub->colour = 25U;
+    dsd_rxid_note_tetra_cell(snapshot, 262U, 1001U, 25U); /* the cell's checked BSCH, received on this carrier */
     pub->trunk_state = DSD_TETRA_TRUNK_ON_TRAFFIC;
     pub->cc_known = 1U;
     pub->cc_carrier = 321U;

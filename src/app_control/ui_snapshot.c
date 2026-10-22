@@ -174,6 +174,9 @@ _Static_assert(offsetof(dsd_state, squelch_auto_active) >= offsetof(dsd_state, v
 _Static_assert(offsetof(dsd_state, tetra_pub) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(tetra_pub) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "tetra_pub must ride the vertex_ks_count..ui_msg range");
+_Static_assert(offsetof(dsd_state, rx_id) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(rx_id) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "rx_id must ride the vertex_ks_count..ui_msg range");
 
 /* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
  * above; the scan-list heap tail past it needs an explicit deep copy.

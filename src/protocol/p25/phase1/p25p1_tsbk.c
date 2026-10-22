@@ -1005,7 +1005,7 @@ tsbk_handle_network_status(const dsd_opts* opts, dsd_state* state, const uint8_t
     } else {
         DSD_FPRINTF(stderr, "\n  P25 TSBK NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
     }
-    p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid);
+    p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid, (uint8_t)lra);
 }
 
 static void

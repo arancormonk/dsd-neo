@@ -1113,16 +1113,31 @@ QString/QML copies cannot promise erasure; only filtered content enters diagnost
 ### Monitor site identity
 
 Tap the site row between the Monitor's call panel and action buttons to open the
-site details. P25 NAC, WACN, SYS and LRA appear independently when known; a
-conventional Phase 1 NAC alone is useful identity even without the complete
-Phase 2 parameter set. RFSS and SITE appear when nonzero. The sheet also shows
-DMR color code/site text/rest LSN, NXDN RAN and location codes (Area for IDAS),
-EDACS site information, and known control/voice frequencies.
+site details. The row and the sheet follow the carrier being decoded: they show
+only what this carrier sent in a message that passed its own check (CRC, FEC or
+a confirmed transmission), never a Phase 2 seed, a `--tetra-net` preset no
+checked block proved, a control channel the decoder returns to, or a value
+another carrier left. P25 NAC, WACN, SYS, RFSS/SITE and LRA each appear once
+received; a conventional Phase 1 NAC alone is useful identity even without the
+complete Phase 2 parameter set. The sheet also shows DMR color code/site
+text/rest LSN/Hytera XPT free LCN, NXDN RAN and location codes (Area, site code
+and Type-D system for IDAS), EDACS site information, the control channel
+frequency where this receiver heard the control channel, and the voice frequency
+being followed. dPMR and M17 show their access code and TETRA its network on the
+row.
 
-The row dims and the sheet labels identity as retained when current sync is lost.
-Starting, stopping to Idle, failure, and scan-target transitions clear the live
-identity through the existing controller lifecycle. Unknown fields are omitted;
-the row is hidden when no identity fields are available.
+The sheet's **Phase 2 seed** row shows the WACN.SYS.NAC triple the Phase 2
+descrambler runs on (for example `BEE00.348.293`), marked "(set)" when `-X` or
+the menu set it by hand. It is configuration, not received identity, so it never
+takes the NAC row's place; **Phase 2 parameters** says whether it is complete.
+
+When sync is lost the identity stays as last heard on this carrier: the row
+dims and the sheet labels it as retained. Any change of carrier (a retune, a
+scan step, an input switch, a trunk-scan target switch) clears it, and the next
+carrier shows only what it sends. A trunking follow keeps the system and drops
+the access code until the new channel sends its own. Starting, stopping to Idle
+and failure clear it too. Unknown fields are omitted; the row is hidden when no
+identity fields are available.
 Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
 slot), recent calls, and history. The notification title prefixes the lead call
 with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v3:

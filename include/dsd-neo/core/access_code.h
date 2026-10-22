@@ -31,10 +31,12 @@
  *   is confirmed; -1 between carriers.
  * - M17 CAN: the low four bits of the call's service options, which the CRC-checked LSF carries; only once the call
  *   has service metadata.
- * - TETRA `tetra_pub.colour`: the 6-bit colour code of a CRC-checked BSCH (EN 300 392-2 table 21.76), or the one
- *   `--tetra-net` gives, while the publication's mode is a trunked mode one; a direct mode carrier has none. Every
- *   carrier of a cell scrambles with the cell's colour code, so it stays across a trunking retune; a call is published
- *   only from blocks descrambled with it whose CRC passed, which proves it on the carrier.
+ * - TETRA `rx_id` (<dsd-neo/core/received_identity.h>): the 6-bit colour code (EN 300 392-2 table 21.76) a
+ *   CRC-checked trunked mode BSCH received on this carrier names, or that a CRC-checked downlink block descrambled
+ *   with proves (every carrier of a cell scrambles with its network and colour code). The network a `--tetra-net`
+ *   preset names, or one the descrambler keeps from another carrier, is configuration until such a block passes; a
+ *   direct mode carrier has none. The record drops the code at every carrier boundary and accepted trunking retune
+ *   until the new carrier's next BSCH or checked downlink block.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_ACCESS_CODE_H_H

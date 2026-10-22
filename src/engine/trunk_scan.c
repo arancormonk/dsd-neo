@@ -11,6 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -280,6 +281,10 @@ dsd_trunk_scan_max_targets(void) {
 typedef struct {
     dsd_trunk_scan_target_runtime* targets;
     dsd_trunk_scan_snapshot scratch_snapshot;
+    /* The received identity (dsd_state::rx_id) as an advance found it, kept beside the scratch snapshot: a rollback
+     * puts the receiver back on a carrier it never left, so it puts back what that carrier sent. No target's snapshot
+     * holds one: a target revisited is last known, not received on this visit. */
+    dsd_received_identity rollback_rx_id;
     size_t count;
     size_t active;
     int hold_active; /* operator hold: the idle dwell never expires while set (#380) */
@@ -2926,6 +2931,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
+            coord->rollback_rx_id = state->rx_id;
             coord->forced_visit_release = 0;
         }
         trunk_scan_save_target_snapshot(coord, state, outgoing);
@@ -2934,6 +2940,8 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
        decoders gathered on that carrier (confirmation evidence, half-built assemblies such as an NXDN SACCH superframe)
        is in none of them, and the incoming carrier's pieces would complete it, so it goes. */
     dsd_engine_forget_carrier_decoding(opts, state);
+    /* So does the identity it received: the incoming target's carrier names its own. */
+    dsd_rxid_reset(state);
 
     coord->active = next;
     coord->gain_editable = trunk_scan_gain_editable(opts);
@@ -3001,6 +3009,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     double now_m = trunk_scan_now_m();
     dsd_trunk_scan_snapshot* original_snapshot = &coord->scratch_snapshot;
     trunk_scan_save_snapshot(state, original_snapshot);
+    coord->rollback_rx_id = state->rx_id;
     size_t original_active = coord->active;
     int save_current = 1;
     int attempted_alternate_retune = 0;
@@ -3052,6 +3061,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_publish_active_target(state, coord);
     (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(coord->targets[coord->active].target.type));
     trunk_scan_restore_snapshot(state, original_snapshot);
+    state->rx_id = coord->rollback_rx_id;
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active]);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
     (void)dsd_scan_key_change_commit(state, &rollback);

@@ -118,6 +118,12 @@ ModalSheet {
                 name: "sitePhase2",
                 valid: true,
                 value: metrics.p25Phase2ParamsReady ? qsTr("Ready") : qsTr("Incomplete")
+            },
+            {
+                label: qsTr("Phase 2 seed"),
+                name: "sitePhase2Seed",
+                valid: metrics.p25Phase2Seed.length > 0,
+                value: metrics.p25Phase2SeedSet ? metrics.p25Phase2Seed + " " + qsTr("(set)") : metrics.p25Phase2Seed
             }
         ]
     }
@@ -141,6 +147,12 @@ ModalSheet {
                 name: "siteDmrRest",
                 valid: metrics.dmrRestLsn > 0,
                 value: metrics.dmrRestLsn
+            },
+            {
+                label: qsTr("Free LCN"),
+                name: "siteDmrXptFree",
+                valid: metrics.dmrXptFreeLcn >= 0,
+                value: metrics.dmrXptFreeLcn
             }
         ]
     }

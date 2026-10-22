@@ -25,6 +25,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -109,6 +110,14 @@ typedef struct {
     uint8_t is_kenwood_sc;
     int protected_lc;
 } dmr_flco_ctx;
+
+/* Whether this LC's own check passed. CRCCorrect is also 1 for a full LC -F accepted by RAS, which the burst handler
+   flags for the slot: such an LC keeps decoding and following, but names no identity in the received identity record. */
+static int
+dmr_flco_crc_checked(const dmr_flco_ctx* ctx) {
+    return ctx->CRCCorrect == 1U && *ctx->IrrecoverableErrors == 0U
+           && ctx->state->event_crc_invalid[ctx->slot_idx] == 0U;
+}
 
 static int
 dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
@@ -222,6 +231,9 @@ dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx, int crc_ok) {
     if (crc_ok && ctx->flco == 0x09 && ctx->fid == 0x68) {
         DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
         DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
+        if (dmr_flco_crc_checked(ctx)) {
+            dsd_rxid_note_dmr_brand(ctx->state, "Hytera XPT");
+        }
     }
 }
 
@@ -483,6 +495,9 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     DSD_FPRINTF(stderr, "%s ", KNRM);
     if (ctx->CRCCorrect == 1U) { // the site's free channel, from a checked LC only
         DSD_SNPRINTF(ctx->state->dmr_site_parms, sizeof(ctx->state->dmr_site_parms), "Free LCN - %d ", ctx->xpt_free);
+    }
+    if (dmr_flco_crc_checked(ctx)) {
+        dsd_rxid_note_dmr_xpt_free_lcn(ctx->state, ctx->xpt_free);
     }
     return 1;
 }
@@ -1134,6 +1149,12 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
         dmr_flco_sync_active_call_state(ctx);
     }
 
+    // The received identity takes the rest LSN only from an LC whose own check passed, never a RAS-accepted one, and
+    // before the change test below, so an unchanged repeat proves it again.
+    if (ctx->restchannel != -1 && dmr_flco_crc_checked(ctx)) {
+        dsd_rxid_note_dmr_rest_lsn(ctx->state, (uint16_t)ctx->restchannel);
+        dsd_rxid_note_dmr_brand(ctx->state, "Capacity Plus");
+    }
     // The rest LSN steers Cap+ following (the release destination, the no-carrier return), so it is taken only from an
     // LC whose own check passed; clean FEC does not vouch for the payload. Under -F a RAS-accepted LC counts as checked,
     // as a RAS-accepted channel-status CSBK does in dmr_cspdu().
@@ -1976,9 +1997,11 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
     dmr_slco_print_tiii_site_parms(state, data, syscode);
 
-    dmr_sm_note_cc_activity(opts, state, 0);
-    /* Reached only from dmr_slco(), whose short LC passed Hamming(17,12,3) and its CRC-8. */
+    /* Reached only from dmr_slco(), whose short LC passed Hamming(17,12,3) and its CRC-8. C_SYS_PARMS is a control
+       channel's: this carrier, where the receiver is tuned before the state machine hears of it. */
     dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->n, data->sub_mask, syscode);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
+    dmr_sm_note_cc_activity(opts, state, 0);
 }
 
 static void
@@ -2019,10 +2042,33 @@ dmr_slco_tg_hold_not_on_slot(const dsd_state* state) {
     return 1;
 }
 
+/* Every short LC reaches its handler only once Hamming(17,12,3) and its CRC-8 passed (dmr_slco()): what it names of the
+   site is the carrier's received identity. */
+static void
+dmr_slco_note_cap_plus_site(dsd_state* state, const dmr_slco_data* data) {
+    char text[32];
+    DSD_SNPRINTF(text, sizeof(text), "Cap+ \xC2\xB7 Site %u", (unsigned)data->capsite);
+    dsd_rxid_note_dmr_site_text(state, text);
+    if (data->restchannel != 0U) {
+        dsd_rxid_note_dmr_rest_lsn(state, data->restchannel);
+    }
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+}
+
+static void
+dmr_slco_note_con_plus_site(dsd_state* state, const dmr_slco_data* data) {
+    char text[48];
+    DSD_SNPRINTF(text, sizeof(text), "Con+ \xC2\xB7 Net %u \xC2\xB7 Site %u", (unsigned)data->con_netid,
+                 (unsigned)data->con_siteid);
+    dsd_rxid_note_dmr_site_text(state, text);
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+}
+
 static void
 dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data) {
     DSD_FPRINTF(stderr, " SLCO Capacity Plus Site: %d - Rest LSN: %d - RS: %02X", data->capsite, data->restchannel,
                 data->cap_reserved);
+    dmr_slco_note_cap_plus_site(state, data);
 
     const long rest = state->trunk_chan_map[data->restchannel];
     if (rest > 0) {
@@ -2058,6 +2104,8 @@ dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data)
                 data->xpt_hash);
     dmr_sm_note_xpt_site(opts, state); // a completed XPT SLCO (Hamming and CRC-8): no control channel
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
+    dsd_rxid_note_dmr_xpt_free_lcn(state, data->xpt_free);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "Free LCN - %d ", data->xpt_free);
 
     if (state->tg_hold != 0 && opts->trunk_enable == 1 && state->dmrburstL == 16 && state->dmrburstR == 16
@@ -2076,6 +2124,9 @@ dmr_slco_handle_con_plus_control(dsd_opts* opts, dsd_state* state, const dmr_slc
     DSD_FPRINTF(stderr, " SLCO Connect Plus Control Channel - Net ID: %d Site ID: %d", data->con_netid,
                 data->con_siteid);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data->con_netid, data->con_siteid);
+    /* A Connect Plus control channel's own short LC: this carrier is the control channel of the site it names. */
+    dmr_slco_note_con_plus_site(state, data);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
 
     dmr_sm_note_cc_activity(opts, state, 0);
     if ((dsd_decode_time() - state->last_vc_sync_time) > 2) {
@@ -2123,6 +2174,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         DSD_FPRINTF(stderr, " SLCO Connect Plus Traffic Channel - Net ID: %d Site ID: %d", data.con_netid,
                     data.con_siteid);
         DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data.con_netid, data.con_siteid);
+        dmr_slco_note_con_plus_site(state, &data);
     } else if (data.slco == 0xA) {
         dmr_slco_handle_con_plus_control(opts, state, &data);
     } else if (data.slco == 0xF) {

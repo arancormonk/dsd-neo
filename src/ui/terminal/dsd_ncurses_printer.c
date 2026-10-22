@@ -27,6 +27,7 @@
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/call_state.h>
@@ -34,6 +35,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1256,7 +1258,7 @@ ui_render_rtl_visual_aid_panels(dsd_opts* opts, dsd_state* state) {
         print_fsk_hist_view();
     }
     if (opts->frontend_display.spectrum_view == 1) {
-        print_spectrum_view(opts);
+        print_spectrum_view(opts, state);
     }
 }
 #endif
@@ -2216,6 +2218,48 @@ ui_print_m17_encryption_details(dsd_state* state) {
     }
 }
 
+/* The identity this carrier sent (the received identity record) while it belongs to @p family, or NULL. Every
+   identity field below reads it, never decoder state a seed, a preset, a control-channel anchor or another carrier
+   wrote: the section ncurses_last_synctype picks may still be the previous carrier's, but it then prints no identity. */
+static const dsd_received_identity*
+ui_rxid(const dsd_state* state, dsd_rxid_family family) {
+    return state->rx_id.family == (uint8_t)family ? &state->rx_id : NULL;
+}
+
+static int
+ui_rxid_has(const dsd_received_identity* id, uint32_t part) {
+    return id != NULL && (id->valid & part) != 0U;
+}
+
+/* Record text joins its parts with a middle dot (U+00B7); a terminal without UTF-8 gets a hyphen instead. */
+static void
+ui_print_rxid_text(const char* text) {
+    if (strcmp(dsd_unicode_or_ascii("\xC2\xB7", "-"), "-") != 0) {
+        printw("%s", text);
+        return;
+    }
+    char ascii[96];
+    size_t used = 0U;
+    for (const char* p = text; *p != '\0' && used + 1U < sizeof ascii; p++) {
+        if ((unsigned char)p[0] == 0xC2U && (unsigned char)p[1] == 0xB7U) {
+            ascii[used++] = '-';
+            p++;
+        } else {
+            ascii[used++] = *p;
+        }
+    }
+    ascii[used] = '\0';
+    printw("%s", ascii);
+}
+
+/* "Freq: 851.012500 MHz": this system's control channel, where a checked message on it was received. */
+static void
+ui_print_rxid_cc_freq(const dsd_received_identity* id) {
+    if (ui_rxid_has(id, DSD_RXID_CC_FREQ)) {
+        printw("Freq: %.06lf MHz", (double)id->cc_freq_hz / 1000000.0);
+    }
+}
+
 static void
 ui_render_call_info_m17(dsd_state* state) {
     //M17
@@ -2263,7 +2307,13 @@ ui_render_call_info_m17(dsd_state* state) {
         printw("\n");
         printw("| ");
 
-        printw("CAN: %02d ", state->m17_can);
+        /* The CAN of a CRC-checked LSF; "--" before one (0 is a CAN). */
+        const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_M17);
+        if (ui_rxid_has(id, DSD_RXID_ACCESS)) {
+            printw("CAN: %02u ", (unsigned)id->access);
+        } else {
+            printw("CAN: -- ");
+        }
 
         printw("\n");
         printw("| ");
@@ -2427,9 +2477,9 @@ ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int id
     printw("| ");
     if (opts->trunk_is_tuned == 0) {
         printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RCCH Channel");
-        if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-            long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-            printw(" - Frequency: %.06lf MHz ", (double)f / 1000000);
+        const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_NXDN);
+        if (ui_rxid_has(id, DSD_RXID_CC_FREQ)) {
+            printw(" - Frequency: %.06lf MHz ", (double)id->cc_freq_hz / 1000000.0);
         }
     } else {
         printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RTCH Channel");
@@ -2443,27 +2493,37 @@ ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int id
 
 static void
 ui_render_nxdn_site_line(const dsd_state* state, int idas) {
+    static const char* const categories[] = {"Global", "Regional", "Local"};
+    const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_NXDN);
     printw("| ");
-    /* Outside IDAS, whose area has its own label, a stand-in is DCR's fixed 7: no RAN (issue #575). */
-    if (state->nxdn_last_ran > 63U || (!idas && state->nxdn_last_ran_stand_in != 0U)) {
-        printw("%s", idas ? "IDAS - Area: --; " : "NXDN - RAN: --; ");
-    } else if (idas) {
-        printw("IDAS - Area: %02d; ", state->nxdn_last_ran);
-    } else {
-        printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
-    }
     if (idas) {
+        /* The SCCH area bit this carrier sent. */
+        if (ui_rxid_has(id, DSD_RXID_NXDN_IDAS_AREA)) {
+            printw("IDAS - Area: %02u; ", (unsigned)id->nxdn_idas_area);
+        } else {
+            printw("IDAS - Area: --; ");
+        }
         /* An IDAS site's own identity, which no Type-C location category describes. */
-        if (state->nxdn_idas_system_id != 0U) {
-            printw("Sys ID: %u; ", (unsigned)state->nxdn_idas_system_id);
+        if (ui_rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM)) {
+            printw("Sys ID: %u; ", (unsigned)id->nxdn_typed_sys);
         }
-        if (state->nxdn_idas_site_code != 0U) {
-            printw("Site Code: %u; ", (unsigned)state->nxdn_idas_site_code);
+        if (ui_rxid_has(id, DSD_RXID_NXDN_IDAS_SITE)) {
+            printw("Site Code: %u; ", (unsigned)id->nxdn_idas_site_code);
+        } else if (ui_rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM)) {
+            printw("Site Code: %u; ", (unsigned)id->nxdn_typed_site);
         }
-    } else if (state->nxdn_location_site_code != 0) {
-        printw("Cat: %s; ", state->nxdn_location_category);
-        printw("Sys Code: %d; ", state->nxdn_location_sys_code);
-        printw("Site Code: %d; ", state->nxdn_location_site_code);
+    } else {
+        /* A stand-in is DCR's fixed 7: no RAN (issue #575). */
+        if (state->nxdn_last_ran > 63U || state->nxdn_last_ran_stand_in != 0U) {
+            printw("NXDN - RAN: --; ");
+        } else {
+            printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
+        }
+        if (ui_rxid_has(id, DSD_RXID_NXDN_LOCATION)) {
+            printw("Cat: %s; ", id->nxdn_category < 3U ? categories[id->nxdn_category] : "--");
+            printw("Sys Code: %u; ", (unsigned)id->nxdn_sys);
+            printw("Site Code: %u; ", (unsigned)id->nxdn_site);
+        }
     }
     if (state->nxdn_rcn == 1) {
         printw("DFA ");
@@ -2651,16 +2711,22 @@ ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
 
 static void
 ui_render_edacs_site_header(const dsd_opts* opts, dsd_state* state) {
-    if (state->edacs_site_id == 0) {
+    /* The site this carrier named, and the control channel LCN it named with it. */
+    const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_EDACS);
+    if (!ui_rxid_has(id, DSD_RXID_EDACS_SITE)) {
         return;
     }
 
     if (opts->trunk_is_tuned == 0) {
-        printw("| Monitoring CC - LCN [%02d]\n", state->edacs_cc_lcn);
+        if (ui_rxid_has(id, DSD_RXID_EDACS_CC_LCN)) {
+            printw("| Monitoring CC - LCN [%02u]\n", (unsigned)id->edacs_cc_lcn);
+        } else {
+            printw("| Monitoring CC - LCN [--]\n");
+        }
     } else {
         printw("| Monitoring VC - LCN [%02d]\n", state->edacs_tuned_lcn);
     }
-    printw("| SITE [%03lld][%02llX]", state->edacs_site_id, state->edacs_site_id);
+    printw("| SITE [%03u][%02X]", (unsigned)id->edacs_site, (unsigned)id->edacs_site);
     printw((state->ea_mode == 1) ? " Extended Addressing" : " Standard/Networked");
     printw((state->esk_mask == 0xA0) ? " w/  ESK" : " w/o ESK");
     printw("\n");
@@ -3012,42 +3078,89 @@ ui_print_dmr_dcc(const char* mode, const dsd_state* state) {
     }
 }
 
+/* The trunking brand, site, Hytera XPT free channel and Capacity Plus rest channel this carrier sent; the rest LSN's
+   frequency is the channel map's. */
 static void
 ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     ui_print_dmr_dcc("BS", state);
-    printw("%s ", state->dmr_branding);
-    printw("%s", state->dmr_branding_sub);
-    printw("%s", state->dmr_site_parms);
-    if (state->dmr_rest_channel > 0) {
-        printw("Rest LSN: %02d; ", state->dmr_rest_channel);
-        if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
-            printw("Freq: %.06lf MHz", (double)state->trunk_chan_map[state->dmr_rest_channel] / 1000000);
+    const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_DMR);
+    if (ui_rxid_has(id, DSD_RXID_DMR_BRAND)) {
+        ui_print_rxid_text(id->dmr_brand);
+        printw("; ");
+    }
+    if (ui_rxid_has(id, DSD_RXID_DMR_SITE_TEXT)) {
+        ui_print_rxid_text(id->dmr_site_text);
+        printw("; ");
+    } else if (ui_rxid_has(id, DSD_RXID_DMR_T3_SYSCODE)) {
+        printw("SYS: %04X; ", (unsigned)id->dmr_t3_syscode);
+    }
+    if (ui_rxid_has(id, DSD_RXID_DMR_XPT_FREE_LCN)) {
+        printw("Free LCN: %u; ", (unsigned)id->dmr_xpt_free_lcn);
+    }
+    if (ui_rxid_has(id, DSD_RXID_DMR_REST_LSN)) {
+        printw("Rest LSN: %02u; ", (unsigned)id->dmr_rest_lsn);
+        const unsigned lsn = id->dmr_rest_lsn;
+        if (lsn < sizeof state->trunk_chan_map / sizeof state->trunk_chan_map[0] && state->trunk_chan_map[lsn] != 0) {
+            printw("Freq: %.06lf MHz", (double)state->trunk_chan_map[lsn] / 1000000);
         }
         return;
     }
-    if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-        long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-        printw("Freq: %.06lf MHz", (double)f / 1000000);
+    ui_print_rxid_cc_freq(id);
+}
+
+/* "WACN: BEE00 SYS: 348 NAC: 293; RFSS: 3 SITE: 21 ": the network, site and NAC this carrier sent, dashes for a part
+   it has not, in the same columns. */
+static void
+ui_render_p25_identity(const dsd_opts* opts, const dsd_received_identity* id) {
+    char wacn[8] = "-----";
+    char sys[8] = "---";
+    char nac[8] = "---";
+    char rfss[8] = "--";
+    char site[8] = "--";
+    if (ui_rxid_has(id, DSD_RXID_P25_WACN)) {
+        DSD_SNPRINTF(wacn, sizeof wacn, "%05X", (unsigned)id->p25_wacn);
     }
+    if (ui_rxid_has(id, DSD_RXID_P25_SYSID)) {
+        DSD_SNPRINTF(sys, sizeof sys, "%03X", (unsigned)id->p25_sysid);
+    }
+    if (ui_rxid_has(id, DSD_RXID_ACCESS)) {
+        DSD_SNPRINTF(nac, sizeof nac, "%03X", (unsigned)id->access);
+    }
+    if (ui_rxid_has(id, DSD_RXID_P25_SITE)) {
+        DSD_SNPRINTF(rfss, sizeof rfss, "%u", (unsigned)id->p25_rfss);
+        DSD_SNPRINTF(site, sizeof site, "%u", (unsigned)id->p25_site);
+    }
+    char callsign[7] = {0};
+    if (opts->frontend_display.show_p25_callsign_decode && ui_rxid_has(id, DSD_RXID_P25_WACN)) {
+        p25_wacn_sysid_to_callsign(id->p25_wacn, id->p25_sysid, callsign);
+    }
+    printw("WACN: %s SYS: %s NAC: %s", wacn, sys, nac);
+    if (callsign[0] != '\0' && callsign[0] != ' ') {
+        printw(" [%s]", callsign);
+    }
+    printw("; RFSS: %s SITE: %s ", rfss, site);
+}
+
+/* "Seed: BEE00.348.293 (set) ": the Phase 2 descrambler seed -X or the menu set by hand. It is configuration, not
+   what the carrier sent, so it never takes the received identity's place. */
+static void
+ui_render_p25_hand_set_seed(const dsd_state* state) {
+    if (state->p2_hardset == 0U) {
+        return;
+    }
+    printw("Seed: %05llX.%03llX.%03llX (set) ", state->p2_wacn, state->p2_sysid, state->p2_cc);
 }
 
 static void
 ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
-    char callsign[7] = {0};
-    if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
-        p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-    }
-    printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-    if (opts->frontend_display.show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
-        printw(" [%s]", callsign);
-    }
-    printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
-    if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-        long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-        printw("Freq: %.06lf MHz", (double)f / 1000000);
-    }
+    const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_P25);
+    printw("P25p1  - ");
+    ui_render_p25_identity(opts, id);
+    ui_render_p25_hand_set_seed(state);
+    ui_print_rxid_cc_freq(id);
 }
 
+/* Whether the Phase 2 seed decoding runs on is complete: decoder state, as the descrambler reads it. */
 static void
 ui_render_p25p2_parameter_status(const dsd_state* state) {
     if (state->p2_wacn == 0 || state->p2_sysid == 0 || state->p2_cc == 0) {
@@ -3062,23 +3175,14 @@ ui_render_p25p2_parameter_status(const dsd_state* state) {
         attron(COLOR_PAIR(3));
         return;
     }
-    if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-        long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-        printw("Freq: %.06lf MHz", (double)f / 1000000);
-    }
+    ui_print_rxid_cc_freq(ui_rxid(state, DSD_RXID_FAMILY_P25));
 }
 
 static void
 ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
-    char callsign[7] = {0};
-    if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
-        p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-    }
-    printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-    if (opts->frontend_display.show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
-        printw(" [%s]", callsign);
-    }
-    printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
+    printw("P25p2  - ");
+    ui_render_p25_identity(opts, ui_rxid(state, DSD_RXID_FAMILY_P25));
+    ui_render_p25_hand_set_seed(state);
     ui_render_p25p2_parameter_status(state);
 }
 

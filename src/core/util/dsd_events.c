@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
@@ -726,8 +727,7 @@ watchdog_event_format_dpmr_sysid(char* out, size_t cap, uint8_t access_code_kind
 
 // A P25 NAC as the system identity and the event line print it, from the row's access code: three hex digits, or
 // "---" when the row has none. Three wide either way, so the long identity form keeps its field positions. The NAC
-// sys id (sys_id3) is the live nac, else p2_cc, which on a Phase 1 call may be another carrier's p2_cc; the access code
-// reads the one the call's phase carries (dsd_access_code_current()).
+// sys id (sys_id3) holds the same code (watchdog_event_current_apply_code_identity()).
 static const char*
 watchdog_event_nac_text(char* buf, size_t cap, uint8_t access_code_kind, uint16_t access_code) {
     if (access_code_kind != (uint8_t)DSD_ACCESS_CODE_NAC) {
@@ -1510,38 +1510,129 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 
     if (call->protocol == DSD_SYNC_ANALOG) {
         DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "NFM");
+    }
+    // The system and site ids are loaded from the received identity record
+    // (watchdog_event_current_load_system()) and the access code's slot with the row's code
+    // (watchdog_event_current_apply_code_identity()); the P25 string is set after the tuning load too.
+}
+
+// The system and site parts a row records, by sys id slot (the access code's slot is the row's code, set apart):
+// P25 WACN, SYSID, -, RFSS, SITE; DMR Tier III system code; NXDN site and system (a Type-C location ID, else the IDAS
+// site code and Type-D system ID); EDACS site, area and system; TETRA MCC, MNC and, in sys_id3, the direct mode mark.
+// 0 is "not received", as before any was decoded.
+//
+// They come from the received identity record of the call's protocol family, never from decoder state a seed, a
+// preset, a control-channel anchor or another carrier writes. While the call is active, a part the record holds
+// replaces the staged row's and a part it lacks keeps the staged row's (unknown never erases known); a part of
+// another system (another P25 SYSID or WACN) replaces the staged system whole. Once the call has ended the parts are
+// frozen at what its last active render captured, known or unknown, like the access code
+// (watchdog_event_current_load_tuning()): a held drop-verdict or the finalize pass may run after a retune, a -Y hop or
+// a trunk-scan switch, when the record already describes the next carrier.
+static void
+watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid_family family, uint32_t sys[5]) {
+    const dsd_received_identity* const id = &state->rx_id;
+    if (DSD_SYNC_IS_TETRA(protocol)) {
+        const uint8_t mode = state->tetra_pub.mode;
+        if (mode >= DSD_TETRA_MODE_DMO_DIRECT && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
+            sys[0] = 0U;
+            sys[1] = 0U;
+            sys[2] = 1U; /* a direct mode carrier belongs to no network */
+            return;
+        }
+        sys[2] = 0U;
+    }
+    if (id->family != (uint8_t)family) {
         return;
     }
-    ctx->sys_id1 = state->p2_wacn;
-    ctx->sys_id2 = state->p2_sysid;
-    if (state->nac != 0) {
-        ctx->sys_id3 = state->nac;
-    } else {
-        ctx->sys_id3 = state->p2_cc;
-    }
-    ctx->sys_id4 = state->p2_rfssid;
-    ctx->sys_id5 = state->p2_siteid;
-
-    if (ctx->sys_id1) {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "P25_%05X%03X%03X_%d_%d", ctx->sys_id1, ctx->sys_id2,
-                     ctx->sys_id3, ctx->sys_id4, ctx->sys_id5);
-    } else {
-        DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "P25_%03X", ctx->sys_id3);
-    }
-
-    if (DSD_SYNC_IS_DMR(ctx->protocol)) {
-        ctx->sys_id1 = state->dmr_t3_syscode;
-        ctx->sys_id2 = state->dmr_color_code;
-        // The string is set after the tuning load (watchdog_event_current_apply_code_identity()).
+    const uint32_t valid = id->valid;
+    switch (family) {
+        case DSD_RXID_FAMILY_P25:
+            if ((valid & DSD_RXID_P25_SYSID) != 0U
+                && ((sys[1] != 0U && sys[1] != id->p25_sysid)
+                    || ((valid & DSD_RXID_P25_WACN) != 0U && sys[0] != 0U && sys[0] != id->p25_wacn))) {
+                sys[0] = 0U; /* another system: none of the staged one belongs with it */
+                sys[3] = 0U;
+                sys[4] = 0U;
+            }
+            if ((valid & DSD_RXID_P25_SYSID) != 0U) {
+                sys[1] = id->p25_sysid;
+            }
+            if ((valid & DSD_RXID_P25_WACN) != 0U) {
+                sys[0] = id->p25_wacn;
+            }
+            if ((valid & DSD_RXID_P25_SITE) != 0U) {
+                sys[3] = id->p25_rfss;
+                sys[4] = id->p25_site;
+            }
+            break;
+        case DSD_RXID_FAMILY_DMR:
+            if ((valid & DSD_RXID_DMR_T3_SYSCODE) != 0U) {
+                sys[0] = id->dmr_t3_syscode;
+            }
+            break;
+        case DSD_RXID_FAMILY_NXDN:
+            if ((valid & DSD_RXID_NXDN_LOCATION) != 0U) {
+                sys[0] = id->nxdn_site;
+                sys[1] = id->nxdn_sys;
+                break;
+            }
+            if ((valid & DSD_RXID_NXDN_IDAS_SITE) != 0U) {
+                sys[0] = id->nxdn_idas_site_code;
+            } else if ((valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U) {
+                sys[0] = id->nxdn_typed_site;
+            }
+            if ((valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U) {
+                sys[1] = id->nxdn_typed_sys;
+            }
+            break;
+        case DSD_RXID_FAMILY_EDACS:
+            if ((valid & DSD_RXID_EDACS_SITE) != 0U) {
+                sys[0] = id->edacs_site;
+            }
+            if ((valid & DSD_RXID_EDACS_AREA) != 0U) {
+                sys[1] = id->edacs_area;
+            }
+            if ((valid & DSD_RXID_EDACS_SYSTEM) != 0U) {
+                sys[2] = id->edacs_system;
+            }
+            break;
+        case DSD_RXID_FAMILY_TETRA:
+            if ((valid & DSD_RXID_TETRA_NET) != 0U) {
+                sys[0] = id->tetra_mcc;
+                sys[1] = id->tetra_mnc;
+            }
+            break;
+        default: break;
     }
 }
 
 static void
-watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    ctx->sys_id1 = state->nxdn_location_site_code;
-    ctx->sys_id2 = state->nxdn_location_sys_code;
-    ctx->sys_id3 = state->nxdn_last_ran;
-    // The string is set after the tuning load (watchdog_event_current_apply_code_identity()).
+watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                   const Event_History* staged, int staged_is_own, watchdog_event_current_ctx* ctx) {
+    if (call == NULL || call->epoch == 0U) {
+        return;
+    }
+    const dsd_rxid_family family = dsd_rxid_family_for_sync(call->protocol);
+    if (family == DSD_RXID_FAMILY_NONE || family == DSD_RXID_FAMILY_OTHER || DSD_SYNC_IS_M17(call->protocol)
+        || DSD_SYNC_IS_DPMR(call->protocol)) {
+        return; /* no system or site beyond the access code */
+    }
+    uint32_t sys[5] = {0U, 0U, 0U, 0U, 0U};
+    if (staged_is_own && staged != NULL && dsd_rxid_family_for_sync((int)staged->systype) == family) {
+        sys[0] = staged->sys_id1;
+        sys[1] = staged->sys_id2;
+        sys[2] = staged->sys_id3;
+        sys[3] = staged->sys_id4;
+        sys[4] = staged->sys_id5;
+    }
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && opts->playfiles == 0) {
+        watchdog_event_system_from_record(state, call->protocol, family, sys);
+    }
+    ctx->sys_id1 = sys[0];
+    ctx->sys_id2 = sys[1];
+    ctx->sys_id3 = sys[2];
+    ctx->sys_id4 = sys[3];
+    ctx->sys_id5 = sys[4];
 }
 
 static void
@@ -1558,27 +1649,6 @@ watchdog_event_current_apply_m17(const dsd_state* state, watchdog_event_current_
     (void)state;
 }
 
-// The network of the TETRA carrier the call is on, from the TETRA publication: a direct mode carrier (EN 300 396-3)
-// marks sys_id3 instead.
-static void
-watchdog_event_current_apply_tetra(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    const dsd_tetra_publication* const pub = &state->tetra_pub;
-    /* None of the P25 identities the base context starts from describe a TETRA carrier. */
-    ctx->sys_id1 = 0U;
-    ctx->sys_id2 = 0U;
-    ctx->sys_id3 = 0U;
-    ctx->sys_id4 = 0U;
-    ctx->sys_id5 = 0U;
-    if (pub->mode >= DSD_TETRA_MODE_DMO_DIRECT && pub->mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
-        ctx->sys_id3 = 1U;
-        return;
-    }
-    if (pub->net_known != 0U) {
-        ctx->sys_id1 = pub->mcc;
-        ctx->sys_id2 = pub->mnc;
-    }
-}
-
 static void
 watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_current_ctx* ctx) {
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "DSTAR");
@@ -1587,9 +1657,18 @@ watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_curren
 
 // Run after watchdog_event_current_load_tuning(): the DMR, NXDN, P25, M17, dPMR and TETRA identities name the row's
 // access code, so the string a merge rebuilds from the merged row (watchdog_event_rebuild_code_sysid()) and the event
-// line agree with it.
+// line agree with it. The access code's sys id slot (DMR sys_id2, P25 and NXDN sys_id3) holds the row's code too --
+// the code the call was heard with, never a Phase 2 seed, a stand-in or a code decoded after the call -- or its "not
+// decoded" value (DMR 16, P25 0, NXDN (unsigned)-1): 0 is a DMR and NXDN code.
 static void
 watchdog_event_current_apply_code_identity(watchdog_event_current_ctx* ctx) {
+    if (DSD_SYNC_IS_DMR(ctx->protocol)) {
+        ctx->sys_id2 = ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE ? (uint32_t)ctx->access_code : 16U;
+    } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
+        ctx->sys_id3 = ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN ? (uint32_t)ctx->access_code : 0xFFFFFFFFU;
+    } else if (DSD_SYNC_IS_P25(ctx->protocol)) {
+        ctx->sys_id3 = ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC ? (uint32_t)ctx->access_code : 0U;
+    }
     if (DSD_SYNC_IS_DMR(ctx->protocol)) {
         watchdog_event_format_dmr_sysid(ctx->sysid_string, sizeof(ctx->sysid_string), ctx->sys_id1,
                                         ctx->access_code_kind, ctx->access_code);
@@ -1613,12 +1692,9 @@ watchdog_event_current_apply_code_identity(watchdog_event_current_ctx* ctx) {
     }
 }
 
+// Run after watchdog_event_current_load_system(): the string names the site that loaded.
 static void
 watchdog_event_current_apply_edacs(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    ctx->sys_id1 = state->edacs_site_id;
-    ctx->sys_id2 = state->edacs_area_code;
-    ctx->sys_id3 = state->edacs_sys_id;
-
     char sup_str[200];
     watchdog_event_build_edacs_sup_str(ctx->svc_opts, 1, sup_str, sizeof(sup_str));
 
@@ -1642,10 +1718,6 @@ watchdog_event_current_apply_edacs(const dsd_state* state, watchdog_event_curren
 
 static void
 watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* item, watchdog_event_current_ctx* ctx) {
-    if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
-        watchdog_event_current_apply_nxdn(state, ctx);
-    }
-
     if (DSD_SYNC_IS_YSF(ctx->protocol)) {
         watchdog_event_current_apply_ysf(state, item, ctx);
     }
@@ -1660,10 +1732,6 @@ watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* 
 
     if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
         watchdog_event_current_apply_edacs(state, ctx);
-    }
-
-    if (DSD_SYNC_IS_TETRA(ctx->protocol)) {
-        watchdog_event_current_apply_tetra(state, ctx);
     }
 }
 
@@ -2502,12 +2570,13 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     watchdog_event_current_ctx ctx;
     watchdog_event_current_init_base(state, slot, effective_call, &ctx);
+    // Rendered with the slot's lifecycle on the epoch it has opened, the staged row is this call's;
+    // otherwise it is another epoch's, and its label, frequency, code, system and start stamp are not reused.
+    const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
+    watchdog_event_current_load_system(opts, state, effective_call, &candidate, staged_is_own, &ctx);
 
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(state, &ctx);
-    // Rendered with the slot's lifecycle on the epoch it has opened, the staged row is this call's;
-    // otherwise it is another epoch's, and its label, frequency, code and start stamp are not reused.
-    const int staged_is_own = lifecycle != NULL && effective_call != NULL && lifecycle->epoch == effective_call->epoch;
     watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
     watchdog_event_current_apply_code_identity(&ctx);

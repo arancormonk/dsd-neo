@@ -34,9 +34,12 @@ enum {
  * @brief Display-ready TETRA state.
  *
  * Every text is "" when its row has nothing to show, and is always terminated; the enumerations the fields name are
- * in core/tetra_publication.h. @c network_text names the colour code the way the call history names one ("CC 25",
- * app_control/access_code_view.h), in decimal like every colour code, with the location area and the carrier being
- * received once known: the fields a TEA1 reduced key is bound to. @c mode_text names every air interface algorithm
+ * in core/tetra_publication.h. @c network_text names the network a CRC-checked BSCH, or a CRC-checked downlink block
+ * descrambled with it, proved on this carrier (the received identity record, core/received_identity.h; a `--tetra-net`
+ * preset whose blocks never pass is configuration and names none), and
+ * its colour code the way the call history names one ("CC 25", app_control/access_code_view.h), in decimal like every
+ * colour code, with the location area and the carrier being received once known: the fields a TEA1 reduced key is
+ * bound to. @c mode_text names every air interface algorithm
  * signalling named; @c security_text the cell's broadcast security and the key that applies to the carrier being
  * received, or a direct mode transmission's security class.
  */

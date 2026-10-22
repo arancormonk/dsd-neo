@@ -915,8 +915,9 @@ suite runs under this compiler.
   says this carrier proved it (see Protocols), NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in` marks it as a
   value the terminal shows where the RAN goes but that is none (an IDAS area bit or DCR's fixed 7; see
   Protocols), dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata,
-  TETRA the 6-bit colour code of `tetra_pub` once a CRC-passed block gave a trunked mode and the network is known
-  (direct mode has none).
+  TETRA the 6-bit colour code a CRC-checked trunked mode BSCH or a CRC-checked downlink block descrambled with it proved
+  on this carrier, from the received identity record (`dsd_state::rx_id`), never `tetra_pub`'s network, which a
+  `--tetra-net` preset or another carrier may have set (direct mode has none).
   `watchdog_event_current_load_tuning()` in `dsd_events.c` applies two per-row rules on every voice render, against the
   staged row: the frequency is the call's own `frequency_hz` whenever it has one, else the staged value, else -- only on
   an ACTIVE render outside `--playfiles` -- `dsd_opts_tuned_freq_hz()`, so the tuner is pinned at the epoch's first
@@ -956,8 +957,9 @@ suite runs under this compiler.
   code (kind and value together). The system identity string (`sysid_string`, which also names WAV files and the
   rdio-scanner `short_name`) and the event line print `--` for a DMR colour code, NXDN RAN or dPMR colour code still at
   its sentinel (`DMR_CC_--`, `NXDN_RAN_--`, `DPMR_CC_--`, `CC: --;`, `RAN: --;`; `watchdog_event_code_text()`), and for
-  an NXDN stand-in, which is never the row's access code (`dsd_access_code_current()`); the numeric sys ids keep the raw
-  value, since 0 is a code. The dPMR event line's `CC:` is the row's decoded colour code (its access code), not the
+  an NXDN stand-in, which is never the row's access code (`dsd_access_code_current()`); the access code's numeric sys id
+  (DMR `sys_id2`, P25 and NXDN `sys_id3`) holds the row's code or its "not decoded" value (DMR 16, P25 0, NXDN
+  `(unsigned)-1`), since 0 is a DMR and NXDN code, never a Phase 2 seed or a stand-in. The dPMR event line's `CC:` is the row's decoded colour code (its access code), not the
   call's `channel`, which `dpmr_publish_call()` sets to 0 for an undecoded code. In
   `watchdog_event_merge_system_identity()` the sentinel, not 0, is the missing code: a reacquired segment that decoded
   one fills it (0 included), and a decoded code is never replaced. The DMR, NXDN and dPMR strings are then rebuilt from
@@ -966,8 +968,7 @@ suite runs under this compiler.
   the string and the event line are the row's access code, so a call whose last render runs after the receiver moved
   names the code it was heard with (under `--playfiles`, which takes none, `DMR_CC_--` and `CC: --;` whatever the file
   reader wrote into `dmr_color_code`), set after the tuning load on a live render
-  (`watchdog_event_current_apply_code_identity()`) and rebuilt by a merge from the merged code: a Phase 1 call's
-  `sys_id3` falls back to a `p2_cc` another carrier left, which the access code does not take. An unknown NAC prints
+  (`watchdog_event_current_apply_code_identity()`) and rebuilt by a merge from the merged code. An unknown NAC prints
   `---` (`P25_---`, `P25_45564006---_10_10`, `NAC: ---;`), three wide like the code, so the long form keeps its field
   positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own `channel`
   and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env). The
@@ -989,6 +990,19 @@ suite runs under this compiler.
   `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`. The control API's
   event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests:
   `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
+- History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site
+  slots come from the received identity record of the call's protocol family, never from decoder state a seed, a
+  preset, a control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`,
+  `_5`), the DMR Tier III system code (`sys_id1`), the NXDN location's site and system (`sys_id1`, `_2`; for IDAS the
+  SCCH site code, else the Type-D SRV_INFO site, and the Type-D system ID), the EDACS site, area and system
+  (`sys_id1`..`_3`), the TETRA MCC and MNC (`sys_id1`, `_2`; a direct mode carrier marks `sys_id3` 1 instead). A part
+  not received takes the value a row had before one was decoded (0, so `P25_<NAC>` without a WACN and
+  `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and X2-TDMA rows carry none. While the call is ACTIVE a part the record
+  holds replaces the staged row's and a part it lacks keeps it (unknown never erases known); a P25 SYSID or WACN of
+  another system replaces the staged system whole. Once the call has ENDED the parts are frozen at its last active
+  render, like the access code, known or unknown: a held drop verdict or the finalize pass may run after a retune, a
+  `-Y` hop or a trunk-scan switch, when the record already describes the next carrier, and a call first rendered after
+  its end takes none. Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -1433,6 +1447,28 @@ suite runs under this compiler.
   in its open, so only startup opens one. `dsd_audio_path_input_kind()` is `-i`'s extension rule. The switch lives in
   its own object file so a link-time wrap of `openAudioInput()` reaches it. Tests: `CORE_AUDIO_INPUT_SWITCH`,
   `CORE_AUDIO_OPEN_INPUT`.
+- Received identity record (`dsd_state::rx_id`, `<dsd-neo/core/received_identity.h>`,
+  `src/core/util/received_identity.c`): the system identity the carrier being decoded sent, kept apart from the decoder
+  state that decoding needs (the Phase 2 seed, control channel anchors and return hints, a `--tetra-net` preset, values
+  another carrier left), so every frontend shows the same identity and none of another carrier's. Protocol code fills it
+  through `dsd_rxid_note_*()` only where a message passed its own check, with that message's own values (Protocols,
+  "Received identity note points"); content accepted only because `-F` or RAS relaxed a check keeps decoding and
+  following but is never noted. Each part has a valid and a fresh bit. Lifetime, all on the decoder thread:
+  `dsd_engine_carrier_boundary()` resets it (every boundary kind); `trunk_scan_switch_to()` resets it on every target
+  switch, and no target snapshot holds one (a revisited target is last known, not received), while a rollback after
+  every retune of an advance failed puts back the record the advance started with (the coordinator's
+  `rollback_rx_id`, taken with the scratch snapshot, again after a forced release); `processFrame()` calls
+  `dsd_rxid_note_sync()` before each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA
+  included, which note nothing) drops the record; the no-carrier pass (`dsd_engine_reset_no_carrier_state()`) marks
+  every part stale and keeps the values; every accepted trunk retune, a voice channel grant
+  (`dsd_engine_update_vc_tune_state()`) or a control channel return or hunt step
+  (`dsd_engine_trunk_tune_to_cc_request()`), calls `dsd_rxid_trunk_tune()`, which drops the access code and keeps the
+  system (the protocols reach both through the trunk tuning hooks, so a refused tune changes nothing). The control
+  channel frequency part (`cc_freq_hz`) is the tuner's frequency (`dsd_opts_tuned_freq_hz()`, so none off a radio input,
+  a rigctl peer on audio input included) at a checked message that confirms this carrier as the control channel, noted
+  before the message's handlers can retune. Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end
+  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -2646,8 +2682,29 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   zero dropped, as Qt's `Util.mhzText()` writes one), the MM status (`7 · MS frequency bands request`) and the codec's
   health (`ready · 18 frames · 2 errors`, `missing`, `failed to load`, `decode errors`), with flags for colour
   (`encrypted`, `on_traffic`, `codec_fault`) so no frontend compares words. `DSD_APP_TETRA_ASCII` swaps the ` · `
-  separator for ` - ` on a terminal without UTF-8. Tests: `APP_CONTROL_TETRA_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
+  separator for ` - ` on a terminal without UTF-8. The network row (MCC, MNC, LA, colour code) reads the received
+  identity record (`dsd_state::rx_id`), never `tetra_pub.net_known`: a `--tetra-net` preset or a network the
+  descrambler kept names none until a CRC-checked BSCH on this carrier, or a CRC-checked downlink block descrambled
+  with it, proves it, and a checked direct mode burst drops it; the carrier number stays the publication's. Tests: `APP_CONTROL_TETRA_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_QT_METRICS_MODEL`.
+- Carrier system identity: `include/dsd-neo/app_control/site_identity_view.h` and
+  `src/app_control/site_identity_view.c`. `dsd_app_site_identity_view()` turns the received identity record
+  (`dsd_state::rx_id`, `core/received_identity.h`) of a snapshot into the display-ready identity every frontend shows:
+  the protocol label (`DMR`, `P25`, `NXDN`, `IDAS`, `dPMR`, `M17`, `TETRA`, `EDACS`; none for YSF, D-STAR, ProVoice,
+  X2-TDMA), ordered tokens with the access code first, each flagged compact or full-only, `live` (synced on the
+  record's family and some part received since the last no-carrier pass), the record's `epoch`, and `cc_freq_hz`, the
+  only control-channel frequency a frontend shows. `dsd_app_site_identity_format()` joins the tokens with ` · `,
+  compact or full, optionally led by the protocol. It reads nothing but the record (and the EDACS addressing flags),
+  so a Phase 2 seed, a preset, a control-channel anchor or another carrier's value never reaches a display. Its
+  consumers: Qt `MetricsModel` (`siteLine`, the SiteSheet fields, `ccFreqHz`, the `carrierIdentity*` group), the
+  terminal spectrum legend's `System:` line (`spectrum_format_system_line()` in `ncurses_visualizers.c`). The terminal
+  Call Info lines (`dsd_ncurses_printer.c`: P25 NAC/WACN/SYS/RFSS/SITE, the `Site:` LRA in `ncurses_p25_display.c`,
+  DMR brand/site/XPT free LCN/rest LSN/system code, NXDN location and IDAS fields, the EDACS site header, M17 CAN, `Freq:`) keep
+  their own column formats and read the record's parts directly, each only while the record is of that section's
+  family, so a section the `ncurses_last_synctype` latch still picks after a boundary prints dashes. A hand-set Phase
+  2 seed prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`,
+  `UI_NCURSES_PRINTER_HELPERS`, `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`,
+  `UI_QT_METRICS_MODEL`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -4878,6 +4935,53 @@ Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_MS_DATA`, `NXDN_ELEMENT_BOUNDS`, `NXDN_DEP
 `DMR_DATA_SYNC`, `DMR_MS_DATA`, `NXDN_FRAME_ROUTING`, `DPMR_VOICE_BRIDGE`, `DSTAR_PROCESS`, `X2TDMA_VOICE_HELPERS`,
 `YSF_DCH_DECODE`, `EDACS_FRAME_VERDICT`, `M17_FRAME_CUT`, `ENGINE_PROTOCOL_DISPATCH` (a split frame's verdict).
 
+Received identity note points (`dsd_state::rx_id`; see Core). Each protocol notes the identity a message carries where
+the message passed its own check, with that message's values, an unchanged repeat included (the note precedes any
+"value changed" test), and never a seed, preset, cache, anchor, voice LCW, fill-in or soft-recovered word:
+
+- P25: the signal search's site note points, now in `p25_search_site.h` for both: `p25_search_note_network()` (TSBK
+  network status, MBT network status, Phase 2 network status MAC) and `p25_search_note_rfss()` (TSBK RFSS status through
+  the vPDU bridge, MBT RFSS status, Phase 2 RFSS status MAC) note the network or the site, bound to the SYSID the message
+  carries as the search binds it, and the location registration area; a Phase 2 network status also notes the NAC it
+  carries (`p25_search_note_network_nac()`), so an unscrambled SACCH's records its own NAC whatever seed is set. Phase 2
+  MACs note only with `ctx->crc_ok` (`p25p2_vpdu_system_tables_writable()`). The Phase 1 NID's NAC at the BCH accept
+  (`p25p1_apply_nac_update()`, reserved $000/$FFF excluded); the Phase 2 seed's WACN, SYSID and NAC once a burst
+  descrambled with the whole seed passed RS with its parity kept (`p25p2_note_seed_proven()`). The control channel at
+  `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
+- DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
+  dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III
+  system code and site text at `dmr_tiii_note_search_site()` (C_ALOHA with a genuine CRC, C/P_SYS_PARMS short LCs),
+  which notes the record whether or not a search runs; the control channel at C_ALOHA and C_SYS_PARMS. Connect Plus site
+  text and brand from its control (0xA, with the control channel) and traffic (0x9) short LCs and the brand from its
+  CSBKs; Capacity Plus rest LSN and brand from the channel status CSBK 0x3E and the voice LC, and site text, rest LSN
+  and brand from its short LC; the Hytera XPT brand from its CSBKs, LC and short LC (XPT sends no site number of its
+  own), and the site's free channel (`dsd_rxid_note_dmr_xpt_free_lcn()`, the view's `Free LCN n` and the terminal's
+  `Free LCN: n;`) from its site status CSBK 0x0A, call alert LC 0x09 and short LC 0x8. A CSBK or full LC counts as checked only when the slot's `event_crc_invalid` is clear, so one RAS accepted
+  under `-F` (and an MBC whose header CRC failed) is decoded and followed but names nothing (`dmr_csbk_crc_checked()`,
+  `dmr_flco_crc_checked()`); a short LC reaches its handler only after Hamming(17,12,3) and its CRC-8.
+- NXDN: the RAN of a CRC-passed CAC (with the control channel, before its elements can retune), FACCH2/UDCH, and a SACCH
+  once the transmission is confirmed (`nxdn_deperm.c`), never the RAN a site code implies; the Type-C location at the
+  location handler's own gate (confirmed, category not reserved); the IDAS area bit and site ID under
+  `nxdn_confirm_scch_confirmed()`; a Type-D SRV_INFO's System ID and site code once confirmed.
+- dPMR: the colour code in `dpmr_publish_call()` after `dpmr_confirm_is_confirmed()`. M17: the CAN in
+  `M17decodeLSF()` only with `publish_canonical` (the LSF's CRC passed), never while the encoder monitors what this
+  station transmits (`s_m17_monitoring_local_tx`).
+- EDACS (`edacs_process_valid_frame()`, both messages' BCH re-derived): a standard site ID notes the site and, unless
+  auxiliary, the control channel LCN and the control channel; an extended system information message the system and
+  LCN and the control channel; an extended site ID the site and the area.
+- TETRA: a CRC-passed BSCH the network and colour code (`tetra_bsch_parse()`), and so does a trunked downlink block
+  whose CRC passed once descrambled with the network's extended colour code (`tetra_nb_note_cell()` in `tetra.c`,
+  before the MAC acts on it): every carrier of a cell scrambles with its MCC, MNC and colour code, so such a block
+  proves all three on this carrier. A followed traffic carrier, whose colour code the trunk tune dropped, names it again
+  with its next checked block. A SYSINFO notes the location area, and the control channel only when the tuner is on the
+  main carrier it names; a checked direct mode burst (`tetra_dmo_apply_sync()`) drops a TETRA record. A `--tetra-net`
+  preset notes nothing by itself: it becomes received identity only once a downlink block descrambled with it passed its
+  CRC on this carrier (one that never descrambles anything stays configuration). Uplink blocks never note.
+
+Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `DMR_SEARCH_SITE_NOTES`,
+`DMR_CONFIDENCE_GATE`, `DMR_DATA_SYNC`, `NXDN_SEARCH_SITE_NOTES`, `NXDN_ELEMENT_BOUNDS`, `DPMR_VOICE_BRIDGE`,
+`M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`, `TETRA_MAC_STATE`, `TETRA_PUBLICATION`, `TETRA_BURST_VERDICT`.
+
 Key public headers (selection):
 
 - DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
@@ -5076,7 +5180,8 @@ Private per-protocol modules worth knowing about:
   the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control channel fill-in
   (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan snapshot restores
   (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR
-  (`dmr_tiii_note_search_site()` in `src/protocol/dmr/dmr_tiii_site.h`, which returns at once when no search runs):
+  (`dmr_tiii_note_search_site()` in `src/protocol/dmr/dmr_tiii_site.h`, which notes the search only while one runs and
+  the received identity record always):
   C_ALOHA inside `dmr_cspdu()`'s CRC gate when the slot's `event_crc_invalid` is clear, since that gate also passes a
   burst `-F` accepts as RAS (`DSD_CRC_RAS_UNVERIFIED`) and an MBC whose header CRC failed (`DSD_CRC_FAILED`), and the
   C_SYS_PARMS / P_SYS_PARMS short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8 (no RAS path); a
@@ -6170,6 +6275,19 @@ Qt Quick frontend (`src/ui/qt`):
   nor the trunk-scan targets, so on a scan that mixes `nfm` rows or `nfm-conventional` targets with other modes it is
   reachable while one of those is on air; the terminal row is always shown. Tests: `UI_QT_METRICS_MODEL`,
   `UI_QT_CONTROLLER`, `UI_QT_QML_CALL_LISTS` (`tst_tone_filter_sheet.qml`, `tst_monitor_rx_tone.qml`).
+- Site identity (Monitor and Spectrum): `MetricsModel::fillSiteView()` builds the `siteChanged` group from
+  `app_control/site_identity_view` over the snapshot: `siteProtocol`, `siteLine` (the full form with its protocol),
+  `siteConfirmed` (the view's `live`), the SiteSheet fields (P25 NAC/WACN/SYS/RFSS/SITE/LRA, DMR colour code/site
+  text/rest LSN/XPT free LCN (`dmrXptFreeLcn`, -1 before one), NXDN RAN or IDAS area and location codes, EDACS site),
+  each only once received, and `ccFreqHz` from the view's `cc_freq_hz` only. There is no Qt latch: the record keeps the
+  last heard values on its carrier and is reset at every carrier boundary and trunk-scan target switch, so no visit
+  generation is needed. The Spectrum-facing
+  `carrierIdentityTokens` (compact tokens), `carrierIdentityProtocol`, `carrierIdentityText` (full form, for
+  accessibility) and `carrierIdentityLive` notify on the same signal, a liveness-only change included.
+  `p25Phase2ParamsReady`, `p25Phase2Seed` (`BEE00.348.293`) and `p25Phase2SeedSet` (`p2_hardset`) read the Phase 2 seed,
+  which is configuration; `qml/SiteSheet.qml` shows it as its **Phase 2 seed** row, "(set)" when hand-set. `vcFreqHz`
+  is the voice channel being followed. Tests: `UI_QT_METRICS_MODEL` (`test_site()`), `UI_QT_CONTROLLER` (stop clears),
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_site.qml`).
 - TETRA: `MetricsModel` publishes the `tetra*` group (`tetraVisible`, `tetraModeText`, `tetraEncrypted`,
   `tetraNetworkText`, `tetraTrunkText`, `tetraOnTraffic`, `tetraControlText`, `tetraTrafficText`, `tetraMmStatusText`,
   `tetraCodecText`, `tetraCodecFault`) on its own `tetraChanged` signal, filled in `fillTetraView()` from

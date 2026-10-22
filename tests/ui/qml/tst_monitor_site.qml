@@ -25,12 +25,15 @@ Item {
             testContext.setMetric("dmrColorCode", -1);
             testContext.setMetric("dmrSiteText", "");
             testContext.setMetric("dmrRestLsn", 0);
+            testContext.setMetric("dmrXptFreeLcn", -1);
             testContext.setMetric("ccFreqHz", 0);
             testContext.setMetric("vcFreqHz", 0);
             testContext.setMetric("nxdnRan", -1);
             testContext.setMetric("nxdnSiteCode", 0);
             testContext.setMetric("nxdnSysCode", 0);
             testContext.setMetric("edacsSiteText", "");
+            testContext.setMetric("p25Phase2Seed", "");
+            testContext.setMetric("p25Phase2SeedSet", false);
             Ui.Theme.resetFontScale();
             root.width = 411;
             root.height = 700;
@@ -71,6 +74,25 @@ Item {
             tryCompare(row, "visible", false);
             tryCompare(item("siteSheet"), "visible", false);
         }
+        // The Phase 2 seed is configuration, apart from the NAC the carrier sent: "(set)" when set by hand.
+        function test_phase2_seed_row() {
+            testContext.setMetric("siteProtocol", "P25");
+            testContext.setMetric("siteLine", "P25 · NAC 2A1");
+            testContext.setMetric("p25NacValid", true);
+            testContext.setMetric("p25Nac", 0x2A1);
+            item("siteSheet").visible = true;
+            tryCompare(item("siteNac"), "visible", true);
+            compare(item("siteNac").text, "2A1");
+            verify(!item("sitePhase2Seed").visible);
+            testContext.setMetric("p25Phase2Seed", "BEE00.348.293");
+            testContext.setMetric("p25Phase2SeedSet", true);
+            tryCompare(item("sitePhase2Seed"), "visible", true);
+            compare(item("sitePhase2Seed").text, "BEE00.348.293 (set)");
+            testContext.setMetric("p25Phase2SeedSet", false);
+            tryCompare(item("sitePhase2Seed"), "text", "BEE00.348.293");
+            compare(item("siteNac").text, "2A1");
+            item("siteSheet").visible = false;
+        }
         function test_protocol_grids_and_frequencies() {
             testContext.setMetric("siteLine", "DMR · CC 7");
             testContext.setMetric("siteProtocol", "DMR");
@@ -86,6 +108,11 @@ Item {
             compare(item("siteDmrText").textFormat, Text.PlainText);
             compare(item("siteCcFreq").text, "851.012500 MHz");
             compare(item("siteVcFreq").text, "852.000000 MHz");
+            // A Hytera XPT site's free channel, 0 included, once received.
+            verify(!item("siteDmrXptFree").visible);
+            testContext.setMetric("dmrXptFreeLcn", 0);
+            tryCompare(item("siteDmrXptFree"), "visible", true);
+            compare(item("siteDmrXptFree").text, "0");
             testContext.setMetric("siteProtocol", "IDAS");
             testContext.setMetric("nxdnRan", -1);
             verify(!item("siteDmrColor").visible);

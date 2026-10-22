@@ -13,11 +13,13 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -759,8 +761,9 @@ print_fsk_hist_view(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-print_spectrum_view(const dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
+print_spectrum_view(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
+    (void)state;
 }
 
 void
@@ -2392,25 +2395,39 @@ test_sync_tree_follows_scan_class(void) {
     ui_render_nxdn_site_line(state, 0);
     assert_capture_contains("NXDN - RAN: --;");
     assert(strstr(g_printw_capture, "RAN: 07") == NULL);
+    /* The IDAS area, system and site are what this carrier sent (the received identity record), never decoder state:
+       the area stand-in alone shows none. */
     state->nxdn_last_ran = 1U;
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 1);
+    assert_capture_contains("IDAS - Area: --;");
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("IDAS - Area: 01;");
     /* An IDAS site shows its own System ID and Site Code, never a Type-C location left in the state. */
     state->nxdn_location_site_code = 3U;
     state->nxdn_location_sys_code = 12U;
-    state->nxdn_idas_site_code = 200U;
+    state->nxdn_idas_site_code = 77U;
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 200U);
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("IDAS - Area: 01; Site Code: 200;");
     assert(strstr(g_printw_capture, "Sys") == NULL);
-    state->nxdn_idas_system_id = 0x5A5A5U;
+    state->nxdn_idas_system_id = 0x12345U;
+    dsd_rxid_note_nxdn_typed_system(state, 0x5A5A5U, 200U);
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 1);
     assert_capture_contains("Sys ID: 370085; Site Code: 200;");
+    /* A Type-C location shows only once received. */
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 0);
-    assert_capture_contains("Sys Code: 12; Site Code: 3;");
+    assert(strstr(g_printw_capture, "Sys Code") == NULL);
+    dsd_rxid_note_nxdn_location(state, 1U, 12U, 3U);
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("Cat: Regional; Sys Code: 12; Site Code: 3;");
+    dsd_rxid_reset(state);
     state->nxdn_location_site_code = 0U;
     state->nxdn_location_sys_code = 0U;
     state->nxdn_idas_site_code = 0U;
@@ -3438,7 +3455,8 @@ test_scan_timing_row_real_cursor(void) {
 }
 #endif
 
-/* A TMO downlink control channel as the TETRA decoder publishes it: network known, SYSINFO and an allocation seen. */
+/* A TMO downlink control channel as the TETRA decoder publishes it: network known, SYSINFO and an allocation seen, and
+   the cell's checked BSCH noted as received on this carrier. */
 static void
 tetra_publish_control_channel(dsd_state* state) {
     dsd_tetra_publication* const pub = &state->tetra_pub;
@@ -3447,6 +3465,7 @@ tetra_publish_control_channel(dsd_state* state) {
     pub->mcc = 262U;
     pub->mnc = 1001U;
     pub->colour = 25U;
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 25U);
     pub->air_encryption = DSD_TETRA_AIR_ENC_CLEAR;
     pub->cc_known = 1U;
     pub->cc_carrier = 321U;
@@ -3488,6 +3507,7 @@ test_tetra_rows_follow_the_view(void) {
     state->tetra_pub.ksg_mask = 1U;
     state->tetra_pub.la_known = 1U;
     state->tetra_pub.la = 4097U;
+    dsd_rxid_note_tetra_la(state, 4097U);
     state->tetra_pub.rx_carrier_known = 1U;
     state->tetra_pub.rx_carrier = 654U;
     g_unicode_stub = 0;
@@ -3631,6 +3651,133 @@ test_dmr_and_dcs_live_service_names(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Every identity field of the call-info lines is what this carrier sent (the received identity record), never decoder
+   state that a hand-set Phase 2 seed, a control-channel anchor or another carrier wrote: a section that
+   ncurses_last_synctype still picks after a carrier boundary prints dashes, not the old system. A hand-set seed shows
+   apart, as configuration. */
+static void
+test_identity_lines_read_the_received_record(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+
+    /* P25: the seed and another carrier's control channel in decoder state, nothing received. */
+    state->p2_wacn = 0xBEE00ULL;
+    state->p2_sysid = 0x348ULL;
+    state->p2_cc = 0x293ULL;
+    state->p2_rfssid = 3;
+    state->p2_siteid = 21;
+    state->p2_hardset = 1U;
+    state->trunk_cc_freq = 851012500L;
+    state->p25_cc_freq = 851012500L;
+    ncurses_last_synctype = DSD_SYNC_P25P1_POS;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| P25p1  - WACN: ----- SYS: --- NAC: ---; RFSS: -- SITE: -- Seed: BEE00.348.293 (set) ");
+    state->p2_hardset = 0U;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| P25p1  - WACN: ----- SYS: --- NAC: ---; RFSS: -- SITE: -- ");
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2A1U);
+    dsd_rxid_note_p25_network(state, 0x45564U, 0x006U);
+    dsd_rxid_note_p25_site(state, 0x006U, 10U, 11U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_P25, 769031250U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| P25p1  - WACN: 45564 SYS: 006 NAC: 2A1; RFSS: 10 SITE: 11 Freq: 769.031250 MHz");
+    ncurses_last_synctype = DSD_SYNC_P25P2_POS;
+    state->p2_hardset = 1U;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| P25p2  - WACN: 45564 SYS: 006 NAC: 2A1; RFSS: 10 SITE: 11 Seed: BEE00.348.293 (set) Freq: "
+                          "769.031250 MHz");
+
+    /* A carrier boundary resets the record; the P25 section the latch still picks names no system. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    state->p2_hardset = 0U;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| P25p2  - WACN: ----- SYS: --- NAC: ---; RFSS: -- SITE: -- ");
+
+    /* DMR: branding, site and rest channel only as received; the rest LSN's frequency is the channel map's. */
+    dsd_rxid_reset(state);
+    state->dmr_color_code = 1U;
+    DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", "Motorola");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "Cap+ ");
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", "TIII Small:1-2;0A3F; ");
+    state->dmr_rest_channel = 5;
+    state->trunk_chan_map[3] = 451000000L;
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; ");
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dsd_rxid_note_dmr_rest_lsn(state, 3U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; Capacity Plus; Rest LSN: 03; Freq: 451.000000 MHz");
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 452000000U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; SYS: 0A3F; Freq: 452.000000 MHz");
+    dsd_rxid_note_dmr_site_text(state, "TIII Small \xC2\xB7 Net 1 \xC2\xB7 Site 2");
+    g_unicode_stub = 0;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; TIII Small - Net 1 - Site 2; Freq: 452.000000 MHz");
+    g_unicode_stub = 1;
+
+    /* Hytera XPT: the free channel its site status, call alert or short LC named, from the record alone (the decoder's
+       site parameters string another carrier may have left is not read). */
+    dsd_rxid_reset(state);
+    DSD_SNPRINTF(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", "Free LCN - 9 ");
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; ");
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
+    dsd_rxid_note_dmr_xpt_free_lcn(state, 4U);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 01; Hytera XPT; Free LCN: 4; ");
+
+    /* EDACS: the site header only once this carrier named a site. */
+    dsd_rxid_reset(state);
+    state->edacs_site_id = 9;
+    state->edacs_cc_lcn = 4;
+    reset_printw_capture();
+    ui_render_edacs_site_header(opts, state);
+    assert(g_printw_capture[0] == '\0');
+    dsd_rxid_note_edacs_site(state, 12U);
+    reset_printw_capture();
+    ui_render_edacs_site_header(opts, state);
+    assert_capture_contains("| Monitoring CC - LCN [--]\n| SITE [012][0C]");
+    dsd_rxid_note_edacs_cc_lcn(state, 2U);
+    reset_printw_capture();
+    ui_render_edacs_site_header(opts, state);
+    assert_capture_contains("| Monitoring CC - LCN [02]\n");
+
+    /* M17: "--" before a CRC-checked LSF, whose CAN 0 is a CAN. */
+    dsd_rxid_reset(state);
+    state->m17_can = 7;
+    ncurses_last_synctype = DSD_SYNC_M17_LSF_POS;
+    reset_printw_capture();
+    ui_render_call_info_m17(state);
+    assert_capture_contains("CAN: -- ");
+    assert(strstr(g_printw_capture, "CAN: 07") == NULL);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, 0U);
+    reset_printw_capture();
+    ui_render_call_info_m17(state);
+    assert_capture_contains("CAN: 00 ");
+
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_tetra_rows_follow_the_view();
@@ -3682,6 +3829,7 @@ main(void) {
     test_slot_header_id_highlight_is_balanced();
     test_live_protocol_panels_ignore_ended_call_identity();
     test_colour_code_sentinels_print_as_unknown();
+    test_identity_lines_read_the_received_record();
     test_lockout_suppressed_companion_slot_renders_idle();
     return 0;
 }

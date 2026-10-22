@@ -30,6 +30,7 @@
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/tetra_publication.h>
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -2228,6 +2229,10 @@ struct dsd_state {
     /* What the TETRA decoder shows every frontend (dsd_tetra_publication), copied from its private state extension at
        the end of each burst. Rides the vertex_ks_count..ui_msg range. */
     dsd_tetra_publication tetra_pub;
+    /* The system identity received on the carrier being decoded (<dsd-neo/core/received_identity.h>), which every
+       frontend shows in place of decoder state that seeds, presets and other carriers also write. Decoder-thread
+       owned; rides the vertex_ks_count..ui_msg range. */
+    dsd_received_identity rx_id;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

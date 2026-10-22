@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -933,6 +934,35 @@ run_radio_health_cases(void) {
     DSD_MEMSET(&g_frontend_metrics, 0, sizeof(g_frontend_metrics));
 }
 
+/* The site status line's LRA is the one this carrier's checked site broadcasts named (the received identity record),
+   never one another carrier left in decoder state. */
+static void
+run_site_status_lra_cases(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.p25_site_lra_valid = 1;
+    state.p25_site_lra = 0x44;
+    reset_printw_capture();
+    assert(ui_print_p25_site_status_metric(&state) == 0);
+    assert(g_printw_capture[0] == '\0');
+    state.p25_site_network_active_valid = 1;
+    state.p25_site_network_active = 1;
+    reset_printw_capture();
+    assert(ui_print_p25_site_status_metric(&state) == 1);
+    assert_capture_contains("| Site: LRA:- Net:active");
+    dsd_rxid_note_p25_lra(&state, 0x348U, 0x1AU);
+    reset_printw_capture();
+    assert(ui_print_p25_site_status_metric(&state) == 1);
+    assert_capture_contains("| Site: LRA:1A Net:active");
+    dsd_rxid_reset(&state);
+    state.p25_site_network_active_valid = 0;
+    dsd_rxid_note_p25_lra(&state, 0x348U, 0x2BU);
+    reset_printw_capture();
+    assert(ui_print_p25_site_status_metric(&state) == 1);
+    assert_capture_contains("| Site: LRA:2B Net:-");
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     run_iden_match_cases();
@@ -948,6 +978,7 @@ main(void) {
     run_p2_gate_helper_cases();
     run_soft_fec_and_nid_display_cases();
     run_radio_health_cases();
+    run_site_status_lra_cases();
     printf("UI_NCURSES_P25_DISPLAY_HELPERS: OK\n");
     return 0;
 }

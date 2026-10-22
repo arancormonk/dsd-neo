@@ -29,8 +29,8 @@ void print_eye_view(dsd_opts* opts, dsd_state* state);
 /** Render FSK 4-level histogram (requires USE_RADIO). */
 void print_fsk_hist_view(void);
 
-/** Render spectrum analyzer (requires USE_RADIO). */
-void print_spectrum_view(const dsd_opts* opts);
+/** Render spectrum analyzer (requires USE_RADIO), with the identity @p state's carrier sent in its legend. */
+void print_spectrum_view(const dsd_opts* opts, const dsd_state* state);
 
 #ifdef __cplusplus
 }

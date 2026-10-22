@@ -10,6 +10,7 @@ target_sources(
         signal_search_store.cpp
         actions/actions_trunk.c
         access_code_view.c
+        site_identity_view.c
         analog_width_view.c
         app_command_queue.c
         key_commands.c

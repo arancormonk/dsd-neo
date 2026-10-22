@@ -11,6 +11,7 @@
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
@@ -1447,6 +1448,9 @@ tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_dmo_sy
     if (!ts || !s) {
         return;
     }
+    /* Every caller holds a direct mode burst whose SCH/S passed its CRC: the carrier belongs to no trunked network, so
+       the received identity holds none (the private network state, which a return to trunked mode uses, stays). */
+    dsd_rxid_note_tetra_direct_mode(state);
     dmo_apply_sync(state, ts, s, h);
     /* The call records and short data notices that follow read the carrier's mode and colour code from the
      * publication (dsd_access_code_current()): it describes direct mode from here, not the burst before. */

@@ -17,12 +17,15 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RADIO
+#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 static int
@@ -1484,8 +1487,55 @@ spectrum_print_color_legend(int use_unicode) {
 }
 #endif
 
+/* "System: P25 · NAC 293 · WACN BEE00 · SYS 348 · RFSS 3 · SITE 21": the identity the tuned carrier sent, in full and
+   with its protocol, " (last heard)" once it is no longer live, hyphens for the dots on a terminal without UTF-8.
+   Returns the length written, 0 (and "") when the carrier sent none. Pure, for the goldens. */
+static size_t
+spectrum_format_system_line(const dsd_state* state, int ascii, char* buf, size_t buf_size) {
+    if (buf == NULL || buf_size == 0U) {
+        return 0U;
+    }
+    buf[0] = '\0';
+    dsd_app_site_identity view;
+    dsd_app_site_identity_view(state, &view);
+    char text[256];
+    if (dsd_app_site_identity_format(&view, DSD_APP_SITE_IDENTITY_FULL, 1, text, sizeof text) == 0U) {
+        return 0U;
+    }
+    const int n = DSD_SNPRINTF(buf, buf_size, "System: %s%s", text, view.live ? "" : " (last heard)");
+    if (n <= 0) {
+        buf[0] = '\0';
+        return 0U;
+    }
+    if (ascii) {
+        size_t out = 0U;
+        for (size_t in = 0U; buf[in] != '\0'; in++) {
+            if ((unsigned char)buf[in] == 0xC2U && (unsigned char)buf[in + 1U] == 0xB7U) {
+                buf[out++] = '-';
+                in++;
+            } else {
+                buf[out++] = buf[in];
+            }
+        }
+        buf[out] = '\0';
+    }
+    return strlen(buf);
+}
+
 static void
-spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, float vmax, float vmin) {
+spectrum_print_system_line(const dsd_state* state) {
+    char line[288];
+    const int ascii = strcmp(dsd_unicode_or_ascii("\xC2\xB7", "-"), "-") == 0;
+    if (state == NULL || spectrum_format_system_line(state, ascii, line, sizeof line) == 0U) {
+        return;
+    }
+    ui_print_lborder();
+    printw(" %s\n", line);
+}
+
+static void
+spectrum_print_legend(const dsd_opts* opts, const dsd_state* state, int rate, int w, int use_unicode, float vmax,
+                      float vmin) {
     float span_hz = (float)rate;
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics(&metrics);
@@ -1502,6 +1552,7 @@ spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, fl
     printw(" Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
     ui_print_lborder();
     printw(" Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
+    spectrum_print_system_line(state);
 #ifdef PRETTY_COLORS
     if (opts && opts->frontend_terminal_display.eye_color && has_colors()) {
         spectrum_print_color_legend(use_unicode);
@@ -1511,7 +1562,7 @@ spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, fl
 }
 
 static void
-print_spectrum_view_rtlsdr(const dsd_opts* opts) {
+print_spectrum_view_rtlsdr(const dsd_opts* opts, const dsd_state* state) {
     static float bins_static[1024];
     static float col[2048];
 
@@ -1536,16 +1587,17 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts) {
 
     int use_unicode = (opts && opts->frontend_terminal_display.eye_unicode && dsd_unicode_block_glyphs_supported());
     spectrum_draw_plot(opts, col, w, h, vmin, vmax, span, use_unicode);
-    spectrum_print_legend(opts, rate, w, use_unicode, vmax, vmin);
+    spectrum_print_legend(opts, state, rate, w, use_unicode, vmax, vmin);
 }
 #endif
 
 void
-print_spectrum_view(const dsd_opts* opts) {
+print_spectrum_view(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
-    print_spectrum_view_rtlsdr(opts);
+    print_spectrum_view_rtlsdr(opts, state);
 #else
     UNUSED(opts);
+    UNUSED(state);
     ui_print_header("Spectrum Analyzer");
     printw("| (no radio support in this build)\n");
     ui_print_hr();

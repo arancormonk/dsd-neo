@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -19,11 +21,14 @@
 
 /* DMR content passed the gate: signal search's evidence, and the stamp a startup control-channel hunt reads on the
    decoder thread (issue #703). Never cleared: a carrier boundary does not undo content that was decoded. The carrier
-   is two-slot TDMA from here, until an acquisition reset or a carrier boundary (dsd_state::tdma_carrier). */
+   is two-slot TDMA from here, until an acquisition reset or a carrier boundary (dsd_state::tdma_carrier). The locked
+   @p color_code is the carrier's received access code, noted before the burst it came with is dispatched, so whatever
+   that burst publishes already carries it. */
 static void
-dmr_confidence_note_evidence(dsd_state* state) {
+dmr_confidence_note_evidence(dsd_state* state, unsigned int color_code) {
     state->dmr_confidence_lock_m = dsd_decode_now_mono_s();
     state->tdma_carrier = 1U;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, (uint16_t)color_code);
     dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
 }
 
@@ -79,7 +84,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
             // co-channel interference never accumulates into a re-lock.
             state->dmr_confidence_candidate_cc = DMR_CONFIDENCE_UNKNOWN_CC;
             state->dmr_confidence_candidate_count = 0;
-            dmr_confidence_note_evidence(state);
+            dmr_confidence_note_evidence(state, color_code);
             return DMR_CONFIDENCE_LOCKED;
         }
         if (state->dmr_confidence_mismatch_count < 255U) {
@@ -104,7 +109,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
             // The previous system identity is gone; voice slots must
             // re-qualify under the new colour code before audio resumes.
             dmr_confidence_clear_voice(state);
-            dmr_confidence_note_evidence(state);
+            dmr_confidence_note_evidence(state, color_code);
             return DMR_CONFIDENCE_LOCKED;
         }
         return DMR_CONFIDENCE_REJECT;
@@ -121,7 +126,7 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
         state->dmr_confidence_locked = 1;
         state->dmr_confidence_color_code = (uint8_t)color_code;
         state->dmr_color_code = color_code;
-        dmr_confidence_note_evidence(state);
+        dmr_confidence_note_evidence(state, color_code);
         return DMR_CONFIDENCE_LOCKED;
     }
 
@@ -162,7 +167,7 @@ dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned in
 
     if (state->dmr_confidence_voice_count[slot] >= DMR_CONFIDENCE_VOICE_OBSERVES) {
         state->dmr_confidence_voice_open[slot] = 1;
-        dmr_confidence_note_evidence(state);
+        dmr_confidence_note_evidence(state, state->dmr_confidence_color_code);
         state->dmr_confidence_voice_m[slot] = state->dmr_confidence_lock_m;
         return DMR_CONFIDENCE_LOCKED;
     }

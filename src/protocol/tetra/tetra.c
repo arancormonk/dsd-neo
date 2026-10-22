@@ -22,6 +22,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -288,6 +289,20 @@ tetra_nb_subtype(dsd_state* state, const tetra_nb_ctx* ctx, const char* what) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", text);
 }
 
+/* A trunked downlink block whose CRC passed once descrambled with the network's extended colour code proves that
+   network and colour code on this carrier, as a BSCH does: every carrier of a cell scrambles with them (EN 300 392-2
+   clause 8.2.5.2), and the seed names all three. So a followed traffic carrier, whose access code the trunk tune dropped,
+   names its colour code again, and a --tetra-net preset is received identity once a block descrambled with it passed
+   (never before). Noted before the MAC acts on the block, which may move the receiver. */
+static void
+tetra_nb_note_cell(dsd_state* state, const tetra_nb_ctx* ctx) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (ts == NULL || ctx->direct || ts->dmo || ts->uplink || !ts->net_known || ts->lfsr_seed != ctx->seed) {
+        return;
+    }
+    dsd_rxid_note_tetra_cell(state, ts->mcc, ts->mnc, ts->colour);
+}
+
 /* A CRC-passed signalling block: the MAC in trunked mode, the DMAC logger in direct mode. It counts as evidence about
    the carrier once it has been acted on, so a grant it carries is judged by the blocks before it. A trunked downlink MAC
    block proves a control channel, an uplink one the carrier for publication only (tetra_confirm.h), and a direct mode
@@ -300,6 +315,7 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
         tetra_confirm_note_block(state);
         return;
     }
+    tetra_nb_note_cell(state, ctx);
     tetra_mac_parse_schd(decoded, len, ctx->cc, opts, state);
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (ts && ts->uplink) {

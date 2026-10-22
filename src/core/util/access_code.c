@@ -9,9 +9,9 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/tetra_publication.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -93,16 +93,18 @@ access_code_read_dpmr(const dsd_state* state, uint16_t* value) {
     return 1;
 }
 
-/* The TETRA publication's colour code, while it describes a trunked mode carrier: a direct mode carrier has none. */
+/* The colour code a CRC-checked trunked mode BSCH, or a CRC-checked downlink block descrambled with it, proved on this
+ * carrier (dsd_state::rx_id). Neither a `--tetra-net` preset nor the network the descrambler keeps from another carrier
+ * is one until such a block passes, and a direct mode carrier has none (its checked burst drops the record). */
 static int
 access_code_read_tetra(const dsd_state* state, uint16_t* value) {
-    const dsd_tetra_publication* const pub = &state->tetra_pub;
-    const int trunked = pub->mode == DSD_TETRA_MODE_TMO_DOWNLINK || pub->mode == DSD_TETRA_MODE_TMO_UPLINK
-                        || pub->mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK;
-    if (!trunked || pub->net_known == 0U) {
+    const dsd_received_identity* const id = &state->rx_id;
+    const uint32_t parts = DSD_RXID_TETRA_NET | DSD_RXID_ACCESS;
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_TETRA || (id->valid & parts) != parts
+        || id->access_kind != (uint8_t)DSD_ACCESS_CODE_COLOR_CODE) {
         return 0;
     }
-    *value = (uint16_t)(pub->colour & 0x3FU);
+    *value = (uint16_t)(id->access & 0x3FU);
     return 1;
 }
 

@@ -2302,7 +2302,7 @@ p25p2_vpdu_iter_block_22(p25p2_vpdu_ctx* ctx) {
             state->p2_rfssid = rfssid;
             // Promote any matching IDENs to trusted on site identification
             p25_confirm_idens_for_current_site(state);
-            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)lra);
         }
     }
 
@@ -2352,7 +2352,7 @@ p25p2_vpdu_iter_block_23(p25p2_vpdu_ctx* ctx) {
             state->p2_siteid = siteid;
             state->p2_rfssid = rfssid;
             p25_confirm_idens_for_current_site(state);
-            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)lra);
         }
     }
 
@@ -3744,7 +3744,8 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
             } else {
                 p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
             }
-            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
+            p25_search_note_network_nac(state, (uint16_t)lcolorcode);
         }
     }
 
@@ -3799,7 +3800,8 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
             } else {
                 p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
             }
-            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
+            p25_search_note_network_nac(state, (uint16_t)lcolorcode);
         }
     }
 

@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -67,6 +68,7 @@ reset_sources(dsd_state* state) {
     state->nxdn_last_ran_stand_in = 0U;
     state->dpmr_color_code = -1;
     dsd_tetra_publication_reset(&state->tetra_pub);
+    dsd_rxid_reset(state);
 }
 
 static int
@@ -225,24 +227,38 @@ test_m17_can(dsd_state* state) {
     return rc;
 }
 
-/* TETRA's colour code is the publication's while it describes a trunked mode carrier whose network identity is known:
- * a direct mode carrier has none. */
+/* TETRA's colour code is the one a CRC-checked trunked mode BSCH sent on this carrier (the received identity record).
+ * A --tetra-net preset or the network the descrambler retains is configuration: with no BSCH there is no code. A
+ * direct mode carrier has none, and a carrier boundary forgets it. */
 static int
 test_tetra_colour_code(dsd_state* state) {
     int rc = 0;
     reset_sources(state);
     rc |= expect_none("TETRA nothing decoded", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    /* What a --tetra-net preset (or a network kept from another carrier) leaves in the publication. */
     state->tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
-    state->tetra_pub.colour = 25U;
-    rc |= expect_none("TETRA network unknown", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
     state->tetra_pub.net_known = 1U;
+    state->tetra_pub.colour = 25U;
+    rc |= expect_none("TETRA preset alone", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 25U);
     rc |= expect_code("TETRA CC 25", state, DSD_SYNC_TETRA_SB_NEG, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 25U);
-    state->tetra_pub.colour = 0U;
+    state->tetra_pub.colour = 7U; /* the publication is not read */
+    rc |=
+        expect_code("TETRA BSCH not preset", state, DSD_SYNC_TETRA_SB_NEG, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 25U);
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 0U);
     rc |= expect_code("TETRA CC 0", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 0U);
-    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_UPLINK;
-    rc |= expect_code("TETRA uplink", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 0U);
-    state->tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
+    dsd_rxid_mark_stale(state); /* a gap keeps this carrier's code */
+    rc |= expect_code("TETRA stale", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 1, DSD_ACCESS_CODE_COLOR_CODE, 0U);
+    dsd_rxid_note_tetra_direct_mode(state);
     rc |= expect_none("TETRA direct mode", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 25U);
+    dsd_rxid_trunk_tune(state);
+    rc |= expect_none("TETRA trunking retune", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 25U);
+    dsd_rxid_reset(state);
+    rc |= expect_none("TETRA carrier boundary", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 9U);
+    rc |= expect_none("TETRA after a DMR code", state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U);
     return rc;
 }
 

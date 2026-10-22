@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
@@ -45,6 +46,9 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
+        /* A frame of another protocol family replaces the identity the last one left, also when the new protocol
+           sends none: what this frame's decoder notes is the carrier's from here. */
+        dsd_rxid_note_sync(state, state->synctype);
         const uint32_t carrier_seq = state->carrier_seq;
         /* The frame's protocol and carrier, for the decoders' MBE capture: a decoder that borrows another protocol's
            vocoder changes state->synctype, not this, and a frame read across a carrier boundary is captured nowhere

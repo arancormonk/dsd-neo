@@ -916,7 +916,49 @@ line only once the decoder has something for it, and under them the latest decod
 ```
 
 A terminal without UTF-8 gets ` - ` between the parts. Message text from the air is shown without control
-characters, and cut on a character boundary at the screen's width.
+characters, and cut on a character boundary at the screen's width. The `Network:` line names only a network this
+carrier proved: a CRC-checked BSCH it sent, or a CRC-checked downlink block descrambled with that network's MCC, MNC
+and colour code (every carrier of a cell scrambles with them, so a followed traffic channel names its colour code again
+with its first checked block). A `--tetra-net` preset configures descrambling but shows no network until a block
+descrambled with it passes its CRC.
+
+## System Identity
+
+Every system identity field in Call Info is what the carrier being decoded sent, in a message that passed its own check
+(CRC, FEC or a confirmed transmission): never a Phase 2 seed, a `--tetra-net` preset no checked block proved, a control
+channel the trunking state machine returns to, or a value another carrier left. The same record feeds the Qt/Android
+monitor and the call history, and every change of carrier (a retune, a `-Y` step, a signal-search step, an input
+switch, a trunk-scan target switch) clears it, so a section still showing the previous protocol after a retune prints
+no old identity. A part not received yet prints dashes in its column:
+
+```text
+| P25p1  - WACN: BEE00 SYS: 348 NAC: 293; RFSS: 3 SITE: 21 Freq: 851.012500 MHz
+| P25p2  - WACN: ----- SYS: --- NAC: ---; RFSS: -- SITE: -- Seed: BEE00.348.293 (set) Phase 2 Missing Parameters
+| DMR BS - DCC: 01; Capacity Plus; Rest LSN: 03; Freq: 451.000000 MHz
+```
+
+- P25: NAC, WACN, SYS, RFSS/SITE and the `Site:` line's LRA as received. A Phase 2 seed set by hand (`-X`, or the
+  menu) shows apart as `Seed: WACN.SYS.NAC (set)`; it is configuration, not what the carrier sent. The Phase 2
+  parameter warnings still read the seed, as the descrambler does.
+- DMR: the trunking brand, Tier III/Connect Plus/XPT site, the Hytera XPT site's free channel (`Free LCN: 4;`) and
+  Capacity Plus rest LSN as received (the rest LSN's frequency is the channel map's); a Tier III system code alone shows
+  as `SYS: 0A3F;`.
+- NXDN: the location (category, system, site) as received; IDAS shows the SCCH area, site code and Type-D system ID.
+- EDACS: the site header shows once this carrier named a site, with the control channel LCN it named.
+- M17: `CAN: --` until a CRC-checked LSF names one (0 is a CAN).
+- `Freq:` is this system's control channel only where a checked message confirmed the carrier as one, at the frequency
+  the radio input (or I/Q replay) was tuned to. On audio input from a rigctl peer (`-U`) it is absent: DSD-neo cannot
+  tell which frequency the peer's audio comes from, since the peer can be retuned on its own and its audio arrives
+  after a tune with no mark where the new frequency's begins.
+
+With the spectrum analyzer on, its legend ends with the same identity in full, led by its protocol, marked
+`(last heard)` once it is no longer live, and absent when the carrier sent none:
+
+```text
+| System: P25 · NAC 293 · SYS 348 · RFSS 3 · SITE 21 · WACN BEE00 · LRA 1A
+```
+
+A terminal without UTF-8 gets ` - ` between the parts.
 
 ## Compact View
 

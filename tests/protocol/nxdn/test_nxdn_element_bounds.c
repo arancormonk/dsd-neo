@@ -2367,11 +2367,16 @@ test_type_d_srv_info_reads_system_id_and_site_code(void) {
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
     rc |= expect_int("type-d-srv-info-unconfirmed-system", (int)state->nxdn_idas_system_id, 0);
     rc |= expect_int("type-d-srv-info-unconfirmed-site", state->nxdn_idas_site_code, 0);
+    rc |= expect_int("type-d-srv-info-unconfirmed-no-identity", (int)state->rx_id.valid, 0);
 
     state->nxdn_confirmed = 1;
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
     rc |= expect_int("type-d-srv-info-system", (int)state->nxdn_idas_system_id, 0x5A5A5);
     rc |= expect_int("type-d-srv-info-site", state->nxdn_idas_site_code, 200);
+    /* The received identity: the Type-D system and site, and no control channel. */
+    rc |= expect_int("type-d-srv-info-identity-parts", (int)state->rx_id.valid, (int)DSD_RXID_NXDN_TYPED_SYSTEM);
+    rc |= expect_int("type-d-srv-info-identity-system", (int)state->rx_id.nxdn_typed_sys, 0x5A5A5);
+    rc |= expect_int("type-d-srv-info-identity-site", state->rx_id.nxdn_typed_site, 200);
     rc |= expect_int("type-d-srv-info-no-ran", (int)state->nxdn_last_ran, -1);
     rc |= expect_int("type-d-srv-info-no-location-site", state->nxdn_location_site_code, 0);
     rc |= expect_int("type-d-srv-info-no-location-sys", (int)state->nxdn_location_sys_code, 0);
@@ -2384,6 +2389,7 @@ test_type_d_srv_info_reads_system_id_and_site_code(void) {
     write_bits_u64(bits, 32U, 251U, 8U);
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
     rc |= expect_int("type-d-srv-info-reserved-site-kept", state->nxdn_idas_site_code, 200);
+    rc |= expect_int("type-d-srv-info-reserved-site-identity-kept", state->rx_id.nxdn_typed_site, 200);
 
     /* The retained "Type-D" category does not make a control channel's SRV_INFO a Type-D one. */
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -2553,6 +2559,12 @@ test_type_d_site_id_message(void) {
     rc |= expect_contains("site-id-print-code", output, "Site Code: 1; ");
     rc |= expect_int("site-id-code", state->nxdn_idas_site_code, 1);
     rc |= expect_int("site-id-area", (int)state->nxdn_last_ran, 1);
+    /* The received identity: the area and the site, its type and code, never an access code. */
+    rc |= expect_int("site-id-identity-parts", (int)state->rx_id.valid,
+                     (int)(DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE));
+    rc |= expect_int("site-id-identity-area", state->rx_id.nxdn_idas_area, 1);
+    rc |= expect_int("site-id-identity-type", state->rx_id.nxdn_idas_site_type, 3);
+    rc |= expect_int("site-id-identity-code", state->rx_id.nxdn_idas_site_code, 1);
     rc |= expect_int("site-id-area-stand-in", state->nxdn_last_ran_stand_in, 1);
     rc |= expect_int("site-id-no-location-site", state->nxdn_location_site_code, 0);
     rc |= expect_int("site-id-no-location-sys", (int)state->nxdn_location_sys_code, 0);
@@ -2564,6 +2576,8 @@ test_type_d_site_id_message(void) {
     NXDN_decode_scch(opts, state, message, 1U);
     rc |= expect_int("site-id-code-200", state->nxdn_idas_site_code, 200);
     rc |= expect_int("site-id-area-0", (int)state->nxdn_last_ran, 0);
+    rc |= expect_int("site-id-identity-code-200", state->rx_id.nxdn_idas_site_code, 200);
+    rc |= expect_int("site-id-identity-area-0", state->rx_id.nxdn_idas_area, 0);
 
     /* Reserved codes (0, 251-255) name no site. */
     write_scch_site_id(message, 0U, 0U, 1U, 251U);
@@ -2578,6 +2592,7 @@ test_type_d_site_id_message(void) {
     write_scch_site_id(message, 0U, 0U, 1U, 7U);
     NXDN_decode_scch(opts, state, message, 1U);
     rc |= expect_int("site-id-unconfirmed-scch", state->nxdn_idas_site_code, 200);
+    rc |= expect_int("site-id-unconfirmed-scch-identity", state->rx_id.nxdn_idas_site_code, 200);
 
     dsd_state_ext_free_all(state);
     free(state);

@@ -33,6 +33,7 @@
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/audio.h>
@@ -155,174 +156,145 @@ MetricsModel::View::qualityEquals(const View& other) const {
 bool
 MetricsModel::SiteView::operator==(const SiteView& other) const {
     return std::tie(siteProtocol, p25NacValid, p25Nac, p25WacnValid, p25Wacn, p25SysIdValid, p25SysId, p25Rfss, p25Site,
-                    p25LraValid, p25Lra, p25Phase2ParamsReady, dmrColorCode, dmrSiteText, dmrRestLsn, nxdnRan,
-                    nxdnLocationCategory, nxdnSysCode, nxdnSiteCode, edacsSiteText, ccFreqHz, vcFreqHz, siteLine,
-                    siteConfirmed)
+                    p25LraValid, p25Lra, p25Phase2ParamsReady, p25Phase2Seed, p25Phase2SeedSet, dmrColorCode,
+                    dmrSiteText, dmrRestLsn, dmrXptFreeLcn, nxdnRan, nxdnLocationCategory, nxdnSysCode, nxdnSiteCode,
+                    edacsSiteText, ccFreqHz, vcFreqHz, siteLine, siteConfirmed, carrierIdentityTokens,
+                    carrierIdentityProtocol, carrierIdentityText, carrierIdentityLive)
            == std::tie(other.siteProtocol, other.p25NacValid, other.p25Nac, other.p25WacnValid, other.p25Wacn,
                        other.p25SysIdValid, other.p25SysId, other.p25Rfss, other.p25Site, other.p25LraValid,
-                       other.p25Lra, other.p25Phase2ParamsReady, other.dmrColorCode, other.dmrSiteText,
-                       other.dmrRestLsn, other.nxdnRan, other.nxdnLocationCategory, other.nxdnSysCode,
-                       other.nxdnSiteCode, other.edacsSiteText, other.ccFreqHz, other.vcFreqHz, other.siteLine,
-                       other.siteConfirmed);
+                       other.p25Lra, other.p25Phase2ParamsReady, other.p25Phase2Seed, other.p25Phase2SeedSet,
+                       other.dmrColorCode, other.dmrSiteText, other.dmrRestLsn, other.dmrXptFreeLcn, other.nxdnRan,
+                       other.nxdnLocationCategory, other.nxdnSysCode, other.nxdnSiteCode, other.edacsSiteText,
+                       other.ccFreqHz, other.vcFreqHz, other.siteLine, other.siteConfirmed, other.carrierIdentityTokens,
+                       other.carrierIdentityProtocol, other.carrierIdentityText, other.carrierIdentityLive);
 }
 
-static void
-appendSiteHex(QStringList& parts, const QString& label, int value, int width) {
-    parts << label + QLatin1Char(' ') + QStringLiteral("%1").arg(value, width, 16, QLatin1Char('0')).toUpper();
+static bool
+rxidHas(const dsd_received_identity& id, uint32_t part) {
+    return (id.valid & part) != 0U;
 }
 
-static void
-appendSiteDecimal(QStringList& parts, const QString& label, int value) {
-    parts << label + QLatin1Char(' ') + QString::number(value);
+/* The Phase 2 seed decoding runs on (p2_wacn/p2_sysid/p2_cc), whatever set it: configuration, never received
+   identity. Ready under the terminal's zero/all-ones parameter gate. */
+void
+MetricsModel::fillPhase2Seed(SiteView& site, const dsd_state* snapshot) {
+    const bool nac = snapshot->p2_cc > 0 && snapshot->p2_cc < 0xFFF;
+    const bool wacn = snapshot->p2_wacn > 0 && snapshot->p2_wacn < 0xFFFFF;
+    const bool sysid = snapshot->p2_sysid > 0 && snapshot->p2_sysid < 0xFFF;
+    site.p25Phase2ParamsReady = nac && wacn && sysid;
+    if (snapshot->p2_wacn != 0 || snapshot->p2_sysid != 0 || snapshot->p2_cc != 0) {
+        site.p25Phase2Seed = QStringLiteral("%1.%2.%3")
+                                 .arg(static_cast<qulonglong>(snapshot->p2_wacn & 0xFFFFFULL), 5, 16, QLatin1Char('0'))
+                                 .arg(static_cast<qulonglong>(snapshot->p2_sysid & 0xFFFULL), 3, 16, QLatin1Char('0'))
+                                 .arg(static_cast<qulonglong>(snapshot->p2_cc & 0xFFFULL), 3, 16, QLatin1Char('0'))
+                                 .toUpper();
+        site.p25Phase2SeedSet = snapshot->p2_hardset != 0U;
+    }
+}
+
+/* The NAC, network, site and LRA this carrier sent: never the Phase 2 seed. */
+void
+MetricsModel::fillP25Site(SiteView& site, const dsd_received_identity& id) {
+    site.p25NacValid = rxidHas(id, DSD_RXID_ACCESS);
+    site.p25Nac = site.p25NacValid ? static_cast<int>(id.access) : 0;
+    site.p25WacnValid = rxidHas(id, DSD_RXID_P25_WACN);
+    site.p25Wacn = site.p25WacnValid ? static_cast<int>(id.p25_wacn) : 0;
+    site.p25SysIdValid = rxidHas(id, DSD_RXID_P25_SYSID);
+    site.p25SysId = site.p25SysIdValid ? static_cast<int>(id.p25_sysid) : 0;
+    if (rxidHas(id, DSD_RXID_P25_SITE)) {
+        site.p25Rfss = id.p25_rfss;
+        site.p25Site = id.p25_site;
+    }
+    site.p25LraValid = rxidHas(id, DSD_RXID_P25_LRA);
+    site.p25Lra = site.p25LraValid ? id.p25_lra : 0;
 }
 
 void
-MetricsModel::fillP25Identity(SiteView& site, const dsd_state* snapshot) {
-    site.siteProtocol = QStringLiteral("P25");
-    site.p25NacValid = snapshot->p2_cc > 0 && snapshot->p2_cc < 0xFFF;
-    site.p25WacnValid = snapshot->p2_wacn > 0 && snapshot->p2_wacn < 0xFFFFF;
-    site.p25SysIdValid = snapshot->p2_sysid > 0 && snapshot->p2_sysid < 0xFFF;
-    site.p25Nac = site.p25NacValid ? static_cast<int>(snapshot->p2_cc) : 0;
-    site.p25Wacn = site.p25WacnValid ? static_cast<int>(snapshot->p2_wacn) : 0;
-    site.p25SysId = site.p25SysIdValid ? static_cast<int>(snapshot->p2_sysid) : 0;
-    site.p25Rfss = snapshot->p2_rfssid <= 255 ? static_cast<int>(snapshot->p2_rfssid) : 0;
-    site.p25Site = snapshot->p2_siteid <= 255 ? static_cast<int>(snapshot->p2_siteid) : 0;
-    site.p25LraValid = snapshot->p25_site_lra_valid != 0;
-    site.p25Lra = site.p25LraValid ? snapshot->p25_site_lra : 0;
-    // The terminal's zero/all-ones parameter gate is independent of P1 identity.
-    site.p25Phase2ParamsReady = site.p25NacValid && site.p25WacnValid && site.p25SysIdValid;
+MetricsModel::fillDmrSite(SiteView& site, const dsd_received_identity& id) {
+    site.dmrColorCode = rxidHas(id, DSD_RXID_ACCESS) ? static_cast<int>(id.access) : -1;
+    if (rxidHas(id, DSD_RXID_DMR_SITE_TEXT)) {
+        site.dmrSiteText = siteText(id.dmr_site_text);
+    }
+    site.dmrRestLsn = rxidHas(id, DSD_RXID_DMR_REST_LSN) ? static_cast<int>(id.dmr_rest_lsn) : 0;
+    site.dmrXptFreeLcn = rxidHas(id, DSD_RXID_DMR_XPT_FREE_LCN) ? static_cast<int>(id.dmr_xpt_free_lcn) : -1;
 }
 
-QStringList
-MetricsModel::p25SiteParts(const SiteView& site) {
-    QStringList parts;
-    if (site.p25WacnValid) {
-        appendSiteHex(parts, QStringLiteral("WACN"), site.p25Wacn, 5);
-    }
-    if (site.p25SysIdValid) {
-        appendSiteHex(parts, QStringLiteral("SYS"), site.p25SysId, 3);
-    }
-    if (site.p25NacValid) {
-        appendSiteHex(parts, QStringLiteral("NAC"), site.p25Nac, 3);
-    }
-    if (site.p25Rfss) {
-        appendSiteDecimal(parts, QStringLiteral("RFSS"), site.p25Rfss);
-    }
-    if (site.p25Site) {
-        appendSiteDecimal(parts, QStringLiteral("SITE"), site.p25Site);
-    }
-    if (site.p25LraValid) {
-        appendSiteHex(parts, QStringLiteral("LRA"), site.p25Lra, 2);
-    }
-    return parts;
-}
-
-QStringList
-MetricsModel::fillDmrSite(SiteView& site, const dsd_state* snapshot) {
-    QStringList parts;
-    site.siteProtocol = QStringLiteral("DMR");
-    site.dmrColorCode = snapshot->dmr_color_code <= 15 ? static_cast<int>(snapshot->dmr_color_code) : -1;
-    site.dmrSiteText = siteText(snapshot->dmr_site_parms);
-    site.dmrRestLsn = qMax(0, snapshot->dmr_rest_channel);
-    if (site.dmrColorCode >= 0) {
-        appendSiteDecimal(parts, QStringLiteral("CC"), site.dmrColorCode);
-    }
-    if (!site.dmrSiteText.isEmpty()) {
-        parts << site.dmrSiteText;
-    }
-    if (site.dmrRestLsn > 0) {
-        appendSiteDecimal(parts, QStringLiteral("Rest LSN"), site.dmrRestLsn);
-    }
-    return parts;
-}
-
-QStringList
-MetricsModel::fillNxdnSite(SiteView& site, const dsd_state* snapshot) {
-    QStringList parts;
-    site.nxdnLocationCategory = siteText(snapshot->nxdn_location_category);
-    const bool idas = site.nxdnLocationCategory == QStringLiteral("Type-D");
-    // Outside IDAS, whose area shows under its own label, a stand-in is DCR's fixed 7, which is no RAN (issue #575).
-    const bool ran_stand_in = !idas && snapshot->nxdn_last_ran_stand_in != 0U;
-    site.nxdnRan = (snapshot->nxdn_last_ran <= 63 && !ran_stand_in) ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
-    site.siteProtocol = idas ? QStringLiteral("IDAS") : QStringLiteral("NXDN");
-    if (idas) {
-        // An IDAS site has its own System ID and Site Code, each received on its own (a Type-D SRV_INFO carries both,
-        // an SCCH site ID message the code alone), which no Type-C location category describes.
-        site.nxdnSiteCode = snapshot->nxdn_idas_site_code;
-        site.nxdnSysCode = static_cast<int>(snapshot->nxdn_idas_system_id);
-    } else {
-        site.nxdnSiteCode = snapshot->nxdn_location_site_code;
-        // As in the terminal, a decoded site code establishes location validity.
-        site.nxdnSysCode = site.nxdnSiteCode ? static_cast<int>(snapshot->nxdn_location_sys_code) : 0;
-    }
-    if (site.nxdnRan >= 0) {
-        appendSiteDecimal(parts, idas ? QStringLiteral("Area") : QStringLiteral("RAN"), site.nxdnRan);
-    }
-    if (idas) {
-        if (site.nxdnSysCode) {
-            appendSiteDecimal(parts, QStringLiteral("SYS"), site.nxdnSysCode);
-        }
-        if (site.nxdnSiteCode) {
-            appendSiteDecimal(parts, QStringLiteral("SITE"), site.nxdnSiteCode);
-        }
-    } else if (site.nxdnSiteCode) {
-        if (!site.nxdnLocationCategory.isEmpty()) {
-            parts << site.nxdnLocationCategory;
-        }
-        appendSiteDecimal(parts, QStringLiteral("SYS"), site.nxdnSysCode);
-        appendSiteDecimal(parts, QStringLiteral("SITE"), site.nxdnSiteCode);
-    }
-    return parts;
-}
-
-QStringList
-MetricsModel::fillEdacsSite(SiteView& site, const dsd_state* snapshot) {
-    QStringList parts;
-    site.siteProtocol = QStringLiteral("EDACS");
-    if (snapshot->edacs_site_id) {
-        site.edacsSiteText =
-            QStringLiteral("SITE %1 [%2] · %3 · %4")
-                .arg(snapshot->edacs_site_id, 3, 10, QLatin1Char('0'))
-                .arg(QStringLiteral("%1").arg(snapshot->edacs_site_id, 2, 16, QLatin1Char('0')).toUpper())
-                .arg(snapshot->ea_mode == 1 ? QStringLiteral("Extended Addressing")
-                                            : QStringLiteral("Standard/Networked"))
-                .arg(snapshot->esk_mask == 0xA0 ? QStringLiteral("ESK") : QStringLiteral("No ESK"));
-        parts << site.edacsSiteText;
-    }
-    return parts;
-}
-
+/* Type-C: the RAN and a location ID. IDAS: the SCCH area, and its own site code and Type-D system ID, which no Type-C
+   location category describes. */
 void
-MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) const {
-    auto& site = next.site;
-    // No snapshot pointer survives the tick. Retain the last copied identity on
-    // loss, even if the no-carrier path has already reset the decoder's fields.
-    if (snapshot->synctype == DSD_SYNC_NONE) {
-        site = m_view.site;
-        site.siteConfirmed = false;
+MetricsModel::fillNxdnSite(SiteView& site, const dsd_received_identity& id, bool idas) {
+    if (idas) {
+        site.nxdnLocationCategory = QStringLiteral("Type-D");
+        site.nxdnRan = rxidHas(id, DSD_RXID_NXDN_IDAS_AREA) ? static_cast<int>(id.nxdn_idas_area) : -1;
+        if (rxidHas(id, DSD_RXID_NXDN_IDAS_SITE)) {
+            site.nxdnSiteCode = id.nxdn_idas_site_code;
+        } else if (rxidHas(id, DSD_RXID_NXDN_TYPED_SYSTEM)) {
+            site.nxdnSiteCode = id.nxdn_typed_site;
+        }
+        site.nxdnSysCode = rxidHas(id, DSD_RXID_NXDN_TYPED_SYSTEM) ? static_cast<int>(id.nxdn_typed_sys) : 0;
         return;
     }
-    QStringList parts;
-    if (DSD_SYNC_IS_P25(snapshot->synctype)) {
-        fillP25Identity(site, snapshot);
-        parts = p25SiteParts(site);
-    } else if (DSD_SYNC_IS_DMR(snapshot->synctype)) {
-        parts = fillDmrSite(site, snapshot);
-    } else if (DSD_SYNC_IS_NXDN(snapshot->synctype)) {
-        parts = fillNxdnSite(site, snapshot);
-    } else if (DSD_SYNC_IS_EDACS(snapshot->synctype)) {
-        parts = fillEdacsSite(site, snapshot);
+    static const char* const categories[] = {"Global", "Regional", "Local"};
+    site.nxdnRan = rxidHas(id, DSD_RXID_ACCESS) ? static_cast<int>(id.access) : -1;
+    if (rxidHas(id, DSD_RXID_NXDN_LOCATION)) {
+        site.nxdnLocationCategory =
+            id.nxdn_category < 3U ? QString::fromLatin1(categories[id.nxdn_category]) : QString();
+        site.nxdnSysCode = static_cast<int>(id.nxdn_sys);
+        site.nxdnSiteCode = id.nxdn_site;
     }
-    if (!site.siteProtocol.isEmpty()) {
-        site.ccFreqHz = qMax(0L, snapshot->trunk_cc_freq != 0 ? snapshot->trunk_cc_freq : snapshot->p25_cc_freq);
-        site.vcFreqHz =
-            qMax(0L, snapshot->trunk_vc_freq[0] != 0 ? snapshot->trunk_vc_freq[0] : snapshot->p25_vc_freq[0]);
+}
+
+void
+MetricsModel::fillEdacsSite(SiteView& site, const dsd_received_identity& id, const dsd_state* snapshot) {
+    if (!rxidHas(id, DSD_RXID_EDACS_SITE)) {
+        return;
     }
-    if (!parts.isEmpty()) {
-        parts.prepend(site.siteProtocol);
-        site.siteLine = parts.join(QStringLiteral(" · "));
-        site.siteConfirmed = true;
+    site.edacsSiteText =
+        QStringLiteral("SITE %1 [%2] · %3 · %4")
+            .arg(id.edacs_site, 3, 10, QLatin1Char('0'))
+            .arg(QStringLiteral("%1").arg(id.edacs_site, 2, 16, QLatin1Char('0')).toUpper())
+            .arg(snapshot->ea_mode == 1 ? QStringLiteral("Extended Addressing") : QStringLiteral("Standard/Networked"))
+            .arg(snapshot->esk_mask == 0xA0 ? QStringLiteral("ESK") : QStringLiteral("No ESK"));
+}
+
+/* Everything here reads the received identity record (the shared view and its parts), never decoder state a seed, a
+   preset, a control-channel anchor or another carrier wrote. There is no latch of its own: the record keeps the last
+   heard values on the carrier (siteConfirmed false, carrierIdentityLive false) and is reset at every carrier
+   boundary and trunk-scan target switch, so the next carrier shows only what it sent. */
+void
+MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) {
+    auto& site = next.site;
+    site = SiteView{};
+    fillPhase2Seed(site, snapshot);
+    dsd_app_site_identity view;
+    dsd_app_site_identity_view(snapshot, &view);
+    if (view.protocol[0] == '\0') {
+        return;
     }
+    const dsd_received_identity& id = snapshot->rx_id;
+    site.siteProtocol = QString::fromUtf8(view.protocol);
+    switch (view.family) {
+        case DSD_RXID_FAMILY_P25: fillP25Site(site, id); break;
+        case DSD_RXID_FAMILY_DMR: fillDmrSite(site, id); break;
+        case DSD_RXID_FAMILY_NXDN: fillNxdnSite(site, id, site.siteProtocol == QStringLiteral("IDAS")); break;
+        case DSD_RXID_FAMILY_EDACS: fillEdacsSite(site, id, snapshot); break;
+        default: break;
+    }
+    site.ccFreqHz = static_cast<double>(view.cc_freq_hz);
+    site.vcFreqHz = qMax(0L, snapshot->trunk_vc_freq[0] != 0 ? snapshot->trunk_vc_freq[0] : snapshot->p25_vc_freq[0]);
+    char text[512];
+    if (dsd_app_site_identity_format(&view, DSD_APP_SITE_IDENTITY_FULL, 1, text, sizeof text) > 0U) {
+        site.siteLine = QString::fromUtf8(text);
+    }
+    site.siteConfirmed = view.live != 0U && !site.siteLine.isEmpty();
+    for (size_t i = 0; i < view.token_count && i < DSD_APP_SITE_IDENTITY_MAX_TOKENS; ++i) {
+        if (view.tokens[i].compact != 0U) {
+            site.carrierIdentityTokens << QString::fromUtf8(view.tokens[i].text);
+        }
+    }
+    site.carrierIdentityProtocol = site.siteProtocol;
+    site.carrierIdentityText = site.siteLine;
+    site.carrierIdentityLive = site.siteConfirmed;
 }
 
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {

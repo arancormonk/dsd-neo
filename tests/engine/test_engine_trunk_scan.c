@@ -6427,6 +6427,78 @@ test_failed_alternate_retune_republishes_restored_target(void) {
     return test_rc;
 }
 
+/* The received identity (dsd_state::rx_id) is the carrier's: every target switch forgets it, and a revisited target's
+ * saved state never brings it back (what a target left is last known, not received on this visit). A switch whose
+ * retunes all fail leaves the receiver on the carrier it never left, so the record comes back as it was. */
+static int
+test_target_switch_forgets_the_received_identity(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "rx-id scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rx_id.valid != 0U) {
+        DSD_FPRINTF(stderr, "rx-id: the switch to b kept the record: active=%zu valid=%08X\n",
+                    dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+    dsd_rxid_note_p25_network(&state, 0xBEE01U, 0x2B4U);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rx_id.valid != 0U) {
+        DSD_FPRINTF(stderr, "rx-id: the revisit of a restored a record: active=%zu valid=%08X\n",
+                    dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+
+    /* Both retunes of the next advance fail: the receiver stays on a, with the record a's visit received. */
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
+    const dsd_received_identity before = state.rx_id;
+    g_counting_tune_to_cc_failures_remaining = 2;
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_failures_remaining != 0
+        || state.rx_id.epoch != before.epoch || state.rx_id.family != before.family || state.rx_id.valid != before.valid
+        || state.rx_id.p25_wacn != before.p25_wacn || state.rx_id.p25_sysid != before.p25_sysid) {
+        DSD_FPRINTF(stderr, "rx-id: a rolled-back switch did not restore the record: active=%zu valid=%08X\n",
+                    dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_dmr_targets_pass_sps_to_retune_paths(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -13579,6 +13651,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_scan_does_not_retune_active_target_while_alternates_cool_down);
     rc |= run_with_default_tune_hook(test_failed_alternate_retune_republishes_restored_target);
     rc |= run_with_default_tune_hook(test_dmr_targets_pass_sps_to_retune_paths);
+    rc |= run_with_default_tune_hook(test_target_switch_forgets_the_received_identity);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);

@@ -41,6 +41,7 @@ target_sources(
         util/scan_profile.c
         util/channel_label.c
         util/access_code.c
+        util/received_identity.c
         util/receive.c
         util/enc_lockout.c
         util/dsd_events.c

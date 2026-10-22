@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>
@@ -43,11 +44,21 @@ test_repeated_data_bursts_lock_color_code(void) {
     init_state(&state);
 
     assert(dmr_confidence_note_data_burst(&state, 0) == DMR_CONFIDENCE_PENDING);
+    assert(state.rx_id.valid == 0U); // a candidate is no received colour code yet
     assert(dmr_confidence_note_data_burst(&state, 0) == DMR_CONFIDENCE_LOCKED);
     assert(state.dmr_confidence_locked == 1);
     assert(state.dmr_confidence_color_code == 0);
     assert(state.dmr_confidence_mismatch_count == 0);
     assert(state.dmr_color_code == 0);
+    // The lock is the carrier's received colour code, and every matching burst proves it again.
+    assert(state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR && state.rx_id.valid == DSD_RXID_ACCESS);
+    assert(state.rx_id.access_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE && state.rx_id.access == 0U);
+    dsd_rxid_mark_stale(&state);
+    assert(dmr_confidence_note_data_burst(&state, 0) == DMR_CONFIDENCE_LOCKED);
+    assert(state.rx_id.fresh == DSD_RXID_ACCESS);
+    // A mismatch the gate rejects names nothing.
+    assert(dmr_confidence_note_data_burst(&state, 9) == DMR_CONFIDENCE_REJECT);
+    assert(state.rx_id.access == 0U);
 }
 
 static void
@@ -89,10 +100,12 @@ test_sustained_mismatch_relocks_to_new_color_code(void) {
     assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
     assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
     assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(state.rx_id.access == 3U);
     assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_LOCKED);
     assert(state.dmr_confidence_locked == 1);
     assert(state.dmr_confidence_color_code == 7);
     assert(state.dmr_color_code == 7);
+    assert(state.rx_id.access == 7U); // the re-lock names the new colour code
 }
 
 static void

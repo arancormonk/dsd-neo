@@ -1,0 +1,191 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/**
+ * @file
+ * @brief The system identity received on the carrier being decoded (dsd_state::rx_id).
+ *
+ * Decoder state keeps identity values that do not belong to the carrier on air: the Phase 2 seed (`p2_wacn`,
+ * `p2_sysid`, `p2_cc`), which `-X` or the menu may set by hand, the control-channel anchors a trunking state machine
+ * returns to, the TETRA network a `--tetra-net` preset names, and values a previous carrier left. Decoding needs them;
+ * a display must not show them as received. This record holds only what the carrier being decoded sent, so every
+ * frontend (Spectrum and Monitor screens, the terminal, call history) shows the same identity and none of another
+ * carrier's.
+ *
+ * Protocol code calls a `dsd_rxid_note_*()` function where a message passed its own check (CRC, FEC, a confirmed
+ * transmission), with that message's own values: never decoder state, a voice link control word, a fill-in, a cache,
+ * a hand-set seed or a preset. Content accepted only because `-F` or RAS relaxed a check is never noted. Each part
+ * has its own valid bit, so a carrier that sent some parts shows those alone, and a fresh bit, which the no-carrier
+ * pass clears, so a retained value never reads as live.
+ *
+ * A note naming another system than the record's (another P25 WACN or SYSID, Tier III system code, Connect Plus or
+ * XPT site, NXDN location or IDAS site, EDACS site, TETRA network or colour) drops what belonged to the old one:
+ * the parts that bind to it and the control-channel frequency.
+ *
+ * Lifetime: dsd_rxid_reset() at every carrier boundary and trunk-scan target switch; dsd_rxid_note_sync() at frame
+ * sync drops a record of another protocol family; dsd_rxid_trunk_tune() on every accepted trunking retune drops the
+ * carrier's access code and keeps the system (a voice channel belongs to its control channel's system).
+ *
+ * Plain integers and characters only: the record rides the dsd_state snapshot copy range (ui_snapshot.c pins it).
+ * Written on the decoder thread only. The type stays out of state.h so app-control's public views can name it.
+ */
+
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_RECEIVED_IDENTITY_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_RECEIVED_IDENTITY_H_
+
+#include <dsd-neo/core/state_fwd.h>
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** The protocol family a record belongs to (dsd_received_identity::family). The values are stable. */
+typedef enum {
+    DSD_RXID_FAMILY_NONE = 0, /**< Nothing received since the last reset. */
+    DSD_RXID_FAMILY_DMR = 1,  /**< DMR, base station or mobile (Tier II, Tier III, Capacity Plus, Connect Plus, XPT). */
+    DSD_RXID_FAMILY_P25 = 2,  /**< P25 Phase 1 or Phase 2. */
+    DSD_RXID_FAMILY_NXDN = 3, /**< NXDN, Type-C or IDAS (Type-D). */
+    DSD_RXID_FAMILY_DPMR = 4, /**< dPMR. */
+    DSD_RXID_FAMILY_M17 = 5,  /**< M17. */
+    DSD_RXID_FAMILY_TETRA = 6, /**< TETRA trunked mode (a direct mode carrier has no system identity). */
+    DSD_RXID_FAMILY_EDACS = 7, /**< EDACS, with its ProVoice voice channels. */
+    /** A protocol that sends no identity this record holds (YSF, D-STAR, X2-TDMA, analog): a sync of it drops the
+     * record of another family. Never stored. */
+    DSD_RXID_FAMILY_OTHER = 8,
+} dsd_rxid_family;
+
+/** dsd_received_identity::valid and ::fresh bits, one per part a message can send on its own. */
+enum {
+    DSD_RXID_ACCESS = 1U << 0,             /**< access_kind/access: DMR/dPMR/TETRA colour code, NAC, RAN, CAN. */
+    DSD_RXID_P25_WACN = 1U << 1,           /**< p25_wacn, with p25_sysid (a network status broadcast). */
+    DSD_RXID_P25_SYSID = 1U << 2,          /**< p25_sysid. */
+    DSD_RXID_P25_SITE = 1U << 3,           /**< p25_rfss/p25_site, of the system p25_sysid names. */
+    DSD_RXID_P25_LRA = 1U << 4,            /**< p25_lra, of the system p25_sysid names. */
+    DSD_RXID_DMR_REST_LSN = 1U << 5,       /**< dmr_rest_lsn: the Capacity Plus rest channel's logical slot number. */
+    DSD_RXID_DMR_SITE_TEXT = 1U << 6,      /**< dmr_site_text: Tier III, Connect Plus or XPT network and site. */
+    DSD_RXID_DMR_BRAND = 1U << 7,          /**< dmr_brand: the trunking brand that message names. */
+    DSD_RXID_DMR_T3_SYSCODE = 1U << 8,     /**< dmr_t3_syscode: the Tier III system code. */
+    DSD_RXID_NXDN_LOCATION = 1U << 9,      /**< nxdn_category/nxdn_sys/nxdn_site: a Type-C location ID. */
+    DSD_RXID_NXDN_IDAS_AREA = 1U << 10,    /**< nxdn_idas_area: an IDAS SCCH area bit. */
+    DSD_RXID_NXDN_IDAS_SITE = 1U << 11,    /**< nxdn_idas_site_type/nxdn_idas_site_code: an IDAS SCCH site ID. */
+    DSD_RXID_NXDN_TYPED_SYSTEM = 1U << 12, /**< nxdn_typed_sys/nxdn_typed_site: a Type-D SRV_INFO system ID. */
+    DSD_RXID_EDACS_SITE = 1U << 13,        /**< edacs_site. */
+    DSD_RXID_EDACS_AREA = 1U << 14,        /**< edacs_area. */
+    DSD_RXID_EDACS_SYSTEM = 1U << 15,      /**< edacs_system. */
+    DSD_RXID_EDACS_CC_LCN = 1U << 16,      /**< edacs_cc_lcn. */
+    DSD_RXID_TETRA_NET = 1U << 17,         /**< tetra_mcc/tetra_mnc; the cell's colour code is the access code. */
+    DSD_RXID_TETRA_LA = 1U << 18,          /**< tetra_la (a D-MLE-SYSINFO). */
+    DSD_RXID_CC_FREQ = 1U << 19,           /**< cc_freq_hz: this system's control channel, where it was received. */
+    DSD_RXID_DMR_XPT_FREE_LCN = 1U << 20,  /**< dmr_xpt_free_lcn: the Hytera XPT site's free channel (LCN). */
+};
+
+/** The system identity received on the carrier being decoded. Read a value only while its valid bit is set. */
+typedef struct dsd_received_identity {
+    /** Bumped by every dsd_rxid_reset() and family replacement, so a reader can tell one record from the next. */
+    uint32_t epoch;
+    uint32_t valid; /**< DSD_RXID_* parts that hold a received value. */
+    uint32_t fresh; /**< DSD_RXID_* parts noted since the last no-carrier pass; a subset of valid. */
+    uint8_t family; /**< dsd_rxid_family */
+
+    uint8_t access_kind; /**< dsd_access_code_kind (<dsd-neo/core/access_code.h>) */
+    uint16_t access;
+
+    uint32_t p25_wacn;  /**< 20 bits. */
+    uint16_t p25_sysid; /**< 12 bits, never 0. */
+    uint8_t p25_rfss;
+    uint8_t p25_site;
+    uint8_t p25_lra;
+
+    uint8_t nxdn_category;       /**< Location ID category: 0 Global, 1 Regional, 2 Local (3 is reserved). */
+    uint8_t nxdn_idas_area;      /**< The SCCH area bit. */
+    uint8_t nxdn_idas_site_type; /**< 1 Wide, 2 Middle, 3 Narrow (NXDN TS 1-E 6.6.4). */
+    uint8_t nxdn_idas_site_code; /**< 1..250 (NXDN TS 1-E 6.6.5). */
+    uint8_t nxdn_typed_site;     /**< Type-D SRV_INFO site code. */
+    uint16_t nxdn_site;          /**< Location ID site code. */
+    uint32_t nxdn_sys;           /**< Location ID system code. */
+    uint32_t nxdn_typed_sys;     /**< Type-D SRV_INFO 19-bit system ID. */
+
+    uint16_t dmr_rest_lsn;
+    uint16_t dmr_t3_syscode;
+    uint8_t dmr_xpt_free_lcn; /**< 0..15, as the XPT message sends it. */
+    char dmr_site_text[64];   /**< Display text, e.g. "TIII Small · Net 12 · Site 3.1 · SYS 0A3F"; NUL-terminated. */
+    char dmr_brand[32];       /**< e.g. "Capacity Plus"; NUL-terminated. */
+
+    uint16_t edacs_site;
+    uint16_t edacs_area;
+    uint16_t edacs_system;
+    uint16_t edacs_cc_lcn;
+
+    uint16_t tetra_mcc; /**< 10 bits. */
+    uint16_t tetra_mnc; /**< 14 bits. */
+    uint16_t tetra_la;  /**< 14 bits. */
+
+    uint32_t cc_freq_hz;
+} dsd_received_identity;
+
+/** The family a `DSD_SYNC_*` value belongs to: NONE for no sync, OTHER for a protocol without system identity. */
+dsd_rxid_family dsd_rxid_family_for_sync(int synctype);
+
+/** Forget everything (a carrier boundary, a trunk-scan target switch, a decoder reset). */
+void dsd_rxid_reset(dsd_state* state);
+/** Frame sync acquired @p synctype: a record of another family is dropped. No sync (DSD_SYNC_NONE) changes nothing. */
+void dsd_rxid_note_sync(dsd_state* state, int synctype);
+/** The no-carrier pass: every part goes stale; the values stay. */
+void dsd_rxid_mark_stale(dsd_state* state);
+/** An accepted trunking retune (to a voice channel, or back to the control channel): the access code belonged to
+ * the carrier left; the system stays. A refused retune must not call this. */
+void dsd_rxid_trunk_tune(dsd_state* state);
+
+/** The access code of @p kind (dsd_access_code_kind) a checked message of @p family carried on this carrier. */
+void dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uint16_t value);
+
+/** A checked P25 network status: WACN and SYSID (SYSID 0 is ignored). Another WACN or SYSID than the record's
+ * replaces its system; the same SYSID completes a record a site or LRA started. */
+void dsd_rxid_note_p25_network(dsd_state* state, uint32_t wacn, uint16_t sysid);
+/** A checked P25 RFSS status: the SYSID it advertises, RFSS and site (SYSID 0 is ignored). A site of another system
+ * than the record's is not this carrier's and is ignored; with no SYSID yet it gives the record its SYSID. */
+void dsd_rxid_note_p25_site(dsd_state* state, uint16_t sysid, uint8_t rfss, uint8_t site);
+/** A checked P25 location registration area, under @p sysid, bound as a site is. */
+void dsd_rxid_note_p25_lra(dsd_state* state, uint16_t sysid, uint8_t lra);
+
+void dsd_rxid_note_dmr_rest_lsn(dsd_state* state, uint16_t lsn);
+/** @p text is display text for the site (copied, truncated to the record's capacity). */
+void dsd_rxid_note_dmr_site_text(dsd_state* state, const char* text);
+void dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand);
+void dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode);
+/** A checked Hytera XPT site status, call alert or short LC: the logical channel number the site names free now (its
+ * 4-bit field as sent). It changes with the site's traffic, so each note replaces the last. */
+void dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn);
+
+/** A confirmed Type-C location ID of category 0..2 (3 is reserved and ignored). */
+void dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, uint16_t site);
+void dsd_rxid_note_nxdn_idas_area(dsd_state* state, uint8_t area);
+/** A confirmed IDAS SCCH site ID: site type 1..3 and site code 1..250 (anything else is ignored). */
+void dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t site_code);
+void dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site);
+
+void dsd_rxid_note_edacs_site(dsd_state* state, uint16_t site);
+void dsd_rxid_note_edacs_area(dsd_state* state, uint16_t area);
+void dsd_rxid_note_edacs_system(dsd_state* state, uint16_t system);
+void dsd_rxid_note_edacs_cc_lcn(dsd_state* state, uint16_t lcn);
+
+/** A CRC-checked trunked mode BSCH, or a CRC-checked downlink block descrambled with the network's extended colour
+ * code (every carrier of a cell scrambles with it): the network and the cell's colour code (the access code). Another
+ * network or colour drops the location area. */
+void dsd_rxid_note_tetra_cell(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t colour);
+void dsd_rxid_note_tetra_la(dsd_state* state, uint16_t la);
+/** A checked direct mode burst: the carrier belongs to no trunked network, so a TETRA record is dropped. */
+void dsd_rxid_note_tetra_direct_mode(dsd_state* state);
+
+/** A checked message of @p family confirmed this carrier, at @p freq_hz, as the control channel of the system the
+ * record names. 0 Hz (an unknown tuner frequency) is ignored. */
+void dsd_rxid_note_cc_freq(dsd_state* state, dsd_rxid_family family, uint32_t freq_hz);
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_RECEIVED_IDENTITY_H_ */

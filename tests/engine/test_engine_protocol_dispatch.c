@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -320,8 +321,38 @@ check_dispatch_context(void) {
     free(opts);
 }
 
+/* A frame of another protocol family drops the identity the last one left (dsd_rxid_note_sync()), also when the new
+   protocol sends no identity at all: DMR, then YSF, then no sync shows nothing of the DMR system. A frame of the same
+   family keeps it, and a synctype no handler claims changes nothing. */
+static void
+check_received_identity_follows_the_protocol(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR && state->rx_id.valid == DSD_RXID_ACCESS);
+
+    state->synctype = -1;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR && state->rx_id.valid == DSD_RXID_ACCESS);
+
+    state->synctype = DSD_SYNC_YSF_POS;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_called_handler == TEST_HANDLER_YSF);
+    assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE && state->rx_id.valid == 0U);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    check_received_identity_follows_the_protocol();
     check_public_handler_table();
     check_dispatch_context();
     check_verdict_default_is_productive();

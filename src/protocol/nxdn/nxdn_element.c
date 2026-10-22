@@ -23,6 +23,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1273,6 +1274,9 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
         state->nxdn_location_sys_code = sys_code;
     }
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
+    /* The record's category: 0 Global, 1 Regional, 2 Local (the location ID's category bits are 00, 10 and 01). */
+    static const uint8_t k_rxid_category[3] = {0U, 2U, 1U};
+    dsd_rxid_note_nxdn_location(state, k_rxid_category[category_bit], sys_code, site_code);
     dsd_signal_search_site_note note;
     DSD_MEMSET(&note, 0, sizeof(note));
     note.kind = DSD_SEARCH_SITE_NOTE_NXDN;
@@ -1978,6 +1982,9 @@ NXDN_decode_srv_info_type_d(dsd_state* state, const uint8_t* Message) {
     }
     if (nxdn_idas_site_code_valid(site_code)) {
         state->nxdn_idas_site_code = site_code;
+        if (system_id != 0U) {
+            dsd_rxid_note_nxdn_typed_system(state, system_id, site_code);
+        }
     }
 }
 
@@ -2731,7 +2738,11 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
          * hold cannot rest on one (issue #398). */
         return;
     }
-    /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). */
+    /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). The received
+       identity takes it once the SCCH run itself is confirmed: its 7-bit CRC passes noise one time in 128. */
+    if (nxdn_confirm_scch_confirmed(state)) {
+        dsd_rxid_note_nxdn_idas_area(state, info->area);
+    }
     state->nxdn_last_ran = info->area;
     state->nxdn_last_ran_stand_in = 1U;
     state->last_cc_sync_time = info->now;
@@ -2772,6 +2783,7 @@ nxdn_scch_handle_site_id(dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_FPRINTF(stderr, "Site Code: %d; ", info->site_code);
     if (nxdn_confirm_scch_confirmed(state)) {
         state->nxdn_idas_site_code = info->site_code;
+        dsd_rxid_note_nxdn_idas_site(state, info->site_type, info->site_code);
     }
 }
 
