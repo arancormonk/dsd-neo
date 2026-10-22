@@ -157,8 +157,16 @@ dsd_rxid_trunk_tune(dsd_state* state) {
 
 void
 dsd_rxid_request_trunk_tune(dsd_state* state) {
-    if (state != NULL) {
-        state->rx_id_trunk_tune_pending = 1U;
+    if (state == NULL) {
+        return;
+    }
+    state->rx_id_trunk_tune_pending = 1U;
+    /* A retune a frame's decoder makes (a grant, a rest channel a CACH names) runs on the decoder thread inside
+       processFrame()'s hold on the tick guard, where no watchdog tick runs: the drop is applied at once. A handler
+       that goes on to publish, or to decode the bursts the carrier it reached sends, within the same dispatch never
+       shows the carrier left's code, and the first code noted after it is the reached carrier's own, not a change. */
+    if (state->frame_dispatch_active) {
+        dsd_rxid_apply_trunk_tune(state);
     }
 }
 

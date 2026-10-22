@@ -19,6 +19,8 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -34,6 +36,7 @@ enum { RACE_ROUNDS = 400 };
 static dsd_opts g_opts;
 static dsd_state g_state;
 static atomic_int g_stop;
+static int g_failed;
 
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
@@ -99,8 +102,9 @@ watchdog_retunes(void* opaque) {
 }
 
 /* What the decoder thread does meanwhile: a frame under the tick guard (processFrame(): the pending drop applied, the
-   checked notes, a call the release then ends), the no-carrier pass's identity step, and a frontend publication's read
-   of the record, which takes no guard. */
+   dispatch marked, the checked notes and a retune of its own, which applies its drop at once, a call the release then
+   ends), the no-carrier pass's identity step, and a frontend publication's read of the record, which takes no guard.
+   The watchdog's retunes read the dispatch mark under the guard. */
 static uint32_t
 decoder_rounds(void) {
     uint32_t seen = 0U;
@@ -115,9 +119,18 @@ decoder_rounds(void) {
     for (int i = 0; i < RACE_ROUNDS; i++) {
         p25_sm_tick_guard_enter();
         dsd_rxid_apply_trunk_tune(&g_state);
+        g_state.frame_dispatch_active = 1;
         dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
         dsd_rxid_note_p25_network(&g_state, 0xBEE00U, 0x1A3U);
         (void)dsd_call_state_observe(&g_state, &call, DSD_CALL_BOUNDARY_BEGIN);
+        if ((i & 3) == 0) {
+            dsd_rxid_request_trunk_tune(&g_state);
+            if (g_state.rx_id_trunk_tune_pending != 0U || (g_state.rx_id.valid & DSD_RXID_ACCESS) != 0U) {
+                DSD_FPRINTF(stderr, "FAIL: a retune inside the dispatch left the access code\n");
+                g_failed = 1;
+            }
+        }
+        g_state.frame_dispatch_active = 0;
         p25_sm_tick_guard_leave();
         dsd_engine_no_carrier_identity_stale(&g_state, 0);
         dsd_received_identity published;
@@ -126,6 +139,48 @@ decoder_rounds(void) {
         dsd_thread_yield();
     }
     return seen;
+}
+
+/* The decoder thread's own retunes between frames drop the access code at once, under the tick guard: a P25 grant it
+   follows outside a frame dispatch (the guard taken for the drop), then the frame sync's no-sync release of that voice
+   channel, whose return to the control channel runs in the frame sync's hold on the guard. What the decoder publishes
+   next shows neither carrier's code, the system stays, and the next code noted is the reached carrier's first. */
+static int
+check_decoder_retunes_between_frames(void) {
+    int failed = 0;
+    g_opts.trunk_tune_group_calls = 1;
+    g_state.trunk_chan_map[0x1234] = 852000000L;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    dsd_rxid_note_p25_network(&g_state, 0xBEE00U, 0x1A3U);
+    dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    const uint32_t epoch = g_state.rx_id.epoch;
+    const uint32_t system = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID;
+
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, 852000000L, 1234, 42, 0);
+    p25_sm_event(ctx, &g_opts, &g_state, &grant);
+    dsd_received_identity published = g_state.rx_id;
+    if (ctx->state != P25_SM_TUNED || g_state.rx_id_trunk_tune_pending != 0U || published.valid != system) {
+        DSD_FPRINTF(stderr, "FAIL: the followed grant left the control channel's access code\n");
+        failed = 1;
+    }
+    dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2F0U);
+
+    dsd_engine_frame_sync_hooks_install();
+    dsd_frame_sync_hook_p25_sm_release(&g_opts, &g_state);
+    dsd_frame_sync_hooks_set(NULL);
+    published = g_state.rx_id;
+    if (ctx->state == P25_SM_TUNED || g_state.rx_id_trunk_tune_pending != 0U || published.valid != system
+        || published.p25_sysid != 0x1A3U) {
+        DSD_FPRINTF(stderr, "FAIL: the frame sync's release left the voice channel's access code\n");
+        failed = 1;
+    }
+    dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    if (g_state.rx_id.valid != (system | DSD_RXID_ACCESS) || g_state.rx_id.epoch != epoch) {
+        DSD_FPRINTF(stderr, "FAIL: the control channel's code read as another system\n");
+        failed = 1;
+    }
+    return failed;
 }
 
 int
@@ -139,6 +194,8 @@ main(void) {
     g_state.p25_cc_freq = g_state.trunk_cc_freq = 851000000L;
     dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_P25);
     dsd_engine_trunk_tuning_hooks_install();
+    dsd_engine_set_decoder_thread(1); /* this thread decodes; the one below stands in for the watchdog's */
+    g_failed = check_decoder_retunes_between_frames();
     atomic_store(&g_stop, 0);
 
     dsd_thread_t watchdog;
@@ -155,5 +212,5 @@ main(void) {
         DSD_FPRINTF(stderr, "FAIL: the decoder's notes never reached the record\n");
         return 1;
     }
-    return 0;
+    return g_failed ? 1 : 0;
 }

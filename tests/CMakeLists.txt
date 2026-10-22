@@ -10889,6 +10889,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_bs.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_sync_times

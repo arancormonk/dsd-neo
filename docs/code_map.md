@@ -1470,7 +1470,12 @@ suite runs under this compiler.
   `dsd_call_snapshot::ended_rx_id`). The watchdog writes nothing of it: an accepted retune it makes through the trunk
   tuning hooks only requests the access code's drop (`dsd_rxid_request_trunk_tune()`, the guard-held
   `dsd_state::rx_id_trunk_tune_pending`, outside every snapshot copy range), which the decoder thread applies
-  (`dsd_rxid_apply_trunk_tune()`). Frontend publication reads the record on the decoder thread without the guard.
+  (`dsd_rxid_apply_trunk_tune()`). The decoder thread's own retunes apply the drop at once, under the guard: inside a
+  frame dispatch (`dsd_state::frame_dispatch_active`, set only under `processFrame()`'s hold, where no watchdog tick
+  runs) the request does, and elsewhere the engine's trunk tuning (`dsd_engine_rxid_trunk_tune()`) does on the thread
+  `dsd_engine_run_with_lifecycle()` marks as the decoder's (`dsd_engine_set_decoder_thread()`), in the hold it has
+  (`p25_sm_tick_guard_held_by_caller()`, a per-thread mark the guard keeps) or one it takes for the drop. On any other
+  thread the request only waits. Frontend publication reads the record on the decoder thread without the guard.
   Lifetime, all on the decoder thread:
   `dsd_engine_carrier_boundary()` resets it (every boundary kind); `trunk_scan_switch_to()` resets it on every target
   switch, and no target snapshot holds one (a revisited target is last known, not received), while a rollback after
@@ -1482,17 +1487,23 @@ suite runs under this compiler.
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
   access code and keeps the system (the protocols and the P25 watchdog reach both through the trunk tuning hooks, so a
-  refused tune changes nothing). The decoder applies the request, under the guard, at the start of `processFrame()`
-  (before the frame's first note, so a code the carrier the retune reached sends is that carrier's first and never
-  erased by the drop), at its end and after the ticks of the synced-frame dispatch (a grant the frame followed: what it
-  noted after it came from the carrier left), in the no-carrier step before the record goes stale, and before a
-  trunk-scan advance or forced release keeps `rollback_rx_id`; a reset forgets it, and a rollback's restore clears it
-  (the switches undone left those carriers). The control channel frequency part (`cc_freq_hz`) is the tuner's frequency
-  (`dsd_opts_tuned_freq_hz()`, so none off a radio input, a rigctl peer on audio input included) at a checked message
-  that confirms this carrier as the control channel, noted before the message's handlers can retune. A note made while a
-  dispatched frame is lost (`frame_dispatch_active` and `dsd_state_frame_read_lost()` against
-  `frame_dispatch_carrier_seq`: a carrier boundary moved the count while the frame was read, or an input interruption cut it) is refused, so a frame split by an I/Q
-  replay retune never notes into the record the boundary reset, whichever decoder's own carrier check comes later. That
+  refused tune changes nothing). A retune the decoder thread makes drops the code where it is made: one a frame's
+  handler makes (a grant, a Capacity Plus or XPT rest channel a CACH names, a DMR state machine tick in the burst
+  loop), so a handler that goes on within the same dispatch, as DMR's burst loop publishes after every burst and
+  decodes the bursts the carrier it reached sends, never shows the carrier left's code, and the reached carrier's
+  checked code is its first, neither erased by a later drop nor read as another system that drops the one kept; and
+  one made between frames (the frame sync's no-sync release, `p25_sm_try_tick()` from the frame sync or the decode
+  loop, the startup hunts and TETRA ticks, the no-carrier pass, a command), so no publication after it shows the code.
+  The watchdog's requests wait, and the decoder applies them under the guard at the start of `processFrame()` (before
+  the frame's first note), after the trunking ticks of the synced-frame dispatch, in the no-carrier step before the
+  record goes stale, and before a trunk-scan advance or forced release keeps `rollback_rx_id`; a reset forgets one, and
+  a rollback's restore clears it (the switches undone left those carriers). The control channel frequency part
+  (`cc_freq_hz`) is the tuner's frequency (`dsd_opts_tuned_freq_hz()`, so none off a radio input, a rigctl peer on audio
+  input included) at a checked message that confirms this carrier as the control channel, noted before the message's
+  handlers can retune. A note made while a dispatched frame is lost (`frame_dispatch_active` and
+  `dsd_state_frame_read_lost()` against `frame_dispatch_carrier_seq`: a carrier boundary moved the count while the frame
+  was read, or an input interruption cut it) is refused, so a frame split by an I/Q replay retune never notes into the
+  record the boundary reset, whichever decoder's own carrier check comes later. That
   gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
   mark the symbol clock (`dsd_state_note_carrier_change()`; a change that runs while `getSymbol()` reads a symbol,
@@ -1538,8 +1549,10 @@ suite runs under this compiler.
   no received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
   Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
   `ENGINE_PROTOCOL_DISPATCH`, `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's
-  notes, no-carrier step and reads, race-free under the `tsan-debug` preset), and end to end
-  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
+  notes, no-carrier step and reads, race-free under the `tsan-debug` preset, and the decoder thread's grant and frame
+  sync release between frames), `DMR_BS_SYNC_TIMES` (a rest channel's retune in one burst, then the reached carrier's
+  bursts in the same loop), and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
+  conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

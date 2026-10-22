@@ -46,7 +46,9 @@
  * Lifetime: dsd_rxid_reset() at every carrier boundary and trunk-scan target switch; dsd_rxid_note_sync() at frame
  * sync drops a record of another protocol family; every accepted trunking retune drops the carrier's access code and
  * keeps the system (a voice channel belongs to its control channel's system), requested by the engine's trunk tuning
- * (dsd_rxid_request_trunk_tune()) and applied by the decoder thread (dsd_rxid_apply_trunk_tune()).
+ * (dsd_rxid_request_trunk_tune()) and applied by the decoder thread (dsd_rxid_apply_trunk_tune()): at once for a
+ * retune the decoder thread makes, in a frame or between frames, so nothing it publishes or notes after the retune
+ * reads the carrier left's code; later for one the P25 watchdog makes.
  * Commands that forget or reinterpret a site forget it here too: the DMR reset (dsd_rxid_forget_system()), and a
  * committed change of the decode mode or the EDACS addressing mode (dsd_rxid_note_decoder_settings()).
  *
@@ -56,7 +58,10 @@
  * P25 SM tick guard: a frame's notes run in processFrame() under it, and the no-carrier pass, the trunk-scan switches
  * and the commands that reset or forget take it. The watchdog's tick reads the record under the guard (the calls its
  * release ends keep it, dsd_call_snapshot::ended_rx_id) and writes nothing of it: its accepted retunes request the
- * access code's drop, which the decoder thread applies (dsd_rxid_apply_trunk_tune()). The decoder thread reads it
+ * access code's drop, which the decoder thread applies (dsd_rxid_apply_trunk_tune()). The decoder thread's own
+ * retunes apply it at once under the guard: inside a frame dispatch (dsd_state::frame_dispatch_active, set only under
+ * processFrame()'s hold) the request does, and elsewhere the engine's trunk tuning does on the thread a run marks as
+ * the decoder's (dsd_engine_set_decoder_thread()), in its own hold or one it takes. The decoder thread reads the record
  * anywhere (frontend publication included). The type stays out of state.h so app-control's public views can name it.
  */
 
@@ -124,62 +129,63 @@ enum {
 
 /** The system identity received on the carrier being decoded. Read a value only while its valid bit is set. */
 typedef struct dsd_received_identity {
+    /* The fields go by size (32-bit, 16-bit, 8-bit, then text), each size in protocol order, so the record carries one
+       byte of padding. 32-bit parts: */
     /** Bumped by every dsd_rxid_reset() and family replacement, and whenever a note invalidates parts because it names
      * another system, site, cell or subtype (another access code on the carrier included): a reader can tell one
      * identity from the next, and a call's history row keeps the one it was heard under. A note that only adds or
      * repeats, the no-carrier pass and a trunk follow's dropped access code keep it. */
     uint32_t epoch;
-    uint32_t valid; /**< DSD_RXID_* parts that hold a received value. */
-    uint32_t fresh; /**< DSD_RXID_* parts noted since the last no-carrier pass; a subset of valid. */
-    uint8_t family; /**< dsd_rxid_family */
+    uint32_t valid;          /**< DSD_RXID_* parts that hold a received value. */
+    uint32_t fresh;          /**< DSD_RXID_* parts noted since the last no-carrier pass; a subset of valid. */
+    uint32_t p25_wacn;       /**< 20 bits. */
+    uint32_t nxdn_sys;       /**< Location ID system code. */
+    uint32_t nxdn_typed_sys; /**< Type-D SRV_INFO 19-bit system ID. */
+    uint32_t cc_freq_hz;
 
-    uint8_t access_kind; /**< dsd_access_code_kind (<dsd-neo/core/access_code.h>) */
-    uint16_t access;
-
-    uint32_t p25_wacn;  /**< 20 bits. */
+    /* 16-bit parts: */
+    uint16_t access;    /**< The access code, of access_kind. */
     uint16_t p25_sysid; /**< 12 bits, never 0. */
+    uint16_t nxdn_site; /**< Location ID site code. */
+    uint16_t dmr_rest_lsn;
+    uint16_t dmr_t3_syscode;
+    uint16_t edacs_site;
+    uint16_t edacs_area;
+    uint16_t edacs_system;
+    uint16_t edacs_cc_lcn;
+    uint16_t tetra_mcc; /**< 10 bits. */
+    uint16_t tetra_mnc; /**< 14 bits. */
+    uint16_t tetra_la;  /**< 14 bits. */
+
+    /* 8-bit parts: */
+    uint8_t family;      /**< dsd_rxid_family */
+    uint8_t access_kind; /**< dsd_access_code_kind (<dsd-neo/core/access_code.h>) */
     uint8_t p25_rfss;
     uint8_t p25_site;
     uint8_t p25_lra;
-
     uint8_t nxdn_category;       /**< Location ID category: 0 Global, 1 Regional, 2 Local (3 is reserved). */
     uint8_t nxdn_idas_area;      /**< The SCCH area bit. */
     uint8_t nxdn_idas_site_type; /**< 1 Wide, 2 Middle, 3 Narrow (NXDN TS 1-E 6.6.4). */
     uint8_t nxdn_idas_site_code; /**< 1..250 (NXDN TS 1-E 6.6.5). */
     uint8_t nxdn_typed_site;     /**< Type-D SRV_INFO site code. */
-    uint16_t nxdn_site;          /**< Location ID site code. */
-    uint32_t nxdn_sys;           /**< Location ID system code. */
-    uint32_t nxdn_typed_sys;     /**< Type-D SRV_INFO 19-bit system ID. */
-
-    uint16_t dmr_rest_lsn;
-    uint16_t dmr_t3_syscode;
-    uint8_t dmr_xpt_free_lcn; /**< 0..15, as the XPT message sends it. */
-    /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 12 · Site 3.1 · SYS 0A3F",
-     * "Cap+ · Site 2", "Con+ · Net 3 · Site 5"; NUL-terminated. The view shows each part as a token, the "Net n" and
-     * "Site n" parts on the compact line. */
-    char dmr_site_text[64];
-    char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated. */
+    uint8_t dmr_xpt_free_lcn;    /**< 0..15, as the XPT message sends it. */
     /** dsd_rxid_dmr_trunk the DMR trunking parts (rest LSN, site text, brand, system code, free LCN) belong to;
      * meaningful while one of them is valid. */
     uint8_t dmr_trunk;
     /** The manufacturer's feature set ID (FID) a checked LC or CSBK carried, e.g. 0x68 Hytera, 0x58 Tait, 0x10 or 0x06
      * Motorola; no trunking type rule touches it. */
     uint8_t dmr_vendor;
-
-    uint16_t edacs_site;
-    uint16_t edacs_area;
-    uint16_t edacs_system;
-    uint16_t edacs_cc_lcn;
     int8_t edacs_ea_mode; /**< dsd_state::ea_mode the EDACS parts were read under; meaningful while one is valid. */
-
-    uint16_t tetra_mcc; /**< 10 bits. */
-    uint16_t tetra_mnc; /**< 14 bits. */
-    uint16_t tetra_la;  /**< 14 bits. */
     /** The colour code of the cell tetra_mcc/tetra_mnc came with (6 bits), valid with DSD_RXID_TETRA_NET. A trunk tune
      * drops the access code from display; the cell stays bound to this colour. */
     uint8_t tetra_colour;
 
-    uint32_t cc_freq_hz;
+    /* Text: */
+    /** Display text, its parts joined by " · " (U+00B7), e.g. "TIII Small · Net 12 · Site 3.1 · SYS 0A3F",
+     * "Cap+ · Site 2", "Con+ · Net 3 · Site 5"; NUL-terminated. The view shows each part as a token, the "Net n" and
+     * "Site n" parts on the compact line. */
+    char dmr_site_text[64];
+    char dmr_brand[32]; /**< e.g. "Capacity Plus"; NUL-terminated. */
 } dsd_received_identity;
 
 /** The family a `DSD_SYNC_*` value belongs to: NONE for no sync, OTHER for a protocol without system identity. */
@@ -196,13 +202,18 @@ void dsd_rxid_mark_stale(dsd_state* state);
  * tuning, which the P25 watchdog also runs, requests it instead (dsd_rxid_request_trunk_tune()). */
 void dsd_rxid_trunk_tune(dsd_state* state);
 /** An accepted trunking retune made under the P25 SM tick guard, on the decoder thread or the P25 watchdog's: records
- * the drop dsd_rxid_trunk_tune() makes (dsd_state::rx_id_trunk_tune_pending) and writes nothing of the record, which
- * the decoder thread applies (dsd_rxid_apply_trunk_tune()). A refused retune must not call this. */
+ * the drop dsd_rxid_trunk_tune() makes (dsd_state::rx_id_trunk_tune_pending), which the decoder thread applies
+ * (dsd_rxid_apply_trunk_tune()). Inside a frame dispatch (dsd_state::frame_dispatch_active), which only the decoder
+ * thread runs, under processFrame()'s hold on the guard, it applies the drop at once: a handler that publishes or
+ * decodes more bursts after the retune (DMR's burst loop) shows and notes only the reached carrier's code. Outside one
+ * it writes nothing of the record; the engine's trunk tuning applies the drop itself when the decoder thread retuned.
+ * A refused retune must not call this. */
 void dsd_rxid_request_trunk_tune(dsd_state* state);
-/** Decoder thread, under the P25 SM tick guard: applies a requested retune's drop (dsd_rxid_trunk_tune()) once. The
- * decode loop applies it before a frame's first note and after its handler and ticks, the no-carrier pass before the
- * record goes stale, and a trunk-scan rollback before it keeps the record; a retune completed between frames is
- * applied before anything the carrier it reached sends is noted. dsd_rxid_reset() forgets a request. */
+/** Decoder thread, under the P25 SM tick guard: applies a requested retune's drop (dsd_rxid_trunk_tune()) once. A
+ * decoder-thread retune applies it where it is made; one the watchdog requested waits for the decode loop, which
+ * applies it before a frame's first note and after the trunking ticks that follow the frame, for the no-carrier pass
+ * before the record goes stale, and for a trunk-scan rollback before it keeps the record: it is applied before anything
+ * the carrier it reached sends is noted. dsd_rxid_reset() forgets a request. */
 void dsd_rxid_apply_trunk_tune(dsd_state* state);
 
 /** The access code of @p kind (dsd_access_code_kind) a checked message of @p family carried on this carrier. Another

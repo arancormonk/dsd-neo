@@ -549,6 +549,42 @@ dsd_engine_maybe_drain_audio(dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+#if defined(_MSC_VER)
+#define DSD_ENGINE_THREAD_LOCAL __declspec(thread)
+#else
+#define DSD_ENGINE_THREAD_LOCAL _Thread_local
+#endif
+/* Set on the thread a run decodes on (dsd_engine_set_decoder_thread()). */
+static DSD_ENGINE_THREAD_LOCAL int s_decoder_thread = 0;
+
+void
+dsd_engine_set_decoder_thread(int is_decoder) {
+    s_decoder_thread = is_decoder ? 1 : 0;
+}
+
+/* An accepted retune: the received identity drops the access code of the carrier left (dsd_rxid_trunk_tune()). The
+   record is the decoder thread's, which reads it without the guard (frontend publication), so any other thread (the P25
+   watchdog's tick runs this) only requests the drop, which the decoder thread applies later. A retune the decoder
+   thread makes, in a frame, a tick between frames, a frame sync release, the no-carrier pass or a command, applies
+   it at once under the guard (its own hold, or one taken here): nothing the decoder publishes or notes next reads
+   the carrier left's code. */
+static void
+dsd_engine_rxid_trunk_tune(dsd_state* state) {
+    if (!s_decoder_thread) {
+        dsd_rxid_request_trunk_tune(state);
+        return;
+    }
+    const int take_guard = !p25_sm_tick_guard_held_by_caller();
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    dsd_rxid_request_trunk_tune(state);
+    dsd_rxid_apply_trunk_tune(state);
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
+}
+
 static void
 dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
@@ -581,9 +617,8 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     }
     state->receive_codes_fresh_freq = freq;
     /* The voice channel belongs to the control channel's system: the received identity keeps the system and drops the
-       control channel's access code. The P25 watchdog's tick runs this too, on its own thread: the decoder thread
-       applies the drop (dsd_rxid_apply_trunk_tune()). */
-    dsd_rxid_request_trunk_tune(state);
+       control channel's access code. */
+    dsd_engine_rxid_trunk_tune(state);
 }
 
 /* Send the demodulator and passband a rigctl peer is asked for under the settings in force (issues #526, #621), which
@@ -1040,9 +1075,8 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     // Do not set trunk_is_tuned here; this is a CC hunt action.
     state->trunk_cc_freq = (long int)freq;
     /* Back to (or on to) the system's control channel: the received identity keeps the system, and the voice channel's
-       access code goes with the voice channel, once the decoder thread applies the drop (the P25 watchdog's returns
-       run here on its thread). */
-    dsd_rxid_request_trunk_tune(state);
+       access code goes with the voice channel. */
+    dsd_engine_rxid_trunk_tune(state);
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     return result;

@@ -56,6 +56,11 @@ static int g_borrow_synctype_during_handler = 0;
 /* The handler notes a P25 NAC (its frame's checked note), then, when set, follows a grant (an accepted retune). */
 static int g_note_nac_during_handler = 0;
 static int g_tune_during_handler = 0;
+/* The handler follows a grant (an accepted retune), publishes, then decodes the next burst, which the carrier it
+   reached sent: a checked NAC of that carrier. */
+static int g_tune_then_burst_during_handler = 0;
+/* The record a frontend publication made between the two copied. */
+static dsd_received_identity g_published_after_tune;
 
 static dsd_frame_verdict
 record_handler(int handler_id) {
@@ -80,6 +85,11 @@ record_handler(int handler_id) {
     }
     if (g_tune_during_handler && g_dispatch_state != NULL) {
         dsd_rxid_request_trunk_tune(g_dispatch_state);
+    }
+    if (g_tune_then_burst_during_handler && g_dispatch_state != NULL) {
+        dsd_rxid_request_trunk_tune(g_dispatch_state);
+        g_published_after_tune = g_dispatch_state->rx_id;
+        dsd_rxid_note_access(g_dispatch_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x5A5U);
     }
     if (g_interrupt_during_handler && g_dispatch_state != NULL) {
         g_dispatch_state->input_interrupted = 1;
@@ -363,7 +373,7 @@ check_received_identity_follows_the_protocol(void) {
 /* An accepted retune made between frames (the P25 watchdog's return to the control channel, on its thread) only
    requests the access code's drop: processFrame() applies it before the frame notes anything, so the code the carrier
    it reached sends is kept and is that carrier's first, not a change that drops the system. One the frame makes itself
-   (a grant followed) is applied when it ends: what the frame noted came from the carrier left. */
+   (a grant followed) drops it at once: what the frame noted before it came from the carrier left. */
 static void
 check_trunk_tune_drop_applied_around_the_frame(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -398,10 +408,42 @@ check_trunk_tune_drop_applied_around_the_frame(void) {
     free(opts);
 }
 
+/* A handler that loops over bursts (DMR's burst loop, a Capacity Plus or XPT rest channel's retune in a CACH) follows
+   a grant, publishes, and decodes the next burst on the carrier it reached, all within one dispatch. The publication
+   after the retune shows no access code of the carrier left, and the next burst's checked code is the reached carrier's
+   first: the system stays, the identity keeps its epoch, and nothing after the handler drops the new code. */
+static void
+check_trunk_tune_inside_the_frame_keeps_the_next_burst(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    const uint32_t system = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID;
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    const uint32_t epoch = state->rx_id.epoch;
+
+    state->synctype = DSD_SYNC_P25P1_POS;
+    g_dispatch_state = state;
+    g_tune_then_burst_during_handler = 1;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    g_tune_then_burst_during_handler = 0;
+    g_dispatch_state = NULL;
+    assert(g_called_handler == TEST_HANDLER_P25P1);
+    assert(g_published_after_tune.valid == system && g_published_after_tune.p25_sysid == 0x1A3U);
+    assert(state->rx_id_trunk_tune_pending == 0U);
+    assert(state->rx_id.valid == (system | DSD_RXID_ACCESS) && state->rx_id.access == 0x5A5U);
+    assert(state->rx_id.p25_wacn == 0xBEE00U && state->rx_id.epoch == epoch);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     check_received_identity_follows_the_protocol();
     check_trunk_tune_drop_applied_around_the_frame();
+    check_trunk_tune_inside_the_frame_keeps_the_next_burst();
     check_public_handler_table();
     check_dispatch_context();
     check_verdict_default_is_productive();

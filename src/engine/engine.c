@@ -4048,6 +4048,8 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     int early_exit = 0;
     int lifecycle_started = 0;
     dsd_exitflag_store(0);
+    /* This thread decodes the run: its accepted retunes drop the received identity's access code at once. */
+    dsd_engine_set_decoder_thread(1);
 
     /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first
        record (the P25 SM log's event=init) and before the stream, the watchdog or a frontend reads the clock. Only on
@@ -4088,6 +4090,7 @@ ENGINE_OUT:
     dsd_engine_cleanup(opts, state);
     /* The stream has stopped: the next session's decode time is the system's again. */
     dsd_engine_decode_clock_leave_replay(opts, state);
+    dsd_engine_set_decoder_thread(0);
     dsd_input_failure failure;
     dsd_input_failure_get(&failure);
     /* A receiver that failed, or an I/Q replay whose capture could not be read (the replay reader latches a file
