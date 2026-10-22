@@ -1522,39 +1522,31 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 // 0 is "not received", as before any was decoded.
 //
 // They come from the received identity record of the call's protocol family, never from decoder state a seed, a
-// preset, a control-channel anchor or another carrier writes. While the call is active, a part the record holds
-// replaces the staged row's and a part it lacks keeps the staged row's (unknown never erases known); a part of
-// another system (another P25 SYSID or WACN) replaces the staged system whole. Once the call has ended the parts are
-// frozen at the record the canonical layer captured at the end transition (dsd_call_snapshot::ended_rx_id), merged
-// the same way, so a part received after the last active render and before the end (a Phase 2 MAC_IDLE handles its
-// broadcast before the call ends) counts: a held drop-verdict or the finalize pass may run after a retune, a -Y hop or
-// a trunk-scan switch, when the record already describes the next carrier. A record reset since the call began (a
-// carrier boundary) is captured as none.
+// preset, a control-channel anchor or another carrier writes. The row takes them whole from the record of the carrier
+// the call began on (the record's epoch is the call's dsd_call_snapshot::rx_id_epoch): the record keeps them one
+// consistent observation, a part it does not hold being one this carrier has not sent, or one a newer part invalidated
+// (an IDAS site ID that disagreed with the Type-D system ID, another EDACS or P25 system), so the row drops it too.
+// While the call is active it takes the live record; once it has ended, the record the canonical layer captured at the
+// end transition (dsd_call_snapshot::ended_rx_id), so a part received after the last active render and before the end
+// (a Phase 2 MAC_IDLE handles its broadcast before the call ends) counts. A record of another carrier (reset since the
+// call began: a boundary, a trunk-scan switch, another protocol in between), or no capture, leaves the row what it took
+// last: a held drop-verdict or the finalize pass may run after a retune, a -Y hop or a trunk-scan switch, when the
+// record already describes the next carrier.
 static void
-watchdog_event_system_from_p25(const dsd_received_identity* id, uint32_t sys[5]) {
+watchdog_event_system_take_p25(const dsd_received_identity* id, uint32_t sys[5]) {
     const uint32_t valid = id->valid;
-    if ((valid & DSD_RXID_P25_SYSID) == 0U) {
-        return; /* a WACN or site is noted with its SYSID */
-    }
-    if ((sys[1] != 0U && sys[1] != id->p25_sysid)
-        || ((valid & DSD_RXID_P25_WACN) != 0U && sys[0] != 0U && sys[0] != id->p25_wacn)) {
-        sys[0] = 0U; /* another system: none of the staged one belongs with it */
-        sys[3] = 0U;
-        sys[4] = 0U;
-    }
-    sys[1] = id->p25_sysid;
-    if ((valid & DSD_RXID_P25_WACN) != 0U) {
-        sys[0] = id->p25_wacn;
-    }
-    if ((valid & DSD_RXID_P25_SITE) != 0U) {
-        sys[3] = id->p25_rfss;
-        sys[4] = id->p25_site;
-    }
+    sys[0] = (valid & DSD_RXID_P25_WACN) != 0U ? id->p25_wacn : 0U;
+    sys[1] = (valid & DSD_RXID_P25_SYSID) != 0U ? id->p25_sysid : 0U;
+    const int site = (valid & DSD_RXID_P25_SITE) != 0U;
+    sys[3] = site ? id->p25_rfss : 0U;
+    sys[4] = site ? id->p25_site : 0U;
 }
 
 static void
-watchdog_event_system_from_nxdn(const dsd_received_identity* id, uint32_t sys[5]) {
+watchdog_event_system_take_nxdn(const dsd_received_identity* id, uint32_t sys[5]) {
     const uint32_t valid = id->valid;
+    sys[0] = 0U;
+    sys[1] = 0U;
     if ((valid & DSD_RXID_NXDN_LOCATION) != 0U) {
         sys[0] = id->nxdn_site;
         sys[1] = id->nxdn_sys;
@@ -1571,47 +1563,38 @@ watchdog_event_system_from_nxdn(const dsd_received_identity* id, uint32_t sys[5]
 }
 
 static void
-watchdog_event_system_from_edacs(const dsd_received_identity* id, uint32_t sys[5]) {
+watchdog_event_system_take_edacs(const dsd_received_identity* id, uint32_t sys[5]) {
     const uint32_t valid = id->valid;
-    if ((valid & DSD_RXID_EDACS_SITE) != 0U) {
-        sys[0] = id->edacs_site;
-    }
-    if ((valid & DSD_RXID_EDACS_AREA) != 0U) {
-        sys[1] = id->edacs_area;
-    }
-    if ((valid & DSD_RXID_EDACS_SYSTEM) != 0U) {
-        sys[2] = id->edacs_system;
-    }
+    sys[0] = (valid & DSD_RXID_EDACS_SITE) != 0U ? id->edacs_site : 0U;
+    sys[1] = (valid & DSD_RXID_EDACS_AREA) != 0U ? id->edacs_area : 0U;
+    sys[2] = (valid & DSD_RXID_EDACS_SYSTEM) != 0U ? id->edacs_system : 0U;
 }
 
-/* The parts @p id holds of @p family's system, over @p sys. */
+/* The system and site slots of @p family, taken whole from @p id when it is a record of @p family; the access code's
+   slot and the TETRA direct mode mark are not system parts. */
 static void
-watchdog_event_system_merge(const dsd_received_identity* id, dsd_rxid_family family, uint32_t sys[5]) {
+watchdog_event_system_take(const dsd_received_identity* id, dsd_rxid_family family, uint32_t sys[5]) {
     if (id->family != (uint8_t)family) {
         return;
     }
+    const uint32_t valid = id->valid;
     switch (family) {
-        case DSD_RXID_FAMILY_P25: watchdog_event_system_from_p25(id, sys); break;
-        case DSD_RXID_FAMILY_NXDN: watchdog_event_system_from_nxdn(id, sys); break;
-        case DSD_RXID_FAMILY_EDACS: watchdog_event_system_from_edacs(id, sys); break;
-        case DSD_RXID_FAMILY_DMR:
-            if ((id->valid & DSD_RXID_DMR_T3_SYSCODE) != 0U) {
-                sys[0] = id->dmr_t3_syscode;
-            }
-            break;
+        case DSD_RXID_FAMILY_P25: watchdog_event_system_take_p25(id, sys); break;
+        case DSD_RXID_FAMILY_NXDN: watchdog_event_system_take_nxdn(id, sys); break;
+        case DSD_RXID_FAMILY_EDACS: watchdog_event_system_take_edacs(id, sys); break;
+        case DSD_RXID_FAMILY_DMR: sys[0] = (valid & DSD_RXID_DMR_T3_SYSCODE) != 0U ? id->dmr_t3_syscode : 0U; break;
         case DSD_RXID_FAMILY_TETRA:
-            if ((id->valid & DSD_RXID_TETRA_NET) != 0U) {
-                sys[0] = id->tetra_mcc;
-                sys[1] = id->tetra_mnc;
-            }
+            sys[0] = (valid & DSD_RXID_TETRA_NET) != 0U ? id->tetra_mcc : 0U;
+            sys[1] = (valid & DSD_RXID_TETRA_NET) != 0U ? id->tetra_mnc : 0U;
             break;
         default: break;
     }
 }
 
 static void
-watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid_family family, uint32_t sys[5]) {
-    if (DSD_SYNC_IS_TETRA(protocol)) {
+watchdog_event_system_from_record(const dsd_state* state, const dsd_call_snapshot* call, dsd_rxid_family family,
+                                  uint32_t sys[5]) {
+    if (DSD_SYNC_IS_TETRA(call->protocol)) {
         const uint8_t mode = state->tetra_pub.mode;
         if (mode >= DSD_TETRA_MODE_DMO_DIRECT && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
             sys[0] = 0U;
@@ -1621,7 +1604,9 @@ watchdog_event_system_from_record(const dsd_state* state, int protocol, dsd_rxid
         }
         sys[2] = 0U;
     }
-    watchdog_event_system_merge(&state->rx_id, family, sys);
+    if (state->rx_id.epoch == call->rx_id_epoch) {
+        watchdog_event_system_take(&state->rx_id, family, sys);
+    }
 }
 
 static void
@@ -1644,9 +1629,9 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
         sys[4] = staged->sys_id5;
     }
     if (call->phase == DSD_CALL_PHASE_ACTIVE && opts->playfiles == 0) {
-        watchdog_event_system_from_record(state, call->protocol, family, sys);
+        watchdog_event_system_from_record(state, call, family, sys);
     } else if (call->phase == DSD_CALL_PHASE_ENDED && opts->playfiles == 0) {
-        watchdog_event_system_merge(&call->ended_rx_id, family, sys); /* the record when it ended */
+        watchdog_event_system_take(&call->ended_rx_id, family, sys); /* the record when it ended */
     }
     ctx->sys_id1 = sys[0];
     ctx->sys_id2 = sys[1];

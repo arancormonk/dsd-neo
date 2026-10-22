@@ -4023,8 +4023,9 @@ test_system_identity_comes_from_the_received_record(void) {
     return rc;
 }
 
-// While the call is active a part received after it opened lands, and a part the record no longer holds (a reset)
-// never erases one the row has; a part of another P25 system replaces the row's system whole.
+// While the call is active a part received after it opened lands, and a part of another P25 system replaces the row's
+// system whole (the record dropped the old site with it). A reset record is another carrier's (a boundary, which ends
+// the call anyway): it erases nothing of the row, and what it receives next is not the row's.
 static int
 test_system_identity_fills_while_live(void) {
     static dsd_opts opts;
@@ -4040,12 +4041,15 @@ test_system_identity_fills_while_live(void) {
     dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
     watchdog_event_current(&opts, &state, 0);
     rc |= expect_str_eq("unknown to known sysid", item->sysid_string, "P25_45564006293_10_11");
-    dsd_rxid_reset(&state);
-    watchdog_event_current(&opts, &state, 0);
-    rc |= expect_str_eq("a reset record erases nothing", item->sysid_string, "P25_45564006293_10_11");
     dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
     watchdog_event_current(&opts, &state, 0);
     rc |= expect_str_eq("another system replaces the row's", item->sysid_string, "P25_BEE00348293_0_0");
+    dsd_rxid_reset(&state);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("a reset record erases nothing", item->sysid_string, "P25_BEE00348293_0_0");
+    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("another carrier's record is not the row's", item->sysid_string, "P25_BEE00348293_0_0");
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -4162,6 +4166,56 @@ test_system_identity_freezes_at_the_end(void) {
     rc |= expect_str_eq("rescued row keeps the system", event_history[0].Event_History_Items[1].sysid_string,
                         "DMR_ABC_CC_3");
 
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The row takes the system and site whole from the record of the carrier the call began on: the record keeps them one
+// consistent observation, so a part the record dropped because a newer one named another site or system (an IDAS SCCH
+// site ID that disagreed with the Type-D system ID, an EDACS system change) goes from the row too, while the call is
+// active and at its end.
+static int
+test_system_identity_takes_dependent_invalidations(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (int at_end = 0; at_end < 2; at_end++) {
+        reset_fixture(&opts, &state, event_history);
+        dsd_rxid_note_nxdn_typed_system(&state, 1234U, 42U);
+        const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+        rc |= expect_has_substr("idas system", item->sysid_string, "NXDN_1234_42_RAN");
+        dsd_rxid_note_nxdn_idas_site(&state, 1U, 43U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_rxid_reset(&state);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_has_substr(at_end ? "idas other site at the end" : "idas other site", item->sysid_string,
+                                "NXDN_0_43_RAN");
+
+        reset_fixture(&opts, &state, event_history);
+        dsd_rxid_note_edacs_site(&state, 12U);
+        dsd_rxid_note_edacs_area(&state, 3U);
+        dsd_rxid_note_edacs_system(&state, 0x45U);
+        item = render_code_row(&opts, &state, event_history, DSD_SYNC_EDACS_POS);
+        rc |= expect_int("edacs parts", item->sys_id1 == 12U && item->sys_id2 == 3U && item->sys_id3 == 0x45U, 1);
+        dsd_rxid_note_edacs_system(&state, 0x46U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_rxid_reset(&state);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_int(at_end ? "edacs system change at the end" : "edacs system change",
+                         item->sys_id1 == 0U && item->sys_id2 == 0U && item->sys_id3 == 0x46U, 1);
+        rc |= expect_has_substr("edacs system change site", item->sysid_string, "EDACS_SITE_000");
+    }
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -7642,6 +7696,7 @@ main(void) {
     rc |= test_system_identity_comes_from_the_received_record();
     rc |= test_system_identity_fills_while_live();
     rc |= test_system_identity_freezes_at_the_end();
+    rc |= test_system_identity_takes_dependent_invalidations();
     rc |= test_reacquisition_merge_names_a_p25_or_m17_code();
     rc |= test_data_notice_carries_frequency_and_access_code();
     rc |= test_playfiles_rows_take_no_tuner_value_or_code();

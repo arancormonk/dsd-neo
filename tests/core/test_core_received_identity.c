@@ -442,9 +442,11 @@ test_lost_frame_notes_nothing(void) {
     free(state);
 }
 
-/* NXDN Type-C (a location ID with its RAN) and IDAS Type-D (the SCCH area and site ID, a Type-D SRV_INFO system ID) are
-   two kinds of system: checked content of one on the carrier drops what the other sent, and its control channel. The
-   message that carries a Type-C location noted its own RAN at its channel's check just before, so that RAN stays. */
+/* NXDN Type-C (a location ID, and the RAN the CAC, FACCH2/UDCH and SACCH carry) and IDAS Type-D (the SCCH area and site
+   ID, a Type-D SRV_INFO system ID) are two kinds of system: checked content of one on the carrier drops what the other
+   sent, and its control channel. A Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3 only (NXDN TS 1-E 4.2.3), none
+   of which carries a RAN, so a RAN is Type-C's. The message that carries a Type-C location noted its own RAN at its
+   channel's check just before, so that RAN stays. */
 static void
 test_nxdn_subtypes_exclusive(void) {
     dsd_state* state = new_state();
@@ -475,12 +477,20 @@ test_nxdn_subtypes_exclusive(void) {
     dsd_rxid_note_nxdn_location(state, 0U, 1U, 2U);
     expect_u("type-c location drops idas", id->valid, DSD_RXID_ACCESS | DSD_RXID_NXDN_LOCATION);
 
-    /* A RAN an IDAS carrier's traffic channel sent is no Type-C part: the IDAS notes keep it. */
+    /* RAN-only records: a Type-C control channel's CAC RAN and control channel, then a checked Type-D SCCH; and IDAS
+       parts, then a checked RAN. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    expect_u("idas drops a ran-only type-c record", id->valid, DSD_RXID_NXDN_IDAS_AREA);
     dsd_rxid_reset(state);
     dsd_rxid_note_nxdn_idas_area(state, 1U);
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 9U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 9U);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 3U);
-    dsd_rxid_note_nxdn_idas_area(state, 1U);
-    expect_u("idas keeps a ran with no type-c", id->valid, DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_ACCESS);
+    expect_u("a ran drops the idas parts", id->valid, DSD_RXID_ACCESS);
+    expect_u("a ran drops the idas parts: value", id->access, 3U);
     free(state);
 }
 

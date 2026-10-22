@@ -168,12 +168,15 @@ rxid_system_parts(uint8_t family) {
     }
 }
 
+static dsd_received_identity* rxid_nxdn(dsd_state* state, int type_d);
+
 void
 dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uint16_t value) {
     if (kind == (uint8_t)DSD_ACCESS_CODE_NONE) {
         return;
     }
-    dsd_received_identity* const id = rxid_for(state, family);
+    /* An NXDN RAN is Type-C's (rxid_nxdn()). */
+    dsd_received_identity* const id = family == DSD_RXID_FAMILY_NXDN ? rxid_nxdn(state, 0) : rxid_for(state, family);
     if (id == NULL) {
         return;
     }
@@ -365,15 +368,17 @@ dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn) {
 #define RXID_NXDN_TYPE_D (DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM)
 
 /* The NXDN record a Type-C (@p type_d 0) or Type-D note goes into: checked content of one kind of system drops what the
-   other kind sent on the carrier, and its control channel. A Type-D note drops a Type-C location with its RAN; a
-   Type-C location keeps the RAN, which its own channel's check noted just before. */
+   other kind sent on the carrier, and its control channel. The RAN is Type-C's: a Type-D RTCH2 carries SCCH, FACCH1,
+   UDCH2 and FACCH3 (NXDN TS 1-E 4.2.3), none of which carries one, while the CAC, FACCH2/UDCH and SACCH that do are
+   Type-C's (and conventional NXDN's). So a Type-D note drops a Type-C location and a RAN, and a RAN or a Type-C location
+   drops the IDAS parts; a location keeps the RAN its own channel's check noted just before. */
 static dsd_received_identity*
 rxid_nxdn(dsd_state* state, int type_d) {
     dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_NXDN);
     if (id == NULL) {
         return NULL;
     }
-    if (type_d && rxid_has(id, DSD_RXID_NXDN_LOCATION)) {
+    if (type_d && rxid_has(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_ACCESS)) {
         rxid_drop(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_ACCESS | DSD_RXID_CC_FREQ);
     } else if (!type_d && rxid_has(id, RXID_NXDN_TYPE_D)) {
         rxid_drop(id, RXID_NXDN_TYPE_D | DSD_RXID_CC_FREQ);

@@ -990,21 +990,22 @@ suite runs under this compiler.
   `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`. The control API's
   event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests:
   `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
-- History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site
-  slots come from the received identity record of the call's protocol family, never from decoder state a seed, a
-  preset, a control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`,
-  `_5`), the DMR Tier III system code (`sys_id1`), the NXDN location's site and system (`sys_id1`, `_2`; for IDAS the
-  SCCH site code, else the Type-D SRV_INFO site, and the Type-D system ID), the EDACS site, area and system
-  (`sys_id1`..`_3`), the TETRA MCC and MNC (`sys_id1`, `_2`; a direct mode carrier marks `sys_id3` 1 instead). A part
-  not received takes the value a row had before one was decoded (0, so `P25_<NAC>` without a WACN and
-  `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and X2-TDMA rows carry none. While the call is ACTIVE a part the record
-  holds replaces the staged row's and a part it lacks keeps it (unknown never erases known); a P25 SYSID or WACN of
-  another system replaces the staged system whole. Once the call has ENDED the parts are frozen at the record the
+- History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
+  come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
+  control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
+  Tier III system code (`sys_id1`), the NXDN location's site and system (`sys_id1`, `_2`; for IDAS the SCCH site code,
+  else the Type-D SRV_INFO site, and the Type-D system ID), the EDACS site, area and system (`sys_id1`..`_3`), the TETRA
+  MCC and MNC (`sys_id1`, `_2`; a direct mode carrier marks `sys_id3` 1 instead). A part not received takes the value a
+  row had before one was decoded (0, so `P25_<NAC>` without a WACN and `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and
+  X2-TDMA rows carry none. The row takes the parts whole from the record of the carrier the call began on (the record's
+  epoch is the call's `dsd_call_snapshot::rx_id_epoch`): the record keeps them one consistent observation, so a part a
+  newer one invalidated there (an IDAS SCCH site ID that disagreed with the Type-D system ID, another EDACS or P25
+  system) goes from the row too. While the call is ACTIVE it takes the live record; once it has ENDED, the record the
   canonical layer captured at the end transition (`dsd_call_state_end_ex()` copies `dsd_state::rx_id` into
-  `dsd_call_snapshot::ended_rx_id` while its epoch is still the `rx_id_epoch` the call began with, else captures none),
-  merged over the staged row the same way: identity received after the last active render and before the end (a
-  Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends the call) counts, identity received after
-  the end does not, and a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
+  `dsd_call_snapshot::ended_rx_id` while its epoch is still the call's, else captures none): identity received after the
+  last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends
+  the call) counts, identity received after the end does not. A record of another carrier, or no capture, leaves the row
+  what it took last, so a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
   switch never takes the next carrier's. Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
@@ -1481,24 +1482,25 @@ suite runs under this compiler.
   (an M17 CAN, per transmission, drops nothing; a trunk tune drops the code first, so a followed channel's is no
   change), and a note carrying both notes the code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep
   the newer; another Type-D system drops the SCCH area and site. NXDN Type-C (a location ID) and IDAS Type-D parts
-  exclude each other: a checked note of one drops the other kind's parts and the control channel (a Type-D note drops a
-  location with its RAN). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`: Tier III, Capacity Plus, Connect Plus,
-  Hytera XPT), named by a brand, a site text prefix, a rest LSN, a system code or a free LCN; the colour code stays. The
-  TETRA cell keeps its colour (`tetra_colour`) apart from the displayed access code, so after a trunk tune another
-  colour is still another cell; a SYSINFO of another cell with the same network and colour (`tetra_bsch_sysinfo_cell()`)
-  drops the last cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). Commands that forget or
-  reinterpret a site forget it in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR
-  trunking parts (keeping the colour code the reset keeps) and the NXDN location, IDAS parts and RAN
-  (`dsd_rxid_forget_system()`); a committed decode mode change (`ui_commit_mode_change()`), an `[edacs]` addressing mode
-  a config apply sets without a `[mode]`, a RadioReference import's EDACS variant and the EDACS addressing mode toggle
-  (after its calls ended, which keep their site) run `dsd_rxid_note_decoder_settings()`, which drops a record of a
-  protocol the settings no longer decode and an EDACS record read under the other addressing mode (`edacs_ea_mode`; an
-  EDACS note under the other mode drops it as well). The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion
-  and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change no received identity: the
-  carrier and the reading of its messages stay (a carrier boundary resets the record anyway). Tests:
-  `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
-  `ENGINE_PROTOCOL_DISPATCH`, and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
-  conventional carrier of another system).
+  exclude each other: a checked note of one drops the other kind's parts and the control channel (a RAN is Type-C's: a
+  Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3, NXDN TS 1-E 4.2.3, none of which carries one; so a Type-D note
+  drops a location and a RAN, and a RAN drops the IDAS parts). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`:
+  Tier III, Capacity Plus, Connect Plus, Hytera XPT), named by a brand, a site text prefix, a rest LSN, a system code or
+  a free LCN; the colour code stays. The TETRA cell keeps its colour (`tetra_colour`) apart from the displayed access
+  code, so after a trunk tune another colour is still another cell; a SYSINFO of another cell with the same network and
+  colour (`tetra_bsch_sysinfo_cell()`) drops the last cell's area and control channel
+  (`dsd_rxid_note_tetra_other_cell()`). Commands that forget or reinterpret a site forget it in the record too: the DMR
+  reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the colour code the reset keeps)
+  and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a committed decode mode change
+  (`ui_commit_mode_change()`), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference
+  import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their site) run
+  `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an EDACS
+  record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as well).
+  The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the
+  tuner release and the scan resets change no received identity: the carrier and the reading of its messages stay (a
+  carrier boundary resets the record anyway). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end
+  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
