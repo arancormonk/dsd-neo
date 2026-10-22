@@ -1590,10 +1590,13 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
         return;
     }
 
-    state->p2_cc = 0;
+    // A hand-set seed (-X, menu) is the user's, not a return hint; it stays, unproven.
+    if (state->p2_hardset == 0) {
+        state->p2_cc = 0;
+        state->p2_wacn = 0;
+        state->p2_sysid = 0;
+    }
     state->p2_cc_verified = 0U;
-    state->p2_wacn = 0;
-    state->p2_sysid = 0;
     state->p2_rfssid = 0;
     state->p2_siteid = 0;
     state->p25_cc_is_tdma = 2; // The shared CC anchor no longer identifies a P25 session.

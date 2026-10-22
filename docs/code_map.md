@@ -4684,7 +4684,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   NAC), or a network status broadcast that passed its CRC named it
   (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder,
   which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
-  (`process_MAC_VPDU_crc()`): such a broadcast may still name the system, as before, but proves no NAC. Every other
+  (`process_MAC_VPDU_crc()`): its grants and voice still act, but its system broadcasts change no system state
+  (`p25p2_vpdu_system_tables_writable()`): the network status's WACN/SYSID/NAC and control channel anchor, the RFSS
+  status's site, LRA and IDEN trust promotion, the IDEN updates (0x73/0x74/0x7D/0xF3) with their trust and the
+  pending announcements they resolve, the secondary control channel broadcasts (0xE9/0x79/0x69: site fill-in,
+  candidates, pending announcements, scan-list fallback), the adjacent-status neighbours, the system service broadcast
+  (0x78), the time and date announcement (0x75) and the protection parameters (bridged 0x7F); so it proves no NAC
+  either. The TSBK path (`tsbk_dispatch_message()`) and the MBT trunking path (`p25_mpdu_handle_trunking()`) need
+  their CRCs under `-F` too. A seed set by hand (`-X`, or `svc_set_p2_params()` for the menu, Qt and API) with all
+  three parts nonzero sets `p2_hardset`: no NID or network status rewrites it, and neither a CC selection
+  (`p25_sm_forget_selected_site()`) nor the no-carrier cleanup after generic trunk activity
+  (`no_carrier_clear_stale_p25_return_hints_after_generic_activity()`) clears it; both still drop its proof. Every other
   proof needs a Reed-Solomon decode that succeeded with its parity check intact, which no option relaxes: a FACCH or
   SACCH that needed the soft-erasure retry, or an ESS that needed `p25p2_ess_decode_with_soft_erasures()`'s erasures,
   still decodes for its content but proves nothing, since erasures spend the code's check (the shortened RS(63,35)
@@ -5038,10 +5048,11 @@ Private per-protocol modules worth knowing about:
   manufacturer's 0x3B is that manufacturer's message and changes no control channel or system), an MBT network or RFSS
   status (`p25_decode_pdu_trunking()`, reached only after the header CRC-16 and CRC-32), and the vPDU network status
   (0x7B/0xFB) and RFSS status (0x7A/0xFA) blocks only when `p25p2_vpdu_ctx::crc_ok` holds, which covers a bridged TSBK
-  and a Phase 2 MAC but not a MAC_SIGNAL let through with a failed CRC under `-F`. An RFSS status notes the SYSID it
-  advertises, even one the decoder's `p2_sysid` check ignores. Not notes: the voice LCW network/RFSS formats
-  (Reed-Solomon only), the secondary control channel fill-in (`p25_note_sccb_site()`), adjacent-status broadcasts,
-  CLI/menu hard-set values and trunk-scan snapshot restores (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR
+  and a Phase 2 MAC but not a MAC_SIGNAL let through with a failed CRC under `-F` (which the decoder does not apply
+  either). An RFSS status notes the SYSID it advertises, even one the decoder's `p2_sysid` check ignores. Not notes:
+  the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control channel fill-in
+  (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan snapshot restores
+  (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR
   (`dmr_tiii_note_search_site()` in `src/protocol/dmr/dmr_tiii_site.h`, which returns at once when no search runs):
   C_ALOHA inside `dmr_cspdu()`'s CRC gate when the slot's `event_crc_invalid` is clear, since that gate also passes a
   burst `-F` accepts as RAS (`DSD_CRC_RAS_UNVERIFIED`) and an MBC whose header CRC failed (`DSD_CRC_FAILED`), and the

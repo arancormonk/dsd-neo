@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -1020,6 +1021,402 @@ run_sccb_full_cache_preservation_case(void) {
     return rc;
 }
 
+/*
+ * Under -F an LCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder (process_MAC_VPDU_crc() with
+ * crc_ok 0) for its grants and voice. It never changes what the decoder holds about the system: the WACN/SYSID/NAC
+ * seed, the control channel anchor, the site and its LRA, the channel identifier (IDEN) tables and their trust,
+ * pending announcements, control channel candidates, the scan-list fallback or the neighbour list.
+ */
+#define FAILED_CRC_CC_HZ 851012500L
+
+/* A known system A on its control channel: IDEN 1 mapped (trust 1, site 2/3 so a site match would promote it), IDEN 2
+   unknown with an announcement waiting for it. */
+static dsd_state*
+failed_crc_seed_state(dsd_opts* opts, int with_site) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->aggressive_framesync = 0; /* -F */
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return NULL;
+    }
+    state->p2_is_lcch = 1;
+    state->p2_wacn = 0xABCDE;
+    state->p2_sysid = 0x123;
+    state->p2_cc = 0x293;
+    state->p2_cc_verified = 1U;
+    state->p2_rfssid = with_site ? 1 : 0;
+    state->p2_siteid = with_site ? 1 : 0;
+    state->p25_site_lra = 0x05;
+    state->p25_site_lra_valid = 1;
+    state->p25_cc_freq = FAILED_CRC_CC_HZ;
+    state->trunk_cc_freq = FAILED_CRC_CC_HZ;
+    p25_iden_entry_t* e = &state->p25_iden_fdma[1];
+    e->chan_type = 1;
+    e->chan_spac = 100;
+    e->base_freq = 851000000 / 5;
+    e->trust = 1;
+    e->populated = 1;
+    e->wacn = state->p2_wacn;
+    e->sysid = state->p2_sysid;
+    e->rfss = 2;
+    e->site = 3;
+    state->p25_chan_tdma_explicit[1] = 1;
+    if (with_site) {
+        p25_pending_announcement_t* pending = &state->p25_pending_announcements[0];
+        pending->populated = 1;
+        pending->kind = P25_PENDING_ANNOUNCEMENT_SECONDARY_CC;
+        pending->rfss = 1;
+        pending->site = 1;
+        pending->channel = 0x200A;
+        state->p25_pending_announcement_count = 1;
+    }
+    return state;
+}
+
+static void
+failed_crc_free_state(dsd_state* state) {
+    if (state) {
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+}
+
+static void
+failed_crc_process(dsd_opts* opts, dsd_state* state, const unsigned char* mac_bytes, int crc_ok) {
+    unsigned long long int MAC[24] = {0};
+    for (int i = 0; i < 24; i++) {
+        MAC[i] = mac_bytes[i];
+    }
+    process_MAC_VPDU_crc(opts, state, 1 /* SACCH */, P25_MAC_PDU_SIGNAL, MAC, crc_ok);
+}
+
+/* System A as failed_crc_seed_state() built it, untouched. */
+static int
+expect_failed_crc_tables_unchanged(const char* tag, const dsd_state* state) {
+    char label[128];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof label, "%s keeps the WACN/SYSID/NAC", tag);
+    rc |= expect_true(label, state->p2_wacn == 0xABCDE && state->p2_sysid == 0x123 && state->p2_cc == 0x293);
+    DSD_SNPRINTF(label, sizeof label, "%s keeps the NAC proof", tag);
+    rc |= expect_eq_long(label, state->p2_cc_verified, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s keeps the CC anchor", tag);
+    rc |= expect_true(label, state->p25_cc_freq == FAILED_CRC_CC_HZ && state->trunk_cc_freq == FAILED_CRC_CC_HZ);
+    DSD_SNPRINTF(label, sizeof label, "%s keeps the site", tag);
+    rc |= expect_true(label, state->p2_rfssid == 1 && state->p2_siteid == 1);
+    DSD_SNPRINTF(label, sizeof label, "%s keeps the LRA", tag);
+    rc |= expect_true(label, state->p25_site_lra == 0x05 && state->p25_site_lra_valid == 1);
+    DSD_SNPRINTF(label, sizeof label, "%s keeps the system's TDMA marks", tag);
+    rc |= expect_true(label, state->p25_sys_is_tdma == 0 && state->p25_cc_is_tdma == 0);
+    const p25_iden_entry_t* e = &state->p25_iden_fdma[1];
+    DSD_SNPRINTF(label, sizeof label, "%s keeps IDEN 1", tag);
+    rc |= expect_true(label, e->populated == 1 && e->base_freq == 851000000 / 5 && e->chan_spac == 100
+                                 && e->wacn == 0xABCDE && e->sysid == 0x123 && e->rfss == 2 && e->site == 3);
+    DSD_SNPRINTF(label, sizeof label, "%s keeps IDEN 1 trust", tag);
+    rc |= expect_eq_long(label, e->trust, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s learns no IDEN 2", tag);
+    rc |= expect_true(label, state->p25_iden_fdma[2].populated == 0 && state->p25_iden_tdma[2].populated == 0
+                                 && state->p25_chan_tdma_explicit[2] == 0);
+    DSD_SNPRINTF(label, sizeof label, "%s keeps the pending announcement", tag);
+    rc |= expect_true(label, state->p25_pending_announcement_count == 1
+                                 && state->p25_pending_announcements[0].channel == 0x200A);
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    DSD_SNPRINTF(label, sizeof label, "%s adds no CC candidate", tag);
+    rc |= expect_eq_long(label, cc ? cc->count : 0, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s adds no neighbour", tag);
+    rc |= expect_eq_long(label, state->p25_nb_count, 0);
+    return rc;
+}
+
+/* A network status naming system B on a mapped channel: abbreviated (0x7B) or extended (0xFB). */
+static void
+build_failed_crc_nsb(unsigned char* mac, unsigned char opcode) {
+    DSD_MEMSET(mac, 0, 24);
+    mac[1] = opcode;
+    mac[2] = 0x09; // LRA
+    mac[3] = 0xBE; // WACN BEE00
+    mac[4] = 0xE0;
+    mac[5] = 0x04; // SYSID 456
+    mac[6] = 0x56;
+    mac[7] = 0x10; // CHAN-T 0x1010
+    mac[8] = 0x10;
+    if (opcode == 0xFB) {
+        mac[9] = 0x10; // CHAN-R
+        mac[10] = 0x10;
+        mac[12] = 0x07; // NAC 777
+        mac[13] = 0x77;
+    } else {
+        mac[10] = 0x07; // NAC 777
+        mac[11] = 0x77;
+    }
+}
+
+/* An RFSS status naming site 2/3 (IDEN 1's site): abbreviated (0x7A) or explicit (0xFA). */
+static void
+build_failed_crc_rfss(unsigned char* mac, unsigned char opcode) {
+    DSD_MEMSET(mac, 0, 24);
+    mac[1] = opcode;
+    mac[2] = 0x09; // LRA
+    mac[3] = 0x01; // SYSID 123
+    mac[4] = 0x23;
+    mac[5] = 0x02; // RFSS
+    mac[6] = 0x03; // SITE
+    mac[7] = 0x10; // CHAN-T
+    mac[8] = 0x10;
+}
+
+/* An identifier update for @p iden at 852 MHz: 0x74 (VHF/UHF), 0x7D (standard), 0x73/0xF3 (TDMA, FDMA channel type).
+   The extended 0xF3 names system A, so a trusted entry would be possible. */
+static void
+build_failed_crc_iden(unsigned char* mac, unsigned char opcode, int iden) {
+    DSD_MEMSET(mac, 0, 24);
+    mac[1] = opcode;
+    const int p = (opcode == 0xF3) ? 3 : 2;
+    mac[p] = (unsigned char)(((iden & 0x0F) << 4) | 0x01);
+    mac[p + 2] = 0x00;
+    mac[p + 3] = 100; // spacing
+    put_iden_base(mac, p + 4, 852000000L / 5L);
+    if (opcode == 0xF3) {
+        mac[11] = 0xAB; // WACN ABCDE, SYSID 123
+        mac[12] = 0xCD;
+        mac[13] = 0xE1;
+        mac[14] = 0x23;
+    }
+}
+
+static int
+run_failed_crc_system_broadcast_cases(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    char tag[64];
+    unsigned char mac[24];
+
+    static const unsigned char nsb_opcodes[] = {0x7B, 0xFB};
+    for (size_t i = 0; i < sizeof nsb_opcodes; i++) {
+        dsd_state* state = failed_crc_seed_state(&opts, 1);
+        if (!state) {
+            return 1;
+        }
+        build_failed_crc_nsb(mac, nsb_opcodes[i]);
+        failed_crc_process(&opts, state, mac, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "failed-crc nsb %02X", nsb_opcodes[i]);
+        rc |= expect_failed_crc_tables_unchanged(tag, state);
+        failed_crc_free_state(state);
+    }
+
+    static const unsigned char rfss_opcodes[] = {0x7A, 0xFA};
+    for (size_t i = 0; i < sizeof rfss_opcodes; i++) {
+        dsd_state* state = failed_crc_seed_state(&opts, 1);
+        if (!state) {
+            return 1;
+        }
+        build_failed_crc_rfss(mac, rfss_opcodes[i]);
+        failed_crc_process(&opts, state, mac, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "failed-crc rfss %02X", rfss_opcodes[i]);
+        rc |= expect_failed_crc_tables_unchanged(tag, state);
+        failed_crc_free_state(state);
+    }
+
+    static const unsigned char iden_opcodes[] = {0x74, 0x7D, 0x73, 0xF3};
+    for (size_t i = 0; i < sizeof iden_opcodes; i++) {
+        for (int iden = 1; iden <= 2; iden++) {
+            dsd_state* state = failed_crc_seed_state(&opts, 1);
+            if (!state) {
+                return 1;
+            }
+            build_failed_crc_iden(mac, iden_opcodes[i], iden);
+            failed_crc_process(&opts, state, mac, 0);
+            DSD_SNPRINTF(tag, sizeof tag, "failed-crc iden %02X for %d", iden_opcodes[i], iden);
+            rc |= expect_failed_crc_tables_unchanged(tag, state);
+            failed_crc_free_state(state);
+        }
+    }
+
+    // A neighbour: abbreviated adjacent status on a mapped channel, explicit on an unmapped one.
+    {
+        dsd_state* state = failed_crc_seed_state(&opts, 1);
+        if (!state) {
+            return 1;
+        }
+        build_failed_crc_rfss(mac, 0x7C);
+        mac[5] = 0x04; // another site
+        mac[6] = 0x05;
+        failed_crc_process(&opts, state, mac, 0);
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[1] = 0xFE;
+        mac[2] = 0x01;
+        mac[3] = 0x21;
+        mac[4] = 0x23;
+        mac[5] = 0x04;
+        mac[6] = 0x05;
+        mac[7] = 0x30; // CHAN-T 0x300A, IDEN 3 unknown
+        mac[8] = 0x0A;
+        mac[9] = 0x30;
+        mac[10] = 0x05;
+        mac[11] = 0x01;
+        mac[12] = 0xAB;
+        mac[13] = 0xCD;
+        mac[14] = 0xE0;
+        failed_crc_process(&opts, state, mac, 0);
+        rc |= expect_failed_crc_tables_unchanged("failed-crc adjacent status", state);
+        failed_crc_free_state(state);
+    }
+
+    // The same broadcast that passed its CRC still applies (the gate is the CRC, not the opcode).
+    {
+        dsd_state* state = failed_crc_seed_state(&opts, 1);
+        if (!state) {
+            return 1;
+        }
+        build_failed_crc_iden(mac, 0x7D, 2);
+        failed_crc_process(&opts, state, mac, 1);
+        rc |= expect_eq_long("checked iden learns IDEN 2", state->p25_iden_fdma[2].populated, 1);
+        rc |= expect_eq_long("checked iden resolves the announcement", state->p25_pending_announcement_count, 0);
+        failed_crc_free_state(state);
+    }
+    return rc;
+}
+
+/* Secondary control channel broadcasts that failed their CRC, with the site still unknown: explicit (0xE9, and the
+   bridged 0x69) and implicit (0x79), naming a mapped channel and one whose IDEN is unknown, then a checked IDEN that
+   maps the second. Nothing fills the site, becomes a candidate, waits for the IDEN or lands in the scan-list
+   fallback. */
+static int
+run_failed_crc_sccb_case(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    dsd_state* state = failed_crc_seed_state(&opts, 0);
+    if (!state) {
+        return 1;
+    }
+    unsigned char mac[24];
+    static const unsigned char explicit_opcodes[] = {0xE9, 0x69};
+    static const unsigned char channel_hi[] = {0x10, 0x20};
+    for (size_t i = 0; i < sizeof explicit_opcodes; i++) {
+        for (size_t c = 0; c < sizeof channel_hi; c++) {
+            DSD_MEMSET(mac, 0, sizeof mac);
+            mac[0] = explicit_opcodes[i] == 0x69 ? 0x07 : 0x00;
+            mac[1] = explicit_opcodes[i];
+            mac[2] = 0x02; // RFSS
+            mac[3] = 0x03; // SITE
+            mac[4] = channel_hi[c];
+            mac[5] = 0x0A;
+            mac[6] = channel_hi[c];
+            mac[7] = 0x05;
+            mac[8] = 0x01;
+            failed_crc_process(&opts, state, mac, 0);
+        }
+    }
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0x79;
+    mac[2] = 0x02; // RFSS
+    mac[3] = 0x03; // SITE
+    mac[4] = 0x10; // CHAN1 0x100A (mapped)
+    mac[5] = 0x0A;
+    mac[6] = 0x01;
+    mac[7] = 0x20; // CHAN2 0x200C (IDEN 2 unknown)
+    mac[8] = 0x0C;
+    mac[9] = 0x01;
+    failed_crc_process(&opts, state, mac, 0);
+
+    build_failed_crc_iden(mac, 0x7D, 2);
+    failed_crc_process(&opts, state, mac, 1);
+
+    rc |= expect_true("failed-crc sccb fills no site", state->p2_rfssid == 0 && state->p2_siteid == 0);
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    rc |= expect_eq_long("failed-crc sccb adds no candidate", cc ? cc->count : 0, 0);
+    rc |= expect_eq_long("failed-crc sccb stores no secondary cc", state->p25_secondary_cc_count, 0);
+    rc |= expect_eq_long("failed-crc sccb leaves nothing pending", state->p25_pending_announcement_count, 0);
+    rc |= expect_true("failed-crc sccb seeds no fallback",
+                      state->lcn_freq_count == 0 && state->trunk_lcn_freq[1] == 0 && state->trunk_lcn_freq[2] == 0);
+    rc |= expect_eq_long("checked iden after failed-crc sccb is learned", state->p25_iden_fdma[2].populated, 1);
+    failed_crc_free_state(state);
+    return rc;
+}
+
+static void
+failed_crc_set_bits(unsigned char* mac, int start_bit, int bit_count, unsigned value) {
+    for (int i = 0; i < bit_count; i++) {
+        const int bit = start_bit + i;
+        const int octet = 1 + (bit / 8);
+        const unsigned char mask = (unsigned char)(1U << (7 - (bit % 8)));
+        if ((value >> (bit_count - 1 - i)) & 1U) {
+            mac[octet] |= mask;
+        } else {
+            mac[octet] &= (unsigned char)~mask;
+        }
+    }
+}
+
+/* The system's status broadcasts: services (0x78, shown on the terminal's P25 panel), date/time and local offset
+   (0x75) and the bridged protection parameters (0x7F). One that failed its CRC sets none of them; the same broadcast
+   that passed it does. */
+static int
+run_failed_crc_status_broadcast_cases(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    unsigned char services[24];
+    DSD_MEMSET(services, 0, sizeof services);
+    services[1] = 0x78;
+    services[2] = 0x01; // TWV
+    services[3] = 0x12; // SSA
+    services[4] = 0x34;
+    services[5] = 0x56;
+    services[6] = 0x65; // SSS
+    services[7] = 0x43;
+    services[8] = 0x21;
+    services[9] = 0x02; // RPL
+
+    unsigned char time_date[24];
+    DSD_MEMSET(time_date, 0, sizeof time_date);
+    time_date[1] = 0x75;
+    failed_crc_set_bits(time_date, 8, 3, 0x7U); // date, time and offset valid
+    failed_crc_set_bits(time_date, 12, 12, 330U);
+    failed_crc_set_bits(time_date, 24, 4, 6U);     // month
+    failed_crc_set_bits(time_date, 28, 5, 15U);    // day
+    failed_crc_set_bits(time_date, 33, 13, 2026U); // year
+    failed_crc_set_bits(time_date, 48, 5, 12U);    // hours
+
+    unsigned char protection[24];
+    DSD_MEMSET(protection, 0, sizeof protection);
+    protection[0] = 0x07; // bridged Phase 1 header
+    protection[1] = 0x7F;
+    protection[4] = 0x84; // ALGID
+    protection[5] = 0x12; // KID
+    protection[6] = 0x34;
+
+    for (int crc_ok = 0; crc_ok <= 1; crc_ok++) {
+        dsd_state* state = failed_crc_seed_state(&opts, 1);
+        if (!state) {
+            return 1;
+        }
+        failed_crc_process(&opts, state, services, crc_ok);
+        failed_crc_process(&opts, state, time_date, crc_ok);
+        failed_crc_process(&opts, state, protection, crc_ok);
+        if (crc_ok) {
+            rc |= expect_true("checked service broadcast applies",
+                              state->p25_sys_services_valid == 1 && state->p25_sys_services_available == 0x123456U);
+            rc |= expect_true("checked time broadcast applies",
+                              state->p25_sys_time_valid == 1 && state->p25_sys_time_offset_valid == 1);
+            rc |= expect_true("checked protection broadcast applies",
+                              state->p25_prot_valid == 1 && state->p25_prot_kid == 0x1234);
+        } else {
+            rc |= expect_true("failed-crc service broadcast sets no services",
+                              state->p25_sys_services_valid == 0 && state->p25_sys_services_available == 0
+                                  && state->p25_sys_services_supported == 0
+                                  && state->p25_sys_services_request_priority == 0);
+            rc |= expect_true("failed-crc time broadcast sets no time",
+                              state->p25_sys_time_valid == 0 && state->p25_sys_time == 0);
+            rc |= expect_true("failed-crc time broadcast sets no offset",
+                              state->p25_sys_time_offset_valid == 0 && state->p25_sys_time_offset == 0);
+            rc |= expect_true("failed-crc protection broadcast sets no parameters",
+                              state->p25_prot_valid == 0 && state->p25_prot_algid == 0 && state->p25_prot_kid == 0);
+            rc |= expect_failed_crc_tables_unchanged("failed-crc status broadcasts", state);
+        }
+        failed_crc_free_state(state);
+    }
+    return rc;
+}
+
 static int
 run_tdma_paging_and_sndcp_metadata_cases(void) {
     static dsd_opts opts;
@@ -1928,6 +2325,9 @@ run_cases(void) {
     rc |= run_deferred_sccb_resolution_case();
     rc |= run_deferred_adjacent_wacn_resolution_case();
     rc |= run_sccb_full_cache_preservation_case();
+    rc |= run_failed_crc_system_broadcast_cases();
+    rc |= run_failed_crc_sccb_case();
+    rc |= run_failed_crc_status_broadcast_cases();
 
     rc |= test_lcch_voice_user_does_not_reopen_call();
     rc |= test_hangtime_sourced_voice_user_does_not_reopen_call();

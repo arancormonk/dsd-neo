@@ -34,6 +34,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/frame_processing.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -41,6 +42,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -3027,6 +3029,79 @@ test_ui_output_lrrp_and_p25_parameter_commands_dispatch_through_queue(void) {
     return rc;
 }
 
+/* A Phase 2 seed set by hand (-X, or the menu/Qt/API P25 P2 params command) survives the no-carrier cleanup that
+ * follows generic trunk activity: the cleanup drops the P25 return hints, the site and the NAC proof, but the
+ * WACN/SYSID/NAC triple is the user's, not a hint. */
+static int
+run_hand_set_seed_cleanup_case(const char* label, int from_cli) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    int rc = 0;
+    char tag[128];
+
+    if (from_cli) {
+        char arg0[] = "dsd-neo";
+        char arg_X[] = "-X";
+        char hex[] = "BEE00ABC123";
+        char* argv[] = {arg0, arg_X, hex, NULL};
+        int argc_effective = 0;
+        int exit_rc = 0;
+        DSD_SNPRINTF(tag, sizeof tag, "%s parses", label);
+        rc |= expect_int_eq(tag, dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc), DSD_PARSE_CONTINUE);
+    } else {
+        struct P2Payload {
+            uint64_t w;
+            uint64_t s;
+            uint64_t n;
+        } p2 = {0xBEE00ULL, 0xABCULL, 0x123ULL};
+
+        dsd_app_command_submit(DSD_APP_CMD_P25_P2_PARAMS_SET, &p2, sizeof p2);
+        DSD_SNPRINTF(tag, sizeof tag, "%s drains", label);
+        rc |= expect_int_eq(tag, dsd_app_drain_cmds(opts, state), 1);
+    }
+
+    // Generic trunk activity (a DMR follow) with stale P25 return hints, then the carrier drops.
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->p2_cc_verified = 1U;
+    state->p2_rfssid = 2;
+    state->p2_siteid = 3;
+    state->p25_sys_is_tdma = 1;
+    state->p25_vc_freq[0] = 771056250;
+    dsd_engine_reset_no_carrier_state(opts, state);
+
+    DSD_SNPRINTF(tag, sizeof tag, "%s keeps the hand-set WACN", label);
+    rc |= expect_u64_eq(tag, state->p2_wacn, 0xBEE00ULL);
+    DSD_SNPRINTF(tag, sizeof tag, "%s keeps the hand-set SYSID", label);
+    rc |= expect_u64_eq(tag, state->p2_sysid, 0xABCULL);
+    DSD_SNPRINTF(tag, sizeof tag, "%s keeps the hand-set NAC", label);
+    rc |= expect_u64_eq(tag, state->p2_cc, 0x123ULL);
+    DSD_SNPRINTF(tag, sizeof tag, "%s stays hand-set", label);
+    rc |= expect_int_eq(tag, state->p2_hardset, 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s drops the NAC proof", label);
+    rc |= expect_int_eq(tag, state->p2_cc_verified, 0);
+    DSD_SNPRINTF(tag, sizeof tag, "%s drops the site", label);
+    rc |= expect_true(tag, state->p2_rfssid == 0 && state->p2_siteid == 0);
+    DSD_SNPRINTF(tag, sizeof tag, "%s drops the return hints", label);
+    rc |= expect_true(tag, state->p25_vc_freq[0] == 0 && state->p25_sys_is_tdma == 0);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
+test_hand_set_p25_seed_survives_generic_trunk_cleanup(void) {
+    int rc = 0;
+    rc |= run_hand_set_seed_cleanup_case("-X seed", 1);
+    rc |= run_hand_set_seed_cleanup_case("menu seed", 0);
+    return rc;
+}
+
 static int
 test_return_cc_uses_pulse_rate_not_stale_file_rate(void) {
     test_runtime runtime;
@@ -3593,6 +3668,7 @@ main(void) {
     rc |= test_ui_malformed_payload_commands_drain_without_mutation();
     rc |= test_ui_runtime_parameter_commands_clamp_and_update_state();
     rc |= test_ui_output_lrrp_and_p25_parameter_commands_dispatch_through_queue();
+    rc |= test_hand_set_p25_seed_survives_generic_trunk_cleanup();
     rc |= test_return_cc_uses_pulse_rate_not_stale_file_rate();
     rc |= test_file_config_apply_keeps_live_pulse_timing();
     rc |= test_file_config_apply_keeps_live_socket_timing();

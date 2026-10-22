@@ -3497,6 +3497,10 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 state->p2_wacn = w & 0xFFFFF;                                                                          \
                 state->p2_sysid = sy & 0xFFF;                                                                          \
                 state->p2_cc = na & 0xFFF;                                                                             \
+                /* Hand-set as the menu sets it (svc_set_p2_params()): no network status overwrites it, and it proves  \
+                   nothing until a burst decodes with it. */                                                           \
+                state->p2_cc_verified = 0U;                                                                            \
+                state->p2_hardset = (state->p2_wacn != 0 && state->p2_sysid != 0 && state->p2_cc != 0) ? 1 : 0;       \
                 LOG_INFO("NOTICE: P25p2 manual WACN/SYSID/NAC set: %05llX/%03llX/%03llX\n", state->p2_wacn,            \
                          state->p2_sysid, state->p2_cc);                                                               \
             } else {                                                                                                   \

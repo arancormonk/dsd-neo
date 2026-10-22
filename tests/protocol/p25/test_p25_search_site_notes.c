@@ -6,8 +6,8 @@
 /*
  * Signal search site notes from P25: every broadcast that passed its CRC (a TSBK RFSS status through the vPDU bridge,
  * an MBT network or RFSS status, a Phase 2 network or RFSS status MAC) notes the identity it carries, and nothing else
- * does: a Phase 2 MAC_SIGNAL that failed its CRC (-F), a voice LCW, a secondary control channel fill-in or an adjacent
- * site. Decoder state is left to the decoders.
+ * does: a Phase 2 MAC_SIGNAL that failed its CRC (-F, which the decoder does not apply either), a voice LCW, a
+ * secondary control channel fill-in or an adjacent site. Decoder state is left to the decoders.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -218,16 +218,16 @@ test_vpdu_rfss(void) {
     rc |= expect_int("p2 explicit rfss notes", g_notes, 1);
     rc |= expect_site("p2 explicit rfss site", "SYS 2B4 \xC2\xB7 RFSS 5 \xC2\xB7 Site 6");
 
-    // The same broadcasts let through with a failed CRC (-F): the decoder still records them; the search hears nothing.
+    // The same broadcasts let through with a failed CRC (-F): neither the decoder nor the search takes the site.
     reset();
     rfss_mac(mac, 0x00, 0x7A, 0x2B4, 3, 4);
     process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
-    rc |= expect_int("failed-crc rfss is decoded", (long)g_state.p2_rfssid, 3);
+    rc |= expect_int("failed-crc rfss is not applied", (long)g_state.p2_rfssid, 0);
     rc |= expect_int("failed-crc rfss notes nothing", g_notes, 0);
     reset();
     rfss_mac(mac, 0x00, 0xFA, 0x2B4, 5, 6);
     process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
-    rc |= expect_int("failed-crc explicit rfss is decoded", (long)g_state.p2_siteid, 6);
+    rc |= expect_int("failed-crc explicit rfss is not applied", (long)g_state.p2_siteid, 0);
     rc |= expect_int("failed-crc explicit rfss notes nothing", g_notes, 0);
 
     // SYSID 0 names no system.
@@ -258,11 +258,11 @@ test_vpdu_network(void) {
         rc |= expect_int("p2 network kind", g_note.kind, DSD_SEARCH_SITE_NOTE_P25_NETWORK);
         rc |= expect_site("p2 network site", "WACN BEE00 \xC2\xB7 SYS 1A3");
 
-        // -F: the decoder may still name the system from it, as it always could; the search may not.
+        // -F: a network status that failed its CRC names the system to neither the decoder nor the search.
         reset();
         network_mac(mac, opcodes[i], 0xBEE00, 0x1A3);
         process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
-        rc |= expect_int("failed-crc network is decoded", (long)g_state.p2_wacn, 0xBEE00);
+        rc |= expect_int("failed-crc network is not applied", (long)g_state.p2_wacn, 0);
         rc |= expect_int("failed-crc network notes nothing", g_notes, 0);
 
         // A WACN under SYSID 0 names no system either.
