@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Window
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 // Tap-to-tune is the one thing on this screen that moves hardware, and the two
 // ways it can be wrong are both invisible to a C++ model test: a tap could map
@@ -858,6 +859,19 @@ Item {
             }
             verify(identity.text.slice(-2) === " …", "the narrowest strip kept every token")
             tc.clearIdentity()
+        }
+
+        // The ellipsis needs room too: a first token that fits only without it
+        // is shown alone rather than handed to the Text to cut.
+        function test_17d2_the_ellipsis_never_cuts_a_token_that_fits() {
+            var fm = { advanceWidth: function (s) { return s.length * 10 } }
+            var tokens = ["SITE 255 [FF]", "SYS 3"]
+            compare(Util.fitTokens(tokens, 135, fm, " · ", " …"), "SITE 255 [FF]")
+            compare(Util.fitTokens(tokens, 150, fm, " · ", " …"), "SITE 255 [FF] …")
+            compare(Util.fitTokens(tokens, 210, fm, " · ", " …"), "SITE 255 [FF] · SYS 3")
+            // Wider than the line on its own: the Text elides it.
+            compare(Util.fitTokens(tokens, 100, fm, " · ", " …"), "SITE 255 [FF] …")
+            compare(Util.fitTokens([], 100, fm, " · ", " …"), "")
         }
 
         // Both lines end where the Radio button begins; with no button, at the
