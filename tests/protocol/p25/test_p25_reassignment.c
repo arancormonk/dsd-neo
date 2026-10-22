@@ -28,6 +28,25 @@ static int g_tune_calls;
 static int g_return_calls;
 static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 
+// A case whose SM orders the stamps of events it sends back to back runs on the decode clock's TEST source, held at a
+// decode instant far from any platform clock reading (1e9 s): on the system clock the events can land in one reading
+// of a coarse clock (issue #747). A double resolves about 1.2e-7 s there, so the case moves the clock in whole
+// milliseconds.
+#define P25_REASSIGNMENT_TEST_DECODE_T0_NS 1000000000000000000ULL
+
+static void
+decode_clock_advance_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + (ms * 1000000ULL));
+}
+
+static int
+run_on_test_decode_clock(int (*test)(void)) {
+    dsd_decode_clock_use_test(P25_REASSIGNMENT_TEST_DECODE_T0_NS);
+    const int rc = test();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 static dsd_trunk_tune_result
 test_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
@@ -261,12 +280,15 @@ test_same_carrier_assignment_restarts_wait_window(void) {
 
     init_case(&opts, &state, &ctx);
     p25_sm_event(&ctx, &opts, &state, &grant);
+    decode_clock_advance_ms(1U);
     p25_sm_event(&ctx, &opts, &state, &ptt);
+    decode_clock_advance_ms(1U);
     p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4451, 5451, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &opts, &state, &end);
     set_hangtime_started(&ctx, dsd_decode_now_mono_s() - ctx.config.hangtime_s + 0.01);
     const double previous_tune_m = ctx.t_tune_m;
 
+    decode_clock_advance_ms(1U);
     p25_sm_event(&ctx, &opts, &state, &grant);
     rc |= expect_true("same-carrier assignment restarted acquisition",
                       ctx.state == P25_SM_TUNED && p25_sm_hangtime_started_m(&ctx) <= 0.0 && ctx.vc_activity_seen == 0
@@ -459,7 +481,7 @@ main(void) {
     rc |= test_assignment_after_timeout();
     rc |= test_assignment_after_explicit_release();
     rc |= test_followup_reuses_retained_carrier();
-    rc |= test_same_carrier_assignment_restarts_wait_window();
+    rc |= run_on_test_decode_clock(test_same_carrier_assignment_restarts_wait_window);
     rc |= test_motorola_talk_complete_tdu_fixture();
     rc |= test_p1_source_less_update_validation();
     rc |= test_p1_tdu_preserves_identified_end_source();

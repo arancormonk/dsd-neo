@@ -410,7 +410,9 @@ test_inband_zero_source_preserves_grant_identity(void) {
 }
 
 // A decode instant far from any platform clock reading (1e9 s), so a window that read the platform
-// clock instead of the decode clock could not land on the expected side of its boundary.
+// clock instead of the decode clock could not land on the expected side of its boundary. A double
+// resolves about 1.2e-7 s there, so a case moves the clock in whole milliseconds: a 1 ns nudge on a
+// stamp vanishes (issue #747).
 #define P25_TEST_DECODE_T0_NS 1000000000000000000ULL
 
 static void
@@ -419,8 +421,9 @@ decode_clock_at_ms(uint64_t offset_ms) {
 }
 
 // Two events sent back to back stamp the system clock at one reading on a coarse clock (a
-// virtualised CI runner), so a test that orders two event stamps runs on the test decode clock and
-// moves it on between those events (issue #619).
+// virtualised CI runner; macOS reads it in microseconds), so the cases run on the test decode clock,
+// which holds still until a case moves it on between the events whose stamps it orders (issues #619
+// and #747).
 static uint64_t g_decode_step_ms;
 
 static void
@@ -1504,13 +1507,18 @@ setup_p1_retained_clear_conflict(p25_sm_ctx_t* ctx, int follow_encrypted) {
     g_opts.trunk_tune_enc_calls = follow_encrypted;
     g_state.trunk_chan_map[0x1234] = 851500000;
 
+    // The cases using this fixture run on the test decode clock, which moves on between frames: the TDU's end and
+    // the next transmission's start are ordered by their stamps (issue #747).
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 0, P25_SM_SVC_UNKNOWN);
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    decode_clock_step();
     ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    decode_clock_step();
     ev = p25_sm_ev_tdu();
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    decode_clock_step();
 
     if (!g_state.p25_p1_identity_pending
         || p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
@@ -1527,6 +1535,7 @@ setup_p1_retained_clear_conflict(p25_sm_ctx_t* ctx, int follow_encrypted) {
         return 1;
     }
 
+    decode_clock_step();
     ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
     if (ctx->state != P25_SM_TUNED || !ctx->slots[0].grant_active || g_return_requests != 0
@@ -1546,6 +1555,7 @@ test_p1_clear_identity_quarantines_conflicting_hdu(void) {
         return 1;
     }
 
+    decode_clock_step();
     p25_sm_event_t ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (!g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
@@ -1559,6 +1569,7 @@ test_p1_clear_identity_quarantines_conflicting_hdu(void) {
         DSD_FPRINTF(stderr, "FAIL: Definitive clear metadata did not resolve quarantined conflict\n");
         return 1;
     }
+    decode_clock_step();
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.state != P25_SM_TUNED || !ctx.slots[0].voice_active || g_state.p25_p1_crypto_conflict.active
         || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || g_return_requests != 0
@@ -1575,6 +1586,7 @@ test_p1_clear_identity_quarantines_conflicting_hdu(void) {
         DSD_FPRINTF(stderr, "FAIL: Matching second tuple did not confirm encryption\n");
         return 1;
     }
+    decode_clock_step();
     ev = p25_sm_ev_enc(0, 0xA0, 0x0064, 3069);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || g_state.p25_p1_crypto_conflict.active
@@ -1627,6 +1639,7 @@ test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw(void) {
         return 1;
     }
 
+    decode_clock_step();
     p25_sm_event_t ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x44);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[0].svc_bits != 0x44 || g_state.dmr_so != 0x44 || !canonical_call_has_service(0U, 0x44, 0U, 4U)
@@ -2308,6 +2321,61 @@ test_tdma_idle_ends_voice_with_newer_grant(void) {
     return 0;
 }
 
+// An IDLE whose payload carries a grant for its own slot keeps that grant: the decoder observes the IDLE, dispatches the
+// payload, then emits the IDLE. When the clock does not move meanwhile (an I/Q replay's window, a coarse clock), the
+// grant shares the IDLE's clock reading, so the slot's grant sequence orders them, and an IDLE observed after a grant
+// at that same reading still ends it (issue #747).
+static int
+test_tdma_idle_keeps_grant_its_payload_carries(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    decode_clock_step();
+
+    const double idle_observed_m = dsd_decode_now_mono_s();
+    const uint32_t idle_grant_seq = ctx.slots[0].grant_seq;
+    ev = p25_sm_ev_group_grant_update(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || ctx.slots[0].grant_seq == idle_grant_seq
+        || fabs(ctx.slots[0].last_grant_m - idle_observed_m) > 1.0e-9) {
+        DSD_FPRINTF(stderr, "FAIL: IDLE payload grant fixture did not stamp the grant at the IDLE's reading\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_idle_observed(0, idle_observed_m, idle_grant_seq);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    dsd_tg_policy_call_route candidate_route = {2000U, 456U, 851500000L, 0x1234, 0, 0};
+    dsd_tg_policy_decision candidate_decision = {0};
+    candidate_decision.priority = 100;
+    candidate_decision.tune_allowed = 1;
+    candidate_decision.preempt_requested = 1;
+    if (ctx.slots[0].voice_active || !ctx.slots[0].grant_active || ctx.slots[0].target_id != 1000
+        || !dsd_tg_policy_should_preempt(&g_opts, &g_state, &candidate_route, &candidate_decision,
+                                         idle_observed_m + 2.0)) {
+        DSD_FPRINTF(stderr, "FAIL: TDMA IDLE dropped the grant its own payload carried\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_idle_observed(0, dsd_decode_now_mono_s(), ctx.slots[0].grant_seq);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].voice_active
+        || dsd_tg_policy_should_preempt(&g_opts, &g_state, &candidate_route, &candidate_decision,
+                                        idle_observed_m + 2.0)) {
+        DSD_FPRINTF(stderr, "FAIL: TDMA IDLE observed after a same-reading grant kept its policy route\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_anonymous_followup_restarts_crypto_pending(void) {
     reset_test_state();
@@ -2916,6 +2984,7 @@ test_tdma_end_identity_and_order_guards(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 202, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    decode_clock_step();
     ev = p25_sm_ev_ptt(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     ev = p25_sm_ev_ptt(1);
@@ -2923,6 +2992,7 @@ test_tdma_end_identity_and_order_guards(void) {
     g_state.p25_p2_audio_allowed[0] = 1;
     g_state.p25_p2_audio_allowed[1] = 1;
 
+    decode_clock_step();
     ev = p25_sm_ev_end_call_at(1, 1900, 191, ctx.slots[1].last_active_m + 0.001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (!ctx.slots[1].voice_active || !ctx.slots[1].grant_active || !g_state.p25_p2_audio_allowed[1]
@@ -2935,6 +3005,7 @@ test_tdma_end_identity_and_order_guards(void) {
         return 1;
     }
 
+    decode_clock_step();
     ev = p25_sm_ev_end_call_at(1, 2000, 202, ctx.slots[1].last_active_m + 0.001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.state != P25_SM_TUNED || ctx.slots[1].voice_active || !ctx.slots[1].grant_active
@@ -2951,6 +3022,7 @@ test_tdma_end_identity_and_order_guards(void) {
     // accidental second application observable without involving XCCH.
     const double accepted_end_m = ctx.slots[1].last_end_m;
     g_state.p25_p2_audio_allowed[1] = 1;
+    decode_clock_step(); // a second application would restamp last_end_m as well
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (!g_state.p25_p2_audio_allowed[1] || fabs(ctx.slots[1].last_end_m - accepted_end_m) > 1.0e-9) {
         DSD_FPRINTF(stderr, "FAIL: Repeated END was applied more than once\n");
@@ -2960,9 +3032,11 @@ test_tdma_end_identity_and_order_guards(void) {
 
     // A newly observed PTT/ACTIVE boundary opens a fresh epoch even if media
     // policy suppresses voice_active and the TG/source identity is reused.
-    ctx.slots[1].last_start_m = accepted_end_m + 1.0e-9;
+    decode_clock_step();
+    ctx.slots[1].last_start_m = dsd_decode_now_mono_s();
     g_state.p25_p2_audio_allowed[1] = 1;
-    ev = p25_sm_ev_end_call_at(1, 2000, 202, ctx.slots[1].last_start_m + 1.0e-9);
+    decode_clock_step();
+    ev = p25_sm_ev_end_call_at(1, 2000, 202, dsd_decode_now_mono_s());
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (g_state.p25_p2_audio_allowed[1] || ctx.slots[1].last_end_m <= accepted_end_m) {
         DSD_FPRINTF(stderr, "FAIL: New same-identity epoch END was mistaken for a repeat\n");
@@ -3421,9 +3495,9 @@ main(void) {
     fail += test_p1_fresh_hdu_survives_missed_terminator();
     fail += test_p1_retained_hdu_waits_for_identity();
     fail += test_p1_retained_hdu_defers_lockout_attribution();
-    fail += test_p1_clear_identity_quarantines_conflicting_hdu();
-    fail += test_p1_follow_mode_expires_clear_conflict();
-    fail += test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw();
+    fail += run_on_test_decode_clock(test_p1_clear_identity_quarantines_conflicting_hdu);
+    fail += run_on_test_decode_clock(test_p1_follow_mode_expires_clear_conflict);
+    fail += run_on_test_decode_clock(test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw);
     fail += test_p1_clear_conflict_restarts_deadline();
     fail += test_p1_grant_hdu_conflict_survives_first_active();
     fail += test_p1_follow_mode_preserves_grant_conflict_deadline();
@@ -3439,6 +3513,7 @@ main(void) {
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
     fail += run_on_test_decode_clock(test_tdma_idle_ends_voice_with_newer_grant);
+    fail += run_on_test_decode_clock(test_tdma_idle_keeps_grant_its_payload_carries);
     fail += test_anonymous_followup_restarts_crypto_pending();
     fail += test_source_less_duplicate_grant_republishes_crypto();
     fail += test_unassigned_companion_start_is_rejected();
@@ -3452,7 +3527,7 @@ main(void) {
     fail += test_tdma_pending_other_slot_blocks_release();
     fail += test_tdma_enc_lockout_slot_does_not_block_release();
     fail += test_tdma_single_slot_end_retains_carrier();
-    fail += test_tdma_end_identity_and_order_guards();
+    fail += run_on_test_decode_clock(test_tdma_end_identity_and_order_guards);
     fail += run_on_test_decode_clock(test_tdma_facch_double_end_release);
     fail += test_tdma_facch_double_end_release_placeholder_src();
     fail += test_tdma_facch_double_end_window_runs_on_the_decode_clock();

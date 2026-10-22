@@ -238,11 +238,11 @@ p25p2_xcch_clear_slot_idle_metadata(dsd_state* state, uint8_t slot, int clear_sl
 }
 
 static void
-p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double idle_observed_m, int clear_slot_ids) {
+p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, uint32_t idle_grant_seq, int clear_slot_ids) {
     if (!state || !p25p2_xcch_slot_valid(slot)) {
         return;
     }
-    if (p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
+    if (p25_sm_slot_grant_since(slot, idle_grant_seq)) {
         return;
     }
 
@@ -528,6 +528,9 @@ p25p2_xcch_handle_sacch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 static void
 p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int smac[24]) {
     double idle_observed_m = dsd_decode_now_mono_s();
+    // The grants the PDU carries are newer than the IDLE. They can share its clock reading (an I/Q replay's window,
+    // a coarse clock), so the slot's grant sequence tells them apart (issue #747).
+    const uint32_t idle_grant_seq = p25_sm_slot_grant_seq(slot);
 
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 24);
@@ -542,9 +545,9 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
         return;
     }
 
-    p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
-    p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 0);
-    if (!p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
+    p25_sm_emit_idle_at(opts, state, slot, idle_observed_m, idle_grant_seq);
+    p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_grant_seq, 0);
+    if (!p25_sm_slot_grant_since(slot, idle_grant_seq)) {
         p25_crypto_reset_slot(state, slot);
     }
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
@@ -664,6 +667,8 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     }
 
     double idle_observed_m = dsd_decode_now_mono_s();
+    // As on SACCH: the slot's grant sequence, not the clock, orders the PDU's grants after the IDLE.
+    const uint32_t idle_grant_seq = p25_sm_slot_grant_seq(slot);
 
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_reset_idle_slot_facch(state, slot);
@@ -677,8 +682,8 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
         return;
     }
 
-    p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
-    p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
+    p25_sm_emit_idle_at(opts, state, slot, idle_observed_m, idle_grant_seq);
+    p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_grant_seq, 1);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 }
 
