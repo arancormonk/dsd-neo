@@ -6249,6 +6249,13 @@ Qt Quick frontend (`src/ui/qt`):
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
     It hides "Explore from here", closes that button's confirm and an open "Go to" sheet when a replay begins, and
     shows "An I/Q replay cannot retune." in the button's place, the refusal's own words.
+  - Carrier identity (Spectrum strip): `SpectrumScreen.qml`'s status strip is two lines bounded by the Radio button
+    (the strip edge when it is hidden). Line 1 (`spectrumSyncLabel`, SNR, `spectrumCfoLabel`, `spectrumCallLabel`)
+    gives way talkgroup first (elided), then the offset (hidden); line 2 (`spectrumIdentityLabel`) is
+    `Util.fitTokens()` over `carrierIdentityTokens`, whole tokens only with " …" when any were dropped, led by
+    `carrierIdentityProtocol` unless `syncedHere && carrierIdentityLive`. Line 2 keeps a line's height when empty so
+    line 1 never moves; the strip is `max(Radio button, both lines)`. The header moves its status pill under the
+    readout, which is never elided, when the two do not fit side by side.
   - Tests: `UI_QT_METRICS_MODEL` (`test_replay_input()`), `UI_QT_QML_CALL_LISTS` (`tst_monitor_scan_target.qml`,
     `tst_monitor_recent_calls.qml`, `tst_call_log_follow.qml`, `tst_spectrum_screen.qml`, `tst_back_modals.qml`).
 - Received tone or code (issues #522, #523): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`,

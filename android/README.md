@@ -1234,6 +1234,17 @@ The Spectrum view is view-only during an I/Q replay: the replay plays the tuning
 capture recorded, so tapping, stepping, **Go to** and **Explore from here** are not
 offered, and the view says **An I/Q replay cannot retune.**
 
+The line under the Spectrum view's sync and SNR names the system on the carrier
+being decoded, from the same received identity as the Monitor's site row: the
+access code first (**CC 1 · Rest LSN 3**, **NAC 293 · SYS 348 · RFSS 3 · SITE 21
+· WACN BEE00**, **RAN 5**, **MCC 262 · MNC 1001 · CC 25**). Where it does not
+fit, whole parts drop from the end and **…** says so; a part is never cut from
+its value. When sync is lost the line keeps what was last heard on this carrier,
+dimmed and led by its protocol (**DMR · CC 1**), and any retune clears it. At
+large text sizes the strip grows to keep both lines clear of the waterfall, and
+the **VIEW ONLY** / **TAP TO TUNE** pill moves under the frequency where the two
+no longer fit side by side.
+
 Each call in History and Monitor's Recent calls names the access code of the carrier
 it was decoded on right after its talkgroup and source: a DMR or dPMR color code
 (**CC 1**), a P25 network access code in hex (**NAC 293**), an NXDN radio access

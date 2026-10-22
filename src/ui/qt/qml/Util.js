@@ -619,3 +619,24 @@ function summaryMarkup(tokens) {
     }
     return {markup: markup.join(" · "), plain: plain.join(" · ")}
 }
+
+// The longest run of whole tokens, joined by sep, that fits avail pixels as the
+// FontMetrics fm measures it, ending in more when any were left out. A token is
+// never cut, because "SYS" without its value says less than no "SYS"; only a
+// first token wider than the whole line is returned as it is, for the Text to
+// elide.
+function fitTokens(tokens, avail, fm, sep, more) {
+    if (!tokens || tokens.length === 0)
+        return ""
+    var all = tokens.join(sep)
+    if (fm.advanceWidth(all) <= avail)
+        return all
+    var text = tokens[0]
+    for (var i = 1; i < tokens.length; i++) {
+        var next = text + sep + tokens[i]
+        if (fm.advanceWidth(next + more) > avail)
+            break
+        text = next
+    }
+    return text + more
+}
