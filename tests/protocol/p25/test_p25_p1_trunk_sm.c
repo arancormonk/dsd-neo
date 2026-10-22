@@ -36,6 +36,15 @@
 static int g_tune_requests = 0;
 static int g_return_requests = 0;
 
+// A decode instant far from any platform clock reading (1e9 s). A double resolves about 1.2e-7 s there, so the test
+// moves the clock in whole milliseconds.
+#define P25_P1_TEST_DECODE_T0_NS 1000000000000000000ULL
+
+static void
+decode_clock_advance_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + (ms * 1000000ULL));
+}
+
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
@@ -88,6 +97,10 @@ main(int argc, char** argv) {
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
     dsd_neo_config_init();
+
+    // The SM orders the stamps of events this test sends back to back, which can land in one reading of a coarse
+    // system clock, so the test runs on the decode clock's TEST source and moves it on between them (issue #747).
+    dsd_decode_clock_use_test(P25_P1_TEST_DECODE_T0_NS);
 
     static dsd_opts opts;
     static dsd_state state;
@@ -168,7 +181,8 @@ main(int argc, char** argv) {
     // caller owns the tuner and is already moving it somewhere else, so the SM must come to
     // rest on the control channel without asking for a single tune of its own.
     // A decoded control-channel message after the return ends the CC acquisition the release
-    // started; without it the next grant is deferred rather than tuned.
+    // started; without it the next grant is deferred rather than tuned. The message is decoded after the return tune.
+    decode_clock_advance_ms(10U);
     state.p25_last_cc_msg_time_m = dsd_decode_now_mono_s();
     int channel2 = (iden << 12) | 0x0003;
     p25_sm_event(p25_sm_get_ctx(), &opts, &state,
@@ -200,6 +214,7 @@ main(int argc, char** argv) {
     rc |= expect_eq("idle eviction keeps context CC return count", p25_sm_get_ctx()->cc_return_count, 1);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_decode_clock_use_system();
     if (dsd_test_rmdir(dir) != 0) {
         DSD_FPRINTF(stderr, "could not remove temp cache directory %s: %s\n", dir, strerror(errno));
         rc |= 1;

@@ -2490,9 +2490,17 @@ dsd_decode_clock_use_system(); /* on every return path */
   call-skip case in `P25_P2_FRAME_LOCKOUT_SM` does, 100 ms a voice burst. Unstepped, it never ends on TEST, and on
   SYSTEM it sits out the whole window in real time.
 - A case that orders two stamps, such as a stop and the start that follows it, runs on TEST and steps between the two
-  events. On SYSTEM, two events sent back to back can land in one reading of a coarse clock (a virtualised CI runner),
-  so a strict comparison fails now and then: `P25_SM_UNIFIED_CORE` runs such cases through
-  `run_on_test_decode_clock()` and steps with `decode_clock_step()` (issue #619).
+  events. On SYSTEM, two events sent back to back can land in one reading of a coarse clock (a virtualised CI runner;
+  macOS reads `CLOCK_MONOTONIC` in microseconds), so a strict comparison fails now and then (issues #619 and #747).
+  `P25_SM_UNIFIED_CORE` runs such cases through `run_on_test_decode_clock()` and steps with `decode_clock_step()`.
+  Running a binary on TEST without stepping finds them: a frozen clock is the coarsest clock there is, so a case that
+  needs the clock to move between two events fails on every run instead of now and then.
+- A frozen clock also hides a stamp that should not have changed: a refresh to now leaves it as it was. A case on TEST
+  steps between the frames it sends, as the system clock moves between them, and before an event whose stamp it
+  expects to be kept.
+- Step by whole milliseconds. At the 1e18 ns origin above a double resolves about 1.2e-7 s, so a 1 ns nudge on a
+  stamp read back through `dsd_decode_now_mono_s()` vanishes. The same holds for stamps near a replay's capture time
+  (about 1.8e9 s, 2.4e-7 s): compare an age measured there with an explicit tolerance.
 - The source is process-wide, so put it back with `dsd_decode_clock_use_system()` on every return path, failures
   included, or the next case in the binary inherits it. Leaving TEST carries no value into SYSTEM. Leaving REPLAY does:
   SYSTEM's monotonic reads then go on from the replay's capture time for the rest of the process, so a case that runs

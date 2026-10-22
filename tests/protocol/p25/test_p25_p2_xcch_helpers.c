@@ -41,7 +41,7 @@ static int g_vpdu_type;
 static p25_mac_pdu_type g_vpdu_pdu_type;
 static int g_vpdu_entry_lasttg[2];
 static int g_vpdu_entry_lastsrc[2];
-static int g_vpdu_grant_newer_slot;
+static int g_vpdu_grant_newer_slot; /* the slot a grant the payload carries assigns */
 static int g_vpdu_enc_pending_slot;
 /* Set to have process_MAC_VPDU() accept a retune, which moves the retune token (issue #651). */
 static int g_vpdu_retunes;
@@ -100,7 +100,11 @@ seed_call(dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t target, u
 }
 
 static int g_lfsr_count[2];
-static int g_slot_grant_newer[2];
+/* The SM's grant sequence (p25_sm_slot_grant_seq()) and active grant per slot, and the sequence an IDLE was emitted
+   with. */
+static uint32_t g_slot_grant_seq[2];
+static int g_slot_grant_active[2];
+static uint32_t g_idle_grant_seq[2];
 static uint64_t g_now_ns;
 
 uint64_t
@@ -168,7 +172,8 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
         g_vpdu_mac[i] = mac[i];
     }
     if (g_vpdu_grant_newer_slot >= 0 && g_vpdu_grant_newer_slot <= 1) {
-        g_slot_grant_newer[g_vpdu_grant_newer_slot] = 1;
+        g_slot_grant_seq[g_vpdu_grant_newer_slot]++;
+        g_slot_grant_active[g_vpdu_grant_newer_slot] = 1;
     }
     if (g_vpdu_retunes) {
         g_retune_epoch++;
@@ -364,8 +369,11 @@ p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 void
-p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m, uint32_t grant_seq) {
     (void)observed_m;
+    if (slot >= 0 && slot <= 1) {
+        g_idle_grant_seq[slot] = grant_seq;
+    }
     p25_sm_emit_idle(opts, state, slot);
 }
 
@@ -378,13 +386,17 @@ p25_sm_emit_hangtime(dsd_opts* opts, dsd_state* state, int slot) {
     }
 }
 
+uint32_t
+p25_sm_slot_grant_seq(int slot) {
+    return (slot >= 0 && slot <= 1) ? g_slot_grant_seq[slot] : 0U;
+}
+
 int
-p25_sm_slot_grant_newer_than(int slot, double observed_m) {
-    (void)observed_m;
+p25_sm_slot_grant_since(int slot, uint32_t grant_seq) {
     if (slot < 0 || slot > 1) {
         return 0;
     }
-    return g_slot_grant_newer[slot] ? 1 : 0;
+    return (g_slot_grant_active[slot] && g_slot_grant_seq[slot] != grant_seq) ? 1 : 0;
 }
 
 void
@@ -632,7 +644,9 @@ reset_stubs(void) {
     g_flush_close_l_count = -1;
     g_flush_close_r_count = -1;
     DSD_MEMSET(g_lfsr_count, 0, sizeof(g_lfsr_count));
-    DSD_MEMSET(g_slot_grant_newer, 0, sizeof(g_slot_grant_newer));
+    DSD_MEMSET(g_slot_grant_seq, 0, sizeof(g_slot_grant_seq));
+    DSD_MEMSET(g_slot_grant_active, 0, sizeof(g_slot_grant_active));
+    DSD_MEMSET(g_idle_grant_seq, 0, sizeof(g_idle_grant_seq));
     g_now_ns = 0;
 }
 
@@ -945,6 +959,7 @@ test_facch_public_dispatch_and_crc_gates(void) {
 
     process_FACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("facch idle grant emitted", g_idle_count[1], 1);
+    rc |= expect_int("facch idle observed before the grant it carries", (int)g_idle_grant_seq[1], 0);
     rc |= expect_int("facch idle grant vpdu entry src", g_vpdu_entry_lastsrc[1], 0x010204);
     rc |= expect_int("facch idle grant vpdu entry tg", g_vpdu_entry_lasttg[1], 0x2468);
     rc |= expect_int("facch idle grant gate clear", state.p25_p2_audio_allowed[1], 0);
@@ -1289,14 +1304,33 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
     state.dmr_soR = 0x93;
-    g_slot_grant_newer[1] = 1;
+    g_slot_grant_seq[1] = 7U;
+    g_slot_grant_active[1] = 1;
+    g_vpdu_grant_newer_slot = 1;
     pack_payload_from_mac(payload, 180, mac, 0x3, 0, 0);
 
     process_SACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("sacch idle grant emitted", g_idle_count[1], 1);
+    rc |= expect_int("sacch idle observed before the grant it carries", (int)g_idle_grant_seq[1], 7);
     rc |= expect_int("sacch idle grant gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("sacch idle grant service preserved", state.dmr_soR, 0x93);
     rc |= expect_int("sacch idle grant crypto preserved", state.p25_crypto_state[1], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+
+    /* A grant taken before the IDLE, whatever its clock reading, is older than the IDLE (issue #747). */
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    state.dmr_soR = 0x93;
+    g_slot_grant_seq[1] = 7U;
+    g_slot_grant_active[1] = 1;
+    pack_payload_from_mac(payload, 180, mac, 0x3, 0, 0);
+
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("sacch idle after a grant emitted", g_idle_count[1], 1);
+    rc |= expect_int("sacch idle after a grant service clear", state.dmr_soR, 0);
+    rc |= expect_int("sacch idle after a grant crypto clear", state.p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

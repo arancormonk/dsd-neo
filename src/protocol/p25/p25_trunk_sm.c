@@ -1804,6 +1804,16 @@ p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     }
 }
 
+// Numbers the grant stamps of every slot from one counter that no re-init or snapshot restore winds back, so a grant
+// never repeats a slot's grant_seq that an IDLE observation captured before it (issue #747).
+static uint32_t g_p25_grant_seq;
+
+static void
+p25_slot_note_grant(p25_sm_slot_ctx_t* slot_ctx, double now_m) {
+    slot_ctx->last_grant_m = now_m;
+    slot_ctx->grant_seq = ++g_p25_grant_seq;
+}
+
 static void
 p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq, int target_id,
                              const p25_grant_eval_ctx_t* eval_ctx, int slot, double now_m) {
@@ -1823,7 +1833,7 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long f
     slot_ctx->svc_bits = ev->svc_bits;
     slot_ctx->enc_override_clear = (eval_ctx && eval_ctx->enc_override_clear) ? 1 : 0;
     slot_ctx->enc_lockout_reprobe = (eval_ctx && eval_ctx->enc_lockout_reprobe) ? 1 : 0;
-    slot_ctx->last_grant_m = now_m;
+    p25_slot_note_grant(slot_ctx, now_m);
     slot_ctx->tg = target_id;
 }
 
@@ -2163,7 +2173,7 @@ p25_grant_refresh_duplicate_slot(p25_sm_ctx_t* ctx, dsd_state* state, const dsd_
     slot_ctx->grant_active = 1;
     slot_ctx->freq_hz = route->freq_hz;
     slot_ctx->channel = route->channel;
-    slot_ctx->last_grant_m = now_m;
+    p25_slot_note_grant(slot_ctx, now_m);
     if (hangtime_refresh && !data_call) {
         slot_ctx->last_active_m = 0.0;
         if (!p25_grant_other_slot_voice_active(ctx, route->slot)) {
@@ -3665,7 +3675,7 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     slot_ctx->is_group = call_ev->is_group ? 1 : 0;
     slot_ctx->svc_bits = call_ev->svc_bits;
     slot_ctx->enc_override_clear = eval_ctx->enc_override_clear ? 1 : 0;
-    slot_ctx->last_grant_m = now_m;
+    p25_slot_note_grant(slot_ctx, now_m);
     slot_ctx->tg = target_id;
     ctx->vc_tg = target_id;
     ctx->vc_src = call_ev->src;
@@ -4123,13 +4133,23 @@ p25_voice_end_reject_reason(const p25_sm_ctx_t* ctx, const dsd_state* state, int
     return NULL;
 }
 
+// An IDLE keeps a grant accepted after it was observed. A decoder that observed the IDLE before dispatching its payload
+// says so with the slot's grant sequence at that moment, because the grants the payload carries are stamped at the
+// IDLE's own clock reading whenever the clock does not move while the payload is dispatched (issue #747).
 static int
-p25_voice_end_preserve_recent_idle_grant(const p25_sm_ctx_t* ctx, int slot, int is_explicit_end, double observed_m) {
-    if (!ctx || slot < 0 || slot > 1 || is_explicit_end || observed_m <= 0.0) {
+p25_voice_end_preserve_recent_idle_grant(const p25_sm_ctx_t* ctx, int slot, int is_explicit_end,
+                                         const p25_sm_event_t* ev) {
+    if (!ctx || !ev || slot < 0 || slot > 1 || is_explicit_end) {
         return 0;
     }
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    return (slot_ctx->grant_active && slot_ctx->last_grant_m > observed_m) ? 1 : 0;
+    if (!slot_ctx->grant_active) {
+        return 0;
+    }
+    if (ev->grant_seq_valid) {
+        return slot_ctx->grant_seq != ev->grant_seq ? 1 : 0;
+    }
+    return (ev->observed_m > 0.0 && slot_ctx->last_grant_m > ev->observed_m) ? 1 : 0;
 }
 
 static const char*
@@ -4246,9 +4266,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     const double now_m = dsd_decode_now_mono_s();
     const int ended_tg = p25_voice_end_event_tg(ctx, state, s, ev);
     const int ended_src = p25_voice_end_event_src(ctx, state, s, ev);
-    const double observed_m = ev ? ev->observed_m : 0.0;
-    const int preserve_recent_idle_grant =
-        p25_voice_end_preserve_recent_idle_grant(ctx, s, is_explicit_end, observed_m);
+    const int preserve_recent_idle_grant = p25_voice_end_preserve_recent_idle_grant(ctx, s, is_explicit_end, ev);
 
     p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
 
@@ -6675,15 +6693,23 @@ p25_sm_touch_rejected_slot_skip(dsd_opts* opts, dsd_state* state, int slot) {
     }
 }
 
+uint32_t
+p25_sm_slot_grant_seq(int slot) {
+    if (slot < 0 || slot > 1) {
+        return 0U;
+    }
+    return p25_sm_get_ctx()->slots[slot].grant_seq;
+}
+
 int
-p25_sm_slot_grant_newer_than(int slot, double observed_m) {
-    if (slot < 0 || slot > 1 || observed_m <= 0.0) {
+p25_sm_slot_grant_since(int slot, uint32_t grant_seq) {
+    if (slot < 0 || slot > 1) {
         return 0;
     }
 
     const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    return (slot_ctx->grant_active && slot_ctx->last_grant_m > observed_m) ? 1 : 0;
+    return (slot_ctx->grant_active && slot_ctx->grant_seq != grant_seq) ? 1 : 0;
 }
 
 /* ============================================================================
@@ -7161,10 +7187,10 @@ p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 void
-p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m, uint32_t grant_seq) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
-    p25_sm_event_t ev = p25_sm_ev_idle_at(slot, observed_m);
+    p25_sm_event_t ev = p25_sm_ev_idle_observed(slot, observed_m, grant_seq);
     p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
         p25_ptt_marker_invalidate(ctx, slot);

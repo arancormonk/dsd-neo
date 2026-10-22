@@ -1865,6 +1865,25 @@ dmr_status_naming_the_alias_returns_at_once(void) {
     return rc;
 }
 
+/* A decode instant far from any platform clock reading (1e9 s). A double resolves about 1.2e-7 s there, so a case on
+   it moves the clock in whole milliseconds. */
+#define DMR_CC_RECOVERY_TEST_DECODE_T0_NS 1000000000000000000ULL
+
+static void
+decode_clock_advance_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + (ms * 1000000ULL));
+}
+
+/* A case that orders the stamps of events it sends back to back runs on the decode clock's TEST source and moves it on
+   between them: on the system clock the events can land in one reading of a coarse clock (issue #747). */
+static int
+run_on_test_decode_clock(int (*test)(void)) {
+    dsd_decode_clock_use_test(DMR_CC_RECOVERY_TEST_DECODE_T0_NS);
+    const int rc = test();
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 /* The machine owns a call a Capacity Plus status followed: repeated statuses neither retune it nor push its deadlines
    back, a voice sync alone (rejected bursts, or evidence from the carrier it was granted on) never holds it, and
    accepted voice holds it until a hangtime after the newest of either slot's. */
@@ -1880,11 +1899,13 @@ dmr_status_follow_is_owned(void) {
     g_state.last_vc_sync_time = 0;
     g_state.dmr_confidence_voice_open[0] = 1;
     g_state.dmr_confidence_voice_m[0] = dsd_decode_now_mono_s(); // the rest channel's own voice, before the follow
+    decode_clock_advance_ms(10U);
     cap_plus_two_calls(3U);
     int rc = expect(dmr->state == DMR_SM_TUNED && dmr->vc_freq_hz == 451000000L && g_opts.trunk_is_tuned,
                     "the status follow is the machine's call");
     const double tuned_m = dmr->t_tune_m;
     for (int i = 0; i < 3; ++i) {
+        decode_clock_advance_ms(10U); // a status that restamped the deadline would move it
         g_state.last_vc_sync_time = 0;
         cap_plus_two_calls(3U);
     }
@@ -2003,11 +2024,13 @@ dmr_operator_move_settles_a_superseded_probe(void) {
         if (done_before) {
             dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_OK);
         }
-        g_frequency = 453000000L; // the operator's tune
+        decode_clock_advance_ms(10U); // so a window started at the completion reads as before the move
+        g_frequency = 453000000L;     // the operator's tune
         g_opts.rtlsdr_center_freq = 453000000U;
         dmr_sm_cold_start_note_retune(dmr, &g_opts, &g_state);
         const double moved_m = dmr->cc_moved_m;
         const int tunes = g_cc_tunes;
+        decode_clock_advance_ms(10U);
         if (!done_before) {
             dsd_trunk_tuning_request_publish(probe, DSD_TRUNK_TUNE_RESULT_FAILED);
             dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
@@ -2329,9 +2352,9 @@ main(void) {
     rc |= dmr_windows_hold_on_validated_content();
     rc |= dmr_operator_move_drops_attribution();
     rc |= dmr_status_naming_the_alias_returns_at_once();
-    rc |= dmr_status_follow_is_owned();
+    rc |= run_on_test_decode_clock(dmr_status_follow_is_owned);
     rc |= dmr_xpt_retries_its_own_frequency();
-    rc |= dmr_operator_move_settles_a_superseded_probe();
+    rc |= run_on_test_decode_clock(dmr_operator_move_settles_a_superseded_probe);
     rc |= dmr_rigctl_read_once_per_generation();
     rc |= dmr_follow_after_a_move_stands();
     rc |= dmr_followed_carrier_and_untracked_settle();

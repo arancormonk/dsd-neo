@@ -67,6 +67,17 @@ typedef struct {
     int right;
 } block;
 
+/* A case whose state machine orders the stamps of a return to the control channel and the message decoded after it
+   runs on the decode clock's TEST source, held at a decode instant far from any platform clock reading (1e9 s): back
+   to back calls can take both in one reading of a coarse system clock (issue #747). A double resolves about 1.2e-7 s
+   there, so the case moves the clock in whole milliseconds. */
+#define P25_P2_VOICE_OUTPUT_TEST_DECODE_T0_NS 1000000000000000000ULL
+
+static void
+decode_clock_advance_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + (ms * 1000000ULL));
+}
+
 static block g_blocks[MAX_BLOCKS];
 static int g_block_count = 0;
 static int g_floating = 0;
@@ -742,6 +753,7 @@ end_call(int slot, uint32_t source, uint16_t target) {
 static int
 test_departed_slot_leaves_no_activity(void) {
     int rc = 0;
+    dsd_decode_clock_use_test(P25_P2_VOICE_OUTPUT_TEST_DECODE_T0_NS);
     setup(0, 2);
     g_opts.trunk_enable = 1;
     g_opts.trunk_tune_group_calls = 1;
@@ -772,7 +784,8 @@ test_departed_slot_leaves_no_activity(void) {
     p25_sm_release(ctx, &g_opts, &g_state, "test-departure");
     rc |= expect_int("departure returns to the control channel", g_return_calls, 1);
 
-    /* Slot 1's call on the next voice channel, granted once the control channel is decoded again. */
+    /* Slot 1's call on the next voice channel, granted once the control channel is decoded again, after the return. */
+    decode_clock_advance_ms(10U);
     g_state.p25_last_cc_msg_time_m = dsd_decode_now_mono_s();
     grant = p25_sm_ev_group_grant(0x2234, 853000000, 100, 1000, 0);
     p25_sm_event(ctx, &g_opts, &g_state, &grant);
@@ -784,13 +797,16 @@ test_departed_slot_leaves_no_activity(void) {
     rc |= expect_int("next channel followed", p25_sm_get_state(ctx), P25_SM_TUNED);
 
     g_return_calls = 0;
+    decode_clock_advance_ms(10U);
     end_call(0, 1000U, 100U);
+    decode_clock_advance_ms(10U);
     end_call(0, 1000U, 100U);
     rc |= expect_int("repeated END releases the channel at once", g_return_calls, 1);
 
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
+    dsd_decode_clock_use_system();
     return rc;
 }
 

@@ -37,6 +37,17 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
+// The test runs on the decode clock's TEST source, held at a decode instant far from any platform clock reading
+// (1e9 s): the SM orders the stamps of a return to the control channel and the message decoded after it, which back to
+// back calls can take in one reading of a coarse system clock (issue #747). A double resolves about 1.2e-7 s there,
+// so the test moves the clock in whole milliseconds.
+#define P25_P2_RELEASE_TEST_DECODE_T0_NS 1000000000000000000ULL
+
+static void
+decode_clock_advance_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + (ms * 1000000ULL));
+}
+
 static int g_return_to_cc_called = 0;
 static int g_finalizing_notice_called = 0;
 static int g_nonfinalizing_notice_called = 0;
@@ -222,6 +233,7 @@ main(void) {
     static dsd_opts opts;
     static dsd_state st;
     static Event_History_I event_history[2];
+    dsd_decode_clock_use_test(P25_P2_RELEASE_TEST_DECODE_T0_NS);
     install_trunk_tuning_hooks();
     install_p25_optional_hooks();
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -310,7 +322,9 @@ main(void) {
     rc |= expect_eq_int("release empties slot 1", dsd_p25p2_playout_level(&st, 0), 0);
     rc |= expect_eq_int("release empties slot 2", dsd_p25p2_playout_level(&st, 1), 0);
 
-    // A capped departure flushes before ending the call, without tuning back to the CC.
+    // A capped departure flushes before ending the call, without tuning back to the CC. A control-channel message
+    // decoded after the return lets the next grant tune.
+    decode_clock_advance_ms(10U);
     st.p25_last_cc_msg_time_m = dsd_decode_now_mono_s();
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
@@ -370,6 +384,7 @@ main(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&st);
+    dsd_decode_clock_use_system();
     return rc;
 }
 

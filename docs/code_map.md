@@ -4592,6 +4592,12 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   after such a segment. So nothing of the old channel's PDU acts on the new assignment, and `p25_p2_frame_reset()`
   zeroing the dispatch's `ts_counter` can no longer replay timeslots as phantom 4V bursts. The DUID-13 LCCH timeout
   re-evaluates its release verdict after the burst's MAC PDU (`p25p2_duid_lcch_release_due()`).
+- MAC_IDLE carrying a grant. The SACCH and FACCH MAC_IDLE handlers observe the IDLE, then dispatch its payload, then
+  emit it. A grant the payload carries for the IDLE's slot is newer than the IDLE and keeps its policy route, service
+  options and crypto state. The SM numbers each slot grant stamp from one counter (`p25_sm_slot_ctx_t.grant_seq`), and
+  the handlers capture `p25_sm_slot_grant_seq()` before the payload and pass it to `p25_sm_emit_idle_at()` and
+  `p25_sm_slot_grant_since()`. Time cannot order them: the decode clock holds still across a window's dispatch during
+  an I/Q replay, and a coarse system clock can do the same, so the grant shares the IDLE's reading (issue #747).
 - Voice. Each processed voice burst gets a serial, and the decode gate's decision for it (`p25p2_prepare_voice_crypto()`,
   the ESS enable) becomes the playout's burst verdict (see Core). After slot 2's timeslot of every pair the pair plays,
   then deferred rekeys commit, whatever the output format or rate. A pair that retirement completes (a missed sync's

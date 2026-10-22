@@ -8659,11 +8659,16 @@ test_replay_leave_keeps_decode_stamps_ageing(void) {
         /* The row stands within a TTL longer than the time since, and expires past a shorter one. */
         DSD_SNPRINTF(tag, sizeof tag, "%s: the recent-activity row stands within 5 s", case_tag);
         rc |= expect_int(tag, dsd_recent_activity_expire(&state, 0U, 5000U), 0);
+        const double slept_s = 0.020;
         dsd_sleep_ms(20U);
         DSD_SNPRINTF(tag, sizeof tag, "%s: the recent-activity row expires past 1 ms", case_tag);
         rc |= expect_int(tag, dsd_recent_activity_expire(&state, 0U, 1U), 1);
+        /* The stamps sit near the capture time (~1.8e9 s), where a double resolves about 2.4e-7 s: a platform clock
+           whose tick divides the sleep reads an age of exactly 20 ms as 0.01999998 s (issue #747). */
+        const double age_tolerance_s = 1.0e-6;
         DSD_SNPRINTF(tag, sizeof tag, "%s: the watchdog's request ages at real time", case_tag);
-        rc |= expect_true(tag, dsd_decode_now_mono_s() - state.rtl_fsk_reacquire_last_request_m >= 0.02);
+        rc |= expect_true(tag, dsd_decode_now_mono_s() - state.rtl_fsk_reacquire_last_request_m
+                                   >= slept_s - age_tolerance_s);
 
         arm_open_audio_input_stub(0, 0);
         state.rtl_ctx = NULL;

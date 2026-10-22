@@ -124,6 +124,8 @@ typedef struct {
     double observed_m;                                 // Optional monotonic timestamp when the event was observed
     uint8_t ptt_signature[P25_SM_PTT_SIGNATURE_BYTES]; // Optional exact MAC octets 1-17 for PTT
     int ptt_signature_valid;                           // 1 when ptt_signature and observed_m are authoritative
+    uint32_t grant_seq;                                // IDLE: the slot's grant_seq when the IDLE was observed
+    int grant_seq_valid;                               // 1 when grant_seq is set
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -174,6 +176,8 @@ typedef struct {
                              // for it, so it may acquire but may not outlive the hangtime the last
                              // followed transmission set.
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
+    uint32_t grant_seq;      // SM-wide sequence number of the last_grant_m stamp. Orders a grant against an
+                             // IDLE observed at the same clock reading, which time alone cannot (issue #747).
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
     double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
     int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT
@@ -620,13 +624,22 @@ int p25_sm_vc_reacquire_hold_active(const p25_sm_ctx_t* ctx, const dsd_opts* opt
  *
  * Decoders use this after processing a MAC payload but before clearing IDLE
  * slot metadata, so grants carried inside the IDLE payload can keep their
- * policy and service context.
+ * policy and service context. A sequence rather than a timestamp: the grants a
+ * payload carries are stamped at the clock reading the IDLE was observed at
+ * whenever the clock does not move while the payload is dispatched (an I/Q
+ * replay's window, a coarse clock).
  *
  * @param slot Slot index (0 or 1).
- * @param observed_m Monotonic timestamp captured before payload processing.
- * @return 1 if the global state machine has a newer active grant for the slot, 0 otherwise.
+ * @param grant_seq p25_sm_slot_grant_seq() captured before payload processing.
+ * @return 1 if the global state machine accepted an active grant for the slot since then, 0 otherwise.
  */
-int p25_sm_slot_grant_newer_than(int slot, double observed_m);
+int p25_sm_slot_grant_since(int slot, uint32_t grant_seq);
+
+/**
+ * @brief The slot's grant sequence in the global state machine, for p25_sm_slot_grant_since()
+ * and p25_sm_emit_idle_at().
+ */
+uint32_t p25_sm_slot_grant_seq(int slot);
 
 /**
  * @brief Check whether a voice-user observation re-describes a call that just ended.
@@ -788,9 +801,10 @@ int p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, in
 void p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
- * @brief Emit IDLE event with a previously captured monotonic observation timestamp.
+ * @brief Emit IDLE event with a previously captured monotonic observation timestamp and the slot's
+ * p25_sm_slot_grant_seq() at that observation. A grant accepted since then is newer than the IDLE.
  */
-void p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
+void p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m, uint32_t grant_seq);
 
 /** @brief Emit a MAC_HANGTIME boundary for a slot. */
 void p25_sm_emit_hangtime(dsd_opts* opts, dsd_state* state, int slot);
@@ -1033,6 +1047,14 @@ static inline p25_sm_event_t
 p25_sm_ev_idle_at(int slot, double observed_m) {
     p25_sm_event_t ev = p25_sm_ev_idle(slot);
     ev.observed_m = observed_m;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_idle_observed(int slot, double observed_m, uint32_t grant_seq) {
+    p25_sm_event_t ev = p25_sm_ev_idle_at(slot, observed_m);
+    ev.grant_seq = grant_seq;
+    ev.grant_seq_valid = 1;
     return ev;
 }
 
