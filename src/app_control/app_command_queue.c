@@ -1339,6 +1339,15 @@ ui_end_calls(dsd_opts* opts, dsd_state* state) {
     dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
 }
 
+/* A tune the user asked for while trunking keeps the decoder's trunking state (it is not a carrier boundary), but the
+   identity received before it is no longer this carrier's (D4: any user move clears it): the record starts over, after
+   the calls the move ended took theirs, and what the frame sync holds buffered from the channel left heads no frame. */
+static void
+ui_user_move_forgets_identity(dsd_state* state) {
+    dsd_rxid_reset(state);
+    dsd_state_note_carrier_change(state);
+}
+
 #ifdef USE_RADIO
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
    capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
@@ -1835,15 +1844,6 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
     }
     const dsdneoUserDecodeMode mode = dsd_infer_decode_mode_preset_exact(opts);
     return mode == DSDCFG_MODE_P25P1 || mode == DSDCFG_MODE_P25P2;
-}
-
-/* A tune the user asked for while trunking keeps the decoder's trunking state (it is not a carrier boundary), but the
-   identity received before it is no longer this carrier's (D4: any user move clears it): the record starts over, after
-   the calls the move ended took theirs, and what the frame sync holds buffered from the channel left heads no frame. */
-static void
-ui_user_move_forgets_identity(dsd_state* state) {
-    dsd_rxid_reset(state);
-    dsd_state_note_carrier_change(state);
 }
 
 static int
@@ -4938,6 +4938,9 @@ static struct {
     int kind; /* the dsd_analog_demod the switch is onto */
     /* A mode change off TETRA waits for the switch to settle before it leaves TETRA (ui_commit_mode_change()). */
     int commit_tetra;
+    /* A mode change waits for the switch to settle before it forgets the identity of a protocol it no longer decodes
+       (ui_commit_mode_identity()). */
+    int commit_identity;
     dsd_scan_settings before;
     ui_follow_state before_follow; /* the follow state before the switch, as `before` is its settings */
     dsd_scan_settings after;
@@ -5039,7 +5042,38 @@ ui_commit_mode_change(dsd_opts* opts, dsd_state* state) {
     }
     g_analog_entry.commit_tetra = 0;
     dsd_decode_mode_commit_tetra(opts, state);
+}
+
+/* The received identity of the settings in force (dsd_rxid_note_decoder_settings()): the active calls render first, so
+   their rows take what the record holds of their carrier before a record of a protocol no longer decoded goes. */
+static void
+ui_forget_undecoded_identity(dsd_opts* opts, dsd_state* state) {
+    if (state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE) {
+        return;
+    }
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_event_sync_slot(opts, state, 1U);
     dsd_rxid_note_decoder_settings(opts, state);
+}
+
+/*
+ * The commit of a mode change for the received identity, once the calls it ends have ended (their rows froze the
+ * identity at the end): a switch onto the analog monitor the front end has still to take or refuse waits for it to
+ * settle (ui_analog_entry_settled()), so a refusal puts the session back with its identity; one that stands, or a
+ * change of any other kind, forgets the identity of a protocol the settings no longer decode now.
+ */
+static void
+ui_commit_mode_identity(dsd_opts* opts, dsd_state* state) {
+    if (g_analog_entry.armed) {
+        dsd_scan_settings now;
+        dsd_scan_settings_capture(opts, state, &now);
+        if (ui_analog_entry_unmoved(&now)) {
+            g_analog_entry.commit_identity = 1;
+            return;
+        }
+    }
+    g_analog_entry.commit_identity = 0;
+    ui_forget_undecoded_identity(opts, state);
 }
 
 /* The armed switch has settled (taken, refused or dropped): nothing can put the settings from before it back any more,
@@ -5050,7 +5084,10 @@ ui_analog_entry_settled(dsd_opts* opts, dsd_state* state) {
     if (g_analog_entry.commit_tetra) {
         g_analog_entry.commit_tetra = 0;
         dsd_decode_mode_commit_tetra(opts, state);
-        dsd_rxid_note_decoder_settings(opts, state);
+    }
+    if (g_analog_entry.commit_identity) {
+        g_analog_entry.commit_identity = 0;
+        ui_forget_undecoded_identity(opts, state);
     }
 }
 
@@ -5721,6 +5758,8 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         reset_call_tracking(opts, state, 1);
     }
+    /* After the outgoing calls ended and froze their identity. */
+    ui_commit_mode_identity(opts, state);
     decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7735,10 +7774,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
        (dsd_stage_user_config_to_opts()). */
     if (cfg.has_mode) {
         ui_commit_mode_change(opts, state);
-    } else {
-        /* An EDACS addressing mode the config set without a [mode]: the mode change's commit covers one with it. */
-        dsd_rxid_note_decoder_settings(opts, state);
     }
+    /* A [mode], or an EDACS addressing mode the config set with or without one. */
+    ui_commit_mode_identity(opts, state);
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);
     if (radio_rc != 0) {

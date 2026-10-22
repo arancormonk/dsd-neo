@@ -2439,7 +2439,19 @@ test_sync_tree_follows_scan_class(void) {
     state->nxdn_last_ran_stand_in = 0U;
     reset_printw_capture();
     ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("NXDN - RAN: --;"); /* the decoder's RAN alone is no received one */
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, (uint8_t)DSD_ACCESS_CODE_RAN, 7U);
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
     assert_capture_contains("NXDN - RAN: 07;");
+    /* A sync loss resets the decoder's RAN; the record keeps the RAN with the location, both retained. */
+    dsd_rxid_note_nxdn_location(state, 1U, 12U, 3U);
+    state->nxdn_last_ran = (unsigned int)-1;
+    dsd_rxid_mark_stale(state);
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 0);
+    assert_capture_contains("NXDN - RAN: 07; Cat: Regional; Sys Code: 12; Site Code: 3;");
+    dsd_rxid_reset(state);
     /* The record, not the decoder's location category, says which kind of NXDN site this is: a checked Type-D
        SRV_INFO shows on the IDAS line with no category set (an SCCH that failed, a cleanup that cleared it), and a
        Type-C location on the NXDN line whatever category the decoder last wrote. */
@@ -2929,12 +2941,17 @@ test_colour_code_sentinels_print_as_unknown(void) {
     assert(opts != NULL && state != NULL);
     state->dmr_rest_channel = -1;
 
+    /* From the received identity: the decoder's sentinel or a value no message on this carrier carried is none. */
     state->dmr_color_code = 16U;
     ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     reset_printw_capture();
     ui_render_p25_dmr_header(opts, state);
     assert_capture_contains("DMR BS - DCC: --;");
     assert(strstr(g_printw_capture, "16") == NULL);
+    state->dmr_color_code = 7U;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_contains("DMR BS - DCC: --;");
 
     ncurses_last_synctype = DSD_SYNC_DMR_MS_VOICE;
     reset_printw_capture();
@@ -2942,11 +2959,11 @@ test_colour_code_sentinels_print_as_unknown(void) {
     assert_capture_contains("DMR MS - DCC: --;");
     assert(strstr(g_printw_capture, "16") == NULL);
 
-    state->dmr_color_code = 0U;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 0U);
     reset_printw_capture();
     ui_render_p25_dmr_header(opts, state);
     assert_capture_contains("DMR MS - DCC: 00;");
-    state->dmr_color_code = 15U;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 15U);
     ncurses_last_synctype = DSD_SYNC_DMR_BS_DATA_NEG;
     reset_printw_capture();
     ui_render_p25_dmr_header(opts, state);
@@ -2958,11 +2975,17 @@ test_colour_code_sentinels_print_as_unknown(void) {
     ui_render_call_info_dpmr(opts, state);
     assert_capture_contains("| DCC: [--] ");
     assert(strstr(g_printw_capture, "-1") == NULL);
-    state->dpmr_color_code = 0;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DPMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 0U);
     reset_printw_capture();
     ui_render_call_info_dpmr(opts, state);
     assert_capture_contains("| DCC: [0] ");
-    state->dpmr_color_code = 63;
+    /* A sync loss resets the decoder's colour code; the record keeps it, as the System line shows it. */
+    state->dpmr_color_code = -1;
+    dsd_rxid_mark_stale(state);
+    reset_printw_capture();
+    ui_render_call_info_dpmr(opts, state);
+    assert_capture_contains("| DCC: [0] ");
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DPMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 63U);
     reset_printw_capture();
     ui_render_call_info_dpmr(opts, state);
     assert_capture_contains("| DCC: [63] ");
@@ -3722,6 +3745,7 @@ test_identity_lines_read_the_received_record(void) {
     /* DMR: branding, site and rest channel only as received; the rest LSN's frequency is the channel map's. */
     dsd_rxid_reset(state);
     state->dmr_color_code = 1U;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
     DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", "Motorola");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "Cap+ ");
     DSD_SNPRINTF(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", "TIII Small:1-2;0A3F; ");
@@ -3737,6 +3761,7 @@ test_identity_lines_read_the_received_record(void) {
     ui_render_p25_dmr_header(opts, state);
     assert_capture_equals("| DMR BS - DCC: 01; Capacity Plus; Rest LSN: 03; Freq: 451.000000 MHz");
     dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
     dsd_rxid_note_dmr_t3_syscode(state, 0x0A3FU);
     dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 452000000U);
     reset_printw_capture();
@@ -3752,6 +3777,7 @@ test_identity_lines_read_the_received_record(void) {
     /* Hytera XPT: the free channel its site status, call alert or short LC named, from the record alone (the decoder's
        site parameters string another carrier may have left is not read). */
     dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", "Free LCN - 9 ");
     reset_printw_capture();
     ui_render_p25_dmr_header(opts, state);

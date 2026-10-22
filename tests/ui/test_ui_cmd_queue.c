@@ -14786,6 +14786,57 @@ test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
     return rc;
 }
 
+/* A mode change ends the outgoing calls before it forgets the received identity of a protocol it stops decoding: a
+   SYSID received after the call's last render still reaches its history row. And a switch onto the analog monitor the
+   front end has queued forgets nothing until it is taken: refused where it lands, the digital session it goes back to
+   keeps its identity; taken, the identity of a protocol the monitor does not decode goes. */
+static int
+test_mode_change_forgets_identity_once_it_stands(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "p25 -> dmr");
+    rc |= expect_int("p25 -> dmr: the outgoing call keeps the SYSID received after its last render",
+                     (int)state.event_history_s[0].Event_History_Items[1].sys_id2, 0x348);
+    rc |= expect_int("p25 -> dmr: the p25 identity goes", (int)state.rx_id.valid, 0);
+    freeState(&state);
+
+    for (int taken = 0; taken < 2; taken++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "dmr session");
+        reset_rx_family_wrap();
+        g_fake_analog_family = 0;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        dsd_rxid_note_dmr_rest_lsn(&state, 3U);
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "dmr -> analog queued");
+        rc |= expect_int("dmr -> analog queued: the identity waits", (int)(state.rx_id.valid != 0U), 1);
+        if (taken) {
+            demod_thread_lands(0);
+            g_fake_analog_family = 1;
+        } else {
+            demod_thread_refuses_analog_keeping(0, 0);
+        }
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int(taken ? "dmr -> analog taken: the dmr identity goes"
+                               : "dmr -> analog refused where it landed: back on dmr with its identity",
+                         (int)state.rx_id.valid, taken ? 0 : DSD_RXID_ACCESS | DSD_RXID_DMR_REST_LSN);
+        if (!taken) {
+            rc |= expect_int("refused: back on dmr", opts.frame_dmr == 1 && opts.analog_only == 0, 1);
+        }
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
 /* A switch from TETRA onto the analog monitor, or onto AM, the front end has queued and not yet taken (@p mode, from
    DECODE_MODE_SET or a config's [mode] as @p config says), or NULL when the TETRA session could not be set up. */
 static tetra_state_t*
@@ -19428,6 +19479,7 @@ main(void) {
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
     rc |= test_queued_switch_off_tetra_commits_once_taken();
+    rc |= test_mode_change_forgets_identity_once_it_stands();
     rc |= test_refused_switch_off_tetra_keeps_the_follow();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();

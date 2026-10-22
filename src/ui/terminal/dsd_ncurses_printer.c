@@ -2527,11 +2527,12 @@ ui_render_nxdn_site_line(const dsd_state* state, int idas) {
             printw("Site Code: %u; ", (unsigned)id->nxdn_typed_site);
         }
     } else {
-        /* A stand-in is DCR's fixed 7: no RAN (issue #575). */
-        if (state->nxdn_last_ran > 63U || state->nxdn_last_ran_stand_in != 0U) {
-            printw("NXDN - RAN: --; ");
+        /* The RAN this carrier sent, with the location beside it: never a stand-in (DCR's fixed 7, an IDAS area bit),
+           and kept, as the location is, through a sync loss (issue #575). */
+        if (ui_rxid_has(id, DSD_RXID_ACCESS)) {
+            printw("NXDN - RAN: %02u; ", (unsigned)id->access);
         } else {
-            printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
+            printw("NXDN - RAN: --; ");
         }
         if (ui_rxid_has(id, DSD_RXID_NXDN_LOCATION)) {
             printw("Cat: %s; ", id->nxdn_category < 3U ? categories[id->nxdn_category] : "--");
@@ -2692,14 +2693,15 @@ ui_render_call_info_nxdn(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
+ui_render_call_info_dpmr(const dsd_opts* opts, const dsd_state* state) {
     //dPMR
     if (DSD_SYNC_IS_DPMR(ncurses_last_synctype)) {
-        /* -1 is "none decoded on this carrier" (issue #575). */
-        if (state->dpmr_color_code < 0 || state->dpmr_color_code > 63) {
-            printw("| DCC: [--] ");
+        /* The colour code this carrier sent, as the System line names it, kept through a sync loss (issue #575). */
+        const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_DPMR);
+        if (ui_rxid_has(id, DSD_RXID_ACCESS)) {
+            printw("| DCC: [%u] ", (unsigned)id->access);
         } else {
-            printw("| DCC: [%i] ", state->dpmr_color_code);
+            printw("| DCC: [--] ");
         }
         dsd_call_snapshot call;
         (void)ui_active_call_snapshot(state, 0U, &call);
@@ -3081,14 +3083,15 @@ ui_restore_call_info_color(const dsd_state* state) {
     }
 }
 
-/* The DMR colour code, or "--" while it reads 16, "nothing decoded", as it does between transmissions (issue #575);
- * the NXDN RAN line prints its sentinel the same way. */
+/* The DMR colour code this carrier sent (the received identity, as the brand and site beside it), or "--" before one
+ * (issue #575); the NXDN RAN and dPMR colour code lines read theirs the same way. */
 static void
 ui_print_dmr_dcc(const char* mode, const dsd_state* state) {
-    if (state->dmr_color_code > 15U) {
+    const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_DMR);
+    if (!ui_rxid_has(id, DSD_RXID_ACCESS)) {
         printw("DMR %s - DCC: --; ", mode);
     } else {
-        printw("DMR %s - DCC: %02u; ", mode, state->dmr_color_code);
+        printw("DMR %s - DCC: %02u; ", mode, (unsigned)id->access);
     }
 }
 

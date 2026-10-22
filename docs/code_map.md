@@ -1502,16 +1502,18 @@ suite runs under this compiler.
   other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y` step, a trunk-scan target, a
   signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site forget it in the record too:
   the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the colour code the reset
-  keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a committed decode mode change
-  (`ui_commit_mode_change()`), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference
-  import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their site) run
-  `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an EDACS
-  record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as well).
-  The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the
-  tuner release and the scan resets change no received identity: the carrier and the reading of its messages stay (a
-  carrier boundary resets the record anyway). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
-  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end
-  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
+  keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a decode mode change, once the calls it
+  ended froze their identity and once a switch onto the analog monitor the front end has queued is taken
+  (`ui_commit_mode_identity()`: refused where it lands, the session goes back with its identity), an `[edacs]`
+  addressing mode a config apply sets without a `[mode]`, a RadioReference import's EDACS variant and the EDACS
+  addressing mode toggle (after its calls ended, which keep their site) run `dsd_rxid_note_decoder_settings()`, which
+  drops a record of a protocol the settings no longer decode and an EDACS record read under the other addressing mode
+  (`edacs_ea_mode`; an EDACS note under the other mode drops it as well). The no-carrier pass, a SIM no-carrier, the ESK
+  toggle, inversion and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change no
+  received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
+  Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
+  `ENGINE_PROTOCOL_DISPATCH`, and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
+  conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -2745,11 +2747,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   Call Info lines (`dsd_ncurses_printer.c`: P25 NAC/WACN/SYS/RFSS/SITE, the `Site:` LRA in `ncurses_p25_display.c`, DMR
   brand/site/XPT free LCN/rest LSN/system code, NXDN location and IDAS fields (which of the two lines shows is the kind
   of site the record names, the decoder's location category only while it names none), the EDACS site header, M17 CAN,
-  `Freq:`) keep their own column formats and read the record's parts directly, each only while the record is of that
-  section's family, so a section the `ncurses_last_synctype` latch still picks after a boundary prints dashes. A
-  hand-set Phase 2 seed prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`,
-  `UI_NCURSES_PRINTER_HELPERS`, `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`,
-  `UI_QT_METRICS_MODEL`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
+  the DMR and dPMR colour codes and the NXDN RAN, all kept through a sync loss as the record keeps them, `Freq:`) keep
+  their own column formats and read the record's parts directly, each only while the record is of that section's family,
+  so a section the `ncurses_last_synctype` latch still picks after a boundary prints dashes. A hand-set Phase 2 seed
+  prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
+  `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`, `UI_QT_METRICS_MODEL`,
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
