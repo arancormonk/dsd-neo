@@ -7376,6 +7376,9 @@ p25_lockout_snapshot_from_observation(const p25_sm_ctx_t* ctx, const dsd_state* 
     call->frequency_hz = p25_lockout_grant_frequency(ctx, slot, target, is_group);
     call->service_options = (uint16_t)svc_bits;
     call->crypto = DSD_CALL_CRYPTO_ENCRYPTED;
+    /* The grant was heard on this carrier: its row names the system the record received here, as a canonical call's
+       does (dsd_call_snapshot::rx_id_epoch). */
+    call->rx_id_epoch = state->rx_id.epoch;
 }
 
 static int

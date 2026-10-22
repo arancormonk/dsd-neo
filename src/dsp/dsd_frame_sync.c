@@ -2058,64 +2058,40 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
 }
 #endif
 
+/* Each protocol's matcher, in the order the hunt tries them, with the most symbols its frame reads back from the symbol
+   its sync ends on: the windows its matcher reads (the sync word, which also warms the slicer up) and what its decoder
+   takes from the hunt's history or a rolling buffer before the sync. X2-TDMA voice reads 144 dibits back from
+   dibit_buf_p (data 90), DMR 90 from dmr_payload_p (the 66 before the sync and the sync), a TETRA normal burst's block
+   1 lies up to 128 symbols back in the history (a synchronisation or control burst's 79); the other protocols read
+   their frames forward from the sync, so theirs is the sync word's window. After a carrier boundary or a trunk-scan
+   target switch (dsd_state_carrier_settling()) a matcher waits until that much is the new carrier's: a frame whose sync
+   the hunt found after the change but which began on the carrier left would decode, and note identity, from the carrier
+   left's dibits, past every decoder's own carrier check, which starts at dispatch. A protocol that reads nothing before
+   its sync takes the new carrier's first sync at once. */
+typedef int (*frame_sync_try_fn)(frame_sync_match_ctx* ctx);
+
+static const struct {
+    frame_sync_try_fn try_match;
+    uint64_t lookback;
+} k_frame_sync_tries[] = {
+    {frame_sync_try_p25p1, 24U},  {frame_sync_try_x2tdma, 144U}, {frame_sync_try_ysf, 20U},
+    {frame_sync_try_m17, 8U},     {frame_sync_try_p25p2, 20U},   {frame_sync_try_dpmr, 12U},
+    {frame_sync_try_tetra, 128U}, {frame_sync_try_dmr, 90U},     {frame_sync_try_provoice, 48U},
+    {frame_sync_try_dstar, 24U},  {frame_sync_try_nxdn, 16U},    {frame_sync_try_provoice_conventional, 32U},
+};
+
 static int
 frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
-    int sync_type = frame_sync_try_p25p1(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
+    for (size_t i = 0U; i < sizeof(k_frame_sync_tries) / sizeof(k_frame_sync_tries[0]); i++) {
+        if (dsd_state_carrier_settling(ctx->state, k_frame_sync_tries[i].lookback)) {
+            continue;
+        }
+        const int sync_type = k_frame_sync_tries[i].try_match(ctx);
+        if (sync_type != DSD_SYNC_NONE) {
+            return sync_type;
+        }
     }
-
-    sync_type = frame_sync_try_x2tdma(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_ysf(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_m17(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_p25p2(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_dpmr(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_tetra(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_dmr(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_provoice(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_dstar(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    sync_type = frame_sync_try_nxdn(ctx);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-
-    return frame_sync_try_provoice_conventional(ctx);
+    return DSD_SYNC_NONE;
 }
 
 /* Every accept the sync hunt makes passes through here, which is where the symbol-timing
@@ -3966,14 +3942,6 @@ frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state)
     }
 }
 
-/* The most symbols a frame reads back from the symbol its sync ends on: the sync word and what a decoder takes from the
-   hunt's history or a rolling buffer before it (X2-TDMA voice 144 dibits from dibit_buf_p, DMR 90 from dmr_payload_p,
-   a TETRA burst's block 1 from the 128-symbol history). After a carrier boundary or a trunk-scan target switch no
-   window is matched until that much is the new carrier's: a frame that began on the carrier left, its sync found after
-   the change, would otherwise decode, and note identity, from the carrier left's dibits on the new carrier, past every
-   decoder's own carrier check, which starts at dispatch. */
-#define FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS 144U
-
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -4018,7 +3986,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.dibit = frame_sync_process_dibit_and_payload(opts, state, rt.symbol);
         frame_sync_history_push(&rt, (char)('0' + (rt.dibit & 0x3)));
 
-        if (rt.history_count >= 8 && !dsd_state_carrier_settling(state, FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS)) {
+        if (rt.history_count >= 8) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
                 g_unsynced_dmr_dump_symbols = 0;

@@ -1006,7 +1006,9 @@ suite runs under this compiler.
   last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends
   the call) counts, identity received after the end does not. A record of another carrier, or no capture, leaves the row
   what it took last, so a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
-  switch never takes the next carrier's. Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
+  switch never takes the next carrier's. The synthetic snapshot a noncanonical P25 encryption lockout notice renders
+  (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch, as the grant was heard on this carrier
+  (`P25_P1_LOCKOUT_EVENTS`). Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -1475,9 +1477,10 @@ suite runs under this compiler.
   replay retune never notes into the record the boundary reset, whichever decoder's own carrier check comes later. That
   gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
-  mark the symbol clock (`dsd_state_note_carrier_change()`), and `getFrameSync()` matches no window until
-  `FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS` (144) symbols of the new carrier are in (`dsd_state_carrier_settling()`;
-  `FRAME_SYNC_DMR_WAV_RATE`). Another value of a valid access code on the same carrier is another system sharing it
+  mark the symbol clock (`dsd_state_note_carrier_change()`), and each protocol's matcher in `getFrameSync()` waits until
+  what its frame reads back (`k_frame_sync_tries`: its sync window, DMR 90, X2-TDMA 144, TETRA 128) is the new
+  carrier's (`dsd_state_carrier_settling()`; `FRAME_SYNC_DMR_WAV_RATE`); a protocol that reads nothing before its sync
+  (P25 Phase 1, 24) takes the new carrier's first sync at once. Another value of a valid access code on the same carrier is another system sharing it
   (co-channel DMR/dPMR colour codes, P25 NACs, NXDN RANs): the family's other parts and the control channel frequency go
   (an M17 CAN, per transmission, drops nothing; a trunk tune drops the code first, so a followed channel's is no
   change), and a note carrying both notes the code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep
@@ -2863,9 +2866,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `nxdn_cc_hunt_due()`), it leaves with no sample and sets
   `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and returns on at once, with no SPS hunt
   step and no no-sync hooks. After a carrier boundary or a trunk-scan target switch (`dsd_state_note_carrier_change()`)
-  the hunt matches no sync window until the 144 symbols a frame can read back from before its sync
-  (`FRAME_SYNC_PRESYNC_LOOKBACK_SYMBOLS`) are all the new carrier's (`dsd_state_carrier_settling()`), so no frame
-  decodes the carrier left's buffered dibits on the new carrier. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
+  each protocol's matcher waits until the symbols its frame reads back from before its sync (`k_frame_sync_tries`: the
+  sync window; DMR 90, X2-TDMA 144, TETRA 128 with their buffered pre-sync parts) are all the new carrier's
+  (`dsd_state_carrier_settling()`), so no frame decodes the carrier left's buffered dibits on the new carrier, and a
+  protocol that reads only forward (P25 Phase 1) loses no frame. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
   gives up the same way between attempts, which connect within a bound to the address the connection was made to
   (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices; "no socket" is `DSD_INVALID_SOCKET`.
   A file or TCP input that ends marks `dsd_state::input_fallback_pending`: frame decoding reads zeros until its frame

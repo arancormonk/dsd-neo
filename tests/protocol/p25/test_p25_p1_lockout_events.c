@@ -15,6 +15,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -447,6 +448,46 @@ test_noncanonical_lockout_row_names_the_voice_channel(void) {
     return rc;
 }
 
+/* The synthetic snapshot of a noncanonical lockout notice belongs to the carrier the grant was heard on: after a carrier
+ * reset (a nonzero record epoch) its row still names the system and site received there, not just the NAC. */
+static int
+test_noncanonical_lockout_row_names_the_received_system(void) {
+    int rc = 0;
+    const int tg = TEST_TG + 400;
+    reset_test_state();
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    tune_group_grant(tg);
+    g_opts.rtlsdr_center_freq = 851500000U;
+    dsd_rxid_reset(&g_state);
+    dsd_rxid_reset(&g_state);
+    dsd_rxid_note_p25_network(&g_state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_p25_site(&g_state, 0x348U, 3U, 21U);
+    rc |= expect("record epoch is nonzero", g_state.rx_id.epoch != 0U);
+    const dsd_call_observation private_call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = (uint64_t)tg,
+        .policy_target_id = (uint64_t)tg,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+    };
+    (void)dsd_call_state_observe(&g_state, &private_call, DSD_CALL_BOUNDARY_BEGIN);
+    g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    p25_sm_emit_enc(&g_opts, &g_state, 0, TEST_ALGID, TEST_KEYID, tg);
+
+    const Event_History* row = committed_lockout_row();
+    rc |= expect("lockout row committed", row != NULL);
+    if (row != NULL
+        && (row->sys_id1 != 0xBEE00U || row->sys_id2 != 0x348U || row->sys_id4 != 3U || row->sys_id5 != 21U)) {
+        DSD_FPRINTF(stderr, "FAIL: lockout row system %X.%X rfss %u site %u (%s), want BEE00.348 3 21\n",
+                    (unsigned)row->sys_id1, (unsigned)row->sys_id2, (unsigned)row->sys_id4, (unsigned)row->sys_id5,
+                    row->sysid_string);
+        rc = 1;
+    }
+    return rc;
+}
+
 /* A tuned assignment whose HDU ESS resolves before any LCW or voice evidence:
  * the epoch opened to hold the classification must carry the assignment
  * identity. Minting identity-less split the call across two rows when the
@@ -534,6 +575,7 @@ main(void) {
     rc |= test_lockout_ess_window_slides_with_repeats();
     rc |= test_non_matching_lockout_still_records_epoch();
     rc |= test_noncanonical_lockout_row_names_the_voice_channel();
+    rc |= test_noncanonical_lockout_row_names_the_received_system();
     rc |= test_identity_pending_ess_still_opens_call();
     rc |= test_reused_key_after_new_assignment_opens_call();
     rc |= test_ess_after_cryptoless_end_still_opens_call();

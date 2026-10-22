@@ -561,44 +561,66 @@ run_nxdn_sync_confirmation_matrix(void) {
 }
 
 /* A carrier boundary while the hunt reads (an I/Q replay retune inside getSymbol()): a sync word that ends soon after
-   it heads a frame whose buffered part (DMR's 66 dibits before the sync, X2-TDMA's 144, TETRA's block 1) the carrier
-   left sent, so no sync is taken until everything a decoder reads back is the new carrier's. The next sync is. */
+   it heads a frame whose decoder reads back from before the sync (DMR's 66 buffered dibits, X2-TDMA's 144, TETRA's
+   block 1) what the carrier left sent, so such a sync is held until everything that protocol reads back is the new
+   carrier's; the next one is taken. A protocol that reads nothing before its sync (P25 Phase 1) takes a sync word of
+   the new carrier at once: holding it would lose the frame (an HDU's call and encryption metadata). */
 static int
-run_sync_after_carrier_boundary_case(void) {
+run_boundary_sync(const char* label, const char* sync, int expected_sync, int profile_index, size_t lead_fill,
+                  size_t boundary_at, size_t want_at) {
     static dsd_opts opts;
     static dsd_state state;
-    static char pattern[24 + 200 + 24 + 1];
-    const size_t sync_len = strlen(DMR_BS_DATA_SYNC);
-    DSD_MEMCPY(pattern, DMR_BS_DATA_SYNC, sync_len);
-    DSD_MEMSET(pattern + sync_len, '1', 200U);
-    DSD_MEMCPY(pattern + sync_len + 200U, DMR_BS_DATA_SYNC, sync_len);
-    pattern[(2U * sync_len) + 200U] = '\0';
-    int rc = 0;
-    for (int boundary = 0; boundary < 2; boundary++) {
-        init_common_wav_opts_state(&opts, &state);
-        if (!init_state_buffers(&state)) {
-            DSD_FPRINTF(stderr, "failed to allocate frame-sync state buffers\n");
-            return 1;
-        }
-        opts.frame_dstar = opts.frame_x2tdma = opts.frame_p25p1 = opts.frame_p25p2 = 0;
-        opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_dpmr = opts.frame_provoice = 0;
-        opts.frame_ysf = opts.frame_m17 = 0;
-        g_symbol_index = 0U;
-        g_sync_pattern = pattern;
-        g_boundary_at = boundary ? 10U : SIZE_MAX;
-        dsd_frame_sync_reset_mod_state();
+    static char pattern[64 + 24 + 200 + 24 + 1];
+    const size_t sync_len = strlen(sync);
+    DSD_MEMSET(pattern, '1', lead_fill);
+    DSD_MEMCPY(pattern + lead_fill, sync, sync_len);
+    DSD_MEMSET(pattern + lead_fill + sync_len, '1', 200U);
+    DSD_MEMCPY(pattern + lead_fill + sync_len + 200U, sync, sync_len);
+    pattern[lead_fill + (2U * sync_len) + 200U] = '\0';
 
-        const int sync = getFrameSync(&opts, &state);
-        const size_t want_at = boundary ? strlen(pattern) : 24U;
-        if (sync != DSD_SYNC_DMR_BS_DATA_POS || g_symbol_index != want_at) {
-            DSD_FPRINTF(stderr, "%s: sync %d after %zu symbols, expected %d after %zu\n",
-                        boundary ? "boundary inside the first sync" : "no boundary", sync, g_symbol_index,
-                        DSD_SYNC_DMR_BS_DATA_POS, want_at);
-            rc = 1;
-        }
-        free_state_buffers(&state);
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate frame-sync state buffers\n");
+        return 1;
     }
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = 0;
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_dpmr = opts.frame_provoice = 0;
+    opts.frame_ysf = opts.frame_m17 = 0;
+    if (DSD_SYNC_IS_DMR(expected_sync)) {
+        opts.frame_dmr = 1;
+    } else if (DSD_SYNC_IS_P25P1(expected_sync)) {
+        opts.frame_p25p1 = 1;
+    } else {
+        opts.frame_x2tdma = 1;
+    }
+    state.sps_hunt_idx = profile_index;
+    set_profile_timing(&opts, &state, profile_index);
+    g_symbol_index = 0U;
+    g_sync_pattern = pattern;
+    g_boundary_at = boundary_at;
+    dsd_frame_sync_reset_mod_state();
+
+    const int got = getFrameSync(&opts, &state);
+    int rc = 0;
+    if (got != expected_sync || g_symbol_index != want_at) {
+        DSD_FPRINTF(stderr, "%s: sync %d after %zu symbols, expected %d after %zu\n", label, got, g_symbol_index,
+                    expected_sync, want_at);
+        rc = 1;
+    }
+    free_state_buffers(&state);
     g_boundary_at = SIZE_MAX;
+    return rc;
+}
+
+static int
+run_sync_after_carrier_boundary_case(void) {
+    int rc = 0;
+    rc |= run_boundary_sync("dmr, no boundary", DMR_BS_DATA_SYNC, DSD_SYNC_DMR_BS_DATA_POS, 0, 0U, SIZE_MAX, 24U);
+    rc |= run_boundary_sync("dmr, boundary inside the first sync", DMR_BS_DATA_SYNC, DSD_SYNC_DMR_BS_DATA_POS, 0, 0U,
+                            10U, 248U);
+    rc |= run_boundary_sync("p25 phase 1 right after a boundary", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0, 32U, 30U, 56U);
+    rc |= run_boundary_sync("x2-tdma right after a boundary", X2TDMA_BS_DATA_SYNC, DSD_SYNC_X2TDMA_DATA_POS, 3, 32U,
+                            30U, 280U);
     return rc;
 }
 
