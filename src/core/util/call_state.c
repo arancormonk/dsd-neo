@@ -943,6 +943,11 @@ call_state_capture_ended_identity(const dsd_state* state, dsd_call_snapshot* sna
     } else {
         DSD_MEMSET(&snapshot->ended_rx_id, 0, sizeof(snapshot->ended_rx_id));
     }
+    const uint8_t mode = state->tetra_pub.mode;
+    snapshot->ended_tetra_direct = (DSD_SYNC_IS_TETRA(snapshot->protocol) && mode >= DSD_TETRA_MODE_DMO_DIRECT
+                                    && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY)
+                                       ? 1U
+                                       : 0U;
 }
 
 int

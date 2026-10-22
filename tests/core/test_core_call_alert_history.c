@@ -4018,6 +4018,21 @@ test_system_identity_comes_from_the_received_record(void) {
     item = render_code_row(&opts, &state, event_history, DSD_SYNC_TETRA_NDB_POS);
     rc |= expect_str_eq("TETRA direct mode sysid", item->sysid_string, "TETRA_DMO");
     rc |= expect_int("TETRA direct mode ids", item->sys_id1 == 0U && item->sys_id2 == 0U && item->sys_id3 == 1U, 1);
+    /* A direct mode call that ends (a retune) before any render keeps its direct mode mark: direct mode empties the
+       record, so the end capture holds no network, and the boundary resets the TETRA mode before the row renders. */
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_tetra_direct_mode(&state);
+    state.tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_TETRA_NDB_POS, DSD_CALL_KIND_GROUP_VOICE, 51002U, 41001U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    state.tetra_pub.mode = DSD_TETRA_MODE_NONE;
+    dsd_rxid_reset(&state);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    item = &event_history[0].Event_History_Items[1];
+    rc |= expect_str_eq("TETRA direct mode ended before a render", item->sysid_string, "TETRA_DMO");
+    rc |= expect_int("TETRA direct mode ended ids", item->sys_id3 == 1U, 1);
 
     dsd_state_ext_free_all(&state);
     return rc;

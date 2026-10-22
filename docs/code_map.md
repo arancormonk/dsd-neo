@@ -1007,7 +1007,9 @@ suite runs under this compiler.
   last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends
   the call) counts, identity received after the end does not. A record of another carrier, or no capture, leaves the row
   what it took last, so a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
-  switch never takes the next carrier's. The synthetic snapshot a noncanonical P25 encryption lockout notice renders
+  switch never takes the next carrier's. Direct mode empties the record, so the end also notes whether a TETRA call
+  ended on a direct mode carrier (`dsd_call_snapshot::ended_tetra_direct`), and the ended row keeps its DMO mark from
+  that. The synthetic snapshot a noncanonical P25 encryption lockout notice renders
   (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch, as the grant was heard on this carrier
   (`P25_P1_LOCKOUT_EVENTS`). Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with

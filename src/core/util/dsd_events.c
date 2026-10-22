@@ -1631,7 +1631,13 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
     if (call->phase == DSD_CALL_PHASE_ACTIVE && opts->playfiles == 0) {
         watchdog_event_system_from_record(state, call, family, sys);
     } else if (call->phase == DSD_CALL_PHASE_ENDED && opts->playfiles == 0) {
-        watchdog_event_system_take(&call->ended_rx_id, family, sys); /* the record when it ended */
+        if (call->ended_tetra_direct != 0U) {
+            sys[0] = 0U;
+            sys[1] = 0U;
+            sys[2] = 1U; /* direct mode leaves the record empty: the mark is the call's own */
+        } else {
+            watchdog_event_system_take(&call->ended_rx_id, family, sys); /* the record when it ended */
+        }
     }
     ctx->sys_id1 = sys[0];
     ctx->sys_id2 = sys[1];

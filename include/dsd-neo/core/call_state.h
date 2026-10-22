@@ -298,6 +298,9 @@ typedef struct {
      * on another carrier, does not.
      */
     dsd_received_identity ended_rx_id;
+    /** 1 when a TETRA call ended on a direct mode carrier, which belongs to no network and leaves ended_rx_id empty;
+     * call history marks the ended row direct mode from it. */
+    uint8_t ended_tetra_direct;
 } dsd_call_snapshot;
 
 typedef struct {
