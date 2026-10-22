@@ -4239,6 +4239,42 @@ test_system_identity_takes_dependent_invalidations(void) {
         }
         rc |= expect_str_eq(at_end ? "another nac: the ended call keeps its system" : "another nac: the row keeps it",
                             item->sysid_string, "P25_BEE00348293_3_21");
+
+        /* A carrier that had sent only its colour code, then another code and a Tier III system: neither is the
+           call's. */
+        reset_fixture(&opts, &state, event_history);
+        state.dmr_color_code = 1U;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS);
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+        dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_int(at_end ? "another colour code: the ended call takes no system"
+                                : "another colour code: the row takes no system",
+                         (int)item->sys_id1, 0);
+
+        /* The same for a NAC-only P25 carrier. */
+        reset_fixture(&opts, &state, event_history);
+        state.nac = 0x293;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+        item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x294U);
+        dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_str_eq(at_end ? "another nac only: the ended call takes no system" : "another nac only: the row",
+                            item->sysid_string, "P25_293");
     }
     dsd_state_ext_free_all(&state);
     return rc;

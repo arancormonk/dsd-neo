@@ -192,7 +192,9 @@ dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uin
         return;
     }
     if (rxid_has(id, DSD_RXID_ACCESS) && (id->access_kind != kind || id->access != value)) {
-        rxid_invalidate(id, rxid_system_parts(id->family)); /* another system on this carrier */
+        /* Another system on this carrier: another identity, though the old one had sent nothing but its code. */
+        rxid_drop(id, rxid_system_parts(id->family));
+        id->epoch++;
     }
     id->access_kind = kind;
     id->access = value;
@@ -484,11 +486,12 @@ dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
         rxid_invalidate(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE
                                 | DSD_RXID_CC_FREQ);
     } else if (rxid_has(id, DSD_RXID_NXDN_TYPED_SYSTEM) && id->nxdn_typed_site != site) {
-        rxid_invalidate(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ); /* another site */
+        /* Another site: its Area bit was the old site's (NXDN TS 1-E 6.6.3). */
+        rxid_invalidate(id, DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_CC_FREQ);
     }
     if (rxid_has(id, DSD_RXID_NXDN_IDAS_SITE) && id->nxdn_idas_site_code != site) {
-        /* The SCCH site ID named another site: the newer system ID replaces it. */
-        rxid_invalidate(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_CC_FREQ);
+        /* The SCCH site ID named another site: the newer system ID replaces it, and the Area that site's SCCH sent. */
+        rxid_invalidate(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_CC_FREQ);
     }
     id->nxdn_typed_sys = sys;
     id->nxdn_typed_site = site;

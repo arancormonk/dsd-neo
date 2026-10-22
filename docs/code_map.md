@@ -1480,46 +1480,48 @@ suite runs under this compiler.
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
   mark the symbol clock (`dsd_state_note_carrier_change()`; a change that runs while `getSymbol()` reads a symbol,
   `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none), and each
-  protocol's matcher in `getFrameSync()` waits until what its frame reads back (`k_frame_sync_tries`: its sync window,
-  DMR 90, X2-TDMA 144, TETRA 128) is the new carrier's (`dsd_state_carrier_settling()`; `FRAME_SYNC_DMR_WAV_RATE`); a
-  protocol that reads nothing before its sync (P25 Phase 1, 24) takes the new carrier's first sync at once. Another
-  value of a valid access code on the same carrier is another system sharing it (co-channel DMR/dPMR colour codes, P25
-  NACs, NXDN RANs): the family's other parts and the control channel frequency go (an M17 CAN, per transmission, drops
-  nothing; a trunk tune drops the code first, so a followed channel's is no change), and a note carrying both notes the
-  code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep the newer; another Type-D system drops the
-  SCCH area and site. NXDN Type-C (a location ID) and IDAS Type-D parts exclude each other: a checked note of one drops
-  the other kind's parts and the control channel (a RAN is Type-C's: a Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and
-  FACCH3, NXDN TS 1-E 4.2.3, none of which carries one; so a Type-D note drops a location and a RAN, and a RAN drops the
-  IDAS parts). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`: Tier III, Capacity Plus, Connect Plus, Hytera XPT),
-  named by a brand, a site text prefix, a rest LSN, a system code or a free LCN; the colour code stays. The TETRA cell
-  keeps its colour (`tetra_colour`) apart from the displayed access code, so after a trunk tune another colour is still
-  another cell; a SYSINFO of another cell with the same network and colour (`tetra_bsch_sysinfo_cell()`) drops the last
-  cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). A note that invalidates parts because it names
-  another system, site, cell or subtype (another access code on the carrier, another P25 network or site, a Capacity
-  Plus site change, which also drops the old site's rest LSN and free LCN, an IDAS area) moves the record's epoch
-  (`rxid_invalidate()`), so a call's history row, which takes the record only under the epoch it was heard on, keeps
-  that identity and is never mixed with the next one. The DMR vendor (`dsd_rxid_note_dmr_vendor()`, the feature set ID
-  of a genuinely checked LC or CSBK) is a part of its own, apart from the trunking brand; the terminal header shows its
-  name (Hytera, Tait, Motorola). A tune the user asked for while trunking, which keeps the decoder's trunking state and
-  so is no carrier boundary, forgets the record too (D4: any user move), after the calls it ended took theirs: a
-  frequency entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to
-  CC, and a channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks the carrier change for the
-  frame sync). A trunking follow keeps it, a lockout's or skip's return to the control channel included (the decoder
-  leaves the call as at its end); every other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y`
-  step, a trunk-scan target, a signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site
-  forget it in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts
-  (keeping the colour code the reset keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a
-  decode mode change, once the calls it ended froze their identity and once a switch onto the analog monitor the front
-  end has queued is taken (`ui_commit_mode_identity()`: refused where it lands, the session goes back with its
-  identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference import's EDACS
-  variant and the EDACS addressing mode toggle (after its calls ended, which keep their site) run
-  `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an EDACS
-  record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as well).
-  The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the
-  tuner release and the scan resets change no received identity: the carrier and the reading of its messages stay (a
-  carrier boundary resets the record anyway). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
-  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, and end to end
-  `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another system).
+  protocol's matcher in `getFrameSync()` waits until what its frame reads back (`k_frame_sync_tries`, then the matched
+  burst's own, `frame_sync_burst_settling()`: its sync window; DMR 90, X2-TDMA data 90 and voice 144, TETRA control 57,
+  synchronisation 79 and normal bursts 126, EDACS 48) is the new carrier's (`dsd_state_carrier_settling()`;
+  `FRAME_SYNC_DMR_WAV_RATE`); a protocol that reads nothing before its sync (P25 Phase 1, 24) takes the new carrier's
+  first sync at once. Another value of a valid access code on the same carrier is another system sharing it (co-channel
+  DMR/dPMR colour codes, P25 NACs, NXDN RANs): the family's other parts and the control channel frequency go (an M17
+  CAN, per transmission, drops nothing; a trunk tune drops the code first, so a followed channel's is no change), and a
+  note carrying both notes the code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep the newer;
+  another Type-D system drops the SCCH area and site. NXDN Type-C (a location ID) and IDAS Type-D parts exclude each
+  other: a checked note of one drops the other kind's parts and the control channel (a RAN is Type-C's: a Type-D RTCH2
+  carries SCCH, FACCH1, UDCH2 and FACCH3, NXDN TS 1-E 4.2.3, none of which carries one; so a Type-D note drops a
+  location and a RAN, and a RAN drops the IDAS parts). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`: Tier III,
+  Capacity Plus, Connect Plus, Hytera XPT), named by a brand, a site text prefix, a rest LSN, a system code or a free
+  LCN; the colour code stays. The TETRA cell keeps its colour (`tetra_colour`) apart from the displayed access code, so
+  after a trunk tune another colour is still another cell; a SYSINFO of another cell with the same network and colour
+  (`tetra_bsch_sysinfo_cell()`) drops the last cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). A
+  note that invalidates parts because it names another system, site, cell or subtype (another access code on the
+  carrier, another P25 network or site, a Capacity Plus site change, which also drops the old site's rest LSN and free
+  LCN, an IDAS area) moves the record's epoch (`rxid_invalidate()`; another access code moves it even when the record
+  held nothing else), so a call's history row, which takes the record only under the epoch it was heard on, keeps that
+  identity and is never mixed with the next one. The DMR vendor (`dsd_rxid_note_dmr_vendor()`, the feature set ID of a
+  genuinely checked LC or CSBK) is a part of its own, apart from the trunking brand; the terminal header shows its name
+  (Hytera, Tait, Motorola). A tune the user asked for while trunking, which keeps the decoder's trunking state and so is
+  no carrier boundary, forgets the record too (D4: any user move), after the calls it ended took theirs: a frequency
+  entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to CC, and a
+  channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks the carrier change for the frame
+  sync). A trunking follow keeps it, a lockout's or skip's return to the control channel included (the decoder leaves
+  the call as at its end); every other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y` step, a
+  trunk-scan target, a signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site forget it
+  in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the
+  colour code the reset keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a decode mode
+  change, once the calls it ended froze their identity and once a switch onto the analog monitor the front end has
+  queued is taken (`ui_commit_mode_identity()`: refused where it lands, the session goes back with its identity), an
+  `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference import's EDACS variant and the
+  EDACS addressing mode toggle (after its calls ended, which keep their site) run `dsd_rxid_note_decoder_settings()`,
+  which drops a record of a protocol the settings no longer decode and an EDACS record read under the other addressing
+  mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as well). The no-carrier pass, a SIM no-carrier,
+  the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change
+  no received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
+  Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
+  `ENGINE_PROTOCOL_DISPATCH`, and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
+  conventional carrier of another system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -2873,30 +2875,31 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   still advance per sample. `mmse_interp.cpp` applies each interpolated tap directly to both interleaved I/Q
   components, preserving the reversed-tap convention and sample-window bounds. Tests: `DSP_FLL_BAND_EDGE`
   (independent complex convolution over every history position), `DSP_MMSE_INTERP`, and `DSP_COSTAS`.
-- Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync)
-  waits on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted
-  a stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
+- Silent inputs and input ends in `dsd_symbol.c` (issue #634). A frame-sync hunt read (`getSymbol()` without sync) waits
+  on a UDP input in 100 ms slices (`udp_read_sample_wait` in the network-audio hooks); once the silence has lasted a
+  stream pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`, the gap the analog receiver already takes for a boundary) and the
   runtime's controls-pending query reports a queued command, or decoder-thread trunking timers are due
   (`dsd_frame_sync_hook_decoder_ticks_due()`: a startup control-channel hunt armed, running or due to arm
-  (`p25_sm_cold_start_due()`, `dmr_sm_cold_start_due()`; with trunking turned off too, until the tick that lets it
-  go), DMR recovery under way, issue #703, or the NXDN control-channel hunt armed, running or due,
-  `nxdn_cc_hunt_due()`), it leaves with no sample and sets
-  `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and returns on at once, with no SPS hunt
-  step and no no-sync hooks. After a carrier boundary or a trunk-scan target switch (`dsd_state_note_carrier_change()`)
-  each protocol's matcher waits until the symbols its frame reads back from before its sync (`k_frame_sync_tries`: the
-  sync window; DMR 90, X2-TDMA 144, TETRA 128 with their buffered pre-sync parts) are all the new carrier's
+  (`p25_sm_cold_start_due()`, `dmr_sm_cold_start_due()`; with trunking turned off too, until the tick that lets it go),
+  DMR recovery under way, issue #703, or the NXDN control-channel hunt armed, running or due, `nxdn_cc_hunt_due()`), it
+  leaves with no sample and sets `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and
+  returns on at once, with no SPS hunt step and no no-sync hooks. After a carrier boundary or a trunk-scan target switch
+  (`dsd_state_note_carrier_change()`) each protocol's matcher waits until the symbols its frame reads back from before
+  its sync (`k_frame_sync_tries`, then the matched burst's own before the matcher acts on it,
+  `frame_sync_burst_settling()`: the sync window; DMR 90, X2-TDMA data 90 and voice 144, TETRA control 57,
+  synchronisation 79 and normal bursts 126 with their buffered pre-sync parts) are all the new carrier's
   (`dsd_state_carrier_settling()`), so no frame decodes the carrier left's buffered dibits on the new carrier, and a
-  protocol that reads only forward (P25 Phase 1) loses no frame. A shorter gap, frame decoding, or no queued command keeps waiting. The M17 TCP reconnect
-  gives up the same way between attempts, which connect within a bound to the address the connection was made to
-  (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices; "no socket" is `DSD_INVALID_SOCKET`.
-  A file or TCP input that ends marks `dsd_state::input_fallback_pending`: frame decoding reads zeros until its frame
-  ends (a symbol capture's dibits are erasures then, reliability 0, never its last dibit repeated at full confidence),
-  and the hunt's read hands the switch to Pulse to the engine (`dsd_engine_input_fallback()`).
-  `dsd_symbol_note_timing_rate()` tells the RTL monitor output's rate rescale which rate the timing is in when an input
-  switch returns to the radio. Tests: `DSP_INPUT_INTERRUPT`, `DSP_WAV_INPUT_EOF`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`.
-  The first crossing a frame records is still pending when the next hunt starts and moves the grid on its first symbol;
-  it was measured against the thresholds the warm start set, which are still in force, and dropping it was measured
-  worse on faNXDN (issue #729), so it stays.
+  protocol that reads only forward (P25 Phase 1) loses no frame. A shorter gap, frame decoding, or no queued command
+  keeps waiting. The M17 TCP reconnect gives up the same way between attempts, which connect within a bound to the
+  address the connection was made to (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices; "no
+  socket" is `DSD_INVALID_SOCKET`. A file or TCP input that ends marks `dsd_state::input_fallback_pending`: frame
+  decoding reads zeros until its frame ends (a symbol capture's dibits are erasures then, reliability 0, never its last
+  dibit repeated at full confidence), and the hunt's read hands the switch to Pulse to the engine
+  (`dsd_engine_input_fallback()`). `dsd_symbol_note_timing_rate()` tells the RTL monitor output's rate rescale which
+  rate the timing is in when an input switch returns to the radio. Tests: `DSP_INPUT_INTERRUPT`, `DSP_WAV_INPUT_EOF`,
+  `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`. The first crossing a frame records is still pending when the next hunt starts and
+  moves the grid on its first symbol; it was measured against the thresholds the warm start set, which are still in
+  force, and dropping it was measured worse on faNXDN (issue #729), so it stays.
 - Sync anchor (`symbol_anchor.c`, `include/dsd-neo/dsp/symbol_anchor.h`, issue #729). A decoder that reads burst after
   burst without returning to the hunt (DMR BS for a whole repeater call) left the grid open loop, so a TX/RX clock
   offset walked it off the symbols until a sync was lost. `dsd_symbol_note_sync_anchor()` names a sync word the grid

@@ -612,6 +612,30 @@ test_invalidation_moves_the_epoch(void) {
     dsd_rxid_note_p25_network(state, 0xBEE00U, 0x222U);
     expect_u("another system moves the epoch", id->epoch, epoch + 2U);
 
+    /* An access code alone, replaced by another: another system on the carrier, though nothing else was received. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    const uint32_t dmr_epoch = id->epoch;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    expect_u("the same colour code keeps the epoch", id->epoch, dmr_epoch);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_u("another colour code alone moves the epoch", id->epoch, dmr_epoch + 1U);
+    dsd_rxid_trunk_tune(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    expect_u("a followed channel's code after a tune keeps it", id->epoch, dmr_epoch + 1U);
+
+    /* A Type-D SRV_INFO naming another site of the same system: the old site's Area goes with its site ID. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_idas_area(state, 0U);
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 5U);
+    const uint32_t idas_epoch = id->epoch;
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 7U);
+    expect_u("srv_info another site drops the old area", id->valid, DSD_RXID_NXDN_TYPED_SYSTEM);
+    expect_u("srv_info another site moves the epoch", id->epoch, idas_epoch + 1U);
+    dsd_rxid_note_nxdn_idas_area(state, 0U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 9U);
+    expect_u("srv_info another typed site drops the area too", id->valid, DSD_RXID_NXDN_TYPED_SYSTEM);
+
     /* A Capacity Plus site change: the rest channel the old site named goes with it. */
     dsd_rxid_reset(state);
     dsd_rxid_note_dmr_site_text(state, "Cap+ \xC2\xB7 Site 1");

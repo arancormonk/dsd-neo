@@ -411,6 +411,13 @@ frame_sync_p25p2_profile_active(const frame_sync_match_ctx* ctx) {
 static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
 static int frame_sync_profile_uses_gfsk_exclusively(const dsd_opts* opts, int profile_index);
 
+/* Whether a burst whose frame reads @p lookback symbols back from the one its sync ends on may still hold a symbol of
+   the carrier left (dsd_state_carrier_settling()): a matcher asks it for the burst it matched, before it acts on it. */
+static inline int
+frame_sync_burst_settling(const frame_sync_match_ctx* ctx, uint64_t lookback) {
+    return dsd_state_carrier_settling(ctx->state, lookback);
+}
+
 static inline void
 frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
     dsd_state* state = ctx->state;
@@ -818,6 +825,11 @@ static int
 frame_sync_accept_x2tdma(frame_sync_match_ctx* ctx, int synctype, const char* label, int marks_first_frame) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
+    /* A voice burst's decoder reads 144 dibits back from dibit_buf_p, a data burst's 90. */
+    const int voice = synctype == DSD_SYNC_X2TDMA_VOICE_POS || synctype == DSD_SYNC_X2TDMA_VOICE_NEG;
+    if (frame_sync_burst_settling(ctx, voice ? 144U : 90U)) {
+        return DSD_SYNC_NONE;
+    }
     frame_sync_set_basic_lock(ctx);
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
     if (opts->errorbars == 1) {
@@ -1091,15 +1103,19 @@ frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
     dsd_state* state = ctx->state;
+    /* Training occupies ages lead..lead + 10. TMO downlink: AACH half 1 is ages 11..17 and block 1 is the 108 dibits
+     * at ages 18..125. DMO and the TMO normal uplink burst have no AACH, so block 1 sits right behind the training:
+     * ages 11..118 in direct mode, 13..120 on the uplink. */
+    const int follows = uplink || state->tetra_sync.block1_follows_training;
+    const uint64_t block1_back = (follows ? 11U : 18U) + (uint64_t)lead + 108U;
+    if (frame_sync_burst_settling(ctx, block1_back)) {
+        return DSD_SYNC_NONE;
+    }
     frame_sync_tetra_begin(ctx, phase_rot);
     /* NTS2 aliases inverted NTS1: keep the polarity the synchronisation burst set and only record which training
      * matched. */
     state->tetra_sync.nts2 = (uint8_t)(inverted ^ (state->tetra_sync.polarity ? 1 : 0));
     state->tetra_sync.cb = 0;
-    /* Training occupies ages lead..lead + 10. TMO downlink: AACH half 1 is ages 11..17 and block 1 is the 108 dibits
-     * at ages 18..125. DMO and the TMO normal uplink burst have no AACH, so block 1 sits right behind the training:
-     * ages 11..118 in direct mode, 13..120 on the uplink. */
-    const int follows = uplink || state->tetra_sync.block1_follows_training;
     frame_sync_tetra_capture_block1(ctx, 108, (follows ? 11 : 18) + lead);
     state->tetra_sync.aach1_valid =
         (uint8_t)(!follows
@@ -1118,7 +1134,8 @@ frame_sync_try_tetra_sb(frame_sync_match_ctx* ctx) {
     int phase_rot = 0;
     int inverted = 0;
     if (!tetra_training_derotation(ctx->synctest79 + 60, TETRA_SB_SSB_SYNC, INV_TETRA_SB_SSB_SYNC, 19, &phase_rot,
-                                   &inverted)) {
+                                   &inverted)
+        || frame_sync_burst_settling(ctx, 79U)) { /* its BSCH block and training: the 79 symbols back */
         return DSD_SYNC_NONE;
     }
     dsd_state* state = ctx->state;
@@ -1144,7 +1161,8 @@ frame_sync_try_tetra_cb(frame_sync_match_ctx* ctx) {
     }
     int phase_rot = 0;
     int inverted = 0;
-    if (!tetra_training_derotation(ctx->synctest79 + 64, TETRA_CB_SYNC, INV_TETRA_CB_SYNC, 15, &phase_rot, &inverted)) {
+    if (!tetra_training_derotation(ctx->synctest79 + 64, TETRA_CB_SYNC, INV_TETRA_CB_SYNC, 15, &phase_rot, &inverted)
+        || frame_sync_burst_settling(ctx, 57U)) { /* its 42 data dibits and 15 of training */
         return DSD_SYNC_NONE;
     }
     frame_sync_tetra_begin(ctx, phase_rot);
@@ -1835,7 +1853,8 @@ frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
         }
     }
 
-    if (frame_sync_match_window_ready(ctx, 48)) {
+    /* EDACS's 48-symbol sync and dotting: what its frame reads back. */
+    if (frame_sync_match_window_ready(ctx, 48) && !frame_sync_burst_settling(ctx, 48U)) {
         if (strcmp(ctx->synctest48, EDACS_SYNC) == 0) {
             return frame_sync_accept_edacs(ctx, DSD_SYNC_EDACS_NEG, "-EDACS");
         }
@@ -2058,26 +2077,28 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
 }
 #endif
 
-/* Each protocol's matcher, in the order the hunt tries them, with the most symbols its frame reads back from the symbol
-   its sync ends on: the windows its matcher reads (the sync word, which also warms the slicer up) and what its decoder
-   takes from the hunt's history or a rolling buffer before the sync. X2-TDMA voice reads 144 dibits back from
-   dibit_buf_p (data 90), DMR 90 from dmr_payload_p (the 66 before the sync and the sync), a TETRA normal burst's block
-   1 lies up to 128 symbols back in the history (a synchronisation or control burst's 79); the other protocols read
-   their frames forward from the sync, so theirs is the sync word's window. After a carrier boundary or a trunk-scan
-   target switch (dsd_state_carrier_settling()) a matcher waits until that much is the new carrier's: a frame whose sync
-   the hunt found after the change but which began on the carrier left would decode, and note identity, from the carrier
-   left's dibits, past every decoder's own carrier check, which starts at dispatch. A protocol that reads nothing before
-   its sync takes the new carrier's first sync at once. */
+/* Each protocol's matcher, in the order the hunt tries them, with the fewest symbols any frame it matches reads back
+   from the symbol its sync ends on: the window its matcher reads (the sync word, which also warms the slicer up) and
+   what its decoder takes from the hunt's history or a rolling buffer before the sync. After a carrier boundary or a
+   trunk-scan target switch (dsd_state_carrier_settling()) a matcher is not tried until that much is the new carrier's,
+   and one whose bursts read back further asks again for the burst it matched, before acting on it
+   (frame_sync_burst_settling()): an X2-TDMA data burst 90 dibits back from dibit_buf_p and a voice burst 144, a TETRA
+   control uplink burst 57, a synchronisation burst 79 and a normal burst its block 1, AACH half and training (126 on
+   the downlink), an EDACS sync 48 against ProVoice's 32. DMR reads 90 for every burst (the 66 before its sync and the
+   sync, from dmr_payload_p); the other protocols read their frames forward from the sync. A frame whose sync the hunt
+   found after the change but which began on the carrier left would decode, and note identity, from the carrier left's
+   dibits, past every decoder's own carrier check, which starts at dispatch; one that reads nothing before its sync is
+   taken at once. */
 typedef int (*frame_sync_try_fn)(frame_sync_match_ctx* ctx);
 
 static const struct {
     frame_sync_try_fn try_match;
     uint64_t lookback;
 } k_frame_sync_tries[] = {
-    {frame_sync_try_p25p1, 24U},  {frame_sync_try_x2tdma, 144U}, {frame_sync_try_ysf, 20U},
-    {frame_sync_try_m17, 8U},     {frame_sync_try_p25p2, 20U},   {frame_sync_try_dpmr, 12U},
-    {frame_sync_try_tetra, 128U}, {frame_sync_try_dmr, 90U},     {frame_sync_try_provoice, 48U},
-    {frame_sync_try_dstar, 24U},  {frame_sync_try_nxdn, 16U},    {frame_sync_try_provoice_conventional, 32U},
+    {frame_sync_try_p25p1, 24U}, {frame_sync_try_x2tdma, 24U}, {frame_sync_try_ysf, 20U},
+    {frame_sync_try_m17, 8U},    {frame_sync_try_p25p2, 20U},  {frame_sync_try_dpmr, 12U},
+    {frame_sync_try_tetra, 57U}, {frame_sync_try_dmr, 90U},    {frame_sync_try_provoice, 32U},
+    {frame_sync_try_dstar, 24U}, {frame_sync_try_nxdn, 10U},   {frame_sync_try_provoice_conventional, 32U},
 };
 
 static int

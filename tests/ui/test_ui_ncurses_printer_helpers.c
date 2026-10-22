@@ -2466,6 +2466,14 @@ test_sync_tree_follows_scan_class(void) {
     reset_printw_capture();
     ui_render_call_info_nxdn(opts, state);
     assert_capture_contains("Cat: Regional; Sys Code: 12; Site Code: 3;");
+    /* IDAS reception, then a checked Type-C SACCH's RAN alone (the decoder's category still "Type-D"): a RAN is Type-C
+       evidence, so the NXDN line shows it, as the shared view names the record NXDN. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, (uint8_t)DSD_ACCESS_CODE_RAN, 5U);
+    reset_printw_capture();
+    ui_render_call_info_nxdn(opts, state);
+    assert_capture_contains("NXDN - RAN: 05;");
     dsd_rxid_reset(state);
     DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", " ");
     state->nxdn_last_ran = (unsigned int)-1;

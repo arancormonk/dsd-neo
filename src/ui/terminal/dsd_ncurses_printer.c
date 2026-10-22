@@ -2468,7 +2468,7 @@ ui_nxdn_is_idas(const dsd_state* state) {
     return strcmp(state->nxdn_location_category, "Type-D") == 0;
 }
 
-/* Which site line shows: the kind of site the received identity names (IDAS parts, or a Type-C location), as the
+/* Which site line shows: the kind of site the received identity names (IDAS parts, or a Type-C location or RAN), as the
    shared view's "IDAS"/"NXDN" label does, whatever the decoder's location category says; the decoder's kind only while
    the record names neither. */
 static int
@@ -2477,8 +2477,8 @@ ui_nxdn_site_is_idas(const dsd_state* state) {
     if (ui_rxid_has(id, DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM)) {
         return 1;
     }
-    if (ui_rxid_has(id, DSD_RXID_NXDN_LOCATION)) {
-        return 0;
+    if (ui_rxid_has(id, DSD_RXID_NXDN_LOCATION | DSD_RXID_ACCESS)) {
+        return 0; /* a location ID or a RAN: Type-C (a Type-D RTCH2 carries no RAN, NXDN TS 1-E 4.2.3) */
     }
     return ui_nxdn_is_idas(state);
 }

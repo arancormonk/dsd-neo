@@ -573,7 +573,7 @@ run_boundary_sync(const char* label, const char* sync, int expected_sync, int pr
                   size_t boundary_at, size_t want_at) {
     static dsd_opts opts;
     static dsd_state state;
-    static char pattern[64 + 24 + 200 + 24 + 1];
+    static char pattern[160 + 24 + 200 + 24 + 1];
     const size_t sync_len = strlen(sync);
     DSD_MEMSET(pattern, '1', lead_fill);
     DSD_MEMCPY(pattern + lead_fill, sync, sync_len);
@@ -634,6 +634,21 @@ run_sync_after_carrier_boundary_case(void) {
                             30U, 29U, 54U);
     rc |= run_boundary_sync("x2-tdma right after a boundary", X2TDMA_BS_DATA_SYNC, DSD_SYNC_X2TDMA_DATA_POS, 3, 32U,
                             30U, 280U);
+    /* Each burst by what its own decoder reads back: an X2-TDMA data burst 90 dibits, a voice burst 144. A data sync
+       whose 90 are all the new carrier's is taken; a voice sync there is not (the next is). */
+    g_boundary_between = 1;
+    rc |= run_boundary_sync("x2-tdma data after 90 new symbols", X2TDMA_BS_DATA_SYNC, DSD_SYNC_X2TDMA_DATA_POS, 3, 100U,
+                            34U, 124U);
+    rc |= run_boundary_sync("x2-tdma voice after 90 new symbols", X2TDMA_BS_VOICE_SYNC, DSD_SYNC_X2TDMA_VOICE_POS, 3,
+                            100U, 34U, 348U);
+    g_boundary_between = 0;
+    /* NXDN reads its frame forward from its 10-symbol sync word: one wholly the new carrier's is taken at once (its
+       first sighting stages it). */
+    g_boundary_at = 0U;
+    g_boundary_between = 1;
+    rc |= run_nxdn_two_pass_case("NXDN48 sync right after a change", NXDN_FSW, 1, 0, DSD_SYNC_NXDN_POS);
+    g_boundary_at = SIZE_MAX;
+    g_boundary_between = 0;
     return rc;
 }
 
