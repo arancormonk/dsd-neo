@@ -491,6 +491,20 @@ test_nxdn_subtypes_exclusive(void) {
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 3U);
     expect_u("a ran drops the idas parts", id->valid, DSD_RXID_ACCESS);
     expect_u("a ran drops the idas parts: value", id->access, 3U);
+
+    /* The Area bit tells adjacent co-channel Type-D sites apart (NXDN TS 1-E 6.6.3): another Area is another site, so
+       the site ID, the Type-D system ID and the control channel the old one sent go; the same Area keeps them. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_idas_area(state, 0U);
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 9U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 9U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_note_nxdn_idas_area(state, 0U);
+    expect_u("same area keeps the site", id->valid,
+             DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    expect_u("another area drops the site", id->valid, DSD_RXID_NXDN_IDAS_AREA);
+    expect_u("another area value", id->nxdn_idas_area, 1U);
     free(state);
 }
 

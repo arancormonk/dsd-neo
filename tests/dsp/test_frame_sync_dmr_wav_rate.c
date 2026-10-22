@@ -24,9 +24,11 @@
 
 static size_t g_symbol_index;
 static const char* g_sync_pattern = DMR_BS_DATA_SYNC;
-/* The symbol a carrier boundary (an I/Q replay retune) runs inside, as the real reader runs it while that symbol's
-   samples are read; SIZE_MAX for none. */
+/* The symbol a carrier boundary runs at, SIZE_MAX for none: inside its read (an I/Q replay retune, which the real
+   reader runs while that symbol's samples are read, so the symbol straddles the two carriers), or, with
+   g_boundary_between, just before its read (an input switch or a menu tune the engine runs between reads). */
 static size_t g_boundary_at = SIZE_MAX;
+static int g_boundary_between;
 
 static float
 symbol_level_for_dibit(char dibit) {
@@ -38,13 +40,14 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     (void)opts;
     (void)have_sync;
 
+    if (g_symbol_index == g_boundary_at) {
+        state->symbol_read_active = g_boundary_between ? 0U : 1U;
+        dsd_state_note_carrier_change(state);
+        state->symbol_read_active = 0U;
+    }
     const size_t pattern_len = strlen(g_sync_pattern);
     char dibit = (g_symbol_index < pattern_len) ? g_sync_pattern[g_symbol_index] : '1';
     g_symbol_index++;
-
-    if (g_symbol_index - 1U == g_boundary_at) {
-        dsd_state_note_carrier_change(state);
-    }
 
     float symbol = symbol_level_for_dibit(dibit);
     dsd_symbol_history_push(state, symbol);
@@ -619,6 +622,16 @@ run_sync_after_carrier_boundary_case(void) {
     rc |= run_boundary_sync("dmr, boundary inside the first sync", DMR_BS_DATA_SYNC, DSD_SYNC_DMR_BS_DATA_POS, 0, 0U,
                             10U, 248U);
     rc |= run_boundary_sync("p25 phase 1 right after a boundary", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0, 32U, 30U, 56U);
+    /* At the exact edge: a sync word whose 24 symbols all follow a change between reads is taken; one whose first
+       symbol was being read when the change ran is not (the next is), and one that starts on the symbol after is. */
+    g_boundary_between = 1;
+    rc |= run_boundary_sync("p25 sync right after a change between reads", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0, 30U, 30U,
+                            54U);
+    g_boundary_between = 0;
+    rc |= run_boundary_sync("p25 sync from the symbol a change ran inside", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0, 30U, 30U,
+                            278U);
+    rc |= run_boundary_sync("p25 sync right after the symbol a change ran inside", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0,
+                            30U, 29U, 54U);
     rc |= run_boundary_sync("x2-tdma right after a boundary", X2TDMA_BS_DATA_SYNC, DSD_SYNC_X2TDMA_DATA_POS, 3, 32U,
                             30U, 280U);
     return rc;

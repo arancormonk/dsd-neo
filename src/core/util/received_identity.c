@@ -411,7 +411,12 @@ dsd_rxid_note_nxdn_idas_area(dsd_state* state, uint8_t area) {
     if (id == NULL) {
         return;
     }
-    id->nxdn_idas_area = (uint8_t)(area & 1U);
+    area &= 1U;
+    if (rxid_has(id, DSD_RXID_NXDN_IDAS_AREA) && id->nxdn_idas_area != area) {
+        /* The Area bit tells adjacent co-channel sites apart (NXDN TS 1-E 6.6.3): another one is another site. */
+        rxid_drop(id, DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM | DSD_RXID_CC_FREQ);
+    }
+    id->nxdn_idas_area = area;
     rxid_set(id, DSD_RXID_NXDN_IDAS_AREA);
 }
 

@@ -912,6 +912,9 @@ struct dsd_state {
     /* Symbols the grid produced, on every input path, since the state was set up. Unlike symbolcnt no protocol resets
        it, so a DMR slot measures elapsed superframes on it (issue #729). Only DSP advances it. */
     uint64_t symbol_clock;
+    /* 1 while getSymbol() reads a symbol's samples: a carrier change that runs then (an I/Q replay retune) splits that
+       symbol between the two carriers (dsd_state_note_carrier_change()). */
+    uint8_t symbol_read_active;
     /* Bumped whenever symbol_clock stops describing one continuous received stream: an RTL stream flush or an input
        switch (DSP bumps it) or a scan target change (the engine does). Carrier changes are compared on carrier_seq. A
        span measured across two epochs is no span. */
@@ -1842,8 +1845,9 @@ struct dsd_state {
        and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left.
        It drops them as well when an input interruption cut them (dsd_state_frame_read_lost()). */
     uint32_t carrier_seq;
-    /* symbol_clock when the receiver last left a carrier (dsd_state_note_carrier_change(): a carrier boundary or a
-       trunk-scan target switch), valid once carrier_change_seen is set. What the frame sync's history and the
+    /* The symbol_clock of the last symbol not wholly the new carrier's when the receiver last left a carrier
+       (dsd_state_note_carrier_change(): a carrier boundary or a trunk-scan target switch; one more than the clock when
+       the change split the symbol being read), valid once carrier_change_seen is set. What the frame sync's history and the
        decoders' rolling buffers hold from before it is the carrier left's (dsd_state_carrier_settling()). */
     uint64_t carrier_change_symbol_clock;
     uint8_t carrier_change_seen;
@@ -2270,22 +2274,25 @@ dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
 }
 
-/* The receiver leaves a carrier: dibits read from here on are the next carrier's. */
+/* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
+   input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
+   (an I/Q replay retune) splits that symbol, which counts as the carrier left's. */
 static inline void
 dsd_state_note_carrier_change(dsd_state* state) {
-    state->carrier_change_symbol_clock = state->symbol_clock;
+    state->carrier_change_symbol_clock = state->symbol_clock + (state->symbol_read_active != 0U ? 1U : 0U);
     state->carrier_change_seen = 1U;
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word
    and what a decoder takes from the hunt's history or a rolling buffer before it) may hold a symbol of the carrier left:
-   the symbol the change happened inside counts as the carrier left's. */
+   fewer than @p lookback whole symbols of the new carrier have been read. */
 static inline int
 dsd_state_carrier_settling(const dsd_state* state, uint64_t lookback) {
     if (state->carrier_change_seen == 0U) {
         return 0;
     }
-    return (state->symbol_clock - state->carrier_change_symbol_clock <= lookback) ? 1 : 0;
+    const uint64_t last_left = state->carrier_change_symbol_clock;
+    return (state->symbol_clock < last_left || state->symbol_clock - last_left < lookback) ? 1 : 0;
 }
 
 static inline int

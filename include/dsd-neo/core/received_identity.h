@@ -205,6 +205,8 @@ void dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn);
 
 /** A confirmed Type-C location ID of category 0..2 (3 is reserved and ignored). */
 void dsd_rxid_note_nxdn_location(dsd_state* state, uint8_t category, uint32_t sys, uint16_t site);
+/** A confirmed IDAS SCCH area bit. It tells adjacent co-channel sites apart (NXDN TS 1-E 6.6.3): another value than a
+ * valid one drops the SCCH site ID, the Type-D system ID and the control-channel frequency. */
 void dsd_rxid_note_nxdn_idas_area(dsd_state* state, uint8_t area);
 /** A confirmed IDAS SCCH site ID: site type 1..3 and site code 1..250 (anything else is ignored). A Type-D system ID
  * of another site code is dropped with the control-channel frequency. */

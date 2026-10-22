@@ -1477,24 +1477,32 @@ suite runs under this compiler.
   replay retune never notes into the record the boundary reset, whichever decoder's own carrier check comes later. That
   gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
-  mark the symbol clock (`dsd_state_note_carrier_change()`), and each protocol's matcher in `getFrameSync()` waits until
-  what its frame reads back (`k_frame_sync_tries`: its sync window, DMR 90, X2-TDMA 144, TETRA 128) is the new
-  carrier's (`dsd_state_carrier_settling()`; `FRAME_SYNC_DMR_WAV_RATE`); a protocol that reads nothing before its sync
-  (P25 Phase 1, 24) takes the new carrier's first sync at once. Another value of a valid access code on the same carrier is another system sharing it
-  (co-channel DMR/dPMR colour codes, P25 NACs, NXDN RANs): the family's other parts and the control channel frequency go
-  (an M17 CAN, per transmission, drops nothing; a trunk tune drops the code first, so a followed channel's is no
-  change), and a note carrying both notes the code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep
-  the newer; another Type-D system drops the SCCH area and site. NXDN Type-C (a location ID) and IDAS Type-D parts
-  exclude each other: a checked note of one drops the other kind's parts and the control channel (a RAN is Type-C's: a
-  Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and FACCH3, NXDN TS 1-E 4.2.3, none of which carries one; so a Type-D note
-  drops a location and a RAN, and a RAN drops the IDAS parts). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`:
-  Tier III, Capacity Plus, Connect Plus, Hytera XPT), named by a brand, a site text prefix, a rest LSN, a system code or
-  a free LCN; the colour code stays. The TETRA cell keeps its colour (`tetra_colour`) apart from the displayed access
-  code, so after a trunk tune another colour is still another cell; a SYSINFO of another cell with the same network and
-  colour (`tetra_bsch_sysinfo_cell()`) drops the last cell's area and control channel
-  (`dsd_rxid_note_tetra_other_cell()`). Commands that forget or reinterpret a site forget it in the record too: the DMR
-  reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the colour code the reset keeps)
-  and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a committed decode mode change
+  mark the symbol clock (`dsd_state_note_carrier_change()`; a change that runs while `getSymbol()` reads a symbol,
+  `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none), and each
+  protocol's matcher in `getFrameSync()` waits until what its frame reads back (`k_frame_sync_tries`: its sync window,
+  DMR 90, X2-TDMA 144, TETRA 128) is the new carrier's (`dsd_state_carrier_settling()`; `FRAME_SYNC_DMR_WAV_RATE`); a
+  protocol that reads nothing before its sync (P25 Phase 1, 24) takes the new carrier's first sync at once. Another
+  value of a valid access code on the same carrier is another system sharing it (co-channel DMR/dPMR colour codes, P25
+  NACs, NXDN RANs): the family's other parts and the control channel frequency go (an M17 CAN, per transmission, drops
+  nothing; a trunk tune drops the code first, so a followed channel's is no change), and a note carrying both notes the
+  code first. An IDAS SCCH site ID and a Type-D SRV_INFO that disagree keep the newer; another Type-D system drops the
+  SCCH area and site. NXDN Type-C (a location ID) and IDAS Type-D parts exclude each other: a checked note of one drops
+  the other kind's parts and the control channel (a RAN is Type-C's: a Type-D RTCH2 carries SCCH, FACCH1, UDCH2 and
+  FACCH3, NXDN TS 1-E 4.2.3, none of which carries one; so a Type-D note drops a location and a RAN, and a RAN drops the
+  IDAS parts). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`: Tier III, Capacity Plus, Connect Plus, Hytera XPT),
+  named by a brand, a site text prefix, a rest LSN, a system code or a free LCN; the colour code stays. The TETRA cell
+  keeps its colour (`tetra_colour`) apart from the displayed access code, so after a trunk tune another colour is still
+  another cell; a SYSINFO of another cell with the same network and colour (`tetra_bsch_sysinfo_cell()`) drops the last
+  cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). A tune the user asked for while trunking, which
+  keeps the decoder's trunking state and so is no carrier boundary, forgets the record too (D4: any user move), after
+  the calls it ended took theirs: a frequency entry that selects a P25 control channel
+  (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to CC, and a channel or candidate cycle
+  (`ui_user_move_forgets_identity()`, which also marks the carrier change for the frame sync). A trunking follow keeps
+  it, a lockout's or skip's return to the control channel included (the decoder leaves the call as at its end); every
+  other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y` step, a trunk-scan target, a
+  signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site forget it in the record too:
+  the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the colour code the reset
+  keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a committed decode mode change
   (`ui_commit_mode_change()`), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference
   import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their site) run
   `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an EDACS

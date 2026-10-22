@@ -8934,6 +8934,68 @@ test_identity_forgetting_commands_clear_the_record(void) {
     return rc;
 }
 
+/* A tune the user asked for while trunking (D4) forgets the received identity, as a carrier boundary does: a frequency
+   entry that selects a P25 control channel, a return to the control channel, a channel cycle. The calls it ends keep
+   the identity they ended with; a refused selection keeps the record. */
+static void
+seed_p25_record(dsd_state* state) {
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_p25_site(state, 0x348U, 3U, 21U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_P25, 851000000U);
+}
+
+static int
+test_user_moves_while_trunking_forget_the_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+#ifdef USE_RADIO // the frequency entry is a radio build's command
+    for (int refused = 0; refused < 2; refused++) {
+        init_test_context(&opts, &state);
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+        seed_p25_record(&state);
+        reset_cc_tune_stub(refused ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_int("p25 control channel entry queued",
+                         dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("p25 control channel entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("p25 control channel entry tuned the control channel", g_cc_tune_calls, 1);
+        rc |= expect_int(refused ? "a refused selection keeps the record" : "a selection forgets the record",
+                         (int)(state.rx_id.valid != 0U), refused ? 1 : 0);
+        freeState(&state);
+    }
+#endif
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    seed_p25_record(&state);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
+    rc |= expect_int("user return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("user return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a user return-to-CC forgets the record", (int)state.rx_id.valid, 0);
+    rc |= expect_true("the ended call keeps the system it ended with",
+                      state.event_history_s[0].Event_History_Items[1].sys_id2 == 0x348U);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.p25_prefer_candidates = 0;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 851000000L;
+    state.trunk_lcn_freq[1] = 851500000L;
+    seed_p25_record(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("trunked channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunked channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunked channel cycle tuned", g_io_control_tune_calls, 1);
+    rc |= expect_int("a trunked channel cycle forgets the record", (int)state.rx_id.valid, 0);
+    freeState(&state);
+    return rc;
+}
+
 /*
  * A [mode] preset also carries an audio layout, but the session's output streams keep the one they were opened with,
  * so a config apply keeps the session's layout as DECODE_MODE_SET does. A config that moves a -fA session (mono) to
@@ -19281,6 +19343,7 @@ main(void) {
     rc |= test_decode_mode_set_closes_nfm_recording_named();
     rc |= test_provoice_toggle_closes_nfm_recording_named();
     rc |= test_identity_forgetting_commands_clear_the_record();
+    rc |= test_user_moves_while_trunking_forget_the_record();
     rc |= test_config_apply_keeps_session_output_layout();
 #endif
     rc |= test_family_change_discards_partial_analog_block();
