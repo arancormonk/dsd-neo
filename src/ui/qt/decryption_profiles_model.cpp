@@ -113,7 +113,8 @@ privateWrite(const QString& path, const QByteArray& bytes) {
 
 QString
 protocolFor(const QString& flags) {
-    if (flags.contains("-ft") || flags.contains("-f1") || flags.contains("-f2")) {
+    // -mq is the P25 Simulcast preset, as Util.decryptionProtocol() and session_args_profile_compatible() read it.
+    if (flags.contains("-ft") || flags.contains("-f1") || flags.contains("-f2") || flags.contains("-mq")) {
         return "p25";
     }
     if (flags.contains("-fs")) {

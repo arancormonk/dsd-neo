@@ -577,7 +577,8 @@ session_args_profile_compatible(const QVariantMap& system) {
     // ProVoice (-fp) has no profile protocol of its own, and dPMR (-fm) also takes an NXDN profile's scrambler, so
     // both expect mixed: any profile.
     QString expected = "mixed";
-    if (flags.contains("-ft") || flags.contains("-f1") || flags.contains("-f2")) {
+    // -mq is the P25 Simulcast preset (Util.decryptionProtocol() reads it as P25 too).
+    if (flags.contains("-ft") || flags.contains("-f1") || flags.contains("-f2") || flags.contains("-mq")) {
         expected = "p25";
     } else if (flags.contains("-fs")) {
         expected = "dmr";

@@ -117,6 +117,9 @@ test_qml_and_session_protocols_agree() {
     // The cross-check itself tells protocols apart.
     check(decryptionProtocol.call({QJSValue(QStringLiteral("-fs"))}).toString() == "dmr"
           && session_expected_protocol(QStringLiteral("-fs")) == "dmr");
+    // -mq is the P25 Simulcast preset: both read it as P25, so a DMR-only profile is refused at start.
+    check(decryptionProtocol.call({QJSValue(QStringLiteral("-mq"))}).toString() == "p25"
+          && session_expected_protocol(QStringLiteral("-mq")) == "p25");
 }
 
 namespace {
@@ -651,6 +654,44 @@ test_aes256_definition_compiles_at_load() {
     check(error.isEmpty() && storedRow("restored-aes256").value("compiled").isObject() && importsAes256(path, 0x2A));
 }
 
+/* The P25 Simulcast preset (-mq) migrates a legacy key as a P25 profile, and a non-legacy profile of another
+   protocol is refused at start for it. */
+static void
+test_simulcast_preset_is_p25(dsd_qt::DecryptionProfilesModel& profiles, dsd_qt::SavedSystemsModel& systems) {
+    check(systems.add({{"name", "Simulcast"},
+                       {"sourceType", "rtltcp"},
+                       {"host", "127.0.0.1"},
+                       {"port", 1234},
+                       {"freqMhz", "851.0125"},
+                       {"decodeFlag", "-mq"},
+                       {"encKeyType", "hex"},
+                       {"encKeyValue", QLatin1String(kAes256Key)},
+                       {"encForceKey", 0}}));
+    const int index = systems.count() - 1;
+    const QString uid = systems.get(index).value("uid").toString();
+    check(profiles.migrateLegacySystems());
+    check(profiles.get(uid).value("protocol").toString() == "p25");
+    check(!dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "dmr"}, {"decodeFlag", "-mq"}}));
+    check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "p25"}, {"decodeFlag", "-mq"}}));
+    check(profiles
+              .saveProfile({{"uid", "dmr-only"},
+                            {"label", "DMR only"},
+                            {"protocol", "dmr"},
+                            {"mode", "direct"},
+                            {"directType", "basic"},
+                            {"directValue", "7"}})
+              .value("ok")
+              .toBool());
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    builder.setSavedSystems(&systems);
+    builder.setDecryptionProfiles(&profiles);
+    QVariantMap system = systems.get(index);
+    check(builder.build(system).value("ok").toBool());
+    system.insert("decryptionProfileUid", "dmr-only");
+    const auto refused = builder.build(system);
+    check(!refused.value("ok").toBool() && refused.value("error").toString() == "encryption");
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -745,6 +786,7 @@ main(int argc, char** argv) {
     test_qml_and_session_protocols_agree();
     test_hex_normalisation(profiles);
     test_aes256_profile_imports(profiles);
+    test_simulcast_preset_is_p25(profiles, systems);
     test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
     dsd_neo_log_set_tap(captureWarning, nullptr);

@@ -24,7 +24,8 @@ Managed key IDs are hexadecimal; legacy destination IDs are decimal. Material is
 masked, and an empty replacement field retains an existing value. Changing its
 format requires replacement material. Hex material may be pasted grouped: spaces,
 `-` and `:` separators and a leading `0x` are ignored. Decimal keys (Basic
-Privacy, scrambler) and advanced vendor modes keep their exact forms. The library validates occupied keyring
+Privacy, scrambler) and advanced vendor modes keep their exact forms. The P25
+Simulcast preset uses P25 profiles. The library validates occupied keyring
 indices, including AES segments and legacy destination hashing, and rejects
 collisions. It does not turn the decoder's flat keyring into an algorithm-namespaced
 database. Use separate profiles for incompatible collections. Attached legacy CSVs
