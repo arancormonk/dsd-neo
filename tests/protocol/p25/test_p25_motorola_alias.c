@@ -470,6 +470,55 @@ test_phase2_harris_failed_crc_publishes_nothing(void) {
     fixture_close(&f);
 }
 
+static void
+p1_send_record(dsd_opts* opts, dsd_state* st, const alias_record* r, uint8_t sn) {
+    p1_send_header(opts, st, r, sn);
+    for (size_t bn = 1U; bn <= p1_block_count(r); bn++) {
+        p1_send_block(opts, st, r, sn, bn);
+    }
+}
+
+/* The record ends at its CRC, not at the first zero word: a scrambled alias octet pair can be 0x0000, and so can the
+ * CRC itself. Both decode on both phases. */
+static void
+test_record_length_with_zero_words(void) {
+    /* FQ-SUID ABCDE.123.000001, encoded alias octets 07 8A 00 00, CRC 0x0000. */
+    static const uint8_t zero_crc_octets[] = {0x07U, 0x8AU, 0x00U, 0x00U};
+    alias_record zero_crc;
+    build_record_encoded(&zero_crc, 0xABCDEU, 0x123U, 0x000001U, zero_crc_octets, sizeof zero_crc_octets);
+    expect_true("vector CRC is zero", convert_bits_into_output(&zero_crc.bits[zero_crc.nbits - 16U], 16) == 0U);
+    /* An interior zero word between non-zero alias octets. */
+    static const uint8_t interior_octets[] = {0x41U, 0x42U, 0x00U, 0x00U, 0x43U, 0x44U};
+    alias_record interior;
+    build_record_encoded(&interior, 0x12345U, 0x678U, 0x00C001U, interior_octets, sizeof interior_octets);
+
+    for (int phase = 1; phase <= 2; phase++) {
+        fixture f;
+        fixture_open(&f);
+        char tag[96];
+        begin_call(&f, phase == 1 ? DSD_SYNC_P25P1_POS : DSD_SYNC_P25P2_POS, 0U, 500U, 0x000001U);
+        if (phase == 1) {
+            p1_send_record(f.opts, f.st, &zero_crc, 0x1U);
+        } else {
+            p2_send_record(f.opts, f.st, 1, &zero_crc, 0x1U);
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "phase %d zero-CRC record decodes", phase);
+        expect_true(tag, history_has_alias(f.st, 0U, "FQ-SUID: ABCDE:123.000001"));
+        DSD_SNPRINTF(tag, sizeof tag, "phase %d zero-CRC record learns the talker", phase);
+        expect_true(tag, policy_has_exact(f.st, 0x000001U));
+
+        begin_call(&f, phase == 1 ? DSD_SYNC_P25P1_POS : DSD_SYNC_P25P2_POS, 0U, 501U, 0x00C001U);
+        if (phase == 1) {
+            p1_send_record(f.opts, f.st, &interior, 0x2U);
+        } else {
+            p2_send_record(f.opts, f.st, 1, &interior, 0x2U);
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "phase %d interior zero word record decodes", phase);
+        expect_true(tag, history_has_alias(f.st, 0U, "FQ-SUID: 12345:678.00C001"));
+        fixture_close(&f);
+    }
+}
+
 int
 main(void) {
     test_phase2_sacch_alias_uses_voice_slot();
@@ -477,6 +526,7 @@ main(void) {
     test_phase1_repeated_and_changed_headers();
     test_phase1_identical_header_in_new_call_restarts();
     test_phase2_harris_failed_crc_publishes_nothing();
+    test_record_length_with_zero_words();
     if (g_fail) {
         return 1;
     }

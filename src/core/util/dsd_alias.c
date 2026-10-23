@@ -356,17 +356,41 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     }
 }
 
-// Record length as the assembler measures it: the FQ-SUID plus every 16-bit word up to the first zero one.
+/** @brief Scratch capacity for one Motorola APX embedded alias record, in octets. */
+#define APX_ALIAS_MAX_OCTETS 200
+
+/**
+ * @brief The record's length in bits, FQ-SUID through CRC, measured over the received extent.
+ *
+ * The record is whole 16-bit words after the 56-bit FQ-SUID, the last of them its CRC, padded with zero words to the
+ * end of the last block. Scrambled alias octets can be zero, and so can the CRC, so neither the first zero word nor the
+ * last non-zero one is the end: the candidates run from the last non-zero word to the received extent, and the first
+ * length whose CRC checks wins. With none, the length through the last non-zero word is returned and the decoder
+ * reports its CRC error there.
+ */
 static int16_t
 apx_alias_record_bits(const uint8_t* store, size_t extent_end) {
-    int16_t num_bits = 56; //starting value is the static bit count on the fqsuid
-    for (size_t at = APX_ALIAS_RECORD_START + 56U; at + 16U <= extent_end; at += 16U) {
-        if ((uint16_t)convert_bits_into_output(&store[at], 16) == 0U) {
-            break;
-        }
-        num_bits = (int16_t)(num_bits + 16);
+    const size_t first_word = APX_ALIAS_RECORD_START + 56U;
+    if (extent_end < first_word + 16U) {
+        return 56; //no room for the CRC: the decoder reports the length
     }
-    return num_bits;
+    const size_t max_words = (extent_end - first_word) / 16U;
+    size_t min_words = 1U;
+    for (size_t w = 0; w < max_words; w++) {
+        if ((uint16_t)convert_bits_into_output(&store[first_word + (w * 16U)], 16) != 0U) {
+            min_words = w + 1U;
+        }
+    }
+    // Two octets per word, less the CRC word: the decoder takes no more alias octets than its scratch holds.
+    for (size_t words = min_words; words <= max_words && (2U * words) - 2U <= APX_ALIAS_MAX_OCTETS; words++) {
+        const size_t num_bits = 56U + (16U * words);
+        const uint16_t crc_ext =
+            (uint16_t)convert_bits_into_output(&store[APX_ALIAS_RECORD_START + num_bits - 16U], 16);
+        if (crc_ext == dsd_crc_ccitt16_bits(&store[APX_ALIAS_RECORD_START], num_bits - 16U)) {
+            return (int16_t)num_bits;
+        }
+    }
+    return (int16_t)(56U + (16U * min_words));
 }
 
 void
@@ -448,9 +472,6 @@ apx_embedded_alias_print_utf16(const uint8_t* decoded, uint16_t num_bytes) {
         apx_embedded_alias_print_scalar(scalars[0]);
     }
 }
-
-/** @brief Scratch capacity for one Motorola APX embedded alias record, in octets. */
-#define APX_ALIAS_MAX_OCTETS 200
 
 void
 apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t num_bits, uint8_t* input) {

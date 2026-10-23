@@ -1037,7 +1037,10 @@ suite runs under this compiler.
   sends the alias in hangtime: a header identical in every received bit within the same epoch and generation is a
   repeat and keeps the blocks, any other header restarts, and a block from another epoch or generation, a block whose
   sequence or number the header does not cover, or one past the store's end abandons the record. The engine's carrier
-  resets clear the store with the rest of the slot state. Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
+  resets clear the store with the rest of the slot state. The record's length is not the first zero word: scrambled
+  alias octets and the CRC can be zero, so the candidate lengths run from the last non-zero 16-bit word to the
+  received extent (bounded by the store and the 200-octet decoder scratch) and the first one whose CRC checks wins
+  (`apx_alias_record_bits()`). Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
   target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the
