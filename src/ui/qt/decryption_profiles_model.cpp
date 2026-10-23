@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
 #include <QChar>
+#include <QCoreApplication>
 #include <QHash>
 #include <QIODevice>
 #include <QJsonValue>
@@ -513,20 +514,56 @@ profileError(QString* error, const QString& message) {
     return false;
 }
 
-bool
-managedShape(const QString& kind, const QString& material) {
-    if (!QRegularExpression("^[0-9A-F]+$").match(material).hasMatch()) {
-        return false;
+/* The managed key formats in the order the editor lists them: id, short name, width (hex digits; 16 means up to 16,
+   0 a decimal key), and the label's width note. */
+struct ManagedKind {
+    const char* id;
+    const char* name;
+    int hexDigits;
+    const char* detail;
+};
+
+const ManagedKind kManagedKinds[] = {
+    {"scalar", QT_TRANSLATE_NOOP("DecryptionProfilesModel", "DES / RC4 / ADP"), 16,
+     QT_TRANSLATE_NOOP("DecryptionProfilesModel", "up to 16 hex digits")},
+    {"aes128", QT_TRANSLATE_NOOP("DecryptionProfilesModel", "AES-128"), 32,
+     QT_TRANSLATE_NOOP("DecryptionProfilesModel", "32 hex digits")},
+    {"aes256", QT_TRANSLATE_NOOP("DecryptionProfilesModel", "AES-256"), 64,
+     QT_TRANSLATE_NOOP("DecryptionProfilesModel", "64 hex digits")},
+    {"tdea", QT_TRANSLATE_NOOP("DecryptionProfilesModel", "Triple DES"), 48,
+     QT_TRANSLATE_NOOP("DecryptionProfilesModel", "48 hex digits")},
+    {"basic", QT_TRANSLATE_NOOP("DecryptionProfilesModel", "Basic Privacy"), 0, "0–255"},
+    {"scrambler", QT_TRANSLATE_NOOP("DecryptionProfilesModel", "Scrambler"), 0, "0–32767"},
+};
+
+const ManagedKind*
+managedKind(const QString& id) {
+    for (const auto& kind : kManagedKinds) {
+        if (id == QLatin1String(kind.id)) {
+            return &kind;
+        }
     }
-    const QMap<QString, int> widths{{"aes128", 32}, {"tdea", 48}, {"aes256", 64}};
-    return kind == "scalar" ? material.size() <= 16 : widths.value(kind, -1) == material.size();
+    return nullptr;
+}
+
+QString
+kindName(const ManagedKind& kind) {
+    return QCoreApplication::translate("DecryptionProfilesModel", kind.name);
+}
+
+/* Keyring cells a key of @p kind fills: its ID, then ID+0x101, +0x201 and +0x301 for each further 16 hex digits. */
+int
+managedWordCount(const ManagedKind& kind) {
+    return kind.hexDigits > 16 ? kind.hexDigits / 16 : 1;
+}
+
+QString
+keyKindOf(const QVariantMap& key) {
+    return key.value("kind", "scalar").toString();
 }
 
 bool
-managedKindAllowed(const QString& kind, const QString& protocol, bool destination) {
-    if (destination && protocol == "p25") {
-        return false;
-    }
+managedKindAllowed(const QString& kind, const QString& protocol) {
     if (protocol == "mixed") {
         return true;
     }
@@ -542,89 +579,187 @@ managedKindAllowed(const QString& kind, const QString& protocol, bool destinatio
     return kind != "aes128" || protocol != "nxdn";
 }
 
-QStringList
-managedWords(const QVariantMap& key, QString* error) {
-    const QString kind = key.value("kind", "scalar").toString();
-    const QString raw = key.value("material").toString();
-    if (kind == "basic" || kind == "scrambler") {
-        if (!session_args_key_valid(kind, raw)) {
-            profileError(error, QObject::tr("Invalid decimal key material."));
-            return {};
-        }
-        return {QString::number(raw.toULongLong(), 16)};
+/* How a key reads in a message: "Dispatch" (ID 1A), "Dispatch" (destination 1234), or ID 1A with no label. */
+QString
+keyDescription(const QVariantMap& key) {
+    bool ok = false;
+    const quint32 id = key.value("keyId").toUInt(&ok);
+    const bool destination = key.value("lookup").toString() == "destination";
+    const QString label = key.value("label").toString().trimmed();
+    if (!ok) {
+        return label.isEmpty() ? QString() : QStringLiteral("\"%1\"").arg(label);
     }
-    const QString material = session_args_key_hex_normalize(raw);
-    if (!managedShape(kind, material)) {
-        profileError(error, QObject::tr("A key has an unsupported format or width."));
+    const QString where = destination ? QObject::tr("destination %1").arg(id)
+                                      : QObject::tr("ID %1").arg(QString::number(id, 16).toUpper());
+    return label.isEmpty() ? where : QStringLiteral("\"%1\" (%2)").arg(label, where);
+}
+
+/* A save-time error that names the key it is about: Key "Dispatch" (ID 1): <message>. */
+QString
+namedKeyError(const QVariantMap& key, const QString& message) {
+    const QString name = keyDescription(key);
+    return name.isEmpty() ? message : QObject::tr("Key %1: %2").arg(name, message);
+}
+
+/* The material checks for @p raw as a key of @p kind, with the 16-hex-digit words it imports as on success. */
+QString
+managedMaterialError(const ManagedKind& kind, const QString& protocol, const QString& raw, QStringList* words) {
+    if (raw.trimmed().isEmpty()) {
+        return QObject::tr("Enter the key material.");
+    }
+    if (kind.hexDigits == 0) {
+        if (!session_args_key_valid(QLatin1String(kind.id), raw)) {
+            return QObject::tr("%1 keys are decimal %2.")
+                .arg(kindName(kind), QCoreApplication::translate("DecryptionProfilesModel", kind.detail));
+        }
+        *words = {QString::number(raw.trimmed().toULongLong(), 16)};
         return {};
     }
-    QStringList words;
-    for (int at = 0; at < material.size(); at += 16) {
-        words << material.mid(at, 16);
+    const QString material = session_args_key_hex_normalize(raw);
+    if (!QRegularExpression("^[0-9A-F]+$").match(material).hasMatch()) {
+        return QObject::tr("Key material is hex: use only 0-9 and A-F.");
     }
-    return words;
+    const int digits = static_cast<int>(material.size());
+    if (kind.hexDigits == 16 && digits > 16) {
+        for (const auto& wider : kManagedKinds) {
+            if (wider.hexDigits == digits && managedKindAllowed(QLatin1String(wider.id), protocol)) {
+                return QLatin1String(wider.id) == "tdea"
+                           ? QObject::tr("%1 hex digits is a %2 key. Choose %2.").arg(digits).arg(kindName(wider))
+                           : QObject::tr("%1 hex digits is an %2 key. Choose %2.").arg(digits).arg(kindName(wider));
+            }
+        }
+        return QObject::tr("%1 takes up to 16 hex digits; %2 entered.").arg(kindName(kind)).arg(digits);
+    }
+    if (kind.hexDigits > 16 && digits != kind.hexDigits) {
+        return QObject::tr("%1 needs %2 hex digits; %3 entered.").arg(kindName(kind)).arg(kind.hexDigits).arg(digits);
+    }
+    words->clear();
+    for (int at = 0; at < digits; at += 16) {
+        *words << material.mid(at, 16);
+    }
+    return {};
+}
+
+/* A key's ID and lookup as the keyring sees them. */
+struct ManagedSlot {
+    quint32 id = 0;
+    bool destination = false;
+    quint32 base = 0;
+};
+
+/* The ID, lookup and format checks for one key, in the order compile() applies them; @p idParsed / @p id is its key
+   ID as parsed. Fills @p slot on success. */
+QString
+managedSlotError(const QVariantMap& key, bool idParsed, quint32 id, const QString& protocol, ManagedSlot* slot) {
+    const ManagedKind* kind = managedKind(keyKindOf(key));
+    if (!kind) {
+        return QObject::tr("Choose a key format.");
+    }
+    const bool destination = key.value("lookup").toString() == "destination";
+    if (destination && protocol == "p25") {
+        return QObject::tr("P25 selects keys by the received key ID; destination lookup is not available.");
+    }
+    if (destination && (!idParsed || id == 0 || id > 0xFFFFFFU)) {
+        return QObject::tr("Destination IDs are decimal 1 to 16777215.");
+    }
+    if (!destination && (!idParsed || id > (protocol == "dmr" ? 0xFFU : 0xFFFFU))) {
+        return protocol == "dmr" ? QObject::tr("DMR key IDs are hex 0 to FF.")
+                                 : QObject::tr("Key IDs are hex 0 to FFFF.");
+    }
+    if (!managedKindAllowed(QLatin1String(kind->id), protocol)) {
+        return QObject::tr("%1 keys are not available for this profile protocol.").arg(kindName(*kind));
+    }
+    if (destination && managedWordCount(*kind) != 1) {
+        return QObject::tr("Destination lookup supports scalar legacy keys only.");
+    }
+    slot->id = id;
+    slot->destination = destination;
+    slot->base = destination ? keyring_destination_index(id) : id;
+    return {};
+}
+
+QString
+legacyDestinationError(const ManagedSlot& slot, const QStringList& words) {
+    bool ok = false;
+    if (slot.destination && (words.size() != 1 || words[0].toULongLong(&ok, 16) > 0xFFFFFFFFFFULL || !ok)) {
+        return QObject::tr("Legacy destination lookup takes keys of at most 40 bits (10 hex digits).");
+    }
+    return {};
 }
 
 struct ManagedCollection {
     QByteArray hex{"keyid,value0,value1,value2,value3\n"}, dec{"keyid,value\n"};
     bool haveHex = false, haveDec = false;
-    QSet<quint32> occupied;
+    QHash<quint32, QString> occupied; // keyring cell -> the key description that holds it
     QSet<QString> references;
 };
 
+const quint32 kSegmentOffsets[] = {0, 0x101, 0x201, 0x301};
+
+/* Why the @p count keyring cells from @p base collide with a key already in @p collection, or empty. */
+QString
+managedCollisionError(const ManagedCollection& collection, quint32 base, int count) {
+    for (int i = 0; i < count; ++i) {
+        const auto held = collection.occupied.constFind(base + kSegmentOffsets[i]);
+        if (held != collection.occupied.cend()) {
+            const QString other =
+                held.value().isEmpty() ? QObject::tr("another key") : QObject::tr("key %1").arg(*held);
+            return QObject::tr("Uses the same keyring cells as %1. Keys wider than 16 hex digits also take ID+101, "
+                               "ID+201 and ID+301 in turn.")
+                .arg(other);
+        }
+    }
+    return {};
+}
+
+void
+occupyManagedKey(ManagedCollection& collection, const QString& ref, quint32 base, int count, const QString& owner) {
+    collection.references.insert(ref);
+    for (int i = 0; i < count; ++i) {
+        if (!collection.occupied.contains(base + kSegmentOffsets[i])) {
+            collection.occupied.insert(base + kSegmentOffsets[i], owner);
+        }
+    }
+}
+
 bool
-reserveManagedKey(ManagedCollection& collection, const QString& ref, quint32 base, int count, QString* error) {
+reserveManagedKey(ManagedCollection& collection, const QVariantMap& key, quint32 base, int count, QString* error) {
+    const QString ref = key.value("uid").toString();
     if (!validId(ref) || collection.references.contains(ref)) {
         return profileError(error, QObject::tr("Key references must be unique."));
     }
-    collection.references.insert(ref);
-    static const quint32 offsets[] = {0, 0x101, 0x201, 0x301};
-    for (int i = 0; i < count; ++i) {
-        if (collection.occupied.contains(base + offsets[i])) {
-            return profileError(
-                error,
-                QObject::tr(
-                    "These keys collide in the decoder keyring. Use separate profiles or one shared key entry."));
-        }
-        collection.occupied.insert(base + offsets[i]);
+    const QString collision = managedCollisionError(collection, base, count);
+    if (!collision.isEmpty()) {
+        return profileError(error, collision);
     }
+    occupyManagedKey(collection, ref, base, count, keyDescription(key));
     return true;
 }
 
-bool
-managedIdValid(bool parsed, quint32 id, quint32 maximum, bool destination) {
-    return parsed && id <= maximum && (!destination || id != 0);
-}
-
+/* Every check for one key in its collection (ID and lookup, format, material, then its keyring cells), appending its
+   import rows on success. keyEntryError() runs the same helpers in the same order. */
 bool
 appendManagedKey(ManagedCollection& collection, const QVariantMap& key, const QString& protocol, QString* error) {
     bool ok = false;
     const quint32 id = key.value("keyId").toUInt(&ok);
-    const bool destination = key.value("lookup").toString() == "destination";
-    const quint32 maximum = destination ? 0xFFFFFFU : protocol == "dmr" ? 255U : 65535U;
-    if (!managedIdValid(ok, id, maximum, destination)) {
-        return profileError(error, QObject::tr("A key identifier is outside the protocol's supported range."));
+    ManagedSlot slot;
+    QString problem = managedSlotError(key, ok, id, protocol, &slot);
+    QStringList words;
+    if (problem.isEmpty()) {
+        problem =
+            managedMaterialError(*managedKind(keyKindOf(key)), protocol, key.value("material").toString(), &words);
     }
-    if (!managedKindAllowed(key.value("kind", "scalar").toString(), protocol, destination)) {
-        return profileError(error, QObject::tr("This key format or lookup is not supported by the profile protocol."));
+    if (problem.isEmpty()) {
+        problem = legacyDestinationError(slot, words);
     }
-    const QStringList words = managedWords(key, error);
-    if (words.isEmpty()) {
-        return false;
+    if (problem.isEmpty()) {
+        (void)reserveManagedKey(collection, key, slot.base, static_cast<int>(words.size()), &problem);
     }
-    if (destination && words.size() != 1) {
-        return profileError(error, QObject::tr("Destination lookup supports scalar legacy keys only."));
+    if (!problem.isEmpty()) {
+        return profileError(error, namedKeyError(key, problem));
     }
-    const quint32 base = destination ? keyring_destination_index(id) : id;
-    if (!reserveManagedKey(collection, key.value("uid").toString(), base, words.size(), error)) {
-        return false;
-    }
-    if (destination) {
-        const auto scalar = words[0].toULongLong(&ok, 16);
-        if (!ok || scalar > 0xFFFFFFFFFFULL) {
-            return profileError(error, QObject::tr("Legacy destination imports support at most 40-bit material."));
-        }
-        collection.dec += QByteArray::number(id) + ',' + QByteArray::number(scalar) + '\n';
+    if (slot.destination) {
+        collection.dec += QByteArray::number(id) + ',' + QByteArray::number(words[0].toULongLong(&ok, 16)) + '\n';
         collection.haveDec = true;
     } else {
         collection.hex += QByteArray::number(id, 16) + ',' + words.join(',').toUtf8() + '\n';
@@ -860,27 +995,35 @@ mergeProfileDraft(QVariantMap& row, const QVariantMap& draft, bool existing) {
     return {};
 }
 
-static void
+/* Blank material keeps a key's stored material, found by key UID, only while its format is unchanged: material kept
+   across a format change would be read with the new format's meaning (scalar "10" as Basic Privacy 10). */
+static QString
 mergeProfileKeys(QVariantMap& row, const QVariantMap& draft) {
-    if (draft.contains("keys")) {
-        QMap<QString, QString> previous;
-        for (const auto& value : row.value("keys").toList()) {
-            const auto key = value.toMap();
-            previous.insert(key.value("uid").toString(), key.value("material").toString());
-        }
-        QVariantList keys;
-        for (const auto& value : draft.value("keys").toList()) {
-            auto key = value.toMap();
-            if (key.value("uid").toString().isEmpty()) {
-                key.insert("uid", uuid());
-            }
-            if (!key.contains("material")) {
-                key.insert("material", previous.value(key.value("uid").toString()));
-            }
-            keys.append(key);
-        }
-        row.insert("keys", keys);
+    if (!draft.contains("keys")) {
+        return {};
     }
+    QMap<QString, QVariantMap> previous;
+    for (const auto& value : row.value("keys").toList()) {
+        const auto key = value.toMap();
+        previous.insert(key.value("uid").toString(), key);
+    }
+    QVariantList keys;
+    for (const auto& value : draft.value("keys").toList()) {
+        auto key = value.toMap();
+        if (key.value("uid").toString().isEmpty()) {
+            key.insert("uid", uuid());
+        }
+        if (key.value("material").toString().isEmpty()) {
+            const auto stored = previous.value(key.value("uid").toString());
+            if (!stored.isEmpty() && keyKindOf(stored) != keyKindOf(key)) {
+                return namedKeyError(key, QObject::tr("Enter replacement material when changing the key format."));
+            }
+            key.insert("material", stored.value("material").toString());
+        }
+        keys.append(key);
+    }
+    row.insert("keys", keys);
+    return {};
 }
 
 QVariantMap
@@ -896,7 +1039,10 @@ DecryptionProfilesModel::saveProfile(const QVariantMap& draft) {
     if (!draftError.isEmpty()) {
         return failure(draftError);
     }
-    mergeProfileKeys(row, draft);
+    const QString keysError = mergeProfileKeys(row, draft);
+    if (!keysError.isEmpty()) {
+        return failure(keysError);
+    }
     QString error;
     QStringList past = row.value("pastRuntimeRefs").toStringList();
     if (!row.value("runtimeRef").toString().isEmpty()) {
@@ -988,6 +1134,128 @@ DecryptionProfilesModel::removeProfile(const QString& uid) {
     QDir(json_store_path("decryption/" + uid)).removeRecursively();
     Q_EMIT countChanged();
     return {{"ok", true}};
+}
+
+QVariantList
+DecryptionProfilesModel::keyKinds(const QString& protocol) const {
+    QVariantList result;
+    for (const auto& kind : kManagedKinds) {
+        if (managedKindAllowed(QLatin1String(kind.id), protocol.isEmpty() ? QStringLiteral("mixed") : protocol)) {
+            result << QVariantMap{
+                {"id", kind.id},
+                {"label", QStringLiteral("%1 · %2").arg(
+                              kindName(kind), QCoreApplication::translate("DecryptionProfilesModel", kind.detail))}};
+        }
+    }
+    return result;
+}
+
+/* The key ID the dialog holds, read as its lookup does: typed text is hex for a received key ID and decimal for a
+   destination; a number (a draft row's keyId) is taken as is. An ID that does not parse leaves *parsed false, and
+   managedSlotError() then names the range. */
+static QString
+entryKeyId(const QVariant& raw, bool destination, bool* parsed, quint32* id) {
+    *parsed = false;
+    *id = 0;
+    if (!raw.isValid() || (raw.typeId() == QMetaType::QString && raw.toString().isEmpty())) {
+        return QObject::tr("Enter a key ID.");
+    }
+    if (raw.typeId() != QMetaType::QString) {
+        *id = raw.toUInt(parsed);
+        return {};
+    }
+    const QString text = raw.toString();
+    static const QRegularExpression hex(QStringLiteral("^[0-9A-Fa-f]+$"));
+    static const QRegularExpression decimal(QStringLiteral("^[0-9]+$"));
+    if (!(destination ? decimal : hex).match(text).hasMatch()) {
+        return destination ? QObject::tr("Destination IDs are decimal digits.")
+                           : QObject::tr("Key IDs are hex digits: use only 0-9 and A-F.");
+    }
+    bool ok = false;
+    const qulonglong value = text.toULongLong(&ok, destination ? 10 : 16);
+    *parsed = ok && value <= 0xFFFFFFFFULL;
+    *id = *parsed ? static_cast<quint32>(value) : 0U;
+    return {};
+}
+
+QString
+DecryptionProfilesModel::keyEntryError(const QString& profileUid, const QVariantList& draftKeys, int index,
+                                       const QVariantMap& entry) const {
+    const int stored = rowForUid(profileUid);
+    QString protocol = entry.value("protocol").toString();
+    if (protocol.isEmpty()) {
+        protocol = stored >= 0 ? m_rows[stored].value("protocol", "mixed").toString() : QStringLiteral("mixed");
+    }
+    const QVariantMap edited = index >= 0 && index < draftKeys.size() ? draftKeys[index].toMap() : QVariantMap();
+    QVariantMap key = entry;
+    if (key.value("uid").toString().isEmpty()) {
+        key.insert("uid", edited.value("uid").toString().isEmpty() ? uuid() : edited.value("uid").toString());
+    }
+    bool parsed = false;
+    quint32 id = 0;
+    QString problem = entryKeyId(entry.value("keyId"), key.value("lookup").toString() == "destination", &parsed, &id);
+    ManagedSlot slot;
+    if (problem.isEmpty()) {
+        problem = managedSlotError(key, parsed, id, protocol, &slot);
+    }
+    if (!problem.isEmpty()) {
+        return problem;
+    }
+
+    /* Blank material keeps what the key holds: an unsaved row's own material, else the stored key's (saveProfile()
+       refills it by key UID), and only under the format it was entered for. */
+    QString material = entry.value("material").toString();
+    bool retained = false;
+    if (material.isEmpty() && !edited.isEmpty()) {
+        QString keptKind;
+        if (!edited.value("material").toString().isEmpty()) {
+            material = edited.value("material").toString();
+            keptKind = keyKindOf(edited);
+        } else if (stored >= 0) {
+            for (const auto& value : m_rows[stored].value("keys").toList()) {
+                const auto storedKey = value.toMap();
+                if (storedKey.value("uid").toString() == key.value("uid").toString()) {
+                    material = storedKey.value("material").toString();
+                    keptKind = keyKindOf(storedKey);
+                    break;
+                }
+            }
+        }
+        retained = !material.isEmpty();
+        if (retained && keptKind != keyKindOf(key)) {
+            return QObject::tr("Enter replacement material when changing the key format.");
+        }
+    }
+    QStringList words;
+    problem = managedMaterialError(*managedKind(keyKindOf(key)), protocol, material, &words);
+    if (!problem.isEmpty()) {
+        return retained ? QObject::tr("The kept material does not fit this key. Enter replacement material.") : problem;
+    }
+    problem = legacyDestinationError(slot, words);
+    if (!problem.isEmpty()) {
+        return problem;
+    }
+
+    // The other draft rows, as compile() reserves them: each format's cells follow from its width.
+    ManagedCollection others;
+    for (int i = 0; i < draftKeys.size(); ++i) {
+        if (i == index) {
+            continue;
+        }
+        const auto other = draftKeys[i].toMap();
+        bool ok = false;
+        const quint32 otherId = other.value("keyId").toUInt(&ok);
+        ManagedSlot otherSlot;
+        const ManagedKind* otherKind = managedKind(keyKindOf(other));
+        if (otherKind && managedSlotError(other, ok, otherId, protocol, &otherSlot).isEmpty()) {
+            occupyManagedKey(others, other.value("uid").toString(), otherSlot.base, managedWordCount(*otherKind),
+                             keyDescription(other));
+        } else {
+            others.references.insert(other.value("uid").toString());
+        }
+    }
+    (void)reserveManagedKey(others, key, slot.base, static_cast<int>(words.size()), &problem);
+    return problem;
 }
 
 bool

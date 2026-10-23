@@ -6706,6 +6706,26 @@ Qt Quick frontend (`src/ui/qt`):
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
+- Decryption profile key material (`decryption_profiles_model.{h,cpp}`, `session_args.{h,cpp}`):
+  - One hex contract: `session_args_key_hex_normalize()` drops every `QChar::isSpace()` character, `-` and `:` and a
+    leading `0x`/`0X`, for the hex direct types (`session_args_key_type_hex()`: hex, rc4, m17Scrambler, m17Aes) and the
+    managed hex formats only. `session_args_key_value_normalize()` is the per-type form every argv and live-apply path
+    uses (decimal types trimmed). Vendor grammars keep their own (`vendorHexNormalize()`: ASCII whitespace and `0x`).
+    `configuration()` returns a direct profile's value normalised, the stored row keeps what was typed, so
+    `CommandBridge::applyDecryptionProfile()` never submits a grouped key past the 72-byte command field.
+  - `session_args_key_protocol_error()` is the profile protocol's direct-key rule (P25 hex never 10 digits, NXDN hex
+    64), used by `ProfileCompiler::direct()` and by `sessionArgs.keyError(type, value, csv, force, protocol)`; the
+    four-argument QML call keeps working.
+  - `keyKinds(protocol)` lists the managed formats the protocol takes with a width label; ids are unchanged.
+    `keyEntryError(profileUid, draftKeys, index, entry)` runs compile's own per-key helpers (`managedSlotError()`,
+    `managedMaterialError()`, `legacyDestinationError()`, the collection's cells and references) for the edited row
+    against the other draft rows, and judges blank material on what the key keeps (an unsaved row's own material, else
+    the stored key's, by key UID) without returning it. `mergeProfileKeys()` refills blank material only under an
+    unchanged format; save-time key errors name the key (`Key "Dispatch" (ID 1): ...`).
+  - `-mq` (P25 Simulcast) reads as P25 in `Util.decryptionProtocol()`, `session_args_profile_compatible()` and the
+    legacy migration's `protocolFor()`.
+  - Tests: `UI_QT_DECRYPTION_PROFILES` (entry table, format change, named errors, normalisation, AES-256 through the
+    hex importer, restore recompile, `-mq`), `UI_QT_CONTROLLER` (`test_spaced_direct_profile_applies_live()`).
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per

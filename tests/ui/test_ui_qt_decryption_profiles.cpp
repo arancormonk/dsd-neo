@@ -504,6 +504,15 @@ test_compile_refuses_linked_directories(const QString& secret) {
           && error.isEmpty());
 }
 
+static QString
+hexDigits(int count, char first = '1') {
+    QString text;
+    for (int i = 0; i < count; ++i) {
+        text += QLatin1Char(i % 2 ? 'A' : first);
+    }
+    return text;
+}
+
 /* The words of a 64-digit key, as the hex importer stores them. */
 static const unsigned long long kAes256Words[] = {0x0123456789ABCDEFULL, 0x0ULL, 0xFEDCBA9876543210ULL,
                                                   0x1122334455667788ULL};
@@ -539,6 +548,271 @@ importsAes256(const QString& path, quint32 id) {
     dsd_state_ext_free_all(state);
     std::free(state);
     return words;
+}
+
+/* The editor's format list comes from the model: ids as before, labels with the width each takes. */
+static void
+test_key_kinds(const dsd_qt::DecryptionProfilesModel& profiles) {
+    const auto ids = [&profiles](const char* protocol) {
+        QStringList result;
+        for (const auto& value : profiles.keyKinds(QLatin1String(protocol))) {
+            result << value.toMap().value("id").toString();
+        }
+        return result;
+    };
+    check(ids("p25") == (QStringList{"scalar", "aes128", "aes256", "tdea"}));
+    check(ids("dmr") == (QStringList{"scalar", "aes128", "aes256", "basic"}));
+    check(ids("nxdn") == (QStringList{"scalar", "aes256", "scrambler"}));
+    check(ids("mixed") == (QStringList{"scalar", "aes128", "aes256", "tdea", "basic", "scrambler"}));
+    QStringList labels;
+    for (const auto& value : profiles.keyKinds("mixed")) {
+        labels << value.toMap().value("label").toString();
+    }
+    check(labels
+          == (QStringList{QString::fromUtf8("DES / RC4 / ADP · up to 16 hex digits"),
+                          QString::fromUtf8("AES-128 · 32 hex digits"), QString::fromUtf8("AES-256 · 64 hex digits"),
+                          QString::fromUtf8("Triple DES · 48 hex digits"), QString::fromUtf8("Basic Privacy · 0–255"),
+                          QString::fromUtf8("Scrambler · 0–32767")}));
+}
+
+/* keyEntryError() runs the checks saving runs for the edited key, against the other draft rows, and judges blank
+   material on what the key keeps (an unsaved row's own material, else the stored one) without returning it. */
+static void
+test_key_entry_errors(dsd_qt::DecryptionProfilesModel& profiles) {
+    const QString wide = QStringLiteral("112233445566"); // 48 bits: too wide for a legacy destination import
+    check(profiles
+              .saveProfile({{"uid", "entry-p25"},
+                            {"label", "Entry P25"},
+                            {"protocol", "p25"},
+                            {"mode", "automatic"},
+                            {"keys", QVariantList{QVariantMap{{"uid", "key-dispatch"},
+                                                              {"label", "Dispatch"},
+                                                              {"keyId", 1},
+                                                              {"kind", "aes256"},
+                                                              {"material", QLatin1String(kAes256Key)}},
+                                                  QVariantMap{{"uid", "key-patrol"},
+                                                              {"label", "Patrol"},
+                                                              {"keyId", 0x20},
+                                                              {"kind", "scalar"},
+                                                              {"material", "1122334455"}}}}})
+              .value("ok")
+              .toBool());
+    check(profiles
+              .saveProfile({{"uid", "entry-mixed"},
+                            {"label", "Entry mixed"},
+                            {"protocol", "mixed"},
+                            {"mode", "automatic"},
+                            {"keys", QVariantList{QVariantMap{{"uid", "key-wide"},
+                                                              {"label", "Wide"},
+                                                              {"keyId", 0x30},
+                                                              {"kind", "scalar"},
+                                                              {"material", wide}},
+                                                  QVariantMap{{"uid", "key-narrow"},
+                                                              {"label", "Narrow"},
+                                                              {"keyId", 0x31},
+                                                              {"kind", "scalar"},
+                                                              {"material", "1122334455"}}}}})
+              .value("ok")
+              .toBool());
+    const QVariantList p25Rows = profiles.get("entry-p25").value("keys").toList();
+    const QVariantList mixedRows = profiles.get("entry-mixed").value("keys").toList();
+    check(p25Rows.size() == 2 && !p25Rows[0].toMap().contains("material"));
+    QStringList answers;
+    const auto error = [&](const QString& profile, const QVariantList& rows, int index, QVariantMap entry) {
+        if (!entry.contains("label")) {
+            entry.insert("label", "Edited");
+        }
+        const QString text = profiles.keyEntryError(profile, rows, index, entry);
+        answers << text;
+        return text;
+    };
+    const auto fresh = [](const char* protocol, const char* kind, const QVariant& keyId, const QString& material) {
+        QVariantMap entry{
+            {"uid", "key-fresh"}, {"protocol", protocol}, {"kind", kind}, {"lookup", "id"}, {"keyId", keyId}};
+        if (!material.isNull()) {
+            entry.insert("material", material);
+        }
+        return entry;
+    };
+    const QString none;
+    // Material shape, with counts.
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "40", none)) == "Enter the key material.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "40", "XYZ"))
+          == "Key material is hex: use only 0-9 and A-F.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "40", hexDigits(63)))
+          == "AES-256 needs 64 hex digits; 63 entered.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes128", "40", hexDigits(31)))
+          == "AES-128 needs 32 hex digits; 31 entered.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "tdea", "40", hexDigits(47)))
+          == "Triple DES needs 48 hex digits; 47 entered.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "scalar", "40", hexDigits(17)))
+          == "DES / RC4 / ADP takes up to 16 hex digits; 17 entered.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "40", hexDigits(64))).isEmpty());
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "40", groupedAes256Key())).isEmpty());
+    // A wide key on the default format names the format it fits, where the protocol has it.
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "scalar", "40", hexDigits(64)))
+          == "64 hex digits is an AES-256 key. Choose AES-256.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "scalar", "40", hexDigits(48)))
+          == "48 hex digits is a Triple DES key. Choose Triple DES.");
+    check(error("entry-p25", p25Rows, -1, fresh("nxdn", "scalar", "40", hexDigits(32)))
+          == "DES / RC4 / ADP takes up to 16 hex digits; 32 entered.");
+    check(error("entry-p25", p25Rows, -1, fresh("dmr", "basic", "40", "256"))
+          == QString::fromUtf8("Basic Privacy keys are decimal 0–255."));
+    check(error("entry-p25", p25Rows, -1, fresh("dmr", "basic", "40", "255")).isEmpty());
+    check(error("entry-p25", p25Rows, -1, fresh("nxdn", "scrambler", "40", "32768"))
+          == QString::fromUtf8("Scrambler keys are decimal 0–32767."));
+    check(error("entry-p25", p25Rows, -1, fresh("dmr", "tdea", "40", hexDigits(48)))
+          == "Triple DES keys are not available for this profile protocol.");
+    // Key IDs per protocol and lookup, typed or as a number.
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "", hexDigits(64))) == "Enter a key ID.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "G1", hexDigits(64)))
+          == "Key IDs are hex digits: use only 0-9 and A-F.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "10000", hexDigits(64)))
+          == "Key IDs are hex 0 to FFFF.");
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", "FFFF", hexDigits(64))).isEmpty());
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes256", 0x10000, hexDigits(64)))
+          == "Key IDs are hex 0 to FFFF.");
+    check(error("entry-p25", p25Rows, -1, fresh("dmr", "aes256", "100", hexDigits(64)))
+          == "DMR key IDs are hex 0 to FF.");
+    check(error("entry-p25", p25Rows, -1, fresh("dmr", "aes256", "FF", hexDigits(64))).isEmpty());
+    const auto destination = [&fresh](const char* protocol, const char* kind, const QVariant& id,
+                                      const QString& material) {
+        auto entry = fresh(protocol, kind, id, material);
+        entry.insert("lookup", "destination");
+        return entry;
+    };
+    check(error("entry-p25", p25Rows, -1, destination("p25", "scalar", "1234", "1234"))
+          == "P25 selects keys by the received key ID; destination lookup is not available.");
+    check(error("entry-mixed", mixedRows, -1, destination("mixed", "scalar", "0", "1234"))
+          == "Destination IDs are decimal 1 to 16777215.");
+    check(error("entry-mixed", mixedRows, -1, destination("mixed", "scalar", "16777216", "1234"))
+          == "Destination IDs are decimal 1 to 16777215.");
+    check(error("entry-mixed", mixedRows, -1, destination("mixed", "scalar", "1A", "1234"))
+          == "Destination IDs are decimal digits.");
+    check(error("entry-mixed", mixedRows, -1, destination("mixed", "scalar", "16777215", "1234")).isEmpty());
+    check(error("entry-mixed", mixedRows, -1, destination("mixed", "aes128", "1234", hexDigits(32)))
+          == "Destination lookup supports scalar legacy keys only.");
+    const QString fortyBits = "Legacy destination lookup takes keys of at most 40 bits (10 hex digits).";
+    check(error("entry-mixed", mixedRows, -1, destination("mixed", "scalar", "1234", wide)) == fortyBits);
+    check(error("entry-mixed", mixedRows, -1, destination("mixed", "scalar", "1234", "1122334455")).isEmpty());
+    // A stored key switched to destination lookup with blank material is judged on the material it keeps.
+    const auto edit = [](const QVariantList& rows, int index, const QVariantMap& fields) {
+        QVariantMap entry = rows[index].toMap();
+        entry.remove("configured");
+        for (auto i = fields.cbegin(); i != fields.cend(); ++i) {
+            entry.insert(i.key(), i.value());
+        }
+        return entry;
+    };
+    check(error("entry-mixed", mixedRows, 0, edit(mixedRows, 0, {{"lookup", "destination"}, {"keyId", "12345"}}))
+          == fortyBits);
+    check(error("entry-mixed", mixedRows, 1, edit(mixedRows, 1, {{"lookup", "destination"}, {"keyId", "12345"}}))
+              .isEmpty());
+    // Shared keyring cells and references, with the edited row left out.
+    const QString shared = "Uses the same keyring cells as key \"Dispatch\" (ID 1). Keys wider than 16 hex digits also "
+                           "take ID+101, ID+201 and ID+301 in turn.";
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "scalar", "102", "1234")) == shared);
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes128", "101", hexDigits(32))) == shared);
+    check(error("entry-p25", p25Rows, -1, fresh("p25", "aes128", "100", hexDigits(32))).isEmpty());
+    check(error("entry-p25", p25Rows, 0, edit(p25Rows, 0, {{"keyId", "1"}})).isEmpty());
+    check(error("entry-p25", p25Rows, 1, edit(p25Rows, 1, {{"keyId", "302"}})) == shared);
+    auto duplicate = fresh("p25", "scalar", "50", "1234");
+    duplicate.insert("uid", "key-patrol");
+    check(error("entry-p25", p25Rows, -1, duplicate) == "Key references must be unique.");
+    // A format change needs replacement material; the same format keeps it.
+    check(error("entry-p25", p25Rows, 0, edit(p25Rows, 0, {{"kind", "aes128"}}))
+          == "Enter replacement material when changing the key format.");
+    check(
+        error("entry-p25", p25Rows, 0, edit(p25Rows, 0, {{"kind", "aes128"}, {"material", hexDigits(32)}})).isEmpty());
+    check(error("entry-p25", p25Rows, 0, edit(p25Rows, 0, {{"label", "Renamed"}})).isEmpty());
+    // An unsaved key carries its own material in the draft row: later edits are judged on that, again and again.
+    QVariantList draft = p25Rows;
+    draft << QVariantMap{{"uid", "key-unsaved"}, {"label", "Unsaved"}, {"keyId", 0x40},
+                         {"kind", "aes256"},     {"lookup", "id"},     {"material", hexDigits(64)}};
+    check(
+        error("entry-p25", draft, 2, edit(draft, 2, {{"label", "Unsaved again"}, {"material", QString()}})).isEmpty());
+    draft[2] = edit(draft, 2, {{"label", "Unsaved again"}});
+    check(error("entry-p25", draft, 2, edit(draft, 2, {{"material", QString()}})).isEmpty());
+    check(error("entry-p25", draft, 2, edit(draft, 2, {{"kind", "scalar"}, {"material", QString()}}))
+          == "Enter replacement material when changing the key format.");
+    check(error("entry-p25", draft, 2, edit(draft, 2, {{"kind", "scalar"}, {"material", "ABCD"}})).isEmpty());
+    // ... and its cells count against a new key.
+    check(error("entry-p25", draft, -1, fresh("p25", "scalar", "141", "1234"))
+          == "Uses the same keyring cells as key \"Unsaved again\" (ID 40). Keys wider than 16 hex digits also take "
+             "ID+101, ID+201 and ID+301 in turn.");
+    // A draft row with neither its own nor stored material needs some.
+    QVariantMap bare = draft[2].toMap();
+    bare.remove("material");
+    bare.insert("uid", "key-bare");
+    draft[2] = bare;
+    check(error("entry-p25", draft, 2, edit(draft, 2, {})) == "Enter the key material.");
+    // No answer carries material.
+    for (const auto& answer : answers) {
+        check(!answer.contains(QLatin1String(kAes256Key).left(16)) && !answer.contains(wide)
+              && !answer.contains("1122334455") && !answer.contains(hexDigits(16)));
+    }
+}
+
+/* Saving refuses blank material on a changed format (stored material would be read with the new format's meaning),
+   keeps it on an unchanged one, and names the key in every key error. */
+static void
+test_key_format_change_and_named_errors(dsd_qt::DecryptionProfilesModel& profiles) {
+    const QVariantMap stored{
+        {"uid", "key-ten"}, {"label", "Ten"}, {"keyId", 0x10}, {"kind", "scalar"}, {"material", "10"}};
+    check(profiles
+              .saveProfile({{"uid", "format-change"},
+                            {"label", "Format change"},
+                            {"protocol", "mixed"},
+                            {"mode", "automatic"},
+                            {"keys", QVariantList{stored}}})
+              .value("ok")
+              .toBool());
+    QString error;
+    const auto before = profiles.configuration("format-change", &error);
+    check(error.isEmpty());
+    QVariantMap basic = profiles.get("format-change").value("keys").toList().value(0).toMap();
+    basic.insert("kind", "basic");
+    auto saved = profiles.saveProfile({{"uid", "format-change"}, {"keys", QVariantList{basic}}});
+    check(!saved.value("ok").toBool()
+          && saved.value("error").toString()
+                 == "Key \"Ten\" (ID 10): Enter replacement material when changing the key format.");
+    check(profiles.configuration("format-change", &error) == before);
+    QVariantMap renamed = profiles.get("format-change").value("keys").toList().value(0).toMap();
+    renamed.insert("label", "Ten renamed");
+    check(profiles.saveProfile({{"uid", "format-change"}, {"keys", QVariantList{renamed}}}).value("ok").toBool());
+    dsd_key_set keys = {};
+    const QString hexPath = profiles.configuration("format-change", &error).value("keysHexCsvPath").toString();
+    check(error.isEmpty() && dsd_key_set_load_csv(&keys, hexPath.toUtf8().constData(), nullptr, 0) == 0);
+    check(keys.count == 1 && keys.entries[0].index == 0x10 && keys.entries[0].value == 0x10);
+    dsd_key_set_free(&keys);
+    basic.insert("material", "73");
+    check(profiles.saveProfile({{"uid", "format-change"}, {"keys", QVariantList{basic}}}).value("ok").toBool());
+
+    const auto saveError = [&profiles](const QVariantMap& key) {
+        return profiles
+            .saveProfile({{"uid", "named-errors"},
+                          {"label", "Named errors"},
+                          {"protocol", "p25"},
+                          {"mode", "automatic"},
+                          {"keys", QVariantList{key}}})
+            .value("error")
+            .toString();
+    };
+    check(saveError({{"uid", "key-short"},
+                     {"label", "Dispatch"},
+                     {"keyId", 1},
+                     {"kind", "aes256"},
+                     {"material", hexDigits(63)}})
+          == "Key \"Dispatch\" (ID 1): AES-256 needs 64 hex digits; 63 entered.");
+    check(saveError({{"uid", "key-short"}, {"keyId", 0x1A}, {"kind", "scalar"}, {"material", hexDigits(64)}})
+          == "Key ID 1A: 64 hex digits is an AES-256 key. Choose AES-256.");
+    check(saveError({{"uid", "key-short"},
+                     {"label", "Dispatch"},
+                     {"keyId", 0x10000},
+                     {"kind", "aes256"},
+                     {"material", hexDigits(64)}})
+          == "Key \"Dispatch\" (ID 10000): Key IDs are hex 0 to FFFF.");
+    check(profiles.get("named-errors").isEmpty());
 }
 
 /* A profile's hex material drops every Unicode space, '-' and ':' grouping and a 0x/0X prefix; vendor grammars keep
@@ -784,6 +1058,9 @@ main(int argc, char** argv) {
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fp"}}));
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fm"}}));
     test_qml_and_session_protocols_agree();
+    test_key_kinds(profiles);
+    test_key_entry_errors(profiles);
+    test_key_format_change_and_named_errors(profiles);
     test_hex_normalisation(profiles);
     test_aes256_profile_imports(profiles);
     test_simulcast_preset_is_p25(profiles, systems);
