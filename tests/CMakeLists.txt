@@ -11946,6 +11946,18 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_grant_policy PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_GRANT_POLICY COMMAND dsd-neo_test_p25_grant_policy)
 
+# P25 talkgroup preemption from voice-channel announcements (P2 updates, P1 LC), hangtime, dwell and cooldown
+add_executable(
+    dsd-neo_test_p25_preempt
+    protocol/p25/test_p25_preempt.c
+)
+target_include_directories(
+    dsd-neo_test_p25_preempt
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
+)
+target_link_libraries(dsd-neo_test_p25_preempt PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
+add_test(NAME P25_PREEMPT COMMAND dsd-neo_test_p25_preempt)
+
 # DMR grant policy behavior (allow-list, explicit block modes, private source allow-list)
 add_executable(
     dsd-neo_test_dmr_grant_policy

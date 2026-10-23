@@ -210,6 +210,9 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     (void)p25_lcw_accept_private_voice_user(ctx, target, source);
 }
 
+static void p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint16_t* groups,
+                                     const int* svcs, int count);
+
 static void
 p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel Update - ");
@@ -239,6 +242,12 @@ p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
     } else {
         (void)dsd_recent_activity_clear(ctx->state, 1U);
     }
+
+    // The format carries no service options: octets 1-2 are channel 1, not the generic decoder's svcopt.
+    const uint16_t channels[2] = {channel1, channel2};
+    const uint16_t groups[2] = {group1, group1 != group2 ? group2 : 0U};
+    const int svcs[2] = {P25_SM_SVC_UNKNOWN, P25_SM_SVC_UNKNOWN};
+    p25_lcw_offer_preemption(ctx, channels, groups, svcs, 2);
 }
 
 static int
@@ -247,6 +256,51 @@ p25_lcw_trunk_cc_ready_for_grant(p25_lcw_ctx* ctx) {
         return 0;
     }
     return ctx->state->p25_cc_freq != 0 || ctx->state->trunk_cc_freq > 0;
+}
+
+/* Calls an FDMA voice channel announces in progress elsewhere (0x42, 0x44 without -j, Motorola LCGRGU). They reach
+ * the trunking SM only as preemption candidates (p25_sm_event_t.preempt_only): a talkgroup whose policy asks to
+ * preempt may take the receiver from a lower-priority call, and every other announcement leaves the SM untouched.
+ * Several are offered held talkgroup first, then highest priority, and the first to take the receiver ends the
+ * offer. */
+static void
+p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint16_t* groups, const int* svcs,
+                         int count) {
+    p25_sm_event_t events[2];
+    p25_sm_grant_rank_t ranks[2];
+    int order[2];
+    int n = 0;
+    if (!p25_lcw_trunk_cc_ready_for_grant(ctx) || ctx->opts->trunk_tune_group_calls != 1) {
+        return;
+    }
+    for (int i = 0; i < count && n < 2; i++) {
+        if (channels[i] == 0U || groups[i] == 0U) {
+            continue;
+        }
+        events[n] = p25_sm_ev_group_grant_update(channels[i], 0, groups[i], 0, svcs[i]);
+        events[n].preempt_only = 1;
+        if (!p25_sm_grant_candidate_rank(ctx->opts, ctx->state, &events[n], &ranks[n])) {
+            DSD_MEMSET(&ranks[n], 0, sizeof(ranks[n]));
+        }
+        order[n] = n;
+        n++;
+    }
+    if (n == 2
+        && (ranks[1].tune_allowed > ranks[0].tune_allowed
+            || (ranks[1].tune_allowed == ranks[0].tune_allowed
+                && (ranks[1].hold_match > ranks[0].hold_match
+                    || (ranks[1].hold_match == ranks[0].hold_match && ranks[1].priority > ranks[0].priority))))) {
+        order[0] = 1;
+        order[1] = 0;
+    }
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    for (int i = 0; i < n; i++) {
+        const long held_freq = sm->vc_freq_hz;
+        p25_sm_event(sm, ctx->opts, ctx->state, &events[order[i]]);
+        if (sm->vc_freq_hz != held_freq) {
+            break;
+        }
+    }
 }
 
 static void
@@ -320,6 +374,11 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
     }
     if (ctx->opts->p25_lcw_retune == 0) {
         p25_lcw_warn_format_44_retune_disabled(ctx);
+        // -j only governs following explicit updates; a preempting talkgroup announced this way still preempts.
+        const uint16_t channels[1] = {channel};
+        const uint16_t groups[1] = {group};
+        const int svcs[1] = {ctx->lc_svcopt};
+        p25_lcw_offer_preemption(ctx, channels, groups, svcs, 1);
         return;
     }
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
@@ -784,6 +843,10 @@ p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
         char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
         DSD_SNPRINTF(notice, sizeof notice, "Regroup Ch: %04X SG: %u; ", (unsigned)ch, (unsigned)sg);
         p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_GROUP_VOICE, sg, 0U, (uint16_t)ch, notice);
+        const uint16_t channels[1] = {(uint16_t)ch};
+        const uint16_t groups[1] = {(uint16_t)sg};
+        const int svcs[1] = {P25_SM_SVC_UNKNOWN};
+        p25_lcw_offer_preemption(ctx, channels, groups, svcs, 1);
     } else {
         (void)dsd_recent_activity_clear(ctx->state, 0U);
     }

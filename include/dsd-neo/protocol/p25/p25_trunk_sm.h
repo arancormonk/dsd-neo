@@ -126,6 +126,7 @@ typedef struct {
     int ptt_signature_valid;                           // 1 when ptt_signature and observed_m are authoritative
     uint32_t grant_seq;                                // IDLE: the slot's grant_seq when the IDLE was observed
     int grant_seq_valid;                               // 1 when grant_seq is set
+    int preempt_only; // GRANT announced on a voice channel for another carrier: considered only as a preemption
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -155,6 +156,13 @@ typedef struct {
     double last_followed_m;
     // Group identity retained while the TDMA media rejection latch is set.
     uint32_t rejected_target_id;
+    // The call this slot has followed since followed_since_m: target, kind and carrier. A repeat or a re-grant of
+    // the same call keeps the stamp, so preemption dwell runs from when the call was first followed; a different
+    // call, a physical retune or a release restarts it (p25_sm_clear_followed_history()).
+    double followed_since_m;
+    int followed_target;
+    int followed_is_group;
+    long followed_freq_hz;
 
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
@@ -872,6 +880,25 @@ void p25_sm_emit_crypto_pending_epoch(dsd_opts* opts, dsd_state* state, int slot
  * @param src Source RID.
  */
 void p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
+
+/** What an assignment for an announced call would decide, for ranking calls announced together. */
+typedef struct {
+    int tune_allowed; /**< the policy admits it */
+    int hold_match;   /**< it is the held talkgroup */
+    int priority;     /**< 0..100 from its row */
+    int preempt;      /**< its row asks to preempt */
+} p25_sm_grant_rank_t;
+
+/**
+ * @brief The policy decision an assignment for @p ev would reach, without writing anything.
+ *
+ * Patch-aware and lockout-release-aware like the grant path, but no ledger release, backoff, call-skip touch or log.
+ * Decoders rank several calls announced together with it (hold match, then priority) before dispatching them.
+ *
+ * @return 1 when @p out was evaluated, 0 otherwise.
+ */
+int p25_sm_grant_candidate_rank(const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                p25_sm_grant_rank_t* out);
 
 /* ============================================================================
  * Helper: SACCH slot mapping
