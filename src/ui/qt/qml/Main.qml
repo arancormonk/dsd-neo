@@ -475,6 +475,11 @@ Window {
     property bool talkgroupsOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
+    // The standalone saved system the session runs, by UID: empty for a scan
+    // list, Explore, a signal search or a wizard test. What the session may
+    // write back to (radio controls, the decryption profile for future starts).
+    readonly property string sessionSavedSystemUid: !mainRoot.exploring && !mainRoot.sessionScanList && mainRoot.sessionSystem
+        && !mainRoot.sessionSystem.signalSearch ? (mainRoot.sessionSystem.uid || "") : ""
     property bool awaitingSessionInitialized: false
 
     property bool sessionReachedRunning: false
@@ -1145,6 +1150,11 @@ Window {
         objectName: "monitorScreen"
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
+        sessionSystemUid: mainRoot.sessionSavedSystemUid
+        onSystemProfileSaved: function (uid) {
+            if (mainRoot.sessionSavedSystemUid === uid)
+                mainRoot.sessionSystem = savedSystems.getByUid(uid);
+        }
         scanTargetName: mainRoot.scanTargetLabel()
         sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {
@@ -1531,8 +1541,7 @@ Window {
     // Shared by Monitor and Spectrum; opening Radio never allocates the waterfall.
     RadioSettingsPersistence {
         id: radioPersistence
-        systemUid: !mainRoot.exploring && !mainRoot.sessionScanList && mainRoot.sessionSystem
-            && !mainRoot.sessionSystem.signalSearch ? (mainRoot.sessionSystem.uid || "") : ""
+        systemUid: mainRoot.sessionSavedSystemUid
         active: decoderHost.running
         onSaved: mainRoot.sessionSystem = savedSystems.getByUid(systemUid)
     }

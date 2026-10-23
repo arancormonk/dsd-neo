@@ -103,6 +103,34 @@ Item {
             compare(callHistory.sessionUid, "")
         }
 
+        // The key sheet's "Use for <system>" names only a standalone saved
+        // system: Monitor passes its UID, and a scan list or Explore passes none.
+        function keySheet() {
+            return findChild(findChild(loader.item, "monitorScreen"), "keySheet")
+        }
+        function test_key_sheet_names_the_saved_system() {
+            var uid = savedSystems.get(0).uid
+            loader.item.startSystem(0)
+            compare(findChild(loader.item, "monitorScreen").sessionSystemUid, uid)
+            compare(keySheet().systemUid, uid)
+            compare(keySheet().systemName, "Saved site")
+            // A profile written for future starts reaches the session's copy of the system.
+            verify(savedSystems.update(0, {decryptionProfileUid: "future-profile"}))
+            keySheet().systemProfileSaved(uid)
+            compare(loader.item.sessionSystem.decryptionProfileUid, "future-profile")
+        }
+        function test_key_sheet_has_no_system_for_a_scan_list() {
+            scanLists.add({name: "Scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]})
+            loader.item.startWithMap(scanLists.get(0), 0, true)
+            compare(decoderHost.sessionState, 1)
+            compare(keySheet().systemUid, "")
+        }
+        function test_key_sheet_has_no_system_when_exploring() {
+            loader.item.startWithMap(loader.item.exploreSystem("rtltcp", "127.0.0.1", 1234, "851.5"), -1, false)
+            compare(decoderHost.sessionState, 1)
+            compare(keySheet().systemUid, "")
+        }
         function test_invalid_start_preserves_identity() {
             var sys = savedSystems.get(0)
             sys.hangtime = "abc"
