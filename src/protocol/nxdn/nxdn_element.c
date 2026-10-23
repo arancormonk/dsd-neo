@@ -1487,6 +1487,50 @@ nxdn_follow_valid(const dsd_opts* opts, const dsd_state* state) {
     return freq > 0 && dsd_opts_trunk_vc_followed(opts) && state->trunk_vc_freq[0] == freq;
 }
 
+/* The frequency the receiver is on: the followed route while it holds, else the voice channel the decoder tuned, else
+ * the tuner's own (a radio input), else what a rigctl peer reports (rigctl on an audio input), asked at most once per
+ * tuning generation (nxdn_cc_hunt_receiver_frequency()). 0 when nothing names it. */
+static long int
+nxdn_receiver_freq(const dsd_opts* opts, dsd_state* state) {
+    if (nxdn_follow_valid(opts, state)) {
+        return state->nxdn_follow.freq_hz;
+    }
+    if (dsd_opts_trunk_vc_followed(opts) && state->trunk_vc_freq[0] > 0) {
+        return state->trunk_vc_freq[0];
+    }
+    const long int tuned = (long int)dsd_opts_tuned_freq_hz(opts);
+    if (tuned > 0) {
+        return tuned;
+    }
+    if (opts->use_rigctl == 1) {
+        return nxdn_cc_hunt_receiver_frequency(opts, state);
+    }
+    return 0;
+}
+
+/* Whether a Type-D SCCH naming go-to repeater @p rep speaks of the call on the receiver's repeater. */
+typedef enum {
+    NXDN_IDAS_UNKNOWN = 0, /* no repeater, no frequency mapped for it, or the receiver's frequency is not known */
+    NXDN_IDAS_MATCH,       /* the receiver is on that repeater */
+    NXDN_IDAS_OTHER,       /* another repeater */
+} nxdn_idas_assoc_t;
+
+static nxdn_idas_assoc_t
+nxdn_idas_assoc(const dsd_opts* opts, dsd_state* state, uint8_t rep) {
+    if (rep < 1U || rep > 30U) {
+        return NXDN_IDAS_UNKNOWN;
+    }
+    const long int rep_freq = nxdn_channel_to_frequency_quiet(state, rep);
+    if (rep_freq <= 0) {
+        return NXDN_IDAS_UNKNOWN;
+    }
+    const long int rx = nxdn_receiver_freq(opts, state);
+    if (rx <= 0) {
+        return NXDN_IDAS_UNKNOWN;
+    }
+    return rx == rep_freq ? NXDN_IDAS_MATCH : NXDN_IDAS_OTHER;
+}
+
 /* The receiver went to @p freq: the route is the followed one's. */
 static void
 nxdn_note_follow(dsd_state* state, uint16_t chan, long int freq, uint8_t repeater) {
@@ -2972,7 +3016,10 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);
     DSD_FPRINTF(stderr, "Home Repeater: %d; ", info->rep2);
     nxdn_scch_update_busy_display(opts, state, info);
-    if (info->rep1 != 31U && info->now - state->last_vc_sync_time < 1) {
+    /* The live call takes the message's target only when the go-to repeater is the receiver's own: a busy message for
+     * another repeater is another call. */
+    if (info->rep1 != 31U && info->now - state->last_vc_sync_time < 1
+        && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         nxdn_scch_enrich_identity(state, 0U, info->id);
     }
     nxdn_scch_apply_busy_tune(opts, state, info);
@@ -3035,7 +3082,7 @@ nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
 }
 
 static void
-nxdn_scch_handle_info2(dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     /* An outbound INFO2 has the INFO4 format (NXDN TS 1-E §6.5.3.3; TS 2-E Tables 5.1-2..5.1-4, "OSM INFO4 / INFO2"):
      * its idle, halt, free repeater and site ID messages carry a fixed code where a busy repeater message carries the
      * destination, and name no unit, so they never become the call's target. */
@@ -3053,7 +3100,8 @@ nxdn_scch_handle_info2(dsd_state* state, const struct nxdn_scch_info* info) {
         DSD_FPRINTF(stderr, "\n%s ", KGRN);
         DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                     info->id);
-        if (info->now - state->last_vc_sync_time < 1) {
+        /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater. */
+        if (info->now - state->last_vc_sync_time < 1 && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
             nxdn_scch_enrich_identity(state, 0U, info->id);
         }
     }
@@ -3113,7 +3161,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
         nxdn_scch_handle_info3(state, &info);
     }
     if (info.opcode == 0x06U || info.opcode == 0x02U) {
-        nxdn_scch_handle_info2(state, &info);
+        nxdn_scch_handle_info2(opts, state, &info);
     }
     if (info.opcode == 0x07U || info.opcode == 0x03U) {
         nxdn_scch_handle_info1(opts, state, &info);

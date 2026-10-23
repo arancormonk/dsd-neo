@@ -76,6 +76,8 @@ static dsd_state g_state;
 static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 static int g_tune_count = 0;
 static long g_last_tune_freq = 0;
+static long g_rigctl_freq = 0;
+static int g_rigctl_queries = 0;
 
 /*
  * Link stubs:
@@ -213,7 +215,8 @@ long int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_rigctl_query_hook_get_current_freq_hz(const dsd_opts* opts) {
     (void)opts;
-    return 0;
+    g_rigctl_queries++;
+    return g_rigctl_freq;
 }
 
 static dsd_trunk_tune_result
@@ -294,9 +297,10 @@ build_scch(uint8_t* message_bits, const nxdn_case* test_case) {
 }
 
 static void
-build_scch_identity(uint8_t* message_bits, uint8_t sf, uint16_t id) {
+build_scch_identity(uint8_t* message_bits, uint8_t sf, uint8_t rep1, uint16_t id) {
     DSD_MEMSET(message_bits, 0, 32);
     write_bits_u32(message_bits, 0U, sf, 2U);
+    write_bits_u32(message_bits, 3U, rep1, 5U);
     write_bits_u32(message_bits, 13U, id, 11U);
 }
 
@@ -329,6 +333,8 @@ nxdn_setup_fixture(const nxdn_case* test_case) {
 
     g_tune_count = 0;
     g_last_tune_freq = 0;
+    g_rigctl_freq = 0;
+    g_rigctl_queries = 0;
 }
 
 static void
@@ -576,12 +582,39 @@ nxdn_run_scch_termination_case(void) {
     return rc;
 }
 
+/* Where the receiver is when a busy repeater message arrives (nxdn_idas_assoc()). */
+typedef enum {
+    NXDN_RX_TUNED_THERE = 0, /* tuned to the message's repeater: MATCH */
+    NXDN_RX_TUNED_ELSEWHERE, /* tuned to another repeater: OTHER */
+    NXDN_RX_UNKNOWN,         /* nothing names the receiver's frequency: UNKNOWN */
+    NXDN_RX_RIGCTL_THERE,    /* rigctl on an audio input, no followed route, the peer on the repeater: MATCH */
+    NXDN_RX_RIGCTL_FAILS,    /* rigctl on an audio input whose frequency query fails: UNKNOWN */
+} nxdn_rx_kind;
+
+/* An anonymous live call takes a busy message's target only when the message names the receiver's repeater. */
 static int
-nxdn_run_scch_busy_enrich_case(void) {
+nxdn_run_scch_busy_enrich_case(const char* variant, nxdn_rx_kind rx, int expect_relabel) {
     const nxdn_case busy = {
         "type-d-scch-busy-enrich", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 1400U, 938012500L,
     };
+    const long other_freq = 939512500L;
     nxdn_setup_fixture(&busy);
+    g_state.trunk_chan_map[9] = other_freq;
+    switch (rx) {
+        case NXDN_RX_TUNED_THERE:
+        case NXDN_RX_TUNED_ELSEWHERE:
+            g_opts.trunk_is_tuned = 1;
+            g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] =
+                rx == NXDN_RX_TUNED_THERE ? busy.expected_freq : other_freq;
+            break;
+        case NXDN_RX_UNKNOWN: break;
+        case NXDN_RX_RIGCTL_THERE:
+        case NXDN_RX_RIGCTL_FAILS:
+            g_opts.use_rigctl = 1;
+            g_opts.audio_in_type = AUDIO_IN_PULSE;
+            g_rigctl_freq = rx == NXDN_RX_RIGCTL_THERE ? busy.expected_freq : 0;
+            break;
+    }
     g_state.last_vc_sync_time = dsd_decode_time();
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
@@ -597,15 +630,26 @@ nxdn_run_scch_busy_enrich_case(void) {
 
     nxdn_install_hooks();
     nxdn_run_case_decode(&busy);
+    nxdn_run_case_decode(&busy);
 
     int rc = 0;
-    rc |= nxdn_expect(g_tune_count == 0, busy.name, "recent-voice", "busy update did not retune");
-    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, busy.name, "recent-voice", "canonical call exists");
-    rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ACTIVE, busy.name, "recent-voice", "canonical call remains active");
-    rc |= nxdn_expect(call.epoch == previous_epoch, busy.name, "recent-voice", "anonymous call enriched in place");
-    rc |= nxdn_expect(call.ota_target_id == busy.scch_id && call.policy_target_id == busy.scch_id, busy.name,
-                      "recent-voice", "busy target applied to canonical call");
-    rc |= nxdn_expect(call.media_active == 1U, busy.name, "recent-voice", "media state preserved");
+    rc |= nxdn_expect(g_tune_count == 0, busy.name, variant, "busy update did not retune");
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, busy.name, variant, "canonical call exists");
+    rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ACTIVE, busy.name, variant, "canonical call remains active");
+    rc |= nxdn_expect(call.epoch == previous_epoch, busy.name, variant, "anonymous call kept its epoch");
+    if (expect_relabel) {
+        rc |= nxdn_expect(call.ota_target_id == busy.scch_id && call.policy_target_id == busy.scch_id, busy.name,
+                          variant, "busy target applied to canonical call");
+    } else {
+        rc |= nxdn_expect(call.ota_target_id == 0U && call.policy_target_id == 0U, busy.name, variant,
+                          "another repeater's target left the call alone");
+    }
+    rc |= nxdn_expect(call.media_active == 1U, busy.name, variant, "media state preserved");
+    if (rx == NXDN_RX_RIGCTL_THERE || rx == NXDN_RX_RIGCTL_FAILS) {
+        /* Each message asks where the receiver is, but a rigctl query is a round trip: once per tuning generation,
+         * a failed one included. */
+        rc |= nxdn_expect(g_rigctl_queries == 1, busy.name, variant, "one rigctl query per tuning generation");
+    }
     return rc;
 }
 
@@ -615,6 +659,11 @@ nxdn_run_scch_identity_context_case(void) {
         "type-d-scch-identity-context", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 0, 0, 0, 0,
     };
     nxdn_setup_fixture(&context);
+    /* The receiver is on repeater 7, where the call is. */
+    g_state.trunk_chan_map[7] = 938012500L;
+    g_state.trunk_chan_map[8] = 938512500L;
+    g_opts.trunk_is_tuned = 1;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 938012500L;
     g_state.last_vc_sync_time = dsd_decode_time();
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
@@ -648,10 +697,17 @@ nxdn_run_scch_identity_context_case(void) {
     uint64_t previous_epoch = call.epoch;
 
     uint8_t message[32];
-    build_scch_identity(message, 2U, 1500U);
+    int rc = 0;
+    /* A target message naming another repeater is another call: the held one keeps its target and epoch. */
+    build_scch_identity(message, 2U, 8U, 1600U);
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_target_id == 1400U
+                          && call.policy_target_id == 1400U && call.epoch == previous_epoch,
+                      context.name, "other-repeater", "another repeater's target left the call alone");
+
+    build_scch_identity(message, 2U, 7U, 1500U);
     NXDN_decode_scch(&g_opts, &g_state, message, 1U);
 
-    int rc = 0;
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, context.name, "target-fragment",
                       "canonical call exists");
     rc |= nxdn_expect(call.ota_target_id == 1500U && call.policy_target_id == 1500U, context.name, "target-fragment",
@@ -673,7 +729,7 @@ nxdn_run_scch_identity_context_case(void) {
         nxdn_expect(strcmp(call.route_text[0], "RAN 7") == 0, context.name, "target-fragment", "route text preserved");
     previous_epoch = call.epoch;
 
-    build_scch_identity(message, 1U, 1200U);
+    build_scch_identity(message, 1U, 0U, 1200U);
     NXDN_decode_scch(&g_opts, &g_state, message, 1U);
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, context.name, "source-fragment",
                       "canonical call exists");
@@ -820,7 +876,11 @@ main(void) {
     rc |= nxdn_run_active_other_tg_no_tune_case();
     rc |= nxdn_run_hold_match_retune_case();
     rc |= nxdn_run_scch_termination_case();
-    rc |= nxdn_run_scch_busy_enrich_case();
+    rc |= nxdn_run_scch_busy_enrich_case("tuned-there", NXDN_RX_TUNED_THERE, 1);
+    rc |= nxdn_run_scch_busy_enrich_case("tuned-elsewhere", NXDN_RX_TUNED_ELSEWHERE, 0);
+    rc |= nxdn_run_scch_busy_enrich_case("receiver-unknown", NXDN_RX_UNKNOWN, 0);
+    rc |= nxdn_run_scch_busy_enrich_case("rigctl-there", NXDN_RX_RIGCTL_THERE, 1);
+    rc |= nxdn_run_scch_busy_enrich_case("rigctl-query-fails", NXDN_RX_RIGCTL_FAILS, 0);
     rc |= nxdn_run_scch_identity_context_case();
     rc |= nxdn_run_vcall_names_followed_route_case();
 
