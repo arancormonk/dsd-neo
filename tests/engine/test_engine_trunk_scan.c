@@ -2943,10 +2943,15 @@ seed_nxdn_identity(dsd_state* state, uint16_t grant_chan, long int grant_freq, u
     state->nxdn_base_freq = base_freq;
     state->nxdn_step = step;
     state->nxdn_bw = bw;
-    /* The followed route travels with the target too; derived from the grant so each target differs. */
+    /* The followed route and held call travel with the target too; derived from the grant so each target differs. */
     state->nxdn_follow.freq_hz = grant_freq;
     state->nxdn_follow.chan = grant_chan;
     state->nxdn_follow.repeater = (uint8_t)(grant_chan & 0x1FU);
+    state->nxdn_call.valid = grant_freq != 0 ? 1U : 0U;
+    state->nxdn_call.target = (uint32_t)grant_chan + 1000U;
+    state->nxdn_call.source = sys_code;
+    state->nxdn_call.rx_freq_hz = grant_freq;
+    state->nxdn_call.follow_m = (double)grant_chan;
 }
 
 static int
@@ -2959,15 +2964,20 @@ expect_nxdn_identity(const char* label, const dsd_state* state, uint16_t grant_c
         || state->nxdn_idas_site_code != (uint8_t)(site_code * 2U) || state->nxdn_rcn != rcn
         || state->nxdn_base_freq != base_freq || state->nxdn_step != step || state->nxdn_bw != bw
         || state->nxdn_follow.freq_hz != grant_freq || state->nxdn_follow.chan != grant_chan
-        || state->nxdn_follow.repeater != (grant_freq != 0 ? (uint8_t)(grant_chan & 0x1FU) : 0U)) {
+        || state->nxdn_follow.repeater != (grant_freq != 0 ? (uint8_t)(grant_chan & 0x1FU) : 0U)
+        || state->nxdn_call.valid != (grant_freq != 0 ? 1U : 0U)
+        || (grant_freq != 0
+            && (state->nxdn_call.target != (uint32_t)grant_chan + 1000U || state->nxdn_call.source != sys_code
+                || state->nxdn_call.rx_freq_hz != grant_freq
+                || fabs(state->nxdn_call.follow_m - (double)grant_chan) > 1e-9))) {
         DSD_FPRINTF(stderr,
                     "%s NXDN identity mismatch chan=%u freq=%ld ran=%u sys=%u site=%u cat='%s' idas=%u/%u rcn=%u "
-                    "base=%u step=%u bw=%u follow=%ld/%u/%u\n",
+                    "base=%u step=%u bw=%u follow=%ld/%u/%u call=%u/%u\n",
                     label, state->nxdn_grant_chan, state->nxdn_grant_freq, state->nxdn_last_ran,
                     state->nxdn_location_sys_code, state->nxdn_location_site_code, state->nxdn_location_category,
                     state->nxdn_idas_system_id, state->nxdn_idas_site_code, state->nxdn_rcn, state->nxdn_base_freq,
                     state->nxdn_step, state->nxdn_bw, state->nxdn_follow.freq_hz, state->nxdn_follow.chan,
-                    state->nxdn_follow.repeater);
+                    state->nxdn_follow.repeater, state->nxdn_call.valid, state->nxdn_call.target);
         return 1;
     }
     return 0;
@@ -9854,8 +9864,8 @@ test_visit_limit_ineligible_alternate_rearms(void) {
     return run_visit_limit_ineligible_alternate_rearms(0) | run_visit_limit_ineligible_alternate_rearms(1);
 }
 
-/* A switch whose tune fails rolls the receiver back to the target it was on, with that target's NXDN followed route as it
- * was: the failed candidate's fresh state must not replace it. */
+/* A switch whose tune fails rolls the receiver back to the target it was on, with that target's NXDN followed route and
+ * held call as they were: the failed candidate's fresh state must not replace them. */
 static int
 test_nxdn_state_survives_failed_switch_rollback(void) {
     char dir[DSD_TEST_PATH_MAX];

@@ -8,7 +8,10 @@
  *
  * Drives Type-C VCALL_ASSGN and Type-D SCCH busy grant paths with
  * result-returning trunk hooks. OK/PENDING must commit tuned state; rejected
- * results must leave voice-channel tune state untouched.
+ * results must leave voice-channel tune state untouched. While a call is held,
+ * candidates go through admission: a duplicate never untunes the receiver, the
+ * held talkgroup and outranking preempting calls take over, and a Type-D SCCH
+ * relabels or moves the receiver only by the repeater it names.
  */
 
 #include <dsd-neo/core/call_state.h>
@@ -16,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -76,6 +80,7 @@ static dsd_state g_state;
 static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 static int g_tune_count = 0;
 static long g_last_tune_freq = 0;
+static int g_tune_cc_count = 0;
 static long g_rigctl_freq = 0;
 static int g_rigctl_queries = 0;
 
@@ -239,10 +244,22 @@ nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_
     return g_tune_result;
 }
 
+static dsd_trunk_tune_result
+nxdn_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)freq;
+    (void)ted_sps;
+    (void)request_id;
+    g_tune_cc_count++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
 static void
 nxdn_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_freq_request = nxdn_hook_tune_to_freq;
+    hooks.tune_to_cc_request = nxdn_hook_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -333,6 +350,7 @@ nxdn_setup_fixture(const nxdn_case* test_case) {
 
     g_tune_count = 0;
     g_last_tune_freq = 0;
+    g_tune_cc_count = 0;
     g_rigctl_freq = 0;
     g_rigctl_queries = 0;
 }
@@ -640,9 +658,12 @@ nxdn_run_scch_busy_enrich_case(const char* variant, nxdn_rx_kind rx, int expect_
     if (expect_relabel) {
         rc |= nxdn_expect(call.ota_target_id == busy.scch_id && call.policy_target_id == busy.scch_id, busy.name,
                           variant, "busy target applied to canonical call");
+        rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == busy.scch_id, busy.name, variant,
+                          "busy target became the held call");
     } else {
         rc |= nxdn_expect(call.ota_target_id == 0U && call.policy_target_id == 0U, busy.name, variant,
                           "another repeater's target left the call alone");
+        rc |= nxdn_expect(g_state.nxdn_call.valid == 0U, busy.name, variant, "no held call was named");
     }
     rc |= nxdn_expect(call.media_active == 1U, busy.name, variant, "media state preserved");
     if (rx == NXDN_RX_RIGCTL_THERE || rx == NXDN_RX_RIGCTL_FAILS) {
@@ -749,7 +770,23 @@ nxdn_run_scch_identity_context_case(void) {
     return rc;
 }
 
-/* ---- A call is held -------------------------------------------------------------------------------------------- */
+/* ---- Admission while a call is held ------------------------------------------------------------------------- */
+
+static void
+at_seconds(double seconds) {
+    dsd_decode_clock_test_set_ns((uint64_t)(seconds * 1e9));
+}
+
+static void
+policy_row(uint32_t id, int priority, int preempt) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, "A", "test", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return;
+    }
+    row.priority = priority;
+    row.preempt = (uint8_t)preempt;
+    (void)dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+}
 
 /* A Type-C fixture with channels 16-19 mapped and the control channel known, untuned on the control channel. */
 static void
@@ -789,14 +826,198 @@ send_vcall(uint16_t source, uint16_t target) {
     NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
 }
 
+static void
+send_disc(void) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x11U);
+    NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
 /* Voice is being heard on the receiver's channel now. */
 static void
 voice_live(void) {
     g_state.last_vc_sync_time = dsd_decode_time();
 }
 
-/* A duplicate assignment that is not followed overwrites the last grant's channel, not the followed route: a new call
- * heard on the followed carrier names the followed channel. */
+/* A duplicate assignment heard on a voice channel past its call's hangtime is refused (here by the allow-list, or for
+ * an unmapped channel) without untuning the receiver: DISC still takes it back to the control channel, and the voice
+ * channel never becomes the control channel. */
+static int
+nxdn_run_refused_duplicate_keeps_tuned_case(void) {
+    static const char* const name = "type-c-refused-duplicate-keeps-tuned";
+    const long vc = type_c_freq(19U);
+    int rc = 0;
+    for (int variant = 0; variant < 3; variant++) {
+        const char* const label = variant == 0 ? "allowlist" : (variant == 1 ? "unmapped" : "no-control-channel");
+        type_c_fixture();
+        g_opts.trunk_is_tuned = 1;
+        g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = vc;
+        g_state.last_vc_sync_time = dsd_decode_time() - 4; /* past the 1 s hangtime */
+        g_opts.use_rigctl = 1;
+        g_rigctl_freq = vc;
+        if (variant == 0) {
+            g_opts.trunk_use_allow_list = 1;
+        } else if (variant == 1) {
+            g_state.trunk_chan_map[16] = 0;
+        } else {
+            g_state.p25_cc_freq = 0;
+            g_state.trunk_cc_freq = 0;
+        }
+        send_assignment(0x05U, 1100U, 16U);
+        rc |= nxdn_expect(g_tune_count == 0, name, label, "refused duplicate did not tune");
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, name, label, "refused duplicate kept the receiver tuned");
+        rc |= nxdn_expect(variant == 2 ? g_state.p25_cc_freq == 0 : g_state.p25_cc_freq == 935000000L, name, label,
+                          "voice channel not anchored as the control channel");
+        if (variant != 2) {
+            send_disc();
+            rc |= nxdn_expect(g_tune_cc_count == 1, name, label, "DISC returned to the control channel");
+            rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, name, label, "DISC untuned the receiver");
+        }
+    }
+    return rc;
+}
+
+/* A duplicate past the hangtime for an allowed, mapped call is followed, and the route is recorded. */
+static int
+nxdn_run_duplicate_after_hangtime_follows_case(void) {
+    static const char* const name = "type-c-duplicate-after-hangtime";
+    type_c_fixture();
+    g_opts.trunk_is_tuned = 1;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = type_c_freq(19U);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    send_assignment(0x05U, 1100U, 16U);
+    int rc = 0;
+    rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == type_c_freq(16U), name, "dup", "duplicate followed");
+    rc |= nxdn_expect(g_state.nxdn_follow.chan == 16U && g_state.nxdn_follow.freq_hz == type_c_freq(16U), name, "dup",
+                      "route recorded");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1100U, name, "dup",
+                      "held call recorded");
+    return rc;
+}
+
+/* While the followed call is live, a preempting candidate that outranks it takes the receiver once the call has been
+ * held for the dwell; a candidate without the flag never does, and does not stand in for the held call. The takeover
+ * starts a cooldown that holds back the next candidate. */
+static int
+nxdn_run_type_c_preemption_case(void) {
+    static const char* const name = "type-c-preemption";
+    type_c_fixture();
+    policy_row(1100U, 10, 0);
+    policy_row(1400U, 90, 0);
+    policy_row(1200U, 60, 1);
+    policy_row(1300U, 80, 1);
+    int rc = 0;
+    at_seconds(2000.0);
+    send_assignment(0x04U, 1100U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_follow.chan == 16U, name, "follow", "first call followed");
+
+    at_seconds(2000.5);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "dwell", "preemption waits for the dwell");
+
+    at_seconds(2000.7);
+    voice_live();
+    send_assignment(0x05U, 1400U, 19U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "no-preempt", "a call without preempt never takes over");
+
+    at_seconds(2000.8);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "preempt",
+                      "outranking preempting call taken against the held call, not the refused one");
+    rc |= nxdn_expect(g_state.nxdn_follow.chan == 17U && g_state.nxdn_call.target == 1200U, name, "preempt",
+                      "route and held call moved");
+
+    at_seconds(2001.6);
+    voice_live();
+    send_assignment(0x05U, 1300U, 18U);
+    rc |= nxdn_expect(g_tune_count == 2, name, "cooldown", "the takeover's cooldown holds back the next one");
+
+    at_seconds(2001.9);
+    voice_live();
+    send_assignment(0x05U, 1300U, 18U);
+    rc |= nxdn_expect(g_tune_count == 3 && g_last_tune_freq == type_c_freq(18U), name, "after-cooldown",
+                      "taken once the cooldown ran out");
+    return rc;
+}
+
+/* The engine took the receiver back to the control channel by itself (the hangtime return): the ledger still holds
+ * the call left. Following a preempting call from the control channel is no takeover, so it starts no cooldown that
+ * would hold back an outranking call once the new one was held for the dwell. */
+static int
+nxdn_run_follow_from_control_channel_is_no_takeover_case(void) {
+    static const char* const name = "type-c-follow-is-no-takeover";
+    type_c_fixture();
+    policy_row(1100U, 10, 0);
+    policy_row(1200U, 60, 1);
+    policy_row(1300U, 80, 1);
+    int rc = 0;
+    at_seconds(5000.0);
+    send_assignment(0x04U, 1100U, 16U);
+    g_opts.trunk_is_tuned = 0; /* the engine's hangtime return */
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 0;
+    at_seconds(5005.0);
+    send_assignment(0x04U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "follow",
+                      "call followed from the control channel");
+    at_seconds(5005.8);
+    voice_live();
+    send_assignment(0x05U, 1300U, 18U);
+    rc |= nxdn_expect(g_tune_count == 3 && g_last_tune_freq == type_c_freq(18U), name, "preempt",
+                      "outranking call taken with no cooldown from the follow");
+    return rc;
+}
+
+/* The held call is the one heard: a new call on the followed carrier replaces the followed grant's, its follow time
+ * starting then, so preemption compares a candidate against it. */
+static int
+nxdn_run_held_call_reconciled_case(void) {
+    static const char* const name = "type-c-held-call-reconciled";
+    int rc = 0;
+
+    /* Followed 1100 (p10), then a call of 1500 (p100) on the same carrier: a p50 preempting call is refused. */
+    type_c_fixture();
+    policy_row(1100U, 10, 0);
+    policy_row(1500U, 100, 0);
+    policy_row(1200U, 50, 1);
+    at_seconds(3000.0);
+    send_assignment(0x04U, 1100U, 16U);
+    at_seconds(3000.2);
+    voice_live();
+    send_vcall(2200U, 1500U);
+    rc |= nxdn_expect(g_state.nxdn_call.target == 1500U, name, "outranked", "the heard call is the held call");
+    at_seconds(3001.5);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "outranked", "a candidate below the heard call is refused");
+
+    /* Followed 1100 (p10), then a call of 1600 (p20): the dwell runs from the new call. */
+    type_c_fixture();
+    policy_row(1100U, 10, 0);
+    policy_row(1600U, 20, 0);
+    policy_row(1200U, 50, 1);
+    at_seconds(3100.0);
+    send_assignment(0x04U, 1100U, 16U);
+    at_seconds(3100.2);
+    voice_live();
+    send_vcall(2200U, 1600U);
+    at_seconds(3100.8);
+    voice_live();
+    send_vcall(2200U, 1600U); /* the same call goes on: its follow time stays */
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "dwell", "dwell runs from the heard call, not the grant");
+    at_seconds(3101.0);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "dwell",
+                      "taken once the heard call was held for the dwell");
+    return rc;
+}
+
+/* A refused duplicate overwrites the last grant's channel, not the followed route: a new call heard on the followed
+ * carrier names the followed channel. */
 static int
 nxdn_run_vcall_names_followed_route_case(void) {
     static const char* const name = "type-c-vcall-route";
@@ -807,12 +1028,79 @@ nxdn_run_vcall_names_followed_route_case(void) {
     send_vcall(2300U, 1300U);
     dsd_call_snapshot call;
     int rc = 0;
-    rc |= nxdn_expect(g_tune_count == 1, name, "refused", "duplicate not followed");
+    rc |= nxdn_expect(g_tune_count == 1, name, "refused", "duplicate refused");
     rc |= nxdn_expect(g_state.nxdn_grant_chan == 17U, name, "refused", "last grant names the refused channel");
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_target_id == 1300U, name, "vcall",
                       "new call published");
     rc |= nxdn_expect(call.channel == 16U && call.frequency_hz == type_c_freq(16U), name, "vcall",
                       "new call names the followed channel");
+    return rc;
+}
+
+/* A Type-D busy message for another repeater while voice is live takes the receiver for the held talkgroup or an
+ * outranking preempting call; one for the receiver's own repeater, or for an unplaceable one, never does. */
+static int
+nxdn_run_type_d_takeover_case(void) {
+    static const char* const name = "type-d-takeover";
+    const nxdn_case first = {
+        "type-d", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 1400U, 938012500L,
+    };
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    nxdn_setup_fixture(&first);
+    g_state.trunk_chan_map[7] = 938512500L;
+    g_state.trunk_chan_map[8] = 939012500L;
+    nxdn_install_hooks();
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 60, 1);
+    policy_row(1700U, 90, 1);
+    int rc = 0;
+
+    at_seconds(4000.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&first);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_follow.repeater == 6U, name, "follow", "first call followed");
+
+    nxdn_case other = first;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(4000.5);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 1, name, "dwell", "preemption waits for the dwell");
+    at_seconds(4000.8);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L && g_state.nxdn_follow.repeater == 7U, name,
+                      "preempt", "outranking call on another repeater taken");
+
+    /* The receiver's own repeater: whatever it names, the receiver stays. */
+    nxdn_case own = first;
+    own.scch_rep1 = 7U;
+    own.scch_id = 1700U;
+    at_seconds(4002.0);
+    voice_live();
+    nxdn_run_case_decode(&own);
+    rc |= nxdn_expect(g_tune_count == 2, name, "own-repeater", "own repeater's message never moves the receiver");
+
+    /* An unmapped repeater cannot be placed. */
+    nxdn_case unknown = first;
+    unknown.scch_rep1 = 9U;
+    unknown.scch_id = 1700U;
+    at_seconds(4003.5);
+    voice_live();
+    nxdn_run_case_decode(&unknown);
+    rc |= nxdn_expect(g_tune_count == 2, name, "unknown-repeater", "unplaceable repeater never moves the receiver");
+
+    /* The held talkgroup on another repeater takes over a call that is not of it. */
+    g_state.tg_hold = 1800U;
+    nxdn_case hold = first;
+    hold.scch_rep1 = 8U;
+    hold.scch_id = 1800U;
+    at_seconds(4003.6);
+    voice_live();
+    nxdn_run_case_decode(&hold);
+    rc |= nxdn_expect(g_tune_count == 3 && g_last_tune_freq == 939012500L, name, "hold", "held talkgroup taken");
+    g_state.tg_hold = 0U;
     return rc;
 }
 
@@ -882,7 +1170,13 @@ main(void) {
     rc |= nxdn_run_scch_busy_enrich_case("rigctl-there", NXDN_RX_RIGCTL_THERE, 1);
     rc |= nxdn_run_scch_busy_enrich_case("rigctl-query-fails", NXDN_RX_RIGCTL_FAILS, 0);
     rc |= nxdn_run_scch_identity_context_case();
+    rc |= nxdn_run_refused_duplicate_keeps_tuned_case();
+    rc |= nxdn_run_duplicate_after_hangtime_follows_case();
+    rc |= nxdn_run_type_c_preemption_case();
+    rc |= nxdn_run_follow_from_control_channel_is_no_takeover_case();
+    rc |= nxdn_run_held_call_reconciled_case();
     rc |= nxdn_run_vcall_names_followed_route_case();
+    rc |= nxdn_run_type_d_takeover_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

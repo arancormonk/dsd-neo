@@ -217,6 +217,7 @@ typedef struct {
     uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
     dsd_nxdn_follow_route nxdn_follow;
+    dsd_nxdn_call_identity nxdn_call;
     unsigned int nxdn_last_ran;
     uint32_t nxdn_idas_system_id;
     uint8_t nxdn_last_ran_stand_in;
@@ -1902,8 +1903,10 @@ static void
 trunk_scan_save_nxdn_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     snapshot->nxdn_grant_chan = state->nxdn_grant_chan;
     snapshot->nxdn_grant_freq = state->nxdn_grant_freq;
-    // The followed route is the target's: it names its own channel map's frequency.
+    // The followed route and held call are the target's: its route names its own channel map's frequency, and the
+    // preemption a later grant there is judged by compares against its held call.
     snapshot->nxdn_follow = state->nxdn_follow;
+    snapshot->nxdn_call = state->nxdn_call;
     snapshot->nxdn_last_ran = state->nxdn_last_ran;
     snapshot->nxdn_last_ran_stand_in = state->nxdn_last_ran_stand_in;
     snapshot->nxdn_location_sys_code = state->nxdn_location_sys_code;
@@ -1926,6 +1929,7 @@ trunk_scan_restore_nxdn_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     state->nxdn_grant_chan = snapshot->nxdn_grant_chan;
     state->nxdn_grant_freq = snapshot->nxdn_grant_freq;
     state->nxdn_follow = snapshot->nxdn_follow;
+    state->nxdn_call = snapshot->nxdn_call;
     state->nxdn_last_ran = snapshot->nxdn_last_ran;
     state->nxdn_last_ran_stand_in = snapshot->nxdn_last_ran_stand_in;
     state->nxdn_location_sys_code = snapshot->nxdn_location_sys_code;

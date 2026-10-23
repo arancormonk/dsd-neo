@@ -4936,6 +4936,45 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   ID messages (IDs 2046, 2045, 2044, 2041) go through the INFO4 handling (`nxdn_scch_handle_repeater_status()`) and never
   become the call's target; its busy repeater message keeps the target handling of `nxdn_scch_handle_info2()`. The
   terminal's IDAS line and the Qt site view show the IDAS fields, the NXDN ones the Type-C location.
+- NXDN trunking admission and preemption (`nxdn_element.c`; NXDN has no trunk state machine). Two records in
+  `dsd_state`, both saved with a trunk scan target's snapshot (and so restored by a failed switch's rollback):
+  - `nxdn_follow` (`dsd_nxdn_follow_route`): the route the receiver last followed a grant or busy repeater message to
+    (frequency, channel, Type-D repeater), written only after an accepted tune. It holds only while the receiver is
+    still tuned there (`nxdn_follow_valid()`: `dsd_opts_trunk_vc_followed()` with `trunk_vc_freq[0]` equal), so an
+    engine-level release (the hangtime return, a scan or operator move) invalidates it without a word to NXDN. It names
+    where the receiver went, never which call is on it; the VCALL's channel comes from it.
+  - `nxdn_call` (`dsd_nxdn_call_identity`): the held call as preemption judges it. The followed grant's identity, then
+    reconciled from the canonical call after a verified VCALL publication and after an SCCH identity that belongs to
+    the receiver's repeater (`nxdn_call_identity_reconcile()`), so a new call on the followed carrier is what a
+    candidate is compared against. Its `follow_m` moves only when the identity changes (target, kind, or frequency
+    when both are known); one heard on another frequency than the receiver's is not known here.
+  - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
+    tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
+    hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per
+    generation, a failed one included; a VFO moved outside the decoder is not seen within a generation).
+  - Type-C (`nxdn_vcall_assgn_admit()`): a duplicate assignment (0x05) heard while tuned reaches admission with the
+    assignment's call-type gates (one heard off a voice channel still is not followed), and never untunes the receiver:
+    one past the call's hangtime is converted and marked `dup_after_hangtime`, and a refused one leaves
+    `trunk_is_tuned` set for DISC or the hangtime return (and the voice channel is never anchored as the control
+    channel). Order: policy, control-channel or frequency refusal; untuned: follow; the channel the receiver is on:
+    nothing to do; the held talkgroup over a held call that is not of it (unknown included): follow; a duplicate past
+    the hangtime: follow; within the hangtime, an outranking preempting candidate (`nxdn_preempts()`): follow; else
+    refuse.
+  - Type-D association (`nxdn_idas_assoc()`): a busy repeater message's or INFO2 target message's go-to repeater is
+    MATCH (its mapped frequency is the receiver's), OTHER, or UNKNOWN (no repeater 1-30, unmapped, or the receiver's
+    frequency unknown). The live call takes the message's target (`nxdn_scch_enrich_identity()`) only on MATCH; UNKNOWN
+    never relabels. While voice is live a busy message for OTHER takes the receiver for the held talkgroup over a call
+    not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a second the message is followed
+    as before. INFO3 names no go-to repeater (`rep1` is a free repeater), so its source enrichment is unchanged and can
+    misname a talker (documented limit); it never changes the target or the policy.
+  - Ledger: `nxdn_preempts()` describes the held call (`dsd_tg_policy_describe_followed_call()`, start `follow_m`)
+    before `dsd_tg_policy_should_preempt()`, with the candidate's route `requires_tuner_retune`; a held call whose
+    identity is not known is never preempted, only displaced by Hold. An accepted tune notes the followed call
+    (`nxdn_note_follow()`): a follow that was no preemption first clears the ledger, so a call left there (the engine's
+    hangtime return) does not read as a takeover; a preemption commits its cooldown
+    (`dsd_tg_policy_commit_preemption()`). DISC's return and a Type-D termination (repeater 31) tune clear the route,
+    the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25 SM tick
+    guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX`, `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
   received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
   scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through

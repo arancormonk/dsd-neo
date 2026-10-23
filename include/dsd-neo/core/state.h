@@ -507,6 +507,17 @@ typedef struct {
     uint8_t repeater; /**< Type-D go-to repeater (1-30); 0 on Type-C */
 } dsd_nxdn_follow_route;
 
+/* NXDN trunking: the call the receiver holds (dsd_state::nxdn_call). */
+typedef struct {
+    double follow_m;     /**< decode clock: when this identity became the held call; moves only when it changes */
+    long int rx_freq_hz; /**< the receiver frequency it was heard or followed on; 0 not known */
+    uint32_t target;     /**< talkgroup, or the destination of a private call */
+    uint32_t source;     /**< source unit; 0 not known */
+    uint8_t valid;
+    uint8_t private_call;
+    uint8_t data_call;
+} dsd_nxdn_call_identity;
+
 typedef struct p25_bandplan_row {
     uint8_t iden;    // identifier 0-15
     uint8_t is_tdma; // 1 seeds p25_iden_tdma, 0 seeds p25_iden_fdma
@@ -1988,6 +1999,10 @@ struct dsd_state {
      * receiver is still tuned there (trunk_is_tuned with trunk_vc_freq[0] == freq_hz). Travels with a trunk scan
      * target. */
     dsd_nxdn_follow_route nxdn_follow;
+    /* NXDN trunking: the call the receiver holds, as the talkgroup policy's preemption judges it: the followed grant's,
+     * then reconciled from verified VCALLs and SCCH identities that belong to the receiver's repeater. Travels with a
+     * trunk scan target. */
+    dsd_nxdn_call_identity nxdn_call;
 
     //multi-key array
     int keyloader;            //let us know the keyloader is active

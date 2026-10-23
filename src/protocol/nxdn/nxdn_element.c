@@ -1477,7 +1477,7 @@ nxdn_policy_log_block(const dsd_opts* opts, int is_private_call, uint32_t target
                 dsd_tg_policy_block_reason_label(decision->block_reasons), target, source);
 }
 
-/* ---- Followed route (Type-C and Type-D trunking) --------------------------------------------------------------- */
+/* ---- Followed route, held call and preemption (Type-C and Type-D trunking) --------------------------------------- */
 
 /* The followed route holds while the receiver is still tuned to it: an engine-level release (the hangtime return, a
  * trunk scan or operator move) leaves the receiver elsewhere without a word to NXDN. */
@@ -1531,18 +1531,126 @@ nxdn_idas_assoc(const dsd_opts* opts, dsd_state* state, uint8_t rep) {
     return rx == rep_freq ? NXDN_IDAS_MATCH : NXDN_IDAS_OTHER;
 }
 
-/* The receiver went to @p freq: the route is the followed one's. */
+/* Take @p target as the held call's identity. Its follow time moves only when the identity changes: another target or
+ * kind, or another frequency when both are known. */
 static void
-nxdn_note_follow(dsd_state* state, uint16_t chan, long int freq, uint8_t repeater) {
+nxdn_call_identity_set(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call,
+                       long int rx_freq_hz, double now_m) {
+    dsd_nxdn_call_identity* const id = &state->nxdn_call;
+    const uint8_t is_private = private_call ? 1U : 0U;
+    const int same = id->valid && id->target == target && id->private_call == is_private
+                     && (id->rx_freq_hz <= 0 || rx_freq_hz <= 0 || id->rx_freq_hz == rx_freq_hz);
+    if (!same) {
+        id->follow_m = now_m;
+        id->source = 0U;
+        id->rx_freq_hz = 0;
+    }
+    id->valid = 1U;
+    id->target = target;
+    id->private_call = is_private;
+    id->data_call = data_call ? 1U : 0U;
+    if (source != 0U) {
+        id->source = source;
+    }
+    if (rx_freq_hz > 0) {
+        id->rx_freq_hz = rx_freq_hz;
+    }
+}
+
+/* The held call is what the canonical call shows once a verified VCALL or an SCCH identity of the receiver's repeater
+ * named it: a new call on the same carrier replaces the one followed there. */
+static void
+nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state) {
+    if (opts->trunk_enable != 1) {
+        return;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_NXDN(call.protocol) || call.policy_target_id == 0U) {
+        return;
+    }
+    nxdn_call_identity_set(state, call.policy_target_id, call.ota_source_id,
+                           call.kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0, 0, nxdn_receiver_freq(opts, state),
+                           dsd_decode_now_mono_s());
+}
+
+/* The held call when its identity is known here: one heard or followed on another frequency than the receiver's is
+ * not. */
+static const dsd_nxdn_call_identity*
+nxdn_current_identity(const dsd_state* state, long int rx) {
+    const dsd_nxdn_call_identity* const id = &state->nxdn_call;
+    if (!id->valid || (id->rx_freq_hz > 0 && rx > 0 && id->rx_freq_hz != rx)) {
+        return NULL;
+    }
+    return id;
+}
+
+/* A candidate of the held talkgroup (Hold) takes the receiver from a call that is not of it, a call whose identity is
+ * not known included. */
+static int
+nxdn_hold_takes_over(const dsd_state* state, const dsd_nxdn_call_identity* cur, int hold_matches) {
+    return hold_matches && !(cur && cur->target == state->tg_hold);
+}
+
+/* A preempting candidate takes the receiver from the held call it outranks (dsd_tg_policy_should_preempt()), judged
+ * against that call as described from when it became the held call. A held call whose identity is not known is never
+ * preempted. */
+static int
+nxdn_preempts(const dsd_opts* opts, dsd_state* state, const dsd_nxdn_call_identity* cur, long int rx,
+              const dsd_tg_policy_call_route* candidate, const dsd_tg_policy_decision* decision) {
+    if (!cur || !decision->preempt_requested) {
+        return 0;
+    }
+    const double now_m = dsd_decode_now_mono_s();
+    dsd_tg_policy_call_route route;
+    DSD_MEMSET(&route, 0, sizeof route);
+    route.target_id = cur->target;
+    route.source_id = cur->source;
+    route.freq_hz = rx > 0 ? rx : cur->rx_freq_hz;
+    route.channel =
+        (nxdn_follow_valid(opts, state) && state->nxdn_follow.freq_hz == route.freq_hz) ? state->nxdn_follow.chan : 0;
+    route.slot = -1;
+    dsd_tg_policy_decision held;
+    (void)nxdn_policy_tune_allowed(opts, state, cur->target, cur->source, cur->private_call, cur->data_call, 1, &held);
+    if (dsd_tg_policy_describe_followed_call(state, &route, &held, cur->follow_m, now_m) != 0) {
+        return 0;
+    }
+    return dsd_tg_policy_should_preempt(opts, state, candidate, decision, now_m);
+}
+
+/* The receiver went to @p freq for @p target: the route and the held call are the followed one's, and the talkgroup
+ * policy's preemption ledger holds it. A follow that was no preemption replaces whatever the ledger held, so nothing
+ * left there reads as a takeover; a preemption commits its cooldown. */
+static void
+nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call, uint16_t chan,
+                 long int freq, uint8_t repeater, const dsd_tg_policy_decision* decision, int preempted) {
+    const double now_m = dsd_decode_now_mono_s();
     state->nxdn_follow.freq_hz = freq;
     state->nxdn_follow.chan = chan;
     state->nxdn_follow.repeater = repeater;
+    nxdn_call_identity_set(state, target, source, private_call, data_call, freq, now_m);
+    dsd_tg_policy_call_route route;
+    DSD_MEMSET(&route, 0, sizeof route);
+    route.target_id = target;
+    route.source_id = source;
+    route.freq_hz = freq;
+    route.channel = chan;
+    route.slot = -1;
+    if (!preempted) {
+        (void)dsd_tg_policy_clear_active_call(state, -1);
+    }
+    (void)dsd_tg_policy_note_active_call(state, &route, decision, now_m);
+    if (preempted) {
+        (void)dsd_tg_policy_commit_preemption(state, now_m);
+    }
 }
 
-/* The receiver went back to the control channel: no route. */
+/* The receiver went back to the control channel: no route, no held call. */
 static void
 nxdn_follow_release(dsd_state* state) {
     DSD_MEMSET(&state->nxdn_follow, 0, sizeof(state->nxdn_follow));
+    DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
+    (void)dsd_tg_policy_clear_active_call(state, -1);
 }
 
 static uint8_t
@@ -1565,6 +1673,7 @@ struct nxdn_vcall_assgn_info {
     uint16_t destination_id;
     uint16_t channel;
     uint16_t ofn;
+    uint8_t dup_after_hangtime; /* a duplicate assignment heard while tuned, past the hangtime of the call there */
 };
 
 static void
@@ -1624,13 +1733,15 @@ nxdn_vcall_assgn_print(const dsd_state* state, const struct nxdn_vcall_assgn_inf
     }
 }
 
+/* A duplicate assignment heard past the hangtime of the call the receiver is on reads as an assignment; whether it is
+ * followed is admission's to say (nxdn_vcall_assgn_admit()): the receiver stays tuned until a tune leaves. */
 static void
-nxdn_vcall_assgn_adjust_duplicate(dsd_opts* opts, const dsd_state* state, time_t now,
+nxdn_vcall_assgn_adjust_duplicate(const dsd_opts* opts, const dsd_state* state, time_t now,
                                   struct nxdn_vcall_assgn_info* info) {
     if (info->message_type == 0x05U && opts->trunk_is_tuned == 1 && opts->trunk_enable == 1
         && (now - state->last_vc_sync_time) > opts->trunk_hangtime) {
         info->message_type = 0x04U;
-        opts->trunk_is_tuned = 0;
+        info->dup_after_hangtime = 1U;
     }
     if (info->message_type == 0x05U && opts->trunk_is_tuned == 1 && opts->trunk_enable == 1 && state->tg_hold != 0
         && state->tg_hold == info->destination_id) {
@@ -1679,12 +1790,15 @@ nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state,
     (void)dsd_recent_activity_publish(state, (uint8_t)dup, &observation, notice, 0U);
 }
 
+/* Assignments, and a duplicate heard while tuned (a candidate to take the receiver from the call it is on), with the
+ * call-type gates. A duplicate heard off a voice channel is not followed. */
 static int
 nxdn_vcall_assgn_should_tune(const dsd_opts* opts, const struct nxdn_vcall_assgn_info* info) {
     if (info->message_type == 0x0DU || info->message_type == 0x0EU) {
         return (opts->trunk_tune_data_calls == 1) ? 1 : 0;
     }
-    if (info->message_type != 0x04U) {
+    const int in_call_duplicate = info->message_type == 0x05U && opts->trunk_is_tuned == 1;
+    if (info->message_type != 0x04U && !in_call_duplicate) {
         return 0;
     }
     if (info->call_type == 4U) {
@@ -1730,17 +1844,59 @@ nxdn_vcall_assgn_load_scrambler_key(const dsd_opts* opts, dsd_state* state, cons
     }
 }
 
-static int
-nxdn_vcall_assgn_can_tune(const dsd_opts* opts, const dsd_state* state, int policy_allowed, int hold_matches,
-                          long int freq) {
+/* How an assignment the receiver may act on is taken (nxdn_vcall_assgn_admit()). */
+typedef enum {
+    NXDN_ADMIT_REFUSE = 0, /* not followed */
+    NXDN_ADMIT_ON_IT,      /* the receiver is on that channel already */
+    NXDN_ADMIT_FOLLOW,     /* followed */
+    NXDN_ADMIT_PREEMPT,    /* followed, preempting the held call */
+} nxdn_admit;
+
+/* Off a voice channel an allowed assignment is followed. On one, an assignment for the channel the receiver is on is
+ * that call's; one of the held talkgroup takes over a call that is not of it; a duplicate heard past the call's
+ * hangtime is followed as today; while the call is live (within the hangtime) an outranking preempting candidate
+ * takes over (nxdn_preempts()); anything else is refused, and the receiver stays tuned for DISC or the hangtime
+ * return to take it back. */
+static nxdn_admit
+nxdn_vcall_assgn_admit(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info,
+                       const dsd_tg_policy_decision* decision, int policy_allowed, int hold_matches, long int freq,
+                       time_t now) {
     if (!opts || !state || opts->trunk_enable != 1 || !policy_allowed || state->p25_cc_freq == 0 || freq == 0) {
-        return 0;
+        return NXDN_ADMIT_REFUSE;
     }
-    return (opts->trunk_is_tuned == 0 || hold_matches) ? 1 : 0;
+    if (opts->trunk_is_tuned == 0) {
+        return NXDN_ADMIT_FOLLOW;
+    }
+    if (state->trunk_vc_freq[0] == freq) {
+        return NXDN_ADMIT_ON_IT;
+    }
+    const long int rx = nxdn_receiver_freq(opts, state);
+    const dsd_nxdn_call_identity* const cur = nxdn_current_identity(state, rx);
+    if (nxdn_hold_takes_over(state, cur, hold_matches)) {
+        return NXDN_ADMIT_FOLLOW;
+    }
+    if (info->dup_after_hangtime) {
+        return NXDN_ADMIT_FOLLOW;
+    }
+    if ((now - state->last_vc_sync_time) <= opts->trunk_hangtime) {
+        dsd_tg_policy_call_route candidate;
+        DSD_MEMSET(&candidate, 0, sizeof candidate);
+        candidate.target_id = info->destination_id;
+        candidate.source_id = info->source_unit_id;
+        candidate.freq_hz = freq;
+        candidate.channel = (state->nxdn_rcn == 1) ? info->ofn : (int)(info->channel & 0x3FFU);
+        candidate.slot = -1;
+        candidate.requires_tuner_retune = 1;
+        if (nxdn_preempts(opts, state, cur, rx, &candidate, decision)) {
+            return NXDN_ADMIT_PREEMPT;
+        }
+    }
+    return NXDN_ADMIT_REFUSE;
 }
 
 static void
-nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq) {
+nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq,
+                            time_t now) {
     if (info->destination_id != 0U) {
         nxdn_print_group_label(state, info->destination_id);
     }
@@ -1751,13 +1907,17 @@ nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_
     dsd_tg_policy_decision policy_decision;
     const int policy_allowed = nxdn_policy_tune_allowed(opts, state, info->destination_id, info->source_unit_id,
                                                         is_private_call, data_call, 1, &policy_decision);
-    if (nxdn_vcall_assgn_can_tune(opts, state, policy_allowed, hold_matches, freq)) {
+    const nxdn_admit admit =
+        nxdn_vcall_assgn_admit(opts, state, info, &policy_decision, policy_allowed, hold_matches, freq, now);
+    if (admit == NXDN_ADMIT_FOLLOW || admit == NXDN_ADMIT_PREEMPT) {
         if (!nxdn_vcall_assgn_setup_tuned_call(opts, state, freq)) {
             return;
         }
         nxdn_vcall_assgn_load_scrambler_key(opts, state, info);
-        nxdn_note_follow(state, (state->nxdn_rcn == 1) ? info->ofn : (uint16_t)(info->channel & 0x3FFU), freq, 0U);
-    } else if (opts->trunk_enable == 1) {
+        const uint16_t chan = (state->nxdn_rcn == 1) ? info->ofn : (uint16_t)(info->channel & 0x3FFU);
+        nxdn_note_follow(state, info->destination_id, info->source_unit_id, is_private_call, data_call, chan, freq, 0U,
+                         &policy_decision, admit == NXDN_ADMIT_PREEMPT);
+    } else if (admit == NXDN_ADMIT_REFUSE && opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->destination_id, info->source_unit_id, &policy_decision);
     }
 }
@@ -1773,7 +1933,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message
     if (nxdn_vcall_assgn_should_tune(opts, &info)) {
         const long int freq = nxdn_vcall_assgn_frequency(opts, state, &info);
         nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
-        nxdn_vcall_assgn_apply_tune(opts, state, &info, freq);
+        nxdn_vcall_assgn_apply_tune(opts, state, &info, freq, now);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -2689,6 +2849,7 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
             opts, state, info->destination_id, info->source_unit_id,
             nxdn_vcall_kind(info->call_type) == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0, state->nxdn_cipher_type != 0U, 0);
         nxdn_vcall_publish(opts, state, info);
+        nxdn_call_identity_reconcile(opts, state);
     }
     nxdn_vcall_run_enc_lockout(opts, state, info);
 }
@@ -2887,6 +3048,11 @@ nxdn_scch_update_control_channel_from_map(dsd_state* state, const struct nxdn_sc
     }
 }
 
+/* A busy repeater message names a call on go-to repeater rep1 (31: the call there ended, back to the control channel).
+ * With no voice on the receiver's repeater for a second it is followed as before. While voice is live there, only a
+ * call on another repeater (nxdn_idas_assoc()) may take the receiver: one of the held talkgroup over a call that is not
+ * of it, else an outranking preempting candidate (nxdn_preempts()); a message for the receiver's own repeater, or one
+ * whose repeater cannot be placed, never moves it. */
 static void
 nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U) {
@@ -2905,8 +3071,30 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
     const int is_private_call = (info->gu == 1U) ? 1 : 0;
     const int policy_allowed =
         nxdn_policy_tune_allowed(opts, state, info->id, 0, is_private_call, 0, 0, &policy_decision);
-    if (opts->trunk_enable == 1 && policy_allowed && state->p25_cc_freq != 0
-        && ((info->now - state->last_vc_sync_time) > 1) && freq != 0) {
+    int admitted = opts->trunk_enable == 1 && policy_allowed && state->p25_cc_freq != 0 && freq != 0;
+    int preempted = 0;
+    if (admitted && (info->now - state->last_vc_sync_time) <= 1) {
+        admitted = 0;
+        if (info->rep1 != 31U && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_OTHER) {
+            const long int rx = nxdn_receiver_freq(opts, state);
+            const dsd_nxdn_call_identity* const cur = nxdn_current_identity(state, rx);
+            const int hold_matches = (state->tg_hold != 0U && state->tg_hold == info->id) ? 1 : 0;
+            dsd_tg_policy_call_route candidate;
+            DSD_MEMSET(&candidate, 0, sizeof candidate);
+            candidate.target_id = info->id;
+            candidate.freq_hz = freq;
+            candidate.channel = info->rep1;
+            candidate.slot = -1;
+            candidate.requires_tuner_retune = 1;
+            if (nxdn_hold_takes_over(state, cur, hold_matches)) {
+                admitted = 1;
+            } else if (nxdn_preempts(opts, state, cur, rx, &candidate, &policy_decision)) {
+                admitted = 1;
+                preempted = 1;
+            }
+        }
+    }
+    if (admitted) {
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             return;
@@ -2921,7 +3109,8 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         if (info->rep1 == 31U) {
             nxdn_follow_release(state); // the termination's return to the control channel
         } else {
-            nxdn_note_follow(state, info->rep1, freq, info->rep1);
+            nxdn_note_follow(state, info->id, 0U, is_private_call, 0, info->rep1, freq, info->rep1, &policy_decision,
+                             preempted);
         }
     } else if (opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->id, 0, &policy_decision);
@@ -3021,6 +3210,7 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     if (info->rep1 != 31U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         nxdn_scch_enrich_identity(state, 0U, info->id);
+        nxdn_call_identity_reconcile(opts, state);
     }
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
@@ -3103,6 +3293,7 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
         /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater. */
         if (info->now - state->last_vc_sync_time < 1 && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
             nxdn_scch_enrich_identity(state, 0U, info->id);
+            nxdn_call_identity_reconcile(opts, state);
         }
     }
 }
