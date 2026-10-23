@@ -427,8 +427,11 @@ DiagnosticsLog::appendRingLocked(const QString& line) {
         if (m_pinned >= m_ring.size()) {
             break;
         }
-        // Otherwise evict the oldest unpinned line; a protected line reaching the front is pinned there instead.
-        if (m_pinned < pinnedLimit && isProtectedLocked(m_ring.at(m_pinned))) {
+        // Otherwise evict the oldest unpinned line; a protected line reaching the front is pinned there instead,
+        // once: repeats of the same text (the same source started again) are evicted like any other line.
+        const QString& oldest = m_ring.at(m_pinned);
+        if (m_pinned < pinnedLimit && isProtectedLocked(oldest)
+            && std::find(m_ring.cbegin(), m_ring.cbegin() + m_pinned, oldest) == m_ring.cbegin() + m_pinned) {
             ++m_pinned;
             continue;
         }
@@ -574,12 +577,10 @@ DiagnosticsLog::flush(int timeoutMs) {
 
 bool
 DiagnosticsLog::flushResult(quint64 ticket) const {
-    for (const auto& result : m_flushResults) {
-        if (result.first >= ticket) {
-            return result.second;
-        }
-    }
-    return false;
+    const auto covering =
+        std::find_if(m_flushResults.cbegin(), m_flushResults.cend(),
+                     [ticket](const std::pair<quint64, bool>& result) { return result.first >= ticket; });
+    return covering != m_flushResults.cend() && covering->second;
 }
 
 void
@@ -622,7 +623,7 @@ DiagnosticsLog::pump() {
 }
 
 void
-DiagnosticsLog::trimFragment(const QString& path) const {
+DiagnosticsLog::trimFragment(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly) || file.size() == 0) {
         return;

@@ -44,11 +44,20 @@ private fun classificationMatchesTheAccessRequest() {
     check(UsbReceiverKind.sourceOf(RTL_2838.first, RTL_2838.second) == "usb") { "an RTL dongle starts as usb" }
 }
 
+private fun aLabelBelongsToItsKindOfReceiver() {
+    val label = "RTL2838UHIDIR 0bda:2838"
+    check(UsbReceiverKind.labelFor("usb", "usb", label) == label) { "the connected RTL labels an RTL start" }
+    check(UsbReceiverKind.labelFor("airspy", "usb", label) == null) { "an RTL label never labels an Airspy start" }
+    check(UsbReceiverKind.labelFor("usb", "", label) == null) { "no connection, no label" }
+    check(UsbReceiverKind.labelFor("usb", "usb", null) == null) { "nothing opened yet, no label" }
+}
+
 fun main() {
     airspyBesideUnrelatedDevicesIsAirspy()
     twoRtlDonglesAreUsb()
     rtlAndAirspyAreBoth()
     nothingKnownIsEmpty()
     classificationMatchesTheAccessRequest()
+    aLabelBelongsToItsKindOfReceiver()
     println("UsbReceiverKindTest: OK")
 }

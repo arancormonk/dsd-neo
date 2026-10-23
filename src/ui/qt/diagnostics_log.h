@@ -108,7 +108,7 @@ class DiagnosticsLog {
     bool syncCurrent();
     void rotate(const QByteArray& header);
     bool clearFiles();
-    void trimFragment(const QString& path) const;
+    static void trimFragment(const QString& path);
     bool writeBatch(const std::deque<QByteArray>& batch);
     QByteArray headerExcluding(std::deque<QByteArray>::const_iterator from,
                                std::deque<QByteArray>::const_iterator end) const;

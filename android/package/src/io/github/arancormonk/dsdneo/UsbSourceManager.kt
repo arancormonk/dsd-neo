@@ -365,9 +365,10 @@ object UsbSourceManager {
         }
     }
 
-    /** Product and VID:PID of the last device opened, or null before any open. */
+    /** Product and VID:PID of the connected receiver when it is of kind [source] ("usb" or "airspy"), else null. */
     @JvmStatic
-    fun diagnosticsLabel(): String? = synchronized(lock) { diagnosticsLabel }
+    fun diagnosticsLabel(source: String): String? =
+        synchronized(lock) { UsbReceiverKind.labelFor(source, if (connection != null) connectedSource else "", diagnosticsLabel) }
 
     /** Body of [open], with the open slot claimed so nothing else can install one. */
     private fun openClaimed(manager: UsbManager, device: UsbDevice) {

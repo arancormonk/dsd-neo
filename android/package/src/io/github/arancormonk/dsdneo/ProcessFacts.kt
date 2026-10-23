@@ -63,7 +63,7 @@ object ProcessFacts {
     fun attemptContext(sourceKind: String): String {
         val parts = mutableListOf(sourceKind.ifEmpty { "unknown source" }, bootPart(appContext))
         if (sourceKind == "usb" || sourceKind == "airspy") {
-            UsbSourceManager.diagnosticsLabel()?.let { parts += it }
+            UsbSourceManager.diagnosticsLabel(sourceKind)?.let { parts += it }
         }
         return parts.joinToString(", ")
     }

@@ -1029,6 +1029,31 @@ pinsFollowTheCurrentSession() {
     check(!rows.join('\n').contains(QStringLiteral("source 3 ")), "a replaced session line stayed pinned");
 }
 
+// Repeats of one session line (the same source started again and again) take a single pinned slot, so the current
+// process and session lines still fit at the front.
+static void
+identicalSessionLinesPinOnce() {
+    QTemporaryDir dir;
+    QByteArray saved("[process] [info] pid 9, android, boot 4\n");
+    for (int i = 0; i < 10; ++i) {
+        saved += "[session] [info] --- session starting: usb, boot 4 ---\n[stderr] [info] between\n";
+    }
+    writeFile(dir.filePath("tail.log"), saved);
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.noteProcess(QStringLiteral("10, android, boot 4"));
+    log.noteSessionAttempt(QStringLiteral("rtltcp, boot 4"));
+    for (int i = 0; i < 2100; ++i) {
+        log.submit("stderr", "info", QStringLiteral("live %1").arg(i));
+    }
+    const auto rows = log.snapshot();
+    const auto head = rows.mid(0, 5).join('\n');
+    check(head.contains(QStringLiteral("pid 10, android")) && head.contains(QStringLiteral("session starting: rtltcp")),
+          "repeated session lines crowded the current context out of the front");
+    check(rows.join('\n').count(QStringLiteral("session starting: usb, boot 4")) == 1,
+          "a repeated line was pinned twice");
+}
+
 // A reload that reserves a slot for the process line moves its cutoff past the session line: that line is kept too.
 static void
 reloadCutoffKeepsBothContextLines() {
@@ -1182,6 +1207,7 @@ main(int argc, char** argv) {
     lostSegmentDoesNotSpin();
     pinsFollowTheCurrentSession();
     reloadCutoffKeepsBothContextLines();
+    identicalSessionLinesPinOnce();
     previousRunBootFact();
     contextSurvivesTheRingLimit();
     unicodeDirectory();

@@ -51,6 +51,14 @@ internal object UsbReceiverKind {
     fun sourceOf(vendorId: Int, productId: Int): String = if (id(vendorId, productId) == AIRSPY_ID) AIRSPY else RTL
 
     /**
+     * The dongle label a session start line may carry for [requested]: the open connection's, and only when it is a
+     * receiver of that kind. Before a first open, or while another kind is connected, there is none, rather than
+     * the previous receiver's (issue #745).
+     */
+    fun labelFor(requested: String, connectedSource: String, label: String?): String? =
+        label?.takeIf { connectedSource.isNotEmpty() && connectedSource == requested }
+
+    /**
      * The kind of receiver attached, from the (vendor id, product id) of every device on the bus: "usb" or "airspy"
      * when only that kind is attached (however many of it), "both" when both are, empty when neither is. Devices that
      * are not receivers -- hubs, keyboards, storage -- are left out first, so they never count as an RTL-SDR.
