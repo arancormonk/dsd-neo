@@ -135,6 +135,8 @@ config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(ftz_daz_enable);
     CONFIG_EQ_FIELD(no_bootstrap_is_set);
     CONFIG_EQ_FIELD(no_bootstrap_enable);
+    CONFIG_EQ_FIELD(no_signal_handlers_is_set);
+    CONFIG_EQ_FIELD(no_signal_handlers_enable);
     CONFIG_EQ_FIELD(debug_sync_is_set);
     CONFIG_EQ_FIELD(debug_sync_enable);
     CONFIG_EQ_FIELD(debug_cqpsk_is_set);

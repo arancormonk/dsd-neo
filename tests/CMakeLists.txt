@@ -10557,7 +10557,11 @@ target_include_directories(
 # dmr_data.c checks an undecodable data burst for voice at the other polarity with mbelib's AMBE decoder (issue #729).
 target_link_libraries(
     dsd-neo_test_dmr_data_sync
-    PRIVATE ${MBE_LINK_TARGET} dsd-neo_test_receive_support
+    PRIVATE
+        ${MBE_LINK_TARGET}
+        dsd-neo_test_receive_support
+        dsd-neo_test_call_state_support
+        dsd-neo_test_event_sync_stub
 )
 add_test(NAME DMR_DATA_SYNC COMMAND dsd-neo_test_dmr_data_sync)
 

@@ -26,6 +26,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -1087,6 +1088,14 @@ yield_after_one_second(const dsd_opts* opts, dsd_state* state) {
     return g_dibit_index >= 4800U;
 }
 
+/* The queued commands that need the frame loop (issue #637): none, or from @p g_frame_loop_command_at dibits on. */
+static size_t g_frame_loop_command_at = SIZE_MAX;
+
+int
+dsd_runtime_controls_need_frame_loop(void) {
+    return g_dibit_index >= g_frame_loop_command_at;
+}
+
 static void
 test_continuous_voice_yields_at_burst_boundary(void) {
     static dsd_opts opts;
@@ -1110,6 +1119,30 @@ test_continuous_voice_yields_at_burst_boundary(void) {
     assert(g_vcrypt_end_calls == 0U);
     assert(state.dmr_stereo == 0);
     dsd_frame_sync_hooks_set(NULL);
+    g_continuous_voice = 0;
+}
+
+/* A command the frame loop must apply (a scan advance, a retune) waits only for the next burst boundary, not for the
+   carrier to end (issue #637); the loop leaves as it does for a scan departure. */
+static void
+test_continuous_voice_yields_to_a_frame_loop_command(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dmr_color_code = 16;
+    load_voice_burst_stream();
+    DSD_MEMCPY(g_dibits + 144U, g_dibits, 144U);
+    set_cach_tact_bit(144U, 1, 1);
+    g_dibits[144U + 12U + 16U] = 2U;
+    g_continuous_voice = 1;
+    g_frame_loop_command_at = 4800U;
+    dmrBS(&opts, &state);
+    assert(g_dibit_index >= 4800U && g_dibit_index < 4800U + 144U);
+    assert(g_dibit_index % 144U == 0U);
+    assert(g_process_mbe_calls > 0U);
+    assert(g_vcrypt_end_calls == 0U);
+    g_frame_loop_command_at = SIZE_MAX;
     g_continuous_voice = 0;
 }
 
@@ -1315,6 +1348,8 @@ main(void) {
     test_bs_consecutive_colour_code_rejections_end_the_loop();
     test_bs_polarity_run_needs_adjacent_bursts();
     test_bs_retune_in_a_burst_keeps_the_next_bursts_colour_code();
+    reset_spies();
+    test_continuous_voice_yields_to_a_frame_loop_command();
     dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");
     return 0;

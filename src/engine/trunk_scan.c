@@ -18,6 +18,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -2934,6 +2935,13 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             dsd_rxid_apply_trunk_tune(state);
             coord->rollback_rx_id = state->rx_id;
             coord->forced_visit_release = 0;
+        } else {
+            /* Any other departure ends the outgoing target's calls too (issue #637): its carrier is left, a call held
+             * past its hold (a terminator missed, idle bursts after it) cannot go on, and its row and per-call
+             * recordings close under the target's own label and names before the next target's replace them. The
+             * rollback snapshot keeps them ended, so a failed park cannot commit them twice. */
+            dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
+            trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
         }
         trunk_scan_save_target_snapshot(coord, state, outgoing);
     }
@@ -3704,14 +3712,13 @@ dsd_engine_trunk_scan_visit_expired(const dsd_opts* opts, dsd_state* state) {
     return expired;
 }
 
+/* A departure that hands the outgoing carrier back before the target is saved (#507): the visit cap's, and an operator's
+ * advance or avoid, which ends the call in progress the same way (issue #637). @p operator_departure leaves out the cap's
+ * own bookkeeping, a fresh limit after a preparation failure, since an operator's departure is not retried. Returns
+ * whether a park was accepted. */
 static int
-trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
-                               dsd_trunk_scan_target_runtime* rt, double now_m) {
-    if (!trunk_scan_visit_expired(opts, state, coord, rt, now_m)) {
-        return 0;
-    }
-    const int limit_ms = trunk_scan_target_max_visit_ms(opts, rt);
-    LOG_INFO("NOTICE: Trunk scan target '%s' reached its %d ms visit limit; advancing\n", rt->target.id, limit_ms);
+trunk_scan_advance_releasing(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m,
+                             int operator_departure) {
     const size_t before = coord->active;
     coord->forced_visit_release = 1;
     const int park_accepted = trunk_scan_advance(opts, state, coord);
@@ -3736,7 +3743,7 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
              * cooldown even in a multi-target rotation; idle dwell cannot recover it. */
             restored->visit_since_m = -1.0;
             restored->retry_until_m = trunk_scan_now_m() + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
-        } else if (!released) {
+        } else if (!released && !operator_departure) {
             /* Preparation failed before any release or tune: keep the current call,
              * but grant a fresh limit instead of retrying the advance every tick. */
             restored->visit_since_m = now_m;
@@ -3744,6 +3751,18 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         /* An accepted fallback owns its anchor: pending stays unarmed, and a completed
          * park keeps the tuner's completion stamp rather than this tick's start time. */
     }
+    return park_accepted;
+}
+
+static int
+trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                               dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (!trunk_scan_visit_expired(opts, state, coord, rt, now_m)) {
+        return 0;
+    }
+    const int limit_ms = trunk_scan_target_max_visit_ms(opts, rt);
+    LOG_INFO("NOTICE: Trunk scan target '%s' reached its %d ms visit limit; advancing\n", rt->target.id, limit_ms);
+    (void)trunk_scan_advance_releasing(opts, state, coord, now_m, 0);
     return 1;
 }
 
@@ -3933,7 +3952,15 @@ trunk_scan_usable_count(const dsd_trunk_scan_coord* coord) {
 static int
 trunk_scan_control_advance_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     const size_t original = coord->active;
-    trunk_scan_advance(opts, state, coord);
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[original];
+    /* The operator chose to leave: a parked visit's call ends with its carrier handed back, as the visit cap ends it
+       (issue #637), so its row and recording close under this target. A park still in flight, or one that never
+       landed, carries no call to hand back, and its ordinary departure keeps the request the switch reconciles. */
+    if (!rt->tune_pending && rt->visit_since_m >= 0.0) {
+        (void)trunk_scan_advance_releasing(opts, state, coord, trunk_scan_now_m(), 1);
+    } else {
+        trunk_scan_advance(opts, state, coord);
+    }
     return coord->active != original ? 0 : 1;
 }
 

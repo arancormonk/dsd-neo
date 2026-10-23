@@ -44,6 +44,7 @@ dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks) { // NOLINT(misc-use-internal
 }
 
 static dsd_controls_pending_fn g_controls_pending;
+static dsd_controls_pending_fn g_controls_need_frame_loop;
 
 void
 dsd_runtime_set_control_pump(dsd_control_pump_fn fn) { // NOLINT(misc-use-internal-linkage)
@@ -55,10 +56,20 @@ dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn) { // NOLINT(misc-us
     g_controls_pending = fn;
 }
 
+void
+dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn) { // NOLINT(misc-use-internal-linkage)
+    g_controls_need_frame_loop = fn;
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
+    return 0;
+}
+
+int
+dsd_app_commands_need_frame_loop(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
@@ -111,12 +122,14 @@ main(void) {
     assert(g_notification_resets == 0 && g_search_session_ends == 0);
     /* A silent input's wait asks the queue whether a command waits (issue #634). */
     assert(g_controls_pending == dsd_app_commands_pending);
+    assert(g_controls_need_frame_loop == dsd_app_commands_need_frame_loop);
     dsd_app_frontend_runtime_stop();
     assert(g_notification_resets == 1);
     /* So does a Signal search status a rejected start left with no coordinator to stop it. */
     assert(g_search_session_ends == 1);
     assert(g_session_open == 0);
     assert(g_controls_pending == NULL);
+    assert(g_controls_need_frame_loop == NULL);
     assert(g_hooks.publish_snapshot == NULL);
     assert(g_hooks.publish_opts_snapshot == NULL);
     assert(g_hooks.request_redraw == NULL);

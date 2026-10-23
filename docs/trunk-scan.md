@@ -353,6 +353,14 @@ During scanning:
   that target's control channel after the retune cooldown instead of waiting through its idle dwell. A pending fallback
   does not start the visit clock until parking completes. A target's `options` column can carry its
   own `--scan-max-visit-ms <ms>`, and `0` there exempts that target while the global cap is set.
+- Leaving a target ends its calls, so each call's history row and per-call recording close under that target's own label
+  and service names before the next target's take over. A manual advance or avoid (`L`, `b`, Qt/Android Next/Avoid)
+  hands the carrier back as the visit cap does, interrupting a call in progress; an idle-dwell or rejection rotation
+  ends whatever call the target still held. A revisit therefore never resumes a call that was on air when the scanner
+  left. While a DMR repeater carrier is on air, a command is applied at the next burst boundary rather than after the
+  transmission, except display, audio, key, decryption and recording edits and front-end tweaks (RF gain, PPM, squelch
+  level, volume), which wait for it to end. During an EDACS analog call every command waits for the call to end (usually
+  seconds), since leaving it early would lose the call.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target
   now, and "Clear avoids" puts every avoided target back. A hold only pauses the idle dwell: the parked target's
@@ -635,8 +643,9 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.
 - **What it refuses.** An analog target takes no `modulation`, `chan_csv`, `p25_bandplan_csv` or key column, and its
-  `options` accept only `--scan-max-visit-ms`, `--squelch-db` or `--squelch`, the width option of its own kind and, on
-  an `nfm-conventional` target, the tone filter ([details](csv-formats.md#analog-rows)). Live decryption changes are
+  `options` accept only `--scan-max-visit-ms`, `--squelch-db` or `--squelch`, the width option of its own kind,
+  `--no-service-names` and, on an `nfm-conventional` target, the tone filter and `--tone-name`
+  ([details](csv-formats.md#analog-rows)). Live decryption changes are
   refused while it is parked. `nfm-trunk` and `am-trunk` are refused with `analog targets are conventional only`, and
   `nfm`, `am` or the analog FM spellings (`fm-conventional`, ...) with a hint naming the conventional type to use.
 
@@ -894,3 +903,9 @@ hears 97.4 Hz and 141.3 Hz, naming the 141.3 Hz traffic **20R Traveler**. The na
 the event history and the per-call recording's file name (`-P`, as an `_SVC_` component). Rdio-scanner exports carry
 it as the talkgroup label; conventional NFM has no talkgroup ID, so its calls are recorded as named WAVs but are not
 exported to Rdio. The CSV file itself is never changed. Quote a name with spaces in single or double quotes.
+
+Naming adds no separate wait and takes no time from a visit: the name is looked up from the identifier the call is
+received with. A matching identifier must be validated during the reception (a verified colour code, RAN or NAC, a slot
+two bursts proved, a locked CTCSS or DCS tone); otherwise the call keeps the target's label. Each visit proves its codes
+again, so a short visit can hear a call without learning its identifier. Activity holds follow admitted traffic as
+described above, for analog targets and the voice gate under their own rules.

@@ -16,10 +16,12 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <math.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -338,6 +340,101 @@ test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup(void) {
     free_test_runtime(opts, state);
     return test_rc;
 }
+
+#ifdef SIGHUP
+/* Issue #637: a hangup (the terminal closed, an SSH session dropped) ends the session as SIGINT does, through the normal
+   shutdown, unless the session was started ignoring it (nohup) or the host embedding the decoder owns its signals. */
+typedef struct {
+    int stop_calls;
+    int exit_after_hangup;
+} engine_hangup_test_ctx;
+
+static int g_host_hangups;
+
+static void
+test_host_hangup_handler(int sgnl) {
+    (void)sgnl;
+    g_host_hangups++;
+}
+
+static int
+raise_hangup_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    (void)state;
+    engine_hangup_test_ctx* ctx = (engine_hangup_test_ctx*)context;
+    (void)raise(SIGHUP);
+    ctx->exit_after_hangup = dsd_exitflag_load();
+    dsd_exitflag_store(1);
+    return 0;
+}
+
+static void
+count_hangup_stop(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    (void)state;
+    ((engine_hangup_test_ctx*)context)->stop_calls++;
+}
+
+/* @p disposition is what the session starts with for SIGHUP; @p embedded sets DSD_NEO_NO_SIGNAL_HANDLERS. Returns the
+   context the run leaves, with -1 in stop_calls when it could not run. */
+static engine_hangup_test_ctx
+run_with_hangup(void (*disposition)(int), int embedded) {
+    engine_hangup_test_ctx ctx = {-1, 0};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (embedded && dsd_test_setenv("DSD_NEO_NO_SIGNAL_HANDLERS", "1", 1) != 0) {
+        return ctx;
+    }
+    dsd_neo_config_init();
+    if (init_test_runtime(&opts, &state) != 0) {
+        (void)dsd_test_unsetenv("DSD_NEO_NO_SIGNAL_HANDLERS");
+        dsd_neo_config_init();
+        return ctx;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
+    ctx.stop_calls = 0;
+    dsd_engine_lifecycle_hooks hooks = {
+        .start = raise_hangup_at_start,
+        .stop = count_hangup_stop,
+        .context = &ctx,
+    };
+    void (*saved_int)(int) = signal(SIGINT, SIG_DFL);
+    void (*saved_term)(int) = signal(SIGTERM, SIG_DFL);
+    void (*saved_hup)(int) = signal(SIGHUP, disposition);
+    dsd_exitflag_store(0);
+    (void)dsd_engine_run_with_lifecycle(opts, state, &hooks);
+    if (disposition == SIG_IGN && signal(SIGHUP, SIG_IGN) != SIG_IGN) {
+        ctx.stop_calls = -2; /* the ignored hangup did not stay ignored */
+    }
+    (void)signal(SIGHUP, saved_hup);
+    (void)signal(SIGTERM, saved_term);
+    (void)signal(SIGINT, saved_int);
+    dsd_exitflag_store(0);
+    free_test_runtime(opts, state);
+    (void)dsd_test_unsetenv("DSD_NEO_NO_SIGNAL_HANDLERS");
+    dsd_neo_config_init();
+    return ctx;
+}
+
+static int
+test_hangup_shuts_down_like_an_interrupt(void) {
+    int test_rc = 0;
+    /* The default disposition would end the process at once: the session's handler turns it into a shutdown. */
+    const engine_hangup_test_ctx hangup = run_with_hangup(SIG_DFL, 0);
+    test_rc |= expect_true("hangup requests the shutdown", hangup.exit_after_hangup == 1);
+    test_rc |= expect_true("hangup shuts down through the lifecycle stop", hangup.stop_calls == 1);
+    /* Started under nohup: the hangup stays ignored. */
+    const engine_hangup_test_ctx ignored = run_with_hangup(SIG_IGN, 0);
+    test_rc |=
+        expect_true("an ignored hangup stays ignored", ignored.exit_after_hangup == 0 && ignored.stop_calls == 1);
+    /* An embedding host keeps its own handler. */
+    g_host_hangups = 0;
+    const engine_hangup_test_ctx embedded = run_with_hangup(test_host_hangup_handler, 1);
+    test_rc |= expect_true("an embedding host keeps its hangup handler",
+                           g_host_hangups == 1 && embedded.exit_after_hangup == 0 && embedded.stop_calls == 1);
+    return test_rc;
+}
+#endif
 
 static int
 inject_receiver_failure(dsd_opts* opts, dsd_state* state, void* context) {
@@ -1441,6 +1538,9 @@ main(void) {
     rc |= test_soapy_setup_normalizes_args_and_tuning();
     rc |= test_iq_replay_guard_and_requested_setup();
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
+#ifdef SIGHUP
+    rc |= test_hangup_shuts_down_like_an_interrupt();
+#endif
     rc |= test_stdout_audio_preserves_bytes();
 #ifdef DSD_NEO_TEST_RIGCTL_WRAP
     rc |= test_startup_rigctl_connection_names_the_peer_record();

@@ -8513,6 +8513,185 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Commands that can wait while a decoder holds one carrier in a loop of its own (issue #637): display and UI state,
+   audio, keys and decryption, recording and exports, and front-end tweaks often dragged as sliders (RF gain, PPM,
+   squelch level, volume). Every other command returns that decoder to the frame loop, so one this list misses costs at
+   most a superframe of audio, never a stall behind the carrier. */
+static const int k_deferred_commands[] = {
+    /* Display and UI state. */
+    DSD_APP_CMD_TOGGLE_COMPACT,
+    DSD_APP_CMD_HISTORY_CYCLE,
+    DSD_APP_CMD_PAYLOAD_TOGGLE,
+    DSD_APP_CMD_P25_GA_TOGGLE,
+    DSD_APP_CMD_CONST_TOGGLE,
+    DSD_APP_CMD_CONST_NORM_TOGGLE,
+    DSD_APP_CMD_CONST_GATE_DELTA,
+    DSD_APP_CMD_EYE_TOGGLE,
+    DSD_APP_CMD_EYE_UNICODE_TOGGLE,
+    DSD_APP_CMD_EYE_COLOR_TOGGLE,
+    DSD_APP_CMD_FSK_HIST_TOGGLE,
+    DSD_APP_CMD_SPECTRUM_TOGGLE,
+    DSD_APP_CMD_SPEC_SIZE_DELTA,
+    DSD_APP_CMD_EH_NEXT,
+    DSD_APP_CMD_EH_PREV,
+    DSD_APP_CMD_EH_TOGGLE_SLOT,
+    DSD_APP_CMD_EH_RESET,
+    DSD_APP_CMD_UI_MSG_CLEAR,
+    DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE,
+    DSD_APP_CMD_CALL_ALERT_TOGGLE,
+    DSD_APP_CMD_CALL_ALERT_EVENTS_SET,
+    DSD_APP_CMD_CONFIG_METADATA_SET,
+    /* Audio. */
+    DSD_APP_CMD_TOGGLE_MUTE,
+    DSD_APP_CMD_REVERSE_MUTE_TOGGLE,
+    DSD_APP_CMD_ALL_MUTES_TOGGLE,
+    DSD_APP_CMD_SLOT1_TOGGLE,
+    DSD_APP_CMD_SLOT2_TOGGLE,
+    DSD_APP_CMD_SLOT_PREF_CYCLE,
+    DSD_APP_CMD_SLOT_PREF_SET,
+    DSD_APP_CMD_SLOTS_ONOFF_SET,
+    DSD_APP_CMD_GAIN_DELTA,
+    DSD_APP_CMD_AGAIN_DELTA,
+    DSD_APP_CMD_GAIN_SET,
+    DSD_APP_CMD_AGAIN_SET,
+    DSD_APP_CMD_LPF_TOGGLE,
+    DSD_APP_CMD_HPF_TOGGLE,
+    DSD_APP_CMD_PBF_TOGGLE,
+    DSD_APP_CMD_HPF_D_TOGGLE,
+    DSD_APP_CMD_INPUT_VOL_CYCLE,
+    DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_INPUT_WARN_DB_SET,
+    DSD_APP_CMD_INPUT_MONITOR_TOGGLE,
+    DSD_APP_CMD_PULSE_OUT_SET,
+    DSD_APP_CMD_UDP_OUT_CFG,
+    /* Keys and decryption. */
+    DSD_APP_CMD_KEY_BASIC_SET,
+    DSD_APP_CMD_KEY_SCRAMBLER_SET,
+    DSD_APP_CMD_KEY_RC4DES_SET,
+    DSD_APP_CMD_KEY_HYTERA_SET,
+    DSD_APP_CMD_KEY_AES_SET,
+    DSD_APP_CMD_KEY_TYT_AP_SET,
+    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
+    DSD_APP_CMD_KEY_TYT_EP_SET,
+    DSD_APP_CMD_KEY_KEN_SCR_SET,
+    DSD_APP_CMD_KEY_ANYTONE_BP_SET,
+    DSD_APP_CMD_KEY_XOR_SET,
+    DSD_APP_CMD_KEY_DIRECT_SET,
+    DSD_APP_CMD_FORCE_KEY_SET,
+    DSD_APP_CMD_FORCE_PRIV_TOGGLE,
+    DSD_APP_CMD_FORCE_RC4_TOGGLE,
+    DSD_APP_CMD_DECRYPTION_APPLY,
+    DSD_APP_CMD_IMPORT_KEYS_DEC,
+    DSD_APP_CMD_IMPORT_KEYS_HEX,
+    DSD_APP_CMD_IMPORT_KEYS_CLEAR,
+    DSD_APP_CMD_DMR_LE_TOGGLE,
+    DSD_APP_CMD_M17_USER_DATA_SET,
+    DSD_APP_CMD_M17_TX_TOGGLE,
+    /* Recording, logs and exports. */
+    DSD_APP_CMD_WAV_START,
+    DSD_APP_CMD_WAV_STOP,
+    DSD_APP_CMD_WAV_TOGGLE,
+    DSD_APP_CMD_WAV_STATIC_OPEN,
+    DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_DSP_OUT_SET,
+    DSD_APP_CMD_SYMCAP_SAVE,
+    DSD_APP_CMD_SYMCAP_STOP,
+    DSD_APP_CMD_SYMCAP_OPEN,
+    DSD_APP_CMD_EVENT_LOG_DISABLE,
+    DSD_APP_CMD_EVENT_LOG_SET,
+    DSD_APP_CMD_LRRP_SET_HOME,
+    DSD_APP_CMD_LRRP_SET_DSDP,
+    DSD_APP_CMD_LRRP_SET_CUSTOM,
+    DSD_APP_CMD_LRRP_DISABLE,
+    DSD_APP_CMD_EXPORT_P25_BANDPLAN,
+    DSD_APP_CMD_TG_LIST_EXPORT,
+    DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
+    DSD_APP_CMD_IMPORT_SRC_LIST,
+    DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR,
+    DSD_APP_CMD_RR_ACCOUNT_SET,
+    /* Front-end tweaks. */
+    DSD_APP_CMD_RTL_SET_GAIN,
+    DSD_APP_CMD_RTL_SET_PPM,
+    DSD_APP_CMD_PPM_DELTA,
+    DSD_APP_CMD_RTL_SET_SQL_DB,
+    DSD_APP_CMD_RTL_SET_SQL_SETTING,
+    DSD_APP_CMD_RTL_SET_VOL_MULT,
+    DSD_APP_CMD_RTL_SET_BIAS_TEE,
+    DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
+    DSD_APP_CMD_RTL_SET_AUTO_PPM,
+};
+
+/* The Airspy settings that are front-end tweaks; a device serial or a sample rate reopens the input. */
+static const char* const k_deferred_airspy_keys[] = {
+    "airspy_gain_mode", "airspy_linearity_gain", "airspy_sensitivity_gain", "airspy_lna_gain", "airspy_mixer_gain",
+    "airspy_vga_gain",  "airspy_lna_agc",        "airspy_mixer_agc",        "airspy_bias_tee",
+};
+
+static int
+command_airspy_setting_deferred(const struct dsd_app_command* c) {
+    if (c->n != sizeof(dsd_app_airspy_setting_payload)) {
+        return 0;
+    }
+    dsd_app_airspy_setting_payload edit;
+    DSD_MEMCPY(&edit, c->data, sizeof(edit));
+    edit.key[sizeof(edit.key) - 1U] = '\0';
+    for (size_t i = 0; i < sizeof(k_deferred_airspy_keys) / sizeof(k_deferred_airspy_keys[0]); i++) {
+        if (strcmp(edit.key, k_deferred_airspy_keys[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The DSP operations that tune the front end; the CQPSK toggle switches the demodulator. */
+static int
+command_dsp_op_deferred(const struct dsd_app_command* c) {
+    if (c->n != sizeof(dsd_app_dsp_payload)) {
+        return 0;
+    }
+    dsd_app_dsp_payload op;
+    DSD_MEMCPY(&op, c->data, sizeof(op));
+    return op.op == DSD_APP_DSP_OP_TOGGLE_IQBAL || op.op == DSD_APP_DSP_OP_IQ_DC_TOGGLE
+           || op.op == DSD_APP_DSP_OP_IQ_DC_K_DELTA || op.op == DSD_APP_DSP_OP_TED_GAIN_SET
+           || op.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
+}
+
+/* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop. */
+static int
+command_needs_frame_loop(const struct dsd_app_command* c) {
+    if (c->id == DSD_APP_CMD_AIRSPY_SET) {
+        return !command_airspy_setting_deferred(c);
+    }
+    if (c->id == DSD_APP_CMD_DSP_OP) {
+        return !command_dsp_op_deferred(c);
+    }
+    for (size_t i = 0; i < sizeof(k_deferred_commands) / sizeof(k_deferred_commands[0]); i++) {
+        if (k_deferred_commands[i] == c->id) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int
+dsd_app_commands_need_frame_loop(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    int needed = 0;
+    for (size_t i = g_head; i != g_tail && !needed; i = (i + 1) % DSD_APP_CMD_Q_CAP) {
+        needed = command_needs_frame_loop(&g_q[i]);
+    }
+    dsd_mutex_unlock(&g_mu);
+    return needed;
+}
+
 int
 dsd_app_commands_pending(void) {
     ensure_mu_init();

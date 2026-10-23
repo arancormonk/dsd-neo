@@ -296,9 +296,19 @@ watchdog_event_log_entry_stamp(const char* event_string, const Event_History* ro
     return 0;
 }
 
+/* The slot a row's log line names: the over-the-air slot its received identity proved, else the decoder lane @p slot
+   (0/1). They differ only on the single-slot DMR decoder, which carries both slots on lane 0 (issue #637). */
+static int
+watchdog_event_log_slot_number(const Event_History* row, uint8_t slot) {
+    if (row != NULL && (row->receive_identity.slot == 1U || row->receive_identity.slot == 2U)) {
+        return row->receive_identity.slot;
+    }
+    return slot + 1;
+}
+
 static void
 watchdog_event_write_log_rendered_line(FILE* event_log_file, const char* stamp, int stamped_from_line,
-                                       const char* prefix, const char* event_string, uint8_t slot, uint8_t swrite) {
+                                       const char* prefix, const char* event_string, int slot_number, uint8_t swrite) {
     if (stamped_from_line && prefix != NULL) {
         // The marker follows the stamp so the continuation line filters and sorts with the row
         // it extends.
@@ -313,7 +323,7 @@ watchdog_event_write_log_rendered_line(FILE* event_log_file, const char* stamp, 
         DSD_FPRINTF(event_log_file, "%s ", event_string);
     }
     if (swrite == 1) {
-        DSD_FPRINTF(event_log_file, "Slot %d; ", slot + 1);
+        DSD_FPRINTF(event_log_file, "Slot %d; ", slot_number);
     }
     DSD_FPRINTF(event_log_file, "\n");
 }
@@ -349,8 +359,8 @@ watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrit
         return;
     }
     if (event_string != NULL) {
-        watchdog_event_write_log_rendered_line(event_log_file, stamp, stamp_source == 2, prefix, event_string, slot,
-                                               swrite);
+        watchdog_event_write_log_rendered_line(event_log_file, stamp, stamp_source == 2, prefix, event_string,
+                                               watchdog_event_log_slot_number(row, slot), swrite);
     }
     watchdog_event_write_log_detail(event_log_file, stamp, "Text: ", row->text_message, wanted.text_message,
                                     row->crc_invalid);

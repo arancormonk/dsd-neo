@@ -61,6 +61,7 @@
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
@@ -7077,6 +7078,73 @@ test_session_queue_cancellation(void) {
         rc |= expect_int("restart has no stale commands", dsd_app_drain_cmds(&opts, &state), 0);
         rc |= expect_true("restart keeps new system key", state.K == 19);
         dsd_app_frontend_runtime_stop();
+    }
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+
+/* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
+   command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks); a command that mixes both
+   is judged by its payload. Asked through the hook the session installs, over the real queue. */
+static int
+test_commands_that_need_the_frame_loop(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    const int value = 0;
+    const dsd_app_dsp_payload cq = {.op = DSD_APP_DSP_OP_TOGGLE_CQ};
+    const dsd_app_dsp_payload iqbal = {.op = DSD_APP_DSP_OP_TOGGLE_IQBAL};
+    dsd_app_airspy_setting_payload serial;
+    dsd_app_airspy_setting_payload lna;
+    DSD_MEMSET(&serial, 0, sizeof serial);
+    DSD_MEMSET(&lna, 0, sizeof lna);
+    DSD_SNPRINTF(serial.key, sizeof serial.key, "%s", "airspy_serial");
+    DSD_SNPRINTF(lna.key, sizeof lna.key, "%s", "airspy_lna_gain");
+
+    const struct {
+        const void* payload;
+        size_t size;
+        const char* name;
+        int id;
+        int needs;
+    } cases[] = {
+        {&value, sizeof value, "scan avoid", DSD_APP_CMD_SCAN_AVOID, 1},
+        {&value, sizeof value, "channel cycle", DSD_APP_CMD_CHANNEL_CYCLE, 1},
+        {&value, sizeof value, "skip slot", DSD_APP_CMD_SKIP_SLOT, 1},
+        {&value, sizeof value, "lockout slot", DSD_APP_CMD_LOCKOUT_SLOT, 1},
+        {&value, sizeof value, "pulse input", DSD_APP_CMD_PULSE_IN_SET, 1},
+        {&value, sizeof value, "retune", DSD_APP_CMD_RTL_SET_FREQ, 1},
+        {&value, sizeof value, "talkgroup hold", DSD_APP_CMD_TG_HOLD_SET, 1},
+        {&value, sizeof value, "RadioReference import", DSD_APP_CMD_RR_APPLY_IMPORT, 1},
+        {&value, sizeof value, "relaxed CRC", DSD_APP_CMD_AGGR_SYNC_TOGGLE, 1},
+        {&value, sizeof value, "quit", DSD_APP_CMD_QUIT, 1},
+        {&cq, sizeof cq, "CQPSK toggle", DSD_APP_CMD_DSP_OP, 1},
+        {&iqbal, sizeof iqbal, "IQ balance toggle", DSD_APP_CMD_DSP_OP, 0},
+        {&serial, sizeof serial, "Airspy serial", DSD_APP_CMD_AIRSPY_SET, 1},
+        {&lna, sizeof lna, "Airspy LNA gain", DSD_APP_CMD_AIRSPY_SET, 0},
+        {&value, sizeof value, "mute", DSD_APP_CMD_TOGGLE_MUTE, 0},
+        {&value, sizeof value, "audio gain", DSD_APP_CMD_GAIN_DELTA, 0},
+        {&value, sizeof value, "key", DSD_APP_CMD_KEY_BASIC_SET, 0},
+        {&value, sizeof value, "RF gain", DSD_APP_CMD_RTL_SET_GAIN, 0},
+        {&value, sizeof value, "squelch level", DSD_APP_CMD_RTL_SET_SQL_DB, 0},
+        {&value, sizeof value, "eye diagram", DSD_APP_CMD_EYE_TOGGLE, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_app_frontend_runtime_start(&opts, &state);
+        rc |= expect_int("empty queue needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
+        rc |= expect_true("command queued", dsd_app_command_submit(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0) > 0);
+        rc |= expect_true("command queued", dsd_app_command_submit(cases[i].id, cases[i].payload, cases[i].size) > 0);
+        if (dsd_runtime_controls_need_frame_loop() != cases[i].needs) {
+            DSD_FPRINTF(stderr, "%s: needs the frame loop %d, want %d\n", cases[i].name,
+                        dsd_runtime_controls_need_frame_loop(), cases[i].needs);
+            rc = 1;
+        }
+        /* The session's stop discards the queue unapplied. */
+        dsd_app_frontend_runtime_stop();
+        rc |= expect_int("stopped session needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
     }
     freeState(&state);
     DSD_SECURE_ZERO(&state, sizeof state);
@@ -19362,6 +19430,7 @@ main(void) {
     }
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
+    rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_scan_row_edit_commands_under_trunk_scan();
