@@ -226,8 +226,7 @@ buildOptions(const QVariantMap& sys, QStringList& options) {
         if (!flags.contains(keyType)) {
             return QStringLiteral("This key type cannot be scoped in a scan list.");
         }
-        options << flags.value(keyType)
-                << ((keyType == "hex" || keyType == "rc4") ? session_args_key_hex_normalize(key) : key.trimmed());
+        options << flags.value(keyType) << session_args_key_value_normalize(keyType, key);
     }
     appendProfileOptions(sys, options);
     if (force) {

@@ -301,6 +301,14 @@ typedef struct {
     /** 1 when a TETRA call ended on a direct mode carrier, which belongs to no network and leaves ended_rx_id empty;
      * call history marks the ended row direct mode from it. */
     uint8_t ended_tetra_direct;
+    /**
+     * The source's display label (source alias, else group-list name) the event layer resolved for this epoch's row,
+     * cached when the row commits and again when a late talker alias renames it, so a view of the ended call shows it
+     * after the staged row has gone without searching the source tables per render. Valid only while
+     * source_label_id equals ota_source_id; empty when the epoch's row had none.
+     */
+    char source_label[DSD_CALL_IDENTITY_TEXT_SIZE];
+    uint64_t source_label_id;
 } dsd_call_snapshot;
 
 typedef struct {

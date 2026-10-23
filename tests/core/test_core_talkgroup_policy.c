@@ -302,6 +302,71 @@ test_upsert_modes(void) {
     rc |= expect_true("protected row unchanged", dsd_tg_policy_lookup_id(st, 500, &lookup) == 0);
     rc |= expect_true("protected row still lockout", strcmp(lookup.entry.mode, "B") == 0);
 
+    // A repeat of the learned row's name and mode bumps no generation; a change does.
+    uint64_t context = 0;
+    unsigned int before = 0;
+    unsigned int after = 0;
+    init_entry(&e, 600, "D", "LEARN-NEW", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    dsd_tg_policy_table_version(st, &context, &before);
+    rc |= expect_true("replace-learned repeat ok",
+                      dsd_tg_policy_upsert_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY) == 0);
+    dsd_tg_policy_table_version(st, &context, &after);
+    rc |= expect_true("replace-learned repeat keeps the generation", after == before);
+    init_entry(&e, 600, "DE", "LEARN-NEW", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("replace-learned mode change ok",
+                      dsd_tg_policy_upsert_exact(st, &e, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY) == 0);
+    dsd_tg_policy_table_version(st, &context, &after);
+    rc |= expect_true("replace-learned mode change moves the generation", after != before);
+    rc |= expect_true("replace-learned mode change applied",
+                      dsd_tg_policy_lookup_id(st, 600, &lookup) == 0 && strcmp(lookup.entry.mode, "DE") == 0);
+
+    free_test_state(st);
+    return rc;
+}
+
+static int
+test_learn_exact(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_lookup lookup;
+    uint64_t context = 0;
+    unsigned int before = 0;
+    unsigned int after = 0;
+    if (!st) {
+        return 1;
+    }
+
+    init_entry(&e, 700, "D", "UNIT 1", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    // A fresh state has no policy context yet: the first learned row creates it.
+    rc |= expect_true("learn adds to a state with no policy context",
+                      dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    dsd_tg_policy_table_version(st, &context, &before);
+    rc |= expect_true("learn repeat unchanged", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_UNCHANGED);
+    dsd_tg_policy_table_version(st, &context, &after);
+    rc |= expect_true("learn repeat keeps the generation", after == before);
+
+    init_entry(&e, 700, "D", "UNIT 1 RENAMED", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn rename replaces", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_REPLACED);
+    rc |= expect_true("learn rename applied", dsd_tg_policy_lookup_id(st, 700, &lookup) == 0
+                                                  && strcmp(lookup.entry.name, "UNIT 1 RENAMED") == 0);
+    init_entry(&e, 700, "DE", "UNIT 1 RENAMED", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn mode-only change replaces",
+                      dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_REPLACED);
+    rc |= expect_true("learn mode-only change applied",
+                      dsd_tg_policy_lookup_id(st, 700, &lookup) == 0 && strcmp(lookup.entry.mode, "DE") == 0);
+
+    init_entry(&e, 710, "A", "IMPORTED", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("append imported", dsd_tg_policy_append_exact(st, &e) == 0);
+    init_entry(&e, 710, "D", "OVER THE AIR", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn keeps an imported row", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_KEPT);
+    rc |= expect_true("imported row unchanged",
+                      dsd_tg_policy_lookup_id(st, 710, &lookup) == 0 && strcmp(lookup.entry.name, "IMPORTED") == 0);
+
+    init_entry(&e, 720, "D", "NOT LEARNED", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("learn refuses a non-learned entry",
+                      dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_FAILED);
+
     free_test_state(st);
     return rc;
 }
@@ -1628,6 +1693,7 @@ test_ota_final_blocks(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_learn_exact();
     rc |= test_snapshot_chain_identity();
     rc |= test_captured_selection();
     rc |= test_set_fields_remove_bounds();

@@ -160,15 +160,31 @@ main(void) {
 
     // AES-128 (0x24) keys off aes_loaded, not the scalar.
     rc |= expect_eq("kid-aes-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0, 0, 0}), 1);
     rc |= expect_eq("kid-aes-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 0, 1, 0}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 0, 1, 0, 0}), 0);
+
+    // An AES ALG needs its own key width: a key narrower than it (one segment: a lone scalar on the key ID's own cell)
+    // is refused, one as wide or wider is accepted, and material built without a width keeps aes_loaded alone.
+    rc |= expect_eq("kid-aes128-one-segment",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0, 0, 1}), 0);
+    rc |= expect_eq("kid-aes128-two-segments",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0, 0, 2}), 1);
+    rc |= expect_eq("kid-aes256-two-segments",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x25, &(dsd_dmr_key_material){0ULL, 1, 0, 0, 2}), 0);
+    rc |= expect_eq("kid-aes256-four-segments",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x25, &(dsd_dmr_key_material){0ULL, 1, 0, 0, 4}), 1);
+    state.aes_key_loaded[0] = 1;
+    state.aes_key_segments[0] = 1U;
+    rc |= expect_eq("slot-wrapper-aes256-one-segment", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x25, 0ULL), 0);
+    state.aes_key_segments[0] = 0U;
+    state.aes_key_loaded[0] = 0;
 
     // RC4 (0x21) keys off the scalar, not aes_loaded.
     rc |= expect_eq("kid-rc4-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0x1234ULL, 0, 0, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0x1234ULL, 0, 0, 0, 0}), 1);
     rc |= expect_eq("kid-rc4-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0ULL, 1, 1, 0}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0ULL, 1, 1, 0, 0}), 0);
 
     // The slot wrapper still reads the slot's own activated flag.
     state.aes_key_loaded[0] = 1;
@@ -179,11 +195,11 @@ main(void) {
     // change completeness -- the slot here has no quartet at all, and the supplied verdict wins
     // in both directions.
     rc |= expect_eq("kid-kirisun-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 1, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 1, 0, 0}), 1);
     rc |= expect_eq("kid-kirisun-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 0, 0}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 0, 0, 0}), 0);
     rc |= expect_eq("kid-kirisun37-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, &(dsd_dmr_key_material){0ULL, 0, 1, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, &(dsd_dmr_key_material){0ULL, 0, 1, 0, 0}), 1);
     // ...and the slot wrapper keeps reading the slot's own quartet, which is still absent.
     rc |= expect_eq("slot-wrapper-kirisun", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x36, 0ULL), 0);
 

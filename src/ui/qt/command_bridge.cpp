@@ -501,10 +501,7 @@ CommandBridge::applyEncryptionKey(const QString& type, const QString& value) con
     } else {
         return false;
     }
-    QString normalized = (payload.key_type == DSD_APP_KEY_TYPE_HEX || payload.key_type == DSD_APP_KEY_TYPE_RC4
-                          || payload.key_type >= DSD_APP_KEY_TYPE_M17_SCRAMBLER)
-                             ? session_args_key_hex_normalize(value)
-                             : value.trimmed();
+    QString normalized = session_args_key_value_normalize(type, value);
     QByteArray bytes = normalized.toUtf8();
     DSD_SECURE_ZERO(normalized.data(), static_cast<size_t>(normalized.size()) * sizeof(QChar));
     const bool fits = bytes.size() < static_cast<qsizetype>(sizeof payload.value) && !bytes.contains('\0');
@@ -832,8 +829,7 @@ CommandBridge::applyDecryptionDraft(const QString& type, const QString& value, b
     if (!fields) {
         return {};
     }
-    const QString normalized =
-        type == "basic" || type == "scrambler" ? value.trimmed() : session_args_key_hex_normalize(value);
+    const QString normalized = session_args_key_value_normalize(type, value);
     return submitDecryption({{"fields", fields},
                              {"source", DSD_APP_KEY_SOURCE_DIRECT_OVERLAY},
                              {"type", type},

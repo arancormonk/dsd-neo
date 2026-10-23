@@ -1168,7 +1168,9 @@ Saved systems and scan entries can select shared **Decryption keys** profiles.
 Automatic collections select by received key ID where the protocol supports it;
 DMR profiles can also map group calls to a stored key ID. Direct channel/stream
 keys and vendor modes are explicit alternatives. Formats, storage, migration and
-scope are documented in [decryption profiles](../docs/decryption-profiles.md).
+scope are documented in [decryption profiles](../docs/decryption-profiles.md),
+including how to [add a P25 AES-256 key](../docs/decryption-profiles.md#add-a-p25-aes-256-key)
+and keep a session override after Stop.
 
 Monitor → More → Decryption shows per-slot received identifiers, selected key
 source and availability separately from listening policy. Key material availability

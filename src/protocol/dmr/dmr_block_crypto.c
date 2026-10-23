@@ -14,6 +14,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/key_presence.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 
@@ -39,18 +40,10 @@ dmr_block_store_u64_be(unsigned long long value, uint8_t* out) {
     }
 }
 
+// Returns whether a key @p words segments wide was loaded: the key ID's imported one (present by its import flags, an
+// all-zero key included), else the direct K1..K4 key. 0 words (no AES ALG) loads nothing usable.
 static int
-dmr_block_bytes_any_nonzero(const uint8_t* bytes, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        if (bytes[i] != 0U) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static void
-dmr_block_load_aes_key(const dsd_state* state, int key_id, uint8_t aes_key[32]) {
+dmr_block_load_aes_key(const dsd_state* state, int key_id, unsigned int words, uint8_t aes_key[32]) {
     unsigned long long parts[4] = {
         dmr_block_rkey_at(state, key_id + 0x000),
         dmr_block_rkey_at(state, key_id + 0x101),
@@ -60,19 +53,22 @@ dmr_block_load_aes_key(const dsd_state* state, int key_id, uint8_t aes_key[32]) 
 
     // Manual-key fallback for a key id with nothing imported. Unreachable on the mapped path by
     // construction: dmr_block_alg_key_need() only lets a row apply for alg 4 when cells
-    // kid+0x000 and kid+0x101 are non-zero, and for alg 5 when all four are -- exactly the cells
+    // kid+0x000 and kid+0x101 are present, and for alg 5 when all four are -- exactly the cells
     // read above. So an explicit --dmr-tg-key-csv row beats -2/-H without the row ever being able
     // to silently substitute an unusable key for a working manual one.
-    if (parts[0] == 0ULL && parts[1] == 0ULL && parts[2] == 0ULL && parts[3] == 0ULL) {
+    int present = words != 0U && keyring_kid_aes_segments(state, key_id) >= (int)words;
+    if (!present) {
         parts[0] = state->K1;
         parts[1] = state->K2;
         parts[2] = state->K3;
         parts[3] = state->K4;
+        present = dsd_key_direct_words_complete(state, words);
     }
 
     for (int i = 0; i < 4; i++) {
         dmr_block_store_u64_be(parts[i], aes_key + ((size_t)i * 8U));
     }
+    return present;
 }
 
 static void
@@ -144,17 +140,19 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint
                                          state->dmr_data_target_is_group[id_slot] != 0U,
                                          dmr_block_alg_key_need(ctx->alg), ctx->signaled_kid, &ctx->mapped);
     ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
+    ctx->rkey_present = keyring_kid_scalar_present(state, ctx->kid);
 
-    dmr_block_load_aes_key(state, ctx->kid, ctx->aes_key);
-    ctx->aes_key_loaded = dmr_block_bytes_any_nonzero(ctx->aes_key, sizeof(ctx->aes_key));
+    ctx->aes_key_loaded =
+        dmr_block_load_aes_key(state, ctx->kid, dsd_key_need_aes_width(dmr_block_alg_key_need(ctx->alg)), ctx->aes_key);
 
     // Slot-correct fallback: RR keys slot 2. Reading R for both slots decrypted slot 2 with
     // slot 1's key whenever the resolved id had nothing imported. No DMR key source is lost by
     // this: -1 (args.c) and DSD_APP_CMD_KEY_RC4DES_SET both write R and RR. The only writers of R
     // without RR are -R and DSD_APP_CMD_KEY_SCRAMBLER_SET, both NXDN/dPMR scrambler keys.
     const unsigned long long slot_rkey = (id_slot == 0U) ? state->R : state->RR;
-    if (ctx->rkey == 0ULL && slot_rkey != 0ULL) {
+    if (!ctx->rkey_present && dsd_key_scalar_present(state, id_slot)) {
         ctx->rkey = slot_rkey;
+        ctx->rkey_present = 1;
     }
 
     ctx->rc4_iv[0] = (uint8_t)((ctx->rkey & 0xFF00000000ULL) >> 32U);
@@ -188,7 +186,7 @@ dmr_block_crypto_print_key(const dmr_block_crypto_ctx* ctx, int show_keys) {
         const size_t key_bytes = (ctx->alg == 5) ? 32U : 16U;
         DSD_FPRINTF(stderr, " Key: %s;",
                     dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, ctx->aes_key, key_bytes));
-    } else if (ctx->rkey != 0ULL && ctx->alg != 0) {
+    } else if (ctx->rkey_present && ctx->alg != 0) {
         char key_text[19];
         const unsigned width = (ctx->alg == 2) ? 16U : 10U;
         DSD_FPRINTF(stderr, " Key: %s;",
@@ -310,7 +308,7 @@ dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block
         return 0;
     }
 
-    if (ctx->alg == 1 && ctx->rkey != 0ULL) {
+    if (ctx->alg == 1 && ctx->rkey_present) {
         uint8_t stream[DMR_BLOCK_CRYPTO_STREAM_BYTES];
         DSD_MEMSET(stream, 0, sizeof(stream));
         rc4_block_output(256, 9, ctx->end, ctx->rc4_iv, stream);
@@ -318,7 +316,7 @@ dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block
         return 1;
     }
 
-    if (ctx->alg == 2 && ctx->rkey != 0ULL) {
+    if (ctx->alg == 2 && ctx->rkey_present) {
         uint8_t stream[DMR_BLOCK_CRYPTO_STREAM_BYTES];
         const int nblocks = (ctx->end / 8) + 1;
         DSD_MEMSET(stream, 0, sizeof(stream));

@@ -49,6 +49,7 @@
 #include "nxdn_confirm.h"
 
 #ifdef LIMAZULUTWEAKS
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include "dsd-neo/core/secret_redaction.h"
 #endif
@@ -405,18 +406,13 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
     if (freq) {
         DSD_FPRINTF(stderr, "\n Freq: %ld - Freq Hash: %d", freq, limazulu);
     }
-    if (state->rkey_array[limazulu] != 0) {
+    // An imported key is present by its import flag, a zero one included (keyring_kid_scalar_present()).
+    if (keyring_load_scalar_key(state, 0, limazulu)) {
         char key_text[24];
-        DSD_FPRINTF(
-            stderr, " - Key Loaded: %s",
-            dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->rkey_array[limazulu], 0U));
+        DSD_FPRINTF(stderr, " - Key Loaded: %s",
+                    dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
-
-    if (state->rkey_array[limazulu] != 0) {
-        state->R = state->rkey_array[limazulu];
-        state->scalar_key_present[0] = 0;
-    }
 
     if (dsd_key_scalar_present(state, 0) && state->M == 1) {
         nxdn_cipher_force(state, 0x1);

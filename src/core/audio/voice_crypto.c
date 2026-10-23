@@ -67,7 +67,7 @@ dsd_nxdn_voice_crypto_class(const dsd_state* state) {
     const int scalar = dsd_key_scalar_present(state, 0);
     const int applied = ((state->nxdn_cipher_type == 0x01 || state->nxdn_cipher_type == 0x02) && scalar)
                         || (state->M == 1 && scalar)
-                        || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1);
+                        || (state->nxdn_cipher_type == 0x03 && dsd_key_aes_slot_complete(state, 0, 4U));
     return applied ? DSD_VOICE_CRYPTO_DECRYPTABLE : DSD_VOICE_CRYPTO_UNDECRYPTABLE;
 }
 

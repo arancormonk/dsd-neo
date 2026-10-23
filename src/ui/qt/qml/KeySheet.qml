@@ -15,6 +15,25 @@ ModalSheet {
     property int profileScope: 0
     property bool advancedOpen: false
     property var context: ({})
+    // The standalone saved system the session runs, by UID; empty for a scan
+    // list, Explore or a wizard test. "Use for" writes only that system.
+    property string systemUid: ""
+    // Its name as the session started, for when it has since been removed.
+    property string systemName: ""
+    // Bumped where this sheet writes the system, so the binding below reads it again.
+    property int systemRevision: 0
+    readonly property var savedSystem: {
+        var revision = systemRevision;
+        if (!systemUid.length || typeof savedSystems === "undefined")
+            return ({});
+        var count = savedSystems.count;
+        return savedSystems.getByUid(systemUid);
+    }
+    readonly property string savedSystemName: savedSystem.name || systemName
+    // A direct draft handed to the profile editor: its save clears the draft.
+    property bool savingDraft: false
+    /** The saved system now names a decryption profile for its future starts. */
+    signal systemProfileSaved(string uid)
     readonly property bool sessionRunning: decoderHost.running
     readonly property var materialProfile: {
         if (typeof decryptionProfiles === "undefined")
@@ -35,17 +54,23 @@ ModalSheet {
             return qsTr("Automatic keys");
         return qsTr("No keys");
     }
-    function open() {
+    // An empty direct draft showing the session's configured identifier policy.
+    function resetDraft() {
         editor.reset();
-        notice = "";
-        selectedProfileUid = materialProfile.uid || "";
-        profileScope = (metrics.scanTargetId || "").length ? 1 : 0;
-        context = commands.decryptionContext(metrics.scanTargetId || "", metrics.keyEpoch || "0");
         var force = metrics.configuredForce || 0;
         editor.forceMode = force === 33 ? 2 : force <= 1 ? force : 0;
         editor.forceChanged = false;
         editor.currentForceSummary = force === 0 ? qsTr("normal identifiers") : force === 1 ? qsTr("privacy forcing") : qsTr("algorithm %1 fallback").arg(force.toString(16).toUpperCase());
+    }
+    function open() {
+        resetDraft();
+        notice = "";
+        selectedProfileUid = materialProfile.uid || "";
+        profileScope = (metrics.scanTargetId || "").length ? 1 : 0;
+        context = commands.decryptionContext(metrics.scanTargetId || "", metrics.keyEpoch || "0");
         advancedOpen = false;
+        savingDraft = false;
+        systemRevision++;
         openedChoice = choiceValue();
         visible = sessionRunning;
     }
@@ -85,6 +110,15 @@ ModalSheet {
         id: discard
         parent: sheet
     }
+    /**
+     * The identifier policy the draft runs with, as a profile force value: a
+     * changed policy as apply() submits it, else the session's configured one.
+     */
+    function draftForce() {
+        if (editor.forceChanged)
+            return editor.forceMode === 2 ? 33 : editor.forceMode;
+        return metrics.configuredForce || 0;
+    }
     function apply() {
         if (!visible || !sessionRunning || !editor.valid || applyFlow.pending)
             return;
@@ -103,10 +137,63 @@ ModalSheet {
     }
     onVisibleChanged: {
         if (!visible) {
+            replaceProfile.visible = false;
             editor.reset();
             notice = "";
             Qt.inputMethod.hide();
         }
+    }
+    /**
+     * "Use for <system> on future starts": the system is looked up again by UID
+     * here, so a row that moved, changed or went away since the session started
+     * is never written by position. Replacing another profile asks first.
+     */
+    function useForSystem() {
+        var system = savedSystems.getByUid(systemUid);
+        if (!system.uid) {
+            notice = qsTr("“%1” is no longer a saved system. Nothing was changed.").arg(savedSystemName);
+            systemRevision++;
+            return;
+        }
+        var current = system.decryptionProfileUid || "";
+        var currentLabel = current.length ? (decryptionProfiles.get(current).label || "") : "";
+        if (current === selectedProfileUid) {
+            systemRevision++;
+            return;
+        }
+        if (currentLabel.length) {
+            var chosen = decryptionProfiles.get(selectedProfileUid).label || qsTr("this profile");
+            replaceProfile.title = qsTr("Replace the profile for “%1”?").arg(system.name);
+            replaceProfile.message = qsTr("Future starts will use “%1” instead of “%2”. This session keeps its keys.").arg(chosen).arg(currentLabel);
+            replaceProfile.confirmText = qsTr("Use “%1”").arg(chosen);
+            replaceProfile.profileUid = selectedProfileUid;
+            replaceProfile.open();
+            return;
+        }
+        writeSystemProfile(selectedProfileUid);
+    }
+    function writeSystemProfile(profileUid) {
+        var row = savedSystems.rowForUid(systemUid);
+        if (row < 0) {
+            notice = qsTr("“%1” is no longer a saved system. Nothing was changed.").arg(savedSystemName);
+        } else if (savedSystems.update(row, {
+                decryptionProfileUid: profileUid
+            })) {
+            var label = decryptionProfiles.get(profileUid).label || qsTr("this profile");
+            var name = savedSystems.get(row).name;
+            notice = (materialProfile.uid || "") === profileUid ? qsTr("“%1” will start with “%2”.").arg(name).arg(label) : qsTr("“%1” will start with “%2”. Apply it to use it in this session too.").arg(name).arg(label);
+            systemProfileSaved(systemUid);
+        } else {
+            notice = qsTr("“%1” could not be saved. Its profile is unchanged.").arg(savedSystemName);
+        }
+        systemRevision++;
+    }
+    ConfirmDialog {
+        id: replaceProfile
+        objectName: "replaceSystemProfile"
+        parent: sheet
+        property string profileUid: ""
+        onConfirmed: sheet.writeSystemProfile(profileUid)
     }
     DecryptionApplyFlow {
         id: applyFlow
@@ -137,6 +224,7 @@ ModalSheet {
                 text: qsTr("Manage matching key")
                 enabled: !applyFlow.pending
                 onClicked: {
+                    sheet.savingDraft = false;
                     var profile = decryptionProfiles.forRuntimeReference(modelData.profileRef);
                     matchingEditor.openMatching(profile.uid || "", modelData.protocol, parseInt(modelData.keyId, 16), modelData.materialKind);
                 }
@@ -146,15 +234,25 @@ ModalSheet {
                 visible: modelData.dmr && modelData.group && sheet.selectedProfileUid.length > 0
                 text: qsTr("Talkgroup key selection")
                 enabled: !applyFlow.pending
-                onClicked: matchingEditor.openTalkgroup(sheet.selectedProfileUid, "dmr", Number(modelData.targetId))
+                onClicked: {
+                    sheet.savingDraft = false;
+                    matchingEditor.openTalkgroup(sheet.selectedProfileUid, "dmr", Number(modelData.targetId));
+                }
             }
         }
     }
     DecryptionProfileEditor {
         id: matchingEditor
+        objectName: "keySheetProfileEditor"
         parent: sheet
         onSaved: function (uid) {
             sheet.selectedProfileUid = uid;
+            if (sheet.savingDraft) {
+                // The key and its identifier policy now live in the profile: the session draft is done.
+                sheet.savingDraft = false;
+                sheet.resetDraft();
+                sheet.notice = qsTr("Profile saved and selected. Apply it to use it in this session.");
+            }
         }
     }
     Text {
@@ -200,6 +298,16 @@ ModalSheet {
         }
     }
     OutlineButton {
+        objectName: "useProfileForSystem"
+        width: parent.width
+        visible: sheet.systemUid.length > 0 && sheet.selectedProfileUid.length > 0
+        readonly property bool alreadyUsed: sheet.savedSystem.uid !== undefined && (sheet.savedSystem.decryptionProfileUid || "") === sheet.selectedProfileUid
+        // Future starts only; Apply above is the live change.
+        enabled: !alreadyUsed
+        text: alreadyUsed ? qsTr("Used for %1 on future starts").arg(sheet.savedSystemName) : qsTr("Use for %1 on future starts").arg(sheet.savedSystemName)
+        onClicked: sheet.useForSystem()
+    }
+    OutlineButton {
         width: parent.width
         text: qsTr("Advanced: session direct override")
         enabled: !applyFlow.pending
@@ -215,12 +323,25 @@ ModalSheet {
         enabled: !applyFlow.pending
     }
     Text {
+        objectName: "directOverrideNote"
         width: parent.width
-        text: qsTr("Direct changes affect session defaults. An explicit scan profile stays effective until rotation restores those defaults. Keys and listening policy are separate; excluded talkgroups remain blocked.")
+        text: qsTr("A direct override is for this session only and is cleared when you stop. It changes session defaults; an explicit scan profile stays effective until rotation restores them. Keys and listening policy are separate; excluded talkgroups remain blocked.")
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSecondary
+    }
+    OutlineButton {
+        objectName: "saveDirectAsProfile"
+        width: parent.width
+        visible: editor.visible && editor.allowedTypes.length > 1 && typeof decryptionProfiles !== "undefined"
+        text: qsTr("Save as profile…")
+        inputValid: editor.keyType.length > 0 && editor.keyValue.length > 0 && editor.valid
+        enabled: !applyFlow.pending && (inputValid || Navigation.composing)
+        onClicked: {
+            sheet.savingDraft = true;
+            matchingEditor.openDirect(sheet.protocol, editor.keyType, editor.keyValue, sheet.systemUid.length ? sheet.savedSystemName : "", sheet.draftForce());
+        }
     }
     Text {
         width: parent.width

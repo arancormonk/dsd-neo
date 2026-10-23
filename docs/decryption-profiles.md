@@ -22,12 +22,42 @@ offer user-key decryption profiles. Signature verification is a separate feature
 
 Managed key IDs are hexadecimal; legacy destination IDs are decimal. Material is
 masked, and an empty replacement field retains an existing value. Changing its
-format requires replacement material. The library validates occupied keyring
+format requires replacement material. Hex material may be pasted grouped: spaces,
+`-` and `:` separators and a leading `0x` are ignored. Decimal keys (Basic
+Privacy, scrambler) and advanced vendor modes keep their exact forms. The P25
+Simulcast preset uses P25 profiles. The library validates occupied keyring
 indices, including AES segments and legacy destination hashing, and rejects
 collisions. It does not turn the decoder's flat keyring into an algorithm-namespaced
 database. Use separate profiles for incompatible collections. Attached legacy CSVs
 retain their existing importer semantics; edit those files or build a replacement
 managed collection explicitly.
+
+## Add a P25 AES-256 key
+
+1. In the saved system's **Decryption keys**, choose **Create profile** (or
+   **Manage profile**). Set Protocol to P25, Key selection to **Automatic keys**
+   and **Manage keys here**.
+2. Choose **Add key** and the format **AES-256 · 64 hex digits**.
+3. Enter the key ID in hex as Monitor → Decryption shows it under **Call key ID**;
+   **Manage matching key** there fills it in. The field shows the decimal value.
+4. Enter the 64 hex digits as key material. **Show** reveals them; the field
+   counts a short key and names the format a 32-, 48- or 64-digit key needs.
+5. Choose **Use this key**, then **Save profile**.
+6. Attach the profile: select it in the saved system's Decryption keys, or, while
+   that system runs, choose **Use for <system> on future starts** in Monitor →
+   Decryption. Apply it there as well to use it in the running session.
+
+A profile holds any number of keys. Key IDs are 0000–FFFF for P25 and NXDN and
+00–FF for DMR. An AES key also fills ID+0x101, +0x201 and +0x301 (one cell per 16
+hex digits), so AES keys whose IDs differ by 0x100, 0x101, 0x200, 0x201 or 0x301
+can share keyring cells; such keys cannot be in one profile, and the editor names
+the key they clash with. Put them in separate profiles.
+
+Monitor → Decryption → **Advanced: session direct override** lasts for the running
+session only and is cleared at Stop. **Save as profile…** opens a new Direct
+override profile holding the typed key, written nowhere until **Save profile**;
+the saved profile is then selected in the sheet, ready to apply or to use for the
+running system's future starts.
 
 Advanced DMR modes include TYT Basic/PC4/Enhanced, Retevis RC2, Baofeng PC5,
 Connect Systems EE72, Kenwood, Anytone, static keystream and Vertex CSV. The editor

@@ -787,6 +787,36 @@ suite runs under this compiler.
   drops before the vocoder (non-standard C0 or the crypto gate) still consumes its keystream position through
   `dsd_mbe_p25p1_skip_voice_frame()`. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`.
   Tests: `CORE_MBE_CRYPTO_SCOPE`, `P25_P1_LDU_HELPERS`.
+- Invariant (keyring presence and width, `<dsd-neo/core/keyring.h>`, `src/core/vocoder/keyring.c`): a keyring cell
+  is present by its import flag (`rkey_array_loaded`), whatever its value, or by a non-zero value for material stored
+  without the flag (`keyring_kid_scalar_present()`), so an imported all-zero DES, RC4 or AES key decrypts as the same
+  value entered directly does, and a key ID nothing was imported for stays refused. An AES key's width is its leading
+  present segment cells (ID, +0x101, +0x201, +0x301; `keyring_kid_aes_segments()`): a cell after a missing one is
+  another ID's key aliased onto it and is never counted. An AES ALG can use a key only at its full width (AES-128 2,
+  TDEA 3, AES-256 4; `dsd_key_need_aes_width()`), never "any segment". `keyring_activate_slot_with_kid()` sets
+  `scalar_key_present[]` from the scalar cell, `aes_key_segments[]` to the width and `aes_key_loaded[]` when the
+  first segment is present; it does not know the ALG, so every consumer that decides decryptability checks the width:
+  `p25_crypto_has_complete_key()` (`aes_key_segments[]` and the keyring's first N cells), the DMR voice verdict
+  (`dsd_dmr_voice_kid_can_decrypt()` with `dsd_dmr_key_material::aes_segments`), and NXDN through
+  `dsd_key_aes_slot_complete()` (`<dsd-neo/core/key_presence.h>`; a legacy writer that set `aes_key_loaded[]` without a
+  width keeps the old rule). Classification agrees with activation: `keyring_kid_material()`, `keyring_kid_satisfies_need()`
+  and the mapped DMR material use the same cells and width; the Kirisun quartet also requires every word non-zero
+  (`keyring_kid_kirisun_complete()`).
+  NXDN keys its material by the VCALL key ID, the destination or the frequency hash outside that activation. The VCALL
+  and VCALL_IV loaders and the key source the call reports share one choice, `nxdn_select_key()`: the signalled ID
+  when it holds the cipher's key (a scalar for the scrambler and DES, all four AES-256 segments for AES), else the
+  destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
+  full width. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
+  another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
+  Every other loader that reads `rkey_array` by key ID decides presence the same way, requires the ALG's width for
+  AES, and falls back to the direct key only when nothing usable was imported, judging that one by
+  `dsd_key_scalar_present()` (R/RR) or `dsd_key_direct_words_complete()` (K1..K4, its recorded word count): the DMR
+  Basic Privacy talkgroup autoload in `dsd_mbe.c` (which also sets `basic_key_present`), the DMR data block crypto
+  (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and
+  talkgroup-keyed lookup (`dsd_file.c`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the
+  narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`,
+  `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay paths),
+  `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the
@@ -1016,6 +1046,35 @@ suite runs under this compiler.
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
   Windows CRT turns that failed conversion into an unbounded write of the stack. Semgrep blocks `%lc`/`%ls`
+- Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
+  MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
+  (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
+  `dmr_pdu_sf` scratch, so an LCW Call Termination or Motorola Talker EOT (which clear that scratch) or the DMR and
+  Harris assemblers cannot wipe a record in flight. Phase 2 handlers take the dispatcher's voice slot (`ctx->slot`, the
+  SACCH-inverted slot), never `currentslot`. Blocks are stored by number and the record completes once blocks
+  1..N are all present, in any order. An assembly is bound to the call epoch (the slot's current or retained ended
+  call) and the tuning generation its header arrived in, and survives that epoch's ACTIVE -> ENDED, since Motorola
+  sends the alias in hangtime: a header identical in every received bit within the same epoch and generation is a
+  repeat and keeps the blocks, any other header restarts, and a block from another epoch or generation, a block whose
+  sequence or number the header does not cover, or one past the store's end abandons the record. The engine's carrier
+  resets clear the store with the rest of the slot state. The record's length is not the first zero word: scrambled
+  alias octets and the CRC can be zero, so the candidate lengths run from the last non-zero 16-bit word to the
+  received extent (bounded by the store and the 200-octet decoder scratch) and the first one whose CRC checks wins
+  (`apx_alias_record_bits()`). The name the event row, the learned policy row and the group file store is the decoded
+  UTF-16BE as UTF-8 (`apx_embedded_alias_dump()`), bounded to the policy name on a scalar boundary: C0, C1 and NUL
+  become spaces (`dsd_unicode_scalar_is_control()`), a comma a dot for the CSV, an unpaired surrogate U+FFFD.
+  The learned policy row is updated before the event row is enriched (`dsd_event_enrich_alias_ex()`), because the
+  alias usually lands after its call's row committed: an alias on the epoch's committed row re-resolves that row's
+  source label through `dsd_source_label_lookup()` (an imported source alias, else the group-list exact row, where an
+  imported row outranks a learned one), re-renders the row against its `committed_env`, and appends one `Enriched:`
+  continuation (the re-rendered line when it changed, and the new `Talker Alias:` line) carrying the row's own stamp,
+  with no end effects; a repeat that changes nothing logs nothing. Lines already written stay as written (the log is
+  append-only). The event layer caches the label of the epoch's row on the call (`dsd_call_snapshot::source_label`,
+  keyed by `source_label_id`) when the row commits and when a late alias renames it, and the shared call view
+  (`slot_source_text()`) reads that cache for an ended call whose staged row is gone, so the held Monitor view names
+  the talker without a source-table search per render.
+  Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
+  `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
   target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the
   IDEN tables it seeds. `src/core/file/p25_bandplan_csv.c` parses and writes the CSV
@@ -1097,6 +1156,15 @@ suite runs under this compiler.
   both snapshot hops, reuses an unchanged clone, and preserves an owned destination store on allocation failure.
   A shallow alias of the source is detached so destination cleanup cannot free the source. `CORE_SOURCE_ALIAS`
   tests matching, precedence, lifecycle and policy isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
+- Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`): every over-the-air alias publisher (Motorola,
+  Harris and Tait in `dsd_alias.c`, the P25 Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c`) learns its row
+  through `dsd_tg_policy_learn_exact()`: the first exact row for the source wins when it was imported or entered by the
+  user, a learned row is replaced only when its normalised name or mode (D vs DE) changed, and a repeat changes
+  nothing, so the policy generation (and every frontend's snapshot copy keyed on it) stays put while a radio keeps
+  sending the same alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same compare. Only a first-learned
+  row is appended to the group file, which is append-only and whose first row for an ID is the one a reload keeps:
+  a renamed radio's new alias holds for the session, and after a restart the file's earlier name loads as an imported
+  row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
 - Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while
   `ota_target_id` is the supergroup every frontend shows. `DSD_TG_POLICY_BLOCK_OTA_FINAL` in
   `<dsd-neo/core/talkgroup_policy.h>` names the supergroup blocks no member overrides (call skip, encryption
@@ -5177,6 +5245,12 @@ Private per-protocol modules worth knowing about:
   new-transmission handling (the identity-pending wait, Phase 2 post-END retention) is unchanged. Phase 2 needs none
   of it: the MAC_ACTIVE's own observation reopens and classifies the call before the SM sees it. Test:
   `P25_VOICE_RESUME_IDENTITY`.
+- Documented limit (P25 Phase 2 fast release and late aliases, `p25_trunk_sm.c` `handle_facch_voice_end()`): while
+  trunking, two FACCH ENDs for the same call within 1 s, with no newer grant and both slots idle, release the voice
+  channel at once (`facch-double-end`) instead of waiting out hangtime. A Motorola talker alias sent in hangtime after
+  that release is never received, so that call keeps whatever name its row had. The fast release is kept (maintainer
+  decision): it returns the tuner to the control channel early, and an alias sent before the second END, or on a
+  channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
@@ -6706,6 +6780,40 @@ Qt Quick frontend (`src/ui/qt`):
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
+- Decryption profile key material (`decryption_profiles_model.{h,cpp}`, `session_args.{h,cpp}`):
+  - One hex contract: `session_args_key_hex_normalize()` drops every `QChar::isSpace()` character, `-` and `:` and a
+    leading `0x`/`0X`, for the hex direct types (`session_args_key_type_hex()`: hex, rc4, m17Scrambler, m17Aes) and the
+    managed hex formats only. `session_args_key_value_normalize()` is the per-type form every argv and live-apply path
+    uses (decimal types trimmed). Vendor grammars keep their own (`vendorHexNormalize()`: ASCII whitespace and `0x`).
+    `configuration()` returns a direct profile's value normalised, the stored row keeps what was typed, so
+    `CommandBridge::applyDecryptionProfile()` never submits a grouped key past the 72-byte command field.
+  - `session_args_key_protocol_error()` is the profile protocol's direct-key rule (P25 hex never 10 digits, NXDN hex
+    64), used by `ProfileCompiler::direct()` and by `sessionArgs.keyError(type, value, csv, force, protocol)`; the
+    four-argument QML call keeps working.
+  - `keyKinds(protocol)` lists the managed formats the protocol takes with a width label; ids are unchanged.
+    `keyEntryError(profileUid, draftKeys, index, entry)` runs compile's own per-key helpers (`managedSlotError()`,
+    `managedMaterialError()`, `legacyDestinationError()`, the collection's cells and references) for the edited row
+    against the other draft rows, and judges blank material on what the key keeps (an unsaved row's own material, else
+    the stored key's, by key UID) without returning it. `mergeProfileKeys()` refills blank material only under an
+    unchanged format; save-time key errors name the key (`Key "Dispatch" (ID 1): ...`).
+  - `-mq` (P25 Simulcast) reads as P25 in `Util.decryptionProtocol()`, `session_args_profile_compatible()` and the
+    legacy migration's `protocolFor()`.
+  - Tests: `UI_QT_DECRYPTION_PROFILES` (entry table, format change, named errors, normalisation, AES-256 through the
+    hex importer, restore recompile, `-mq`), `UI_QT_CONTROLLER` (`test_spaced_direct_profile_applies_live()`).
+  - QML: `DecryptionProfileEditor.qml`'s key dialog lists `keyKinds()` (the choice kept by id, `kindId`) and gates
+    "Use this key" on `keyEntryError()` (`inputValid`, so the #718 composing gate holds). It places the message with
+    two narrower calls: the ID alone as a one-digit scalar with no other keys (`idError`) and the key without the other
+    draft rows (`ownError`); what remains is a shared-cell clash, shown at the key ID. Material is mono, masked, with
+    `RevealButton.qml` (shared with `EncryptionEditor.qml`). `EncryptionEditor.qml` checks only the format list itself
+    and leaves shape and protocol width to `sessionArgs.keyError(..., protocol)`. Sheet errors scroll into view
+    through `ModalSheet.reveal()`.
+  - `KeySheet.qml`: Main's `sessionSavedSystemUid` (also the radio persistence target: empty for scan lists, Explore,
+    signal search and wizard tests) reaches it through `MonitorScreen.sessionSystemUid`. "Use for <system> on future
+    starts" resolves the system again by UID at the tap, asks through `ConfirmDialog` before replacing another
+    profile, refuses a removed system, and writes `decryptionProfileUid` with `update()`; Main then refreshes
+    `sessionSystem`. "Save as profile…" opens the editor's `openDirect()` with the typed draft (QML fields only until
+    Save profile) and selects the saved profile. Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
+    `tst_history_session_identity.qml`.
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per

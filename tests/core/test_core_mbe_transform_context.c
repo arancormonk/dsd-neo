@@ -11,6 +11,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
@@ -398,7 +399,9 @@ test_keyring_tracks_aes_segment_metadata(void) {
     rc |= expect_eq_int("keyring-slot0-zero-a3", (int)state.A3[0], 0);
     rc |= expect_eq_int("keyring-slot0-zero-a4", (int)state.A4[0], 0);
     rc |= expect_eq_int("keyring-slot0-zero-present-count", state.aes_key_segments[0], 4);
-    rc |= expect_eq_int("keyring-slot0-zero-not-loaded", state.aes_key_loaded[0], 0);
+    /* Imported, so present: an all-zero key is a key, as the same value entered directly is. */
+    rc |= expect_eq_int("keyring-slot0-zero-loaded", state.aes_key_loaded[0], 1);
+    rc |= expect_eq_int("keyring-slot0-zero-scalar-present", state.scalar_key_present[0], 1);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
@@ -416,7 +419,9 @@ test_keyring_tracks_aes_segment_metadata(void) {
     rc |= expect_eq_int("keyring-slot1-zero-a3", (int)state.A3[1], 0);
     rc |= expect_eq_int("keyring-slot1-zero-a4", (int)state.A4[1], 0);
     rc |= expect_eq_int("keyring-slot1-zero-present-count", state.aes_key_segments[1], 4);
-    rc |= expect_eq_int("keyring-slot1-zero-not-loaded", state.aes_key_loaded[1], 0);
+    /* Imported, so present: an all-zero key is a key, as the same value entered directly is. */
+    rc |= expect_eq_int("keyring-slot1-zero-loaded", state.aes_key_loaded[1], 1);
+    rc |= expect_eq_int("keyring-slot1-zero-scalar-present", state.scalar_key_present[1], 1);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
@@ -431,8 +436,22 @@ test_keyring_tracks_aes_segment_metadata(void) {
     rc |= expect_eq_int("keyring-slot1-fallback-a2", (int)state.A2[1], 0x111);
     rc |= expect_eq_int("keyring-slot1-fallback-a3", (int)state.A3[1], 0);
     rc |= expect_eq_int("keyring-slot1-fallback-a4", (int)state.A4[1], 0x222);
-    rc |= expect_eq_int("keyring-slot1-fallback-nonzero-count", state.aes_key_segments[1], 2);
-    rc |= expect_eq_int("keyring-slot1-fallback-loaded", state.aes_key_loaded[1], 1);
+    /* The key's width is its leading present cells: with the ID's own cell empty, the cells at +0x101 and +0x301 are
+     * other IDs' keys aliased onto it, so the key ID holds no AES key at all. */
+    rc |= expect_eq_int("keyring-slot1-fallback-width", state.aes_key_segments[1], 0);
+    rc |= expect_eq_int("keyring-slot1-fallback-not-loaded", state.aes_key_loaded[1], 0);
+    /* Neither imported nor non-zero at the scalar cell: absent. */
+    rc |= expect_eq_int("keyring-slot1-fallback-scalar-absent", state.scalar_key_present[1], 0);
+
+    /* Nothing imported for the key id at all: still absent. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.payload_keyid = slot0_zero_key;
+    state.scalar_key_present[0] = 1U;
+    keyring_activate_slot(&opts, &state, state.currentslot);
+    rc |= expect_eq_int("keyring-absent-not-loaded", state.aes_key_loaded[0], 0);
+    rc |= expect_eq_int("keyring-absent-no-segments", state.aes_key_segments[0], 0);
+    rc |= expect_eq_int("keyring-absent-scalar-cleared", state.scalar_key_present[0], 0);
 
     return rc;
 }
@@ -3335,6 +3354,7 @@ dmr_decrypted_then_undecryptable_row(int floating_point, int autoload) {
     if (autoload) {
         (void)dsd_call_state_end(state, 0U, 0.0);
         state->K = 0ULL;
+        state->basic_key_present = 0U;
         state->K1 = 0ULL;
         state->H = 0ULL;
         state->hytera_key_segments = 0U;
@@ -3408,6 +3428,52 @@ test_dmr_reverse_mute_with_mute_option_off(void) {
         rc |= expect_eq_int(tag, allow, encrypted);
         DSD_SNPRINTF(tag, sizeof(tag), "-q mute option off: %s call keeps the option", what);
         rc |= expect_eq_int(tag, opts->dmr_mute_encL, 0);
+        closeMbeOutFile(opts, state);
+        freeState(state);
+        free(state);
+        free(opts);
+        remove_capture_dir(dir);
+    }
+    return rc;
+}
+
+/* The Basic Privacy talkgroup key autoload takes an imported zero key as a key, as the same value entered directly is;
+ * a talkgroup with nothing imported loads none. */
+static int
+test_dmr_bp_autoload_imported_zero_key(void) {
+    int rc = 0;
+    for (int imported = 1; imported >= 0; imported--) {
+        dsd_opts* opts = dmr_mix_new_opts(0, 0);
+        dsd_state* state = calloc(1, sizeof(*state));
+        char dir[DSD_TEST_PATH_MAX];
+        if (!opts || !state || !dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_bp_zero")) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        DSD_SNPRINTF(opts->mbe_out_dir, sizeof opts->mbe_out_dir, "%s", dir);
+        initState(state);
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmrburstL = 16;
+        const dsd_call_observation call = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 4242U,
+            .ota_source_id = 77U,
+        };
+        (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN);
+        state->rkey_array[4242U] = 0ULL;
+        state->rkey_array_loaded[4242U] = (unsigned char)imported;
+        state->dmr_so = 0x40;
+        state->dmr_fid = 0x10;
+        dmr_mix_stage_frame(opts, state, 0, 0);
+        const char* what = imported ? "imported zero" : "absent";
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof(tag), "BP autoload %s key present", what);
+        rc |= expect_eq_int(tag, dsd_key_basic_present(state), imported);
+        DSD_SNPRINTF(tag, sizeof(tag), "BP autoload %s key decrypts the frame", what);
+        rc |= expect_eq_int(tag, state->mbe_slot_muted[0], imported ? 0 : 1);
         closeMbeOutFile(opts, state);
         freeState(state);
         free(state);
@@ -6609,6 +6675,7 @@ main(void) {
     dsd_audio_activity_arm();
     rc |= test_dmr_stereo_mixes_follow_vocoder_slot_verdict();
     rc |= test_dmr_decrypted_call_leaves_mute_options();
+    rc |= test_dmr_bp_autoload_imported_zero_key();
     rc |= test_dmr_reverse_mute_with_mute_option_off();
     rc |= test_dmr_mixes_keep_slot_switches_and_preference();
     rc |= test_dmr_mixes_stamp_vocoder_media();

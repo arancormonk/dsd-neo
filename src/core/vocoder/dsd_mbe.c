@@ -1239,7 +1239,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     //NXDN Generic Cipher 2 and Cipher 3 Keystream Application (to be tested)
     else if (nxdn_crypto
              && ((state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0))
-                 || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1))) {
+                 || (state->nxdn_cipher_type == 0x03 && dsd_key_aes_slot_complete(state, 0, 4U)))) {
         if (mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d) < 0) {
             mbe_mute_exhausted_frame(opts, state, 0, frame_ctx);
             return;
@@ -1266,10 +1266,11 @@ mbeslot_left_autoload_keys(dsd_state* state) {
                               ? (uint32_t)call.ota_target_id
                               : 0U;
         uint32_t hash = mbe_hash_tg_for_key(target);
-        if (state->rkey_array[hash] != 0) {
+        if (keyring_kid_scalar_present(state, (int)hash)) {                // an imported zero is a key too
             state->K = state->rkey_array[hash] & 0xFF;                     //doesn't exceed 255
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
             state->K2 = state->K3 = state->K4 = 0ULL;
+            state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
             (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);
@@ -1285,10 +1286,11 @@ mbeslot_right_autoload_keys(dsd_state* state) {
                               ? (uint32_t)call.ota_target_id
                               : 0U;
         uint32_t hash = mbe_hash_tg_for_key(target);
-        if (state->rkey_array[hash] != 0) {
+        if (keyring_kid_scalar_present(state, (int)hash)) { // an imported zero is a key too
             state->K = state->rkey_array[hash] & 0xFF;
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
             state->K2 = state->K3 = state->K4 = 0ULL;
+            state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
             (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);

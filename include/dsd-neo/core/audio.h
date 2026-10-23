@@ -392,6 +392,9 @@ typedef struct {
     int aes_loaded;
     int kirisun_complete;
     int scalar_present; /* An explicitly supplied scalar may be zero. */
+    /* The AES key's width in segments (aes_key_segments[], keyring_kid_aes_segments()); an AES ALG needs its own
+     * width (AES-128 2, AES-256 4). 0 carries no width (material built without one) and leaves aes_loaded alone. */
+    int aes_segments;
 } dsd_dmr_key_material;
 
 /**

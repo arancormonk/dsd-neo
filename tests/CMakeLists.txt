@@ -11683,8 +11683,47 @@ target_include_directories(
     dsd-neo_test_p25_crypto_state
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_p25_crypto_state PRIVATE dsd-neo_proto_p25)
+target_link_libraries(
+    dsd-neo_test_p25_crypto_state
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
 add_test(NAME P25_CRYPTO_STATE COMMAND dsd-neo_test_p25_crypto_state)
+
+# P25 over-the-air talker aliases through the real protocol and event layers (Motorola Phase 1/2, Harris Phase 2)
+add_executable(
+    dsd-neo_test_p25_motorola_alias
+    protocol/p25/test_p25_motorola_alias.c
+)
+target_include_directories(
+    dsd-neo_test_p25_motorola_alias
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+# The real VPDU path reaches core GPS decoding, which resolves utf8_to_text back in proto_dmr (see
+# P25_P2_VPDU_BOUNDS), so the archives need a link group.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_motorola_alias
+        PRIVATE
+            dsd-neo_app_control
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_motorola_alias
+        PRIVATE
+            dsd-neo_app_control
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_MOTOROLA_ALIAS COMMAND dsd-neo_test_p25_motorola_alias)
 
 # P25 SM core behaviors (monotonic/backoff/cc-hunt)
 add_executable(dsd-neo_test_p25_sm_core protocol/p25/test_p25_sm_core.c)
@@ -17537,6 +17576,10 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
         # WP-D1: exercise the real bridge through the retained export result.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
+        # A saved profile applied live through the real bridge and queue.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp

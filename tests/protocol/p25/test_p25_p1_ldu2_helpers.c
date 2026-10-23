@@ -78,7 +78,7 @@ static int g_write_event_calls;
 static int g_push_event_calls;
 static int g_init_event_calls;
 static int g_policy_make_calls;
-static int g_policy_upsert_calls;
+static int g_policy_learn_calls;
 static int g_soft_dibit_value;
 static int g_get_dibit_soft_calls;
 static int g_read_dibit_soft_calls;
@@ -99,7 +99,6 @@ static int g_boundary_at_imbe = -1;
 static int g_interrupt_at_imbe = -1;
 static uint32_t g_last_policy_id;
 static uint8_t g_last_policy_source;
-static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
 static const char* g_lookup_label;
 static Event_History_I g_event_history[2];
 static int g_resolve_entry_algid;
@@ -269,16 +268,15 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
     return 0;
 }
 
-int
-dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode) {
+dsd_tg_policy_learn_result
+dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
     (void)state;
-    g_policy_upsert_calls++;
-    g_last_policy_upsert_mode = mode;
+    g_policy_learn_calls++;
     if (entry != NULL) {
         g_last_policy_id = entry->id_start;
         g_last_policy_source = entry->source;
     }
-    return 0;
+    return DSD_TG_POLICY_LEARN_ADDED;
 }
 
 void
@@ -384,7 +382,7 @@ reset_hook_counters(void) {
     g_push_event_calls = 0;
     g_init_event_calls = 0;
     g_policy_make_calls = 0;
-    g_policy_upsert_calls = 0;
+    g_policy_learn_calls = 0;
     g_soft_dibit_value = 0;
     g_get_dibit_soft_calls = 0;
     g_read_dibit_soft_calls = 0;
@@ -400,7 +398,6 @@ reset_hook_counters(void) {
     g_interrupt_at_imbe = -1;
     g_last_policy_id = 0U;
     g_last_policy_source = 0U;
-    g_last_policy_upsert_mode = 0;
     g_lookup_label = NULL;
     g_resolve_entry_algid = 0;
     g_resolve_entry_keyid = 0;
@@ -771,11 +768,9 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     rc |= expect_int("AES LDU2 classification permits audio", p25_crypto_audio_permitted(&opts, &state, 0), 1);
     rc |= expect_int("alias finalized resets format", state.dmr_alias_format[0], 0);
     rc |= expect_int("alias policy make count", g_policy_make_calls, 1);
-    rc |= expect_int("alias policy upsert count", g_policy_upsert_calls, 2);
+    rc |= expect_int("alias policy learns once", g_policy_learn_calls, 1);
     rc |= expect_int("alias policy id", (int)g_last_policy_id, 77);
     rc |= expect_int("alias policy source", (int)g_last_policy_source, (int)DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
-    rc |=
-        expect_int("alias last upsert mode", (int)g_last_policy_upsert_mode, (int)DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
     return rc;
 }
 
@@ -966,7 +961,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout preserves algid", state.payload_algid, 0xAA);
     rc |= expect_int("lockout preserves kid", state.payload_keyid, 0x2A2A);
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
-    rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
+    rc |= expect_int("lockout does not learn runtime policy", g_policy_learn_calls, 0);
     rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);
     /* With an event log configured, the LDU2 still writes and stages no event of its own. */
     rc |= expect_int("lockout writes no event", g_write_event_calls, 0);

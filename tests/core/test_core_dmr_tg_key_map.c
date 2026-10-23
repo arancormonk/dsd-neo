@@ -538,9 +538,11 @@ test_kid_material_reports_without_activating(void) {
     // activation, not with a tidier definition.
     rc |= expect_eq("mat-scalar-aes", aes_loaded, 1);
 
-    rc |= expect_eq("mat-segment-only", keyring_kid_material(&state, 0x22, &rkey, &aes_loaded), 1);
+    // A cell after the key ID's own missing one is another ID's key aliased onto it, never this ID's material.
+    rc |= expect_eq("mat-segment-only", keyring_kid_material(&state, 0x22, &rkey, &aes_loaded), 0);
     rc |= expect_eq("mat-segment-only-rkey", (long long)rkey, 0LL);
-    rc |= expect_eq("mat-segment-only-aes", aes_loaded, 1);
+    rc |= expect_eq("mat-segment-only-aes", aes_loaded, 0);
+    rc |= expect_eq("mat-segment-only-width", keyring_kid_aes_segments(&state, 0x22), 0);
 
     rc |= expect_eq("mat-none", keyring_kid_material(&state, 0x33, &rkey, &aes_loaded), 0);
     rc |= expect_eq("mat-none-rkey", (long long)rkey, 0LL);
@@ -588,9 +590,9 @@ test_mapped_kid_without_material_falls_back(void) {
 //
 // Exhaustive over the four AES segments x {rkey_array_loaded, value non-zero} -- 4^4 = 256
 // combinations, both slots -- because the asymmetric cases are where a plausible-looking predicate
-// breaks: keyring_aes_segment_count() returns the loaded-flag count whenever any flag is set and
-// the non-zero count otherwise, so "loaded but zero" and "unloaded but non-zero" pull the segment
-// count and the A1..A4 non-zero test in opposite directions. keyring_aes_segments_complete(.., 4)
+// breaks: keyring_aes_segment_count() counts the leading cells present by flag or value, so "loaded
+// but zero" and "unloaded but non-zero" pull the segment count and the A1..A4 non-zero test in
+// opposite directions. keyring_aes_segments_complete(.., 4)
 // accepts the loaded-but-zero case and is NOT this predicate.
 static int
 test_kirisun_kid_predicate_matches_activation(void) {
@@ -676,22 +678,42 @@ test_kid_satisfies_need(void) {
     rc |= expect_eq("need-aes4-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4), 1);
     rc |= expect_eq("need-quartet-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 1);
 
-    // AES_4 and QUARTET diverge exactly here: four non-zero values satisfy AES_4 regardless of
-    // rkey_array_loaded, but QUARTET also requires keyring_aes_segment_count() to read 4, which
-    // needs the loaded flags too. That divergence is why key_material.h documents the two needs
-    // as distinct rather than one collapsing into the other.
+    // Every cell is present by its flag or by a non-zero value, so four non-zero cells, flagged or not, are a key four
+    // segments wide: AES_4 and the quartet both hit. They diverge on a flagged zero cell, below: present for AES_4,
+    // not non-zero for the quartet.
     state.rkey_array_loaded[0x40] = 0U;
     state.rkey_array_loaded[0x241] = 0U;
     rc |= expect_eq("need-aes4-partial-loaded-still-hits", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4),
                     1);
-    rc |= expect_eq("need-quartet-partial-loaded-misses",
-                    keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 0);
+    rc |= expect_eq("need-quartet-partial-loaded-hits-by-value",
+                    keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 1);
 
-    // A loaded-but-zero cell activates as A_i == 0, so it must not satisfy an AES need. This is
-    // the distinction keyring_kid_kirisun_complete()'s comment already draws against
-    // keyring_aes_segments_complete(): classification has to predict activation.
+    // A loaded-but-zero cell is an imported key and activates as present (aes_key_loaded), so it
+    // satisfies an AES need: classification has to predict activation. The Kirisun quartet keeps
+    // its all-non-zero rule. A cell neither imported nor non-zero is absent.
     state.rkey_array[0x141] = 0ULL;
-    rc |= expect_eq("need-aes2-loaded-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 0);
+    rc |= expect_eq("need-aes2-loaded-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 1);
+    rc |= expect_eq("need-quartet-loaded-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 0);
+    state.rkey_array_loaded[0x141] = 0U;
+    rc |= expect_eq("need-aes2-absent-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 0);
+
+    // The same rule for a scalar: an imported zero is a key, an unimported zero is not.
+    state.rkey_array[0x05] = 0ULL;
+    state.rkey_array_loaded[0x05] = 1U;
+    rc |= expect_eq("need-scalar-loaded-zero", keyring_kid_satisfies_need(&state, 0x05, DSD_KEY_NEED_SCALAR), 1);
+    rc |= expect_eq("scalar-present-loaded-zero", keyring_kid_scalar_present(&state, 0x05), 1);
+    rc |= expect_eq("need-scalar-absent", keyring_kid_satisfies_need(&state, 0x06, DSD_KEY_NEED_SCALAR), 0);
+    rc |= expect_eq("scalar-present-absent", keyring_kid_scalar_present(&state, 0x06), 0);
+
+    // The mapped key material a call is classified with agrees with what activation installs.
+    const dsd_dmr_key_material mapped = dsd_dmr_slot_key_material(&state, 0, 0x05, 1);
+    keyring_activate_slot_with_kid(&state, 0, 0x05);
+    rc |= expect_eq("mapped-zero-scalar-present", mapped.scalar_present, 1);
+    rc |= expect_eq("activated-zero-scalar-present", state.scalar_key_present[0], 1);
+    rc |= expect_eq("mapped-zero-scalar-agrees", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &mapped),
+                    dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x21, state.R));
+    const dsd_dmr_key_material mapped_absent = dsd_dmr_slot_key_material(&state, 0, 0x06, 1);
+    rc |= expect_eq("mapped-absent-scalar", mapped_absent.scalar_present, 0);
 
     // NONE never maps, and a NULL state never maps.
     rc |= expect_eq("need-none", keyring_kid_satisfies_need(&state, 0x03, DSD_KEY_NEED_NONE), 0);
@@ -807,9 +829,49 @@ test_none_need_alg_produces_no_notice(void) {
     return rc;
 }
 
+// A matched row that is not applied says why: the mapped ID holds a key of the wrong kind (incompatible) or none
+// (missing). Another ID's scalar key that sits on the mapped ID's first AES cell (0x05 + 0x101) is not the mapped ID's
+// key, so the row is missing, not incompatible; a scalar key at the mapped ID itself under an AES ALG is incompatible.
+static int
+test_unapplied_row_reports_why(void) {
+    static dsd_state state;
+    dsd_call_snapshot call;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    map_one(&state, 300U, 0x05);
+    state.rkey_array[0x05 + 0x101] = 0xABCDEULL;
+    state.rkey_array_loaded[0x05 + 0x101] = 1U;
+    observe_group_call(&state, 0, 300U);
+    state.payload_keyid = 0x03;
+    state.payload_algid = 0x21;
+    (void)activate_via_map(&state, 0);
+    rc |= expect_eq("unapplied-row-call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq("unapplied-row-aliased-cell-is-missing", call.key_selection.fallback,
+                    DSD_CALL_KEY_FALLBACK_MAPPED_MISSING);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    map_one(&state, 301U, 0x06);
+    state.rkey_array[0x06] = 0x12345ULL;
+    state.rkey_array_loaded[0x06] = 1U;
+    observe_group_call(&state, 0, 301U);
+    state.payload_keyid = 0x03;
+    state.payload_algid = 0x24;
+    (void)activate_via_map(&state, 0);
+    rc |= expect_eq("unapplied-row-call-aes", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq("unapplied-row-scalar-under-aes-is-incompatible", call.key_selection.fallback,
+                    DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_unapplied_row_reports_why();
     rc |= test_kirisun_kid_predicate_matches_activation();
     rc |= test_lookup_hit_and_miss();
     rc |= test_mapped_tg_overrides_signaled_kid();

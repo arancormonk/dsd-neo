@@ -27,6 +27,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
@@ -1411,13 +1412,12 @@ sdrtrunk_build_rc4_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
         return 0;
     }
 
-    unsigned long long int rc4_key = state->rkey_array[key_id];
-    if (rc4_key == 0ULL) {
-        rc4_key = state->R;
-    }
-    if (rc4_key == 0ULL) {
+    // The imported key when present (an imported zero included), else the direct one.
+    const int imported = keyring_kid_scalar_present(state, key_id);
+    if (!imported && !dsd_key_scalar_present(state, 0)) {
         return 0;
     }
+    unsigned long long int rc4_key = imported ? state->rkey_array[key_id] : state->R;
 
     uint8_t rc4_kiv[13];
     DSD_MEMSET(rc4_kiv, 0, sizeof(rc4_kiv));
@@ -1443,13 +1443,14 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
         return 0;
     }
 
-    unsigned long long int des_key = (protocol == 3 && state->keyloader != 1) ? state->R : state->rkey_array[key_id];
-    if (des_key == 0ULL && (protocol != 3 || state->keyloader != 1)) {
-        des_key = state->R;
-    }
-    if (des_key == 0ULL) {
+    // NXDN without the keyloader keys from the direct key alone; otherwise the imported key when present (an imported
+    // zero included), and the direct one when nothing was imported, except for NXDN under the keyloader.
+    const int imported = !(protocol == 3 && state->keyloader != 1) && keyring_kid_scalar_present(state, key_id);
+    const int direct_allowed = protocol != 3 || state->keyloader != 1;
+    if (!imported && !(direct_allowed && dsd_key_scalar_present(state, 0))) {
         return 0;
     }
+    unsigned long long int des_key = imported ? state->rkey_array[key_id] : state->R;
 
     unsigned long long int iv_u64 = sdrtrunk_u64_from_be8(iv64);
     // codeql[cpp/weak-cryptographic-algorithm] DES is required for active radio protocol interoperability.
@@ -1458,34 +1459,38 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
     return 1;
 }
 
+// @p words: the ALG's key width in 64-bit segments; the key must be that wide (by import flags, zero values allowed).
 static int
-sdrtrunk_load_aes_key(const dsd_state* state, uint16_t key_id, int strict_lookup, uint8_t key[32]) {
-    uint64_t words[4];
+sdrtrunk_load_aes_key(const dsd_state* state, uint16_t key_id, int strict_lookup, unsigned int words, uint8_t key[32]) {
+    uint64_t key_words[4];
     if (strict_lookup && state->keyloader != 1) {
-        words[0] = state->K1;
-        words[1] = state->K2;
-        words[2] = state->K3;
-        words[3] = state->K4;
+        key_words[0] = state->K1;
+        key_words[1] = state->K2;
+        key_words[2] = state->K3;
+        key_words[3] = state->K4;
     } else {
-        words[0] = state->rkey_array[key_id];
-        words[1] = state->rkey_array[key_id + 0x101];
-        words[2] = state->rkey_array[key_id + 0x201];
-        words[3] = state->rkey_array[key_id + 0x301];
+        key_words[0] = state->rkey_array[key_id];
+        key_words[1] = state->rkey_array[key_id + 0x101];
+        key_words[2] = state->rkey_array[key_id + 0x201];
+        key_words[3] = state->rkey_array[key_id + 0x301];
     }
-    uint64_t present = words[0] | words[1] | words[2] | words[3];
+    // Imported material is present by its import flags (an all-zero key included) and must reach the ALG's width; the
+    // direct K1..K4 key by dsd_key_direct_words_complete().
+    int present = (strict_lookup && state->keyloader != 1) ? dsd_key_direct_words_complete(state, words)
+                                                           : keyring_kid_aes_segments(state, key_id) >= (int)words;
     if (!present && !strict_lookup) {
-        words[0] = state->K1;
-        words[1] = state->K2;
-        words[2] = state->K3;
-        words[3] = state->K4;
-        present = words[0] | words[1] | words[2] | words[3];
+        key_words[0] = state->K1;
+        key_words[1] = state->K2;
+        key_words[2] = state->K3;
+        key_words[3] = state->K4;
+        present = dsd_key_direct_words_complete(state, words);
     }
-    if (!present && !(strict_lookup && state->keyloader == 1 && state->rkey_array_loaded[key_id])) {
+    if (!present) {
         return 0;
     }
     for (unsigned word = 0; word < 4U; word++) {
         for (unsigned byte = 0; byte < 8U; byte++) {
-            key[word * 8U + byte] = (uint8_t)(words[word] >> (56U - byte * 8U));
+            key[word * 8U + byte] = (uint8_t)(key_words[word] >> (56U - byte * 8U));
         }
     }
     return 1;
@@ -1509,6 +1514,13 @@ sdrtrunk_expand_aes_iv(const dsd_state* state, uint8_t alg_id, int protocol, con
     return 1;
 }
 
+/* The AES key size a replayed record's algorithm uses: NXDN AES, P25 0x84 and DMR 0x25 are AES-256, the rest
+   (P25 0x89, DMR 0x24) AES-128. */
+static dsd_aes_key_size
+sdrtrunk_aes_key_size(uint8_t alg_id, int nxdn) {
+    return (nxdn || alg_id == 0x84 || alg_id == 0x25) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+}
+
 static int
 sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint8_t alg_id, const uint8_t iv64[8],
                                    int protocol, uint8_t* ks_bytes, size_t ks_cap, size_t* skip_bytes) {
@@ -1517,15 +1529,17 @@ sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint
     }
     const int dmr_aes = alg_id == 0x24 || alg_id == 0x25;
     const int nxdn = protocol == 3;
+    const dsd_aes_key_size key_size = sdrtrunk_aes_key_size(alg_id, nxdn);
     uint8_t aes_key[32];
-    if (!sdrtrunk_load_aes_key(state, key_id, dmr_aes || nxdn, aes_key)) {
+    // The key words the algorithm uses: an AES-128 key is two, an AES-256 key four.
+    const unsigned int words = key_size == DSD_AES_KEY_256 ? 4U : 2U;
+    if (!sdrtrunk_load_aes_key(state, key_id, dmr_aes || nxdn, words, aes_key)) {
         return 0;
     }
     uint8_t aes_iv[16] = {0};
     if (!sdrtrunk_expand_aes_iv(state, alg_id, protocol, iv64, aes_iv)) {
         return 0;
     }
-    const dsd_aes_key_size key_size = (nxdn || alg_id == 0x84 || alg_id == 0x25) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
     aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, key_size, SDRTRUNK_KS_BYTES / 16);
     *skip_bytes = (protocol == 1) ? 27u : 16u;
     return 1;
@@ -1999,12 +2013,11 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
                     effective_kid = (uint16_t)kid;
                 }
             }
-            if (!mapped && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU
-                && state->rkey_array[ctx->target_id] != 0) {
+            if (!mapped && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU) {
                 // Pre-existing implicit "key indexed by talkgroup" replay convention. Kept as the
                 // fallback so replay workflows that depend on it are unchanged when no row matches.
-                state->R = state->rkey_array[ctx->target_id];
-                state->scalar_key_present[0] = 0;
+                // An imported zero key is a key too (keyring_kid_scalar_present()).
+                (void)keyring_load_scalar_key(state, 0, (int)ctx->target_id);
             }
         }
         if (ctx->alg_id == 0x21) {
@@ -2254,7 +2267,9 @@ sdrtrunk_json_build_keystreams(const dsd_opts* opts, const dsd_state* state, sdr
         }
         if (ctx->alg_id == 1) {
             const uint64_t key = state->keyloader == 1 ? state->rkey_array[key_id] : state->R;
-            if (key == 0U || key > 0x7FFFU) {
+            const int present =
+                state->keyloader == 1 ? keyring_kid_scalar_present(state, key_id) : dsd_key_scalar_present(state, 0);
+            if (!present || key > 0x7FFFU) {
                 return 0;
             }
             nxdn_pdu_scrambler_keystream_creation(ctx->ks, (int)key, 16 * 49);

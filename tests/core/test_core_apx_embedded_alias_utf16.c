@@ -41,6 +41,12 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     return 0;
 }
 
+int
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+    (void)opts;
+    return dsd_event_enrich_alias(state, slot, epoch, alias);
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {

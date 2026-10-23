@@ -9,8 +9,10 @@ Column {
     readonly property var allowedTypes: protocol === "m17" ? ["", "m17Scrambler", "m17Aes"] : protocol === "dpmr" ? ["", "scrambler"] : protocol === "dstar" || protocol === "ysf" ? [""] : protocol === "p25" ? ["", "hex", "rc4"] : protocol === "dmr" ? ["", "basic", "hex", "rc4"] : protocol === "nxdn" ? ["", "hex", "rc4", "scrambler"] : ["", "basic", "hex", "rc4", "scrambler", "m17Scrambler", "m17Aes"]
     readonly property bool privacySupported: protocol === "dmr" || protocol === "nxdn" || protocol === "mixed"
     readonly property bool fallbackSupported: protocol === "dmr" || protocol === "mixed"
-    readonly property string capabilityError: allowedTypes.indexOf(keyType) < 0 ? qsTr("Choose a key format supported by this protocol, or keep this draft and return to its previous decode mode.") : protocol === "p25" && keyType === "hex" && normalizedKey.length === 10 ? qsTr("P25 AES needs 32 or 64 hex digits.") : protocol === "nxdn" && keyType === "hex" && normalizedKey.length > 0 && normalizedKey.length !== 64 ? qsTr("NXDN AES needs 64 hex digits.") : ""
-    readonly property string normalizedKey: keyValue.replace(/\s/g, "").replace(/^0x/i, "")
+    // Only the format is checked here. The material's shape and the protocol's
+    // width rules come from sessionArgs.keyError(), the check a start or a
+    // saved profile runs, so the live and saved verdicts agree.
+    readonly property string capabilityError: allowedTypes.indexOf(keyType) < 0 ? qsTr("Choose a key format supported by this protocol, or keep this draft and return to its previous decode mode.") : ""
     property string keyType: ""
     property alias keyValue: keyField.text
     property int forceMode: 0
@@ -29,7 +31,7 @@ Column {
     property string keyAction: "keep"
     readonly property bool keepingKey: keyConfigured && keyAction === "keep"
     readonly property bool clearingKey: keyConfigured && keyAction === "clear"
-    readonly property string errorText: !keepingKey && !clearingKey && capabilityError.length ? capabilityError : keepingKey ? (csvPath.length > 0 ? qsTr("Choose either a direct key or a key CSV.") : sessionArgs.keyError("", "", "", liveMode && !forceChanged ? 0 : forceMode)) : sessionArgs.keyError(clearingKey ? "" : keyType, clearingKey ? "" : keyValue, csvPath, liveMode && !forceChanged ? 0 : forceMode)
+    readonly property string errorText: !keepingKey && !clearingKey && capabilityError.length ? capabilityError : keepingKey ? (csvPath.length > 0 ? qsTr("Choose either a direct key or a key CSV.") : sessionArgs.keyError("", "", "", liveMode && !forceChanged ? 0 : forceMode, protocol)) : sessionArgs.keyError(clearingKey ? "" : keyType, clearingKey ? "" : keyValue, csvPath, liveMode && !forceChanged ? 0 : forceMode, protocol)
     readonly property bool valid: errorText.length === 0
     spacing: 10
 
@@ -152,32 +154,10 @@ Column {
             input.echoMode: editor.revealed ? TextInput.Normal : TextInput.Password
             inputMethodHints: Qt.ImhHiddenText | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
         }
-        OutlineButton {
+        RevealButton {
             id: eye
             objectName: "encryptionKeyEye"
-            width: 82
-            // Eye affordance plus a readable label; avoids relying on emoji fonts.
-            Canvas {
-                x: 5
-                anchors.verticalCenter: parent.verticalCenter
-                width: 14
-                height: 10
-                onPaint: {
-                    var ctx = getContext("2d");
-                    ctx.reset();
-                    ctx.strokeStyle = Theme.textSecondary;
-                    ctx.lineWidth = 1;
-                    ctx.beginPath();
-                    ctx.moveTo(0, 5);
-                    ctx.quadraticCurveTo(7, -3, 14, 5);
-                    ctx.quadraticCurveTo(7, 13, 0, 5);
-                    ctx.stroke();
-                    ctx.beginPath();
-                    ctx.arc(7, 5, 2, 0, 2 * Math.PI);
-                    ctx.stroke();
-                }
-            }
-            text: editor.revealed ? qsTr("Hide") : qsTr("Show")
+            revealed: editor.revealed
             onClicked: editor.revealed = !editor.revealed
         }
     }

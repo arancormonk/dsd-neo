@@ -163,7 +163,26 @@ int dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* 
 int dsd_tg_policy_evaluate_private_grant(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
                                          int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
+/** REPLACE_LEARNED_ONLY replaces a learned row only when its name or mode differs, so a repeat bumps no generation. */
 int dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode);
+
+/** Outcome of dsd_tg_policy_learn_exact(). */
+typedef enum {
+    DSD_TG_POLICY_LEARN_FAILED = -1,   /**< invalid entry, or the row could not be stored */
+    DSD_TG_POLICY_LEARN_UNCHANGED = 0, /**< the learned row already has this name and mode; nothing changed */
+    DSD_TG_POLICY_LEARN_ADDED = 1,     /**< no exact row for the ID: the learned row was appended */
+    DSD_TG_POLICY_LEARN_REPLACED = 2,  /**< the learned row's name or mode changed and was replaced */
+    DSD_TG_POLICY_LEARN_KEPT = 3,      /**< an imported or user row holds the ID and wins; nothing changed */
+} dsd_tg_policy_learn_result;
+
+/**
+ * @brief Learn an over-the-air alias (a DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS exact row) for an ID.
+ *
+ * Compares before it writes: the first exact row for the ID is kept when it was imported or entered by the user, and
+ * a learned one is replaced only when its normalised name or mode (D vs DE) changed, so a repeated alias leaves the
+ * table and its generation alone while a renamed radio's new alias replaces the old one.
+ */
+dsd_tg_policy_learn_result dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
 int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);
 
 int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,

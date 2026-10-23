@@ -21,6 +21,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/utf16.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,23 +30,26 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static int
-policy_try_append_alias(dsd_state* state, uint32_t id, const char* mode, const char* name) {
+/**
+ * @brief Learn an over-the-air alias as the source's policy row, and give a new row its group file line.
+ *
+ * An imported row for the source wins, a repeat of the learned name changes nothing, and a renamed radio's alias
+ * replaces the learned one (dsd_tg_policy_learn_exact()). Only a first-learned row is appended to the group file: the
+ * file is append-only and its first row for an ID is the one a reload keeps, so a rename stays session-only.
+ */
+static void
+policy_learn_alias(const dsd_opts* opts, dsd_state* state, uint32_t id, const char* mode, const char* name,
+                   const char* metadata) {
     dsd_tg_policy_entry entry;
-    dsd_tg_policy_lookup lookup;
     if (!state || id == 0 || !mode || !name) {
-        return 0;
+        return;
     }
-
-    if (dsd_tg_policy_lookup_id(state, id, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_EXACT) {
-        return 0;
-    }
-
     if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
-        return 0;
+        return;
     }
-
-    return dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0 ? 1 : 0;
+    if (dsd_tg_policy_learn_exact(state, &entry) == DSD_TG_POLICY_LEARN_ADDED) {
+        (void)dsd_tg_policy_append_group_file_row(opts, &entry, metadata);
+    }
 }
 
 static void
@@ -105,58 +109,151 @@ apx_alias_state_reset(dsd_state* state, uint8_t slot) {
     DSD_MEMSET(rx, 0, sizeof(*rx));
 }
 
+// Store geometry of the two phases. Phase 1 keeps the 72-bit LCW header and 44 bits per block after it; Phase 2
+// repacks its MAC header into 136 bits, the last 64 of them the record's first bits, and keeps 100 bits per block.
+// Either way the record (FQ-SUID, alias octets, CRC) starts at bit 72 of the store.
+enum {
+    APX_ALIAS_RECORD_START = 72,
+    APX_ALIAS_P1_HEADER_BITS = 72,
+    APX_ALIAS_P1_BLOCK_BITS = 44,
+    APX_ALIAS_P2_HEADER_BITS = 136,
+    APX_ALIAS_P2_BLOCK_BITS = 100,
+};
+
+static size_t
+apx_alias_header_bits(uint8_t phase) {
+    return phase == 2U ? (size_t)APX_ALIAS_P2_HEADER_BITS : (size_t)APX_ALIAS_P1_HEADER_BITS;
+}
+
+static size_t
+apx_alias_block_bits(uint8_t phase) {
+    return phase == 2U ? (size_t)APX_ALIAS_P2_BLOCK_BITS : (size_t)APX_ALIAS_P1_BLOCK_BITS;
+}
+
+// The call epoch an alias message on this slot belongs to: the slot's current call, or the ended one it retains
+// (Motorola sends the alias in hangtime, after the call's end). 0 when the slot has neither.
+static uint64_t
+apx_alias_slot_epoch(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, alias_slot_index(slot), &call) <= 0) {
+        return 0U;
+    }
+    return (call.phase == DSD_CALL_PHASE_ACTIVE || call.phase == DSD_CALL_PHASE_ENDED) ? call.epoch : 0U;
+}
+
+static int
+apx_alias_bound_here(const p25_apx_alias_rx_state_t* rx, uint64_t epoch, uint64_t generation) {
+    return rx->epoch == epoch && rx->tune_generation == generation;
+}
+
+/**
+ * @brief Take an alias header into the slot's assembly.
+ *
+ * A header identical in every received bit to the one in progress, in the same call epoch and on the same carrier,
+ * is a repeat (Motorola sends the header again during the record) and keeps the blocks stored so far. Any other
+ * header -- different content, another epoch, another tuning generation -- restarts the assembly.
+ */
 static void
-apx_alias_state_begin(dsd_state* state, uint8_t slot, uint8_t sequence, uint8_t block_count) {
+apx_alias_header_received(dsd_state* state, uint8_t slot, uint8_t phase, const uint8_t* header, size_t header_len,
+                          const uint8_t* store_header, uint8_t sequence, uint8_t block_count) {
+    p25_apx_alias_rx_state_t* rx = apx_alias_state_for(state, slot);
+    if (!rx || header_len > sizeof(rx->header)) {
+        return;
+    }
+    const uint64_t epoch = apx_alias_slot_epoch(state, slot);
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    if (rx->valid && rx->phase == phase && rx->header_len == header_len && apx_alias_bound_here(rx, epoch, generation)
+        && memcmp(rx->header, header, header_len) == 0) {
+        DSD_FPRINTF(stderr, " Repeat;");
+        return;
+    }
+    DSD_MEMSET(rx, 0, sizeof(*rx));
+    rx->valid = block_count != 0U;
+    rx->phase = phase;
+    rx->sequence = sequence;
+    rx->block_count = block_count;
+    rx->header_len = (uint16_t)header_len;
+    rx->epoch = epoch;
+    rx->tune_generation = generation;
+    DSD_MEMCPY(rx->header, header, header_len);
+    DSD_MEMCPY(rx->bits, store_header, apx_alias_header_bits(phase));
+}
+
+typedef enum {
+    APX_ALIAS_BLOCK_REJECTED = -1,
+    APX_ALIAS_BLOCK_STORED = 0,
+    APX_ALIAS_BLOCK_COMPLETE = 1,
+} apx_alias_block_verdict;
+
+/**
+ * @brief Store one alias block by its number, bounded.
+ *
+ * The block number is checked against the header's block count, but that count is itself an unvalidated 8-bit field
+ * taken off the air: a header claiming more blocks than the store holds would walk the copy past its end, so such a
+ * block abandons the assembly instead. A block whose sequence differs from the header's, whose number the header does
+ * not cover, or that arrives in another call epoch or on another carrier than the header abandons it too.
+ */
+static apx_alias_block_verdict
+apx_alias_block_received(dsd_state* state, uint8_t slot, uint8_t sequence, uint8_t block_num, const uint8_t* data) {
+    p25_apx_alias_rx_state_t* rx = apx_alias_state_for(state, slot);
+    if (!rx) {
+        return APX_ALIAS_BLOCK_REJECTED;
+    }
+    if (!apx_alias_bound_here(rx, apx_alias_slot_epoch(state, slot), dsd_trunk_tuning_generation())) {
+        DSD_FPRINTF(stderr, " Alias Header From Another Call;");
+        apx_alias_state_reset(state, slot);
+        return APX_ALIAS_BLOCK_REJECTED;
+    }
+    if (sequence != rx->sequence || block_num == 0U || block_num > rx->block_count) {
+        DSD_FPRINTF(stderr, " Alias Sequence/Block Mismatch");
+        apx_alias_state_reset(state, slot);
+        return APX_ALIAS_BLOCK_REJECTED;
+    }
+    const size_t len = apx_alias_block_bits(rx->phase);
+    const size_t offset = apx_alias_header_bits(rx->phase) + ((size_t)(block_num - 1U) * len);
+    if (offset > sizeof(rx->bits) || len > sizeof(rx->bits) - offset) {
+        DSD_FPRINTF(stderr, " Alias Block Overflow");
+        apx_alias_state_reset(state, slot);
+        return APX_ALIAS_BLOCK_REJECTED;
+    }
+    DSD_MEMCPY(rx->bits + offset, data, len);
+    rx->blocks_seen[block_num / 8U] = (uint8_t)(rx->blocks_seen[block_num / 8U] | (1U << (block_num % 8U)));
+    for (unsigned int bn = 1U; bn <= rx->block_count; bn++) {
+        if ((rx->blocks_seen[bn / 8U] & (1U << (bn % 8U))) == 0U) {
+            return APX_ALIAS_BLOCK_STORED;
+        }
+    }
+    return APX_ALIAS_BLOCK_COMPLETE;
+}
+
+static int16_t apx_alias_record_bits(const uint8_t* store, size_t extent_end);
+
+// Blocks 1..N are all stored: decode the record and start over. Motorola repeats the whole alias, so the next header
+// opens a fresh assembly.
+static void
+apx_alias_complete(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     p25_apx_alias_rx_state_t* rx = apx_alias_state_for(state, slot);
     if (!rx) {
         return;
     }
-    rx->valid = block_count != 0U;
-    rx->sequence = sequence;
-    rx->block_count = block_count;
-    rx->next_block = 1U;
+    size_t extent_end = apx_alias_header_bits(rx->phase) + ((size_t)rx->block_count * apx_alias_block_bits(rx->phase));
+    if (extent_end > sizeof(rx->bits)) {
+        extent_end = sizeof(rx->bits);
+    }
+    apx_embedded_alias_decode(opts, state, slot, apx_alias_record_bits(rx->bits, extent_end), rx->bits);
+    apx_alias_state_reset(state, slot);
 }
 
-static int
-apx_alias_state_accept_block(dsd_state* state, uint8_t slot, uint8_t sequence, uint8_t block_num) {
-    p25_apx_alias_rx_state_t* rx = apx_alias_state_for(state, slot);
-    if (!rx) {
-        return 0;
+static void
+apx_alias_print_missing_header(uint8_t bn, uint8_t sn, const uint8_t* lc_bits, uint8_t first_nibble,
+                               uint8_t end_nibble) {
+    DSD_FPRINTF(stderr, " Missing Header");
+    DSD_FPRINTF(stderr, " BN: %d/??;", bn);
+    DSD_FPRINTF(stderr, " SN: %X;", sn);
+    DSD_FPRINTF(stderr, " Partial: ");
+    for (uint8_t i = first_nibble; i < end_nibble; i++) {
+        DSD_FPRINTF(stderr, "%0X", (uint8_t)convert_bits_into_output(&lc_bits[0 + (i * 4)], 4));
     }
-    if (!rx->valid || block_num == 0U || block_num > rx->block_count || sequence != rx->sequence
-        || block_num != rx->next_block) {
-        apx_alias_state_reset(state, slot);
-        return 0;
-    }
-
-    if (block_num < rx->block_count) {
-        rx->next_block = (uint8_t)(block_num + 1U);
-    } else {
-        apx_alias_state_reset(state, slot);
-    }
-    return 1;
-}
-
-/**
- * @brief Store one alias block into the superframe row, bounded.
- *
- * The block number is checked against ta_len, but ta_len is itself an unvalidated 8-bit field
- * taken off the air: a header claiming more blocks than the row holds would walk this copy past
- * the end of the row and into unrelated dsd_state members.
- *
- * @return 1 when the block was stored, 0 when the record was rejected and the store reset.
- */
-static int
-apx_alias_store_block(dsd_state* state, uint8_t slot, size_t offset, const uint8_t* bits, size_t len) {
-    const size_t capacity = sizeof(state->dmr_pdu_sf[slot]);
-    if (offset > capacity || len > capacity - offset) {
-        DSD_FPRINTF(stderr, " Alias Block Overflow");
-        DSD_MEMSET(state->dmr_pdu_sf[slot], 0, capacity);
-        apx_alias_state_reset(state, slot);
-        return 0;
-    }
-    DSD_MEMCPY(state->dmr_pdu_sf[slot] + offset, bits, len);
-    return 1;
 }
 
 //Motorola P25 OTA Alias Decoding ripped/demystified from Ilya Smirnov's SDRTrunk Voodoo Code
@@ -185,79 +282,32 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
     DSD_FPRINTF(stderr, " SN: %X;", sn);
     DSD_FPRINTF(stderr, " BN: 0/%d;", ta_len);
 
-    //use dmr_pdu_sf for storage, store entire header (will be used to verify complete reception of full alias)
-    DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot])); //reset storage for header and blocks
-    DSD_MEMCPY(state->dmr_pdu_sf[slot], lc_bits, 72 * sizeof(uint8_t));
-    apx_alias_state_begin(state, slot, sn, ta_len);
+    //the whole header is the stored header: it carries no record bits
+    apx_alias_header_received(state, slot, 1U, lc_bits, APX_ALIAS_P1_HEADER_BITS, lc_bits, sn, ta_len);
 }
 
 void
 apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
-    UNUSED(opts);
     uint8_t bn = (uint8_t)convert_bits_into_output(&lc_bits[16], 8); //current block number
     uint8_t sn = (uint8_t)convert_bits_into_output(&lc_bits[24], 4); //is a static value on all block sequences
-    uint8_t ta_len =
-        (uint8_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][32], 8); //len in blocks pulled from stored header
-    uint16_t header =
-        (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][0], 16); //header check, should be 0x1590
+    const p25_apx_alias_rx_state_t* rx = apx_alias_state_for(state, slot);
 
-    if (ta_len == 0
-        || header != 0x1590) //checkdown, make sure we have an up to date header for this with a good len value
-    {
-        DSD_FPRINTF(stderr, " Missing Header");
-        DSD_FPRINTF(stderr, " BN: %d/??;", bn);
-        DSD_FPRINTF(stderr, " SN: %X;", sn);
-        DSD_FPRINTF(stderr, " Partial: ");
-        for (uint8_t i = 7; i < 18; i++) {
-            DSD_FPRINTF(stderr, "%0X", (uint8_t)convert_bits_into_output(&lc_bits[0 + (i * 4)], 4));
-        }
-
-        //clear out now stale storage
-        DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+    if (!rx || !rx->valid || rx->phase != 1U) {
+        apx_alias_print_missing_header(bn, sn, lc_bits, 7, 18);
         apx_alias_state_reset(state, slot);
+        return;
     }
 
-    else //good len and header stored
-    {
-
-        if (!apx_alias_state_accept_block(state, slot, sn, bn)) {
-            DSD_FPRINTF(stderr, " Alias Sequence/Block Mismatch");
-            DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
-            return;
-        }
-
-        DSD_FPRINTF(stderr, " SN: %X;", sn);
-        DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
-
-        //use dmr_pdu_sf for storage, store data relevant portion at ptr of (bn-1) * 44 + 72 offset for header
-        if (!apx_alias_store_block(state, slot, ((size_t)(bn - 1U) * 44U) + 72U, lc_bits + 28, 44U)) {
-            return;
-        }
-
-        if (ta_len == bn) //this is the last block, proceed to decoding
-        {
-
-            //Calculate variable len bits determined by non-zero octets
-            int16_t num_bits = 56; //starting value is the static bit count on the fqsuid
-
-            //evaluate the storage and determine how many octets/bits are present at this point (expanded to two octets each, CRC with a 00xx pattern failed this)
-            for (int16_t i = 0; i < 184; i++) //(3072-128)/16
-            {
-                uint16_t bytes = (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][72 + 56 + (i * 16)], 16);
-                if (bytes == 0) {
-                    break;
-                } else {
-                    num_bits += 16;
-                }
-            }
-
-            //pass to alias decoder
-            apx_embedded_alias_decode(opts, state, slot, num_bits, state->dmr_pdu_sf[slot]);
-
-            //clear out now stale storage
-            DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
-        }
+    const uint8_t ta_len = rx->block_count;
+    const apx_alias_block_verdict verdict = apx_alias_block_received(state, slot, sn, bn, lc_bits + 28);
+    if (verdict == APX_ALIAS_BLOCK_REJECTED) {
+        return;
+    }
+    DSD_FPRINTF(stderr, " SN: %X;", sn);
+    DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
+    if (verdict == APX_ALIAS_BLOCK_COMPLETE) {
+        apx_alias_complete(opts, state, slot);
     }
 }
 
@@ -273,97 +323,77 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
 
     //bit array to rearrange input lc_bits from phase 2 input to match the phase 1 header and block handling
-    uint8_t bits[136];
+    uint8_t bits[APX_ALIAS_P2_HEADER_BITS];
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMCPY(bits, lc_bits, ((size_t)2) * 8 * sizeof(uint8_t));            //header 0x9190
     DSD_MEMCPY(bits + 16, lc_bits + 24, ((size_t)4) * 8 * sizeof(uint8_t));  //BN, SN, etc
     DSD_MEMCPY(bits + 56, lc_bits + 56, ((size_t)10) * 8 * sizeof(uint8_t)); //adding 8 bits of extra padding here
 
-    int16_t alias_st = 136; //start of the encoded alias (the copied size of this header, basically)
-
-    //debug, dump header arranged at this end
-
-    //use dmr_pdu_sf for storage, store entire header (will be used to verify complete reception of full alias)
-    DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot])); //reset storage for header and blocks
-    DSD_MEMCPY(state->dmr_pdu_sf[slot], bits,
-               (size_t)alias_st
-                   * sizeof(uint8_t)); //this header block has 128 bits of relevant data (through the fqsuid)
-    apx_alias_state_begin(state, slot, sn, ta_len);
+    //this header block has 128 bits of relevant data (through the fqsuid); the received bits are the repeat key
+    apx_alias_header_received(state, slot, 2U, lc_bits, APX_ALIAS_P2_HEADER_BITS, bits, sn, ta_len);
 }
 
 void
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
-    UNUSED(opts);
     uint8_t bn = (uint8_t)convert_bits_into_output(&lc_bits[24], 8); //current block number
     uint8_t sn = (uint8_t)convert_bits_into_output(&lc_bits[32], 4); //is a static value on all block sequences
-    uint8_t ta_len =
-        (uint8_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][32], 8); //len in blocks pulled from stored header
-    uint16_t header =
-        (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][0], 16); //header check, should be 0x9190
+    const p25_apx_alias_rx_state_t* rx = apx_alias_state_for(state, slot);
 
-    if (ta_len == 0 || header != 0x9190) {
-        DSD_FPRINTF(stderr, " Missing Header");
-        DSD_FPRINTF(stderr, " BN: %d/??;", bn);
-        DSD_FPRINTF(stderr, " SN: %X;", sn);
-        DSD_FPRINTF(stderr, " Partial: ");
-        for (uint8_t i = 9; i < 32; i++) { //double check and adjust
-            DSD_FPRINTF(stderr, "%0X", (uint8_t)convert_bits_into_output(&lc_bits[0 + (i * 4)], 4));
-        }
-
-        //clear out now stale storage
-        DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+    if (!rx || !rx->valid || rx->phase != 2U) {
+        apx_alias_print_missing_header(bn, sn, lc_bits, 9, 32); //double check and adjust
         apx_alias_state_reset(state, slot);
+        return;
     }
 
-    else //good len and header stored
-    {
-        int16_t rel_bits = 100; //number of relevant bits in each block
-        int16_t rel_st = 36;    //start of relevant bits in this block
-        int16_t alias_st = 136; //start of the encoded alias
+    const uint8_t ta_len = rx->block_count;
+    //relevant bits of this block start at bit 36
+    const apx_alias_block_verdict verdict = apx_alias_block_received(state, slot, sn, bn, lc_bits + 36);
+    if (verdict == APX_ALIAS_BLOCK_REJECTED) {
+        return;
+    }
+    DSD_FPRINTF(stderr, " SN: %X;", sn);
+    DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
+    if (verdict == APX_ALIAS_BLOCK_COMPLETE) {
+        apx_alias_complete(opts, state, slot);
+    }
+}
 
-        if (!apx_alias_state_accept_block(state, slot, sn, bn)) {
-            DSD_FPRINTF(stderr, " Alias Sequence/Block Mismatch");
-            DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
-            return;
-        }
+/** @brief Scratch capacity for one Motorola APX embedded alias record, in octets. */
+#define APX_ALIAS_MAX_OCTETS 200
 
-        DSD_FPRINTF(stderr, " SN: %X;", sn);
-        DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
-
-        //use dmr_pdu_sf for storage, store data relevant portion at ptr calculated below
-        const size_t store_off = (size_t)alias_st + ((size_t)(bn - 1U) * (size_t)rel_bits);
-        if (!apx_alias_store_block(state, slot, store_off, lc_bits + rel_st,
-                                   (size_t)rel_bits)) { //Fix this value when samples arrive
-            return;
-        }
-
-        //debug, dump accumulated data at this end
-
-        if (ta_len == bn) //this is the last block, proceed to decoding
-        {
-
-            //Calculate variable len bits determined by non-zero octets
-            int16_t num_bits = 56; //starting value is the static bit count on the fqsuid
-
-            //evaluate the storage and determine how many octets/bits are present at this point (expanded to two octets each, CRC with a 00xx pattern failed this)
-            for (int16_t i = 0; i < 184; i++) //(3072-128)/16
-            {
-                uint16_t bytes = (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][72 + 56 + (i * 16)], 16);
-                if (bytes == 0) {
-                    break;
-                } else {
-                    num_bits += 16;
-                }
-            }
-
-            //pass to alias decoder
-            apx_embedded_alias_decode(opts, state, slot, num_bits, state->dmr_pdu_sf[slot]);
-
-            //clear out now stale storage
-            DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+/**
+ * @brief The record's length in bits, FQ-SUID through CRC, measured over the received extent.
+ *
+ * The record is whole 16-bit words after the 56-bit FQ-SUID, the last of them its CRC, padded with zero words to the
+ * end of the last block. Scrambled alias octets can be zero, and so can the CRC, so neither the first zero word nor the
+ * last non-zero one is the end: the candidates run from the last non-zero word to the received extent, and the first
+ * length whose CRC checks wins. With none, the length through the last non-zero word is returned and the decoder
+ * reports its CRC error there.
+ */
+static int16_t
+apx_alias_record_bits(const uint8_t* store, size_t extent_end) {
+    const size_t first_word = APX_ALIAS_RECORD_START + 56U;
+    if (extent_end < first_word + 16U) {
+        return 56; //no room for the CRC: the decoder reports the length
+    }
+    const size_t max_words = (extent_end - first_word) / 16U;
+    size_t min_words = 1U;
+    for (size_t w = 0; w < max_words; w++) {
+        if ((uint16_t)convert_bits_into_output(&store[first_word + (w * 16U)], 16) != 0U) {
+            min_words = w + 1U;
         }
     }
+    // Two octets per word, less the CRC word: the decoder takes no more alias octets than its scratch holds.
+    for (size_t words = min_words; words <= max_words && (2U * words) - 2U <= APX_ALIAS_MAX_OCTETS; words++) {
+        const size_t num_bits = 56U + (16U * words);
+        const uint16_t crc_ext =
+            (uint16_t)convert_bits_into_output(&store[APX_ALIAS_RECORD_START + num_bits - 16U], 16);
+        if (crc_ext == dsd_crc_ccitt16_bits(&store[APX_ALIAS_RECORD_START], num_bits - 16U)) {
+            return (int16_t)num_bits;
+        }
+    }
+    return (int16_t)(56U + (16U * min_words));
 }
 
 void
@@ -446,9 +476,6 @@ apx_embedded_alias_print_utf16(const uint8_t* decoded, uint16_t num_bytes) {
     }
 }
 
-/** @brief Scratch capacity for one Motorola APX embedded alias record, in octets. */
-#define APX_ALIAS_MAX_OCTETS 200
-
 void
 apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t num_bits, uint8_t* input) {
 
@@ -526,29 +553,59 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     }
 }
 
+// One decoded scalar into the stored name, whole or not at all, so the name stays valid UTF-8 when it fills. A
+// control (C0, C1, NUL) becomes a space so off-air bytes put no escape sequence on a terminal or in a log, and a comma
+// a dot so the group file's CSV columns hold.
+static void
+apx_alias_name_append_scalar(char* name, size_t name_size, size_t* len, uint32_t scalar) {
+    if (scalar == 0x2CU) {
+        scalar = 0x2EU;
+    } else if (dsd_unicode_scalar_is_control(scalar)) {
+        scalar = 0x20U;
+    }
+    char utf8[DSD_UTF8_MAX_BYTES + 1];
+    const size_t n = dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8);
+    if (n == 0U || *len + n >= name_size) {
+        *len = name_size; //full: later, shorter scalars must not land after a dropped one
+        return;
+    }
+    DSD_MEMCPY(name + *len, utf8, n);
+    *len += n;
+    name[*len] = '\0';
+}
+
+// The alias text the event row, the learned policy row and the group file store: the decoded UTF-16BE units as UTF-8,
+// surrogate pairs combined and unpaired halves as U+FFFD (the same decode the operator's terminal line gets).
+static void
+apx_alias_name_from_utf16(const uint8_t* decoded, uint16_t num_bytes, char* name, size_t name_size) {
+    dsd_utf16_decoder decoder;
+    uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+    size_t len = 0;
+    name[0] = '\0';
+    dsd_utf16_decoder_reset(&decoder);
+    for (int i = 0; i < num_bytes / 2; i++) {
+        uint16_t unit = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
+        size_t n = dsd_utf16_decoder_push(&decoder, unit, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        for (size_t k = 0; k < n && len < name_size; k++) {
+            apx_alias_name_append_scalar(name, name_size, &len, scalars[k]);
+        }
+    }
+    if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U && len < name_size) {
+        apx_alias_name_append_scalar(name, name_size, &len, scalars[0]);
+    }
+}
+
 void
 apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t num_bytes, const uint8_t* input,
                         const uint8_t* decoded) {
 
+    // Sized to the policy row's name (dsd_tg_policy_entry::name), which the alias is learned into.
     char str[50];
     DSD_MEMSET(str, 0, sizeof(str));
     char fqs[50];
     DSD_MEMSET(fqs, 0, sizeof(fqs));
 
-    //check num_bytes, if greter than 100, then set to 100
-    if (num_bytes >= 98) {
-        num_bytes = 98;
-    }
-
-    for (int i = 0; i < num_bytes / 2; i++) {
-        if (decoded[(i * 2) + 1] == 0x2C) { //remove a comma if it exists, change it to a 0x2E dot
-            str[i] = 0x2E;
-        } else if (decoded[(i * 2) + 1] > 0x1F && decoded[(i * 2) + 1] < 0x7F) { //may not need or use this restriction
-            str[i] = decoded[(i * 2) + 1];
-        } else {
-            str[i] = 0x20; //space
-        }
-    }
+    apx_alias_name_from_utf16(decoded, num_bytes, str, sizeof str);
 
     //fully qualified SUID
     uint32_t wacn = (uint32_t)convert_bits_into_output(&input[72], 20);
@@ -560,21 +617,13 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
     dsd_call_snapshot call;
     int current_call_match = alias_current_call_snapshot(state, slot, rid, 0, &call);
     if (current_call_match) {
+        char metadata[128];
+        DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
+        policy_learn_alias(opts, state, rid, "D", str, metadata);
         char alias[500];
         DSD_SNPRINTF(alias, sizeof(alias), "%s; %s", str, fqs);
-        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, alias);
-    }
-
-    if (current_call_match
-        && policy_try_append_alias(state, rid, "D", str)) //not already in there, so save it there now
-    {
-        dsd_tg_policy_entry row;
-        if (dsd_tg_policy_make_exact_entry(rid, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
-            char metadata[128];
-            DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
-            (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
-        }
-    } else if (rid != 0 && !current_call_match) {
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, alias);
+    } else if (rid != 0) {
         DSD_FPRINTF(stderr, " Alias Deferred: current call source mismatch;");
     }
 }
@@ -900,17 +949,10 @@ l3h_alias_sanitize_char(uint8_t value) {
 
 static void
 l3h_alias_append_policy_row(const dsd_opts* opts, dsd_state* state, uint32_t tsrc, uint32_t ttg, const char* alias) {
-    if (!policy_try_append_alias(state, tsrc, "D", alias)) {
-        return;
-    }
-
-    dsd_tg_policy_entry row;
-    if (dsd_tg_policy_make_exact_entry(tsrc, "D", alias, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
-        char metadata[160];
-        DSD_SNPRINTF(metadata, sizeof(metadata), "TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris", ttg, state->p2_sysid,
-                     state->p2_rfssid, state->p2_siteid);
-        (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
-    }
+    char metadata[160];
+    DSD_SNPRINTF(metadata, sizeof(metadata), "TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris", ttg, state->p2_sysid,
+                 state->p2_rfssid, state->p2_siteid);
+    policy_learn_alias(opts, state, tsrc, "D", alias, metadata);
 }
 
 static int
@@ -951,11 +993,11 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
 
     uint8_t slot_idx = alias_slot_index(slot);
     if (attach) {
-        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, str);
         if (save_policy) {
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
         }
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, str);
     } else {
         DSD_FPRINTF(stderr, " Alias Deferred: no attributable call for this slot;");
     }
@@ -998,20 +1040,10 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
     uint16_t nac = state->nac;
 
     if (rid != 0U) {
-        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, (const char*)alias);
-    }
-
-    if (rid != 0) {
-        if (policy_try_append_alias(state, rid, "D", (const char*)alias)) //not already in there, so save it there now
-        {
-            dsd_tg_policy_entry row;
-            if (dsd_tg_policy_make_exact_entry(rid, "D", (const char*)alias, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row)
-                == 0) {
-                char metadata[64];
-                DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
-                (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
-            }
-        }
+        char metadata[64];
+        DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
+        policy_learn_alias(opts, state, rid, "D", (const char*)alias, metadata);
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, (const char*)alias);
     }
 }
 

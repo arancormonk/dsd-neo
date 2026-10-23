@@ -2181,7 +2181,8 @@ p25p2_vpdu_iter_block_19(p25p2_vpdu_ctx* ctx) {
         // so a malformed length is truncated rather than trusted.
         dsd_unpack_bytes_to_bits_truncating(bytes + 1, sizeof(bytes) - 1U, mac_bits, sizeof(mac_bits), len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Header");
-        apx_embedded_alias_header_phase2(opts, state, state->currentslot, mac_bits);
+        // The voice slot the message describes: on SACCH that is the other slot (ctx->slot), not currentslot.
+        apx_embedded_alias_header_phase2(opts, state, (uint8_t)slot, mac_bits);
     }
 
     if (len_b < 0) {
@@ -2221,7 +2222,7 @@ p25p2_vpdu_iter_block_20(p25p2_vpdu_ctx* ctx) {
         // so a malformed length is truncated rather than trusted.
         dsd_unpack_bytes_to_bits_truncating(bytes + 1, sizeof(bytes) - 1U, mac_bits, sizeof(mac_bits), len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Blocks");
-        apx_embedded_alias_blocks_phase2(opts, state, state->currentslot, mac_bits);
+        apx_embedded_alias_blocks_phase2(opts, state, (uint8_t)slot, mac_bits);
     }
 
     if (len_b < 0) {
@@ -2408,7 +2409,11 @@ p25p2_vpdu_iter_block_24(p25p2_vpdu_ctx* ctx) {
         }
 
         //Harris "Talker" Alias
-        if (MAC[1 + len_a] == 0xA8) {
+        if (MAC[1 + len_a] == 0xA8 && !ctx->crc_ok) {
+            // The Harris alias carries no check of its own: text from a MAC that failed its CRC (-F) would reach
+            // the event row, the learned policy and the group file.
+            DSD_FPRINTF(stderr, "\n MFID A4 (Harris); VCH %d; Talker Alias (CRC failed; not applied)", slot);
+        } else if (MAC[1 + len_a] == 0xA8) {
             DSD_FPRINTF(stderr, "\n MFID A4 (Harris); VCH %d;", slot);
             uint8_t bytes[24];
             DSD_MEMSET(bytes, 0, sizeof(bytes));
@@ -5069,6 +5074,12 @@ p25p2_vpdu_handle_harris_gps_location(p25p2_vpdu_ctx* ctx) {
     uint8_t bits[24 * 8];
     int src = (int)p25p2_vpdu_active_source(state, (uint8_t)ctx->slot);
     int payload_octets = ctx->len_b - 3;
+
+    // A position from a MAC that failed its CRC (-F) would reach the event row and the location files.
+    if (!ctx->crc_ok) {
+        DSD_FPRINTF(stderr, "\n L3Harris GPS Location (CRC failed; not applied)");
+        return;
+    }
 
     if (payload_octets <= 0 || !p25p2_vpdu_vendor_has_octets(ctx, 4, 1)) {
         DSD_FPRINTF(stderr, "\n L3Harris GPS Location invalid: short message");

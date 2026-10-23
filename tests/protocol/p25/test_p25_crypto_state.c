@@ -6,6 +6,7 @@
 /* Shared Phase 1/Phase 2 crypto resolution and slot-isolation regressions. */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -13,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -24,6 +26,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 static int
 expect_int(const char* tag, long long got, long long want) {
@@ -781,7 +784,7 @@ test_imported_key_activation_is_slot_aware(void) {
     rc |= expect_int("sparse imported AES-128 blocked",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x89, sparse_aes_kid, 0x2223, 201),
                      DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("sparse imported AES segment count", state.aes_key_segments[1], 2);
+    rc |= expect_int("sparse imported AES key width", state.aes_key_segments[1], 1);
 
     state.currentslot = 1;
     state.payload_keyidR = aes_kid;
@@ -799,6 +802,82 @@ test_imported_key_activation_is_slot_aware(void) {
     rc |= expect_u64("release clears imported slot0 scalar", state.R, 0ULL);
     rc |= expect_u64("release preserves imported keyring material", state.rkey_array[des_kid], 0x0102030405060708ULL);
     rc |= expect_u64("release does not clear other active slot word", state.A1[1], 0x9999AAAABBBBCCCCULL);
+    return rc;
+}
+
+/* Load a hex key CSV through the real importer, which flags every parsed cell rkey_array_loaded. */
+static int
+import_hex_keys(dsd_state* state, const char* rows) {
+    char path[DSD_TEST_PATH_MAX] = {0};
+    int fd = dsd_test_mkstemp(path, sizeof path, "p25_zero_keys");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "import_hex_keys: mkstemp failed\n");
+        return 1;
+    }
+    (void)dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (fp == NULL) {
+        (void)remove(path);
+        return 1;
+    }
+    DSD_FPRINTF(fp, "key id(hex),key value (hex)\n%s", rows);
+    fclose(fp);
+    const int rc = csvKeyImportHexPath(path, 0, state, NULL);
+    (void)remove(path);
+    return rc == 0 ? 0 : 1;
+}
+
+/* An imported key whose value is all zero is a key, exactly as the same value entered directly is: presence comes
+ * from the import flags, not from the words. Key ID 0 and a key ID with hex letters behave like any other; an
+ * incomplete AES collection and a key ID nothing was imported for stay refused. */
+static int
+test_imported_zero_keys_are_present(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+    state.keyloader = 1;
+
+    int rc = import_hex_keys(&state, "0,0,0,0,0\n"
+                                     "1A2B,0000000000000000,0,0,0000000000000000\n"
+                                     "3C00,0,0,0\n"
+                                     "0ABC,0\n"
+                                     "0BCD,0000000000\n");
+    rc |= expect_int("zero keys imported", rc, 0);
+
+    const dsd_p25_crypto_phase phases[2] = {DSD_P25_CRYPTO_PHASE1, DSD_P25_CRYPTO_PHASE2};
+    const char* names[2] = {"P1", "P2"};
+    for (int i = 0; i < 2; i++) {
+        char tag[96];
+        for (int slot = 0; slot < (phases[i] == DSD_P25_CRYPTO_PHASE2 ? 2 : 1); slot++) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s slot%d zero AES-256 key ID 0 decryptable", names[i], slot);
+            rc |= expect_int(tag, p25_crypto_resolve(&opts, &state, phases[i], slot, 0x84, 0x0000, 0x11, 200),
+                             DSD_P25_CRYPTO_DECRYPTABLE);
+            rc |= expect_int("zero AES-256 activates loaded", state.aes_key_loaded[slot], 1);
+            rc |= expect_int("zero AES-256 activates four segments", state.aes_key_segments[slot], 4);
+            DSD_SNPRINTF(tag, sizeof tag, "%s slot%d zero AES-256 key ID 1A2B decryptable", names[i], slot);
+            rc |= expect_int(tag, p25_crypto_resolve(&opts, &state, phases[i], slot, 0x84, 0x1A2B, 0x12, 200),
+                             DSD_P25_CRYPTO_DECRYPTABLE);
+            DSD_SNPRINTF(tag, sizeof tag, "%s slot%d three-segment collection refused for AES-256", names[i], slot);
+            rc |= expect_int(tag, p25_crypto_resolve(&opts, &state, phases[i], slot, 0x84, 0x3C00, 0x13, 200),
+                             DSD_P25_CRYPTO_BLOCKED);
+            DSD_SNPRINTF(tag, sizeof tag, "%s slot%d zero DES key decryptable", names[i], slot);
+            rc |= expect_int(tag, p25_crypto_resolve(&opts, &state, phases[i], slot, 0x81, 0x0ABC, 0x14, 200),
+                             DSD_P25_CRYPTO_DECRYPTABLE);
+            rc |= expect_int("zero DES activates present", state.scalar_key_present[slot], 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s slot%d zero RC4 key decryptable", names[i], slot);
+            rc |= expect_int(tag, p25_crypto_resolve(&opts, &state, phases[i], slot, 0xAA, 0x0BCD, 0x15, 200),
+                             DSD_P25_CRYPTO_DECRYPTABLE);
+            DSD_SNPRINTF(tag, sizeof tag, "%s slot%d absent DES key refused", names[i], slot);
+            rc |= expect_int(tag, p25_crypto_resolve(&opts, &state, phases[i], slot, 0x81, 0x0ABD, 0x16, 200),
+                             DSD_P25_CRYPTO_BLOCKED);
+            rc |= expect_int("absent DES activates absent", state.scalar_key_present[slot], 0);
+            DSD_SNPRINTF(tag, sizeof tag, "%s slot%d absent AES-256 key refused", names[i], slot);
+            rc |= expect_int(tag, p25_crypto_resolve(&opts, &state, phases[i], slot, 0x84, 0x5D00, 0x17, 200),
+                             DSD_P25_CRYPTO_BLOCKED);
+            rc |= expect_int("absent AES-256 activates unloaded", state.aes_key_loaded[slot], 0);
+        }
+    }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -1174,6 +1253,7 @@ main(void) {
     rc |= test_expire_pending_returns_slot_to_unclassified();
     rc |= test_algorithm_and_manual_key_resolution();
     rc |= test_imported_key_activation_is_slot_aware();
+    rc |= test_imported_zero_keys_are_present();
     rc |= test_slot_local_transition_purge_and_mi_refresh();
     rc |= test_phase1_resolution_stamps_only_this_carriers_frequency();
     rc |= test_resolution_publishes_received_crypto();

@@ -1335,6 +1335,89 @@ test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup(void) {
     return rc;
 }
 
+// An imported zero key is a key: the implicit talkgroup-keyed lookup loads it, and the RC4 replay keystream is built
+// from it (the records decrypt and are written), where a key ID nothing was imported for loads nothing and its
+// records stay undecrypted (none written).
+static int
+test_sdrtrunk_json_imported_zero_key_is_a_key(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json_target[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+        "\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\"}";
+    static const char json_rc4[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    unsigned char keyed[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char unkeyed[SDRTRUNK_MAP_RECORD_CAP];
+    size_t keyed_len = 0;
+    size_t unkeyed_len = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+    state.M = 0x21;
+    state.keyloader = 1;
+    state.R = 0x5555ULL;
+    state.rkey_array_loaded[123] = 1U;
+    rc |= run_sdrtrunk_json(json_target, &opts, &state);
+    rc |= expect_u64("sdrtrunk implicit lookup loads an imported zero key", state.R, 0ULL);
+    rc |= expect_int("sdrtrunk implicit lookup marks the zero key present", state.scalar_key_present[0], 1);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    state.rkey_array_loaded[3] = 1U;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk rc4 imported zero key", json_rc4, &state, keyed, sizeof keyed,
+                                          &keyed_len);
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk rc4 absent key", json_rc4, &state, unkeyed, sizeof unkeyed,
+                                          &unkeyed_len);
+    dsd_state_ext_free_all(&state);
+    rc |= expect_true("sdrtrunk rc4 imported zero key decrypts the records", keyed_len >= 24U);
+    rc |= expect_true("sdrtrunk rc4 absent key leaves them undecrypted", unkeyed_len == 0U);
+    return rc;
+}
+
+// A P25 AES-256 replay record needs the whole key: with all four segments imported (zero values allowed) the
+// records decrypt and are written; with three of them they stay undecrypted and none is.
+static int
+test_sdrtrunk_json_incomplete_aes_key_refused(void) {
+    int rc = 0;
+    static dsd_state state;
+    static const char json[] =
+        "{\"version\":\"1\",\"protocol\":\"APCO25-PHASE1\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"132\",\"encryption_key_id\":\"7\",\"encryption_mi\":\"0011223344556677\","
+        "\"hex\":\"000000000000000000000000000000000000\"}";
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    unsigned char out[SDRTRUNK_MAP_RECORD_CAP];
+    size_t complete_len = 0;
+    size_t partial_len = 0;
+    for (int segments = 4; segments >= 3; segments--) {
+        DSD_MEMSET(&state, 0, sizeof state);
+        state.keyloader = 1;
+        for (int seg = 0; seg < segments; seg++) {
+            state.rkey_array_loaded[7 + offsets[seg]] = 1U;
+        }
+        rc |= capture_sdrtrunk_replay_records(segments == 4 ? "sdrtrunk aes256 complete" : "sdrtrunk aes256 partial",
+                                              json, &state, out, sizeof out,
+                                              segments == 4 ? &complete_len : &partial_len);
+        dsd_state_ext_free_all(&state);
+    }
+    rc |= expect_true("sdrtrunk aes256 complete key decrypts the records", complete_len >= 12U);
+    rc |= expect_true("sdrtrunk aes256 three segments leave them undecrypted", partial_len == 0U);
+    return rc;
+}
+
 // sdrtrunk_json_handle_mi() also serves P25 replay, where ctx->key_id (a uint16_t; P25 signals a
 // full 16-bit KID) must reach keyring_activate_slot_with_kid() at full width, not narrowed to
 // the DMR resolver's uint8_t. Neither P25 fixture above sets state.keyloader = 1, so nothing
@@ -3612,6 +3695,8 @@ main(void) {
     rc |= test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv();
     rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
+    rc |= test_sdrtrunk_json_imported_zero_key_is_a_key();
+    rc |= test_sdrtrunk_json_incomplete_aes_key_refused();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width();
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row();

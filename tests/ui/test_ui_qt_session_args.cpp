@@ -835,6 +835,59 @@ test_radio_settings_args() {
     }
 }
 
+/* Grouped hex key material (issue reports: byte-spaced, NBSP, '-'/':' groups, 0X) is the key the decoder takes, on
+   every hex type and in argv; decimal keys keep their own form. The profile protocol rule is shared with QML. */
+static void
+test_grouped_hex_keys() {
+    const QString plain = QStringLiteral("0123456789ABCDEF0000000000000000FEDCBA98765432101122334455667788");
+    QString grouped = QStringLiteral("0X");
+    for (int at = 0; at < plain.size(); at += 2) {
+        if (at) {
+            grouped += at % 16 == 0 ? QChar(0x00A0) : at % 8 == 0 ? QChar('-') : at % 4 == 0 ? QChar(':') : QChar(' ');
+        }
+        grouped += plain.mid(at, 2).toLower();
+    }
+    expect("grouped hex normalises", dsd_qt::session_args_key_hex_normalize(grouped) == plain);
+    expect("Unicode spaces normalise", dsd_qt::session_args_key_hex_normalize(QStringLiteral("0x12") + QChar(0x2009)
+                                                                              + "ab" + QChar(0x3000) + "CD\t")
+                                           == "12ABCD");
+    expect("grouped hex is valid", dsd_qt::session_args_key_valid("hex", grouped)
+                                       && dsd_qt::session_args_key_valid("m17Aes", grouped)
+                                       && dsd_qt::session_args_key_valid("rc4", "12:34-56 78"));
+    expect("hex types normalise", dsd_qt::session_args_key_value_normalize("m17Scrambler", "0X12-34") == "1234"
+                                      && dsd_qt::session_args_key_value_normalize("hex", grouped) == plain);
+    // Decimal kinds: trimmed only, no grouping (baseline).
+    expect("decimal keys trim", dsd_qt::session_args_key_value_normalize("basic", " 73 ") == "73");
+    expect("decimal keys take no grouping",
+           !dsd_qt::session_args_key_valid("basic", "1-2") && !dsd_qt::session_args_key_valid("scrambler", "1:2"));
+    auto sys = usb_system();
+    sys["encKeyType"] = "hex";
+    sys["encKeyValue"] = grouped;
+    SessionArgsError error = SessionArgsError::None;
+    const auto args = session_args_build(sys, SessionArgPrefs(), &error);
+    const auto at = args.indexOf("-H");
+    expect("grouped key starts as plain hex",
+           error == SessionArgsError::None && at >= 0 && args.value(at + 1) == plain);
+
+    // EncryptionEditor's protocol rule in C++: a grouped NXDN AES-256 key is accepted, a grouped 10-digit P25 key is
+    // not. The four-argument form QML already calls stays.
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    expect("grouped NXDN AES-256 accepted", builder.keyError("hex", grouped, "", 0, "nxdn").isEmpty());
+    expect("grouped 10-digit P25 hex refused",
+           builder.keyError("hex", "12 34-56:78 90", "", 0, "p25") == "P25 AES needs 32 or 64 hex digits.");
+    expect("NXDN AES needs 64 digits",
+           builder.keyError("hex", QString(32, 'A'), "", 0, "nxdn") == "NXDN AES needs 64 hex digits.");
+    expect("no protocol, no protocol rule", builder.keyError("hex", "12 34-56:78 90", "", 0).isEmpty()
+                                                && builder.keyError("hex", "12 34-56:78 90", "", 0, "dmr").isEmpty());
+    expect("shape errors still apply", builder.keyError("hex", QString(11, 'A'), "", 0, "dmr")
+                                           == dsd_qt::session_args_error_text(SessionArgsError::KeyHex));
+    expect("QML keeps the four-argument keyError",
+           dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfMethod("keyError(QString,QString,QString,int)") >= 0
+               && dsd_qt::SessionArgsBuilder::staticMetaObject.indexOfMethod(
+                      "keyError(QString,QString,QString,int,QString)")
+                      >= 0);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -868,6 +921,7 @@ main(int argc, char** argv) {
     test_network_and_file_sources();
     test_explore_system();
     test_radio_settings_args();
+    test_grouped_hex_keys();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

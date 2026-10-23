@@ -23,10 +23,24 @@ ModalSheet {
     readonly property var modes: draft.protocol === "dstar" || draft.protocol === "ysf" ? ["none"] : draft.protocol === "m17" || draft.protocol === "dpmr" ? ["direct", "none"] : draft.protocol === "dmr" || draft.protocol === "mixed" ? ["automatic", "direct", "vendor", "none"] : ["automatic", "direct", "none"]
     readonly property var types: available ? decryptionProfiles.directTypes(draft.protocol || "mixed") : []
     readonly property var vendors: available ? decryptionProfiles.vendorTypes() : []
-    readonly property var kinds: draft.protocol === "p25" ? ["scalar", "aes128", "aes256", "tdea"] : draft.protocol === "dmr" ? ["scalar", "aes128", "aes256", "basic"] : draft.protocol === "nxdn" ? ["scalar", "aes256", "scrambler"] : ["scalar", "aes128", "aes256", "tdea", "basic", "scrambler"]
+    // The managed key formats this protocol takes, [{id, label}] in editor order;
+    // each label carries the width ("AES-256 · 64 hex digits").
+    readonly property var kinds: available ? decryptionProfiles.keyKinds(draft.protocol || "mixed") : []
     readonly property var forceValues: draft.protocol === "dmr" || draft.protocol === "mixed" ? [-1, 0, 1, 33] : draft.protocol === "nxdn" ? [-1, 0, 1] : [-1, 0]
     signal saved(string uid)
 
+    function kindLabel(id) {
+        var kind = kinds.find(function (entry) {
+            return entry.id === id;
+        });
+        return kind ? kind.label : id;
+    }
+    // An error the sheet shows below its form, scrolled into view: a refused
+    // save, or a reason the sheet cannot do what it was opened for.
+    function showError(text) {
+        errorText = text;
+        reveal(errorLabel);
+    }
     function setField(field, value) {
         if (loading)
             return;
@@ -60,11 +74,11 @@ ModalSheet {
     function openMatching(uid, protocol, kid, kind) {
         open(uid, protocol);
         if (draft.mode !== "automatic") {
-            errorText = qsTr("This profile uses a direct or no-key configuration. Choose Automatic keys before adding entries selected by received ID.");
+            showError(qsTr("This profile uses a direct or no-key configuration. Choose Automatic keys before adding entries selected by received ID."));
             return;
         }
         if (draft.keySource === "csv") {
-            errorText = qsTr("This profile uses an imported CSV. Update that file in Imported files, or choose Manage keys here to build a replacement collection.");
+            showError(qsTr("This profile uses an imported CSV. Update that file in Imported files, or choose Manage keys here to build a replacement collection."));
             return;
         }
         var index = keyRows.findIndex(function (entry) {
@@ -74,7 +88,10 @@ ModalSheet {
         if (index < 0) {
             keyId.text = kid.toString(16).toUpperCase();
             keyName.text = qsTr("Key %1").arg(keyId.text);
-            keyKind.currentIndex = kinds.indexOf(kind);
+            if (kinds.some(function (entry) {
+                return entry.id === kind;
+            }))
+                keyDialog.kindId = kind;
             // The dialog opened with these values: they are not an edit.
             keyDialog.openedForm = keyDialog.fingerprint();
         }
@@ -82,7 +99,7 @@ ModalSheet {
     function openTalkgroup(uid, protocol, talkgroup) {
         open(uid, protocol);
         if (draft.mode !== "automatic" || draft.mappingCsvPath) {
-            errorText = qsTr("Choose automatic keys and managed talkgroup overrides before editing a mapping here. Imported mappings can be updated in Imported files.");
+            showError(qsTr("Choose automatic keys and managed talkgroup overrides before editing a mapping here. Imported mappings can be updated in Imported files."));
             return;
         }
         var index = mapRows.findIndex(function (entry) {
@@ -91,6 +108,29 @@ ModalSheet {
         mappingDialog.openFor(index);
         mapTg.text = String(talkgroup);
         mappingDialog.openedForm = mappingDialog.fingerprint();
+    }
+    // A new direct-override profile holding a key typed elsewhere (the session
+    // override): the material stays in the field until Save profile. An M17
+    // key typed in a mixed session saves under M17, the protocol that takes
+    // it. @p force is the identifier policy in effect (a profile force value);
+    // one the profile protocol does not offer becomes the plain default.
+    function openDirect(protocol, type, material, label, force) {
+        var profileProtocol = protocol === "mixed" && (type === "m17Scrambler" || type === "m17Aes") ? "m17" : protocol;
+        open("", profileProtocol);
+        if (modes.indexOf("direct") < 0)
+            return;
+        var policy = force === undefined ? 0 : force;
+        loading = true;
+        draft = Object.assign({}, draft, {
+            label: label || "",
+            mode: "direct",
+            directType: type,
+            force: forceValues.indexOf(policy >= 32 ? 33 : policy) >= 0 ? policy : 0
+        });
+        profileName.text = draft.label;
+        loading = false;
+        directMaterial.text = material;
+        dirty = true;
     }
     function save() {
         var value = Object.assign({}, draft, {
@@ -103,7 +143,7 @@ ModalSheet {
             value.vendorValue = vendorMaterial.text;
         var result = decryptionProfiles.saveProfile(value);
         if (!result.ok) {
-            errorText = result.error;
+            showError(result.error);
             return;
         }
         dirty = false;
@@ -150,6 +190,7 @@ ModalSheet {
 
     PlexTextField {
         id: profileName
+        objectName: "profileName"
         width: parent.width
         placeholderText: qsTr("Profile name")
         onTextChanged: sheet.setField("label", text)
@@ -208,6 +249,7 @@ ModalSheet {
         }
         PlexTextField {
             id: directMaterial
+            objectName: "profileDirectMaterial"
             width: parent.width
             placeholderText: qsTr("Replacement key material")
             echoMode: TextInput.Password
@@ -283,7 +325,7 @@ ModalSheet {
                 required property int index
                 width: parent.width
                 title: modelData.label || qsTr("Key")
-                subtitle: qsTr("ID %1 · %2").arg(Number(modelData.keyId).toString(16).toUpperCase()).arg(modelData.kind || "scalar")
+                subtitle: (modelData.lookup === "destination" ? qsTr("Destination %1").arg(Number(modelData.keyId)) : qsTr("ID %1").arg(Number(modelData.keyId).toString(16).toUpperCase())) + " · " + sheet.kindLabel(modelData.kind || "scalar")
                 onTapped: keyDialog.openFor(index)
             }
         }
@@ -368,12 +410,16 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
     }
     Text {
+        id: errorLabel
+        objectName: "profileError"
         width: parent.width
         visible: text.length > 0
         text: sheet.errorText
         wrapMode: Text.Wrap
         color: Theme.alert
         font.pixelSize: Theme.fontSize(14)
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: text
     }
     GradientButton {
         objectName: "profileSave"
@@ -396,8 +442,43 @@ ModalSheet {
         closesOnOutsideTap: false
         // The fields as the dialog opened: a dismissal asks only once they differ.
         property string openedForm: ""
+        // The chosen format's id: the format list is rebuilt from the draft's
+        // protocol, so the choice is kept by id rather than by row.
+        property string kindId: ""
+        property bool revealed: false
+        // The dialog's fields as one key entry for the profile model's checks.
+        function entry(kind, material) {
+            return {
+                uid: sheet.originalKey.uid || "",
+                label: keyName.text,
+                kind: kind,
+                lookup: keyLookup.currentIndex ? "destination" : "id",
+                keyId: keyId.text,
+                material: material,
+                protocol: sheet.draft.protocol || "mixed"
+            };
+        }
+        // Every check saving the profile runs for this key, against the other
+        // draft keys. Blank material is judged on what the key keeps. This gates
+        // "Use this key"; the two below only place the message.
+        readonly property string entryError: visible && sheet.available ? decryptionProfiles.keyEntryError(sheet.draft.uid || "", sheet.keyRows, sheet.editingKey, entry(kindId, keyMaterial.text)) : ""
+        // The key ID and lookup alone, checked as a one-digit scalar key with no
+        // other keys.
+        readonly property string idError: visible && sheet.available ? decryptionProfiles.keyEntryError("", [], -1, entry("scalar", "0")) : ""
+        // This key alone, without the other draft keys: its format and material.
+        readonly property string ownError: visible && sheet.available ? decryptionProfiles.keyEntryError(sheet.draft.uid || "", sheet.editingKey >= 0 ? [sheet.keyRows[sheet.editingKey]] : [], sheet.editingKey >= 0 ? 0 : -1, entry(kindId, keyMaterial.text)) : ""
+        readonly property string materialError: idError.length ? "" : ownError
+        // What is left is the ID clashing with another key: shared keyring cells.
+        readonly property string keyIdError: idError.length ? idError : ownError.length ? "" : entryError
+        // The ID in the other base, so a decimal ID typed into the hex field shows.
+        readonly property string idOtherBase: {
+            if (keyIdError.length || !keyId.text.length)
+                return "";
+            var id = parseInt(keyId.text, keyLookup.currentIndex ? 10 : 16);
+            return keyLookup.currentIndex ? qsTr("= 0x%1").arg(id.toString(16).toUpperCase()) : qsTr("= %1 decimal").arg(id);
+        }
         function fingerprint() {
-            return JSON.stringify([keyName.text, keyKind.currentIndex, keyLookup.currentIndex, keyId.text, keyMaterial.text]);
+            return JSON.stringify([keyName.text, kindId, keyLookup.currentIndex, keyId.text, keyMaterial.text]);
         }
         function requestClose() {
             if (fingerprint() !== openedForm)
@@ -416,24 +497,27 @@ ModalSheet {
         Connections {
             target: keyDialog
             function onVisibleChanged() {
-                if (!keyDialog.visible)
+                if (!keyDialog.visible) {
                     keyMaterial.text = "";
+                    keyDialog.revealed = false;
+                }
             }
         }
         function openFor(index) {
             sheet.editingKey = index;
+            // A new key starts with no ID: the received key ID is typed, never assumed.
             sheet.originalKey = index >= 0 ? sheet.keyRows[index] : {
                 uid: decryptionProfiles.newReference(),
                 label: "",
                 kind: "scalar",
-                keyId: 0,
                 lookup: "id"
             };
             keyName.text = sheet.originalKey.label || "";
-            keyId.text = Number(sheet.originalKey.keyId).toString(sheet.originalKey.lookup === "destination" ? 10 : 16).toUpperCase();
+            keyId.text = sheet.originalKey.keyId === undefined ? "" : Number(sheet.originalKey.keyId).toString(sheet.originalKey.lookup === "destination" ? 10 : 16).toUpperCase();
             keyLookup.currentIndex = sheet.originalKey.lookup === "destination" ? 1 : 0;
-            keyKind.currentIndex = sheet.kinds.indexOf(sheet.originalKey.kind);
+            kindId = sheet.originalKey.kind || "scalar";
             keyMaterial.text = "";
+            revealed = false;
             openedForm = fingerprint();
             visible = true;
         }
@@ -443,15 +527,32 @@ ModalSheet {
             width: parent.width
             placeholderText: qsTr("Key label")
         }
+        MicroLabel {
+            text: qsTr("Key format")
+        }
         PlexComboBox {
             id: keyKind
+            objectName: "profileKeyKind"
             width: parent.width
             Accessible.name: qsTr("Key format")
-            model: sheet.kinds
+            model: sheet.kinds.map(function (kind) {
+                return kind.label;
+            })
+            currentIndex: sheet.kinds.findIndex(function (kind) {
+                return kind.id === keyDialog.kindId;
+            })
+            onActivated: keyDialog.kindId = sheet.kinds[currentIndex].id
+        }
+        // P25 selects keys by the received key ID only; a legacy destination
+        // entry still shows its lookup so it can be changed.
+        MicroLabel {
+            visible: keyLookup.visible
+            text: qsTr("Key lookup")
         }
         PlexComboBox {
             id: keyLookup
             width: parent.width
+            visible: sheet.draft.protocol !== "p25" || currentIndex === 1
             Accessible.name: qsTr("Key lookup")
             model: [qsTr("Received key ID"), qsTr("Legacy destination ID")]
             onActivated: keyId.text = ""
@@ -460,25 +561,48 @@ ModalSheet {
             id: keyId
             objectName: "profileKeyId"
             width: parent.width
+            mono: true
             placeholderText: keyLookup.currentIndex ? qsTr("Destination ID (decimal)") : qsTr("Key ID (hex)")
+            inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+            // Guidance while typing, an error once the field is left.
+            error: !input.activeFocus && text.length ? keyDialog.keyIdError : ""
+            hint: keyDialog.keyIdError.length ? (input.activeFocus && text.length ? keyDialog.keyIdError : "") : keyDialog.idOtherBase
+            nextField: keyMaterial
         }
-        PlexTextField {
-            id: keyMaterial
-            objectName: "profileKeyMaterial"
+        Row {
             width: parent.width
-            placeholderText: sheet.editingKey >= 0 ? qsTr("Replacement material; blank keeps current") : qsTr("Key material")
-            echoMode: TextInput.Password
-            inputMethodHints: Qt.ImhHiddenText | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+            spacing: 8
+            PlexTextField {
+                id: keyMaterial
+                objectName: "profileKeyMaterial"
+                width: parent.width - keyReveal.width - parent.spacing
+                mono: true
+                placeholderText: sheet.editingKey >= 0 ? qsTr("Replacement material; blank keeps current") : qsTr("Key material")
+                input.echoMode: keyDialog.revealed ? TextInput.Normal : TextInput.Password
+                inputMethodHints: Qt.ImhHiddenText | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                // The count and format advice while typing; an error once left.
+                error: !input.activeFocus && text.length ? keyDialog.materialError : ""
+                // A masked key cannot be counted by eye: say when it fits.
+                hint: keyDialog.materialError.length ? (input.activeFocus || !text.length ? keyDialog.materialError : "") : text.length && !keyDialog.entryError.length ? qsTr("Fits %1.").arg(sheet.kindLabel(keyDialog.kindId)) : ""
+            }
+            RevealButton {
+                id: keyReveal
+                objectName: "profileKeyReveal"
+                // Level with the input, below the field's label.
+                y: keyMaterial.labelHeight
+                revealed: keyDialog.revealed
+                onClicked: keyDialog.revealed = !keyDialog.revealed
+            }
         }
         OutlineButton {
             objectName: "profileUseKey"
             width: parent.width
             text: qsTr("Use this key")
-            inputValid: keyKind.currentIndex >= 0 && (keyLookup.currentIndex ? /^[0-9]+$/.test(keyId.text) : /^[0-9a-f]+$/i.test(keyId.text))
+            inputValid: keyDialog.kindId.length > 0 && keyDialog.entryError === ""
             onClicked: {
                 var value = Object.assign({}, sheet.originalKey, {
                     label: keyName.text,
-                    kind: sheet.kinds[keyKind.currentIndex],
+                    kind: keyDialog.kindId,
                     lookup: keyLookup.currentIndex ? "destination" : "id",
                     keyId: parseInt(keyId.text, keyLookup.currentIndex ? 10 : 16)
                 });

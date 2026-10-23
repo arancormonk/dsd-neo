@@ -727,6 +727,39 @@ dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
     return ctx ? dsd_tg_policy_store_append(ctx, entry) : -1;
 }
 
+// The fields a learned (over-the-air alias) row carries: its name and its mode. Both are compared normalised, as stored.
+static int
+tg_policy_learned_fields_equal(const dsd_tg_policy_entry* stored, const dsd_tg_policy_entry* normalized) {
+    return strcmp(stored->name, normalized->name) == 0 && strcmp(stored->mode, normalized->mode) == 0;
+}
+
+dsd_tg_policy_learn_result
+dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
+    dsd_tg_policy_entry normalized;
+    if (!state || !entry || !tg_policy_entry_valid_exact(entry)
+        || entry->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS) {
+        return DSD_TG_POLICY_LEARN_FAILED;
+    }
+    tg_policy_copy_entry_normalized(&normalized, entry);
+    // No policy context yet means no row for this ID either: appending creates the context.
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    const int policy_idx = ctx != NULL ? tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start) : -1;
+    if (ctx == NULL || policy_idx < 0) {
+        return dsd_tg_policy_append_exact(state, &normalized) == 0 ? DSD_TG_POLICY_LEARN_ADDED
+                                                                   : DSD_TG_POLICY_LEARN_FAILED;
+    }
+    dsd_tg_policy_entry* stored = &ctx->table.entries[policy_idx];
+    if (stored->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS) {
+        return DSD_TG_POLICY_LEARN_KEPT;
+    }
+    if (tg_policy_learned_fields_equal(stored, &normalized)) {
+        return DSD_TG_POLICY_LEARN_UNCHANGED;
+    }
+    *stored = normalized;
+    tg_policy_table_note_mutation(ctx);
+    return DSD_TG_POLICY_LEARN_REPLACED;
+}
+
 int
 dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode) {
     dsd_tg_policy_context* ctx = NULL;
@@ -762,6 +795,11 @@ dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, d
             return 0;
         }
         if (ctx->table.entries[policy_idx].source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS) {
+            return 0;
+        }
+        // A repeat of what the row already says changes nothing, so it must not bump the generation (every
+        // frontend snapshot copies the table when the generation moves).
+        if (tg_policy_learned_fields_equal(&ctx->table.entries[policy_idx], &normalized)) {
             return 0;
         }
         ctx->table.entries[policy_idx] = normalized;

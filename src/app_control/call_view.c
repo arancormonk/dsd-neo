@@ -97,7 +97,10 @@ staged_group_name(const dsd_state* state, uint8_t slot, uint64_t tg_id, char* ou
 
 /* The event layer resolves source aliases before group-list exact labels. Reuse that
  * staged value only for the same nonzero source, so the previous caller cannot name
- * a new epoch. Keep the OTA identity visible alongside the label. */
+ * a new epoch. Once the row has committed (an ended call the view still holds), the
+ * label the event layer cached on the epoch names it instead -- including a name a late
+ * talker alias taught after the commit -- read as cached, never resolved per render.
+ * Keep the OTA identity visible alongside the label. */
 static void
 slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, char* out, size_t out_size) {
     char identity[DSD_CALL_IDENTITY_TEXT_SIZE];
@@ -107,9 +110,15 @@ slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* 
         DSD_SNPRINTF(identity, sizeof(identity), "%llu", (unsigned long long)call->ota_source_id);
     }
     const Event_History* staged = state->event_history_s ? &state->event_history_s[slot].Event_History_Items[0] : NULL;
-    if (staged && call->ota_source_id != 0U && call->ota_source_id == staged->source_id && staged->s_name[0] != '\0'
-        && strcmp(staged->s_name, identity) != 0) {
-        DSD_SNPRINTF(out, out_size, "%s (%s)", staged->s_name, identity);
+    const char* label = NULL;
+    if (staged && call->ota_source_id != 0U && call->ota_source_id == staged->source_id && staged->s_name[0] != '\0') {
+        label = staged->s_name;
+    } else if (call->ota_source_id != 0U && call->source_label_id == call->ota_source_id
+               && call->source_label[0] != '\0') {
+        label = call->source_label;
+    }
+    if (label != NULL && strcmp(label, identity) != 0) {
+        DSD_SNPRINTF(out, out_size, "%s (%s)", label, identity);
     } else {
         DSD_SNPRINTF(out, out_size, "%s", identity);
     }
