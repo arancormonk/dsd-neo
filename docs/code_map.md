@@ -799,7 +799,9 @@ suite runs under this compiler.
   `keyring_load_scalar_key()` (scrambler and DES, voice and data) and `keyring_kid_aes_present()` (AES voice and data).
   Whether a VCALL's own key ID holds its key, for the loader and the key source the call reports alike, is
   cipher-specific (`nxdn_vcall_kid_holds_key()`): a scalar for the scrambler and DES, all four AES-256 segments for
-  AES, so another ID's scalar parked on one of this ID's AES cells (ID + 0x101 ...) never reads as this ID's key.
+  AES, so another ID's scalar parked on one of this ID's AES cells (ID + 0x101 ...) never reads as this ID's key. The
+  DMR talkgroup map reports a matched but unapplied row by the same reasoning: the mapped ID holds a key of another
+  kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
   Every other loader that reads `rkey_array` by key ID decides presence the same way
   and falls back to the direct key only when nothing was imported, judging that one by `dsd_key_scalar_present()`
   (R/RR) or `dsd_key_direct_words_present()` (K1..K4): the DMR Basic Privacy talkgroup autoload in `dsd_mbe.c` (which

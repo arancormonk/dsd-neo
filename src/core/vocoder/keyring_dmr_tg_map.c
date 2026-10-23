@@ -177,6 +177,16 @@ keyring_dmr_tg_map_note_skipped(dsd_state* state, int slot, uint64_t epoch, uint
                 slot + 1, tg, mapped_kid, label, signaled_kid);
 }
 
+// Why a matched row was not applied: the mapped ID holds a key of another kind than the ALG needs (incompatible), or
+// holds none (missing). Every key stored at an ID -- scalar, AES, the Kirisun quartet -- occupies the ID's own cell, so
+// the ID holds a key exactly when that cell is present (keyring_kid_scalar_present()). Its AES cells at +0x101/+0x201/
+// +0x301 alone are other IDs' keys aliased onto them, never this ID's.
+static int
+keyring_unapplied_row_fallback(const dsd_state* state, uint8_t mapped_kid) {
+    return keyring_kid_scalar_present(state, mapped_kid) ? DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE
+                                                         : DSD_CALL_KEY_FALLBACK_MAPPED_MISSING;
+}
+
 static void
 keyring_note_selection(dsd_state* state, int slot, const dsd_call_snapshot* call, dsd_key_material_need need,
                        int signaled_kid, int kid, int mapped) {
@@ -184,8 +194,7 @@ keyring_note_selection(dsd_state* state, int slot, const dsd_call_snapshot* call
     int fallback = need == DSD_KEY_NEED_NONE ? DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM : DSD_CALL_KEY_FALLBACK_NONE;
     if (!mapped && keyring_dmr_tg_map_call_is_mappable(call)
         && keyring_dmr_tg_map_kid(state, (uint32_t)call->ota_target_id, &mapped_kid) && need != DSD_KEY_NEED_NONE) {
-        fallback = keyring_kid_material(state, mapped_kid, NULL, NULL) ? DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE
-                                                                       : DSD_CALL_KEY_FALLBACK_MAPPED_MISSING;
+        fallback = keyring_unapplied_row_fallback(state, mapped_kid);
     }
     if (state->keyloader == 1 && call->phase == DSD_CALL_PHASE_ACTIVE
         && (DSD_SYNC_IS_DMR(call->protocol) || call->protocol == DSD_SYNC_NONE)) {

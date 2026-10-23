@@ -828,9 +828,49 @@ test_none_need_alg_produces_no_notice(void) {
     return rc;
 }
 
+// A matched row that is not applied says why: the mapped ID holds a key of the wrong kind (incompatible) or none
+// (missing). Another ID's scalar key that sits on the mapped ID's first AES cell (0x05 + 0x101) is not the mapped ID's
+// key, so the row is missing, not incompatible; a scalar key at the mapped ID itself under an AES ALG is incompatible.
+static int
+test_unapplied_row_reports_why(void) {
+    static dsd_state state;
+    dsd_call_snapshot call;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    map_one(&state, 300U, 0x05);
+    state.rkey_array[0x05 + 0x101] = 0xABCDEULL;
+    state.rkey_array_loaded[0x05 + 0x101] = 1U;
+    observe_group_call(&state, 0, 300U);
+    state.payload_keyid = 0x03;
+    state.payload_algid = 0x21;
+    (void)activate_via_map(&state, 0);
+    rc |= expect_eq("unapplied-row-call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq("unapplied-row-aliased-cell-is-missing", call.key_selection.fallback,
+                    DSD_CALL_KEY_FALLBACK_MAPPED_MISSING);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    map_one(&state, 301U, 0x06);
+    state.rkey_array[0x06] = 0x12345ULL;
+    state.rkey_array_loaded[0x06] = 1U;
+    observe_group_call(&state, 0, 301U);
+    state.payload_keyid = 0x03;
+    state.payload_algid = 0x24;
+    (void)activate_via_map(&state, 0);
+    rc |= expect_eq("unapplied-row-call-aes", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq("unapplied-row-scalar-under-aes-is-incompatible", call.key_selection.fallback,
+                    DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_unapplied_row_reports_why();
     rc |= test_kirisun_kid_predicate_matches_activation();
     rc |= test_lookup_hit_and_miss();
     rc |= test_mapped_tg_overrides_signaled_kid();
