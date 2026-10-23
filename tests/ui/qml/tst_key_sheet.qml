@@ -30,8 +30,10 @@ Item {
         }
         function cleanup() {
             monitorLoader.active = false;
-            if (sheet)
+            if (sheet) {
                 sheet.visible = false;
+                sheet.protocol = "mixed";
+            }
             testContext.setMetric("optionsKnown", false);
             testContext.setMetric("directKeys", false);
             testContext.setMetric("automaticKeys", false);
@@ -330,6 +332,28 @@ Item {
         }
         function editor() {
             return findChild(sheet, "sessionEncryptionEditor");
+        }
+        function hexDigits(count) {
+            var digits = "";
+            for (var i = 0; i < count; ++i)
+                digits += "0123456789ABCDEF"[(i * 5 + 1) % 16];
+            return digits;
+        }
+        // The live check is the start path's own: grouped hex reads as the
+        // decoder takes it, with the protocol's AES widths.
+        function test_live_key_check_matches_the_saved_check() {
+            var draft = editor();
+            sheet.protocol = "nxdn";
+            draft.keyType = "hex";
+            draft.keyValue = hexDigits(64).replace(/(.{4})(?!$)/g, "$1-");
+            verify(draft.valid, "a grouped NXDN AES-256 key: " + draft.errorText);
+            draft.keyValue = hexDigits(32);
+            compare(draft.errorText, "NXDN AES needs 64 hex digits.");
+            sheet.protocol = "p25";
+            draft.keyValue = "12 34-56:78 90";
+            compare(draft.errorText, "P25 AES needs 32 or 64 hex digits.");
+            draft.keyValue = "";
+            draft.keyType = "";
         }
         function test_unchanged_apply_preserves_force_and_keyloader() {
             sheet.apply();

@@ -9,8 +9,10 @@ Column {
     readonly property var allowedTypes: protocol === "m17" ? ["", "m17Scrambler", "m17Aes"] : protocol === "dpmr" ? ["", "scrambler"] : protocol === "dstar" || protocol === "ysf" ? [""] : protocol === "p25" ? ["", "hex", "rc4"] : protocol === "dmr" ? ["", "basic", "hex", "rc4"] : protocol === "nxdn" ? ["", "hex", "rc4", "scrambler"] : ["", "basic", "hex", "rc4", "scrambler", "m17Scrambler", "m17Aes"]
     readonly property bool privacySupported: protocol === "dmr" || protocol === "nxdn" || protocol === "mixed"
     readonly property bool fallbackSupported: protocol === "dmr" || protocol === "mixed"
-    readonly property string capabilityError: allowedTypes.indexOf(keyType) < 0 ? qsTr("Choose a key format supported by this protocol, or keep this draft and return to its previous decode mode.") : protocol === "p25" && keyType === "hex" && normalizedKey.length === 10 ? qsTr("P25 AES needs 32 or 64 hex digits.") : protocol === "nxdn" && keyType === "hex" && normalizedKey.length > 0 && normalizedKey.length !== 64 ? qsTr("NXDN AES needs 64 hex digits.") : ""
-    readonly property string normalizedKey: keyValue.replace(/\s/g, "").replace(/^0x/i, "")
+    // Only the format is checked here. The material's shape and the protocol's
+    // width rules come from sessionArgs.keyError(), the check a start or a
+    // saved profile runs, so the live and saved verdicts agree.
+    readonly property string capabilityError: allowedTypes.indexOf(keyType) < 0 ? qsTr("Choose a key format supported by this protocol, or keep this draft and return to its previous decode mode.") : ""
     property string keyType: ""
     property alias keyValue: keyField.text
     property int forceMode: 0
@@ -29,7 +31,7 @@ Column {
     property string keyAction: "keep"
     readonly property bool keepingKey: keyConfigured && keyAction === "keep"
     readonly property bool clearingKey: keyConfigured && keyAction === "clear"
-    readonly property string errorText: !keepingKey && !clearingKey && capabilityError.length ? capabilityError : keepingKey ? (csvPath.length > 0 ? qsTr("Choose either a direct key or a key CSV.") : sessionArgs.keyError("", "", "", liveMode && !forceChanged ? 0 : forceMode)) : sessionArgs.keyError(clearingKey ? "" : keyType, clearingKey ? "" : keyValue, csvPath, liveMode && !forceChanged ? 0 : forceMode)
+    readonly property string errorText: !keepingKey && !clearingKey && capabilityError.length ? capabilityError : keepingKey ? (csvPath.length > 0 ? qsTr("Choose either a direct key or a key CSV.") : sessionArgs.keyError("", "", "", liveMode && !forceChanged ? 0 : forceMode, protocol)) : sessionArgs.keyError(clearingKey ? "" : keyType, clearingKey ? "" : keyValue, csvPath, liveMode && !forceChanged ? 0 : forceMode, protocol)
     readonly property bool valid: errorText.length === 0
     spacing: 10
 
