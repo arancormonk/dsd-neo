@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -54,6 +55,7 @@
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
+#include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
@@ -612,6 +614,43 @@ test_zero_bounds() {
         dsd_state_ext_free_all(&state);
     }
 }
+
+/* A saved direct profile whose key was typed byte-spaced applies live through the real DECRYPTION_APPLY queue: its 95
+   characters do not fit the 72-byte command field, the 64 digits configuration() hands the bridge do. */
+static void
+test_spaced_direct_profile_applies_live() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_app_frontend_runtime_start(&opts, &state);
+    dsd_qt::DecryptionProfilesModel profiles;
+    QString spaced;
+    for (int i = 0; i < 32; ++i) {
+        spaced += i ? QStringLiteral(" 1a") : QStringLiteral("1a");
+    }
+    check(spaced.size() == 95);
+    check(profiles
+              .saveProfile({{"uid", "live-direct"},
+                            {"label", "Live direct"},
+                            {"protocol", "p25"},
+                            {"mode", "direct"},
+                            {"directType", "hex"},
+                            {"directValue", spaced}})
+              .value("ok")
+              .toBool());
+    dsd_qt::CommandBridge bridge;
+    bridge.setDecryptionProfiles(&profiles);
+    const QVariantMap context = bridge.decryptionContext(QString(), QStringLiteral("0"));
+    check(!bridge.applyDecryptionProfile("live-direct", DSD_APP_KEY_SCOPE_DEFAULTS, context).isEmpty());
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    dsd_app_decryption_result result = {};
+    check(dsd_app_decryption_result_get(&result) && result.status == DSD_APP_KEY_APPLIED);
+    check(state.K1 == 0x1A1A1A1A1A1A1A1AULL && state.K2 == state.K1 && state.K3 == state.K1 && state.K4 == state.K1);
+    check(state.aes_key_segments[0] == 4 && state.aes_key_loaded[0]);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+}
 } // namespace
 
 int
@@ -632,6 +671,7 @@ main(int argc, char** argv) {
     test_zero_bounds();
     test_auto_start_requests();
     test_initial_usb_record();
+    test_spaced_direct_profile_applies_live();
     static dsd_opts opts;
     static dsd_state state;
     initOpts(&opts);

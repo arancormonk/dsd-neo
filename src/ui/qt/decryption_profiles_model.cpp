@@ -434,11 +434,23 @@ vendorHex(const QString& type, QString& value) {
     return true;
 }
 
+/* Vendor hex keeps its own grammar: ASCII whitespace and a leading 0x dropped, nothing else. The wider grouping
+   session_args_key_hex_normalize() accepts is for direct and managed hex keys only. */
+static QString
+vendorHexNormalize(const QString& raw) {
+    QString value = raw;
+    value.remove(QRegularExpression(QStringLiteral("[ \\t\\n\\r\\f\\v]")));
+    if (value.startsWith(QLatin1String("0x"), Qt::CaseInsensitive)) {
+        value.remove(0, 2);
+    }
+    return value.toUpper();
+}
+
 static bool
 compileVendor(QVariantMap& row, QVariantMap& compiled) {
     const QString type = row.value("vendorType").toString();
     const QString raw = row.value("vendorValue").toString();
-    QString value = session_args_key_hex_normalize(raw);
+    QString value = vendorHexNormalize(raw);
     const QMap<QString, QString> flags{{"tytBp", "-2"},
                                        {"tytPc4", "-!"},
                                        {"tytEp", "-5"},
@@ -659,14 +671,9 @@ struct ProfileCompiler {
         if ((!allowed && !legacy) || !session_args_key_valid(type, value)) {
             return fail(QObject::tr("The direct key does not match this protocol and key format."));
         }
-        if (!legacy && type == "hex") {
-            const int width = session_args_key_hex_normalize(value).size();
-            if (protocol == "p25" && width == 10) {
-                return fail(QObject::tr("P25 AES requires 32 or 64 hex digits."));
-            }
-            if (protocol == "nxdn" && width != 64) {
-                return fail(QObject::tr("NXDN AES requires 64 hex digits."));
-            }
+        const QString rule = legacy ? QString() : session_args_key_protocol_error(protocol, type, value);
+        if (!rule.isEmpty()) {
+            return fail(rule);
         }
         compiled.insert("encKeyType", type);
         return true;
@@ -944,7 +951,9 @@ DecryptionProfilesModel::configuration(const QString& uid, QString* error) const
     }
     auto result = m_rows[row].value("compiled").toMap();
     if (m_rows[row].value("mode").toString() == "direct") {
-        result.insert("encKeyValue", m_rows[row].value("directValue"));
+        // The stored row keeps what was typed; the session and a live apply take the material as the decoder does.
+        result.insert("encKeyValue", session_args_key_value_normalize(result.value("encKeyType").toString(),
+                                                                      m_rows[row].value("directValue").toString()));
     }
     for (const auto* key : {"keysHexCsvPath", "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
         const QString path = result.value(key).toString();

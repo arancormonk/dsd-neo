@@ -25,7 +25,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/log.h>
@@ -40,12 +44,14 @@
 #include "session_args.h"
 
 static void
-check(bool condition) {
+expect(bool condition, int line) {
     if (!condition) {
-        std::fputs("Decryption profile regression failed\n", stderr);
+        std::fprintf(stderr, "Decryption profile regression failed at line %d\n", line);
         std::abort();
     }
 }
+
+#define check(condition) expect(!!(condition), __LINE__)
 
 void
 LFSRN(const char*, char*, dsd_state*) {}
@@ -495,6 +501,156 @@ test_compile_refuses_linked_directories(const QString& secret) {
           && error.isEmpty());
 }
 
+/* The words of a 64-digit key, as the hex importer stores them. */
+static const unsigned long long kAes256Words[] = {0x0123456789ABCDEFULL, 0x0ULL, 0xFEDCBA9876543210ULL,
+                                                  0x1122334455667788ULL};
+static const char kAes256Key[] = "0123456789ABCDEF0000000000000000FEDCBA98765432101122334455667788";
+
+/* The same key as a reporter pastes it: 0X prefix, byte-spaced with a no-break space, dash and colon groups. */
+static QString
+groupedAes256Key() {
+    const QString plain = QLatin1String(kAes256Key);
+    QString grouped = QStringLiteral("0X");
+    for (int at = 0; at < plain.size(); at += 2) {
+        if (at) {
+            grouped += at % 16 == 0 ? QChar(0x00A0) : at % 8 == 0 ? QChar('-') : at % 4 == 0 ? QChar(':') : QChar(' ');
+        }
+        grouped += plain.mid(at, 2).toLower();
+    }
+    return grouped;
+}
+
+/* Load @p path through the decoder's own hex key importer and report whether key ID @p id holds @p words. */
+static bool
+importsAes256(const QString& path, quint32 id) {
+    auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
+    check(state != nullptr);
+    dsd_csv_validation stats = {};
+    const bool imported = csvKeyImportHexPath(path.toUtf8().constData(), 0, state, &stats) == 0;
+    static const quint32 offsets[] = {0, 0x101, 0x201, 0x301};
+    bool words = imported && stats.accepted == 1;
+    for (int i = 0; i < 4; ++i) {
+        words = words && state->rkey_array[id + offsets[i]] == kAes256Words[i]
+                && state->rkey_array_loaded[id + offsets[i]] == 1U;
+    }
+    dsd_state_ext_free_all(state);
+    std::free(state);
+    return words;
+}
+
+/* A profile's hex material drops every Unicode space, '-' and ':' grouping and a 0x/0X prefix; vendor grammars keep
+   their own rules, the direct-key protocol rule is session_args', and configuration() hands out normalised material. */
+static void
+test_hex_normalisation(dsd_qt::DecryptionProfilesModel& profiles) {
+    // Vendor grammars are untouched (baseline): grouping they never took stays refused, their own forms still work.
+    QString dashed = QLatin1String(kAes256Key).left(32);
+    dashed.insert(8, '-');
+    check(!profiles
+               .saveProfile({{"uid", "vendor-grouped"},
+                             {"label", "Vendor grouped"},
+                             {"protocol", "dmr"},
+                             {"mode", "vendor"},
+                             {"vendorType", "tytEp"},
+                             {"vendorValue", dashed}})
+               .value("ok")
+               .toBool());
+    check(!profiles
+               .saveProfile({{"uid", "vendor-grouped"},
+                             {"label", "Vendor grouped"},
+                             {"protocol", "dmr"},
+                             {"mode", "vendor"},
+                             {"vendorType", "kenwood"},
+                             {"vendorValue", "1-2"}})
+               .value("ok")
+               .toBool());
+    check(profiles
+              .saveProfile({{"uid", "vendor-grouped"},
+                            {"label", "Vendor grouped"},
+                            {"protocol", "dmr"},
+                            {"mode", "vendor"},
+                            {"vendorType", "tytEp"},
+                            {"vendorValue", " 0x" + QString::fromLatin1(kAes256Key).left(32).toLower() + " "}})
+              .value("ok")
+              .toBool());
+    QString error;
+    check(profiles.configuration("vendor-grouped", &error).value("decryptionVendorArgs").toStringList()
+          == (QStringList{"-5", QLatin1String(kAes256Key).left(16) + ' ' + QLatin1String(kAes256Key).mid(16, 16)}));
+
+    const auto direct = [&profiles](const char* uid, const char* protocol, const QString& value) {
+        return profiles.saveProfile({{"uid", uid},
+                                     {"label", uid},
+                                     {"protocol", protocol},
+                                     {"mode", "direct"},
+                                     {"directType", "hex"},
+                                     {"directValue", value}});
+    };
+    check(direct("direct-nxdn", "nxdn", groupedAes256Key()).value("ok").toBool());
+    const auto refused = direct("direct-p25-short", "p25", "12 34-56:78 90");
+    check(!refused.value("ok").toBool() && refused.value("error").toString() == "P25 AES needs 32 or 64 hex digits.");
+
+    // configuration() hands the session and a live apply the material as the decoder takes it; the stored row keeps
+    // what was typed.
+    check(direct("direct-p25", "p25", groupedAes256Key()).value("ok").toBool());
+    const auto config = profiles.configuration("direct-p25", &error);
+    check(error.isEmpty() && config.value("encKeyType").toString() == "hex"
+          && config.value("encKeyValue").toString() == QLatin1String(kAes256Key));
+    check(storedRow("direct-p25").value("directValue").toString() == groupedAes256Key());
+    check(profiles
+              .saveProfile({{"uid", "direct-basic"},
+                            {"label", "Direct basic"},
+                            {"protocol", "dmr"},
+                            {"mode", "direct"},
+                            {"directType", "basic"},
+                            {"directValue", " 73 "}})
+              .value("ok")
+              .toBool());
+    check(profiles.configuration("direct-basic", &error).value("encKeyValue").toString() == "73");
+}
+
+/* A P25 AES-256 managed key compiles to a hex collection the decoder's own importer files under its key ID and the
+   three AES segment cells, for key ID 0 and a non-decimal ID, from grouped material too. */
+static void
+test_aes256_profile_imports(dsd_qt::DecryptionProfilesModel& profiles) {
+    for (const quint32 id : {0U, 0xBEEFU}) {
+        const QString uid = QStringLiteral("aes256-%1").arg(id, 0, 16);
+        check(profiles
+                  .saveProfile({{"uid", uid},
+                                {"label", "AES-256"},
+                                {"protocol", "p25"},
+                                {"mode", "automatic"},
+                                {"keys", QVariantList{QVariantMap{{"uid", "key-aes256"},
+                                                                  {"label", "Dispatch"},
+                                                                  {"keyId", id},
+                                                                  {"kind", "aes256"},
+                                                                  {"lookup", "id"},
+                                                                  {"material", groupedAes256Key()}}}}})
+                  .value("ok")
+                  .toBool());
+        QString error;
+        const QString path = profiles.configuration(uid, &error).value("keysHexCsvPath").toString();
+        check(error.isEmpty() && importsAes256(path, id));
+    }
+}
+
+/* Issue #580 restore: an AES-256 profile definition (grouped material) compiles at load into a collection the
+   importer reads back whole. */
+static void
+test_aes256_definition_compiles_at_load() {
+    const QJsonObject key{{"uid", "key-restored"}, {"label", "Dispatch"}, {"keyId", 0x2A},
+                          {"kind", "aes256"},      {"lookup", "id"},      {"material", groupedAes256Key()}};
+    seedStore({QJsonObject{{"uid", "restored-aes256"},
+                           {"label", "Restored AES-256"},
+                           {"protocol", "p25"},
+                           {"mode", "automatic"},
+                           {"force", 0},
+                           {"keySource", "managed"},
+                           {"keys", QJsonArray{key}}}});
+    dsd_qt::DecryptionProfilesModel loaded;
+    QString error;
+    const QString path = loaded.configuration("restored-aes256", &error).value("keysHexCsvPath").toString();
+    check(error.isEmpty() && storedRow("restored-aes256").value("compiled").isObject() && importsAes256(path, 0x2A));
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -587,6 +743,8 @@ main(int argc, char** argv) {
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fp"}}));
     check(dsd_qt::session_args_profile_compatible({{"decryptionProtocol", "nxdn"}, {"decodeFlag", "-fm"}}));
     test_qml_and_session_protocols_agree();
+    test_hex_normalisation(profiles);
+    test_aes256_profile_imports(profiles);
     test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
     dsd_neo_log_set_tap(captureWarning, nullptr);
@@ -594,5 +752,6 @@ main(int argc, char** argv) {
     test_definitions_compile_at_load(secret);
     test_load_compile_persist_failure(secret);
     test_compile_refuses_linked_directories(secret);
+    test_aes256_definition_compiles_at_load();
     return 0;
 }

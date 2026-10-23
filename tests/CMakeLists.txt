@@ -17537,6 +17537,10 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
         # WP-D1: exercise the real bridge through the retained export result.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
+        # A saved profile applied live through the real bridge and queue.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp

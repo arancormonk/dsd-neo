@@ -221,7 +221,7 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
 }
 
 void
-append_key_args(QStringList& args, int keyIndex, const QString& keyValue, int force) {
+append_key_args(QStringList& args, int keyIndex, const QString& keyType, const QString& keyValue, int force) {
     if (keyIndex >= 0) {
         const QStringList flags{QStringLiteral("-b"),
                                 QStringLiteral("-H"),
@@ -229,9 +229,7 @@ append_key_args(QStringList& args, int keyIndex, const QString& keyValue, int fo
                                 QStringLiteral("-R"),
                                 QStringLiteral("--m17-scrambler-key"),
                                 QStringLiteral("--m17-aes-key")};
-        args << flags[keyIndex]
-             << ((keyIndex == 1 || keyIndex == 2 || keyIndex >= 4) ? session_args_key_hex_normalize(keyValue)
-                                                                   : keyValue.trimmed());
+        args << flags[keyIndex] << session_args_key_value_normalize(keyType, keyValue);
     }
     if (force != 0) {
         args << (force == 1 ? QStringLiteral("-4") : QStringLiteral("-0"));
@@ -423,12 +421,43 @@ session_args_am_bandwidth_choices() {
 
 QString
 session_args_key_hex_normalize(const QString& value) {
-    QString normalized = value;
-    normalized.remove(QRegularExpression(QStringLiteral("[ \\t\\n\\r\\f\\v]")));
+    QString normalized;
+    normalized.reserve(value.size());
+    for (const QChar c : value) {
+        if (!c.isSpace() && c != QLatin1Char('-') && c != QLatin1Char(':')) {
+            normalized.append(c);
+        }
+    }
     if (normalized.startsWith(QLatin1String("0x"), Qt::CaseInsensitive)) {
         normalized.remove(0, 2);
     }
     return normalized.toUpper();
+}
+
+bool
+session_args_key_type_hex(const QString& type) {
+    return type == QLatin1String("hex") || type == QLatin1String("rc4") || type == QLatin1String("m17Scrambler")
+           || type == QLatin1String("m17Aes");
+}
+
+QString
+session_args_key_value_normalize(const QString& type, const QString& value) {
+    return session_args_key_type_hex(type) ? session_args_key_hex_normalize(value) : value.trimmed();
+}
+
+QString
+session_args_key_protocol_error(const QString& protocol, const QString& type, const QString& value) {
+    if (type != QLatin1String("hex")) {
+        return {};
+    }
+    const auto width = session_args_key_hex_normalize(value).size();
+    if (protocol == QLatin1String("p25") && width == 10) {
+        return QObject::tr("P25 AES needs 32 or 64 hex digits.");
+    }
+    if (protocol == QLatin1String("nxdn") && width > 0 && width != 64) {
+        return QObject::tr("NXDN AES needs 64 hex digits.");
+    }
+    return {};
 }
 
 static bool
@@ -462,8 +491,7 @@ session_args_key_valid(const QString& type, const QString& value) {
     if (type == QLatin1String("basic") || type == QLatin1String("scrambler")) {
         return decimal_key_valid(type, value);
     }
-    if (type != QLatin1String("hex") && type != QLatin1String("rc4") && type != QLatin1String("m17Scrambler")
-        && type != QLatin1String("m17Aes")) {
+    if (!session_args_key_type_hex(type)) {
         return false;
     }
     const QString hex = session_args_key_hex_normalize(value);
@@ -726,7 +754,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     args << QStringLiteral("-o") << QStringLiteral("pulse");
     append_csv_args(args, system);
     append_profile_args(args, system);
-    append_key_args(args, keyIndex, keyValue, force);
+    append_key_args(args, keyIndex, keyType, keyValue, force);
     args << system.value("decryptionVendorArgs").toStringList();
     if (!system.value("decryptionProfileRef").toString().isEmpty()) {
         args << "--key-profile-ref" << system.value("decryptionProfileRef").toString();
@@ -847,7 +875,12 @@ SessionArgsBuilder::amBandwidthError(const QString& sourceType, int bandwidthKhz
 
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML validation uses the shared startup rules.
 QString
-SessionArgsBuilder::keyError(const QString& type, const QString& value, const QString& csvPath, int force) const {
+SessionArgsBuilder::keyError(const QString& type, const QString& value, const QString& csvPath, int force,
+                             const QString& protocol) const {
+    const QString rule = session_args_key_protocol_error(protocol, type, value);
+    if (!rule.isEmpty()) {
+        return rule;
+    }
     const QStringList types{QStringLiteral("basic"),     QStringLiteral("hex"),          QStringLiteral("rc4"),
                             QStringLiteral("scrambler"), QStringLiteral("m17Scrambler"), QStringLiteral("m17Aes")};
     const QVariantMap fields{{QStringLiteral("keyCsvPath"), csvPath}, {QStringLiteral("encForceKey"), force}};

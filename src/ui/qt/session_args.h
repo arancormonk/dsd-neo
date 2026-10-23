@@ -80,10 +80,20 @@ enum class SessionArgsError {
  * needs its text: a static_assert there holds the text table to this value. */
 constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::RecordingMissing;
 
-/** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies
- * cannot promise erasure; never expose returned key text in diagnostics. */
+/** Every Unicode space (QChar::isSpace(): NBSP and the rest included), '-' and ':' grouping removed, then a leading
+ * 0x or 0X stripped, uppercase hex. Only for hex material (session_args_key_type_hex() types and the profile model's
+ * managed hex formats): decimal keys and vendor grammars keep their own rules. QString copies cannot promise erasure;
+ * never expose returned key text in diagnostics. */
 QString session_args_key_hex_normalize(const QString& value);
+/** Whether a direct key of @p type is hex material: hex, rc4, m17Scrambler and m17Aes. */
+bool session_args_key_type_hex(const QString& type);
+/** Direct key material as the decoder takes it: hex types through session_args_key_hex_normalize(), the decimal
+ * types (basic, scrambler) and any other trimmed. */
+QString session_args_key_value_normalize(const QString& type, const QString& value);
 bool session_args_key_valid(const QString& type, const QString& value);
+/** The profile protocol's own rule for a direct key, or empty: a P25 hex key is never the 10-digit Hytera width, and
+ * an NXDN hex key is 64 digits. Other protocols and types add nothing. */
+QString session_args_key_protocol_error(const QString& protocol, const QString& type, const QString& value);
 /** Safe, complete validation sentence for the wizard/session rejection UI. */
 QString session_args_error_text(SessionArgsError error);
 
@@ -153,8 +163,12 @@ class SessionArgsBuilder : public QObject {
      */
     Q_INVOKABLE QString amBandwidthError(const QString& sourceType, int bandwidthKhz) const;
 
-    /** Safe encryption-only validation; never builds or returns secret argv. */
-    Q_INVOKABLE QString keyError(const QString& type, const QString& value, const QString& csvPath, int force) const;
+    /**
+     * Safe encryption-only validation; never builds or returns secret argv. A non-empty @p protocol (a profile
+     * protocol: p25, nxdn, ...) applies session_args_key_protocol_error() first, as a saved direct profile does.
+     */
+    Q_INVOKABLE QString keyError(const QString& type, const QString& value, const QString& csvPath, int force,
+                                 const QString& protocol = QString()) const;
 
   private:
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error) const;
