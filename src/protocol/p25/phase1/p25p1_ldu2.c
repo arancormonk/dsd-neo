@@ -422,7 +422,7 @@ ldu2_enrich_lsd_alias_if_call(dsd_state* state, const dsd_call_snapshot* call, i
 }
 
 static void
-ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
+ldu2_maybe_finalize_lsd_alias(dsd_state* state) {
     int k = state->data_block_counter[0];
     if (state->dmr_alias_format[0] != 0x02 || k < state->dmr_alias_block_len[0]) {
         return;
@@ -449,13 +449,10 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     ldu2_enrich_lsd_alias_if_call(state, &call, has_call, str);
 
     if (tsrc != 0) {
-        const char* mode = "D";
+        // A learned alias names a radio and is always mode D: an encrypted radio's calls are locked out by the
+        // encryption ledger, and a DE row would read as a talkgroup lockout once the list is saved and reloaded.
         dsd_tg_policy_entry alias_entry;
-        if (p25_crypto_metadata_is_confirmed_encrypted(state, 0) && opts->trunk_tune_enc_calls == 0
-            && !dsd_key_scalar_present(state, 0)) {
-            mode = "DE";
-        }
-        if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
+        if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
             == 0) {
             (void)dsd_tg_policy_learn_exact(state, &alias_entry);
         }
@@ -469,10 +466,10 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-ldu2_handle_lsd_alias(const dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame) {
+ldu2_handle_lsd_alias(dsd_state* state, const Ldu2Frame* frame) {
     ldu2_store_lsd_alias_chars(state, frame);
     ldu2_maybe_begin_lsd_alias(state, frame);
-    ldu2_maybe_finalize_lsd_alias(opts, state);
+    ldu2_maybe_finalize_lsd_alias(state);
 }
 
 static void
@@ -526,7 +523,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     ldu2_print_payload_lsd(opts, &frame);
     DSD_FPRINTF(stderr, "\n");
 
-    ldu2_handle_lsd_alias(opts, state, &frame);
+    ldu2_handle_lsd_alias(state, &frame);
 
     state->xl_is_hdu = 0;
     ldu2_report_decryption_key(opts, state);

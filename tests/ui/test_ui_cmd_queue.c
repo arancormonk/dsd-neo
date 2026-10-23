@@ -6589,6 +6589,22 @@ test_talkgroup_row_commands(void) {
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
     dsd_app_drain_cmds(opts, state);
     rc |= expect_contains("stale generation set refused", state->ui_msg, "stale");
+    // A radio alias learned over the air while the sheet was open does not make the priority edit stale.
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    {
+        dsd_tg_policy_entry learned;
+        dsd_tg_policy_make_exact_entry(3000, "D", "Talker", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &learned);
+        rc |= expect_int("alias renamed while editing", dsd_tg_policy_learn_exact(state, &learned),
+                         DSD_TG_POLICY_LEARN_REPLACED);
+    }
+    edit.priority = 75;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    {
+        dsd_tg_policy_lookup applied;
+        dsd_tg_policy_lookup_id(state, 2000, &applied);
+        rc |= expect_int("edit applied across a learned alias", applied.entry.priority, 75);
+    }
     edit.priority = 99;
     edit.id_start = edit.id_end = 2002;
     dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
@@ -6596,11 +6612,15 @@ test_talkgroup_row_commands(void) {
     dsd_app_drain_cmds(opts, state);
     dsd_tg_policy_lookup lookup;
     dsd_tg_policy_lookup_id(state, 2002, &lookup);
-    rc |= expect_int("alias priority unchanged", lookup.entry.priority, 50);
-    dsd_app_tg_range_payload rem = {2002, 2002, edit.policy_context, edit.policy_generation};
+    // A mode-D row is a persisted radio alias: a talkgroup edit of that ID takes the row over as a talkgroup row.
+    rc |= expect_int("alias collision taken over by the edit", lookup.entry.priority, 99);
+    rc |= expect_str("taken-over row listens", lookup.entry.mode, "A");
+    rc |= expect_int("taken over in place", (int)dsd_tg_policy_entry_count(state), 6);
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_tg_range_payload rem = {3000, 3000, edit.policy_context, edit.policy_generation};
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
     dsd_app_drain_cmds(opts, state);
-    rc |= expect_int("mode D remove refused", (int)dsd_tg_policy_entry_count(state), 6);
+    rc |= expect_int("learned alias remove refused", (int)dsd_tg_policy_entry_count(state), 6);
 
     union {
         unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];

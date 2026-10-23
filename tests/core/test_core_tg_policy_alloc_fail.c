@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,7 @@
 
 void dsd_tg_policy_test_alloc_reset(void);
 void dsd_tg_policy_test_alloc_fail_after(long fail_after);
+void dsd_tg_policy_test_set_generation(dsd_state* state, unsigned int generation, unsigned int structural_generation);
 
 static int
 expect_true(const char* tag, int cond) {
@@ -165,6 +167,34 @@ test_session_avoid_allocation_failure(void) {
     return rc;
 }
 
+/* A generation wrap is structural: an edit captured before it goes stale, so the tolerated interval stays bounded. */
+static int
+test_edit_version_wrap(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry e;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    init_entry(&e, 100, "A", "Fire", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("seed row", dsd_tg_policy_append_exact(st, &e) == 0);
+    dsd_tg_policy_test_set_generation(st, UINT_MAX - 1u, UINT_MAX - 2u);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    init_entry(&e, 777001, "D", "Radio A", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("alias at the top", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("capture valid before wrap", dsd_tg_policy_edit_version_valid(st, context, generation) == 1);
+    init_entry(&e, 777002, "D", "Radio B", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("alias wraps", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("capture stale after wrap", dsd_tg_policy_edit_version_valid(st, context, generation) == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    rc |= expect_true("generation skips zero", generation == 1u);
+    rc |= expect_true("fresh capture valid", dsd_tg_policy_edit_version_valid(st, context, generation) == 1);
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -174,6 +204,7 @@ main(void) {
     if (!st) {
         return 1;
     }
+    rc |= test_edit_version_wrap();
 
     init_entry(&e, 100, "A", "ALLOC-FAIL", DSD_TG_POLICY_SOURCE_IMPORTED);
     dsd_tg_policy_test_alloc_reset();

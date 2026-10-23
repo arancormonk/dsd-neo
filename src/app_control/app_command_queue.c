@@ -6232,10 +6232,8 @@ tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int e
  * would allow a row from the previous scan target to address a different list. */
 static int
 tg_edit_check_version(dsd_state* state, uint64_t context, unsigned int generation) {
-    uint64_t current_context = 0;
-    unsigned int current_generation = 0;
-    dsd_tg_policy_table_version(state, &current_context, &current_generation);
-    if (context != current_context || generation != current_generation) {
+    // A learned alias or a session avoid since the capture moves the generation but no row the edit addresses.
+    if (!dsd_tg_policy_edit_version_valid(state, context, generation)) {
         ui_set_toast(state, 3, "Talkgroup list changed: stale edit rejected");
         return UI_CMD_APPLY_FAILED;
     }
