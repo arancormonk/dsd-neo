@@ -19,3 +19,4 @@ query-filters:
 # Keep vendored upstream libraries out of project-owned CodeQL results.
 paths-ignore:
   - "src/third_party/**"
+  - "android/third_party/**"
