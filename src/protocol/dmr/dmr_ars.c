@@ -34,9 +34,12 @@
 
 #define DMR_ARS_HDR_EXT         0x80U
 #define DMR_ARS_HDR_ACK         0x40U
+// Priority and Control: every message spec section 3.4 defines sets both.
+#define DMR_ARS_HDR_PRI_CNTL    0x30U
 
-// Second header of a registration: the Event field, bits 6-5.
+// Second header of a registration: the Event field, bits 6-5, and the name field encoding, bits 4-0.
 #define DMR_ARS_HDR2_EVENT      0x60U
+#define DMR_ARS_HDR2_ENCODING   0x1FU
 #define DMR_ARS_EVENT_INITIAL   0x20U
 #define DMR_ARS_EVENT_REFRESH   0x40U
 
@@ -171,17 +174,25 @@ static void
 dmr_ars_format_ack(const uint8_t* rec, uint16_t rec_len, uint8_t is_user, char* out, size_t out_sz) {
     const char* label = is_user ? "ARS User Ack" : "ARS Ack";
     uint8_t hdr = rec[0];
-    // The timer/reason lives in the second header. Without it the spec pins the refresh timer to
-    // zero (disabled) and the session to "until power cycle", which is what a 0 renders as.
+    // The timer/reason lives in the optional second header. Without it a device ack's refresh
+    // timer is zero (disabled, spec 3.4.2), but nothing else is implied: a failure carries no
+    // reason (3.4.3, 3.4.9), and a bare user ack is either a registration ack whose session ends
+    // with the refresh timer (3.4.8) or a deregistration ack (3.4.11).
     uint8_t have_ext = (uint8_t)(((hdr & DMR_ARS_HDR_EXT) != 0U) && rec_len > 1U);
     uint8_t value = have_ext ? (uint8_t)(rec[1] & 0x7FU) : 0U;
 
     if ((hdr & DMR_ARS_HDR_ACK) != 0U) {
+        if (!have_ext) {
+            DSD_SNPRINTF(out, out_sz, "%s: FAIL; ", label);
+            return;
+        }
         char reason[32];
         dmr_ars_fail_reason(is_user, value, reason, sizeof(reason));
         DSD_SNPRINTF(out, out_sz, "%s: FAIL - %s; ", label, reason);
     } else if (is_user) {
-        if (value == 0U) {
+        if (!have_ext) {
+            DSD_SNPRINTF(out, out_sz, "%s: OK; ", label);
+        } else if (value == 0U) {
             DSD_SNPRINTF(out, out_sz, "%s: OK; session until power cycle; ", label);
         } else {
             DSD_SNPRINTF(out, out_sz, "%s: OK; session %u; ", label, (unsigned)value);
@@ -227,6 +238,115 @@ dmr_ars_format(const uint8_t* rec, uint16_t rec_len, char* out, size_t out_sz) {
         case DMR_ARS_TYPE_REG_ACK: dmr_ars_format_ack(rec, rec_len, 0U, out, out_sz); break;
         default: break;
     }
+}
+
+// One length-value name field at `*pos`: advances past it and returns its size, or -1 when it
+// runs past `end`. Sizes are octets, as the public parsers read them; every example in the spec
+// is ASCII, where octets and characters agree.
+static int
+dmr_ars_exact_lv(const uint8_t* rec, uint16_t end, uint16_t* pos) {
+    if (*pos >= end) {
+        return -1;
+    }
+    uint8_t size = rec[*pos];
+    if ((uint32_t)*pos + 1U + size > end) {
+        return -1;
+    }
+    *pos = (uint16_t)(*pos + 1U + size);
+    return size;
+}
+
+// The first header octet against the message table of spec section 3.4: Priority and Control are set
+// on every message, the type is a defined one, and the Ext and Ack bits are the ones that type allows.
+static int
+dmr_ars_first_header_is_exact(uint8_t hdr) {
+    const uint8_t ext = (uint8_t)((hdr & DMR_ARS_HDR_EXT) != 0U);
+    const uint8_t ack = (uint8_t)((hdr & DMR_ARS_HDR_ACK) != 0U);
+    if ((hdr & DMR_ARS_HDR_PRI_CNTL) != DMR_ARS_HDR_PRI_CNTL) {
+        return 0;
+    }
+    switch (hdr & 0x0FU) {
+        case DMR_ARS_TYPE_DEV_REG:
+        case DMR_ARS_TYPE_USER_REG: return ack;
+        case DMR_ARS_TYPE_DEV_DEREG: return !ext && !ack;
+        case DMR_ARS_TYPE_QUERY:
+        case DMR_ARS_TYPE_USER_DEREG: return !ext && ack;
+        case DMR_ARS_TYPE_USER_ACK:
+        case DMR_ARS_TYPE_REG_ACK: return 1;
+        default: return 0;
+    }
+}
+
+// The optional second header: every one the spec defines ends the chain (Ext clear). A registration's
+// encoding is UTF-8 (00000) and a device registration's Event is initial (01) or refresh (10); a
+// successful user registration ack is "fixed as 0x 00 02 B7 00" (3.4.8).
+static int
+dmr_ars_second_header_is_exact(uint8_t hdr, uint8_t hdr2) {
+    const uint8_t type = (uint8_t)(hdr & 0x0FU);
+    const uint8_t event = (uint8_t)(hdr2 & DMR_ARS_HDR2_EVENT);
+    if ((hdr2 & DMR_ARS_HDR_EXT) != 0U) {
+        return 0;
+    }
+    if ((type == DMR_ARS_TYPE_DEV_REG || type == DMR_ARS_TYPE_USER_REG) && (hdr2 & DMR_ARS_HDR2_ENCODING) != 0U) {
+        return 0;
+    }
+    if (type == DMR_ARS_TYPE_DEV_REG && event != DMR_ARS_EVENT_INITIAL && event != DMR_ARS_EVENT_REFRESH) {
+        return 0;
+    }
+    return !(type == DMR_ARS_TYPE_USER_ACK && (hdr & DMR_ARS_HDR_ACK) == 0U && hdr2 != 0U);
+}
+
+// A registration's name field from `pos`: device identifier, user identifier, password, each length
+// prefixed, filling the record exactly. A device registration names the device only ("User Identifier
+// and Password fields are not used ... set to 0", 3.4.1); a user registration names both (3.4.7).
+static int
+dmr_ars_name_field_is_exact(const uint8_t* rec, uint16_t rec_len, uint16_t pos, uint8_t is_user) {
+    const int dev_size = dmr_ars_exact_lv(rec, rec_len, &pos);
+    const int user_size = dmr_ars_exact_lv(rec, rec_len, &pos);
+    const int pw_size = dmr_ars_exact_lv(rec, rec_len, &pos);
+    if (dev_size < 1 || user_size < 0 || pw_size < 0 || pos != rec_len) {
+        return 0;
+    }
+    return is_user ? (user_size >= 1) : (user_size == 0 && pw_size == 0);
+}
+
+// Header octets and payload of one record without its CSBK capability suffix, checked against the
+// message table of spec section 3.4. `rec_len` excludes the size prefix.
+static int
+dmr_ars_body_is_exact(const uint8_t* rec, uint16_t rec_len) {
+    if (rec_len == 0U || !dmr_ars_first_header_is_exact(rec[0])) {
+        return 0;
+    }
+    uint16_t pos = 1U;
+    if ((rec[0] & DMR_ARS_HDR_EXT) != 0U) {
+        if (rec_len < 2U || !dmr_ars_second_header_is_exact(rec[0], rec[1])) {
+            return 0;
+        }
+        pos = 2U;
+    }
+    const uint8_t type = (uint8_t)(rec[0] & 0x0FU);
+    if (type == DMR_ARS_TYPE_DEV_REG || type == DMR_ARS_TYPE_USER_REG) {
+        return dmr_ars_name_field_is_exact(rec, rec_len, pos, (uint8_t)(type == DMR_ARS_TYPE_USER_REG));
+    }
+    return pos == rec_len;
+}
+
+int
+dmr_ars_record_is_exact(const uint8_t* msg, uint16_t len) {
+    if (msg == NULL || len < 3U) {
+        return 0;
+    }
+    const uint16_t rec_len = (uint16_t)(((uint16_t)msg[0] << 8) | msg[1]);
+    if ((uint32_t)rec_len + 2U != len) {
+        return 0;
+    }
+    const uint8_t* rec = msg + 2;
+    if (dmr_ars_body_is_exact(rec, rec_len)) {
+        return 1;
+    }
+    // CSBK ARS appends the capability octets 0x10 0x80 to an otherwise standard message (3.3).
+    return rec_len >= 3U && rec[rec_len - 2U] == 0x10U && rec[rec_len - 1U] == 0x80U
+           && dmr_ars_body_is_exact(rec, (uint16_t)(rec_len - 2U));
 }
 
 // Print an ARS message. `msg` points at the two octet size prefix; `len` is the number of

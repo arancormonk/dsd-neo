@@ -9,6 +9,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
+#include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -424,6 +425,38 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     return 0;
 }
 
+// UDP 231 (Cellocator) payloads reach decode_cellocator() with their own length; the decoder reads a
+// four-octet signature and a type octet, so anything shorter is reported, not read past (issue #746).
+static int
+test_cellocator_short_payloads(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    for (int len = 0; len <= 5; len++) {
+        uint8_t* payload = (uint8_t*)malloc(len > 0 ? (size_t)len : 1U);
+        if (payload == NULL) {
+            return 1;
+        }
+        DSD_MEMSET(payload, 0x04, len > 0 ? (size_t)len : 1U);
+        char output[2048] = {0};
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "cellocator") != 0) {
+            free(payload);
+            return 1;
+        }
+        decode_cellocator(opts, state, payload, len);
+        dsd_test_capture_stderr_end(&cap);
+        free(payload);
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 1;
+        }
+        const char* want = (len < 5) ? "Cellocator: Truncated;" : "Time and Location Data;";
+        if (strstr(output, want) == NULL) {
+            DSD_FPRINTF(stderr, "cellocator len %d: missing '%s' in '%s'\n", len, want, output);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -443,6 +476,7 @@ main(void) {
     rc |= test_short_lip(&opts, &state, path);
     rc |= test_unsupported_lip(&opts, &state, path);
     rc |= run_cases(&opts, &state, path);
+    rc |= test_cellocator_short_payloads(&opts, &state);
     remove(path);
     if (rc == 0) {
         DSD_FPRINTF(stdout, "CORE_GPS_LRRP_CRC_GATING: PASS\n");

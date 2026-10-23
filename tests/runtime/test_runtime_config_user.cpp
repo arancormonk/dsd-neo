@@ -17,6 +17,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
@@ -31,6 +32,7 @@
 #include <errno.h>
 #include <math.h>
 #include <memory>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2904,6 +2906,7 @@ test_persistence_gap_schema_rows(void) {
         {"mode", "edacs_ea"},
         {"mode", "edacs_esk"},
         {"mode", "dmr_lrrp_ports"},
+        {"mode", "dmr_udp_comp_ports"},
         {"trunking", "p25_bandplan_csv"},
         {"trunking", "src_csv"},
         {"trunking", "scan_voice_only"},
@@ -4619,6 +4622,200 @@ test_dmr_lrrp_ports_bad_entries_are_skipped(void) {
     return 0;
 }
 
+/* Load @p ini from a temp file into @p cfg; returns 0 on success. */
+static int
+load_ini_text(const char* ini, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    if (dsd_user_config_load(path, cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+    return 0;
+}
+
+static int
+test_dmr_udp_comp_ports_load_apply_snapshot_roundtrip(void) {
+    // Blanks, out-of-order entries and a repeated pair are tolerated on the way in; the map holds each link once
+    // and renders in index order.
+    static const char* ini = "[mode]\n"
+                             "dmr_udp_comp_ports = \"98 = 4007, 97=4005,97=4005\"\n";
+    dsdneoUserConfig cfg;
+    if (load_ini_text(ini, &cfg) != 0) {
+        return 1;
+    }
+
+    int rc = 0;
+    if (strcmp(cfg.dmr_udp_comp_ports, "98 = 4007, 97=4005,97=4005") != 0) {
+        DSD_FPRINTF(stderr, "dmr_udp_comp_ports parse mismatch: \"%s\"\n", cfg.dmr_udp_comp_ports);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 97U) != 4005U
+        || dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 98U) != 4007U) {
+        DSD_FPRINTF(stderr, "dmr_udp_comp_ports apply mismatch: 97=%u 98=%u\n",
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 97U),
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 98U));
+        rc |= 1;
+    }
+
+    // Applying another config replaces the map rather than merging into it.
+    dsdneoUserConfig other;
+    if (load_ini_text("[mode]\ndmr_udp_comp_ports = \"100=5016\"\n", &other) != 0) {
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&other, &opts, &state);
+    if (dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 97U) != 0U
+        || dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 100U) != 5016U) {
+        DSD_FPRINTF(stderr, "dmr_udp_comp_ports re-apply merged: 97=%u 100=%u\n",
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 97U),
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 100U));
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (strcmp(snap.dmr_udp_comp_ports, "97=4005,98=4007") != 0) {
+        DSD_FPRINTF(stderr, "snapshot dmr_udp_comp_ports mismatch: \"%s\"\n", snap.dmr_udp_comp_ports);
+        rc |= 1;
+    }
+
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (!strstr(rendered, "dmr_udp_comp_ports = \"97=4005,98=4007\"")) {
+        DSD_FPRINTF(stderr, "rendered config missing dmr_udp_comp_ports:\n%s\n", rendered);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig cfg_reload;
+    if (load_ini_text(rendered, &cfg_reload) != 0) {
+        return 1;
+    }
+    static dsd_opts opts_reload;
+    static dsd_state state_reload;
+    reset_opts_and_state(opts_reload, state_reload);
+    dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
+    if (memcmp(opts_reload.dmr_udp_comp_ports, opts.dmr_udp_comp_ports, sizeof opts.dmr_udp_comp_ports) != 0) {
+        DSD_FPRINTF(stderr, "reloaded dmr_udp_comp_ports mismatch\n");
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_dmr_udp_comp_ports_full_map_roundtrip(void) {
+    // Every index 95-127 linked to the widest port still fits the key and survives snapshot, render and reload.
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    for (unsigned i = 0; i < DSD_UDP_COMP_PORT_MAP_ENTRIES; i++) {
+        opts.dmr_udp_comp_ports[i] = 65535U;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    uint16_t parsed[DSD_UDP_COMP_PORT_MAP_ENTRIES];
+    int rc = 0;
+    if (dsd_udp_comp_port_list_parse(snap.dmr_udp_comp_ports, parsed) != 0
+        || memcmp(parsed, opts.dmr_udp_comp_ports, sizeof parsed) != 0) {
+        DSD_FPRINTF(stderr, "full dmr_udp_comp_ports snapshot lost entries: \"%s\"\n", snap.dmr_udp_comp_ports);
+        rc |= 1;
+    }
+    static char rendered[16384];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg_reload;
+    if (load_ini_text(rendered, &cfg_reload) != 0) {
+        return 1;
+    }
+    static dsd_opts opts_reload;
+    static dsd_state state_reload;
+    reset_opts_and_state(opts_reload, state_reload);
+    dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
+    if (memcmp(opts_reload.dmr_udp_comp_ports, opts.dmr_udp_comp_ports, sizeof opts.dmr_udp_comp_ports) != 0) {
+        DSD_FPRINTF(stderr, "full dmr_udp_comp_ports reload mismatch: \"%s\"\n", cfg_reload.dmr_udp_comp_ports);
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_dmr_udp_comp_ports_absent_key_keeps_existing_map(void) {
+    // A config that never mentions the key must not wipe a map the CLI already supplied.
+    dsdneoUserConfig cfg;
+    if (load_ini_text("[mode]\ndmr_mono = false\n", &cfg) != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.dmr_udp_comp_ports[97U - DSD_UDP_COMP_PORT_IDX_FIRST] = 4005U;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 97U) != 4005U) {
+        DSD_FPRINTF(stderr, "absent dmr_udp_comp_ports changed the map: 97=%u\n",
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 97U));
+        rc |= 1;
+    }
+
+    // And a snapshot of a session with no links renders no key at all.
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "dmr_udp_comp_ports")) {
+        DSD_FPRINTF(stderr, "empty port map rendered a dmr_udp_comp_ports key:\n%s\n", rendered);
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_dmr_udp_comp_ports_bad_entries_are_skipped(void) {
+    // Loading is lenient: the validator warns, apply keeps the entries that parse. Rejected here: a reserved index,
+    // an ETSI-defined one, one past 127, port 0, a port past 65535, a malformed entry and a second port for 97.
+    static const char* ini =
+        "[mode]\n"
+        "dmr_udp_comp_ports = \"97=4005,50=4005,1=4005,128=4005,99=0,99=70000,abc,97=4007,98=4007\"\n";
+    dsdneoUserConfig cfg;
+    if (load_ini_text(ini, &cfg) != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    uint16_t want[DSD_UDP_COMP_PORT_MAP_ENTRIES];
+    DSD_MEMSET(want, 0, sizeof want);
+    want[97U - DSD_UDP_COMP_PORT_IDX_FIRST] = 4005U;
+    want[98U - DSD_UDP_COMP_PORT_IDX_FIRST] = 4007U;
+    if (memcmp(want, opts.dmr_udp_comp_ports, sizeof want) != 0) {
+        DSD_FPRINTF(stderr, "bad dmr_udp_comp_ports entries not skipped: 97=%u 98=%u 99=%u\n",
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 97U),
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 98U),
+                    (unsigned)dsd_udp_comp_port_lookup(opts.dmr_udp_comp_ports, 99U));
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_tg_lockout_persistence_roundtrip(void) {
     int rc = 0;
@@ -4810,6 +5007,10 @@ main(void) {
     rc |= test_dmr_lrrp_ports_load_apply_snapshot_roundtrip();
     rc |= test_dmr_lrrp_ports_absent_key_keeps_existing_list();
     rc |= test_dmr_lrrp_ports_bad_entries_are_skipped();
+    rc |= test_dmr_udp_comp_ports_load_apply_snapshot_roundtrip();
+    rc |= test_dmr_udp_comp_ports_full_map_roundtrip();
+    rc |= test_dmr_udp_comp_ports_absent_key_keeps_existing_map();
+    rc |= test_dmr_udp_comp_ports_bad_entries_are_skipped();
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_scan_voice_gate_roundtrip();
     rc |= test_scan_max_visit_roundtrip();

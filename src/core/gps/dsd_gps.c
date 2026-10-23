@@ -910,12 +910,18 @@ apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
 }
 
 void
-decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
+decode_cellocator(dsd_opts* opts, dsd_state* state, const uint8_t* input, int len) {
     //TODO: This
     UNUSED(opts);
     UNUSED(state);
     UNUSED(input);
     UNUSED(len);
+
+    // The four-octet signature and the type octet are read below; a shorter payload has neither.
+    if (input == NULL || len < 5) {
+        DSD_FPRINTF(stderr, " Cellocator: Truncated;");
+        return;
+    }
 
     //UTF8 Text: MCGP (0x4D434750) followed by data values
     //(0417D1050000F45FD1DD00010000000097BDD56C81000009AAAABF12864C)

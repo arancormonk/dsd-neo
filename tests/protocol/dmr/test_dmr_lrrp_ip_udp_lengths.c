@@ -80,7 +80,7 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
+decode_cellocator(dsd_opts* opts, dsd_state* state, const uint8_t* input, int len) {
     (void)opts;
     (void)state;
     (void)input;
@@ -862,6 +862,80 @@ main(void) {
         rc |= expect_lacks_substr(st.dmr_lrrp_gps[0], "LRRP SRC:", "registered service is not remapped");
 
         opts.lrrp_extra_port_count = 0;
+    }
+
+    // Case 17 (issue #746): the radio's ARS port is "always 4005 and is not CPS configurable" while the
+    // server's is configurable (MOTOTRBO ARS specification 4.4.2, 4.4.4), so a registration from 4005 to a
+    // server on 4025 is ARS. A source port with no fixed meaning (4001 LRRP) does not name the service,
+    // and the unknown-port line names both ports.
+    {
+        static const uint8_t reg[] = {0x00, 0x07, 0xF0, 0x20, 0x02, 0x31, 0x31, 0x00, 0x00};
+        reset_spies();
+        size_t plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4025U, reg, sizeof reg);
+        pkt[20] = 0x0F;
+        pkt[21] = 0xA5;
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "ARS Reg: 11; Initial;", "ars from radio port 4005");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "ars from 4005 category");
+
+        reset_spies();
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4025U, reg, sizeof reg);
+        pkt[20] = 0x0F;
+        pkt[21] = 0xA1;
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "IP SRC: 1.2.3.4:4001; DST: 5.6.7.8:4025; Unknown UDP Port;",
+                                "unknown port names both ports");
+
+        // ETSI text from its default port to a server port is text; a claimed destination still wins.
+        static const uint8_t text[] = {0x00, 'O', 0x00, 'K'};
+        reset_spies();
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4025U, text, sizeof text);
+        pkt[20] = 0x13;
+        pkt[21] = 0x98;
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "ETSI TMS SRC:", "text from 5016");
+        reset_spies();
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4007U, text, sizeof text);
+        pkt[20] = 0x13;
+        pkt[21] = 0x98;
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "TMS SRC:", "claimed destination 4007");
+        rc |= expect_lacks_substr(st.dmr_lrrp_gps[0], "ETSI TMS", "claimed destination wins over 5016");
+
+        // An ack without its optional second header states no reason or session it was not sent
+        // (spec 3.4.3, 3.4.8, 3.4.9, 3.4.11).
+        static const struct {
+            uint8_t hdr;
+            const char* want;
+            const char* not_want;
+        } acks[] = {
+            {0x7F, "ARS Ack: FAIL; ", "not authorized"},
+            {0x77, "ARS User Ack: FAIL; ", "transmission failure"},
+            {0x37, "ARS User Ack: OK; ", "power cycle"},
+        };
+
+        for (size_t i = 0; i < sizeof(acks) / sizeof(acks[0]); i++) {
+            const uint8_t ack[] = {0x00, 0x01, acks[i].hdr};
+            reset_spies();
+            plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4005U, ack, sizeof ack);
+            st.dmr_lrrp_gps[0][0] = '\0';
+            decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+            rc |= expect_has_substr(st.dmr_lrrp_gps[0], acks[i].want, "bare ars ack");
+            rc |= expect_lacks_substr(st.dmr_lrrp_gps[0], acks[i].not_want, "bare ars ack invents nothing");
+        }
+
+        // A one-octet LRRP datagram does not re-publish the previous summary.
+        static const uint8_t one[] = {0x0D};
+        reset_spies();
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4001U, one, sizeof one);
+        DSD_SNPRINTF(st.dmr_lrrp_gps[0], sizeof st.dmr_lrrp_gps[0], "%s", "LRRP SRC: 1; earlier fix");
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Truncated;", "one-octet lrrp truncated");
+        rc |= expect_lacks_substr(g_datacall_text, "earlier fix", "one-octet lrrp no stale summary");
     }
 
     free(st.event_history_s);

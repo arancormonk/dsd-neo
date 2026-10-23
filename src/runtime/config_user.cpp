@@ -22,6 +22,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
@@ -1066,6 +1067,10 @@ render_output_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "\n");
 }
 
+/* Every index linked, each as "127=65535" plus a comma, must fit the rendered list. */
+static_assert(sizeof(dsdneoUserConfig::dmr_udp_comp_ports) >= DSD_UDP_COMP_PORT_MAP_SIZE * sizeof("127=65535,"),
+              "mode.dmr_udp_comp_ports must hold a fully linked map");
+
 static void
 render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "[mode]\n");
@@ -1078,6 +1083,9 @@ render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     }
     if (cfg->dmr_lrrp_ports[0]) {
         DSD_FPRINTF(out, "dmr_lrrp_ports = \"%s\"\n", cfg->dmr_lrrp_ports);
+    }
+    if (cfg->dmr_udp_comp_ports[0]) {
+        DSD_FPRINTF(out, "dmr_udp_comp_ports = \"%s\"\n", cfg->dmr_udp_comp_ports);
     }
     if (cfg->has_edacs_variant) {
         DSD_FPRINTF(out, "edacs_ea = %s\n", ini_bool(cfg->edacs_ea));
@@ -1604,6 +1612,10 @@ apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state,
         (void)dsd_lrrp_port_list_parse(cfg->dmr_lrrp_ports, opts->lrrp_extra_ports, DSD_LRRP_EXTRA_PORT_MAX,
                                        &opts->lrrp_extra_port_count);
     }
+    /* Same for the compressed-UDP port links: the map is rebuilt, not merged. */
+    if (cfg->dmr_udp_comp_ports[0]) {
+        (void)dsd_udp_comp_port_list_parse(cfg->dmr_udp_comp_ports, opts->dmr_udp_comp_ports);
+    }
     /* Must follow dsd_apply_decode_mode_preset() above: decode_mode_apply_edacs_pv()
        zeroes both fields unconditionally, so applying these first would silently
        lose them. Unlike dmr_mono there is no preset that carries the variant
@@ -2035,6 +2047,7 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
         DSD_SNPRINTF(cfg->dmr_lrrp_ports + used, sizeof cfg->dmr_lrrp_ports - used, "%s%u", used ? "," : "",
                      (unsigned)opts->lrrp_extra_ports[i]);
     }
+    dsd_udp_comp_port_list_format(opts->dmr_udp_comp_ports, cfg->dmr_udp_comp_ports, sizeof cfg->dmr_udp_comp_ports);
     /* The only snapshotter that reads dsd_state. NOT unconditional, unlike
        dmr_mono: ea_mode is TRI-state - dsd_init.c seeds it at -1 ("no EDACS
        addressing mode chosen yet"), which edacs-fme.c, provoice.c, dsd_events.c

@@ -159,9 +159,16 @@ static const char* const k_skip_exact_next_nonnull[] = {
 };
 
 static const char* const k_skip_exact_next_nonopt[] = {
-    "--lrrp-extra-port", "--rtl-udp-control", "--rtl-udp-control-bind",
-    "--config",          "--validate-config", "--api",
-    "--api-bind",        "--tetra-net",       "--tetra-key",
+    "--lrrp-extra-port",
+    "--dmr-udp-comp-port",
+    "--rtl-udp-control",
+    "--rtl-udp-control-bind",
+    "--config",
+    "--validate-config",
+    "--api",
+    "--api-bind",
+    "--tetra-net",
+    "--tetra-key",
 };
 
 static const char* const k_skip_prefix[] = {
@@ -178,6 +185,7 @@ static const char* const k_skip_prefix[] = {
     "--airspy-bias-tee=",
 
     "--lrrp-extra-port=",
+    "--dmr-udp-comp-port=",
     "--rtl-udp-control=",
     "--rtl-udp-control-bind=",
     "--api=",

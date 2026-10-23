@@ -372,8 +372,19 @@ does.
   The registered location port 4001 is always decoded; this adds ports a system uses
   instead of it, which would otherwise be reported as `Unknown UDP Port`. Ports the decoder
   already recognises (4005 ARS, 4007 TMS, and so on) keep their own service; the mapping
-  only applies to ports that would otherwise be unknown. Config key: `mode.dmr_lrrp_ports`
+  only applies to ports that would otherwise be unknown. It covers compressed UDP/IPv4 data
+  (SAP 3) as well as IPv4 datagrams. Config key: `mode.dmr_lrrp_ports`
   (comma-separated); a CLI list replaces the config list.
+- `--dmr-udp-comp-port <idx>=<port>` Decode DMR compressed-UDP port index `<idx>` (95-127) as UDP port `<port>`, e.g.
+  `--dmr-udp-comp-port 97=4005`. Repeatable, one pair per option; the `--dmr-udp-comp-port=<idx>=<port>` form also
+  works. A compressed UDP/IPv4 header (ETSI TS 102 361-3) carries a 7-bit port index instead of the port. ETSI defines
+  indices 0-2 and reserves 3-94, but leaves 95-127 to the manufacturer, and the radio's codeplug links them to UDP
+  ports, so nothing on the air names the port. A mapped index decodes through the same UDP port services as
+  uncompressed IP (4005 ARS, 4007 TMS, 4001 LRRP, ...), with `--lrrp-extra-port` ports decoded as LRRP too. Without a
+  mapping, only ARS is recognised, and only when the payload is exactly one ARS message. An index outside 95-127, a
+  port outside 1-65535, or a second, different port for an index is an error; repeating the same pair is not. Config
+  key: `mode.dmr_udp_comp_ports` (comma-separated, e.g. `"97=4005,98=4007"`); the first CLI entry replaces the config
+  list.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, play encrypted audio, whether or not a loaded key decrypts it. It applies to
   the protocols whose encryption the decoder classifies: DMR, P25 (encrypted P25 without a key plays only while

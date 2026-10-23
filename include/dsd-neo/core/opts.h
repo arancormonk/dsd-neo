@@ -37,7 +37,11 @@
 
 /* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-extra-port or the
    mode.dmr_lrrp_ports config key; see core/lrrp_ports.h for the shared helpers. */
-#define DSD_LRRP_EXTRA_PORT_MAX 8
+#define DSD_LRRP_EXTRA_PORT_MAX       8
+
+/* UDP ports linked to the manufacturer-specific DMR compressed-header port indices 95-127 with
+   --dmr-udp-comp-port or the mode.dmr_udp_comp_ports config key; see core/udp_comp_ports.h. */
+#define DSD_UDP_COMP_PORT_MAP_ENTRIES 33
 
 /**
  * @brief Audio input source types.
@@ -410,7 +414,8 @@ struct dsd_opts {
     char symbol_out_open_path[1024]; /* the capture file symbol_out_f writes, named when it opened */
     char symbol_capture_last[1024];  /* the last capture closed this session: what Replay last replays (issue #634) */
     char lrrp_out_file[1024];
-    uint16_t lrrp_extra_ports[DSD_LRRP_EXTRA_PORT_MAX]; //site-mapped UDP ports decoded as LRRP
+    uint16_t lrrp_extra_ports[DSD_LRRP_EXTRA_PORT_MAX];         //site-mapped UDP ports decoded as LRRP
+    uint16_t dmr_udp_comp_ports[DSD_UDP_COMP_PORT_MAP_ENTRIES]; //port per compressed index 95-127, 0 unmapped
     char event_out_file[1024];
     char frame_log_file[1024];
     char p25_sm_log_file[1024];
