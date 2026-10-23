@@ -500,6 +500,13 @@ typedef struct {
  * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
  * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
  */
+/* NXDN trunking: where the receiver followed a call to (dsd_state::nxdn_follow). */
+typedef struct {
+    long int freq_hz; /**< the voice channel's frequency; 0 none */
+    uint16_t chan;    /**< its channel number (DFA OFN on a DFA site; Type-D repeater number) */
+    uint8_t repeater; /**< Type-D go-to repeater (1-30); 0 on Type-C */
+} dsd_nxdn_follow_route;
+
 typedef struct p25_bandplan_row {
     uint8_t iden;    // identifier 0-15
     uint8_t is_tdma; // 1 seeds p25_iden_tdma, 0 seeds p25_iden_fdma
@@ -1976,6 +1983,11 @@ struct dsd_state {
     // NXDN trunking: last observed call grant mapping (for UI/logging)
     uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
+    /* NXDN trunking: the voice channel route the receiver last followed a grant or busy repeater message to
+     * (nxdn_element.c). It names only where the receiver went, never which call is on it, and holds only while the
+     * receiver is still tuned there (trunk_is_tuned with trunk_vc_freq[0] == freq_hz). Travels with a trunk scan
+     * target. */
+    dsd_nxdn_follow_route nxdn_follow;
 
     //multi-key array
     int keyloader;            //let us know the keyloader is active

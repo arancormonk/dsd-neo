@@ -4881,9 +4881,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `noCarrier()` and the carrier boundary clear both with trunking off. Trunk scan keeps the pair in each target's
     snapshot beside `p25_vc_freq[]`, and a fresh target starts without one: a rotation between conventional P25
     targets runs neither, so the incoming carrier's call with the same target would otherwise take the other's grant.
-  - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the last
-    grant's channel (`nxdn_grant_chan`) only when that grant's frequency is the followed one, since a duplicate
-    assignment decoded while tuned moves it without moving the receiver.
+  - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the channel of
+    the followed route (`dsd_state::nxdn_follow`: written after an accepted tune, cleared by DISC's return and a Type-D
+    termination, kept in each trunk scan target's snapshot, and valid only while the receiver is still tuned to its
+    frequency, `nxdn_follow_valid()`), never the last grant's (`nxdn_grant_chan`), since a duplicate assignment decoded
+    while tuned moves that without moving the receiver.
   - The P25 encryption lockout's notice for a call the slot has not published (the synthetic snapshot of
     `p25_lockout_snapshot_from_observation()`) carries the frequency of the grant the SM tuned the slot to when that
     grant names the locked-out target (`p25_lockout_grant_frequency()`), as `p25_call_publish_observation()` stamps

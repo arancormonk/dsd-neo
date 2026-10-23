@@ -34,6 +34,8 @@
 
 void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
+void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
+                                  size_t ElementsContentBits);
 unsigned int dsd_call_state_stub_event_sync_count(uint8_t slot);
 
 typedef enum {
@@ -691,6 +693,73 @@ nxdn_run_scch_identity_context_case(void) {
     return rc;
 }
 
+/* ---- A call is held -------------------------------------------------------------------------------------------- */
+
+/* A Type-C fixture with channels 16-19 mapped and the control channel known, untuned on the control channel. */
+static void
+type_c_fixture(void) {
+    const nxdn_case base = {"type-c", NXDN_MATRIX_TYPE_C, 0x04U, 1U, 2100U, 1100U, 16U, 0, 0, 0, 0, 0, 0, 936012500L};
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    nxdn_setup_fixture(&base);
+    for (uint16_t ch = 16U; ch <= 19U; ch++) {
+        g_state.trunk_chan_map[ch] = 936012500L + ((long)(ch - 16U) * 500000L);
+    }
+    nxdn_install_hooks();
+}
+
+static long
+type_c_freq(uint16_t ch) {
+    return 936012500L + ((long)(ch - 16U) * 500000L);
+}
+
+static void
+send_assignment(uint8_t message_type, uint16_t target, uint16_t channel) {
+    const nxdn_case c = {"", NXDN_MATRIX_TYPE_C, message_type, 1U, 2100U, target, channel, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t message[128];
+    build_vcall_assgn(message, &c);
+    NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message);
+}
+
+/* A checked VCALL of a confirmed transmission on the channel the receiver is on. */
+static void
+send_vcall(uint16_t source, uint16_t target) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x01U);
+    write_bits_u32(bits, 16U, 1U, 3U);
+    write_bits_u32(bits, 24U, source, 16U);
+    write_bits_u32(bits, 40U, target, 16U);
+    g_state.nxdn_confirmed = 1;
+    NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
+/* Voice is being heard on the receiver's channel now. */
+static void
+voice_live(void) {
+    g_state.last_vc_sync_time = dsd_decode_time();
+}
+
+/* A duplicate assignment that is not followed overwrites the last grant's channel, not the followed route: a new call
+ * heard on the followed carrier names the followed channel. */
+static int
+nxdn_run_vcall_names_followed_route_case(void) {
+    static const char* const name = "type-c-vcall-route";
+    type_c_fixture();
+    send_assignment(0x04U, 1100U, 16U);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    send_vcall(2300U, 1300U);
+    dsd_call_snapshot call;
+    int rc = 0;
+    rc |= nxdn_expect(g_tune_count == 1, name, "refused", "duplicate not followed");
+    rc |= nxdn_expect(g_state.nxdn_grant_chan == 17U, name, "refused", "last grant names the refused channel");
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_target_id == 1300U, name, "vcall",
+                      "new call published");
+    rc |= nxdn_expect(call.channel == 16U && call.frequency_hz == type_c_freq(16U), name, "vcall",
+                      "new call names the followed channel");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -753,6 +822,7 @@ main(void) {
     rc |= nxdn_run_scch_termination_case();
     rc |= nxdn_run_scch_busy_enrich_case();
     rc |= nxdn_run_scch_identity_context_case();
+    rc |= nxdn_run_vcall_names_followed_route_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

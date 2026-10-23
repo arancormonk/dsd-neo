@@ -73,6 +73,7 @@ static void nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex,
 static void nxdn_print_group_label(const dsd_state* state, uint32_t id);
 static void nxdn_anchor_control_channel_from_current_tuner(const dsd_opts* opts, dsd_state* state, int only_if_missing);
 static nxdn_element_handler_fn nxdn_element_dispatch_handler(uint8_t message_type);
+static void nxdn_follow_release(dsd_state* state);
 static void nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits);
 static void nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                               size_t elements_bits);
@@ -490,6 +491,7 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
             return;
         }
         opts->trunk_is_tuned = 0;
+        nxdn_follow_release(state);
 
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
@@ -1475,6 +1477,30 @@ nxdn_policy_log_block(const dsd_opts* opts, int is_private_call, uint32_t target
                 dsd_tg_policy_block_reason_label(decision->block_reasons), target, source);
 }
 
+/* ---- Followed route (Type-C and Type-D trunking) --------------------------------------------------------------- */
+
+/* The followed route holds while the receiver is still tuned to it: an engine-level release (the hangtime return, a
+ * trunk scan or operator move) leaves the receiver elsewhere without a word to NXDN. */
+static int
+nxdn_follow_valid(const dsd_opts* opts, const dsd_state* state) {
+    const long int freq = state->nxdn_follow.freq_hz;
+    return freq > 0 && dsd_opts_trunk_vc_followed(opts) && state->trunk_vc_freq[0] == freq;
+}
+
+/* The receiver went to @p freq: the route is the followed one's. */
+static void
+nxdn_note_follow(dsd_state* state, uint16_t chan, long int freq, uint8_t repeater) {
+    state->nxdn_follow.freq_hz = freq;
+    state->nxdn_follow.chan = chan;
+    state->nxdn_follow.repeater = repeater;
+}
+
+/* The receiver went back to the control channel: no route. */
+static void
+nxdn_follow_release(dsd_state* state) {
+    DSD_MEMSET(&state->nxdn_follow, 0, sizeof(state->nxdn_follow));
+}
+
 static uint8_t
 nxdn_message_type_from_bits(const uint8_t* Message) {
     uint8_t message_type = (Message[2] & 1U) << 5U;
@@ -1686,6 +1712,7 @@ nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_
             return;
         }
         nxdn_vcall_assgn_load_scrambler_key(opts, state, info);
+        nxdn_note_follow(state, (state->nxdn_rcn == 1) ? info->ofn : (uint16_t)(info->channel & 0x3FFU), freq, 0U);
     } else if (opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->destination_id, info->source_unit_id, &policy_decision);
     }
@@ -2458,13 +2485,14 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         protocol = DSD_SYNC_NXDN_POS;
     }
     /* A VCALL carries no channel or frequency of its own (issue #575). The call may name only the voice channel the
-     * receiver followed a grant to: trunk_vc_freq[] while that holds, and the last grant's channel only when that
-     * grant is the one followed. Without trunking no grant is followed, and trunk_vc_freq[] holds whatever a DMR grant
-     * decoded with trunking off wrote for display; a grant decoded while tuned (a duplicate assignment for another
-     * call) moves nxdn_grant_chan without moving the receiver. */
-    const long int followed_freq = dsd_opts_trunk_vc_followed(opts) ? state->trunk_vc_freq[0] : 0;
-    const uint16_t followed_chan =
-        (followed_freq != 0 && state->nxdn_grant_freq == followed_freq) ? state->nxdn_grant_chan : 0U;
+     * receiver followed a grant to: the followed route (nxdn_follow_valid()) while the receiver is still there, else
+     * trunk_vc_freq[] while tuned, with no channel. Without trunking no grant is followed, and trunk_vc_freq[] holds
+     * whatever a DMR grant decoded with trunking off wrote for display; a grant decoded while tuned (a duplicate
+     * assignment for another call) moves nxdn_grant_chan without moving the receiver, so it never names the channel. */
+    const int route_held = nxdn_follow_valid(opts, state);
+    const long int followed_freq =
+        route_held ? state->nxdn_follow.freq_hz : (dsd_opts_trunk_vc_followed(opts) ? state->trunk_vc_freq[0] : 0);
+    const uint16_t followed_chan = route_held ? state->nxdn_follow.chan : 0U;
     const dsd_call_observation observation = {
         .protocol = protocol,
         .slot = 0U,
@@ -2845,6 +2873,11 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         (void)keyring_load_scalar_key(state, 0, (int)info->id);
         if (state->M == 1) {
             nxdn_cipher_force(state, 0x1);
+        }
+        if (info->rep1 == 31U) {
+            nxdn_follow_release(state); // the termination's return to the control channel
+        } else {
+            nxdn_note_follow(state, info->rep1, freq, info->rep1);
         }
     } else if (opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->id, 0, &policy_decision);
