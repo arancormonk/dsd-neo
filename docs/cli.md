@@ -299,8 +299,11 @@ Windows console runs:
   or rotating `--trunk-scan` targets, each line names the channel it was heard on in brackets between the
   timestamp and the protocol token. A [service name](#receive-filters-and-service-names) that labels the traffic
   takes that place, scanning or not; other lines from a receiver that is not scanning a named channel are unchanged.
-  In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
-  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]`, while FDMA rows carry no slot tag.
+  A DMR, P25 Phase 2 or X2-TDMA line ends with the over-the-air slot, `Slot 1;` or `Slot 2;`. The single-slot DMR
+  decoder (`-fr`, `-nm`) carries both slots on one lane and logs the slot its bursts' CACH proved (`Slot 1;` while
+  none is proven). In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
+  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]`), while
+  FDMA rows carry no slot tag.
   DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`
   carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
   as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT, USBD and
@@ -1379,7 +1382,8 @@ channel proved after its tune are remembered: a tune forgets the control channel
 confirmation locks too), so they never name, split or admit the voice channel's calls. A slot
 filter judges the over-the-air slot even on the single-slot DMR decoder (`-fr`, `-nm`): a repeater's slot is proven
 by two consecutive bursts' CACH, a direct-mode one by its sync word, and the first bursts stay Checking. A proven
-move to the other slot starts a new call there, even with the same colour code.
+move to the other slot starts a new call there, even with the same colour code; a call that opens on the other slot
+with its voice header is one call there from the header on.
 Rejected traffic does not refresh an activity hold. A manually held conventional channel stays selected and muted.
 
 Names use repeatable `--slot-name`, `--dcc-name`, `--ran-name`, `--nac-name` and `--tone-name` options:
@@ -2216,8 +2220,10 @@ Misc
 - `DSD_NEO_RT_PRIO_USB|DSD_NEO_RT_PRIO_DONGLE|DSD_NEO_RT_PRIO_DEMOD=<1..99>` — per-thread RT priority (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_CPU_USB|DSD_NEO_CPU_DONGLE|DSD_NEO_CPU_DEMOD=<cpu>` — per-thread CPU affinity (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
-- `DSD_NEO_NO_SIGNAL_HANDLERS=1` — do not install the `SIGINT`/`SIGTERM` handlers; for hosts that embed the
-  decoder in their own process and drive shutdown themselves
+- `DSD_NEO_NO_SIGNAL_HANDLERS=1` — do not install the `SIGINT`/`SIGTERM`/`SIGHUP` handlers; for hosts that embed
+  the decoder in their own process and drive shutdown themselves. Without it, a hangup (`SIGHUP`, the terminal closed
+  or an SSH session dropped) shuts down as `SIGINT` does, finalizing recordings and the call in progress, unless the
+  session was started ignoring it (`nohup`)
 - `DSD_NEO_LOG_SINK=stderr|platform` — destination for runtime log messages (default `stderr`). `platform`
   selects the operating system's native logging facility where one exists — on Android that is logcat under
   the `dsd-neo` tag, with severities mapped from the log level; elsewhere it behaves like `stderr`. Read once

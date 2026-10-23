@@ -115,8 +115,9 @@ Notes:
   reject the import, since an analog row decrypts nothing.
 - Under `-Y`, a declared mode selects its decoder class even when the global preset excludes it. P25 enables both
   phases and excludes DMR and X2-TDMA. Fully declared mixed lists work without `-fa`; untyped lists retain their
-  existing behavior. The initial input uses global settings until the first scheduled row entry. Explicit global
-  modulation locks remain effective. Manual `L` cycling and avoid/advance use the same row-entry rules and visit
+  existing behavior. The initial input uses global settings until the first scheduled row entry: a row's own receive
+  filters and service names, like its mode, apply from then on, while the global ones apply from startup. Explicit
+  global modulation locks remain effective. Manual `L` cycling and avoid/advance use the same row-entry rules and visit
   same-frequency rows with different metadata. Zero-frequency placeholders change neither the mode nor keys.
   An NXDN48 row needs only `mode=nxdn48`, not an outer `-fi` or a decoder switch in `options`. Audio keeps the
   startup output layout; mono voice is duplicated into both channels when that layout is stereo.
@@ -315,13 +316,13 @@ rewrite the imported CSV or change a permanent target ID.
 
 `nfm` and `am` channel-map rows and `nfm-conventional` and `am-conventional` trunk-scan targets accept only the options
 that mean something for an analog channel: `--scan-max-visit-ms`, `--squelch-db` or `--squelch` (an auto squelch
-included) and the width option of their own kind,
-`--nfm-bandwidth-hz` on NFM and `--am-bandwidth-hz` on AM, and on NFM the tone policy (`--tone-allow`, `--tone-block`,
-`--no-tone-filter`). Key switches (`-b`, `-H`, `-1`, `-R`, `-k`, `-K`, `--dmr-tg-key-csv`, `--dmr-tg-key-clear`,
-`--no-decryption-keys`, `--key-profile-ref`), forcing (`-4`, `-0`, `--dmr-force-algid`, `--no-force-key`), CRC policy
-(`-F`, `--strict-crc`), `-^`, `-G`, data- and encrypted-call policy (`-e`, `--no-data-calls`, `--enc-*`) and the
-voice-gate switches describe digital frames an analog channel never carries, and are rejected with
-`not supported for this mode/target`.
+included), the width option of their own kind, `--nfm-bandwidth-hz` on NFM and `--am-bandwidth-hz` on AM,
+`--no-service-names`, and on NFM the tone policy (`--tone-allow`, `--tone-block`, `--no-tone-filter`) and tone names
+(`--tone-name`, CTCSS or DCS). Key switches (`-b`, `-H`, `-1`, `-R`, `-k`, `-K`, `--dmr-tg-key-csv`,
+`--dmr-tg-key-clear`, `--no-decryption-keys`, `--key-profile-ref`), forcing (`-4`, `-0`, `--dmr-force-algid`,
+`--no-force-key`), CRC policy (`-F`, `--strict-crc`), `-^`, `-G`, data- and encrypted-call policy (`-e`,
+`--no-data-calls`, `--enc-*`) and the voice-gate switches describe digital frames an analog channel never carries, and
+are rejected with `not supported for this mode/target`.
 
 `--nfm-bandwidth-hz` and `--am-bandwidth-hz` are the full RF channel width the analog channel filter protects while the
 row is on air (the same contracts as the receiver's NFM and AM widths); a row without one uses the configured width of

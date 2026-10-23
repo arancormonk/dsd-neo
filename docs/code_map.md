@@ -7432,13 +7432,31 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   on other trunked protocols (NXDN) gets a 4 s window from the tune, and admitted traffic or one no filter judges keeps
   the channel); an admitted call in progress (`dsd_call_state_admitted_call_active()`, data included) keeps it, as it
   keeps a `-Y` channel with voice-only off. The single-slot DMR lane is re-proven when a burst names the other slot. A
-  rejected Phase 2 call's queued audio never plays under a talkgroup hold. A P25 start while Checking keeps its identity
-  and epoch (its PTT crypto fields survive the NAC proof). A segment staged while admitted commits when a live edit
-  rejects its call. A suspended scan scope (CONFIG_APPLY) defers the boundary to `dsd_scan_mode_resume()`. Signal search
-  ignores rejected or checking traffic, and the terminal names an admitted call by its service.
+  voice LC header the single-slot output folds onto lane 0 applies that rule once the lane's call took it (its epoch or
+  revision moved during the dispatch, on the header's slot; `dmr_data_header_opened_lane_call()`), instead of the voice
+  lane's restored proof, so the call it opens on the other slot is not ended by the previous call's proof; its `-J` line
+  names the row's proven over-the-air slot (`watchdog_event_log_slot_number()`), the lane only while none is proven. A
+  rejected Phase 2 call's queued audio never plays under a talkgroup hold. A P25 start while
+  Checking keeps its identity and epoch (its PTT crypto fields survive the NAC proof). A segment staged while admitted
+  commits when a live edit rejects its call. A suspended scan scope (CONFIG_APPLY) defers the boundary to
+  `dsd_scan_mode_resume()`. Signal search ignores rejected or checking traffic, and the terminal names an admitted call
+  by its service.
 - Canonical calls carry a separate service label, received identity and admission verdict. A confirmed identity
   change starts another epoch; completed event/history rows retain their labels. Frontend/API history merging checks
   confirmed service identities. Channel labels, numeric IDs and imported files keep their existing meaning.
+- Trunk-scan departures end the outgoing target's calls before its snapshot is saved, so rows and per-call recordings
+  (the NFM reception's included, which lives outside the snapshot) close under its own label and names: the visit cap
+  and an operator's advance or avoid release the carrier (`trunk_scan_advance_releasing()`; an operator's departure from
+  a park still pending, or one that never landed, is an ordinary one), and every other departure ends the calls in
+  `trunk_scan_switch_to()` and re-saves the rollback snapshot. `dmr_sm_abandon_carrier()` keeps the destination an
+  ordinary release would return to (a Cap+ rest channel a voice LC named). `runtime/control_pump.h`
+  `dsd_runtime_controls_need_frame_loop()` (installed from `dsd_app_commands_need_frame_loop()`: any queued command but
+  those on `k_deferred_commands` (display, audio, keys and decryption, recording, front-end slider tweaks), with
+  `DSP_OP` and `AIRSPY_SET` judged by their payload) lets `dmrBS()`, which holds the decoder for a whole repeater
+  carrier, return to the frame loop at a burst boundary; other commands wait for the carrier to end. EDACS analog voice
+  (`edacs_analog_call()`) keeps every command until its call ends: leaving the loop early ends the call, which cannot be
+  re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored, and the runtime
+  config's snapshot comparison includes `no_signal_handlers_*`.
 - `engine/analog_call.c` owns conventional NFM call/recording lifecycle in the engine scan-owner extension. Runtime's
   frame-sync hooks accept DSP monitor blocks without a backend-to-engine dependency. Speaker output is independent
   of reception and recording. The existing analog sink provides a separate 48 kHz call-WAV conversion lane;
