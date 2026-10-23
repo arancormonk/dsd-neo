@@ -9,12 +9,14 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -1959,6 +1961,40 @@ test_capacity_plus_rest_lsn_spans_sixteen_slots(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// The rest LSN steers Cap+ following, so only an LC whose own check passed announces it: a voice header or terminator
+// whose RS check failed, or an embedded LC whose 5-bit checksum failed, leaves the last checked rest channel standing
+// even though its FEC came back clean.
+static void
+test_capacity_plus_rest_lsn_needs_a_checked_lc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    static const uint8_t k_types[] = {1U, 2U, 3U};
+
+    cap_plus_state_init(&opts, &state, history);
+    build_cap_plus_group_lc(bits, 0U, 90U, 3U, 1001U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert(state.dmr_rest_channel == 3);
+
+    for (size_t i = 0; i < sizeof k_types / sizeof k_types[0]; i++) {
+        irr = 0;
+        build_cap_plus_group_lc(bits, 0U, 90U, 5U, 1001U);
+        dmr_flco(&opts, &state, bits, 0U, &irr, k_types[i]);
+        assert(irr == 0);
+        assert(state.dmr_rest_channel == 3);
+    }
+
+    irr = 0;
+    build_cap_plus_group_lc(bits, 0U, 90U, 5U, 1001U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert(state.dmr_rest_channel == 5);
+    dsd_state_ext_free_all(&state);
+}
+
 // ---- Capacity Plus channel-status identity: the status that sends Cap+ to a carrier names the calls on it ----
 
 #define CAPPLUS_CC_FREQ   851000000L
@@ -2268,6 +2304,108 @@ test_capacity_plus_terminator_reports_rest_lsn_and_ends_call(void) {
     assert(call.epoch == epoch);
     assert(call.phase == DSD_CALL_PHASE_ENDED);
     assert(call.ota_target_id == 109U);
+    dsd_state_ext_free_all(&state);
+}
+
+static dsd_trunk_tune_result
+capplus_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    opts->rtlsdr_center_freq = (uint32_t)state->trunk_cc_freq;
+    opts->trunk_is_tuned = 0;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+// A call a Cap+ status followed releases to the rest channel announced last. A voice LC on the followed carrier that
+// failed its check and names another rest channel (LSN 5, 852 MHz) must not move that release; a checked one does.
+static void
+test_capacity_plus_release_takes_rest_only_from_a_checked_lc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    static const uint8_t k_types[] = {1U, 3U};
+
+    for (uint32_t checked = 0U; checked < 2U; checked++) {
+        for (size_t i = 0; i < sizeof k_types / sizeof k_types[0]; i++) {
+            uint32_t irr = 0;
+            capplus_follow_env(&opts, &state, history);
+            opts.frame_dmr = 1; // the machine's ticks run for a DMR session
+            dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+                .tune_to_freq_request = capplus_tune_to_freq,
+                .tune_to_cc_request = capplus_tune_to_freq,
+                .return_to_cc_request = capplus_return_to_cc,
+            });
+            capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, CAPPLUS_TG_SLOT0, 0, 0U);
+            dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+            assert(opts.rtlsdr_center_freq == (uint32_t)CAPPLUS_VC_FREQ && dmr->state == DMR_SM_TUNED);
+            assert(state.dmr_rest_channel == 1);
+
+            state.currentslot = 0;
+            build_cap_plus_group_lc(bits, 0U, CAPPLUS_TG_SLOT0, 5U, 4321U);
+            dmr_flco(&opts, &state, bits, checked, &irr, k_types[i]);
+            assert(irr == 0);
+            assert(state.dmr_rest_channel == (checked ? 5 : 1));
+
+            dmr->t_tune_m -= dmr->grant_timeout_s + 0.5;
+            dmr_sm_tick_ctx(dmr, &opts, &state);
+            assert(dmr->state != DMR_SM_TUNED);
+            assert(opts.rtlsdr_center_freq == (uint32_t)(checked ? CAPPLUS_OTHER_VC : CAPPLUS_CC_FREQ));
+            capplus_env_done(&state);
+        }
+    }
+}
+
+// A Hytera XPT LC names the site XPT, which changes how later LCs and data headers are read, and its free channel;
+// one that failed its check does neither.
+static void
+test_hytera_xpt_alert_needs_a_checked_lc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    static const uint8_t k_types[] = {1U, 3U};
+
+    for (size_t i = 0; i < sizeof k_types / sizeof k_types[0]; i++) {
+        uint32_t irr = 0;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = 0;
+        build_regular_flco(bits, 0x09U, 0x68U, 0x00U, 0U, 0U);
+        write_bits_u64(bits, 24U, 6U, 4U);
+        dmr_flco(&opts, &state, bits, 0U, &irr, k_types[i]);
+        assert(irr == 0);
+        assert(state.dmr_branding[0] == '\0');
+        assert(state.dmr_branding_sub[0] == '\0');
+        assert(state.dmr_site_parms[0] == '\0');
+        dsd_state_ext_free_all(&state);
+    }
+}
+
+// The LC's FID names the vendor (dmr_mfid), which the DMR status line shows as the site's branding ("Hytera"): a voice
+// LC that failed its check names none.
+static void
+test_vendor_id_needs_a_checked_lc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    static const uint8_t k_types[] = {1U, 2U, 3U};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.dmr_mfid = -1;
+    for (size_t i = 0; i < sizeof k_types / sizeof k_types[0]; i++) {
+        uint32_t irr = 0;
+        build_regular_flco(bits, 0x00U, 0x68U, 0x00U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 0U, &irr, k_types[i]);
+        assert(irr == 0);
+        assert(state.dmr_mfid == -1);
+    }
+
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x68U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert(state.dmr_mfid == 0x68);
     dsd_state_ext_free_all(&state);
 }
 
@@ -2595,6 +2733,57 @@ test_encrypted_flco_lockout_return_keeps_canonical_calls_ended(void) {
     assert(opts.trunk_is_tuned == 0);
     assert_call(&state, 0U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
     assert_call(&state, 1U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+    dsd_state_ext_free_all(&state);
+}
+
+// The P_CLEAR the lockout synthesizes to release the channel carries FID 0xFF and passes as CRC-checked, but nothing in
+// it was received: it still releases the channel, and names nothing in the received identity record, where the vendor a
+// checked message noted stays.
+static void
+test_encrypted_flco_lockout_release_names_no_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    opts.trunk_is_tuned = 1;
+    state.currentslot = 0;
+    state.trunk_cc_freq = 851250000L;
+    state.trunk_vc_freq[0] = 852000000L;
+    state.trunk_vc_freq[1] = 852000000L;
+    state.dmrburstL = 16;
+    state.dmrburstR = 9;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    dsd_rxid_note_dmr_vendor(&state, 0x68U);
+    const dsd_received_identity before = state.rx_id;
+
+    dmr_sm_init(&opts, &state);
+    dmr_sm_get_ctx()->state = DMR_SM_TUNED;
+    s_return_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .return_to_cc_request = capture_return_to_cc_ending_calls,
+    });
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+    assert(irr == 0U);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    assert(s_return_to_cc_calls == 1);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.rx_id.dmr_vendor == 0x68U);
+    assert(state.rx_id.valid == before.valid && state.rx_id.fresh == before.fresh && state.rx_id.epoch == before.epoch);
+    assert(state.rx_id.access == 3U && state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR);
     dsd_state_ext_free_all(&state);
 }
 
@@ -3660,13 +3849,17 @@ main(void) {
     test_capacity_plus_header_names_the_imported_talkgroup();
     test_capacity_plus_embedded_lc_matches_header_identity();
     test_capacity_plus_rest_lsn_spans_sixteen_slots();
+    test_capacity_plus_rest_lsn_needs_a_checked_lc();
     test_capacity_plus_terminator_reports_rest_lsn_and_ends_call();
+    test_capacity_plus_release_takes_rest_only_from_a_checked_lc();
     test_capacity_plus_status_names_calls_no_lc_named();
     test_capacity_plus_status_seed_yields_to_lc_identity();
     test_capacity_plus_status_seed_expires_with_its_carrier();
     test_capacity_plus_status_seed_waits_for_pending_tune();
     test_capacity_plus_status_seed_carries_fragment_provenance();
     test_hytera_xpt_alert_records_free_lcn_and_targets();
+    test_hytera_xpt_alert_needs_a_checked_lc();
+    test_vendor_id_needs_a_checked_lc();
     test_cach_single_fragment_throttle_and_reject_paths();
     test_cach_single_fragment_labels_cover_known_and_reserved_codes();
     test_cach_single_fragment_throttle_runs_on_the_decode_clock();
@@ -3675,6 +3868,7 @@ main(void) {
     test_cach_fragment_counter_overflow_resets_fragments();
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
     test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
+    test_encrypted_flco_lockout_release_names_no_identity();
     test_encrypted_flco_lockout_preserves_active_companion_call();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_embedded_lc_enc_requires_corroboration_for_lockout();

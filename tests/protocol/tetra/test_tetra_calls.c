@@ -16,6 +16,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -153,6 +154,7 @@ session_history(session* s) {
     ts->mnc = 1001U;
     ts->colour = 25U;
     tetra_publish(s->state);
+    dsd_rxid_note_tetra_cell(s->state, 262U, 1001U, 25U); /* the cell's checked BSCH, received on this carrier */
 }
 
 static dsd_call_snapshot

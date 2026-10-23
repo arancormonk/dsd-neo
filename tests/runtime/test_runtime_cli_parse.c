@@ -733,6 +733,56 @@ test_F_relaxes_crc_and_notice_omits_nxdn(void) {
     return test_rc;
 }
 
+/* -X sets the Phase 2 seed by hand, as the menu does: a full WACN/SYSID/NAC triple is hand-set (no network status
+ * may overwrite it) and unproven until a burst decodes with it; a triple with a zero part is not hand-set. */
+static int
+test_X_seed_is_hand_set(void) {
+    static const struct {
+        const char* hex;
+        unsigned long long wacn;
+        unsigned long long sysid;
+        unsigned long long nac;
+        int hardset;
+    } cases[] = {
+        {"BEE00ABC123", 0xBEE00ULL, 0xABCULL, 0x123ULL, 1},
+        {"BEE00ABC000", 0xBEE00ULL, 0xABCULL, 0x000ULL, 0},
+    };
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        initOpts(opts);
+        initState(state);
+        char arg0[] = "dsd-neo";
+        char arg_X[] = "-X";
+        char hex[16];
+        DSD_SNPRINTF(hex, sizeof hex, "%s", cases[i].hex);
+        char* argv[] = {arg0, arg_X, hex, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || state->p2_wacn != cases[i].wacn || state->p2_sysid != cases[i].sysid
+            || state->p2_cc != cases[i].nac || state->p2_hardset != cases[i].hardset || state->p2_cc_verified != 0U) {
+            DSD_FPRINTF(stderr,
+                        "-X %s: rc=%d WACN %05llX SYSID %03llX NAC %03llX hardset %d verified %u, want hardset %d\n",
+                        cases[i].hex, rc, state->p2_wacn, state->p2_sysid, state->p2_cc, state->p2_hardset,
+                        (unsigned)state->p2_cc_verified, cases[i].hardset);
+            test_rc = 1;
+        }
+        freeState(state);
+    }
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 static int
 expect_numeric_parse_error(const char* option, const char* value) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -10246,6 +10296,7 @@ main(void) {
     rc |= test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open();
     rc |= test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open();
     rc |= test_F_relaxes_crc_and_notice_omits_nxdn();
+    rc |= test_X_seed_is_hand_set();
     rc |= test_tg_lockout_persistence_flags();
     return rc;
 }

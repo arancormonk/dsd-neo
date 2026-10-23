@@ -23,12 +23,14 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/trellis.h>
@@ -77,6 +79,13 @@ int
 nxdn_ran_from_trellis(const uint8_t* trellis_buf) {
     return (trellis_buf[2] << 5) | (trellis_buf[3] << 4) | (trellis_buf[4] << 3) | (trellis_buf[5] << 2)
            | (trellis_buf[6] << 1) | trellis_buf[7];
+}
+
+/* The RAN a channel that passed its own check carries (a CAC, a FACCH2/UDCH, a SACCH once the transmission is
+   confirmed): the carrier's received access code. */
+static void
+nxdn_note_received_ran(dsd_state* state, int ran) {
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, (uint8_t)DSD_ACCESS_CODE_RAN, (uint16_t)ran);
 }
 
 void
@@ -266,6 +275,7 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
         if (nxdn_confirm_is_confirmed(state)) {
             state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_last_ran_stand_in = 0U;
+            nxdn_note_received_ran(state, nxdn_ran_from_trellis(trellis_buf));
         }
         state->nxdn_part_of_frame = 3;
         DSD_FPRINTF(stderr, "PF 1/1");
@@ -309,6 +319,7 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
             const int ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_ran = state->nxdn_last_ran = ran;
             state->nxdn_last_ran_stand_in = 0U;
+            nxdn_note_received_ran(state, ran);
         }
         state->nxdn_sf = sf;
         state->nxdn_part_of_frame = part_of_frame;
@@ -512,6 +523,7 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         state->nxdn_last_ran = (unsigned int)ran;
         state->nxdn_last_ran_stand_in = 0U;
+        nxdn_note_received_ran(state, ran);
         nxdn_print_last_ran(state);
         state->nxdn_part_of_frame = 3 - sf;
     } else {
@@ -630,7 +642,10 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     if (crc == 0) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         /* Only an outbound control channel carries a CAC: this one names the control channel, before its elements
-           (a grant among them) are decoded. */
+           (a grant among them) are decoded, and in the received identity before anything here can tune away from
+           this carrier. */
+        nxdn_note_received_ran(state, nxdn_ran_from_trellis(trellis_buf));
+        dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, dsd_opts_tuned_freq_hz(opts));
         nxdn_cc_hunt_note_control(opts, state);
         state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);

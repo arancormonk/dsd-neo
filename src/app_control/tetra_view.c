@@ -2,9 +2,9 @@
 
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
-#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -171,26 +171,33 @@ tetra_view_fill_security(dsd_app_tetra* out, const dsd_tetra_publication* pub, u
     out->security_known = (uint8_t)(out->security_text[0] != '\0');
 }
 
-/* "MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654", the location area and the carrier once known. */
+/* "MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654": the network a CRC-checked BSCH, or a CRC-checked downlink block
+   descrambled with it, proved on this carrier (the received identity record, never a --tetra-net preset or a network
+   the descrambler kept on their own), its location area and colour code once received, and the carrier once known. */
 static void
-tetra_view_fill_network(dsd_app_tetra* out, const dsd_tetra_publication* pub, unsigned flags) {
-    char cc[16];
-    if (pub->net_known == 0U
-        || dsd_app_access_code_format(DSD_ACCESS_CODE_COLOR_CODE, pub->colour, DSD_APP_ACCESS_CODE_SHORT, cc, sizeof cc)
-               != 1) {
+tetra_view_fill_network(dsd_app_tetra* out, const dsd_state* state, unsigned flags) {
+    const dsd_received_identity* const id = &state->rx_id;
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_TETRA || (id->valid & DSD_RXID_TETRA_NET) == 0U) {
         return;
     }
+    const dsd_tetra_publication* const pub = &state->tetra_pub;
     const char* const sep = tetra_view_sep(flags);
-    char la[16] = "";
+    char cc[24] = "";
+    char code[16];
+    if ((id->valid & DSD_RXID_ACCESS) != 0U
+        && dsd_app_access_code_format(id->access_kind, id->access, DSD_APP_ACCESS_CODE_SHORT, code, sizeof code) == 1) {
+        DSD_SNPRINTF(cc, sizeof cc, "%s%s", sep, code);
+    }
+    char la[24] = "";
     char carrier[24] = "";
-    if (pub->la_known != 0U) {
-        DSD_SNPRINTF(la, sizeof la, "LA %u%s", (unsigned)pub->la, sep);
+    if ((id->valid & DSD_RXID_TETRA_LA) != 0U) {
+        DSD_SNPRINTF(la, sizeof la, "%sLA %u", sep, (unsigned)id->tetra_la);
     }
     if (pub->rx_carrier_known != 0U) {
         DSD_SNPRINTF(carrier, sizeof carrier, "%scarrier %u", sep, (unsigned)pub->rx_carrier);
     }
-    DSD_SNPRINTF(out->network_text, sizeof out->network_text, "MCC %u%sMNC %u%s%s%s%s", (unsigned)pub->mcc, sep,
-                 (unsigned)pub->mnc, sep, la, cc, carrier);
+    DSD_SNPRINTF(out->network_text, sizeof out->network_text, "MCC %u%sMNC %u%s%s%s", (unsigned)id->tetra_mcc, sep,
+                 (unsigned)id->tetra_mnc, la, cc, carrier);
     out->network_known = 1U;
 }
 
@@ -328,7 +335,7 @@ dsd_app_tetra_view(const dsd_opts* opts, const dsd_state* state, unsigned flags,
     out->trunked = (uint8_t)tetra_view_mode_is_trunked(pub->mode);
     tetra_view_fill_mode(out, pub, flags);
     tetra_view_fill_security(out, pub, flags);
-    tetra_view_fill_network(out, pub, flags);
+    tetra_view_fill_network(out, state, flags);
     tetra_view_fill_channels(out, opts, pub, flags);
     tetra_view_fill_mm_status(out, pub, flags);
     tetra_view_fill_codec(out, pub, flags);

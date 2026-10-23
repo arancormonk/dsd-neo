@@ -21,6 +21,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -30,6 +31,15 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_mfid90_utils.h"
+
+/* Built the way a SoapySDR-only or Airspy-only build compiles the decoder: the radio stream's BER counters must not
+   depend on librtlsdr being present. */
+#ifdef USE_RTLSDR
+#error "This test must compile p25p1_tsbk.c with USE_RADIO only."
+#endif
+#ifndef USE_RADIO
+#error "This test must compile p25p1_tsbk.c with USE_RADIO."
+#endif
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -450,6 +460,15 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+static int g_ber_ok;
+static int g_ber_err;
+
+static void
+capture_p25p1_ber(int ok_delta, int err_delta) {
+    g_ber_ok += ok_delta;
+    g_ber_err += err_delta;
+}
+
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -464,6 +483,9 @@ main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
     dsd_signal_search_evidence_set(capture_evidence);
     dsd_signal_search_site_set(capture_site);
+    dsd_rtl_stream_metrics_hooks ber_hooks = {0};
+    ber_hooks.p25p1_ber_update = capture_p25p1_ber;
+    dsd_rtl_stream_metrics_hooks_set(&ber_hooks);
     build_two_block_stream();
     reset_decode_counters();
 
@@ -487,6 +509,9 @@ main(void) {
     rc |= expect_eq_int("status symbols collected", g_status_count, 6);
     rc |= expect_eq_int("fec ok count", (int)state.p25_p1_fec_ok, 2);
     rc |= expect_eq_int("fec err count", (int)state.p25_p1_fec_err, 0);
+    /* The radio stream's decode-health counters follow every SDR backend, not only RTL-SDR. */
+    rc |= expect_eq_int("radio ber hook ok count", g_ber_ok, 2);
+    rc |= expect_eq_int("radio ber hook err count", g_ber_err, 0);
     /* A block whose CRC passes is the P25 evidence a Signal search confirms a control channel by: its NID alone is
        not, since a list-decoded BCH takes several percent of random words. */
     rc |= expect_eq_int("each crc-valid block is search evidence", g_evidence, 2);
@@ -504,8 +529,11 @@ main(void) {
     g_evidence = 0;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    g_ber_ok = 0;
+    g_ber_err = 0;
     processTSBK(&opts, &state);
     rc |= expect_eq_int("corrupt block fails its crc", state.p25_p1_fec_err > 0, 1);
+    rc |= expect_eq_int("radio ber hook sees the crc failure", g_ber_err, (int)state.p25_p1_fec_err);
     rc |= expect_eq_int("only crc-valid blocks are search evidence", g_evidence, (int)state.p25_p1_fec_ok);
 
     build_network_status_stream();
@@ -621,6 +649,7 @@ main(void) {
     }
     g_interrupt_at = -1;
     dsd_signal_search_site_set(NULL);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_decode_clock_use_system();
     return rc;
 }

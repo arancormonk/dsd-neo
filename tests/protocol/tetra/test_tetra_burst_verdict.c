@@ -13,10 +13,12 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -402,6 +404,65 @@ test_failed_bsch_runs_the_clock(void) {
     session_close(&s);
 }
 
+static void
+preset_network(session* s, uint8_t colour) {
+    s->opts->tetra_net_preset = 1;
+    s->opts->tetra_net_mcc = 460U;
+    s->opts->tetra_net_mnc = 4242U;
+    s->opts->tetra_net_colour = colour;
+}
+
+static int
+rxid_names_cell(const dsd_state* state, uint8_t colour) {
+    const dsd_received_identity* id = &state->rx_id;
+    const uint32_t cell = DSD_RXID_TETRA_NET | DSD_RXID_ACCESS;
+    return id->family == DSD_RXID_FAMILY_TETRA && (id->valid & cell) == cell && id->tetra_mcc == 460U
+           && id->tetra_mnc == 4242U && id->access == colour;
+}
+
+/* The cell a CRC-passed downlink block proves (dsd_state::rx_id): every carrier of a cell scrambles with its network
+ * and colour code (EN 300 392-2 clause 8.2.5.2), so a block descrambled with them whose CRC passed names them on this
+ * carrier as a BSCH does. A --tetra-net preset alone, a block that fails, or a preset whose blocks never descramble
+ * names nothing. After a trunk tune, which drops the colour code, the followed carrier's next checked block names it
+ * again. */
+static void
+test_crc_passed_block_proves_the_cell(void) {
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+
+    session s = session_open();
+    preset_network(&s, 17U);
+    (void)nts2_burst(&s, zeros, zeros);
+    assert(tetra_st_existing(s.state)->net_known);
+    assert(s.state->rx_id.valid == 0U);
+    (void)nts2_burst(&s, zeros, sysinfo);
+    assert(rxid_names_cell(s.state, 17U));
+    assert((s.state->rx_id.valid & DSD_RXID_TETRA_LA) != 0U);
+    session_close(&s);
+
+    s = session_open();
+    preset_network(&s, 18U);
+    (void)nts2_burst(&s, zeros, sysinfo);
+    assert(tetra_st_existing(s.state)->frames_sysinfo == 0U);
+    assert(s.state->rx_id.valid == 0U);
+    session_close(&s);
+
+    s = session_open();
+    (void)sync_burst(&s, bsch, sysinfo);
+    assert(rxid_names_cell(s.state, 17U));
+    dsd_rxid_trunk_tune(s.state);
+    assert((s.state->rx_id.valid & DSD_RXID_ACCESS) == 0U && (s.state->rx_id.valid & DSD_RXID_TETRA_NET) != 0U);
+    (void)nts2_burst(&s, zeros, zeros);
+    assert((s.state->rx_id.valid & DSD_RXID_ACCESS) == 0U);
+    (void)nts2_burst(&s, zeros, sysinfo);
+    assert(rxid_names_cell(s.state, 17U));
+    assert((s.state->rx_id.valid & DSD_RXID_TETRA_LA) != 0U);
+    session_close(&s);
+}
+
 enum { CB_HALF_DIBITS = 42, SCH_HU_BITS = 92 };
 
 /* A control uplink burst (--tetra-uplink, network 460/4242 colour code 17 preset) whose 84 coded dibits are @p coded,
@@ -597,8 +658,16 @@ test_uplink_signalling_proves_the_carrier(void) {
         uint8_t block2[BLOCK_DIBITS];
         encode_sch_hd(b.bits, seed, block2);
         const uint8_t zeros[BLOCK_DIBITS] = {0};
+        assert(s.state->rx_id.valid == 0U); /* the preset alone names no cell */
         const dsd_frame_verdict verdict = nub ? uplink_nts2_burst(&s, zeros, block2) : control_burst(&s, coded, 0);
         assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && tetra_confirm_carrier_proven(s.state));
+        /* The uplink scrambles with the cell's extended colour code too (EN 300 392-2 clause 8.2.5.2), and no BSCH
+           comes to name it: the CRC-passed block descrambled with the preset proves the cell, for every frontend. */
+        assert(rxid_names_cell(s.state, 17U));
+        uint8_t code_kind = 0U;
+        uint16_t code = 0U;
+        assert(dsd_access_code_current(s.state, s.state->lastsynctype, 0U, 0U, &code_kind, &code) == 1
+               && code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE && code == 17U);
 
         const uint8_t speech[TETRA_SPEECH_FULL_BITS] = {0};
         tetra_voice_full_slot(s.opts, s.state, speech, 1);
@@ -1076,6 +1145,7 @@ main(void) {
     test_sync_burst_decodes_bnch();
     test_normal_burst_failure_and_colour();
     test_failed_bsch_runs_the_clock();
+    test_crc_passed_block_proves_the_cell();
     test_control_burst_tells_the_polarity();
     test_control_burst_publishes_its_mode();
     test_control_burst_leaves_direct_mode();

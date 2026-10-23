@@ -261,6 +261,16 @@ target_link_libraries(
     PUBLIC $<LINK_ONLY:dsd-neo_runtime>
 )
 
+# Links dsd-neo_runtime without its usage requirements, so a test can compile
+# decoder sources with its own feature macros: a SoapySDR-only or Airspy-only
+# build's USE_RADIO without USE_RTLSDR, whatever backends this configure found.
+# $<LINK_ONLY:> strips them only for consumers, hence the interface target.
+add_library(dsd-neo_test_runtime_link_only INTERFACE)
+target_link_libraries(
+    dsd-neo_test_runtime_link_only
+    INTERFACE $<LINK_ONLY:dsd-neo_runtime>
+)
+
 add_library(
     dsd-neo_test_call_state_support
     STATIC
@@ -959,6 +969,18 @@ dsd_neo_add_public_header_smoke_test(
 )
 # Issue #575: the call history's access-code text, read by the Qt call history.
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_site_identity_view
+  HEADERS_PUBLIC_APP_CONTROL_SITE_IDENTITY_VIEW
+  dsd-neo/app_control/site_identity_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_site_identity_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SITE_IDENTITY_VIEW_CXX
+  dsd-neo/app_control/site_identity_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_access_code_view
   HEADERS_PUBLIC_APP_CONTROL_ACCESS_CODE_VIEW
   dsd-neo/app_control/access_code_view.h
@@ -1231,6 +1253,18 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_access_code_cxx
   HEADERS_PUBLIC_CORE_ACCESS_CODE_CXX
   dsd-neo/core/access_code.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_received_identity
+  HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY
+  dsd-neo/core/received_identity.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_received_identity_cxx
+  HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY_CXX
+  dsd-neo/core/received_identity.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -1731,6 +1765,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_voice_bridge
@@ -1746,6 +1781,7 @@ add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
 add_executable(
     dsd-neo_test_dpmr_reference_vectors
     protocol/dpmr/test_dpmr_reference_vectors.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
@@ -2075,7 +2111,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_nxdn_search_site_notes
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
 target_link_libraries(
     dsd-neo_test_nxdn_search_site_notes
@@ -2788,6 +2826,9 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_visualizers_helpers
         ui/test_ui_ncurses_visualizers_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_visualizers_helpers
@@ -2848,6 +2889,26 @@ target_include_directories(
 add_test(
     NAME APP_CONTROL_ACCESS_CODE_VIEW
     COMMAND dsd-neo_test_app_control_access_code_view
+)
+
+# The system identity received on the carrier being decoded, as every frontend shows it.
+add_executable(
+    dsd-neo_test_app_control_site_identity_view
+    ui/test_app_control_site_identity_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_site_identity_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_site_identity_view
+    PRIVATE dsd-neo_core
+)
+add_test(
+    NAME APP_CONTROL_SITE_IDENTITY_VIEW
+    COMMAND dsd-neo_test_app_control_site_identity_view
 )
 
 add_executable(
@@ -3057,6 +3118,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_ncurses_p25_display_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -3087,50 +3149,64 @@ if(DSD_ENABLE_TERMINAL_UI)
     # The shared scan-timing, squelch, received-tone and TETRA views come in as sources rather
     # than stubs: the Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything if they
     # run through the real display rules.
-    add_executable(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        ui/test_ui_ncurses_printer_helpers.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
-        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
-        ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
-    )
-    target_compile_definitions(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE NCURSES_REENTRANT=0
-    )
-    target_include_directories(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE
-            ${PROJECT_SOURCE_DIR}/include
-            ${PROJECT_SOURCE_DIR}/src/ui/terminal
-            ${CURSES_INCLUDE_DIRS}
-    )
-    target_link_libraries(
-        dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE
-            dsd-neo_test_call_state_support
-            ${CURSES_LIBRARIES}
-            ${DSD_NEO_TEST_MATH_LIB}
-    )
-    if(MSVC)
-        target_compile_definitions(
+    # Built twice: as a radio-off build compiles the printer, and as a radio build
+    # does (USE_RADIO, whichever SDR backend), which draws the Visual Aids section.
+    foreach(
+        _target
+        IN
+        ITEMS
             dsd-neo_test_ui_ncurses_printer_helpers
-            PRIVATE CURSES_LIBRARY
+            dsd-neo_test_ui_ncurses_printer_helpers_radio
+    )
+        add_executable(
+            ${_target}
+            ui/test_ui_ncurses_printer_helpers.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+            ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         )
-    endif()
+        target_compile_definitions(${_target} PRIVATE NCURSES_REENTRANT=0)
+        target_include_directories(
+            ${_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/terminal
+                ${CURSES_INCLUDE_DIRS}
+        )
+        target_link_libraries(
+            ${_target}
+            PRIVATE
+                dsd-neo_test_call_state_support
+                ${CURSES_LIBRARIES}
+                ${DSD_NEO_TEST_MATH_LIB}
+        )
+        if(MSVC)
+            target_compile_definitions(${_target} PRIVATE CURSES_LIBRARY)
+        endif()
+    endforeach()
+    target_compile_definitions(
+        dsd-neo_test_ui_ncurses_printer_helpers_radio
+        PRIVATE USE_RADIO
+    )
     add_test(
         NAME UI_NCURSES_PRINTER_HELPERS
         COMMAND dsd-neo_test_ui_ncurses_printer_helpers
+    )
+    add_test(
+        NAME UI_NCURSES_PRINTER_HELPERS_RADIO
+        COMMAND dsd-neo_test_ui_ncurses_printer_helpers_radio
     )
 
     add_executable(
@@ -3206,6 +3282,11 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(
         dsd-neo_test_ui_hotkeys_regression
         PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    )
+    # A radio build without librtlsdr (SoapySDR or Airspy only).
+    target_compile_definitions(
+        dsd-neo_test_ui_hotkeys_regression
+        PRIVATE USE_RADIO
     )
     add_test(
         NAME UI_HOTKEYS_REGRESSION
@@ -3860,6 +3941,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/receive_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
     )
     target_include_directories(
@@ -4549,6 +4631,7 @@ add_test(
 add_executable(
     dsd-neo_test_app_control_snapshot_event_history
     ui/test_ui_snapshot_event_history.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -5563,6 +5646,21 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_access_code PRIVATE dsd-neo_core)
 add_test(NAME CORE_ACCESS_CODE COMMAND dsd-neo_test_core_access_code)
 
+# The system identity received on the carrier being decoded (dsd_state::rx_id)
+add_executable(
+    dsd-neo_test_core_received_identity
+    core/test_core_received_identity.c
+)
+target_include_directories(
+    dsd-neo_test_core_received_identity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_received_identity PRIVATE dsd-neo_core)
+add_test(
+    NAME CORE_RECEIVED_IDENTITY
+    COMMAND dsd-neo_test_core_received_identity
+)
+
 add_executable(
     dsd-neo_test_core_state_trunk_lcn_avoid
     test_support/scan_group_stubs.c
@@ -6294,6 +6392,7 @@ add_executable(
     dsd-neo_test_engine_protocol_dispatch
     engine/test_engine_protocol_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/protocol_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_engine_protocol_dispatch
@@ -6618,6 +6717,56 @@ if(DSD_HAS_RADIO)
     set_tests_properties(ENGINE_REPLAY_DECODE_CLOCK PROPERTIES TIMEOUT 60)
 endif()
 
+# End to end: a trunked P25 control channel replayed through the real engine, then a conventional P25 carrier of
+# another system on the same decoder state; the received identity record, the shared identity text and the second
+# carrier's history row carry none of the first system's WACN, SYS, site or control channel frequency.
+if(DSD_HAS_RADIO)
+    add_executable(
+        dsd-neo_test_engine_replay_identity
+        engine/test_engine_replay_identity.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_replay_identity
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_replay_identity
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_engine_replay_identity
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_engine
+                dsd-neo_io_radio
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                dsd-neo_app_control
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_engine_replay_identity
+            PRIVATE
+                dsd-neo_engine
+                dsd-neo_app_control
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    endif()
+    add_test(
+        NAME ENGINE_REPLAY_IDENTITY
+        COMMAND dsd-neo_test_engine_replay_identity
+    )
+    set_tests_properties(
+        ENGINE_REPLAY_IDENTITY
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+endif()
+
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     # The engine loop's side of an input switch: an interrupted hunt, a replaced stream, a fallback (issue #634).
     add_executable(
@@ -6767,6 +6916,7 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
@@ -6861,6 +7011,7 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
@@ -7277,6 +7428,37 @@ add_test(
     COMMAND dsd-neo_test_engine_p25_policy_store_guard
 )
 set_tests_properties(ENGINE_P25_POLICY_STORE_GUARD PROPERTIES TIMEOUT 180)
+
+# The received identity across the P25 watchdog's retunes and the decoder's passes, run on two threads at once (a
+# ThreadSanitizer build checks them). The rigctl peer is replaced through the linker, so GNU ld and lld only.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_rxid_watchdog_race
+        engine/test_engine_rxid_watchdog_race.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_rxid_watchdog_race
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_rxid_watchdog_race
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            ${LIBS}
+            dsd-neo_feature_radio
+    )
+    add_test(
+        NAME ENGINE_RXID_WATCHDOG_RACE
+        COMMAND dsd-neo_test_engine_rxid_watchdog_race
+    )
+endif()
 
 # Compile the queue here to enable private storage-erasure probes without adding
 # diagnostic accessors to the production library or public frontend API.
@@ -7910,6 +8092,7 @@ add_test(NAME P25_MBT_DECODE COMMAND dsd-neo_test_p25_mbt_decode)
 add_executable(
     dsd-neo_test_p25_p1_tsbk_handlers
     protocol/p25/test_p25_p1_tsbk_handlers.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
 )
 target_include_directories(
@@ -8304,6 +8487,7 @@ add_executable(
     dsd-neo_test_p25_p1_sync_dispatch
     protocol/p25/test_p25_p1_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
@@ -8360,6 +8544,7 @@ add_test(NAME P25_P1_TSBK_CLAMP COMMAND dsd-neo_test_p25_p1_tsbk_clamp)
 add_executable(
     dsd-neo_test_p25_p1_tsbk_sequence
     protocol/p25/test_p25_p1_tsbk_sequence.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/fec/trellis34.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_tsbk.c
@@ -8378,7 +8563,12 @@ target_link_libraries(
     PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME P25_P1_TSBK_SEQUENCE COMMAND dsd-neo_test_p25_p1_tsbk_sequence)
-target_link_libraries(dsd-neo_test_p25_p1_tsbk_sequence PRIVATE dsd-neo_runtime)
+# Compiled as a SoapySDR-only or Airspy-only build compiles the decoder.
+target_link_libraries(
+    dsd-neo_test_p25_p1_tsbk_sequence
+    PRIVATE dsd-neo_test_runtime_link_only
+)
+target_compile_definitions(dsd-neo_test_p25_p1_tsbk_sequence PRIVATE USE_RADIO)
 
 # P25 P1 TDU state cleanup and status-symbol handoff
 add_executable(
@@ -9405,6 +9595,7 @@ add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 add_executable(
     dsd-neo_test_dmr_t3_cmove
     protocol/dmr/test_dmr_t3_cmove.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -9430,13 +9621,14 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/tests/protocol/dmr
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
+# dmr_csbk.c compiles as in a SoapySDR-only or Airspy-only build (no USE_RTLSDR).
 target_link_libraries(
     dsd-neo_test_dmr_t3_cmove
     PRIVATE
         dsd-neo_test_call_state_support
         dsd-neo_test_event_sync_stub
         dsd-neo_platform
-        dsd-neo_runtime
+        dsd-neo_test_runtime_link_only
         ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
@@ -9445,6 +9637,7 @@ add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 add_executable(
     dsd-neo_test_dmr_t3_force_release
     protocol/dmr/test_dmr_t3_force_release.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -9485,6 +9678,7 @@ add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 add_executable(
     dsd-neo_test_dmr_t3_move_release
     protocol/dmr/test_dmr_t3_move_release.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -9525,6 +9719,7 @@ add_test(NAME DMR_T3_MOVE_RELEASE COMMAND dsd-neo_test_dmr_t3_move_release)
 add_executable(
     dsd-neo_test_dmr_t3_ann_wd_tscc
     protocol/dmr/test_dmr_t3_ann_wd_tscc.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -10353,6 +10548,7 @@ add_executable(
     protocol/dmr/test_dmr_data_sync.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_dmr_data_sync
@@ -10537,6 +10733,7 @@ add_test(NAME DMR_LIP_CARRIERS COMMAND dsd-neo_test_dmr_lip_carriers)
 add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
 )
@@ -10692,6 +10889,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_bs.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dmr_mix_media.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_sync_times
@@ -11667,6 +11865,7 @@ add_test(NAME P25_INDIV_GATING COMMAND dsd-neo_test_p25_indiv_gating)
 add_executable(
     dsd-neo_test_p25_p1_pdu_private_allowlist
     protocol/p25/test_p25_p1_pdu_private_allowlist.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c

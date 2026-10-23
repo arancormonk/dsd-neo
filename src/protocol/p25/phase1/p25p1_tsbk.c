@@ -163,12 +163,12 @@ tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     if (err == 0) {
         p25_sm_note_validated_cc(opts, state);
         state->p25_p1_fec_ok++;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
 #endif
     } else {
         state->p25_p1_fec_err++;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(0, 1);
 #endif
     }
@@ -1005,7 +1005,7 @@ tsbk_handle_network_status(const dsd_opts* opts, dsd_state* state, const uint8_t
     } else {
         DSD_FPRINTF(stderr, "\n  P25 TSBK NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
     }
-    p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid);
+    p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid, (uint8_t)lra);
 }
 
 static void

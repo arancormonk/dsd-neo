@@ -57,9 +57,10 @@ Display, then housekeeping. Put another way: to find a setting, ask which signal
 ### Menu map
 
 Bracketed states and values are examples. `(status)` marks a read-only row; `─────` a separator. Rows marked
-*RTL-SDR input only* appear while the RTL-SDR front end is the input, and *Airspy input only* while an Airspy is; rows
-marked *radio builds* or *RTL-SDR builds* need a build with the radio pipeline (an SDR backend), and *RadioReference
-builds* one with libcurl and expat.
+*radio input only* appear while a radio is the input (an RTL-SDR, an rtl_tcp server, a SoapySDR device or an Airspy),
+*Airspy input only* while an Airspy is, and *not on an Airspy* while any other input is. The `RTL-SDR` submenu under
+Input holds the tuning of whichever radio runs. Rows marked *radio builds* need a build with the radio pipeline (any
+SDR backend), and *RadioReference builds* one with libcurl and expat.
 
 ```text
 Main Menu
@@ -69,7 +70,7 @@ Main Menu
 │   │   ├── Pulse Audio (mic/line)
 │   │   ├── Pulse input device...
 │   │   ├── Airspy R2 / Mini                         (radio builds)
-│   │   ├── RTL-SDR                                  (RTL-SDR builds)
+│   │   ├── RTL-SDR                                  (radio builds)
 │   │   ├── TCP audio... [Off]                   8
 │   │   ├── UDP audio...
 │   │   ├── WAV / raw file...
@@ -92,18 +93,18 @@ Main Menu
 │   │   ├── LNA AGC (0 off, 1 on)...
 │   │   ├── Mixer AGC (0 off, 1 on)...
 │   │   └── Bias tee (0 off, 1 on)...
-│   └── RTL-SDR                                  (RTL-SDR input only)
+│   └── RTL-SDR                                  (radio input only)
 │       ├── Frequency... [769.768750 MHz]        (hidden under --trunk-scan, which owns the tuner)
-│       ├── Gain... [AGC]                        ([20] (target: 10) when a trunk-scan target has its own gain)
-│       ├── PPM correction... [0]                { }
+│       ├── Gain... [AGC]                        (not on an Airspy; [20] (target: 10) when a trunk-scan target has its own gain)
+│       ├── PPM correction... [0]                { }  (not on an Airspy)
 │       ├── DSP bandwidth... [48 kHz]
 │       ├── Volume multiplier... [1]             v
-│       ├── Tuner autogain [On]
-│       ├── Bias tee [Off]
+│       ├── Tuner autogain [On]                      (not on an Airspy)
+│       ├── Bias tee [Off]                           (not on an Airspy)
 │       ├── ─────
-│       ├── Device index...
+│       ├── Device index...                          (not on an Airspy)
 │       ├── Restart stream
-│       ├── Auto-PPM & rtl_tcp
+│       ├── Auto-PPM & rtl_tcp                       (not on an Airspy)
 │       │   ├── Auto-PPM [On]
 │       │   ├── Auto-PPM SNR threshold... [6.0 dB]
 │       │   ├── Auto-PPM minimum power... [-80.0 dB]
@@ -126,7 +127,7 @@ Main Menu
 │   ├── Mode... [Auto]
 │   ├── Modulation [C4FM]                        m
 │   ├── P25 Phase 2 modulation lock [Off]        M
-│   ├── CQPSK path [On]                              (RTL-SDR input only)
+│   ├── CQPSK path [On]                              (radio input only)
 │   ├── Receive filters and names
 │   │   ├── Slot filter...
 │   │   ├── DCC filter...
@@ -271,7 +272,7 @@ Main Menu
 │   ├── Compact view [Off]                       c
 │   ├── Sections
 │   │   ├── Channels [On]
-│   │   ├── DSP panel [Off]                          (RTL-SDR input only)
+│   │   ├── DSP panel [Off]                          (radio input only)
 │   │   ├── ─────
 │   │   ├── P25 metrics [Off]
 │   │   ├── P25 affiliations [Off]
@@ -280,7 +281,7 @@ Main Menu
 │   │   ├── P25 IDEN plan [Off]
 │   │   ├── P25 CC candidates [Off]
 │   │   └── P25 callsign decode [Off]
-│   ├── Visualizers                               (RTL-SDR input only)
+│   ├── Visualizers                               (radio input only)
 │   │   ├── Constellation [Off]                  o
 │   │   ├── Constellation normalization [Radial] n   (constellation on only)
 │   │   ├── Eye diagram [Off]                    E
@@ -446,8 +447,9 @@ a parked keyed row overrides them again on its next hop.
 
 ## DSP Status
 
-The DSP status panel shows RTL DSP loop state when RTL input support is available. CQPSK mode reports FLL band-edge,
-carrier/Costas, NCO, and timing-recovery state for the active OP25-style chain.
+The DSP status panel shows the radio front end's DSP loop state in any build with the radio pipeline, whichever SDR
+backend (RTL-SDR, SoapySDR or Airspy) it carries. CQPSK mode reports FLL band-edge, carrier/Costas, NCO, and
+timing-recovery state for the active OP25-style chain.
 
 For RTL-family inputs, the optional DSP panel also shows `Squelch`, which compares post-channel-filter power against the
 configured SQL threshold. This is an advanced squelch diagnostic and is separate from the raw `RF Level` health line.
@@ -661,7 +663,7 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `N` | Toggle the analog voice band-pass (300-3400 Hz; takes CTCSS and DCS signalling out) |
 | `H` | Toggle digital high-pass filter |
 
-### Visualizers (RTL input builds)
+### Visualizers (radio builds, radio input)
 
 | Key | Action |
 |---|---|
@@ -914,7 +916,49 @@ line only once the decoder has something for it, and under them the latest decod
 ```
 
 A terminal without UTF-8 gets ` - ` between the parts. Message text from the air is shown without control
-characters, and cut on a character boundary at the screen's width.
+characters, and cut on a character boundary at the screen's width. The `Network:` line names only a network this
+carrier proved: a CRC-checked BSCH it sent, or a CRC-checked downlink block descrambled with that network's MCC, MNC
+and colour code (every carrier of a cell scrambles with them, so a followed traffic channel names its colour code again
+with its first checked block). A `--tetra-net` preset configures descrambling but shows no network until a block
+descrambled with it passes its CRC.
+
+## System Identity
+
+Every system identity field in Call Info is what the carrier being decoded sent, in a message that passed its own check
+(CRC, FEC or a confirmed transmission): never a Phase 2 seed, a `--tetra-net` preset no checked block proved, a control
+channel the trunking state machine returns to, or a value another carrier left. The same record feeds the Qt/Android
+monitor and the call history, and every change of carrier (a retune, a `-Y` step, a signal-search step, an input
+switch, a trunk-scan target switch) clears it, so a section still showing the previous protocol after a retune prints
+no old identity. A part not received yet prints dashes in its column:
+
+```text
+| P25p1  - WACN: BEE00 SYS: 348 NAC: 293; RFSS: 3 SITE: 21 Freq: 851.012500 MHz
+| P25p2  - WACN: ----- SYS: --- NAC: ---; RFSS: -- SITE: -- Seed: BEE00.348.293 (set) Phase 2 Missing Parameters
+| DMR BS - DCC: 01; Capacity Plus; Rest LSN: 03; Freq: 451.000000 MHz
+```
+
+- P25: NAC, WACN, SYS, RFSS/SITE and the `Site:` line's LRA as received. A Phase 2 seed set by hand (`-X`, or the
+  menu) shows apart as `Seed: WACN.SYS.NAC (set)`; it is configuration, not what the carrier sent. The Phase 2
+  parameter warnings still read the seed, as the descrambler does.
+- DMR: the trunking brand, Tier III/Connect Plus/XPT site, the Hytera XPT site's free channel (`Free LCN: 4;`) and
+  Capacity Plus rest LSN as received (the rest LSN's frequency is the channel map's); a Tier III system code alone shows
+  as `SYS: 0A3F;`.
+- NXDN: the location (category, system, site) as received; IDAS shows the SCCH area, site code and Type-D system ID.
+- EDACS: the site header shows once this carrier named a site, with the control channel LCN it named.
+- M17: `CAN: --` until a CRC-checked LSF names one (0 is a CAN).
+- `Freq:` is this system's control channel only where a checked message confirmed the carrier as one, at the frequency
+  the radio input (or I/Q replay) was tuned to. On audio input from a rigctl peer (`-U`) it is absent: DSD-neo cannot
+  tell which frequency the peer's audio comes from, since the peer can be retuned on its own and its audio arrives
+  after a tune with no mark where the new frequency's begins.
+
+With the spectrum analyzer on, its legend ends with the same identity in full, led by its protocol, marked
+`(last heard)` once it is no longer live, and absent when the carrier sent none:
+
+```text
+| System: P25 · NAC 293 · SYS 348 · RFSS 3 · SITE 21 · WACN BEE00 · LRA 1A
+```
+
+A terminal without UTF-8 gets ` - ` between the parts.
 
 ## Compact View
 

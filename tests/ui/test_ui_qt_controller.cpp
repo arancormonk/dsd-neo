@@ -26,11 +26,13 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -682,11 +684,12 @@ main(int argc, char** argv) {
     for (auto phase : {Host::Starting, Host::Idle, Host::Failed}) {
         host.setPhase(Host::Running);
         state.synctype = DSD_SYNC_P25P1_POS;
-        state.p2_cc = 0x293;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, static_cast<uint8_t>(DSD_ACCESS_CODE_NAC), 0x293U);
         state.p25_p1_fec_ok = 3;
         state.p25_p1_fec_err = 1;
         tick();
         check(metrics.p25NacValid() && !metrics.siteLine().isEmpty());
+        check(!metrics.carrierIdentityTokens().isEmpty() && metrics.carrierIdentityLive());
         check(metrics.qualityValid() && metrics.ccFecOkPct() == 75.0);
         check(!metrics.syncLabel().isEmpty());
         check(network.radios().size() == 1);
@@ -695,6 +698,8 @@ main(int argc, char** argv) {
         tick(); // The last engine snapshot is still published after stop.
         check(metrics.syncLabel().isEmpty());
         check(metrics.siteLine().isEmpty() && !metrics.p25NacValid() && !metrics.siteConfirmed());
+        check(metrics.carrierIdentityTokens().isEmpty() && metrics.carrierIdentityProtocol().isEmpty()
+              && metrics.carrierIdentityText().isEmpty() && !metrics.carrierIdentityLive());
         check(!metrics.qualityValid() && !metrics.ccFecValid());
         check(diagnosticsModel.allText().contains("before next session"));
         check(diagnosticsModel.allText().count("--- session starting ---") == 1);

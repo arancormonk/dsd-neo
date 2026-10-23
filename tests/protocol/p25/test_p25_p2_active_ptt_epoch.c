@@ -268,7 +268,8 @@ test_unverified_seed_is_no_received_nac(void) {
         rc |= expect("verified seed records the NAC",
                      row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NAC && row->access_code == 0x293U);
         rc |= expect("verified seed prints the NAC", strstr(row->event_string, "NAC: 293; ") != NULL);
-        rc |= expect("verified seed sysid names the NAC", strstr(row->sysid_string, "293_") != NULL);
+        /* The seed's WACN and SYSID are configuration: no network status named them on this carrier. */
+        rc |= expect("verified seed sysid names the NAC alone", strcmp(row->sysid_string, "P25_293") == 0);
     }
     return rc;
 }

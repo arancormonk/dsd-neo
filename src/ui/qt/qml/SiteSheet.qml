@@ -118,6 +118,12 @@ ModalSheet {
                 name: "sitePhase2",
                 valid: true,
                 value: metrics.p25Phase2ParamsReady ? qsTr("Ready") : qsTr("Incomplete")
+            },
+            {
+                label: qsTr("Phase 2 seed"),
+                name: "sitePhase2Seed",
+                valid: metrics.p25Phase2Seed.length > 0,
+                value: metrics.p25Phase2SeedSet ? metrics.p25Phase2Seed + " " + qsTr("(set)") : metrics.p25Phase2Seed
             }
         ]
     }
@@ -141,6 +147,24 @@ ModalSheet {
                 name: "siteDmrRest",
                 valid: metrics.dmrRestLsn > 0,
                 value: metrics.dmrRestLsn
+            },
+            {
+                label: qsTr("Free LCN"),
+                name: "siteDmrXptFree",
+                valid: metrics.dmrXptFreeLcn >= 0,
+                value: metrics.dmrXptFreeLcn
+            },
+            {
+                label: qsTr("System code"),
+                name: "siteDmrSyscode",
+                valid: metrics.dmrT3Syscode >= 0,
+                value: hex(metrics.dmrT3Syscode, 4)
+            },
+            {
+                label: qsTr("Trunking"),
+                name: "siteDmrBrand",
+                valid: metrics.dmrBrand.length > 0,
+                value: metrics.dmrBrand
             }
         ]
     }
@@ -162,7 +186,7 @@ ModalSheet {
             {
                 label: qsTr("System"),
                 name: "siteNxdnSys",
-                valid: metrics.nxdnSiteCode > 0,
+                valid: metrics.siteProtocol === "IDAS" ? metrics.nxdnSysCode > 0 : metrics.nxdnSiteCode > 0,
                 value: metrics.nxdnSysCode
             },
             {
@@ -181,6 +205,64 @@ ModalSheet {
                 name: "siteEdacs",
                 valid: metrics.edacsSiteText.length > 0,
                 value: metrics.edacsSiteText
+            },
+            {
+                label: qsTr("System"),
+                name: "siteEdacsSystem",
+                valid: metrics.edacsSystem >= 0,
+                value: metrics.edacsSystem
+            },
+            {
+                label: qsTr("Area"),
+                name: "siteEdacsArea",
+                valid: metrics.edacsArea >= 0,
+                value: metrics.edacsArea
+            },
+            {
+                label: qsTr("CC LCN"),
+                name: "siteEdacsCcLcn",
+                valid: metrics.edacsCcLcn >= 0,
+                value: metrics.edacsCcLcn
+            }
+        ]
+    }
+    FieldGrid {
+        visible: metrics.siteProtocol === "dPMR" || metrics.siteProtocol === "M17"
+        fields: [
+            {
+                label: metrics.siteProtocol === "M17" ? qsTr("CAN") : qsTr("Color code"),
+                name: "siteAccess",
+                valid: metrics.siteAccessCode >= 0,
+                value: metrics.siteAccessCode
+            }
+        ]
+    }
+    FieldGrid {
+        visible: metrics.siteProtocol === "TETRA"
+        fields: [
+            {
+                label: qsTr("MCC"),
+                name: "siteTetraMcc",
+                valid: metrics.tetraSiteMcc >= 0,
+                value: metrics.tetraSiteMcc
+            },
+            {
+                label: qsTr("MNC"),
+                name: "siteTetraMnc",
+                valid: metrics.tetraSiteMnc >= 0,
+                value: metrics.tetraSiteMnc
+            },
+            {
+                label: qsTr("Color code"),
+                name: "siteTetraColor",
+                valid: metrics.siteAccessCode >= 0,
+                value: metrics.siteAccessCode
+            },
+            {
+                label: qsTr("LA"),
+                name: "siteTetraLa",
+                valid: metrics.tetraSiteLa >= 0,
+                value: metrics.tetraSiteLa
             }
         ]
     }

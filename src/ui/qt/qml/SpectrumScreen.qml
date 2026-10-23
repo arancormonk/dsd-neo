@@ -298,7 +298,11 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
-        height: 48
+        // The readout is never elided, so where large text leaves no room for
+        // the status pill beside it, the pill takes a line of its own under it.
+        readonly property bool pillBeside: backButton.width + 6 + readoutRow.implicitWidth + 12 + statusPill.width <= width
+        readonly property real titleHeight: Math.max(48, titleColumn.implicitHeight)
+        height: pillBeside ? titleHeight : titleHeight + 6 + statusPill.height
         // Same shield the picture carries, for the same reason: the sheets are
         // siblings anchored over the whole screen, so their scrim covers this
         // strip too, and a TapHandler never takes an exclusive grab. Without
@@ -312,16 +316,18 @@ Item {
             icon: "back"
             objectName: "spectrumBack"
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            y: (header.titleHeight - height) / 2
             onClicked: screen.closed()
         }
 
         Column {
+            id: titleColumn
+
             anchors.left: backButton.right
             anchors.leftMargin: 6
-            anchors.right: statusPill.left
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: header.pillBeside ? statusPill.left : parent.right
+            anchors.rightMargin: header.pillBeside ? 12 : 0
+            y: (header.titleHeight - height) / 2
             spacing: 2
 
             MicroLabel {
@@ -337,6 +343,8 @@ Item {
             }
 
             Row {
+                id: readoutRow
+
                 spacing: 6
 
                 Text {
@@ -374,7 +382,7 @@ Item {
 
             objectName: "spectrumStatusPill"
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.pillBeside ? (header.titleHeight - height) / 2 : header.titleHeight + 6
             width: statusLabel.implicitWidth + 22
             height: 30
             radius: Theme.radiusButton
@@ -428,7 +436,9 @@ Item {
         // energy is and says nothing at all about whether any of it is being
         // decoded — which, on a band being swept, is the only question. Sync
         // first because it is the answer; SNR second because it explains a
-        // missing sync; the call last because it is the payoff.
+        // missing sync; the call last because it is the payoff. The line under
+        // it says which system that is: the colour code, NAC or RAN that tells
+        // one site from the next while discovering what is on a band.
         Item {
             id: statusStrip
 
@@ -436,75 +446,154 @@ Item {
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
-            height: radioButton.height
+            // The button's height until large text needs more for two lines.
+            height: Math.max(radioButton.height, statusLines.implicitHeight)
 
-            Row {
+            Column {
+                id: statusLines
+
+                objectName: "spectrumStatusLines"
                 anchors.left: parent.left
+                anchors.right: radioButton.visible ? radioButton.left : parent.right
+                anchors.rightMargin: radioButton.visible ? Theme.gap : 0
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 14
+                spacing: 2
 
                 Row {
-                    spacing: 6
+                    id: statusLine
 
-                    Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 7
-                        height: 7
-                        radius: 3.5
-                        color: metrics.syncedHere ? Theme.cyan : Theme.textSubdued
+                    // Wider than the line, the talkgroup gives way first, then
+                    // the offset; the sync and SNR are what the strip is for.
+                    readonly property real lockedWidth: syncRow.width + spacing + snrLabel.width
+                    readonly property bool cfoWanted: metrics.syncedHere && Math.abs(metrics.cfoHz) >= 50
+                    readonly property real callMinimum: callLabel.text.length > 0 ? Math.min(callLabel.implicitWidth, callMetrics.advanceWidth) + spacing : 0
+
+                    width: parent.width
+                    spacing: 14
+
+                    Row {
+                        id: syncRow
+
+                        spacing: 6
+
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 7
+                            height: 7
+                            radius: 3.5
+                            color: metrics.syncedHere ? Theme.cyan : Theme.textSubdued
+                        }
+
+                        Text {
+                            objectName: "spectrumSyncLabel"
+                            anchors.verticalCenter: parent.verticalCenter
+                            // Named when there is one, because "DMR" where P25 was
+                            // expected is the whole explanation for silence.
+                            text: metrics.syncedHere ? metrics.syncLabel.toUpperCase() : qsTr("NO SYNC")
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(11)
+                            font.letterSpacing: 1.0
+                            color: metrics.syncedHere ? Theme.textPrimary : Theme.textSubdued
+                        }
                     }
 
                     Text {
-                        objectName: "spectrumSyncLabel"
+                        id: snrLabel
+
                         anchors.verticalCenter: parent.verticalCenter
-                        // Named when there is one, because "DMR" where P25 was
-                        // expected is the whole explanation for silence.
-                        text: metrics.syncedHere ? metrics.syncLabel.toUpperCase() : qsTr("NO SYNC")
+                        text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "— dB"
                         font.family: Theme.mono
                         font.pixelSize: Theme.fontSize(11)
-                        font.letterSpacing: 1.0
-                        color: metrics.syncedHere ? Theme.textPrimary : Theme.textSubdued
+                        color: metrics.snrValid ? Theme.textSecondary : Theme.textSubdued
+                    }
+
+                    // How far off frequency the decoder is finding the signal. Only
+                    // meaningful once something is locked, and only interesting when
+                    // it is not ~0 — a standing offset of a few hundred Hz is the
+                    // symptom of a PPM correction that does not match this dongle,
+                    // which is a thing the panel one tap away can fix.
+                    Text {
+                        id: cfoLabel
+
+                        objectName: "spectrumCfoLabel"
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: statusLine.cfoWanted && statusLine.lockedWidth + statusLine.spacing + implicitWidth + statusLine.callMinimum <= statusLine.width
+                        text: Math.round(metrics.cfoHz) + " Hz"
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        // Loud once it is large enough to be why nothing decodes.
+                        color: Math.abs(metrics.cfoHz) >= 500 ? Theme.magenta : Theme.textSecondary
+                    }
+
+                    Text {
+                        id: callLabel
+
+                        objectName: "spectrumCallLabel"
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: text.length > 0
+                        width: Math.max(0, Math.min(implicitWidth, statusLine.width - statusLine.lockedWidth - (cfoLabel.visible ? statusLine.spacing + cfoLabel.width : 0) - statusLine.spacing))
+                        elide: Text.ElideRight
+                        // "0" is a call epoch whose target has not decoded yet — which
+                        // a control channel opens routinely. Naming it would put a
+                        // talkgroup on screen that nobody is transmitting on.
+                        text: {
+                            var tg = metrics.slot1CallState === 2 ? metrics.slot1TgText : metrics.slot2CallState === 2 ? metrics.slot2TgText : "";
+                            return tg === "0" ? "" : tg;
+                        }
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        color: Theme.cyan
+
+                        // Room for a few characters and the ellipsis: less than
+                        // this and the offset gives up its place instead.
+                        TextMetrics {
+                            id: callMetrics
+
+                            font: callLabel.font
+                            text: "0000…"
+                        }
                     }
                 }
 
+                // The system on this carrier, as it said so itself: only what a
+                // checked message carried, never a typed-in seed or what the last
+                // carrier left. Dimmed once it is what was last heard here rather
+                // than what is being received. Whole tokens or none, because a
+                // "SYS" cut from its value is worse than no "SYS".
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "— dB"
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(11)
-                    color: metrics.snrValid ? Theme.textSecondary : Theme.textSubdued
-                }
+                    id: identityLabel
 
-                // How far off frequency the decoder is finding the signal. Only
-                // meaningful once something is locked, and only interesting when
-                // it is not ~0 — a standing offset of a few hundred Hz is the
-                // symptom of a PPM correction that does not match this dongle,
-                // which is a thing the panel one tap away can fix.
-                Text {
-                    objectName: "spectrumCfoLabel"
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: metrics.syncedHere && Math.abs(metrics.cfoHz) >= 50
-                    text: Math.round(metrics.cfoHz) + " Hz"
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(11)
-                    // Loud once it is large enough to be why nothing decodes.
-                    color: Math.abs(metrics.cfoHz) >= 500 ? Theme.magenta : Theme.textSecondary
-                }
-
-                Text {
-                    objectName: "spectrumCallLabel"
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: text.length > 0
-                    // "0" is a call epoch whose target has not decoded yet — which
-                    // a control channel opens routinely. Naming it would put a
-                    // talkgroup on screen that nobody is transmitting on.
-                    text: {
-                        var tg = metrics.slot1CallState === 2 ? metrics.slot1TgText : metrics.slot2CallState === 2 ? metrics.slot2TgText : "";
-                        return tg === "0" ? "" : tg;
+                    readonly property bool live: metrics.syncedHere && metrics.carrierIdentityLive
+                    // Under NO SYNC, or a sync hold that still names another
+                    // protocol, the line names its own.
+                    readonly property var tokens: {
+                        var list = metrics.carrierIdentityTokens.slice();
+                        if (list.length > 0 && !live && metrics.carrierIdentityProtocol.length > 0)
+                            list.unshift(metrics.carrierIdentityProtocol);
+                        return list;
                     }
+
+                    objectName: "spectrumIdentityLabel"
+                    width: parent.width
+                    // A line's height whether or not there is anything to say, so
+                    // the line above never moves.
+                    height: identityFont.height
+                    // The font is read here so a text size change refits.
+                    text: font.pixelSize > 0 ? Util.fitTokens(tokens, width, identityFont, " · ", " …") : ""
+                    // Only for a first token wider than the whole line.
+                    elide: Text.ElideRight
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
-                    color: Theme.cyan
+                    font.letterSpacing: 1.0
+                    color: live ? Theme.textPrimary : Theme.textSubdued
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: metrics.carrierIdentityText.length === 0 ? "" : live ? qsTr("System identity: %1").arg(metrics.carrierIdentityText) : qsTr("System identity, last heard: %1").arg(metrics.carrierIdentityText)
+
+                    FontMetrics {
+                        id: identityFont
+
+                        font: identityLabel.font
+                    }
                 }
             }
 

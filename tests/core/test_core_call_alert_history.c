@@ -13,11 +13,13 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
@@ -339,6 +341,13 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]
     DSD_MEMSET(g_close_wav_captures, 0, sizeof g_close_wav_captures);
     g_close_wav_capture_count = 0;
     g_close_wav_export_dir[0] = '\0';
+}
+
+// What a P25 control channel's checked network and RFSS status broadcasts leave in the received identity record.
+static void
+note_p25_site(dsd_state* state) {
+    dsd_rxid_note_p25_network(state, 0x45564U, 0x006U);
+    dsd_rxid_note_p25_site(state, 0x006U, 10U, 10U);
 }
 
 static int
@@ -1736,9 +1745,9 @@ test_edacs_service_string_appends_past_pointer_size(void) {
     opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.edacs_tuned_lcn = 7;
-    state.edacs_site_id = 3;
-    state.edacs_area_code = 1;
-    state.edacs_sys_id = 0x2A;
+    dsd_rxid_note_edacs_site(&state, 3);
+    dsd_rxid_note_edacs_area(&state, 1);
+    dsd_rxid_note_edacs_system(&state, 0x2A);
     state.edacs_a_shift = 7;
     state.edacs_f_shift = 3;
     state.edacs_a_mask = 0x0F;
@@ -1766,7 +1775,7 @@ test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
 
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.dmr_color_code = 7U;
-    state.dmr_t3_syscode = 0xABCU;
+    dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
     assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 123456U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -1793,10 +1802,7 @@ test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
     state.nac = 0x293;
     state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
     state.p2_cc_verified = 1U; /* proven on this carrier */
-    state.p2_wacn = 0x45564U;
-    state.p2_sysid = 0x006U;
-    state.p2_rfssid = 10U;
-    state.p2_siteid = 10U;
+    note_p25_site(&state);
     assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -1821,10 +1827,7 @@ test_source_less_current_event_updates_history_metadata(void) {
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x006;
-    state.p2_wacn = 0x45564U;
-    state.p2_sysid = 0x006U;
-    state.p2_rfssid = 10U;
-    state.p2_siteid = 10U;
+    note_p25_site(&state);
     assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 21001U, 0U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -2101,8 +2104,7 @@ test_nxdn_current_includes_channel_encryption_and_policy_labels(void) {
 
     state.lastsynctype = DSD_SYNC_NXDN_POS;
     state.nxdn_last_ran = 23U;
-    state.nxdn_location_site_code = 5U;
-    state.nxdn_location_sys_code = 12U;
+    dsd_rxid_note_nxdn_location(&state, 0U, 12U, 5U);
     state.nxdn_cipher_type = 3U;
     state.nxdn_key = 0x2AU;
     state.nxdn_grant_chan = 198U;
@@ -2154,9 +2156,9 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
     opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.edacs_tuned_lcn = 11U;
-    state.edacs_site_id = 12U;
-    state.edacs_area_code = 3U;
-    state.edacs_sys_id = 0x45U;
+    dsd_rxid_note_edacs_site(&state, 12U);
+    dsd_rxid_note_edacs_area(&state, 3U);
+    dsd_rxid_note_edacs_system(&state, 0x45U);
     state.edacs_a_shift = 7;
     state.edacs_f_shift = 3;
     state.edacs_a_mask = 0x0F;
@@ -2176,9 +2178,9 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.ea_mode = 1;
     state.edacs_tuned_lcn = 12U;
-    state.edacs_site_id = 7U;
-    state.edacs_area_code = 2U;
-    state.edacs_sys_id = 0x1234U;
+    dsd_rxid_note_edacs_site(&state, 7U);
+    dsd_rxid_note_edacs_area(&state, 2U);
+    dsd_rxid_note_edacs_system(&state, 0x1234U);
     assert(observe_test_call(&state, 0U, DSD_SYNC_EDACS_POS, DSD_CALL_KIND_GROUP_VOICE, 88002U, 77001U, 0x48U, 12U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -3130,10 +3132,7 @@ test_scanner_mode_row_carries_channel_label(void) {
     state.nac = 0x293;
     state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
     state.p2_cc_verified = 1U; /* proven on this carrier */
-    state.p2_wacn = 0x45564U;
-    state.p2_sysid = 0x006U;
-    state.p2_rfssid = 10U;
-    state.p2_siteid = 10U;
+    note_p25_site(&state);
     rc |= expect_int("scanner call begins",
                      observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U,
                                        0U, DSD_CALL_BOUNDARY_BEGIN),
@@ -3175,7 +3174,7 @@ test_trunk_scan_row_carries_target_id(void) {
 
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.dmr_color_code = 7U;
-    state.dmr_t3_syscode = 0xABCU;
+    dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
     assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 123456U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -3205,10 +3204,7 @@ test_channel_label_coexists_with_policy_label(void) {
     state.nac = 0x293;
     state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
     state.p2_cc_verified = 1U; /* proven on this carrier */
-    state.p2_wacn = 0x45564U;
-    state.p2_sysid = 0x006U;
-    state.p2_rfssid = 10U;
-    state.p2_siteid = 10U;
+    note_p25_site(&state);
     assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -3236,10 +3232,7 @@ test_unlabelled_row_string_is_unchanged(void) {
     state.nac = 0x293;
     state.p2_cc = 0x293ULL;    /* a Phase 2 call's NAC is the one its descrambler runs on, */
     state.p2_cc_verified = 1U; /* proven on this carrier */
-    state.p2_wacn = 0x45564U;
-    state.p2_sysid = 0x006U;
-    state.p2_rfssid = 10U;
-    state.p2_siteid = 10U;
+    note_p25_site(&state);
     assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
@@ -3775,8 +3768,8 @@ render_code_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[
 
 // A code the decoder never decoded reads as its sentinel -- DMR 16, NXDN (unsigned)-1, dPMR -1, which every carrier
 // boundary now leaves (issue #575) -- and the system identity string and the event line print "--" for it, as the
-// terminal does, rather than the sentinel. NXDN's stand-ins (an IDAS area bit or site type, DCR's fixed 7) are no RAN
-// either. The numeric sys ids keep the raw value: 0 is a code.
+// terminal does, rather than the sentinel. NXDN's stand-ins (an IDAS area bit, DCR's fixed 7) are no RAN
+// either. The numeric sys id holds the row's code or that sentinel: 0 is a code.
 static int
 test_unknown_access_codes_render_as_dashes(void) {
     static dsd_opts opts;
@@ -3793,7 +3786,7 @@ test_unknown_access_codes_render_as_dashes(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.dmr_color_code = 16U;
-    state.dmr_t3_syscode = 0xABCU;
+    dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
     item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_MS_VOICE);
     rc |= expect_str_eq("unknown DMR CC sysid with system code", item->sysid_string, "DMR_ABC_CC_--");
     rc |= expect_has_substr("unknown DMR CC event with system code", item->event_string, "CC: --; SYS: ABC;");
@@ -3813,8 +3806,7 @@ test_unknown_access_codes_render_as_dashes(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.nxdn_last_ran = (unsigned int)-1;
-    state.nxdn_location_site_code = 3U;
-    state.nxdn_location_sys_code = 12U;
+    dsd_rxid_note_nxdn_location(&state, 0U, 12U, 3U);
     item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_NEG);
     rc |= expect_str_eq("unknown NXDN RAN sysid with site", item->sysid_string, "NXDN_12_3_RAN_--");
     rc |= expect_has_substr("unknown NXDN RAN event with site", item->event_string, "RAN: --; SYS: 12.3; ");
@@ -3825,7 +3817,7 @@ test_unknown_access_codes_render_as_dashes(void) {
     item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
     rc |= expect_str_eq("DCR stand-in sysid", item->sysid_string, "NXDN_RAN_--");
     rc |= expect_has_substr("DCR stand-in event", item->event_string, "RAN: --; ");
-    rc |= expect_int("DCR stand-in keeps its numeric id", (int)item->sys_id3, 7);
+    rc |= expect_u64("DCR stand-in is no RAN in its numeric id", item->sys_id3, 0xFFFFFFFFU);
 
     reset_fixture(&opts, &state, event_history);
     state.nxdn_last_ran = 0U;
@@ -3898,18 +3890,416 @@ render_svc_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2
     return &event_history[0].Event_History_Items[0];
 }
 
-static void
-set_p25_site(dsd_state* state) {
-    state->p2_wacn = 0x45564U;
-    state->p2_sysid = 0x006U;
-    state->p2_rfssid = 10U;
-    state->p2_siteid = 10U;
+// The system and site a row records come from the received identity record of the call's protocol family -- what this
+// carrier sent -- never from decoder state that a Phase 2 seed, a --tetra-net preset, a control-channel anchor or
+// another carrier wrote. A part not received takes the value a row had before any was decoded: 0, "P25_<NAC>" without
+// a WACN, "EDACS_SITE_000".
+static int
+test_system_identity_comes_from_the_received_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    /* P25: a hand-set seed and another carrier's site in decoder state, nothing received. */
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    state.p2_wacn = 0xBEE00U;
+    state.p2_sysid = 0x348U;
+    state.p2_cc = 0x111ULL;
+    state.p2_hardset = 1U;
+    state.p2_rfssid = 3U;
+    state.p2_siteid = 21U;
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    rc |= expect_str_eq("P25 seed alone sysid", item->sysid_string, "P25_293");
+    rc |= expect_no_substr("P25 seed alone event", item->event_string, "NET_STS");
+    rc |= expect_int("P25 seed alone ids",
+                     item->sys_id1 == 0U && item->sys_id2 == 0U && item->sys_id3 == 0x293U && item->sys_id4 == 0U
+                         && item->sys_id5 == 0U,
+                     1);
+    /* What the carrier sent, whatever the seed says. */
+    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    dsd_rxid_note_p25_site(&state, 0x006U, 10U, 11U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("P25 received sysid", item->sysid_string, "P25_45564006293_10_11");
+    rc |= expect_has_substr("P25 received event", item->event_string, "NAC: 293; NET_STS: 45564:006:10.11; ");
+    rc |= expect_int(
+        "P25 received ids",
+        item->sys_id1 == 0x45564U && item->sys_id2 == 0x006U && item->sys_id4 == 10U && item->sys_id5 == 11U, 1);
+    /* A site with no network status yet: its SYSID and site in the numeric ids, the string as before a WACN. */
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    dsd_rxid_note_p25_site(&state, 0x006U, 10U, 11U);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    rc |= expect_str_eq("P25 site alone sysid", item->sysid_string, "P25_293");
+    rc |= expect_int("P25 site alone ids",
+                     item->sys_id1 == 0U && item->sys_id2 == 0x006U && item->sys_id4 == 10U && item->sys_id5 == 11U, 1);
+    /* Another protocol's record names no P25 system. */
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
+    item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P2_POS, 0U, 0U);
+    rc |= expect_str_eq("P25 under a DMR record sysid", item->sysid_string, "P25_---");
+    rc |= expect_int("P25 under a DMR record ids", item->sys_id1 == 0U && item->sys_id2 == 0U, 1);
+
+    /* DMR: a Tier III system code another carrier left in decoder state is not this call's. */
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 7U;
+    state.dmr_t3_syscode = 0x123U;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_str_eq("DMR stale system code sysid", item->sysid_string, "DMR_CC_7");
+    rc |= expect_no_substr("DMR stale system code event", item->event_string, "SYS:");
+    rc |= expect_int("DMR stale system code id", (int)item->sys_id1, 0);
+    dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("DMR received system code sysid", item->sysid_string, "DMR_ABC_CC_7");
+    rc |= expect_int("DMR received system code id", (int)item->sys_id1, 0xABC);
+
+    /* NXDN Type-C: a location in decoder state is not received; a noted one is. */
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = 5U;
+    state.nxdn_location_site_code = 3U;
+    state.nxdn_location_sys_code = 12U;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    rc |= expect_str_eq("NXDN stale location sysid", item->sysid_string, "NXDN_RAN_5");
+    rc |= expect_int("NXDN stale location ids", item->sys_id1 == 0U && item->sys_id2 == 0U, 1);
+    dsd_rxid_note_nxdn_location(&state, 1U, 40U, 9U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("NXDN received location sysid", item->sysid_string, "NXDN_40_9_RAN_5");
+    rc |= expect_has_substr("NXDN received location event", item->event_string, "RAN: 05; SYS: 40.9; ");
+
+    /* IDAS: the SCCH site code and the Type-D system ID; the area bit stand-in is no RAN. */
+    reset_fixture(&opts, &state, event_history);
+    state.nxdn_last_ran = 1U;
+    state.nxdn_last_ran_stand_in = 1U;
+    dsd_rxid_note_nxdn_idas_area(&state, 1U);
+    dsd_rxid_note_nxdn_idas_site(&state, 1U, 42U);
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    rc |= expect_str_eq("IDAS site sysid", item->sysid_string, "NXDN_0_42_RAN_--");
+    rc |= expect_int("IDAS site ids", item->sys_id1 == 42U && item->sys_id2 == 0U && item->sys_id3 == 0xFFFFFFFFU, 1);
+    dsd_rxid_note_nxdn_typed_system(&state, 1234U, 42U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("IDAS system sysid", item->sysid_string, "NXDN_1234_42_RAN_--");
+
+    /* EDACS: a site in decoder state that no message on this carrier named. */
+    reset_fixture(&opts, &state, event_history);
+    state.edacs_site_id = 9;
+    state.edacs_area_code = 4;
+    state.edacs_sys_id = 0x77;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_EDACS_POS);
+    rc |= expect_has_substr("EDACS stale site sysid", item->sysid_string, "EDACS_SITE_000");
+    rc |= expect_int("EDACS stale site ids", item->sys_id1 == 0U && item->sys_id2 == 0U && item->sys_id3 == 0U, 1);
+    dsd_rxid_note_edacs_site(&state, 12U);
+    dsd_rxid_note_edacs_area(&state, 3U);
+    dsd_rxid_note_edacs_system(&state, 0x45U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_has_substr("EDACS received site sysid", item->sysid_string, "EDACS_SITE_012");
+    rc |= expect_int("EDACS received ids", item->sys_id1 == 12U && item->sys_id2 == 3U && item->sys_id3 == 0x45U, 1);
+
+    /* TETRA: a --tetra-net preset names no network and no colour code; a checked BSCH does. */
+    reset_fixture(&opts, &state, event_history);
+    state.tetra_pub.mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    state.tetra_pub.net_known = 1U;
+    state.tetra_pub.mcc = 262U;
+    state.tetra_pub.mnc = 1001U;
+    state.tetra_pub.colour = 25U;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_TETRA_NDB_POS);
+    rc |= expect_str_eq("TETRA preset sysid", item->sysid_string, "TETRA_CC_--");
+    rc |= expect_access_code("TETRA preset code", item, DSD_ACCESS_CODE_NONE, 0U);
+    rc |= expect_int("TETRA preset ids", item->sys_id1 == 0U && item->sys_id2 == 0U, 1);
+    dsd_rxid_note_tetra_cell(&state, 262U, 1001U, 25U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("TETRA received sysid", item->sysid_string, "TETRA_262_1001_CC_25");
+    rc |= expect_int("TETRA received ids", item->sys_id1 == 262U && item->sys_id2 == 1001U && item->sys_id3 == 0U, 1);
+    /* A checked direct mode burst: the carrier belongs to no network. */
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_tetra_cell(&state, 262U, 1001U, 25U);
+    dsd_rxid_note_tetra_direct_mode(&state);
+    state.tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
+    item = render_code_row(&opts, &state, event_history, DSD_SYNC_TETRA_NDB_POS);
+    rc |= expect_str_eq("TETRA direct mode sysid", item->sysid_string, "TETRA_DMO");
+    rc |= expect_int("TETRA direct mode ids", item->sys_id1 == 0U && item->sys_id2 == 0U && item->sys_id3 == 1U, 1);
+    /* A direct mode call that ends (a retune) before any render keeps its direct mode mark: direct mode empties the
+       record, so the end capture holds no network, and the boundary resets the TETRA mode before the row renders. */
+    reset_fixture(&opts, &state, event_history);
+    dsd_rxid_note_tetra_direct_mode(&state);
+    state.tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_TETRA_NDB_POS, DSD_CALL_KIND_GROUP_VOICE, 51002U, 41001U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    state.tetra_pub.mode = DSD_TETRA_MODE_NONE;
+    dsd_rxid_reset(&state);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    item = &event_history[0].Event_History_Items[1];
+    rc |= expect_str_eq("TETRA direct mode ended before a render", item->sysid_string, "TETRA_DMO");
+    rc |= expect_int("TETRA direct mode ended ids", item->sys_id3 == 1U, 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// While the call is active a part received after it opened lands. A network status of another P25 system starts
+// another record identity (the record drops the old site with it), and a reset record is another carrier's (a
+// boundary, which ends the call anyway): neither erases nor replaces what the row took, and nothing received under them
+// is the row's.
+static int
+test_system_identity_fills_while_live(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+
+    const Event_History* item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+    int rc = expect_str_eq("late entry sysid", item->sysid_string, "P25_293");
+    dsd_rxid_note_p25_site(&state, 0x006U, 10U, 11U);
+    watchdog_event_current(&opts, &state, 0);
+    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("unknown to known sysid", item->sysid_string, "P25_45564006293_10_11");
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("another system keeps the row's", item->sysid_string, "P25_45564006293_10_11");
+    dsd_rxid_note_p25_site(&state, 0x348U, 1U, 2U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("nor does the other system's site land", item->sysid_string, "P25_45564006293_10_11");
+    dsd_rxid_reset(&state);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("a reset record erases nothing", item->sysid_string, "P25_45564006293_10_11");
+    dsd_rxid_note_p25_network(&state, 0x12345U, 0x111U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_str_eq("another carrier's record is not the row's", item->sysid_string, "P25_45564006293_10_11");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Once the call has ended its system and site are frozen at what the received identity record held when it ended,
+// known or unknown: the finalize pass, and every render of a row whose keep-or-drop verdict is held, can run after the
+// record already describes the next carrier.
+static int
+test_system_identity_freezes_at_the_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.dmr_color_code = 3U;
+    dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
+
+    /* First finalization after the record changed. */
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_dmr_t3_syscode(&state, 0x123U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* row = &event_history[0].Event_History_Items[1];
+    int rc = expect_int("ended call commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_str_eq("finalize keeps the system the call was heard on", row->sysid_string, "DMR_ABC_CC_3");
+    rc |= expect_int("finalize keeps its numeric id", (int)row->sys_id1, 0xABC);
+
+    /* A part unknown at the end stays unknown. */
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_str_eq("unknown at the end stays unknown", row->sysid_string, "P25_293");
+    rc |= expect_int("unknown at the end keeps no ids", row->sys_id1 == 0U && row->sys_id2 == 0U, 1);
+
+    /* A call first rendered after its end takes the system the carrier had named when it ended; one the record
+       received after the end is not the call's. */
+    reset_fixture(&opts, &state, event_history);
+    state.edacs_site_id = 5;
+    dsd_rxid_note_edacs_site(&state, 12U);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_EDACS_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_rxid_note_edacs_site(&state, 13U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_has_substr("ended first render takes the site at the end",
+                            event_history[0].Event_History_Items[1].sysid_string, "EDACS_SITE_012");
+
+    /* Identity received after the last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast
+       before the call ends): the end takes it. */
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_rxid_note_p25_site(&state, 0x006U, 10U, 11U);
+    dsd_rxid_note_p25_network(&state, 0x45564U, 0x006U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_str_eq("identity just before the end", row->sysid_string, "P25_45564006293_10_11");
+
+    /* The carrier the call began on: a record reset (a boundary) before the end is another carrier's, and the end
+       takes none of it. */
+    reset_fixture(&opts, &state, event_history);
+    state.nac = 0x293;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_str_eq("another carrier's record at the end", row->sysid_string, "P25_293");
+
+    /* Held-ended rendering: an identity-less audible row whose verdict waits on a late terminator is rendered on every
+       pass while it waits, and each of those renders keeps the system the call ended with. */
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 3U;
+    dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
+    rc |= expect_int("audible epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("carrier fades", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_dmr_t3_syscode(&state, 0x123U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("verdict is held", committed_history_rows(&event_history[0]), 0);
+    rc |= expect_str_eq("held render keeps the system", event_history[0].Event_History_Items[0].sysid_string,
+                        "DMR_ABC_CC_3");
+    rc |= expect_int("late terminator", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("rescued row reaches history", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_str_eq("rescued row keeps the system", event_history[0].Event_History_Items[1].sysid_string,
+                        "DMR_ABC_CC_3");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The row takes the system and site whole from the record the call was heard under. A note naming another site or
+// system (an IDAS SCCH site ID that disagrees with the Type-D system ID, an EDACS system change, another NAC on the
+// carrier) starts another record identity (its epoch), so the row keeps the consistent observation it took last, never
+// a mix of the two, while the call is active and at its end.
+static int
+test_system_identity_takes_dependent_invalidations(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (int at_end = 0; at_end < 2; at_end++) {
+        reset_fixture(&opts, &state, event_history);
+        dsd_rxid_note_nxdn_typed_system(&state, 1234U, 42U);
+        const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+        rc |= expect_has_substr("idas system", item->sysid_string, "NXDN_1234_42_RAN");
+        dsd_rxid_note_nxdn_idas_site(&state, 1U, 43U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_rxid_reset(&state);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_has_substr(at_end ? "idas other site at the end" : "idas other site", item->sysid_string,
+                                "NXDN_1234_42_RAN");
+
+        reset_fixture(&opts, &state, event_history);
+        dsd_rxid_note_edacs_site(&state, 12U);
+        dsd_rxid_note_edacs_area(&state, 3U);
+        dsd_rxid_note_edacs_system(&state, 0x45U);
+        item = render_code_row(&opts, &state, event_history, DSD_SYNC_EDACS_POS);
+        rc |= expect_int("edacs parts", item->sys_id1 == 12U && item->sys_id2 == 3U && item->sys_id3 == 0x45U, 1);
+        dsd_rxid_note_edacs_system(&state, 0x46U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_rxid_reset(&state);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_int(at_end ? "edacs system change at the end" : "edacs system change",
+                         item->sys_id1 == 12U && item->sys_id2 == 3U && item->sys_id3 == 0x45U, 1);
+        rc |= expect_has_substr("edacs system change site", item->sysid_string, "EDACS_SITE_012");
+
+        /* Another NAC on the carrier during a P25 call (a co-channel system): the record drops the old system, and the
+           refresh that ends the call finds a record that is no longer the call's. */
+        reset_fixture(&opts, &state, event_history);
+        state.nac = 0x293;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+        dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+        dsd_rxid_note_p25_site(&state, 0x348U, 3U, 21U);
+        item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+        rc |= expect_str_eq("p25 system", item->sysid_string, "P25_BEE00348293_3_21");
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x294U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_str_eq(at_end ? "another nac: the ended call keeps its system" : "another nac: the row keeps it",
+                            item->sysid_string, "P25_BEE00348293_3_21");
+
+        /* A carrier that had sent only its colour code, then another code and a Tier III system: neither is the
+           call's. */
+        reset_fixture(&opts, &state, event_history);
+        state.dmr_color_code = 1U;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        item = render_code_row(&opts, &state, event_history, DSD_SYNC_DMR_BS_VOICE_POS);
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+        dsd_rxid_note_dmr_t3_syscode(&state, 0xABCU);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_int(at_end ? "another colour code: the ended call takes no system"
+                                : "another colour code: the row takes no system",
+                         (int)item->sys_id1, 0);
+
+        /* The same for a NAC-only P25 carrier. */
+        reset_fixture(&opts, &state, event_history);
+        state.nac = 0x293;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+        item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_POS, 0U, 0U);
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x294U);
+        dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+        if (at_end) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+            item = &event_history[0].Event_History_Items[1];
+        } else {
+            watchdog_event_current(&opts, &state, 0);
+        }
+        rc |= expect_str_eq(at_end ? "another nac only: the ended call takes no system" : "another nac only: the row",
+                            item->sysid_string, "P25_293");
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
 }
 
 // The P25 NAC and the M17 CAN in the system identity string and the event line follow the row's access code, as the
 // other protocols' codes do: a Phase 1 call takes nac only, so a p2_cc an earlier Phase 2 carrier left is no code of
 // its, and an M17 call names a CAN only once its service options were observed. An unknown NAC prints "---", three
-// wide like the hex code, so the long form keeps its field positions. The numeric sys ids keep the raw value.
+// wide like the hex code, so the long form keeps its field positions. The numeric NAC sys id holds the row's code, or
+// 0 for none: never a Phase 2 seed.
 static int
 test_unknown_p25_and_m17_codes_render_as_dashes(void) {
     static dsd_opts opts;
@@ -3924,12 +4314,12 @@ test_unknown_p25_and_m17_codes_render_as_dashes(void) {
     rc |= expect_access_code("P25p1 with nac 0 has no code", item, DSD_ACCESS_CODE_NONE, 0U);
     rc |= expect_str_eq("P25p1 unknown NAC sysid", item->sysid_string, "P25_---");
     rc |= expect_has_substr("P25p1 unknown NAC event", item->event_string, "SRC: 00041001; NAC: ---; ");
-    rc |= expect_int("P25p1 unknown NAC keeps its numeric id", (int)item->sys_id3, 0x293);
+    rc |= expect_int("P25p1 unknown NAC takes no seed in its numeric id", (int)item->sys_id3, 0);
 
     reset_fixture(&opts, &state, event_history);
     state.nac = 0;
     state.p2_cc = 0x293ULL;
-    set_p25_site(&state);
+    note_p25_site(&state);
     item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P1_NEG, 0U, 0U);
     rc |= expect_str_eq("P25p1 unknown NAC long sysid", item->sysid_string, "P25_45564006---_10_10");
     rc |= expect_has_substr("P25p1 unknown NAC long event", item->event_string, "NAC: ---; NET_STS: 45564:006:10.10; ");
@@ -3943,7 +4333,7 @@ test_unknown_p25_and_m17_codes_render_as_dashes(void) {
     reset_fixture(&opts, &state, event_history);
     state.p2_cc = 0x293ULL;
     state.p2_cc_verified = 1U;
-    set_p25_site(&state);
+    note_p25_site(&state);
     item = render_svc_row(&opts, &state, event_history, DSD_SYNC_P25P2_POS, 0U, 0U);
     rc |= expect_str_eq("P25p2 NAC long sysid", item->sysid_string, "P25_45564006293_10_10");
     rc |= expect_has_substr("P25p2 NAC long event", item->event_string, "NAC: 293; NET_STS: 45564:006:10.10; ");
@@ -4048,16 +4438,20 @@ typedef struct {
 
 static void
 set_code_segment(dsd_state* state, int protocol, const code_segment* segment) {
+    dsd_rxid_reset(state); /* what this segment received */
     if (DSD_SYNC_IS_NXDN(protocol)) {
         state->nxdn_last_ran = (unsigned int)segment->code;
         state->nxdn_last_ran_stand_in = segment->stand_in;
-        state->nxdn_location_site_code = segment->nxdn_site_code;
-        state->nxdn_location_sys_code = segment->nxdn_sys_code;
+        if (segment->nxdn_site_code != 0U) {
+            dsd_rxid_note_nxdn_location(state, 0U, segment->nxdn_sys_code, segment->nxdn_site_code);
+        }
     } else if (DSD_SYNC_IS_DPMR(protocol)) {
         state->dpmr_color_code = segment->code;
     } else {
         state->dmr_color_code = (unsigned int)segment->code;
-        state->dmr_t3_syscode = segment->dmr_syscode;
+        if (segment->dmr_syscode != 0U) {
+            dsd_rxid_note_dmr_t3_syscode(state, (uint16_t)segment->dmr_syscode);
+        }
     }
 }
 
@@ -6191,8 +6585,7 @@ test_merge_carries_late_system_identifiers(void) {
     assert(event_history[0].Event_History_Items[1].sys_id1 == 0U);
 
     // The reacquired segment decodes the network status.
-    state.p2_wacn = 0xBEE00U;
-    state.p2_sysid = 0x123U;
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x123U);
     state.nac = 0x321U;
     assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
                              DSD_CALL_BOUNDARY_CONTINUE)
@@ -7375,6 +7768,10 @@ main(void) {
     rc |= test_reacquisition_merge_keeps_the_code_and_takes_a_later_system_id();
     rc |= test_nxdn_row_names_the_ran_it_was_heard_with();
     rc |= test_unknown_p25_and_m17_codes_render_as_dashes();
+    rc |= test_system_identity_comes_from_the_received_record();
+    rc |= test_system_identity_fills_while_live();
+    rc |= test_system_identity_freezes_at_the_end();
+    rc |= test_system_identity_takes_dependent_invalidations();
     rc |= test_reacquisition_merge_names_a_p25_or_m17_code();
     rc |= test_data_notice_carries_frequency_and_access_code();
     rc |= test_playfiles_rows_take_no_tuner_value_or_code();

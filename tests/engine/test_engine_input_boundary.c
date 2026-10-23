@@ -265,7 +265,8 @@ decode_frame_across_a_recorded_retune(dsd_opts* opts, dsd_state* state) {
     expect("the read that adopts the new centre ends the outgoing call", slot0_target(state) == 0U);
     expect("the outgoing call commits with the colour code it was heard with",
            state->event_history_s[0].Event_History_Items[1].target_id == 1234U
-               && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U);
+               && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U
+               && state->event_history_s[0].Event_History_Items[1].access_code == 5U);
     expect("the incoming carrier starts with no colour code", state->dmr_color_code == 16U);
     state->dmr_color_code = 9U;
     begin_call_with_target(state, 4321U);
@@ -297,6 +298,7 @@ replay_retune_step(dsd_opts* opts, dsd_state* state) {
         case 1:
             begin_call(state);
             state->dmr_color_code = 5U;
+            dsd_event_sync_slot(opts, state, 0U); /* the active call's render takes the colour code it is heard with */
             dsd_frame_sync_note_replay_center(opts, state, 851012500U);
             return DSD_SYNC_NONE;
         case 2:
@@ -409,6 +411,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                no pass forgets it as stale (issue #575). */
             state->dstar_confirmed = 1;
             state->dmr_color_code = 5U;
+            dsd_event_sync_slot(opts, state, 0U); /* the active call's render takes the colour code it is heard with */
             state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
             state->last_cc_sync_time = dsd_decode_time();
             state->input_boundary = 1;
@@ -423,7 +426,8 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                row keeps the colour code it was heard with in every field (issue #575). */
             expect("the replaced stream's call commits with its colour code",
                    state->event_history_s[0].Event_History_Items[1].target_id == 1234U
-                       && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U);
+                       && state->event_history_s[0].Event_History_Items[1].sys_id2 == 5U
+                       && state->event_history_s[0].Event_History_Items[1].access_code == 5U);
             expect("the new stream inherits no colour code", state->dmr_color_code == 16U);
             expect("the new stream inherits no voice frequency the old one's grants named",
                    state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);

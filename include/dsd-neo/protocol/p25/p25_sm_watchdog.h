@@ -53,6 +53,9 @@ void p25_sm_tick_guard_enter(void);
 /** @brief Leave a critical section entered by either guard entry function. */
 void p25_sm_tick_guard_leave(void);
 
+/** @brief Return 1 when the calling thread holds the tick guard (entered and not yet left). */
+int p25_sm_tick_guard_held_by_caller(void);
+
 /**
  * @brief Start the background 1 Hz watchdog thread.
  *

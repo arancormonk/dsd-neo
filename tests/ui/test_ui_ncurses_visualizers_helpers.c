@@ -3,15 +3,26 @@
 // invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
 // NOLINTBEGIN(bugprone-suspicious-include)
 /*
- * Pure-helper checks for RTL ncurses visualizer math and bucketing.
+ * Pure-helper checks for the ncurses radio visualizer math and bucketing.
+ *
+ * Compiled the way a SoapySDR-only or Airspy-only build compiles the panels:
+ * USE_RADIO without USE_RTLSDR. The visualizers serve every radio backend, so
+ * none of them may sit behind the librtlsdr macro.
  */
 
-#define USE_RTLSDR    1
+#define USE_RADIO     1
 #define PRETTY_COLORS 1
+
+#ifdef USE_RTLSDR
+#error "This test must compile the visualizers with USE_RADIO only."
+#endif
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <math.h>
@@ -77,6 +88,8 @@ static int test_init_pair(short pair, short f, short b);
 #include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/ui/ncurses_internal.h"
 #include "dsd-neo/ui/ui_prims.h"
@@ -160,6 +173,13 @@ select_k_int_local(int* a, int n, int k) { // NOLINT(misc-use-internal-linkage)
 int
 dsd_unicode_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
+}
+
+static int g_unicode_text = 1;
+
+const char*
+dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) { // NOLINT(misc-use-internal-linkage)
+    return g_unicode_text ? unicode_str : ascii_str;
 }
 
 double
@@ -674,7 +694,7 @@ test_histogram_and_spectrum_helpers(void) {
     assert(strstr(g_render_out, "##\n") != NULL);
 
     render_reset();
-    spectrum_print_legend(&opts, 48000, 48, 0, vmax, vmin);
+    spectrum_print_legend(&opts, NULL, 48000, 48, 0, vmax, vmin);
     assert(strstr(g_render_out, "Span: 48.0 kHz") != NULL);
     assert(strstr(g_render_out, "FFT: 128") != NULL);
     assert(strstr(g_render_out, "Glyphs: ASCII; colored") != NULL);
@@ -682,16 +702,92 @@ test_histogram_and_spectrum_helpers(void) {
     g_has_colors = 0;
 
     render_reset();
-    print_fsk_hist_view();
-    assert(strstr(g_render_out, "(no samples)") != NULL);
+    print_constellation_view(&opts, NULL);
+    assert(strstr(g_render_out, "(no samples yet)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
 
     render_reset();
-    print_spectrum_view(&opts);
+    print_eye_view(&opts, NULL);
+    assert(strstr(g_render_out, "(no samples or SPS)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
+
+    render_reset();
+    print_fsk_hist_view();
+    assert(strstr(g_render_out, "(no samples)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
+
+    render_reset();
+    print_spectrum_view(&opts, NULL);
     assert(strstr(g_render_out, "(no spectrum yet)") != NULL);
+    assert(strstr(g_render_out, "in this build") == NULL);
+}
+
+/* The spectrum legend names the identity the tuned carrier sent (the received identity record, through the shared
+   view): in full, with its protocol, marked "(last heard)" once no longer live, and nothing at all when the carrier
+   sent none. A terminal without UTF-8 gets hyphens for the dots. */
+static void
+test_spectrum_system_line(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof state);
+    char line[288];
+    assert(spectrum_format_system_line(&state, 0, line, sizeof line) == 0U && line[0] == '\0');
+    render_reset();
+    spectrum_print_system_line(&state);
+    assert(g_render_out[0] == '\0');
+
+    /* Decoder state that a seed or another carrier left names nothing. */
+    state.p2_wacn = 0xBEE00U;
+    state.p2_sysid = 0x348U;
+    state.p2_cc = 0x293U;
+    state.nac = 0x293;
+    assert(spectrum_format_system_line(&state, 0, line, sizeof line) == 0U);
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_p25_site(&state, 0x348U, 3U, 21U);
+    assert(spectrum_format_system_line(&state, 0, line, sizeof line) > 0U);
+    assert(strcmp(line,
+                  "System: P25 \xC2\xB7 NAC 293 \xC2\xB7 SYS 348 \xC2\xB7 RFSS 3 \xC2\xB7 SITE 21 \xC2\xB7 WACN BEE00")
+           == 0);
+    render_reset();
+    spectrum_print_system_line(&state);
+    assert(strstr(g_render_out, " System: P25 \xC2\xB7 NAC 293") != NULL);
+    assert(strstr(g_render_out, "last heard") == NULL);
+
+    /* The no-carrier pass: the values stay, no longer live. */
+    dsd_rxid_mark_stale(&state);
+    state.synctype = DSD_SYNC_NONE;
+    assert(spectrum_format_system_line(&state, 1, line, sizeof line) > 0U);
+    assert(strcmp(line, "System: P25 - NAC 293 - SYS 348 - RFSS 3 - SITE 21 - WACN BEE00 (last heard)") == 0);
+    g_unicode_text = 0;
+    render_reset();
+    spectrum_print_system_line(&state);
+    assert(strstr(g_render_out, " System: P25 - NAC 293") != NULL);
+    g_unicode_text = 1;
+
+    /* A carrier boundary resets the record: nothing. */
+    dsd_rxid_reset(&state);
+    assert(spectrum_format_system_line(&state, 0, line, sizeof line) == 0U);
+
+    /* The protocol always leads, whatever the carrier sent. */
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_rest_lsn(&state, 3U);
+    assert(spectrum_format_system_line(&state, 1, line, sizeof line) > 0U);
+    assert(strcmp(line, "System: DMR - CC 1 - Rest LSN 3") == 0);
+
+    /* The legend carries it. */
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    render_reset();
+    spectrum_print_legend(&opts, &state, 48000, 48, 0, 0.0f, -10.0f);
+    assert(strstr(g_render_out, "Scale:") != NULL && strstr(g_render_out, " System: DMR") != NULL);
 }
 
 int
 main(void) {
+    test_spectrum_system_line();
     test_density_and_constellation_helpers();
     test_eye_helpers();
     test_histogram_and_spectrum_helpers();

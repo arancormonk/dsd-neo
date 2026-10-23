@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -45,6 +46,8 @@ static int g_debug_format_calls;
 static uint8_t g_handler_burst;
 static uint8_t g_handler_info[196];
 static uint8_t g_handler_reliab[98];
+/* The received identity as a snapshot published while the burst is dispatched would carry it. */
+static dsd_received_identity g_handler_rxid;
 static dmr_confidence_result g_confidence_result;
 /* The live read that adopts a retune its capture recorded, where the carrier boundary moves the carrier count
    (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
@@ -155,6 +158,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         state->carrier_seq++;
     }
     g_handler_burst = databurst;
+    g_handler_rxid = state->rx_id;
     if (g_handler_writes_fix) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s", "lrrp-fix");
     }
@@ -302,6 +306,17 @@ test_ms_data_sync_bypasses_confidence_and_cach(void) {
     assert(g_reset_calls == 0);
     assert(g_cach_calls == 0);
     assert(state.dmr_color_code == 5);
+    /* The slot type's checked colour code is the carrier's before the burst it heads is dispatched. */
+    assert(g_handler_rxid.family == (uint8_t)DSD_RXID_FAMILY_DMR && g_handler_rxid.valid == DSD_RXID_ACCESS);
+    assert(g_handler_rxid.access == 5U);
+
+    /* A slot type that failed its Golay(20,8) names nothing. */
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    state.dmr_ms_mode = 1;
+    g_golay_ok = 0;
+    dmr_data_sync(&opts, &state);
+    assert(state.rx_id.valid == 0U);
 }
 
 /* Issue #637: a standalone data burst is judged by its own CACH slot, not by the slot the single-slot decoder proved
@@ -519,6 +534,42 @@ test_live_half_split_by_a_carrier_boundary_is_dropped(void) {
     assert(g_skip_calls == 66);
 }
 
+/* A carrier boundary while the slot type's live dibits are read (a replay read adopting a recorded retune): the slot
+   type straddles two carriers, so its colour code is neither the carrier's received identity nor confidence evidence,
+   in either mode, and the burst dispatches nothing. */
+static void
+test_slot_type_split_by_a_carrier_boundary_notes_nothing(void) {
+    for (int ms = 0; ms < 2; ms++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        static int payload[90];
+        static dsd_dibit_soft_t reliab[90];
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        prepare_state(&state, payload, reliab);
+        reset_fixture();
+        state.dmr_stereo = 0;
+        state.dmr_ms_mode = ms;
+        state.color_code = 9;
+        state.dmr_color_code = 9;
+        state.min = 0;
+        state.lmid = 10;
+        state.center = 20;
+        state.umid = 30;
+        state.max = 40;
+        prepare_live_symbols(173U, 3);
+        g_boundary_at = 2;
+
+        dmr_data_sync(&opts, &state);
+
+        assert(state.carrier_seq == 1U);
+        assert(state.rx_id.valid == 0U);
+        assert(g_confidence_calls == 0);
+        assert(state.color_code == 9 && state.dmr_color_code == 9);
+        assert(g_handler_calls == 0);
+        assert(g_reset_calls == 1);
+    }
+}
+
 /* A Signal search that leaves the burst (its visit ended, or a command came), or a live read that gives up on a stalled
    input, cuts its live half: from the cut every symbol is an erasure getSymbol() stood in. The slot type decodes as
    soon as its five live dibits are read, so one the cut reached would set the colour code and feed the confidence that
@@ -701,6 +752,7 @@ main(void) {
     test_live_second_half_reliability_and_debug_output();
     test_live_half_split_by_a_carrier_boundary_is_dropped();
     test_live_half_cut_by_an_input_interruption_is_dropped();
+    test_slot_type_split_by_a_carrier_boundary_notes_nothing();
     test_live_reliability_is_forwarded_unscaled();
     test_direct_mode_sync_overrides_cach_slot();
     test_confidence_pending_and_reject_gate_dispatch();

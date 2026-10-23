@@ -8,6 +8,7 @@
 
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
@@ -244,6 +245,8 @@ tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, 
                           "[TETRA SYSINFO] main carrier %ld Hz, location area %u: another cell than %ld Hz, %u\n",
                           main_carrier_hz, (unsigned)la, ts->dl_carrier_hz, (unsigned)ts->la);
         bsch_forget_cell(opts, state, ts);
+        /* The received identity forgets the last cell's location area and control channel too. */
+        dsd_rxid_note_tetra_other_cell(state);
     }
 }
 
@@ -265,6 +268,9 @@ tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state)
     ts->colour = p.colour;
     ts->lfsr_seed = tetra_compute_scramb_seed(p.mcc, p.mnc, p.colour);
     ts->net_known = 1;
+    /* Every caller passes a BSCH whose CRC passed: the network and the cell's colour code are the carrier's received
+       identity (never a --tetra-net preset, which only seeds the descrambler). */
+    dsd_rxid_note_tetra_cell(state, (uint16_t)p.mcc, (uint16_t)p.mnc, (uint8_t)p.colour);
     tdma_anchor(ts, &p, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
     /* What the burst's block 2 signals reads the cell's colour code from the publication (dsd_access_code_current()):
      * it describes this cell from here, not the burst before. */

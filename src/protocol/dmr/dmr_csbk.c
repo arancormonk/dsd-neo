@@ -27,6 +27,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -45,10 +46,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_crc_provenance.h"
 #include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/* 1 while dmr_cspdu() handles the P_CLEAR the decoder synthesized itself (dmr_cspdu_release_channel()). Decoder thread
+   only. */
+static int s_dmr_cspdu_synthesized;
+
+/* Whether the CSBK being handled passed its own CRC. dmr_cspdu() also handles one -F accepted by RAS and an MBC whose
+   header CRC failed, which the burst handler flags for the slot, and a P_CLEAR the encryption lockout synthesized,
+   which was never received: they keep decoding, following and releasing, but name no identity in the received
+   identity record. */
+static int
+dmr_csbk_crc_checked(const dsd_state* state) {
+    return !s_dmr_cspdu_synthesized && state->event_crc_invalid[state->currentslot & 1] == 0U;
+}
+
+/* The trunking brand a checked CSBK names, to the received identity record. */
+static void
+dmr_csbk_note_brand(dsd_state* state, const char* brand) {
+    if (dmr_csbk_crc_checked(state)) {
+        dsd_rxid_note_dmr_brand(state, brand);
+    }
+}
 
 static void
 dmr_csbk_print_group_label(const dsd_state* state, uint32_t id) {
@@ -1594,6 +1617,9 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
         //set overarching manufacturer in use when non-standard feature id set is up
         if (csbk_fid != 0) {
             state->dmr_mfid = csbk_fid;
+            if (dmr_csbk_crc_checked(state)) {
+                dsd_rxid_note_dmr_vendor(state, (uint8_t)csbk_fid);
+            }
         }
 
         DSD_FPRINTF(stderr, "%s", KYEL);
@@ -1749,6 +1775,11 @@ static void
 dmr_cspdu_cap_plus_3e_sync_rest(const dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
     if (!dmr_cap_plus_rest_lsn_valid(ctx->rest_channel)) {
         return;
+    }
+    // Before the change test: an unchanged repeat proves the rest channel again.
+    if (dmr_csbk_crc_checked(state)) {
+        dsd_rxid_note_dmr_rest_lsn(state, ctx->rest_channel);
+        dsd_rxid_note_dmr_brand(state, "Capacity Plus");
     }
     if (ctx->rest_channel != state->dmr_rest_channel) {
         state->dmr_rest_channel = ctx->rest_channel;
@@ -2197,6 +2228,7 @@ dmr_cspdu_con_plus_set_branding(dsd_state* state) {
     state->dmr_mfid = 0x06;
     DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "Con+ ");
+    dmr_csbk_note_brand(state, "Connect Plus");
 }
 
 static void
@@ -2606,6 +2638,9 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
 
     dmr_cspdu_xpt_print_and_collect(opts, state, cs_pdu_bits, xpt_seq, xpt_bank, xpt_ch, t_tg);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "Free LCN - %d ", xpt_free);
+    if (dmr_csbk_crc_checked(state)) {
+        dsd_rxid_note_dmr_xpt_free_lcn(state, xpt_free);
+    }
     dmr_cspdu_xpt_update_cc_from_input(opts, state);
 
     if (opts->trunk_tune_group_calls == 1) {
@@ -2623,6 +2658,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
 
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
+    dmr_csbk_note_brand(state, "Hytera XPT");
 }
 
 static void
@@ -2653,6 +2689,7 @@ dmr_cspdu_xpt_handle_adjacent(uint8_t cs_pdu_bits[], dsd_state* state, int csbk_
         }
     }
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
+    dmr_csbk_note_brand(state, "Hytera XPT");
 }
 
 static void
@@ -2713,9 +2750,7 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
         if (opts->use_rigctl == 1) {
             ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
         } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RTLSDR
             ccfreq = (long int)opts->rtlsdr_center_freq;
-#endif
         }
         if (ccfreq != 0) {
             state->trunk_cc_freq = ccfreq;
@@ -2772,6 +2807,20 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+void
+dmr_cspdu_release_channel(dsd_opts* opts, dsd_state* state) {
+    // The bit buffer must span the full 12-octet CSPDU: handlers may read bits ahead of their opcode check.
+    uint8_t pdu[12];
+    uint8_t pdu_bits[96];
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    DSD_MEMSET(pdu_bits, 0, sizeof(pdu_bits));
+    pdu[0] = 46; // P_CLEAR
+    pdu[1] = 255;
+    s_dmr_cspdu_synthesized = 1;
+    dmr_cspdu(opts, state, pdu_bits, pdu, 1, 0);
+    s_dmr_cspdu_synthesized = 0;
 }
 
 //translate special gateway identifier addresses
@@ -3025,8 +3074,10 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
         /* Type 0 is C_ALOHA, naming this site; type 1 (C_BCAST vote or adjacent) names another and is no note.
            dmr_cspdu()'s gate also passes a burst -F accepted by RAS, or an MBC whose header CRC failed: the dispatcher
            flags those for the slot, and only a CRC that matched names the site. */
-        if (state->event_crc_invalid[state->currentslot & 1] == 0U) {
+        if (dmr_csbk_crc_checked(state)) {
             dmr_tiii_note_search_site(state, model_str, net, site, n, sub_mask, syscode);
+            /* A C_ALOHA comes from a Tier III control channel: this carrier, where the receiver is tuned. */
+            dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
         }
     } else if (type == 1) {
         dmr_syscode_print_type1(model_str, net, site, n, sub_mask, syscode);

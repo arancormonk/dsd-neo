@@ -4,7 +4,7 @@
  */
 /*
  * ncurses_dsp_display.c
- * DSP status panel (RTL-SDR pipeline state)
+ * DSP status panel (radio pipeline state)
  */
 
 #include <curses.h>
@@ -83,9 +83,6 @@ dsp_status_print_squelch(const dsd_opts* opts, const dsd_state* state) {
         ui_print_kv_line("Squelch", "%s", status);
     }
 }
-#endif
-
-#ifdef USE_RTLSDR
 
 typedef struct {
     dsd_frontend_metrics metrics;
@@ -164,22 +161,16 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
 
-#ifdef USE_RTLSDR
     dsp_status_snapshot snap;
     dsp_status_capture(&snap, state);
-#endif
 
     ui_print_header("DSP");
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
-#ifdef USE_RTLSDR
     dsp_status_print_front_and_path(&snap);
-#endif
     dsp_status_print_squelch(opts, state);
-#ifdef USE_RTLSDR
     if (snap.cq) {
         dsp_status_print_cqpsk_metrics(&snap);
     }
-#endif
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));
     ui_print_hr();

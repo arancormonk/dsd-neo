@@ -11,7 +11,9 @@
  * are not parsed. The MAC-RESOURCE header, SYSINFO and ACCESS-DEFINE are read by pure decoders (tetra_mac_pdu.h).
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -812,6 +814,15 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     tetra_state_t* const ts = b->ts;
     const long dl_hz = carrier_frequency_hz(si->main_carrier, si->band, si->offset);
     tetra_bsch_sysinfo_cell(b->opts, b->state, dl_hz, si->mle_present, si->la);
+    /* The received identity: the location area, and this carrier as the control channel only when it is the main
+       carrier the SYSINFO names (every carrier of the cell broadcasts the same SYSINFO), before anything here retunes. */
+    if (si->mle_present) {
+        dsd_rxid_note_tetra_la(b->state, si->la);
+    }
+    const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(b->opts);
+    if (dl_hz > 0L && tuned_hz != 0U && (long)tuned_hz == dl_hz) {
+        dsd_rxid_note_cc_freq(b->state, DSD_RXID_FAMILY_TETRA, tuned_hz);
+    }
     if (dl_hz > 0L) {
         ts->dl_carrier_hz = dl_hz;
         ts->freq_band = si->band;

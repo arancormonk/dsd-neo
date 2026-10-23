@@ -21,6 +21,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -2823,6 +2824,48 @@ edacs_run_golden_48k_cases(void) {
     return rc;
 }
 
+/* The received identity record (dsd_state::rx_id): each EDACS message variant notes the parts it carries on its own. A
+   standard site ID names the site with its control channel's LCN, and the control channel where the receiver is tuned;
+   an extended system information message names the system and the LCN; an extended site ID the site and the area. */
+static int
+edacs_run_received_identity_cases(void) {
+    int rc = 0;
+    const dsd_received_identity* id = &g_state.rx_id;
+    /* Standard MT-A/MT-B 7, MT-D 0x0B: CC LCN 5, site 13. */
+    const unsigned long long std_site = 0xE000000ULL | 0x1C00000ULL | (0x0BULL << 17) | (5ULL << 12) | 13ULL;
+    /* Extended MT1 0x1F, MT2 0x8 (system 0x1234, CC LCN 3) and MT2 0xA (area 0x12, site 9). */
+    const unsigned long long ext_system = (0x1FULL << 23) | (0x8ULL << 19) | 0x1234ULL;
+    const unsigned long long ext_site = (0x1FULL << 23) | (0xAULL << 19) | (0x12ULL << 5) | 9ULL;
+
+    edacs_setup_state_fixture(0);
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 851012500U;
+    edacs_process_valid_frame(&g_opts, &g_state, std_site, 0ULL);
+    rc |= edacs_expect(id->family == (uint8_t)DSD_RXID_FAMILY_EDACS, "rx-id", "standard", "family");
+    rc |= edacs_expect(id->valid == (DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_CC_LCN | DSD_RXID_CC_FREQ), "rx-id",
+                       "standard", "site, cc lcn and control channel");
+    rc |= edacs_expect(id->edacs_site == 13U && id->edacs_cc_lcn == 5U, "rx-id", "standard", "values");
+    rc |= edacs_expect(id->cc_freq_hz == 851012500U, "rx-id", "standard", "control channel frequency");
+
+    edacs_setup_state_fixture(1);
+    edacs_process_valid_frame(&g_opts, &g_state, ext_system, 3ULL);
+    rc |= edacs_expect(id->valid == (DSD_RXID_EDACS_SYSTEM | DSD_RXID_EDACS_CC_LCN), "rx-id", "extended-system",
+                       "system and cc lcn alone");
+    rc |= edacs_expect(id->edacs_system == 0x1234U && id->edacs_cc_lcn == 3U, "rx-id", "extended-system", "values");
+    edacs_process_valid_frame(&g_opts, &g_state, ext_site, 0ULL);
+    rc |= edacs_expect(
+        id->valid == (DSD_RXID_EDACS_SYSTEM | DSD_RXID_EDACS_CC_LCN | DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA),
+        "rx-id", "extended-site", "site and area join the system");
+    rc |= edacs_expect(id->edacs_site == 9U && id->edacs_area == 0x12U, "rx-id", "extended-site", "values");
+
+    edacs_setup_state_fixture(1);
+    edacs_process_valid_frame(&g_opts, &g_state, ext_site, 0ULL);
+    rc |= edacs_expect(id->valid == (DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA), "rx-id", "extended-site-alone",
+                       "site and area alone");
+    edacs_setup_state_fixture(0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2892,6 +2935,7 @@ main(void) {
     rc |= edacs_run_retry_after_reject_case(&cases[1], DSD_TRUNK_TUNE_RESULT_FAILED, "retry-after-failed");
     rc |= edacs_run_retry_after_reject_case(&cases[2], DSD_TRUNK_TUNE_RESULT_TIMEOUT, "retry-after-timeout");
     rc |= edacs_run_inverted_polarity_cases(&cases[0]);
+    rc |= edacs_run_received_identity_cases();
 
     for (size_t r = 0; r < sizeof(results) / sizeof(results[0]); r++) {
         rc |= edacs_run_eot_result_case(results[r].result, results[r].name);

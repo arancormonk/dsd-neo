@@ -28,10 +28,22 @@ static dsd_opts* g_opts = NULL;
 static dsd_state* g_state = NULL;
 static int g_p25_sm_wd_ms = 0; // 0 => unset (use defaults per UI mode)
 
+#if defined(_MSC_VER)
+#define P25_SM_THREAD_LOCAL __declspec(thread)
+#else
+#define P25_SM_THREAD_LOCAL _Thread_local
+#endif
+/* Whether the calling thread holds the tick guard (p25_sm_tick_guard_held_by_caller()). */
+static P25_SM_THREAD_LOCAL int s_tick_guard_held_here = 0;
+
 int
 p25_sm_tick_guard_try_enter(void) {
     int expected = 0;
-    return atomic_compare_exchange_strong(&g_p25_sm_tick_lock, &expected, 1) ? 1 : 0;
+    if (!atomic_compare_exchange_strong(&g_p25_sm_tick_lock, &expected, 1)) {
+        return 0;
+    }
+    s_tick_guard_held_here = 1;
+    return 1;
 }
 
 void
@@ -43,7 +55,13 @@ p25_sm_tick_guard_enter(void) {
 
 void
 p25_sm_tick_guard_leave(void) {
+    s_tick_guard_held_here = 0;
     atomic_store(&g_p25_sm_tick_lock, 0);
+}
+
+int
+p25_sm_tick_guard_held_by_caller(void) {
+    return s_tick_guard_held_here;
 }
 
 void

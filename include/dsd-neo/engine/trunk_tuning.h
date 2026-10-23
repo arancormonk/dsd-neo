@@ -29,6 +29,14 @@ dsd_trunk_tune_result dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_st
                                                           uint64_t request_id);
 dsd_trunk_tune_result dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id);
 /**
+ * @brief Mark (non-zero) or unmark the calling thread as the decoder thread, which owns dsd_state::rx_id.
+ *
+ * An accepted retune the decoder thread makes drops the received identity's access code at once, under the P25 SM tick
+ * guard; one made on any other thread (the P25 watchdog's) only requests the drop, which the decoder thread applies.
+ * dsd_engine_run_with_lifecycle() marks the thread it runs on for the run.
+ */
+void dsd_engine_set_decoder_thread(int is_decoder);
+/**
  * @brief Tune a scanner row or target (the -Y channel scan, --trunk-scan).
  *
  * Queues the receive profile the row runs on, bound to @p freq: an analog row (the analog FM monitor in @p opts,

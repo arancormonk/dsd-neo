@@ -16,10 +16,12 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -245,10 +247,11 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
         ctx->SlotType[(i * 2) + 11] = (unsigned char)(1 & dibit);
     }
     /* An input interruption cut the slot type (a Signal search left the burst): its live half is erasures the reader
-       stood in, so nothing of it decodes, neither the colour code nor the confidence and search evidence it would
-       feed. dmr_data_sync() reads on and drops the burst at its carrier check, which the interruption fails too; a cut
-       burst is no FEC error, so the slot type does not report one. */
-    if (ctx->state->input_interrupted) {
+       stood in. Or the carrier boundary moved while it was read (a replay read adopting a recorded retune), so it
+       straddles two carriers. Either way nothing of it decodes, neither the colour code (the received identity) nor
+       the confidence and search evidence it would feed. dmr_data_sync() reads on and drops the burst at its carrier
+       check, which this fails too; a cut burst is no FEC error, so the slot type does not report one. */
+    if (dmr_data_carrier_left(ctx)) {
         ctx->SlotTypeOk = 1;
         return 1;
     }
@@ -273,7 +276,10 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
             ctx->confidence_pending = 1;
         }
     } else {
+        /* MS mode has no confidence lock: the slot type's checked colour code is the carrier's. */
         ctx->state->dmr_color_code = ctx->state->color_code;
+        dsd_rxid_note_access(ctx->state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE,
+                             (uint16_t)ctx->state->color_code);
     }
 
     if (ctx->state->currentslot == 0) {

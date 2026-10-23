@@ -595,6 +595,19 @@ static void p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx);
 static int p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index);
 static int p25p2_vpdu_vendor_has_octets(const p25p2_vpdu_ctx* ctx, int first_octet, int count);
 
+/* -F lets a MAC_SIGNAL that failed its CRC through for its grants and voice, but its system broadcasts change no
+ * system state: the WACN/SYSID/NAC seed, the control channel, the site and LRA, the IDEN tables and their trust,
+ * pending announcements, control channel candidates, the scan-list fallback, the neighbour list, the system services,
+ * the system time and the protection parameters. */
+static int
+p25p2_vpdu_system_tables_writable(const p25p2_vpdu_ctx* ctx) {
+    if (ctx->crc_ok) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, " (CRC failed; not applied)");
+    return 0;
+}
+
 static void
 p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
     uint8_t mfid = (uint8_t)ctx->mac[2];
@@ -2241,7 +2254,9 @@ p25p2_vpdu_iter_block_21(p25p2_vpdu_ctx* ctx) {
         int RPL = MAC[9 + len_a];
         DSD_FPRINTF(stderr, "\n System Service Broadcast - Abbreviated \n");
         DSD_FPRINTF(stderr, "  TWV: %02X SSA: %06X; SSS: %06X; RPL: %02X", TWV, SSA, SSS, RPL);
-        p25_store_system_service_broadcast(state, (uint32_t)SSA, (uint32_t)SSS, (uint8_t)RPL);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            p25_store_system_service_broadcast(state, (uint32_t)SSA, (uint32_t)SSS, (uint8_t)RPL);
+        }
     }
 
     if (len_b < 0) {
@@ -2280,15 +2295,14 @@ p25p2_vpdu_iter_block_22(p25p2_vpdu_ctx* ctx) {
                     lsysid, rfssid, siteid, channel, sysclass);
         process_channel_to_freq(opts, state, channel);
 
-        p25_store_site_lra(state, (uint8_t)lra);
-        p25_store_site_network_active(state, (uint8_t)((MAC[3 + len_a] & 0x10U) != 0U));
-        state->p2_siteid = siteid;
-        state->p2_rfssid = rfssid;
-        // Promote any matching IDENs to trusted on site identification
-        p25_confirm_idens_for_current_site(state);
-        /* A MAC_SIGNAL that failed its CRC (-F) names no site a search may show. */
-        if (ctx->crc_ok) {
-            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            p25_store_site_lra(state, (uint8_t)lra);
+            p25_store_site_network_active(state, (uint8_t)((MAC[3 + len_a] & 0x10U) != 0U));
+            state->p2_siteid = siteid;
+            state->p2_rfssid = rfssid;
+            // Promote any matching IDENs to trusted on site identification
+            p25_confirm_idens_for_current_site(state);
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)lra);
         }
     }
 
@@ -2332,13 +2346,13 @@ p25p2_vpdu_iter_block_23(p25p2_vpdu_ctx* ctx) {
         process_channel_to_freq(opts, state, channelt);
         process_channel_to_freq(opts, state, channelr);
 
-        p25_store_site_lra(state, (uint8_t)lra);
-        p25_store_site_network_active(state, (uint8_t)((MAC[3 + len_a] & 0x10U) != 0U));
-        state->p2_siteid = siteid;
-        state->p2_rfssid = rfssid;
-        p25_confirm_idens_for_current_site(state);
-        if (ctx->crc_ok) {
-            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            p25_store_site_lra(state, (uint8_t)lra);
+            p25_store_site_network_active(state, (uint8_t)((MAC[3 + len_a] & 0x10U) != 0U));
+            state->p2_siteid = siteid;
+            state->p2_rfssid = rfssid;
+            p25_confirm_idens_for_current_site(state);
+            p25_search_note_rfss(state, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)lra);
         }
     }
 
@@ -2671,8 +2685,7 @@ p25p2_vpdu_iter_block_29(p25p2_vpdu_ctx* ctx) {
     if (MAC[1 + len_a] == 0x74) {
         struct p25p2_iden_update up = {0};
         (void)p25p2_mac_decode_iden_vuhf(MAC, 2 + len_a, &up);
-        state->p25_chan_iden = up.iden;
-        int iden = state->p25_chan_iden;
+        int iden = up.iden;
         int bw_vu = up.bw_vu;
         int trans_off = up.trans_off;
         int chan_spac = up.chan_spac;
@@ -2683,10 +2696,17 @@ p25p2_vpdu_iter_block_29(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, "\n  WARNING: 0x74 IDEN_UP_VU base_freq %08lX outside VHF/UHF range", base_freq);
         }
 
-        p25_invalidate_chan_map_for_iden(state, iden);
+        DSD_FPRINTF(stderr, "\n Identifier Update UHF/VHF\n");
+        DSD_FPRINTF(stderr,
+                    "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
+                    "Frequency [%08lX] [%09lld]",
+                    iden, bw_vu, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
 
-        // Write to FDMA IDEN entry
-        {
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            state->p25_chan_iden = iden;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Write to FDMA IDEN entry
             p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
             e->base_freq = base_freq;
             e->chan_type = 1; // FDMA default
@@ -2700,14 +2720,8 @@ p25p2_vpdu_iter_block_29(p25p2_vpdu_ctx* ctx) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
+            p25_resolve_pending_announcements(opts, state);
         }
-        p25_resolve_pending_announcements(opts, state);
-
-        DSD_FPRINTF(stderr, "\n Identifier Update UHF/VHF\n");
-        DSD_FPRINTF(stderr,
-                    "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
-                    "Frequency [%08lX] [%09lld]",
-                    state->p25_chan_iden, bw_vu, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
     }
 
     if (len_b < 0) {
@@ -2737,17 +2751,23 @@ p25p2_vpdu_iter_block_30(p25p2_vpdu_ctx* ctx) {
     if (MAC[1 + len_a] == 0x7D) {
         struct p25p2_iden_update up = {0};
         (void)p25p2_mac_decode_iden_standard(MAC, 2 + len_a, &up);
-        state->p25_chan_iden = up.iden;
-        int iden = state->p25_chan_iden;
+        int iden = up.iden;
         long int base_freq = up.base_freq;
         int bw = up.bandwidth;
         int trans_off = up.trans_off;
         int chan_spac = up.chan_spac;
 
-        p25_invalidate_chan_map_for_iden(state, iden);
+        DSD_FPRINTF(stderr, "\n Identifier Update (8.3.1.23)\n");
+        DSD_FPRINTF(stderr,
+                    "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
+                    "Frequency [%08lX] [%09lld]",
+                    iden, bw, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
 
-        // Write to FDMA IDEN entry
-        {
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            state->p25_chan_iden = iden;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Write to FDMA IDEN entry
             p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
             e->base_freq = base_freq;
             e->chan_type = 1; // FDMA default
@@ -2761,14 +2781,8 @@ p25p2_vpdu_iter_block_30(p25p2_vpdu_ctx* ctx) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             state->p25_chan_tdma_explicit[iden] |= 1; // bit0 = has FDMA/non-TDMA entry
+            p25_resolve_pending_announcements(opts, state);
         }
-        p25_resolve_pending_announcements(opts, state);
-
-        DSD_FPRINTF(stderr, "\n Identifier Update (8.3.1.23)\n");
-        DSD_FPRINTF(stderr,
-                    "  Channel Identifier [%01X] BW [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] Base "
-                    "Frequency [%08lX] [%09lld]",
-                    state->p25_chan_iden, bw, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
     }
 
     if (len_b < 0) {
@@ -2798,17 +2812,23 @@ p25p2_vpdu_iter_block_31(p25p2_vpdu_ctx* ctx) {
     if (MAC[1 + len_a] == 0x73) {
         struct p25p2_iden_update up = {0};
         (void)p25p2_mac_decode_iden_tdma(MAC, 2 + len_a, &up);
-        state->p25_chan_iden = up.iden;
-        int iden = state->p25_chan_iden;
+        int iden = up.iden;
         int chan_type = up.chan_type;
         int trans_off = up.trans_off;
         int chan_spac = up.chan_spac;
         long int base_freq = up.base_freq;
 
-        p25_invalidate_chan_map_for_iden(state, iden);
+        DSD_FPRINTF(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
+        DSD_FPRINTF(stderr,
+                    "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
+                    "Base Frequency [%08lX] [%09lld]",
+                    iden, chan_type, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
 
-        // Route by ChannelType using the shared slot denominator table; types 3-15 are TDMA.
-        {
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            state->p25_chan_iden = iden;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType using the shared slot denominator table; types 3-15 are TDMA.
             int is_tdma = p25_channel_type_is_tdma(chan_type);
             p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
             e->base_freq = base_freq;
@@ -2822,14 +2842,8 @@ p25p2_vpdu_iter_block_31(p25p2_vpdu_ctx* ctx) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            p25_resolve_pending_announcements(opts, state);
         }
-        p25_resolve_pending_announcements(opts, state);
-
-        DSD_FPRINTF(stderr, "\n Identifier Update for TDMA - Abbreviated\n");
-        DSD_FPRINTF(stderr,
-                    "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
-                    "Base Frequency [%08lX] [%09lld]",
-                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
     }
 
     if (len_b < 0) {
@@ -2859,8 +2873,7 @@ p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
     if (MAC[1 + len_a] == 0xF3) {
         struct p25p2_iden_update up = {0};
         (void)p25p2_mac_decode_iden_tdma(MAC, 3 + len_a, &up);
-        state->p25_chan_iden = up.iden;
-        int iden = state->p25_chan_iden;
+        int iden = up.iden;
         int chan_type = up.chan_type;
         int trans_off = up.trans_off;
         int chan_spac = up.chan_spac;
@@ -2868,10 +2881,18 @@ p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
         int lwacn = (MAC[11 + len_a] << 12) | (MAC[12 + len_a] << 4) | ((MAC[13 + len_a] & 0xF0) >> 4);
         int lsysid = ((MAC[13 + len_a] & 0xF) << 8) | MAC[14 + len_a];
 
-        p25_invalidate_chan_map_for_iden(state, iden);
+        DSD_FPRINTF(stderr, "\n Identifier Update for TDMA - Extended\n");
+        DSD_FPRINTF(stderr,
+                    "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
+                    "Base Frequency [%08lX] [%09lld]",
+                    iden, chan_type, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
+        DSD_FPRINTF(stderr, "\n  WACN [%04X] SYSID [%04X]", lwacn, lsysid);
 
-        // Route by ChannelType using the shared slot denominator table; types 3-15 are TDMA.
-        {
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            state->p25_chan_iden = iden;
+            p25_invalidate_chan_map_for_iden(state, iden);
+
+            // Route by ChannelType using the shared slot denominator table; types 3-15 are TDMA.
             int is_tdma = p25_channel_type_is_tdma(chan_type);
             p25_iden_entry_t* e = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
             e->base_freq = base_freq;
@@ -2888,15 +2909,8 @@ p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            p25_resolve_pending_announcements(opts, state);
         }
-        p25_resolve_pending_announcements(opts, state);
-
-        DSD_FPRINTF(stderr, "\n Identifier Update for TDMA - Extended\n");
-        DSD_FPRINTF(stderr,
-                    "  Channel Identifier [%01X] Channel Type [%01X] Transmit Offset [%04X]\n  Channel Spacing [%03X] "
-                    "Base Frequency [%08lX] [%09lld]",
-                    state->p25_chan_iden, chan_type, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
-        DSD_FPRINTF(stderr, "\n  WACN [%04X] SYSID [%04X]", lwacn, lsysid);
     }
 
     if (len_b < 0) {
@@ -2936,8 +2950,10 @@ p25p2_vpdu_iter_block_33(p25p2_vpdu_ctx* ctx) {
                     channelt, channelr, sysclass);
 
         (void)process_channel_to_freq(opts, state, channelr);
-        (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channelt, (uint8_t)rfssid, (uint8_t)siteid,
-                                                (uint8_t)sysclass);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channelt, (uint8_t)rfssid, (uint8_t)siteid,
+                                                    (uint8_t)sysclass);
+        }
     }
 
     if (len_b < 0) {
@@ -2984,16 +3000,18 @@ p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
         if (channel2_valid) {
             freq2 = process_channel_to_freq(opts, state, channel2);
         }
-        (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channel1, (uint8_t)rfssid, (uint8_t)siteid,
-                                                (uint8_t)sysclass1);
-        if (channel2_valid) {
-            (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channel2, (uint8_t)rfssid, (uint8_t)siteid,
-                                                    (uint8_t)sysclass2);
-        }
-        const long scc_freqs[2] = {freq1, freq2};
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channel1, (uint8_t)rfssid, (uint8_t)siteid,
+                                                    (uint8_t)sysclass1);
+            if (channel2_valid) {
+                (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channel2, (uint8_t)rfssid,
+                                                        (uint8_t)siteid, (uint8_t)sysclass2);
+            }
+            const long scc_freqs[2] = {freq1, freq2};
 
-        //place the cc freq into the list at index 0 if 0 is empty so we can hunt for rotating CCs without user LCN list
-        p25p2_seed_secondary_lcn_fallback(opts, state, rfssid, siteid, scc_freqs, channel2_valid ? 2 : 1);
+            // Place the CC freq in an empty low scan-list slot so rotating CCs can be hunted without a user LCN list
+            p25p2_seed_secondary_lcn_fallback(opts, state, rfssid, siteid, scc_freqs, channel2_valid ? 2 : 1);
+        }
     }
 
     if (len_b < 0) {
@@ -3635,10 +3653,9 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
-/* @p crc_ok is the broadcast's CRC verdict (process_MAC_VPDU_crc()): one that failed its CRC under -F may still name
-   the system, as it always could, but proves no NAC. */
+/* Only a network status that passed its CRC reaches here (p25p2_vpdu_system_tables_writable()). */
 static void
-p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolorcode, int crc_ok) {
+p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolorcode) {
     if (!state || (lwacn == 0 && lsysid == 0)) {
         return;
     }
@@ -3650,7 +3667,7 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
         state->p2_cc = lcolorcode;
     }
     // A broadcast that passed its CRC naming the descrambler's NAC proves it on this carrier (issue #575).
-    if (crc_ok && state->p2_cc == (unsigned long long)lcolorcode) {
+    if (state->p2_cc == (unsigned long long)lcolorcode) {
         state->p2_cc_verified = 1U;
     }
 }
@@ -3663,8 +3680,7 @@ p25p2_vpdu_note_nsb_system_tdma(dsd_state* state) {
 }
 
 static void
-p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0,
-                         int crc_ok) {
+p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0) {
     const long neigh[1] = {state->p25_cc_freq};
     p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
     p25p2_vpdu_note_nsb_system_tdma(state);
@@ -3672,7 +3688,7 @@ p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int 
 
     // Only update system identity and potentially reset IDEN tables when values
     // are sane (non-zero) and we have a valid frequency mapping.
-    p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode, crc_ok);
+    p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
 
     if (seed_lcn0 && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
         state->trunk_lcn_freq[0] = state->p25_cc_freq;
@@ -3715,21 +3731,22 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X]", lra, lwacn, lsysid,
                     lcolorcode, channel);
         long int cc_freq = process_channel_to_freq(opts, state, channel);
-        p25p2_vpdu_note_nsb_system_tdma(state);
-        int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
-        const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
-        if (cc_metadata_allowed) {
-            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode, ctx->crc_ok);
-            p25_store_site_lra(state, (uint8_t)lra);
-        }
-        if (accepted_cc) {
-            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1, ctx->crc_ok);
-        } else {
-            p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
-        }
-        /* A MAC_SIGNAL that failed its CRC (-F) may still update decoder state, but names no system a search shows. */
-        if (ctx->crc_ok) {
-            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            p25p2_vpdu_note_nsb_system_tdma(state);
+            int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
+            const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
+            if (cc_metadata_allowed) {
+                p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
+                p25_store_site_lra(state, (uint8_t)lra);
+            }
+            if (accepted_cc) {
+                p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1);
+            } else {
+                p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
+            }
+            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
+            p25_search_note_network_nac(state, (uint16_t)lcolorcode);
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
         }
     }
 
@@ -3771,21 +3788,22 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
                     lsysid, lcolorcode, channelt, channelr);
         long int nf1 = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
-        p25p2_vpdu_note_nsb_system_tdma(state);
-        int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
-        const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
-        if (cc_metadata_allowed) {
-            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode, ctx->crc_ok);
-            p25_store_site_lra(state, (uint8_t)lra);
-        }
-        if (accepted_cc) {
-            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0, ctx->crc_ok);
-        } else {
-            p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
-        }
-        /* A MAC_SIGNAL that failed its CRC (-F) may still update decoder state, but names no system a search shows. */
-        if (ctx->crc_ok) {
-            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            p25p2_vpdu_note_nsb_system_tdma(state);
+            int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
+            const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
+            if (cc_metadata_allowed) {
+                p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
+                p25_store_site_lra(state, (uint8_t)lra);
+            }
+            if (accepted_cc) {
+                p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0);
+            } else {
+                p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
+            }
+            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
+            p25_search_note_network_nac(state, (uint16_t)lcolorcode);
+            p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
         }
     }
 
@@ -3859,7 +3877,9 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
             .lra_valid = 1U,
             .cfva_valid = 1U,
         };
-        (void)p25_announce_neighbor_channel(opts, state, &announcement);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            (void)p25_announce_neighbor_channel(opts, state, &announcement);
+        }
     }
 
     if (len_b < 0) {
@@ -3924,7 +3944,9 @@ p25p2_vpdu_iter_block_50(p25p2_vpdu_ctx* ctx) {
             .lra_valid = 1U,
             .cfva_valid = 1U,
         };
-        (void)p25_announce_neighbor_channel(opts, state, &announcement);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            (void)p25_announce_neighbor_channel(opts, state, &announcement);
+        }
     }
 
     if (len_b < 0) {
@@ -3993,7 +4015,9 @@ p25p2_vpdu_iter_block_51(p25p2_vpdu_ctx* ctx) {
             .lra_valid = 1U,
             .cfva_valid = 1U,
         };
-        (void)p25_announce_neighbor_channel(opts, state, &announcement);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            (void)p25_announce_neighbor_channel(opts, state, &announcement);
+        }
     }
 
     if (len_b < 0) {
@@ -4094,12 +4118,14 @@ p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
                     channelt, channelr, sysclass);
         long int sccf = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
-        // Add to CC candidate list for hunting
-        if (sccf > 0) {
-            p25p2_seed_secondary_lcn_fallback(opts, state, rfssid, siteid, &sccf, 1);
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            // Add to CC candidate list for hunting
+            if (sccf > 0) {
+                p25p2_seed_secondary_lcn_fallback(opts, state, rfssid, siteid, &sccf, 1);
+            }
+            (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channelt, (uint8_t)rfssid, (uint8_t)siteid,
+                                                    (uint8_t)sysclass);
         }
-        (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channelt, (uint8_t)rfssid, (uint8_t)siteid,
-                                                (uint8_t)sysclass);
     }
 
     if (len_b < 0) {
@@ -4173,9 +4199,11 @@ p25p2_vpdu_iter_block_55(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, " Target [%d]", target);
         DSD_FPRINTF(stderr, "%s", KNRM);
 
-        state->p25_prot_algid = (uint8_t)algid;
-        state->p25_prot_kid = (uint16_t)kid;
-        state->p25_prot_valid = 1;
+        if (p25p2_vpdu_system_tables_writable(ctx)) {
+            state->p25_prot_algid = (uint8_t)algid;
+            state->p25_prot_kid = (uint16_t)kid;
+            state->p25_prot_valid = 1;
+        }
     }
 
     if (len_b < 0) {
@@ -4196,6 +4224,64 @@ p25p2_vpdu_lto_offset_minutes(int valid, int sign, int magnitude) {
     return sign ? -magnitude : magnitude;
 }
 
+/* A Time and Date Announcement's fields (0x75): which parts are valid, the local date and time, and the local time
+   offset's sign and magnitude in minutes. */
+typedef struct {
+    int vd, vt, vl;
+    int year, month, day;
+    int hours, minutes, seconds;
+    int lto_sign, lto_mag;
+} p25p2_vpdu_time_fields;
+
+static void
+p25p2_vpdu_parse_time(const unsigned long long int* MAC, int len_a, p25p2_vpdu_time_fields* f) {
+    DSD_MEMSET(f, 0, sizeof(*f));
+    const int bridged_p1 = (MAC[len_a] == 0x07);
+    f->vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
+    f->vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
+    f->vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
+    if (f->vd) {
+        f->month = (int)p25_mac_get_bits(MAC, len_a, 24, 4);
+        f->day = (int)p25_mac_get_bits(MAC, len_a, 28, 5);
+        f->year = (int)p25_mac_get_bits(MAC, len_a, 33, 13);
+    }
+    if (f->vt) {
+        f->hours = (int)p25_mac_get_bits(MAC, len_a, 48, 5);
+        f->minutes = (int)p25_mac_get_bits(MAC, len_a, 53, 6);
+        f->seconds = (int)p25_mac_get_bits(MAC, len_a, 59, 6);
+    }
+    if (f->vl) {
+        if (bridged_p1) {
+            int raw_lto = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
+            f->lto_sign = (raw_lto >> 11) & 0x1;
+            f->lto_mag = raw_lto & 0x7FF;
+        } else {
+            f->lto_sign = (int)p25_mac_get_bits(MAC, len_a, 11, 1);
+            f->lto_mag = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
+        }
+    }
+}
+
+static void
+p25p2_vpdu_print_time(const p25p2_vpdu_time_fields* f) {
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Time and Date Announcement");
+    DSD_FPRINTF(stderr, "\n  ");
+    if (f->vd) {
+        DSD_FPRINTF(stderr, "%04d-%02d-%02d ", f->year, f->month, f->day);
+    }
+    if (f->vt) {
+        DSD_FPRINTF(stderr, "%02d:%02d:%02d ", f->hours, f->minutes, f->seconds);
+    }
+    if (f->vl) {
+        int lto_total_minutes = f->lto_mag;
+        int lto_hours = lto_total_minutes / 60;
+        int lto_mins = lto_total_minutes % 60;
+        DSD_FPRINTF(stderr, "UTC%c%02d:%02d", f->lto_sign ? '-' : '+', lto_hours, lto_mins);
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
 static void
 p25p2_vpdu_iter_block_56(p25p2_vpdu_ctx* ctx) {
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -4210,65 +4296,24 @@ p25p2_vpdu_iter_block_56(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x75) {
-        int bridged_p1 = (MAC[len_a] == 0x07);
-        int vd = (int)p25_mac_get_bits(MAC, len_a, 8, 1);
-        int vt = (int)p25_mac_get_bits(MAC, len_a, 9, 1);
-        int vl = (int)p25_mac_get_bits(MAC, len_a, 10, 1);
+        p25p2_vpdu_time_fields f;
+        p25p2_vpdu_parse_time(MAC, len_a, &f);
+        p25p2_vpdu_print_time(&f);
 
-        int year = 0, month = 0, day = 0;
-        int hours = 0, minutes = 0, seconds = 0;
-        int lto_sign = 0, lto_mag = 0;
-
-        if (vd) {
-            month = (int)p25_mac_get_bits(MAC, len_a, 24, 4);
-            day = (int)p25_mac_get_bits(MAC, len_a, 28, 5);
-            year = (int)p25_mac_get_bits(MAC, len_a, 33, 13);
-        }
-        if (vt) {
-            hours = (int)p25_mac_get_bits(MAC, len_a, 48, 5);
-            minutes = (int)p25_mac_get_bits(MAC, len_a, 53, 6);
-            seconds = (int)p25_mac_get_bits(MAC, len_a, 59, 6);
-        }
-        if (vl) {
-            if (bridged_p1) {
-                int raw_lto = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
-                lto_sign = (raw_lto >> 11) & 0x1;
-                lto_mag = raw_lto & 0x7FF;
-            } else {
-                lto_sign = (int)p25_mac_get_bits(MAC, len_a, 11, 1);
-                lto_mag = (int)p25_mac_get_bits(MAC, len_a, 12, 12);
-            }
-        }
-
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "\n Time and Date Announcement");
-        DSD_FPRINTF(stderr, "\n  ");
-        if (vd) {
-            DSD_FPRINTF(stderr, "%04d-%02d-%02d ", year, month, day);
-        }
-        if (vt) {
-            DSD_FPRINTF(stderr, "%02d:%02d:%02d ", hours, minutes, seconds);
-        }
-        if (vl) {
-            int lto_total_minutes = lto_mag;
-            int lto_hours = lto_total_minutes / 60;
-            int lto_mins = lto_total_minutes % 60;
-            DSD_FPRINTF(stderr, "UTC%c%02d:%02d", lto_sign ? '-' : '+', lto_hours, lto_mins);
-        }
-        DSD_FPRINTF(stderr, "%s", KNRM);
-
-        const int offset_minutes = p25p2_vpdu_lto_offset_minutes(vl, lto_sign, lto_mag);
+        const int offset_minutes = p25p2_vpdu_lto_offset_minutes(f.vl, f.lto_sign, f.lto_mag);
+        const int writable = p25p2_vpdu_system_tables_writable(ctx);
 
         // Store UTC time_t if both date and time are valid.
-        if (vd && vt) {
-            time_t t = p25_utc_time_from_local_fields(year, month, day, hours, minutes, seconds, offset_minutes);
+        if (writable && f.vd && f.vt) {
+            time_t t =
+                p25_utc_time_from_local_fields(f.year, f.month, f.day, f.hours, f.minutes, f.seconds, offset_minutes);
             if (t != (time_t)-1) {
                 state->p25_sys_time = t;
                 state->p25_sys_time_valid = 1;
             }
         }
 
-        if (vl) {
+        if (writable && f.vl) {
             state->p25_sys_time_offset = (int16_t)offset_minutes;
             state->p25_sys_time_offset_valid = 1;
         }

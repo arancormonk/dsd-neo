@@ -31,6 +31,7 @@
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 
@@ -38,7 +39,9 @@ namespace dsd_qt {
 
 class MetricsModel : public QObject {
     Q_OBJECT
-    // WP-F1: copied site identity, with one notification group.
+    // WP-F1: the identity received on the carrier (the received identity record, through the shared
+    // site identity view), with one notification group. A part shows only once this carrier sent it;
+    // the record keeps it, dimmed by siteConfirmed, until the next carrier.
     Q_PROPERTY(QString siteProtocol READ siteProtocol NOTIFY siteChanged)
     Q_PROPERTY(bool p25NacValid READ p25NacValid NOTIFY siteChanged)
     Q_PROPERTY(int p25Nac READ p25Nac NOTIFY siteChanged)
@@ -50,19 +53,38 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int p25Site READ p25Site NOTIFY siteChanged)
     Q_PROPERTY(bool p25LraValid READ p25LraValid NOTIFY siteChanged)
     Q_PROPERTY(int p25Lra READ p25Lra NOTIFY siteChanged)
+    // The Phase 2 seed decoding runs on: configuration (-X, the menu) or learned, never shown as received.
     Q_PROPERTY(bool p25Phase2ParamsReady READ p25Phase2ParamsReady NOTIFY siteChanged)
+    Q_PROPERTY(QString p25Phase2Seed READ p25Phase2Seed NOTIFY siteChanged)
+    Q_PROPERTY(bool p25Phase2SeedSet READ p25Phase2SeedSet NOTIFY siteChanged)
     Q_PROPERTY(int dmrColorCode READ dmrColorCode NOTIFY siteChanged)
     Q_PROPERTY(QString dmrSiteText READ dmrSiteText NOTIFY siteChanged)
     Q_PROPERTY(int dmrRestLsn READ dmrRestLsn NOTIFY siteChanged)
+    Q_PROPERTY(int dmrXptFreeLcn READ dmrXptFreeLcn NOTIFY siteChanged)
     Q_PROPERTY(int nxdnRan READ nxdnRan NOTIFY siteChanged)
     Q_PROPERTY(QString nxdnLocationCategory READ nxdnLocationCategory NOTIFY siteChanged)
     Q_PROPERTY(int nxdnSysCode READ nxdnSysCode NOTIFY siteChanged)
     Q_PROPERTY(int nxdnSiteCode READ nxdnSiteCode NOTIFY siteChanged)
     Q_PROPERTY(QString edacsSiteText READ edacsSiteText NOTIFY siteChanged)
+    Q_PROPERTY(int edacsSystem READ edacsSystem NOTIFY siteChanged)
+    Q_PROPERTY(int edacsArea READ edacsArea NOTIFY siteChanged)
+    Q_PROPERTY(int edacsCcLcn READ edacsCcLcn NOTIFY siteChanged)
+    Q_PROPERTY(QString dmrBrand READ dmrBrand NOTIFY siteChanged)
+    Q_PROPERTY(int dmrT3Syscode READ dmrT3Syscode NOTIFY siteChanged)
+    Q_PROPERTY(int siteAccessCode READ siteAccessCode NOTIFY siteChanged)
+    Q_PROPERTY(int tetraSiteMcc READ tetraSiteMcc NOTIFY siteChanged)
+    Q_PROPERTY(int tetraSiteMnc READ tetraSiteMnc NOTIFY siteChanged)
+    Q_PROPERTY(int tetraSiteLa READ tetraSiteLa NOTIFY siteChanged)
     Q_PROPERTY(double ccFreqHz READ ccFreqHz NOTIFY siteChanged)
     Q_PROPERTY(double vcFreqHz READ vcFreqHz NOTIFY siteChanged)
     Q_PROPERTY(QString siteLine READ siteLine NOTIFY siteChanged)
     Q_PROPERTY(bool siteConfirmed READ siteConfirmed NOTIFY siteChanged)
+    // The same identity for the Spectrum strip: the compact tokens, the protocol they belong to, the full form
+    // with its protocol (for accessibility), and whether it is live or last heard.
+    Q_PROPERTY(QStringList carrierIdentityTokens READ carrierIdentityTokens NOTIFY siteChanged)
+    Q_PROPERTY(QString carrierIdentityProtocol READ carrierIdentityProtocol NOTIFY siteChanged)
+    Q_PROPERTY(QString carrierIdentityText READ carrierIdentityText NOTIFY siteChanged)
+    Q_PROPERTY(bool carrierIdentityLive READ carrierIdentityLive NOTIFY siteChanged)
 
     /* WP-F3: one notification group for copied decode-quality readings. */
     Q_PROPERTY(bool qualityValid READ qualityValid NOTIFY qualityChanged)
@@ -359,6 +381,16 @@ class MetricsModel : public QObject {
         return m_view.site.p25Phase2ParamsReady;
     }
 
+    QString
+    p25Phase2Seed() const {
+        return m_view.site.p25Phase2Seed;
+    }
+
+    bool
+    p25Phase2SeedSet() const {
+        return m_view.site.p25Phase2SeedSet;
+    }
+
     int
     dmrColorCode() const {
         return m_view.site.dmrColorCode;
@@ -372,6 +404,12 @@ class MetricsModel : public QObject {
     int
     dmrRestLsn() const {
         return m_view.site.dmrRestLsn;
+    }
+
+    /* The Hytera XPT site's free channel as received (0..15), or -1 before one. */
+    int
+    dmrXptFreeLcn() const {
+        return m_view.site.dmrXptFreeLcn;
     }
 
     int
@@ -399,6 +437,56 @@ class MetricsModel : public QObject {
         return m_view.site.edacsSiteText;
     }
 
+    /* The record's EDACS system, area and control channel LCN, each -1 until received. */
+    int
+    edacsSystem() const {
+        return m_view.site.edacsSystem;
+    }
+
+    int
+    edacsArea() const {
+        return m_view.site.edacsArea;
+    }
+
+    int
+    edacsCcLcn() const {
+        return m_view.site.edacsCcLcn;
+    }
+
+    /* The DMR trunking brand a checked message named ("Capacity Plus", "Connect Plus", "Hytera XPT"), or empty. */
+    QString
+    dmrBrand() const {
+        return m_view.site.dmrBrand;
+    }
+
+    /* The Tier III system code when no site text carries it, or -1. */
+    int
+    dmrT3Syscode() const {
+        return m_view.site.dmrT3Syscode;
+    }
+
+    /* The access code of a dPMR (colour code), M17 (CAN) or TETRA (the cell's colour code) carrier, or -1. */
+    int
+    siteAccessCode() const {
+        return m_view.site.siteAccessCode;
+    }
+
+    /* The TETRA network (MCC, MNC) and location area the carrier sent, each -1 until received. */
+    int
+    tetraSiteMcc() const {
+        return m_view.site.tetraSiteMcc;
+    }
+
+    int
+    tetraSiteMnc() const {
+        return m_view.site.tetraSiteMnc;
+    }
+
+    int
+    tetraSiteLa() const {
+        return m_view.site.tetraSiteLa;
+    }
+
     double
     ccFreqHz() const {
         return m_view.site.ccFreqHz;
@@ -417,6 +505,26 @@ class MetricsModel : public QObject {
     bool
     siteConfirmed() const {
         return m_view.site.siteConfirmed;
+    }
+
+    QStringList
+    carrierIdentityTokens() const {
+        return m_view.site.carrierIdentityTokens;
+    }
+
+    QString
+    carrierIdentityProtocol() const {
+        return m_view.site.carrierIdentityProtocol;
+    }
+
+    QString
+    carrierIdentityText() const {
+        return m_view.site.carrierIdentityText;
+    }
+
+    bool
+    carrierIdentityLive() const {
+        return m_view.site.carrierIdentityLive;
     }
 
     explicit MetricsModel(QObject* parent = nullptr);
@@ -1865,30 +1973,46 @@ class MetricsModel : public QObject {
     };
 
     struct SiteView {
+        double ccFreqHz = 0;
+        double vcFreqHz = 0;
         QString siteProtocol = {};
-        bool p25NacValid = false;
+        QString p25Phase2Seed = {};
+        QString dmrSiteText = {};
+        QString nxdnLocationCategory = {};
+        QString edacsSiteText = {};
+        QString dmrBrand = {};
+        QString siteLine = {};
+        QStringList carrierIdentityTokens = {};
+        QString carrierIdentityProtocol = {};
+        QString carrierIdentityText = {};
         int p25Nac = 0;
-        bool p25WacnValid = false;
         int p25Wacn = 0;
-        bool p25SysIdValid = false;
         int p25SysId = 0;
         int p25Rfss = 0;
         int p25Site = 0;
-        bool p25LraValid = false;
         int p25Lra = 0;
-        bool p25Phase2ParamsReady = false;
         int dmrColorCode = -1;
-        QString dmrSiteText = {};
         int dmrRestLsn = 0;
+        int dmrXptFreeLcn = -1;
         int nxdnRan = -1;
-        QString nxdnLocationCategory = {};
         int nxdnSysCode = 0;
         int nxdnSiteCode = 0;
-        QString edacsSiteText = {};
-        double ccFreqHz = 0;
-        double vcFreqHz = 0;
-        QString siteLine = {};
+        int edacsSystem = -1;
+        int edacsArea = -1;
+        int edacsCcLcn = -1;
+        int dmrT3Syscode = -1;
+        int siteAccessCode = -1;
+        int tetraSiteMcc = -1;
+        int tetraSiteMnc = -1;
+        int tetraSiteLa = -1;
+        bool p25NacValid = false;
+        bool p25WacnValid = false;
+        bool p25SysIdValid = false;
+        bool p25LraValid = false;
+        bool p25Phase2ParamsReady = false;
+        bool p25Phase2SeedSet = false;
         bool siteConfirmed = false;
+        bool carrierIdentityLive = false;
         bool operator==(const SiteView& other) const;
     };
 
@@ -2230,12 +2354,14 @@ class MetricsModel : public QObject {
 
     /** @brief Replace the published frame, signalling only the groups that moved. */
     void publish(const View& next);
-    static void fillP25Identity(SiteView& site, const dsd_state* snapshot);
-    static QStringList p25SiteParts(const SiteView& site);
-    static QStringList fillDmrSite(SiteView& site, const dsd_state* snapshot);
-    static QStringList fillNxdnSite(SiteView& site, const dsd_state* snapshot);
-    static QStringList fillEdacsSite(SiteView& site, const dsd_state* snapshot);
-    void fillSiteView(View& next, const dsd_state* snapshot) const;
+    static void fillPhase2Seed(SiteView& site, const dsd_state* snapshot);
+    static void fillP25Site(SiteView& site, const dsd_received_identity& id);
+    static void fillDmrSite(SiteView& site, const dsd_received_identity& id);
+    static void fillNxdnSite(SiteView& site, const dsd_received_identity& id, bool idas);
+    static void fillEdacsSite(SiteView& site, const dsd_received_identity& id, const dsd_state* snapshot);
+    static void fillTetraSite(SiteView& site, const dsd_received_identity& id);
+    static void fillFamilySite(SiteView& site, uint8_t family, const dsd_state* snapshot);
+    static void fillSiteView(View& next, const dsd_state* snapshot);
     static void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m);
     static void fillQualityView(View& next, const dsd_state* snapshot);
 

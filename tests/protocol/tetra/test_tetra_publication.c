@@ -5,10 +5,13 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
@@ -226,9 +229,15 @@ test_direct_mode_publishes_no_trunked_network(void) {
     }
     tetra_dmo_sync_s_t s;
     assert(tetra_dmo_parse_sync_s(bits, &s) == 1 && s.sync_pdu_type == TETRA_DMO_SYNC_DMAC);
+    /* The trunked identity a checked BSCH and SYSINFO gave the received identity record. */
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 0x19U);
+    dsd_rxid_note_tetra_la(state, 987U);
+    assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_TETRA);
     tetra_forget_carrier(state);
     tetra_dmo_apply_sync(state, &s, NULL);
     assert(ts->net_known == 1U && ts->mcc == 262U && ts->mm_status_valid == 1U);
+    /* A checked direct mode burst: no trunked network is received on this carrier, so the record holds none. */
+    assert(state->rx_id.valid == 0U && state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE);
     assert(pub->mode == DSD_TETRA_MODE_DMO_DIRECT);
     assert(pub->net_known == 0U && pub->mcc == 0U && pub->mnc == 0U && pub->colour == 0U);
     assert(pub->mm_status_valid == 0U && pub->mm_status_code == 0U);
@@ -345,6 +354,40 @@ test_reset_clears_the_publication(void) {
     state_close(state);
 }
 
+/* A --tetra-net preset (or a network the TETRA state keeps from another carrier) is configuration: it drives
+ * descrambling and the publication, but it is no identity received on this carrier, so the carrier has no access code
+ * until a CRC-checked BSCH on it notes one in the received identity record. A checked direct mode burst drops that
+ * trunked identity; the TETRA state's network, which descrambling uses, stays as it was. */
+static void
+test_preset_network_is_no_received_identity(void) {
+    dsd_state* state = state_open();
+    tetra_state_t* const ts = tetra_st(state);
+    assert(ts != NULL);
+    ts->decode_ok = 1U;
+    ts->net_known = 1U;
+    ts->mcc = 262U;
+    ts->mnc = 1001U;
+    ts->colour = 25U;
+    tetra_publish(state);
+    assert(state->tetra_pub.mode == DSD_TETRA_MODE_TMO_DOWNLINK && state->tetra_pub.net_known == 1U);
+    uint8_t kind = 0xA5U;
+    uint16_t code = 0xBEEFU;
+    assert(dsd_access_code_current(state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, &kind, &code) == 0);
+    assert(kind == DSD_ACCESS_CODE_NONE && code == 0U);
+
+    dsd_rxid_note_tetra_cell(state, 262U, 1001U, 25U);
+    assert(dsd_access_code_current(state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, &kind, &code) == 1);
+    assert(kind == DSD_ACCESS_CODE_COLOR_CODE && code == 25U);
+
+    dsd_rxid_note_tetra_direct_mode(state);
+    ts->dmo = 1U;
+    tetra_publish(state);
+    assert(dsd_access_code_current(state, DSD_SYNC_TETRA_NDB_POS, 0U, 0U, &kind, &code) == 0);
+    assert(state->rx_id.family == DSD_RXID_FAMILY_NONE && state->rx_id.valid == 0U);
+    assert(ts->net_known == 1U && ts->mcc == 262U && ts->mnc == 1001U && ts->colour == 25U);
+    state_close(state);
+}
+
 int
 main(void) {
     test_nothing_before_a_decoded_block();
@@ -354,5 +397,6 @@ main(void) {
     test_direct_mode_publishes_no_trunked_network();
     test_security_publication();
     test_reset_clears_the_publication();
+    test_preset_network_is_no_received_identity();
     return 0;
 }

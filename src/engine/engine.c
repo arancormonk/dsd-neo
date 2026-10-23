@@ -22,6 +22,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -1590,10 +1591,13 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
         return;
     }
 
-    state->p2_cc = 0;
+    // A hand-set seed (-X, menu) is the user's, not a return hint; it stays, unproven.
+    if (state->p2_hardset == 0) {
+        state->p2_cc = 0;
+        state->p2_wacn = 0;
+        state->p2_sysid = 0;
+    }
     state->p2_cc_verified = 0U;
-    state->p2_wacn = 0;
-    state->p2_sysid = 0;
     state->p2_rfssid = 0;
     state->p2_siteid = 0;
     state->p25_cc_is_tdma = 2; // The shared CC anchor no longer identifies a P25 session.
@@ -2188,6 +2192,8 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     state->nxdn_location_site_code = 0;
     state->nxdn_location_sys_code = 0;
     set_spaces(state->nxdn_location_category, 1);
+    state->nxdn_idas_system_id = 0;
+    state->nxdn_idas_site_code = 0;
     state->nxdn_rcn = 0;
     state->nxdn_base_freq = 0;
     state->nxdn_step = 0;
@@ -2874,7 +2880,11 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
            (dsd_engine_note_input_replaced()), here at the stream's start (issue #703). */
         dsd_trunk_tuning_requests_reset();
     }
+    /* What the carrier left sent is not the next one's identity: the received identity starts over. */
+    dsd_rxid_reset(state);
     state->carrier_seq++;
+    /* Nor is a frame whose sync the hunt finds next, while what it reads back was buffered on the carrier left. */
+    dsd_state_note_carrier_change(state);
     if (take_guard || guard_held) {
         /* An operator move restarts a startup control-channel window on the new carrier (issue #703). */
         p25_sm_cold_start_note_retune(p25_sm_get_ctx(), opts, state);
@@ -3044,6 +3054,7 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     }
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
+    dsd_engine_no_carrier_identity_stale(state, guard_held);
 }
 
 void
@@ -3082,6 +3093,26 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
     no_carrier_reset_m17_and_sample_buffers(state);
+}
+
+void
+dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
+    if (!state) {
+        return;
+    }
+    /* The P25 watchdog's call ends read the record under the tick guard. A pass that finds it taken leaves the step to
+       the next one, as it leaves the playout's drain (no_carrier_drain_playout()): the record stays as the last frame
+       left it, and a retune's drop is applied before the next frame's notes all the same. */
+    if (!guard_held && !p25_sm_tick_guard_try_enter()) {
+        return;
+    }
+    /* The received identity outlives the gap, as the last one heard, but no longer reads as live; a retune accepted
+       since the last frame drops the access code of the carrier it left. */
+    dsd_rxid_apply_trunk_tune(state);
+    dsd_rxid_mark_stale(state);
+    if (!guard_held) {
+        p25_sm_tick_guard_leave();
+    }
 }
 
 // One voice chain gain serves both output formats (issue #653), so its setting and starting level do too.
@@ -3251,6 +3282,8 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
         || nxdn_cc_hunt_due(opts, state)) {
         dsd_engine_cold_start_tick_locked(opts, state);
     }
+    /* A retune these ticks accepted, before the next frame's first read. */
+    dsd_rxid_apply_trunk_tune(state);
     return frame_dispatchable;
 }
 
@@ -4015,6 +4048,8 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     int early_exit = 0;
     int lifecycle_started = 0;
     dsd_exitflag_store(0);
+    /* This thread decodes the run: its accepted retunes drop the received identity's access code at once. */
+    dsd_engine_set_decoder_thread(1);
 
     /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first
        record (the P25 SM log's event=init) and before the stream, the watchdog or a frontend reads the clock. Only on
@@ -4055,6 +4090,7 @@ ENGINE_OUT:
     dsd_engine_cleanup(opts, state);
     /* The stream has stopped: the next session's decode time is the system's again. */
     dsd_engine_decode_clock_leave_replay(opts, state);
+    dsd_engine_set_decoder_thread(0);
     dsd_input_failure failure;
     dsd_input_failure_get(&failure);
     /* A receiver that failed, or an I/Q replay whose capture could not be read (the replay reader latches a file

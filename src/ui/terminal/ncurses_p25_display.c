@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -660,8 +661,8 @@ ui_print_p25p2_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p
 }
 
 static int
-ui_print_p25_rtl_metrics(int is_p25p1, int is_p25p2) {
-#ifdef USE_RTLSDR
+ui_print_p25_radio_health(int is_p25p1, int is_p25p2) {
+#ifdef USE_RADIO
     if (!is_p25p1 && !is_p25p2) {
         return 0;
     }
@@ -671,7 +672,7 @@ ui_print_p25_rtl_metrics(int is_p25p1, int is_p25p2) {
     if (!health->valid) {
         return 0;
     }
-    printw("| RTL Health: P1 FEC %u/%u P2 FACCH %u/%u SACCH %u/%u VERR %u\n", health->p25p1_fec_ok,
+    printw("| Radio Health: P1 FEC %u/%u P2 FACCH %u/%u SACCH %u/%u VERR %u\n", health->p25p1_fec_ok,
            health->p25p1_fec_err, health->p25p2_facch_ok, health->p25p2_facch_err, health->p25p2_sacch_ok,
            health->p25p2_sacch_err, health->p25p2_voice_err);
     return 1;
@@ -822,16 +823,20 @@ ui_print_p25_sm_cc_mode(const dsd_state* state) {
     return 1;
 }
 
+/* The LRA is the one this carrier's checked site broadcasts named (the received identity record), never one another
+   carrier left in decoder state. */
 static int
 ui_print_p25_site_status_metric(const dsd_state* state) {
-    if (!state->p25_site_lra_valid && !state->p25_site_network_active_valid && !state->p25_cc_prot_valid) {
+    const int lra_valid =
+        state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25 && (state->rx_id.valid & DSD_RXID_P25_LRA) != 0U;
+    if (!lra_valid && !state->p25_site_network_active_valid && !state->p25_cc_prot_valid) {
         return 0;
     }
     char lra[12] = "-";
     char net[16] = "-";
     char prot[12] = "-";
-    if (state->p25_site_lra_valid) {
-        DSD_SNPRINTF(lra, sizeof lra, "%02X", state->p25_site_lra);
+    if (lra_valid) {
+        DSD_SNPRINTF(lra, sizeof lra, "%02X", (unsigned)state->rx_id.p25_lra);
     }
     if (state->p25_site_network_active_valid) {
         DSD_SNPRINTF(net, sizeof net, "%s", state->p25_site_network_active ? "active" : "failsoft");
@@ -1105,7 +1110,7 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
     int is_p25p2 = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     lines += ui_print_p25_core_metrics(state, is_p25p1, is_p25p2);
     lines += ui_print_p25p2_metrics(opts, state, is_p25p1, is_p25p2);
-    lines += ui_print_p25_rtl_metrics(is_p25p1, is_p25p2);
+    lines += ui_print_p25_radio_health(is_p25p1, is_p25p2);
     lines += ui_print_p25_trunk_metrics(opts, state);
     lines += ui_print_p25p2_slot_metrics(opts, state, is_p25p2);
     lines += ui_print_p25p1_sm_metrics(opts, state, is_p25p1);

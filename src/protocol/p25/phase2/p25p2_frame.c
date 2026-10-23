@@ -12,6 +12,7 @@
  * 2022-09 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
@@ -436,6 +438,13 @@ p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
         && s_descramble_seed.sysid == state->p2_sysid && s_descramble_seed.nac == state->p2_cc) {
         const int newly_proven = state->p2_cc_verified == 0U;
         state->p2_cc_verified = 1U;
+        /* The burst decoded under the whole seed, so the carrier sends with this WACN, SYSID and NAC: the received
+           identity, however the seed was set. The NAC first: another NAC drops the old system, not this one. */
+        if (s_descramble_seed.nac != 0U && s_descramble_seed.nac < 0xFFFU) {
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC,
+                                 (uint16_t)s_descramble_seed.nac);
+        }
+        dsd_rxid_note_p25_network(state, (uint32_t)s_descramble_seed.wacn, (uint16_t)s_descramble_seed.sysid);
         if (newly_proven) {
             dsd_event_sync_slot(opts, state, 0U);
             dsd_event_sync_slot(opts, state, 1U);

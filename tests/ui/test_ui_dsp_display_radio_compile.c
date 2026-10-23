@@ -3,13 +3,25 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+/*
+ * The DSP panel in a radio build without librtlsdr (SoapySDR or Airspy only):
+ * it must compile, and it must still read the front-end metrics for its
+ * Front/Path/CQPSK lines.
+ */
+
 #include "ncurses_dsp_status_format.h"
 
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/squelch_view.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <stddef.h>
+#include <dsd-neo/ui/ncurses_dsp_display.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #ifdef USE_RTLSDR
 #error "This regression guard must compile the DSP panel with USE_RADIO only."
@@ -51,7 +63,31 @@ dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, size_t 
     return -1;
 }
 
+static int g_metrics_reads;
+
+int
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+    g_metrics_reads++;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
+}
+
 int
 main(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    /* Curses is never initialised here: every draw call meets a null stdscr and draws nothing. */
+    print_dsp_status(opts, state);
+    free(state);
+    free(opts);
+    if (g_metrics_reads != 1) {
+        DSD_FPRINTF(stderr, "DSP panel read the front-end metrics %d times, want 1\n", g_metrics_reads);
+        return 1;
+    }
     return 0;
 }

@@ -1545,10 +1545,15 @@ setting, shown apart from what is received, and it is off by default: then the o
   audio unfiltered.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
 - Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
-  CRC-verified content (see the NXDN note under "Modes & Decoders" above).
+  CRC-verified content (see the NXDN note under "Modes & Decoders" above). A P25 Phase 2 MAC_SIGNAL that failed its CRC
+  still acts on its grants, payload and voice, but no system broadcast in it is applied: no WACN/SYSID/NAC, control
+  channel, site or LRA, channel identifier (IDEN) table or trust, secondary control channel, neighbour, system services,
+  system time or protection parameters come from it. P25 Phase 1 TSBK and trunking MBT always need their CRCs.
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
   raw `X||Y` hex.
-- P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)
+- P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
+  the menu's P25 P2 parameters set it: no NID or network status rewrites it, and neither a control channel change nor
+  another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it.
 - DMR Tier III Location Area n‑bits: `-D <0–10>`
 - Env (CQPSK timing):
   - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain.

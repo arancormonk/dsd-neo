@@ -6,11 +6,13 @@
 /*
  * Signal search site notes from P25: every broadcast that passed its CRC (a TSBK RFSS status through the vPDU bridge,
  * an MBT network or RFSS status, a Phase 2 network or RFSS status MAC) notes the identity it carries, and nothing else
- * does: a Phase 2 MAC_SIGNAL that failed its CRC (-F), a voice LCW, a secondary control channel fill-in or an adjacent
- * site. Decoder state is left to the decoders.
+ * does: a Phase 2 MAC_SIGNAL that failed its CRC (-F, which the decoder does not apply either), a voice LCW, a
+ * secondary control channel fill-in or an adjacent site. Decoder state is left to the decoders.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
@@ -218,16 +220,16 @@ test_vpdu_rfss(void) {
     rc |= expect_int("p2 explicit rfss notes", g_notes, 1);
     rc |= expect_site("p2 explicit rfss site", "SYS 2B4 \xC2\xB7 RFSS 5 \xC2\xB7 Site 6");
 
-    // The same broadcasts let through with a failed CRC (-F): the decoder still records them; the search hears nothing.
+    // The same broadcasts let through with a failed CRC (-F): neither the decoder nor the search takes the site.
     reset();
     rfss_mac(mac, 0x00, 0x7A, 0x2B4, 3, 4);
     process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
-    rc |= expect_int("failed-crc rfss is decoded", (long)g_state.p2_rfssid, 3);
+    rc |= expect_int("failed-crc rfss is not applied", (long)g_state.p2_rfssid, 0);
     rc |= expect_int("failed-crc rfss notes nothing", g_notes, 0);
     reset();
     rfss_mac(mac, 0x00, 0xFA, 0x2B4, 5, 6);
     process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
-    rc |= expect_int("failed-crc explicit rfss is decoded", (long)g_state.p2_siteid, 6);
+    rc |= expect_int("failed-crc explicit rfss is not applied", (long)g_state.p2_siteid, 0);
     rc |= expect_int("failed-crc explicit rfss notes nothing", g_notes, 0);
 
     // SYSID 0 names no system.
@@ -258,11 +260,11 @@ test_vpdu_network(void) {
         rc |= expect_int("p2 network kind", g_note.kind, DSD_SEARCH_SITE_NOTE_P25_NETWORK);
         rc |= expect_site("p2 network site", "WACN BEE00 \xC2\xB7 SYS 1A3");
 
-        // -F: the decoder may still name the system from it, as it always could; the search may not.
+        // -F: a network status that failed its CRC names the system to neither the decoder nor the search.
         reset();
         network_mac(mac, opcodes[i], 0xBEE00, 0x1A3);
         process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
-        rc |= expect_int("failed-crc network is decoded", (long)g_state.p2_wacn, 0xBEE00);
+        rc |= expect_int("failed-crc network is not applied", (long)g_state.p2_wacn, 0);
         rc |= expect_int("failed-crc network notes nothing", g_notes, 0);
 
         // A WACN under SYSID 0 names no system either.
@@ -390,6 +392,113 @@ test_lcw_and_fill_in(void) {
     return rc;
 }
 
+/* The received identity record (dsd_state::rx_id) is noted at the same points, with the same messages' own values, and
+   also takes the location registration area those messages carry and the NAC a Phase 2 network status carries. */
+static int
+test_received_identity(void) {
+    int rc = 0;
+    unsigned long long mac[24];
+    const dsd_received_identity* id = &g_state.rx_id;
+
+    // A TSBK RFSS status through the vPDU bridge: the site and LRA, under the SYSID it advertises.
+    reset();
+    rfss_mac(mac, 0x07, 0x7A, 0x1A3, 1, 2);
+    process_MAC_VPDU(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac);
+    rc |=
+        expect_int("rx-id tsbk rfss parts", (long)id->valid, DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA);
+    rc |= expect_int("rx-id tsbk rfss sysid", id->p25_sysid, 0x1A3);
+    rc |= expect_int("rx-id tsbk rfss site", id->p25_rfss * 1000L + id->p25_site, 1002);
+    rc |= expect_int("rx-id tsbk rfss lra", id->p25_lra, 0x01);
+
+    // A Phase 2 network status of the same system completes it, with its NAC; the explicit RFSS status too.
+    network_mac(mac, 0x7B, 0xBEE00, 0x1A3);
+    process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+    rc |= expect_int("rx-id network completes the site", (long)id->valid,
+                     DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA | DSD_RXID_ACCESS);
+    rc |= expect_int("rx-id network wacn", (long)id->p25_wacn, 0xBEE00);
+    rc |= expect_int("rx-id network nac", id->access, 0x293);
+    rc |= expect_int("rx-id network nac kind", id->access_kind, DSD_ACCESS_CODE_NAC);
+    rfss_mac(mac, 0x00, 0xFA, 0x1A3, 5, 6);
+    process_MAC_VPDU_crc(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac, 1);
+    rc |= expect_int("rx-id explicit rfss site", id->p25_rfss * 1000L + id->p25_site, 5006);
+
+    // A hand-set seed of system A, then a checked network status of system B with the same NAC: B is received.
+    reset();
+    g_state.p2_hardset = 1;
+    g_state.p2_wacn = 0xAAAAA;
+    g_state.p2_sysid = 0x111;
+    g_state.p2_cc = 0x293;
+    network_mac(mac, 0xFB, 0xBEE00, 0x1A3);
+    process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+    rc |= expect_int("rx-id seed: the seed stays", (long)g_state.p2_wacn, 0xAAAAA);
+    rc |= expect_int("rx-id seed: B's wacn", (long)id->p25_wacn, 0xBEE00);
+    rc |= expect_int("rx-id seed: B's sysid", id->p25_sysid, 0x1A3);
+    rc |= expect_int("rx-id seed: the nac carried", id->access, 0x293);
+
+    // Another system on the same carrier (co-channel, another NAC): its network status carries the NAC that drops the
+    // old system, and its own WACN and SYSID stay.
+    reset();
+    dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x111U);
+    dsd_rxid_note_p25_network(&g_state, 0xAAAAAU, 0x222U);
+    for (int i = 0; i < 2; ++i) {
+        network_mac(mac, i == 0 ? 0x7B : 0xFB, 0xBEE00, 0x1A3);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("rx-id co-channel system parts", (long)id->valid,
+                         DSD_RXID_ACCESS | DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_LRA);
+        rc |= expect_int("rx-id co-channel wacn", (long)id->p25_wacn, 0xBEE00);
+        rc |= expect_int("rx-id co-channel nac", id->access, 0x293);
+        dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x111U);
+    }
+
+    // -F: broadcasts that failed their CRC note nothing.
+    reset();
+    network_mac(mac, 0x7B, 0xBEE00, 0x1A3);
+    process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
+    rfss_mac(mac, 0x00, 0x7A, 0x1A3, 3, 4);
+    process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
+    rc |= expect_int("rx-id failed crc notes nothing", (long)id->valid, 0);
+
+    // An MBT RFSS status, then an MBT network status, bind by SYSID.
+    reset();
+    uint8_t mbt[48];
+    mbt_rfss(mbt, 0x1A3, 2, 3);
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    mbt_network(mbt, 0xBEE00, 0x1A3);
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    rc |= expect_int("rx-id mbt parts", (long)id->valid,
+                     DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_P25_LRA);
+
+    // On a radio input, a checked outbound MBT names this carrier as the control channel of the system the record
+    // holds. After a carrier boundary, a conventional carrier of another system names no control channel.
+    reset();
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 851012500U;
+    mbt_rfss(mbt, 0x1A3, 2, 3);
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    mbt_network(mbt, 0xBEE00, 0x1A3);
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    rc |= expect_int("rx-id mbt control channel", (long)((id->valid & DSD_RXID_CC_FREQ) != 0U ? id->cc_freq_hz : 0U),
+                     851012500L);
+    dsd_rxid_reset(&g_state);
+    g_opts.rtlsdr_center_freq = 852512500U;
+    network_mac(mac, 0x7B, 0xBEE01, 0x2B4);
+    process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+    rc |= expect_int("rx-id conventional carrier has no control channel", (long)(id->valid & DSD_RXID_CC_FREQ), 0);
+    rc |= expect_int("rx-id conventional carrier's system", id->p25_sysid, 0x2B4);
+
+    // A voice LCW and a secondary control channel fill-in note nothing.
+    reset();
+    uint8_t lcw[72];
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    put_bits(lcw, 0, 0x64, 8);
+    put_bits(lcw, 16, 0xBEE00, 20);
+    put_bits(lcw, 36, 0x1A3, 12);
+    p25_lcw(&g_opts, &g_state, lcw, 0);
+    (void)p25_announce_secondary_cc_channel(&g_opts, &g_state, 0x1001, 2, 3, 0);
+    rc |= expect_int("rx-id lcw and fill-in note nothing", (long)id->valid, 0);
+    return rc;
+}
+
 int
 main(void) {
     dsd_signal_search_site_set(capture_site);
@@ -398,6 +507,7 @@ main(void) {
     rc |= test_vpdu_network();
     rc |= test_mbt();
     rc |= test_lcw_and_fill_in();
+    rc |= test_received_identity();
     dsd_signal_search_site_set(NULL);
     return rc;
 }

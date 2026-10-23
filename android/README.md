@@ -1113,16 +1113,31 @@ QString/QML copies cannot promise erasure; only filtered content enters diagnost
 ### Monitor site identity
 
 Tap the site row between the Monitor's call panel and action buttons to open the
-site details. P25 NAC, WACN, SYS and LRA appear independently when known; a
-conventional Phase 1 NAC alone is useful identity even without the complete
-Phase 2 parameter set. RFSS and SITE appear when nonzero. The sheet also shows
-DMR color code/site text/rest LSN, NXDN RAN and location codes (Area for IDAS),
-EDACS site information, and known control/voice frequencies.
+site details. The row and the sheet follow the carrier being decoded: they show
+only what this carrier sent in a message that passed its own check (CRC, FEC or
+a confirmed transmission), never a Phase 2 seed, a `--tetra-net` preset no
+checked block proved, a control channel the decoder returns to, or a value
+another carrier left. P25 NAC, WACN, SYS, RFSS/SITE and LRA each appear once
+received; a conventional Phase 1 NAC alone is useful identity even without the
+complete Phase 2 parameter set. The sheet also shows DMR color code/site
+text/rest LSN/Hytera XPT free LCN/trunking type/Tier III system code, NXDN RAN
+and location codes (Area, site code and Type-D system for IDAS), EDACS site,
+system, area and control channel LCN, the dPMR color code or M17 CAN, TETRA
+MCC, MNC, color code and location area, the control channel frequency where
+this receiver heard the control channel, and the voice frequency being followed.
 
-The row dims and the sheet labels identity as retained when current sync is lost.
-Starting, stopping to Idle, failure, and scan-target transitions clear the live
-identity through the existing controller lifecycle. Unknown fields are omitted;
-the row is hidden when no identity fields are available.
+The sheet's **Phase 2 seed** row shows the WACN.SYS.NAC triple the Phase 2
+descrambler runs on (for example `BEE00.348.293`), marked "(set)" when `-X` or
+the menu set it by hand. It is configuration, not received identity, so it never
+takes the NAC row's place; **Phase 2 parameters** says whether it is complete.
+
+When sync is lost the identity stays as last heard on this carrier: the row
+dims and the sheet labels it as retained. Any change of carrier (a retune, a
+scan step, an input switch, a trunk-scan target switch) clears it, and the next
+carrier shows only what it sends. A trunking follow keeps the system and drops
+the access code until the new channel sends its own. Starting, stopping to Idle
+and failure clear it too. Unknown fields are omitted; the row is hidden when no
+identity fields are available.
 Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
 slot), recent calls, and history. The notification title prefixes the lead call
 with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v3:
@@ -1218,6 +1233,17 @@ cannot report it. History rows open full details, including timestamps and messa
 The Spectrum view is view-only during an I/Q replay: the replay plays the tuning its
 capture recorded, so tapping, stepping, **Go to** and **Explore from here** are not
 offered, and the view says **An I/Q replay cannot retune.**
+
+The line under the Spectrum view's sync and SNR names the system on the carrier
+being decoded, from the same received identity as the Monitor's site row: the
+access code first (**CC 1 · Rest LSN 3**, **NAC 293 · SYS 348 · RFSS 3 · SITE 21
+· WACN BEE00**, **RAN 5**, **MCC 262 · MNC 1001 · CC 25**). Where it does not
+fit, whole parts drop from the end and **…** says so; a part is never cut from
+its value. When sync is lost the line keeps what was last heard on this carrier,
+dimmed and led by its protocol (**DMR · CC 1**), and any retune clears it. At
+large text sizes the strip grows to keep both lines clear of the waterfall, and
+the **VIEW ONLY** / **TAP TO TUNE** pill moves under the frequency where the two
+no longer fit side by side.
 
 Each call in History and Monitor's Recent calls names the access code of the carrier
 it was decoded on right after its talkgroup and source: a DMR or dPMR color code

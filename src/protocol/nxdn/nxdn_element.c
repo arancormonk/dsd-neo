@@ -23,6 +23,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -120,7 +121,9 @@ static void nxdn_adj_site_channel_entry(dsd_opts* opts, dsd_state* state, uint32
 static void nxdn_adj_site_dfa_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw,
                                     uint16_t chan);
 static void NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
-static void NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, int control_channel);
+static void NXDN_decode_srv_info_type_d(dsd_state* state, const uint8_t* Message);
+static void NXDN_decode_adj_site_type_d(const uint8_t* Message);
 static void NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static char* NXDN_Call_Type_To_Str(uint8_t CallType);
@@ -215,6 +218,24 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 
 } /* End NXDN_SACCH_Full_decode() */
 
+/* Whether a channel handed over at least the `min_bits` elements a message's parser reads. Each channel's buffer has
+ * its own size, and a non-superframe SACCH's is 26 elements (nxdn_handle_sacch()), short of most messages, while its
+ * 6-bit CRC passes noise one time in 64: every parser is bounded by the length it was given. */
+static int
+nxdn_element_has_bits(const char* name, size_t elements_bits, size_t min_bits) {
+    if (elements_bits >= min_bits) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, " %s Too Short (%zu bits); ", name, elements_bits);
+    return 0;
+}
+
+/* The fields VCALL, TX_REL and DISC read end with the key ID at elements 58-63; the ARIB form shifts them 8 later. */
+enum {
+    NXDN_VCALL_MIN_BITS = 64U,
+    NXDN_VCALL_ARIB_MIN_BITS = 72U,
+};
+
 static void
 nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     UNUSED4(opts, state, elements, elements_bits);
@@ -261,7 +282,10 @@ nxdn_element_handle_dcall_data(dsd_opts* opts, dsd_state* state, const uint8_t* 
 
 static void
 nxdn_element_handle_call_assignment(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED(elements_bits);
+    /* The channel ends at element 71; the DFA's OFN at 79. */
+    if (!nxdn_element_has_bits("VCALL_ASSGN", elements_bits, state->nxdn_rcn == 1 ? 80U : 72U)) {
+        return;
+    }
     NXDN_decode_VCALL_ASSGN(opts, state, elements);
 }
 
@@ -295,6 +319,10 @@ static void
 nxdn_element_handle_alias(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     if (!nxdn_element_is_standard_alias(elements, elements_bits)) {
         nxdn_element_print_prop_form(opts, elements, elements_bits);
+        return;
+    }
+    /* Four characters from element 40. */
+    if (!nxdn_element_has_bits("ALIAS", elements_bits, 72U)) {
         return;
     }
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -378,11 +406,29 @@ nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
     nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
 }
 
+/*
+ * SRV_INFO (0x19) has one layout per system type, chosen by the channel this frame's own LICH names
+ * (dsd_state::nxdn_frame_channel), never by the "Type-D" category an earlier SCCH left behind: on a Type-D (IDAS)
+ * RTCH2 it is NXDN TS 1-E §6.4.3.1's 80-element System ID / Site Code form, elsewhere the Type-C location ID form of
+ * 72 elements. A Type-C SRV_INFO also reaches a traffic channel's SACCH; only a control channel's says the control
+ * channel is here.
+ */
 static void
 nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED(elements_bits);
-    NXDN_decode_srv_info(opts, state, elements);
-    nxdn_element_mark_control_sync(opts, state);
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+        if (nxdn_element_has_bits("SRV_INFO", elements_bits, 80U)) {
+            NXDN_decode_srv_info_type_d(state, elements);
+        }
+        return;
+    }
+    if (!nxdn_element_has_bits("SRV_INFO", elements_bits, 72U)) {
+        return;
+    }
+    const int control_channel = state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_CONTROL;
+    NXDN_decode_srv_info(opts, state, elements, control_channel);
+    if (control_channel) {
+        nxdn_element_mark_control_sync(opts, state);
+    }
 }
 
 static void
@@ -399,26 +445,40 @@ nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* e
 
 static void
 nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    /* On a Type-D (IDAS) RTCH2 the same type code is a traffic channel's ADJ_SITE_INFO (NXDN TS 1-E §6.4.3.2), with
+     * a layout of its own, and says nothing of where a control channel is. */
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+        if (nxdn_element_has_bits("ADJ_SITE_INFO", elements_bits, 80U)) {
+            NXDN_decode_adj_site_type_d(elements);
+        }
+        return;
+    }
     NXDN_decode_adj_site(opts, state, elements, elements_bits);
     nxdn_element_mark_control_sync(opts, state);
 }
 
 static void
 nxdn_element_handle_tx_release(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED(elements_bits);
+    if (!nxdn_element_has_bits("TX_REL", elements_bits, NXDN_VCALL_MIN_BITS)) {
+        return;
+    }
     nxdn_reset_data_call_state(state);
     NXDN_decode_VCALL(opts, state, elements);
 }
 
 static void
 nxdn_element_handle_vcall(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED(elements_bits);
+    if (!nxdn_element_has_bits("VCALL", elements_bits, NXDN_VCALL_MIN_BITS)) {
+        return;
+    }
     NXDN_decode_VCALL(opts, state, elements);
 }
 
 static void
 nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED(elements_bits);
+    if (!nxdn_element_has_bits("DISC", elements_bits, NXDN_VCALL_MIN_BITS)) {
+        return;
+    }
     nxdn_reset_data_call_state(state);
     NXDN_decode_VCALL(opts, state, elements);
     nxdn_alias_reset(state);
@@ -442,7 +502,11 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
 
 static void
 nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED(elements_bits);
+    /* The IV is 64 bits from element 8, 22 on Type-D (nxdn_vcall_iv_extract()). */
+    const size_t min_bits = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 30U : 72U;
+    if (!nxdn_element_has_bits("VCALL_IV", elements_bits, min_bits)) {
+        return;
+    }
     NXDN_decode_VCALL_IV(opts, state, elements);
 }
 
@@ -516,12 +580,17 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
     nxdn_message_type(opts, state, MessageTypeExt);
 
     if (MessageTypeExt == 0xE7U) {
-        nxdn_alias_decode_arib(opts, state, ElementsContent);
+        /* Six characters from element 24. */
+        if (nxdn_element_has_bits("ARIB ALIAS", elements_bits, 72U)) {
+            nxdn_alias_decode_arib(opts, state, ElementsContent);
+        }
         return;
     }
 
     if (MessageTypeExt == 0xE1U || MessageTypeExt == 0xE8U) {
-        NXDN_decode_VCALL_ARIB(opts, state, ElementsContent);
+        if (nxdn_element_has_bits("ARIB VCALL", elements_bits, NXDN_VCALL_ARIB_MIN_BITS)) {
+            NXDN_decode_VCALL_ARIB(opts, state, ElementsContent);
+        }
         return;
     }
 
@@ -1157,7 +1226,7 @@ nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Messa
 //externalize multiple sub-element handlers
 static void
 nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
-    //6.5.2 Location ID
+    //6.5.2 Location ID (NXDN TS 1-A): a 2-bit category, then the system and site codes it splits the other 22 bits into
     uint8_t category_bit = location_id >> 22;
     uint32_t sys_code = 0;
     uint16_t site_code = 0;
@@ -1166,7 +1235,7 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
 
     if (category_bit == 0) {
         sys_code = ((location_id & 0x3FFFFF) >> 12); //10 bits
-        site_code = location_id & 0x3FF;             //12 bits
+        site_code = location_id & 0xFFF;             //12 bits
         DSD_SNPRINTF(category, sizeof(category), "%s", "Global");
     } else if (category_bit == 2) {
         sys_code = ((location_id & 0x3FFFFF) >> 8); //14 bits
@@ -1182,32 +1251,38 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
     }
 
     //type 0 is for current site, type 1 is for adjacent sites
-    if (type == 0) {
-        state->nxdn_last_ran = site_code % 64; //Table 6.3-4 RAN for Trunked Radio Systems
-        state->nxdn_last_ran_stand_in = 0U;
-        if (site_code != 0) {
-            state->nxdn_location_site_code = site_code;
-        }
-        if (sys_code != 0) {
-            state->nxdn_location_sys_code = sys_code;
-        }
-        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
-        DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
-                    site_code);
-        /* Every caller holds a message its channel's CRC passed (NXDN_Elements_Content_decode()); a short SACCH CRC
-           counts once the transmission is confirmed, as its RAN does. A reserved category names no site. */
-        if (category_bit != 3U && nxdn_confirm_is_confirmed(state)) {
-            dsd_signal_search_site_note note;
-            DSD_MEMSET(&note, 0, sizeof(note));
-            note.kind = DSD_SEARCH_SITE_NOTE_NXDN;
-            note.nxdn_sys = sys_code;
-            note.nxdn_site = site_code;
-            dsd_signal_search_note_site(state, &note);
-        }
-    } else {
+    if (type != 0) {
         DSD_FPRINTF(stderr, "\n Adjacent Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
                     site_code);
+        return;
     }
+
+    DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
+                site_code);
+    /* Every caller holds a message its channel's CRC passed (NXDN_Elements_Content_decode()); a short SACCH CRC counts
+       once the transmission is confirmed, as the SACCH's own RAN does (nxdn_handle_sacch()). Until then the location is
+       decoded and printed, not kept. A reserved category names no site and gives no RAN. */
+    if (category_bit == 3U || !nxdn_confirm_is_confirmed(state)) {
+        return;
+    }
+    state->nxdn_last_ran = site_code % 64; //Table 6.3-4 RAN for Trunked Radio Systems
+    state->nxdn_last_ran_stand_in = 0U;
+    if (site_code != 0) {
+        state->nxdn_location_site_code = site_code;
+    }
+    if (sys_code != 0) {
+        state->nxdn_location_sys_code = sys_code;
+    }
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
+    /* The record's category: 0 Global, 1 Regional, 2 Local (the location ID's category bits are 00, 10 and 01). */
+    static const uint8_t k_rxid_category[3] = {0U, 2U, 1U};
+    dsd_rxid_note_nxdn_location(state, k_rxid_category[category_bit], sys_code, site_code);
+    dsd_signal_search_site_note note;
+    DSD_MEMSET(&note, 0, sizeof(note));
+    note.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+    note.nxdn_sys = sys_code;
+    note.nxdn_site = site_code;
+    dsd_signal_search_note_site(state, &note);
 }
 
 static void
@@ -1835,7 +1910,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
 }
 
 static void
-NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
+NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, int control_channel) {
     uint32_t location_id = 0;
     uint16_t svc_info = 0; //service information
     uint32_t rst_info = 0; //restriction information
@@ -1859,13 +1934,82 @@ NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Mess
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    nxdn_anchor_control_channel_from_current_tuner(opts, state, 0);
+    if (control_channel) {
+        nxdn_anchor_control_channel_from_current_tuner(opts, state, 0);
+    }
 
     //clear stale active channel listing -- consider best placement for this (NXDN Type C Trunking -- inside SRV_INFO)
     if (dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
         state->nxdn_grant_chan = 0;
         state->nxdn_grant_freq = 0;
     }
+}
+
+/* A Type-D Site Code (NXDN TS 1-E §6.6.5, Table 6.6-3): 1-250 name a site, 0 and 251-255 are reserved. */
+static int
+nxdn_idas_site_code_valid(uint8_t site_code) {
+    return site_code != 0U && site_code <= 250U;
+}
+
+/*
+ * Type-D (IDAS) Service Information (NXDN TS 1-E §6.4.3.1, Fig 6.4-39), a traffic channel's message: after the message
+ * type, 5 spare bits and the 19-bit System ID (§6.6.2: Integrator Code 4 bits, System Code 15), the 8-bit Site Code
+ * (§6.6.5), then 16 bits of Service Information (§6.6.41) and 24 of Restriction Information (§6.6.42); 80 elements. It
+ * carries no Type-C location ID and no RAN. The identity is kept once the transmission is confirmed (a FACCH1 or
+ * FACCH3 confirms it with its own CRC).
+ */
+static void
+NXDN_decode_srv_info_type_d(dsd_state* state, const uint8_t* Message) {
+    const uint32_t system_id = (uint32_t)convert_bits_into_output(&Message[13], 19);
+    const uint8_t site_code = (uint8_t)convert_bits_into_output(&Message[32], 8);
+    const uint16_t svc_info = (uint16_t)convert_bits_into_output(&Message[40], 16);
+    const uint32_t rst_info = (uint32_t)convert_bits_into_output(&Message[56], 24);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Service Information - System ID [%05X] (Integrator %u; System Code %u) Site Code %u%s ",
+                system_id, (unsigned)(system_id >> 15), (unsigned)(system_id & 0x7FFFU), (unsigned)site_code,
+                nxdn_idas_site_code_valid(site_code) ? "" : " (Reserved)");
+    DSD_FPRINTF(stderr, "SVC [%04X] RST [%06X] ", svc_info, rst_info);
+    /* SIF1-SIF5 are the Type-C flags; the rest are reserved or spare on Type-D (Table 6.6-40). */
+    nxdn_srv_info_handler(state, (uint16_t)(svc_info & 0xF800U));
+    DSD_FPRINTF(stderr, "%s", KNRM);
+
+    if (!nxdn_confirm_is_confirmed(state)) {
+        return;
+    }
+    if (system_id != 0U) {
+        state->nxdn_idas_system_id = system_id;
+    }
+    if (nxdn_idas_site_code_valid(site_code)) {
+        state->nxdn_idas_site_code = site_code;
+        if (system_id != 0U) {
+            dsd_rxid_note_nxdn_typed_system(state, system_id, site_code);
+        }
+    }
+}
+
+/*
+ * Type-D (IDAS) Adjacent Site Information (NXDN TS 1-E §6.4.3.2, Fig 6.4-40): after the message type, 7 spare bits and
+ * the Index (§6.6.46), then two sites of Adjacent Site Option (5 bits, §6.6.45), Adjacent Site System ID (19) and
+ * Adjacent Site Code (8); 80 elements. A null System ID fills an unused entry. Printed only: another site's identity.
+ */
+static void
+NXDN_decode_adj_site_type_d(const uint8_t* Message) {
+    const uint8_t index = Message[15];
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    for (size_t i = 0U; i < 2U; i++) {
+        const size_t base = 16U + (i * 32U);
+        const uint8_t option = (uint8_t)convert_bits_into_output(&Message[base], 5);
+        const uint32_t system_id = (uint32_t)convert_bits_into_output(&Message[base + 5U], 19);
+        const uint8_t site_code = (uint8_t)convert_bits_into_output(&Message[base + 24U], 8);
+        if (system_id == 0U) {
+            continue;
+        }
+        DSD_FPRINTF(stderr, "\n Adjacent Site %u - System ID [%05X] Site Code %u%s",
+                    (unsigned)(index * 2U) + (unsigned)i + 1U, system_id, (unsigned)site_code,
+                    (option & 0x10U) ? " - Isolated" : "");
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
 static void
@@ -2530,7 +2674,8 @@ struct nxdn_scch_info {
     uint8_t area;
     uint8_t rep1;
     uint8_t rep2;
-    uint8_t sitet;
+    uint8_t site_type;
+    uint8_t site_code;
     uint8_t gu;
     uint8_t iv_type;
     uint8_t call_opt;
@@ -2553,7 +2698,9 @@ nxdn_scch_parse(const uint8_t* Message, uint8_t direction, time_t now, struct nx
     info->rep1 = (uint8_t)convert_bits_into_output(&Message[3], 5);
     info->rep2 = (uint8_t)convert_bits_into_output(&Message[8], 5);
     info->id = (uint16_t)convert_bits_into_output(&Message[13], 11);
-    info->sitet = (uint8_t)convert_bits_into_output(&Message[3], 5);
+    /* The site ID message's fields (NXDN TS 1-E §6.5.3.1 Fig 6.5-8): Site Type 2 bits, Site Code 8. */
+    info->site_type = (uint8_t)convert_bits_into_output(&Message[3], 2);
+    info->site_code = (uint8_t)convert_bits_into_output(&Message[5], 8);
     info->gu = Message[24];
     info->iv_a = (uint64_t)convert_bits_into_output(&Message[13], 12);
     info->iv_b = (uint64_t)convert_bits_into_output(&Message[18], 6);
@@ -2591,7 +2738,11 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
          * hold cannot rest on one (issue #398). */
         return;
     }
-    /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). */
+    /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). The received
+       identity takes it once the SCCH run itself is confirmed: its 7-bit CRC passes noise one time in 128. */
+    if (nxdn_confirm_scch_confirmed(state)) {
+        dsd_rxid_note_nxdn_idas_area(state, info->area);
+    }
     state->nxdn_last_ran = info->area;
     state->nxdn_last_ran_stand_in = 1U;
     state->last_cc_sync_time = info->now;
@@ -2599,36 +2750,41 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
     nxdn_cc_hunt_note_type_d(opts, state);
 }
 
+/* Site Type (NXDN TS 1-E §6.6.4, Table 6.6-2): the coverage the roaming algorithm selects on. */
 static void
-nxdn_scch_print_site_type(uint8_t sitet) {
-    DSD_FPRINTF(stderr, "Site Type: %d ", sitet);
-    if (sitet == 0U) {
+nxdn_scch_print_site_type(uint8_t site_type) {
+    DSD_FPRINTF(stderr, "Site Type: %d ", site_type);
+    if (site_type == 0U) {
         DSD_FPRINTF(stderr, "Reserved; ");
-    } else if (sitet == 1U) {
+    } else if (site_type == 1U) {
         DSD_FPRINTF(stderr, "Wide; ");
-    } else if (sitet == 2U) {
+    } else if (site_type == 2U) {
         DSD_FPRINTF(stderr, "Middle; ");
     } else {
         DSD_FPRINTF(stderr, "Narrow; ");
     }
 }
 
+/*
+ * The site ID message (NXDN TS 1-E §6.5.3.1 Fig 6.5-8): Structure(2) Area(1) Site Type(2) Site Code(8) ID=2041(11)
+ * Spare(1). It names a site code and nothing else: no system and no RAN, so it writes neither; its area is
+ * nxdn_scch_prepare_type_d()'s, as every SCCH's is. Its 7-bit CRC passes noise one time in 128, so the site code is
+ * kept only once SCCHs of NXDN_CONFIRM_WEAK_OBSERVES frames running have passed theirs.
+ */
 static void
 nxdn_scch_handle_site_id(dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_FPRINTF(stderr, "Site ID Message - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
-    nxdn_scch_print_site_type(info->sitet);
-    DSD_FPRINTF(stderr, "Site Code: %d ", info->rep2);
-    if (info->rep2 == 0U || info->rep2 >= 251U) {
-        DSD_FPRINTF(stderr, "Reserved; ");
-    } else {
-        DSD_FPRINTF(stderr, "Open Access; ");
+    nxdn_scch_print_site_type(info->site_type);
+    if (!nxdn_idas_site_code_valid(info->site_code)) {
+        DSD_FPRINTF(stderr, "Site Code: %d (Reserved); ", info->site_code);
+        return;
     }
-    state->nxdn_location_site_code = info->sitet;
-    state->nxdn_location_sys_code = info->sitet;
-    /* Likewise shown where the RAN goes, and likewise not one (issue #575). */
-    state->nxdn_last_ran = info->sitet;
-    state->nxdn_last_ran_stand_in = 1U;
+    DSD_FPRINTF(stderr, "Site Code: %d; ", info->site_code);
+    if (nxdn_confirm_scch_confirmed(state)) {
+        state->nxdn_idas_site_code = info->site_code;
+        dsd_rxid_note_nxdn_idas_site(state, info->site_type, info->site_code);
+    }
 }
 
 static int
@@ -2786,10 +2942,10 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
 
-static void
-nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
-
+/* The INFO4 messages whose ID field is a fixed code rather than a unit (NXDN TS 1-E §6.5.3.1 Figs 6.5-5..6.5-8): idle
+ * (2046), halt (2045) and free (2044) repeater, and site ID (2041). Returns whether this was one. */
+static int
+nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* info) {
     if (info->id == 2046U) {
         DSD_FPRINTF(stderr, "Idle Repeater Message - ");
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
@@ -2810,6 +2966,16 @@ nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     } else if (info->id == 2041U) {
         nxdn_scch_handle_site_id(state, info);
     } else {
+        return 0;
+    }
+    return 1;
+}
+
+static void
+nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+    (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
+
+    if (!nxdn_scch_handle_repeater_status(state, info)) {
         nxdn_scch_handle_busy(opts, state, info);
     }
 }
@@ -2834,6 +3000,12 @@ nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
 
 static void
 nxdn_scch_handle_info2(dsd_state* state, const struct nxdn_scch_info* info) {
+    /* An outbound INFO2 has the INFO4 format (NXDN TS 1-E §6.5.3.3; TS 2-E Tables 5.1-2..5.1-4, "OSM INFO4 / INFO2"):
+     * its idle, halt, free repeater and site ID messages carry a fixed code where a busy repeater message carries the
+     * destination, and name no unit, so they never become the call's target. */
+    if (info->direction == 1U && nxdn_scch_handle_repeater_status(state, info)) {
+        return;
+    }
     DSD_FPRINTF(stderr, "Target Message - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
     DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);

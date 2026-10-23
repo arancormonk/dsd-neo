@@ -8,11 +8,13 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -189,6 +191,48 @@ test_sysinfo(void) {
     ok &= check(ts->hyperframe_valid && ts->hyperframe == 0x1234, "SYSINFO hyperframe number");
     ok &= check(state->trunk_cc_freq == 401243750L && ts->dl_carrier_hz == 401243750L && ts->freq_band == 4,
                 "SYSINFO main carrier becomes the control channel");
+    free_state(state);
+    free(opts);
+    return ok;
+}
+
+/* The received identity record (dsd_state::rx_id): a CRC-passed BSCH names the network and the cell's colour code, a
+ * SYSINFO the location area, and the control channel where the receiver is tuned only when that is the main carrier
+ * the SYSINFO names (every carrier of the cell broadcasts it). */
+static int
+test_sysinfo_received_identity(void) {
+    dsd_state* state = new_state();
+    dsd_opts* opts = new_opts();
+    int ok = 1;
+    ttb_block sync = {0};
+    ttb_sync_pdu(&sync, 262, 1001, 25);
+    ok &= check(tetra_bsch_parse(sync.bits, sync.n, opts, state) == 1, "rx-id: the BSCH decodes");
+    const dsd_received_identity* id = &state->rx_id;
+    ok &= check(id->family == (uint8_t)DSD_RXID_FAMILY_TETRA && id->valid == (DSD_RXID_TETRA_NET | DSD_RXID_ACCESS)
+                    && id->tetra_mcc == 262U && id->tetra_mnc == 1001U && id->access == 25U,
+                "rx-id: the BSCH names the network and the colour code");
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 401268750U; /* a secondary carrier, not the main carrier */
+    ttb_block b = {0};
+    put_sysinfo(&b, 50, 4, 2);
+    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
+    ok &= check((id->valid & DSD_RXID_TETRA_LA) != 0U && id->tetra_la == 987U, "rx-id: the SYSINFO names the area");
+    ok &= check((id->valid & DSD_RXID_CC_FREQ) == 0U, "rx-id: a secondary carrier is no control channel");
+    opts->rtlsdr_center_freq = 401243750U;
+    tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
+    ok &= check((id->valid & DSD_RXID_CC_FREQ) != 0U && id->cc_freq_hz == 401243750U,
+                "rx-id: on the main carrier the SYSINFO names the control channel");
+
+    /* A SYSINFO of another cell with the same network and colour code (another main carrier): the last cell's control
+       channel goes with it, and its location area is the new SYSINFO's. */
+    ttb_block other = {0};
+    ttb_sysinfo(&other, 60, 4, 2, 988);
+    tetra_mac_parse_schd(other.bits, other.n, 0, opts, state);
+    ok &= check((id->valid & DSD_RXID_CC_FREQ) == 0U, "rx-id: another cell's SYSINFO drops the last control channel");
+    ok &= check((id->valid & DSD_RXID_TETRA_LA) != 0U && id->tetra_la == 988U, "rx-id: another cell's area");
+    ok &= check((id->valid & (DSD_RXID_TETRA_NET | DSD_RXID_ACCESS)) == (DSD_RXID_TETRA_NET | DSD_RXID_ACCESS),
+                "rx-id: another cell's SYSINFO keeps the network and colour code");
     free_state(state);
     free(opts);
     return ok;
@@ -1055,6 +1099,7 @@ main(void) {
     ok &= test_llc_fcs_annex_c();
     ok &= test_sysinfo();
     ok &= test_sysinfo_band_zero_keeps_control_channel();
+    ok &= test_sysinfo_received_identity();
     ok &= test_sysinfo_tooshort();
     ok &= test_sysinfo_security();
     ok &= test_null_state();

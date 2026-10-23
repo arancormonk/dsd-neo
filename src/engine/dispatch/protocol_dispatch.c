@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
@@ -43,8 +44,15 @@ processFrame(dsd_opts* opts, dsd_state* state) {
      * consumed nothing, so crediting it changes nothing either way. */
     state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
 
+    /* An accepted retune the P25 watchdog made since the last frame drops the carrier's access code before this frame
+       notes anything of the carrier it reached. The decoder thread's own retunes, the frame's handler's included
+       (dsd_rxid_request_trunk_tune(), while frame_dispatch_active is set), apply it where they are made. */
+    dsd_rxid_apply_trunk_tune(state);
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
+        /* A frame of another protocol family replaces the identity the last one left, also when the new protocol
+           sends none: what this frame's decoder notes is the carrier's from here. */
+        dsd_rxid_note_sync(state, state->synctype);
         const uint32_t carrier_seq = state->carrier_seq;
         /* The frame's protocol and carrier, for the decoders' MBE capture: a decoder that borrows another protocol's
            vocoder changes state->synctype, not this, and a frame read across a carrier boundary is captured nowhere

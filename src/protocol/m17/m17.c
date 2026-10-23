@@ -12,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -372,6 +374,10 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     }
 }
 
+/* Set while the encoder decodes what this station transmits through the receive path, to monitor it: that is no
+   identity received on the carrier. Decoder thread only. */
+static int s_m17_monitoring_local_tx;
+
 static void
 M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical) {
     struct m17_lsf_result res;
@@ -383,6 +389,10 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical) {
     if (m17_apply_lsf_result(state, &res) == 1) {
         if (publish_canonical != 0) {
             m17_publish_lsf(opts, state, &res);
+            /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. */
+            if (!s_m17_monitoring_local_tx) {
+                dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
+            }
         }
         M17logLSFTrailer(state, &res);
     }
@@ -1422,7 +1432,9 @@ m17_monitor_encoded_lsf(const dsd_opts* opts, dsd_state* state, const uint8_t* m
     for (size_t i = 0U; i < M17_PAYLOAD_BITS; i++) {
         m17_soft_bits[i] = m17_bits[i] ? 0xFFFFU : 0U;
     }
+    s_m17_monitoring_local_tx = 1;
     (void)m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
+    s_m17_monitoring_local_tx = 0;
 }
 
 /* Decode the transmitted frame through the receive path for encoded-audio monitoring and state reporting. */
@@ -1432,9 +1444,11 @@ m17_monitor_encoded_stream(const dsd_opts* opts, dsd_state* state, const uint8_t
     DSD_MEMSET(m17_bits, 0, sizeof(m17_bits));
 
     m17_payload_decode_bits(m17_rnd_bits, m17_bits);
+    s_m17_monitoring_local_tx = 1;
     if (m17_process_lich(state, opts, m17_bits) == 0) {
         M17prepareStream(opts, state, m17_bits);
     }
+    s_m17_monitoring_local_tx = 0;
 }
 
 _Static_assert(M17_RRC_RECOMMENDED_TAPS == DSD_M17_RRC_48KHZ_TAP_COUNT, "M17 RRC tap count mismatch");

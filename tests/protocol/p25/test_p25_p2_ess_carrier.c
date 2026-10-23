@@ -13,7 +13,9 @@
  * descrambling seed.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
@@ -108,6 +110,7 @@ main(void) {
     p25p2_process_ess(&opts, &state, 0);
     rc |= expect_int("one carrier: the full-erasure decode still yields the ESS", state.payload_algid, 0x86);
     rc |= expect_int("one carrier: a full-erasure decode proves no seed", state.p2_cc_verified, 0);
+    rc |= expect_int("one carrier: a full-erasure decode notes no identity", state.rx_id.valid, 0);
 
     /* A carrier boundary, then the new carrier's first voice burst is a 2V: the ESS_B left is not decoded. */
     reset_session(&opts, &state);
@@ -135,6 +138,32 @@ main(void) {
     }
     p25p2_process_ess(&opts, &state, 0);
     rc |= expect_int("a hard-decoded ESS proves the seed", state.p2_cc_verified, 1);
+    /* The proven seed is what the carrier sends: its WACN, SYSID and NAC are the received identity. */
+    rc |= expect_int("the proven seed notes its parts", state.rx_id.valid,
+                     DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_ACCESS);
+    rc |= expect_int("the proven seed's network", (long long)state.rx_id.p25_wacn * 0x1000 + state.rx_id.p25_sysid,
+                     0x1001);
+    rc |= expect_int("the proven seed's NAC", state.rx_id.access, 0x456);
+
+    /* Another system shared the carrier before (another NAC): the proven seed's NAC drops it, its network stays. */
+    reset_session(&opts, &state);
+    seed_site(&opts, &state, 0x456ULL);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x111U);
+    dsd_rxid_note_p25_network(&state, 0xAAAAAU, 0x222U);
+    for (int i = 0; i < 96; i++) {
+        state.ess_b[0][i] = 0;
+        state.ess_b_llr[0][i] = 1000;
+    }
+    for (int i = 0; i < 168; i++) {
+        ess_a[0][i] = 0;
+        ess_a_llr[0][i] = 1000;
+    }
+    p25p2_process_ess(&opts, &state, 0);
+    rc |= expect_int("co-channel: the proven seed's parts", state.rx_id.valid,
+                     DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_ACCESS);
+    rc |= expect_int("co-channel: the proven seed's network",
+                     (long long)state.rx_id.p25_wacn * 0x1000 + state.rx_id.p25_sysid, 0x1001);
+    rc |= expect_int("co-channel: the proven seed's NAC", state.rx_id.access, 0x456);
 
     /* A burst whose slot is out of range has no ESS_B, ESS_A or counters to read: the ESS path checks the slot once and
        decodes nothing, rather than indexing the slots' arrays with it. */

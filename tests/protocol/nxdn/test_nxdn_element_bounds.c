@@ -12,12 +12,14 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -42,6 +44,7 @@ void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 
 static int g_alias_prop_calls;
+static int g_alias_arib_calls;
 static int g_channel_to_frequency_calls;
 static int g_channel_to_frequency_quiet_calls;
 static uint16_t g_channel_to_frequency_channel;
@@ -70,6 +73,7 @@ nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* me
     (void)opts;
     (void)state;
     (void)message_bits;
+    g_alias_arib_calls++;
 }
 
 void
@@ -918,6 +922,8 @@ test_srv_info_anchors_control_channel_from_rigctl(void) {
     write_bits_u64(bits, 48U, 0x345678U, 24U);
     opts->trunk_enable = 1;
     opts->use_rigctl = 1;
+    state->nxdn_confirmed = 1;
+    state->nxdn_frame_channel = NXDN_FRAME_CHANNEL_CONTROL; // a CAC carried it
     state->p25_cc_freq = 851012500L;
     state->trunk_cc_freq = 851012500L;
     state->nxdn_grant_chan = 77U;
@@ -965,6 +971,7 @@ test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     reset_assignment_capture();
 
+    state->nxdn_confirmed = 1; // a CAC's CRC-16 confirms the transmission it carries
     state->nxdn_rcn = 1;
     g_mapped_channel = ofn1;
     g_mapped_channel_freq = cc_freq;
@@ -1818,9 +1825,9 @@ expect_nxdn_access_code(const char* tag, const dsd_state* state, int want_valid,
     return 0;
 }
 
-/* An IDAS (Type-D) carrier's SCCH writes its area bit, and a site ID message its site type, where the RAN goes, and
- * the terminal labels them "IDAS - Area". Neither is a RAN, so the carrier has no access code; a RAN a site
- * information message carries afterwards is one again (issue #575). */
+/* An IDAS (Type-D) carrier's SCCH writes its area bit where the RAN goes, and the terminal labels it "IDAS - Area". It
+ * is no RAN, so the carrier has no access code, and a site ID message writes nothing there; a RAN a site information
+ * message carries afterwards is one again (issue #575). */
 static int
 test_type_d_scch_values_are_not_access_codes(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1846,15 +1853,16 @@ test_type_d_scch_values_are_not_access_codes(void) {
     rc |= expect_int("type-d-area-written", (int)state->nxdn_last_ran, 1);
     rc |= expect_nxdn_access_code("type-d-area-no-access-code", state, 0, 0U);
 
-    /* The site ID message writes its site type there, CRC-7 alone or not. */
-    state->nxdn_confirmed = 0;
+    /* A site ID message carries its site type and code, neither of which goes where the RAN goes. */
+    state->nxdn_confirm_scch_streak = 2U;
     DSD_MEMSET(message, 0, sizeof(message));
-    write_bits_u64(message, 3U, 2U, 5U);      /* site type: Middle */
-    write_bits_u64(message, 8U, 17U, 5U);     /* site code */
+    message[2] = 1U;                          /* area bit */
+    write_bits_u64(message, 3U, 2U, 2U);      /* site type: Middle */
+    write_bits_u64(message, 5U, 17U, 8U);     /* site code */
     write_bits_u64(message, 13U, 2041U, 11U); /* Site ID Message */
     NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_int("type-d-site-type-written", (int)state->nxdn_last_ran, 2);
-    rc |= expect_nxdn_access_code("type-d-site-type-no-access-code", state, 0, 0U);
+    rc |= expect_int("type-d-site-id-keeps-area", (int)state->nxdn_last_ran, 1);
+    rc |= expect_nxdn_access_code("type-d-site-id-no-access-code", state, 0, 0U);
 
     /* A site information message's site code is the RAN (Table 6.3-4). */
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -2138,6 +2146,534 @@ test_vcall_names_only_the_followed_voice_channel(void) {
     return rc;
 }
 
+/* Decode `nbits` elements from a heap block of exactly that size, so a read past the end is a heap overflow the
+ * sanitizers report, not a quiet read of the caller's spare stack. */
+static void
+decode_exact(dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t nbits) {
+    uint8_t* exact = (uint8_t*)malloc(nbits);
+    if (exact == NULL) {
+        return;
+    }
+    DSD_MEMCPY(exact, bits, nbits);
+    NXDN_Elements_Content_decode(opts, state, exact, nbits);
+    free(exact);
+}
+
+static void
+reset_location_sentinels(dsd_state* state) {
+    state->nxdn_last_ran = (unsigned int)-1;
+    state->nxdn_last_ran_stand_in = 0U;
+    state->nxdn_location_site_code = 0U;
+    state->nxdn_location_sys_code = 0U;
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
+    state->nxdn_idas_system_id = 0U;
+    state->nxdn_idas_site_code = 0U;
+}
+
+static int
+expect_location_untouched(const char* tag, const dsd_state* state) {
+    int rc = 0;
+    char label[96];
+    DSD_SNPRINTF(label, sizeof(label), "%s-ran", tag);
+    rc |= expect_int(label, (int)state->nxdn_last_ran, -1);
+    DSD_SNPRINTF(label, sizeof(label), "%s-site", tag);
+    rc |= expect_int(label, state->nxdn_location_site_code, 0);
+    DSD_SNPRINTF(label, sizeof(label), "%s-sys", tag);
+    rc |= expect_int(label, (int)state->nxdn_location_sys_code, 0);
+    DSD_SNPRINTF(label, sizeof(label), "%s-category", tag);
+    rc |= expect_string(label, state->nxdn_location_category, " ");
+    return rc;
+}
+
+/* A non-superframe SACCH hands the element decoder 26 elements (nxdn_handle_sacch()), and its 6-bit CRC passes noise
+ * one time in 64. Every message type that buffer can name must be bounded by the length it was given: SRV_INFO reads
+ * 72 elements (80 on a Type-D channel), a VCALL 64, an assignment 72 (80 in its DFA form), a Type-C VCALL_IV 72, the
+ * ARIB VCALL and alias 72, and a standard alias 72. */
+static int
+test_short_buffers_never_read_past_their_length(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    state->nxdn_confirmed = 1;
+
+    /* SRV_INFO, Type-C: a Global location of system 1, site 0x234. */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x19U);
+    write_bits_u64(bits, 8U, (1U << 12U) | 0x234U, 24U);
+    reset_location_sentinels(state);
+    decode_exact(opts, state, bits, 26U);
+    rc |= expect_location_untouched("srv-info-26", state);
+    decode_exact(opts, state, bits, 71U);
+    rc |= expect_location_untouched("srv-info-71", state);
+    decode_exact(opts, state, bits, 72U);
+    rc |= expect_int("srv-info-72-site", state->nxdn_location_site_code, 0x234);
+    rc |= expect_int("srv-info-72-ran", (int)state->nxdn_last_ran, 0x34);
+
+    /* SRV_INFO, Type-D: System ID 5, site code 9. */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x19U);
+    write_bits_u64(bits, 13U, 5U, 19U);
+    write_bits_u64(bits, 32U, 9U, 8U);
+    reset_location_sentinels(state);
+    state->nxdn_frame_channel = NXDN_FRAME_CHANNEL_TYPE_D;
+    decode_exact(opts, state, bits, 26U);
+    decode_exact(opts, state, bits, 79U);
+    rc |= expect_int("type-d-srv-info-79-site", state->nxdn_idas_site_code, 0);
+    rc |= expect_int("type-d-srv-info-79-system", (int)state->nxdn_idas_system_id, 0);
+    decode_exact(opts, state, bits, 80U);
+    rc |= expect_int("type-d-srv-info-80-site", state->nxdn_idas_site_code, 9);
+    rc |= expect_int("type-d-srv-info-80-system", (int)state->nxdn_idas_system_id, 5);
+    state->nxdn_frame_channel = NXDN_FRAME_CHANNEL_NONE;
+
+    /* The voice-call family: VCALL, TX_REL_EX, TX_REL, DISC, read 64 elements. */
+    static const uint8_t vcall_types[] = {0x01U, 0x07U, 0x08U, 0x11U};
+    for (size_t i = 0U; i < sizeof(vcall_types); i++) {
+        char tag[64];
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        write_vcall_fields(bits, vcall_types[i], 0x00U, 1U, 0U, 0x0123U, 0x0456U, 0U, 0U);
+        state->NxdnElementsContent.SourceUnitID = 0xBEEFU;
+        decode_exact(opts, state, bits, 26U);
+        DSD_SNPRINTF(tag, sizeof(tag), "vcall-%02X-26", vcall_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0xBEEF);
+        decode_exact(opts, state, bits, 63U);
+        DSD_SNPRINTF(tag, sizeof(tag), "vcall-%02X-63", vcall_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0xBEEF);
+        decode_exact(opts, state, bits, 64U);
+        DSD_SNPRINTF(tag, sizeof(tag), "vcall-%02X-64", vcall_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0x0123);
+        dsd_state_ext_free_all(state);
+    }
+
+    /* Assignments read 72 elements, and 80 for the DFA's OFN. */
+    static const uint8_t assignment_types[] = {0x04U, 0x05U, 0x0DU, 0x0EU};
+    for (size_t i = 0U; i < sizeof(assignment_types); i++) {
+        char tag[64];
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        write_assignment_fields(bits, assignment_types[i], 0x00U, 1U, 0U, 0x0123U, 0x0456U, 0x12AU, 0x1234U);
+        state->nxdn_rcn = 0U;
+        state->NxdnElementsContent.SourceUnitID = 0xBEEFU;
+        decode_exact(opts, state, bits, 26U);
+        DSD_SNPRINTF(tag, sizeof(tag), "assignment-%02X-26", assignment_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0xBEEF);
+        decode_exact(opts, state, bits, 71U);
+        DSD_SNPRINTF(tag, sizeof(tag), "assignment-%02X-71", assignment_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0xBEEF);
+        state->nxdn_rcn = 1U;
+        decode_exact(opts, state, bits, 79U);
+        DSD_SNPRINTF(tag, sizeof(tag), "assignment-dfa-%02X-79", assignment_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0xBEEF);
+        decode_exact(opts, state, bits, 80U);
+        DSD_SNPRINTF(tag, sizeof(tag), "assignment-dfa-%02X-80", assignment_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0x0123);
+        state->nxdn_rcn = 0U;
+        state->NxdnElementsContent.SourceUnitID = 0xBEEFU;
+        decode_exact(opts, state, bits, 72U);
+        DSD_SNPRINTF(tag, sizeof(tag), "assignment-%02X-72", assignment_types[i]);
+        rc |= expect_int(tag, state->NxdnElementsContent.SourceUnitID, 0x0123);
+        dsd_state_ext_free_all(state);
+    }
+
+    /* VCALL_IV: 64 IV bits after the type on Type-C, 22 on Type-D. */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_iv_fields(bits, 0x0102030405060708ULL);
+    state->payload_miN = 0x55ULL;
+    decode_exact(opts, state, bits, 26U);
+    rc |= expect_u64("vcall-iv-26", state->payload_miN, 0x55ULL);
+    decode_exact(opts, state, bits, 71U);
+    rc |= expect_u64("vcall-iv-71", state->payload_miN, 0x55ULL);
+    decode_exact(opts, state, bits, 72U);
+    rc |= expect_u64("vcall-iv-72", state->payload_miN, 0x0102030405060708ULL);
+
+    /* The ARIB VCALL carries its fields 8 elements later, and the ARIB alias six characters from element 24. */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_extended_message_type(bits, 0xE1U);
+    write_bits_u64(bits, 32U, 0x0321U, 16U);
+    state->NxdnElementsContent.SourceUnitID = 0xBEEFU;
+    decode_exact(opts, state, bits, 26U);
+    rc |= expect_int("arib-vcall-26", state->NxdnElementsContent.SourceUnitID, 0xBEEF);
+    decode_exact(opts, state, bits, 71U);
+    rc |= expect_int("arib-vcall-71", state->NxdnElementsContent.SourceUnitID, 0xBEEF);
+    decode_exact(opts, state, bits, 72U);
+    rc |= expect_int("arib-vcall-72", state->NxdnElementsContent.SourceUnitID, 0x0321);
+    dsd_state_ext_free_all(state);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_extended_message_type(bits, 0xE7U);
+    g_alias_arib_calls = 0;
+    decode_exact(opts, state, bits, 26U);
+    decode_exact(opts, state, bits, 71U);
+    rc |= expect_int("arib-alias-short", g_alias_arib_calls, 0);
+    decode_exact(opts, state, bits, 72U);
+    rc |= expect_int("arib-alias-72", g_alias_arib_calls, 1);
+
+    /* A standard alias reads four characters from element 40. */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x3FU);
+    write_standard_alias_marker(bits);
+    g_alias_prop_calls = 0;
+    decode_exact(opts, state, bits, 26U);
+    decode_exact(opts, state, bits, 40U);
+    decode_exact(opts, state, bits, 71U);
+    rc |= expect_int("standard-alias-short", g_alias_prop_calls, 0);
+    decode_exact(opts, state, bits, 72U);
+    rc |= expect_int("standard-alias-72", g_alias_prop_calls, 1);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* A Type-D (IDAS) SRV_INFO is a traffic channel's message with its own layout (NXDN TS 1-E §6.4.3.1, Fig 6.4-39):
+ * 5 spare bits, a 19-bit System ID, an 8-bit Site Code, then the service and restriction information. It is no Type-C
+ * location ID, no RAN, and says nothing of where the control channel is. */
+static int
+test_type_d_srv_info_reads_system_id_and_site_code(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    reset_assignment_capture();
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x19U);
+    write_bits_u64(bits, 8U, 0x1FU, 5U);       /* spare, set to show it is not read */
+    write_bits_u64(bits, 13U, 0x5A5A5U, 19U);  /* System ID: integrator 0xB, system code 0x25A5 */
+    write_bits_u64(bits, 32U, 200U, 8U);       /* Site Code */
+    write_bits_u64(bits, 40U, 0xF800U, 16U);   /* SIF1-5 */
+    write_bits_u64(bits, 56U, 0x000001U, 24U); /* ISO */
+
+    opts->trunk_enable = 1;
+    opts->use_rigctl = 1;
+    state->p25_cc_freq = 851012500L;
+    state->trunk_cc_freq = 851012500L;
+    g_current_rigctl_freq = 855262500L;
+    reset_location_sentinels(state);
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    state->nxdn_frame_channel = NXDN_FRAME_CHANNEL_TYPE_D;
+
+    int rc = 0;
+    /* Unconfirmed: decoded, not kept. */
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("type-d-srv-info-unconfirmed-system", (int)state->nxdn_idas_system_id, 0);
+    rc |= expect_int("type-d-srv-info-unconfirmed-site", state->nxdn_idas_site_code, 0);
+    rc |= expect_int("type-d-srv-info-unconfirmed-no-identity", (int)state->rx_id.valid, 0);
+
+    state->nxdn_confirmed = 1;
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("type-d-srv-info-system", (int)state->nxdn_idas_system_id, 0x5A5A5);
+    rc |= expect_int("type-d-srv-info-site", state->nxdn_idas_site_code, 200);
+    /* The received identity: the Type-D system and site, and no control channel. */
+    rc |= expect_int("type-d-srv-info-identity-parts", (int)state->rx_id.valid, (int)DSD_RXID_NXDN_TYPED_SYSTEM);
+    rc |= expect_int("type-d-srv-info-identity-system", (int)state->rx_id.nxdn_typed_sys, 0x5A5A5);
+    rc |= expect_int("type-d-srv-info-identity-site", state->rx_id.nxdn_typed_site, 200);
+    rc |= expect_int("type-d-srv-info-no-ran", (int)state->nxdn_last_ran, -1);
+    rc |= expect_int("type-d-srv-info-no-location-site", state->nxdn_location_site_code, 0);
+    rc |= expect_int("type-d-srv-info-no-location-sys", (int)state->nxdn_location_sys_code, 0);
+    rc |= expect_string("type-d-srv-info-category", state->nxdn_location_category, "Type-D");
+    rc |= expect_int("type-d-srv-info-cc-kept", (int)state->p25_cc_freq, (int)851012500L);
+    rc |= expect_int("type-d-srv-info-trunk-cc-kept", (int)state->trunk_cc_freq, (int)851012500L);
+    rc |= expect_int("type-d-srv-info-no-cc-sync", state->last_cc_sync_time_m > 0.0 ? 1 : 0, 0);
+
+    /* A reserved site code (Table 6.6-3) is no site. */
+    write_bits_u64(bits, 32U, 251U, 8U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("type-d-srv-info-reserved-site-kept", state->nxdn_idas_site_code, 200);
+    rc |= expect_int("type-d-srv-info-reserved-site-identity-kept", state->rx_id.nxdn_typed_site, 200);
+
+    /* The retained "Type-D" category does not make a control channel's SRV_INFO a Type-D one. */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x19U);
+    write_bits_u64(bits, 8U, (1U << 12U) | 0x234U, 24U);
+    state->nxdn_frame_channel = NXDN_FRAME_CHANNEL_CONTROL;
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("type-c-srv-info-after-type-d-site", state->nxdn_location_site_code, 0x234);
+    rc |= expect_int("type-c-srv-info-after-type-d-idas-kept", state->nxdn_idas_site_code, 200);
+
+    g_current_rigctl_freq = 0;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* A Type-C SRV_INFO also reaches a traffic channel's SACCH. It names the site, but only a control channel's says the
+ * control channel is here. */
+static int
+test_traffic_channel_srv_info_does_not_anchor_control(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x19U);
+    write_bits_u64(bits, 8U, (1U << 12U) | 0x234U, 24U);
+    opts->trunk_enable = 1;
+    opts->use_rigctl = 1;
+    state->nxdn_confirmed = 1;
+    state->p25_cc_freq = 851012500L;
+    state->trunk_cc_freq = 851012500L;
+    g_current_rigctl_freq = 855262500L;
+    reset_location_sentinels(state);
+
+    int rc = 0;
+    static const uint8_t channels[] = {NXDN_FRAME_CHANNEL_TRAFFIC, NXDN_FRAME_CHANNEL_NONE};
+    for (size_t i = 0U; i < sizeof(channels); i++) {
+        state->nxdn_frame_channel = channels[i];
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        rc |= expect_int("traffic-srv-info-site", state->nxdn_location_site_code, 0x234);
+        rc |= expect_int("traffic-srv-info-ran", (int)state->nxdn_last_ran, 0x34);
+        rc |= expect_int("traffic-srv-info-cc-kept", (int)state->p25_cc_freq, (int)851012500L);
+        rc |= expect_int("traffic-srv-info-trunk-cc-kept", (int)state->trunk_cc_freq, (int)851012500L);
+        rc |= expect_int("traffic-srv-info-no-cc-sync", state->last_cc_sync_time_m > 0.0 ? 1 : 0, 0);
+    }
+
+    g_current_rigctl_freq = 0;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* The Type-D ADJ_SITE_INFO (NXDN TS 1-E §6.4.3.2, Fig 6.4-40) is a traffic channel's message too: on an RTCH2 it is
+ * read in its own layout, and neither refreshes the control-channel sync nor places the control channel at the tuner. */
+static int
+test_type_d_adj_site_does_not_anchor_control(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x1BU);
+    bits[15] = 1U;                            /* index: sites 3 and 4 */
+    write_bits_u64(bits, 16U, 0x10U, 5U);     /* isolated */
+    write_bits_u64(bits, 21U, 0x5A5A5U, 19U); /* System ID */
+    write_bits_u64(bits, 40U, 17U, 8U);       /* Site Code */
+    opts->trunk_enable = 1;
+    opts->use_rigctl = 1;
+    state->nxdn_confirmed = 1;
+    state->nxdn_frame_channel = NXDN_FRAME_CHANNEL_TYPE_D;
+    g_current_rigctl_freq = 855262500L;
+
+    dsd_test_capture_stderr cap;
+    char output[512];
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_nxdn_adj_site_d") != 0) {
+        DSD_FPRINTF(stderr, "capture stderr begin failed\n");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_capture_file(cap.path, output, sizeof output) != 0) {
+        DSD_FPRINTF(stderr, "capture stderr read failed\n");
+        (void)remove(cap.path);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    (void)remove(cap.path);
+
+    int rc = 0;
+    rc |=
+        expect_contains("type-d-adj-site-print", output, "Adjacent Site 3 - System ID [5A5A5] Site Code 17 - Isolated");
+    rc |= expect_int("type-d-adj-site-no-cc", (int)state->p25_cc_freq, 0);
+    rc |= expect_int("type-d-adj-site-no-trunk-cc", (int)state->trunk_cc_freq, 0);
+    rc |= expect_int("type-d-adj-site-no-cc-sync", state->last_cc_sync_time_m > 0.0 ? 1 : 0, 0);
+
+    g_current_rigctl_freq = 0;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static void
+write_scch_site_id(uint8_t* message, uint8_t structure, uint8_t area, uint8_t site_type, uint8_t site_code) {
+    DSD_MEMSET(message, 0, 32U);
+    write_bits_u64(message, 0U, structure, 2U);
+    message[2] = area;
+    write_bits_u64(message, 3U, site_type, 2U);
+    write_bits_u64(message, 5U, site_code, 8U);
+    write_bits_u64(message, 13U, 2041U, 11U);
+}
+
+/* The IDAS SCCH site ID message (NXDN TS 1-E §6.5.3.1 Fig 6.5-8): Structure(2) Area(1) Site Type(2) Site Code(8)
+ * ID=2041(11) Spare(1). It names the site code alone: no system, no RAN. NXDN TS 2-E Table 5.1-50's site 1 is type 11b,
+ * code 1. */
+static int
+test_type_d_site_id_message(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t message[32];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    reset_location_sentinels(state);
+    state->nxdn_confirmed = 1;
+    state->nxdn_confirm_scch_streak = 2U;
+
+    dsd_test_capture_stderr cap;
+    char output[512];
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_nxdn_site_id") != 0) {
+        DSD_FPRINTF(stderr, "capture stderr begin failed\n");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    write_scch_site_id(message, 0U, 1U, 3U, 1U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_capture_file(cap.path, output, sizeof output) != 0) {
+        DSD_FPRINTF(stderr, "capture stderr read failed\n");
+        (void)remove(cap.path);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    (void)remove(cap.path);
+    rc |= expect_contains("site-id-print-area", output, "Area: 1; ");
+    rc |= expect_contains("site-id-print-type", output, "Site Type: 3 Narrow; ");
+    rc |= expect_contains("site-id-print-code", output, "Site Code: 1; ");
+    rc |= expect_int("site-id-code", state->nxdn_idas_site_code, 1);
+    rc |= expect_int("site-id-area", (int)state->nxdn_last_ran, 1);
+    /* The received identity: the area and the site, its type and code, never an access code. */
+    rc |= expect_int("site-id-identity-parts", (int)state->rx_id.valid,
+                     (int)(DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE));
+    rc |= expect_int("site-id-identity-area", state->rx_id.nxdn_idas_area, 1);
+    rc |= expect_int("site-id-identity-type", state->rx_id.nxdn_idas_site_type, 3);
+    rc |= expect_int("site-id-identity-code", state->rx_id.nxdn_idas_site_code, 1);
+    rc |= expect_int("site-id-area-stand-in", state->nxdn_last_ran_stand_in, 1);
+    rc |= expect_int("site-id-no-location-site", state->nxdn_location_site_code, 0);
+    rc |= expect_int("site-id-no-location-sys", (int)state->nxdn_location_sys_code, 0);
+    rc |= expect_int("site-id-no-system", (int)state->nxdn_idas_system_id, 0);
+    rc |= expect_string("site-id-category", state->nxdn_location_category, "Type-D");
+
+    /* A code above 31 needs all eight bits. */
+    write_scch_site_id(message, 0U, 0U, 1U, 200U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("site-id-code-200", state->nxdn_idas_site_code, 200);
+    rc |= expect_int("site-id-area-0", (int)state->nxdn_last_ran, 0);
+    rc |= expect_int("site-id-identity-code-200", state->rx_id.nxdn_idas_site_code, 200);
+    rc |= expect_int("site-id-identity-area-0", state->rx_id.nxdn_idas_area, 0);
+
+    /* Reserved codes (0, 251-255) name no site. */
+    write_scch_site_id(message, 0U, 0U, 1U, 251U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("site-id-reserved-251", state->nxdn_idas_site_code, 200);
+    write_scch_site_id(message, 0U, 0U, 1U, 0U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("site-id-reserved-0", state->nxdn_idas_site_code, 200);
+
+    /* One SCCH's 7-bit CRC has not confirmed the run: decoded, not kept. */
+    state->nxdn_confirm_scch_streak = 1U;
+    write_scch_site_id(message, 0U, 0U, 1U, 7U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("site-id-unconfirmed-scch", state->nxdn_idas_site_code, 200);
+    rc |= expect_int("site-id-unconfirmed-scch-identity", state->rx_id.nxdn_idas_site_code, 200);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* An outbound INFO2 has the INFO4 format (NXDN TS 1-E §6.5.3.3; TS 2-E Tables 5.1-2..5.1-4, "OSM INFO4 / INFO2"): a
+ * site ID, free, idle or halt repeater message there names no unit, so near voice sync it must not become the call's
+ * target. A busy repeater message's destination still is the call's target. */
+static int
+test_osm_info2_special_messages_are_not_targets(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t message[32];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    reset_assignment_capture();
+    reset_location_sentinels(state);
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    state->p25_cc_freq = 851012500L;
+    state->trunk_cc_freq = 851012500L;
+    state->nxdn_confirmed = 1;
+    state->nxdn_confirm_scch_streak = 2U;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x0456U,
+        .policy_target_id = 0x0456U,
+        .ota_source_id = 0x0123U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->last_vc_sync_time = dsd_decode_time();
+
+    dsd_call_snapshot call;
+    /* Site ID, structure 10b (INFO2), outbound. */
+    write_scch_site_id(message, 2U, 0U, 3U, 7U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("osm-info2-site-id-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("osm-info2-site-id-target", call.ota_target_id, 0x0456U);
+    rc |= expect_u64("osm-info2-site-id-source", call.ota_source_id, 0x0123U);
+    rc |= expect_int("osm-info2-site-id-code", state->nxdn_idas_site_code, 7);
+    rc |= expect_int("osm-info2-site-id-no-tune", g_tune_freq_calls, 0);
+    rc |= expect_int("osm-info2-site-id-not-tuned", opts->trunk_is_tuned, 0);
+
+    static const uint16_t special_ids[] = {2044U, 2045U, 2046U};
+    for (size_t i = 0U; i < sizeof(special_ids) / sizeof(special_ids[0]); i++) {
+        DSD_MEMSET(message, 0, sizeof(message));
+        write_bits_u64(message, 0U, 2U, 2U);
+        write_bits_u64(message, 3U, 3U, 5U);
+        write_bits_u64(message, 8U, 4U, 5U);
+        write_bits_u64(message, 13U, special_ids[i], 11U);
+        NXDN_decode_scch(opts, state, message, 1U);
+        rc |= expect_int("osm-info2-special-call", dsd_call_state_get(state, 0U, &call), 1);
+        rc |= expect_u64("osm-info2-special-target", call.ota_target_id, 0x0456U);
+    }
+    rc |= expect_int("osm-info2-special-no-tune", g_tune_freq_calls, 0);
+
+    /* A busy repeater message names the call's destination. */
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 2U, 2U);
+    write_bits_u64(message, 3U, 5U, 5U);
+    write_bits_u64(message, 13U, 0x0321U, 11U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("osm-info2-busy-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("osm-info2-busy-target", call.ota_target_id, 0x0321U);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2177,6 +2713,12 @@ main(void) {
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
     rc |= test_assignment_data_gate_and_duplicate_release();
     rc |= test_vcall_names_only_the_followed_voice_channel();
+    rc |= test_short_buffers_never_read_past_their_length();
+    rc |= test_type_d_srv_info_reads_system_id_and_site_code();
+    rc |= test_traffic_channel_srv_info_does_not_anchor_control();
+    rc |= test_type_d_site_id_message();
+    rc |= test_type_d_adj_site_does_not_anchor_control();
+    rc |= test_osm_info2_special_messages_are_not_targets();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

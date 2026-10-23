@@ -6,7 +6,7 @@
  * @file ncurses_visualizers.h
  * @brief Visualizer panel API for ncurses UI.
  *
- * Provides functions for rendering RTL-SDR visualization panels including
+ * Provides functions for rendering the radio visualization panels including
  * constellation diagram, eye diagram, FSK histogram, and spectrum analyzer.
  */
 
@@ -20,17 +20,17 @@
 extern "C" {
 #endif
 
-/** Render IQ constellation diagram (requires USE_RTLSDR). */
+/** Render IQ constellation diagram (requires USE_RADIO). */
 void print_constellation_view(dsd_opts* opts, dsd_state* state);
 
-/** Render eye diagram for C4FM/FSK (requires USE_RTLSDR). */
+/** Render eye diagram for C4FM/FSK (requires USE_RADIO). */
 void print_eye_view(dsd_opts* opts, dsd_state* state);
 
-/** Render FSK 4-level histogram (requires USE_RTLSDR). */
+/** Render FSK 4-level histogram (requires USE_RADIO). */
 void print_fsk_hist_view(void);
 
-/** Render spectrum analyzer (requires USE_RTLSDR). */
-void print_spectrum_view(const dsd_opts* opts);
+/** Render spectrum analyzer (requires USE_RADIO), with the identity @p state's carrier sent in its legend. */
+void print_spectrum_view(const dsd_opts* opts, const dsd_state* state);
 
 #ifdef __cplusplus
 }

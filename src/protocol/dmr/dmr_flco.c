@@ -25,6 +25,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -41,6 +42,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
 #include "dmr_tiii_site.h"
 #include "dmr_vcrypt.h"
@@ -109,6 +111,14 @@ typedef struct {
     uint8_t is_kenwood_sc;
     int protected_lc;
 } dmr_flco_ctx;
+
+/* Whether this LC's own check passed. CRCCorrect is also 1 for a full LC -F accepted by RAS, which the burst handler
+   flags for the slot: such an LC keeps decoding and following, but names no identity in the received identity record. */
+static int
+dmr_flco_crc_checked(const dmr_flco_ctx* ctx) {
+    return ctx->CRCCorrect == 1U && *ctx->IrrecoverableErrors == 0U
+           && ctx->state->event_crc_invalid[ctx->slot_idx] == 0U;
+}
 
 static int
 dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
@@ -216,11 +226,15 @@ dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
     }
 }
 
+// The XPT branding changes how later LCs, preamble CSBKs and data headers are read, so only a checked LC sets it.
 static void
-dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx) {
-    if (*ctx->IrrecoverableErrors == 0 && ctx->flco == 0x09 && ctx->fid == 0x68) {
+dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx, int crc_ok) {
+    if (crc_ok && ctx->flco == 0x09 && ctx->fid == 0x68) {
         DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
         DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
+        if (dmr_flco_crc_checked(ctx)) {
+            dsd_rxid_note_dmr_brand(ctx->state, "Hytera XPT");
+        }
     }
 }
 
@@ -236,7 +250,7 @@ dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
     const int crc_ok = (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1);
     dmr_flco_detect_kenwood_sc(ctx, crc_ok);
     dmr_flco_detect_kirisun_le(ctx, crc_ok);
-    dmr_flco_detect_hytera_xpt(ctx);
+    dmr_flco_detect_hytera_xpt(ctx, crc_ok);
     dmr_flco_detect_invalid_hytera_enhanced(ctx);
     if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
         ctx->is_xpt = 1;
@@ -422,6 +436,42 @@ dmr_flco_set_xpt_targets(dmr_flco_ctx* ctx) {
     ctx->tg_hash = crc8(ctx->target_hash, 16);
 }
 
+static void
+dmr_flco_print_hytera_xpt_alert_kind(const dmr_flco_ctx* ctx) {
+    if (ctx->reserved == 1) {
+        DSD_FPRINTF(stderr, "Group ");
+        if (ctx->target > 248 && ctx->target < 255) {
+            DSD_FPRINTF(stderr, "Emergency ");
+        }
+        if (ctx->target == 255) {
+            DSD_FPRINTF(stderr, "All ");
+        }
+    } else {
+        DSD_FPRINTF(stderr, "Private ");
+    }
+    DSD_FPRINTF(stderr, "Call Alert ");
+}
+
+static void
+dmr_flco_print_hytera_xpt_alert_payload(const dmr_flco_ctx* ctx) {
+    if (ctx->reserved == 0) {
+        DSD_FPRINTF(stderr, "TGT Hash=%d; ", ctx->tg_hash);
+    }
+    DSD_FPRINTF(stderr, "HSK=%X; ", ctx->xpt_hand);
+    DSD_FPRINTF(stderr, "Handshake - ");
+    if (ctx->xpt_hand == 0) {
+        DSD_FPRINTF(stderr, "Ordinary; ");
+    } else if (ctx->xpt_hand == 1) {
+        DSD_FPRINTF(stderr, "Callback/Alarm Interrupt; ");
+    } else if (ctx->xpt_hand == 2) {
+        DSD_FPRINTF(stderr, "Release Channel Interrupt; ");
+    } else {
+        DSD_FPRINTF(stderr, "Reserved; ");
+    }
+    DSD_FPRINTF(stderr, "Call on LCN %d; ", ctx->xpt_int);
+    DSD_FPRINTF(stderr, "Free LCN %d; ", ctx->xpt_free);
+}
+
 static int
 dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     if (!(ctx->fid == 0x68 && ctx->flco == 0x09)) {
@@ -443,44 +493,23 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "TGT=%u SRC=%u ", ctx->target, ctx->source);
     DSD_FPRINTF(stderr, "Hytera XPT ");
-    if (ctx->reserved == 1) {
-        DSD_FPRINTF(stderr, "Group ");
-        if (ctx->target > 248 && ctx->target < 255) {
-            DSD_FPRINTF(stderr, "Emergency ");
-        }
-        if (ctx->target == 255) {
-            DSD_FPRINTF(stderr, "All ");
-        }
-    } else {
-        DSD_FPRINTF(stderr, "Private ");
-    }
-    DSD_FPRINTF(stderr, "Call Alert ");
+    dmr_flco_print_hytera_xpt_alert_kind(ctx);
 
     if (ctx->opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n  ");
         DSD_FPRINTF(stderr, "%s", KYEL);
     }
 
-    if (ctx->reserved == 0 && ctx->opts->payload == 1) {
-        DSD_FPRINTF(stderr, "TGT Hash=%d; ", ctx->tg_hash);
-    }
     if (ctx->opts->payload == 1) {
-        DSD_FPRINTF(stderr, "HSK=%X; ", ctx->xpt_hand);
-        DSD_FPRINTF(stderr, "Handshake - ");
-        if (ctx->xpt_hand == 0) {
-            DSD_FPRINTF(stderr, "Ordinary; ");
-        } else if (ctx->xpt_hand == 1) {
-            DSD_FPRINTF(stderr, "Callback/Alarm Interrupt; ");
-        } else if (ctx->xpt_hand == 2) {
-            DSD_FPRINTF(stderr, "Release Channel Interrupt; ");
-        } else {
-            DSD_FPRINTF(stderr, "Reserved; ");
-        }
-        DSD_FPRINTF(stderr, "Call on LCN %d; ", ctx->xpt_int);
-        DSD_FPRINTF(stderr, "Free LCN %d; ", ctx->xpt_free);
+        dmr_flco_print_hytera_xpt_alert_payload(ctx);
     }
     DSD_FPRINTF(stderr, "%s ", KNRM);
-    DSD_SNPRINTF(ctx->state->dmr_site_parms, sizeof(ctx->state->dmr_site_parms), "Free LCN - %d ", ctx->xpt_free);
+    if (ctx->CRCCorrect == 1U) { // the site's free channel, from a checked LC only
+        DSD_SNPRINTF(ctx->state->dmr_site_parms, sizeof(ctx->state->dmr_site_parms), "Free LCN - %d ", ctx->xpt_free);
+    }
+    if (dmr_flco_crc_checked(ctx)) {
+        dsd_rxid_note_dmr_xpt_free_lcn(ctx->state, ctx->xpt_free);
+    }
     return 1;
 }
 
@@ -1119,8 +1148,11 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
         return 0;
     }
 
-    if (ctx->fid != 0) {
+    if (ctx->fid != 0 && ctx->CRCCorrect == 1U) { // the vendor (shown as the branding) only from a checked LC
         ctx->state->dmr_mfid = ctx->fid;
+        if (dmr_flco_crc_checked(ctx)) {
+            dsd_rxid_note_dmr_vendor(ctx->state, ctx->fid); // and as identity only from a genuine check
+        }
     }
 
     if (ctx->protected_lc) {
@@ -1131,7 +1163,16 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
         dmr_flco_sync_active_call_state(ctx);
     }
 
-    if (ctx->restchannel != ctx->state->dmr_rest_channel && ctx->restchannel != -1) {
+    // The received identity takes the rest LSN only from an LC whose own check passed, never a RAS-accepted one, and
+    // before the change test below, so an unchanged repeat proves it again.
+    if (ctx->restchannel != -1 && dmr_flco_crc_checked(ctx)) {
+        dsd_rxid_note_dmr_rest_lsn(ctx->state, (uint16_t)ctx->restchannel);
+        dsd_rxid_note_dmr_brand(ctx->state, "Capacity Plus");
+    }
+    // The rest LSN steers Cap+ following (the release destination, the no-carrier return), so it is taken only from an
+    // LC whose own check passed; clean FEC does not vouch for the payload. Under -F a RAS-accepted LC counts as checked,
+    // as a RAS-accepted channel-status CSBK does in dmr_cspdu().
+    if (ctx->CRCCorrect == 1U && ctx->restchannel != ctx->state->dmr_rest_channel && ctx->restchannel != -1) {
         ctx->state->dmr_rest_channel = ctx->restchannel;
     }
 
@@ -1202,15 +1243,7 @@ dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
     }
     if (!other_voice) {
         // Synthesize a P_CLEAR so the trunking layer releases the channel.
-        // The bit buffer must span the full 12-octet CSPDU: handlers may read
-        // bits ahead of their opcode check.
-        uint8_t dummy[12];
-        uint8_t dbits_local[96];
-        DSD_MEMSET(dummy, 0, sizeof(dummy));
-        DSD_MEMSET(dbits_local, 0, sizeof(dbits_local));
-        dummy[0] = 46;
-        dummy[1] = 255;
-        dmr_cspdu(ctx->opts, ctx->state, dbits_local, dummy, 1, 0);
+        dmr_cspdu_release_channel(ctx->opts, ctx->state);
     } else if (ctx->opts->verbose > 0) {
         DSD_FPRINTF(stderr, " ENC lockout: other slot active with clear voice; stay on VC, mute enc slot. ");
     }
@@ -1970,9 +2003,11 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
     dmr_slco_print_tiii_site_parms(state, data, syscode);
 
-    dmr_sm_note_cc_activity(opts, state, 0);
-    /* Reached only from dmr_slco(), whose short LC passed Hamming(17,12,3) and its CRC-8. */
+    /* Reached only from dmr_slco(), whose short LC passed Hamming(17,12,3) and its CRC-8. C_SYS_PARMS is a control
+       channel's: this carrier, where the receiver is tuned before the state machine hears of it. */
     dmr_tiii_note_search_site(state, data->model_str, data->net, data->site, data->n, data->sub_mask, syscode);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
+    dmr_sm_note_cc_activity(opts, state, 0);
 }
 
 static void
@@ -2013,10 +2048,33 @@ dmr_slco_tg_hold_not_on_slot(const dsd_state* state) {
     return 1;
 }
 
+/* Every short LC reaches its handler only once Hamming(17,12,3) and its CRC-8 passed (dmr_slco()): what it names of the
+   site is the carrier's received identity. */
+static void
+dmr_slco_note_cap_plus_site(dsd_state* state, const dmr_slco_data* data) {
+    char text[32];
+    DSD_SNPRINTF(text, sizeof(text), "Cap+ \xC2\xB7 Site %u", (unsigned)data->capsite);
+    dsd_rxid_note_dmr_site_text(state, text);
+    if (data->restchannel != 0U) {
+        dsd_rxid_note_dmr_rest_lsn(state, data->restchannel);
+    }
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+}
+
+static void
+dmr_slco_note_con_plus_site(dsd_state* state, const dmr_slco_data* data) {
+    char text[48];
+    DSD_SNPRINTF(text, sizeof(text), "Con+ \xC2\xB7 Net %u \xC2\xB7 Site %u", (unsigned)data->con_netid,
+                 (unsigned)data->con_siteid);
+    dsd_rxid_note_dmr_site_text(state, text);
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+}
+
 static void
 dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data) {
     DSD_FPRINTF(stderr, " SLCO Capacity Plus Site: %d - Rest LSN: %d - RS: %02X", data->capsite, data->restchannel,
                 data->cap_reserved);
+    dmr_slco_note_cap_plus_site(state, data);
 
     const long rest = state->trunk_chan_map[data->restchannel];
     if (rest > 0) {
@@ -2052,6 +2110,8 @@ dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data)
                 data->xpt_hash);
     dmr_sm_note_xpt_site(opts, state); // a completed XPT SLCO (Hamming and CRC-8): no control channel
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
+    dsd_rxid_note_dmr_xpt_free_lcn(state, data->xpt_free);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "Free LCN - %d ", data->xpt_free);
 
     if (state->tg_hold != 0 && opts->trunk_enable == 1 && state->dmrburstL == 16 && state->dmrburstR == 16
@@ -2070,6 +2130,9 @@ dmr_slco_handle_con_plus_control(dsd_opts* opts, dsd_state* state, const dmr_slc
     DSD_FPRINTF(stderr, " SLCO Connect Plus Control Channel - Net ID: %d Site ID: %d", data->con_netid,
                 data->con_siteid);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data->con_netid, data->con_siteid);
+    /* A Connect Plus control channel's own short LC: this carrier is the control channel of the site it names. */
+    dmr_slco_note_con_plus_site(state, data);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
 
     dmr_sm_note_cc_activity(opts, state, 0);
     if ((dsd_decode_time() - state->last_vc_sync_time) > 2) {
@@ -2117,6 +2180,7 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
         DSD_FPRINTF(stderr, " SLCO Connect Plus Traffic Channel - Net ID: %d Site ID: %d", data.con_netid,
                     data.con_siteid);
         DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data.con_netid, data.con_siteid);
+        dmr_slco_note_con_plus_site(state, &data);
     } else if (data.slco == 0xA) {
         dmr_slco_handle_con_plus_control(opts, state, &data);
     } else if (data.slco == 0xF) {

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -289,7 +290,14 @@ main(void) {
     /* The air keys the publication only names the kind of never ride the snapshot themselves. */
     state->tetra_air_keys[0].loaded = 1U;
     state->tetra_air_keys[0].key[0] = 0xA5U;
+    /* So does the identity received on the carrier, which every frontend's identity line reads. */
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_p25_site(state, 0x348U, 3U, 21U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_P25, 851012500U);
+    const uint32_t rxid_epoch = state->rx_id.epoch;
     dsd_app_telemetry_publish_snapshot(state);
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_rest_lsn(state, 3U);
     state->tetra_pub.mode = DSD_TETRA_MODE_DMO_DIRECT;
     state->tetra_pub.mcc = 1U;
     state->tetra_pub.codec_frames = 99U;
@@ -324,6 +332,11 @@ main(void) {
     assert(snap->tetra_pub.aie == DSD_TETRA_AIE_AVAILABLE && snap->tetra_pub.sec_known == 1U
            && snap->tetra_pub.sec_sckn == 3U && snap->tetra_pub.dmo_sckn == 5U);
     assert(snap->tetra_air_keys[0].loaded == 0U && snap->tetra_air_keys[0].key[0] == 0U);
+    assert(snap->rx_id.family == DSD_RXID_FAMILY_P25 && snap->rx_id.epoch == rxid_epoch);
+    assert(snap->rx_id.p25_wacn == 0xBEE00U && snap->rx_id.p25_sysid == 0x348U && snap->rx_id.p25_rfss == 3U
+           && snap->rx_id.p25_site == 21U && snap->rx_id.cc_freq_hz == 851012500U);
+    assert((snap->rx_id.valid & (DSD_RXID_P25_WACN | DSD_RXID_P25_SITE | DSD_RXID_CC_FREQ))
+           == (DSD_RXID_P25_WACN | DSD_RXID_P25_SITE | DSD_RXID_CC_FREQ));
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
     /* A shared pointer would let the next reserve() on either side realloc the other's

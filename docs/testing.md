@@ -295,6 +295,16 @@ analog NFM under `-fA` (see "Received tone (CTCSS) on the analog monitor" and "R
 monitor's audio has its own cases, which score the audio rather than a log line; see
 [Analog monitor audio checks](#analog-monitor-audio-checks).
 
+`ENGINE_REPLAY_IDENTITY` (label `iq-decode`, radio builds) runs the real engine in-process on two of these
+fixtures, one decoder state for both: `p25p1_c4fm_cc` (a trunked system's control channel, WACN BEE00, SYS 14C, NAC
+140), then `p25p1_c4fm_vc` under a copy of its sidecar with another centre (a conventional carrier of another system,
+NAC 293). The second replay is the carrier boundary a stream on another source is. The received identity record must
+name the first system and its control channel frequency after the first run, and after the second the record, the
+shared identity text (`dsd_app_site_identity_format()`, which the terminal's `System:` line and the Qt site line print)
+and the second carrier's history row must carry its NAC alone. Both carriers are P25, so the protocol change that drops
+a record of another family cannot hide a boundary that failed to reset it. The terminal's own Call Info lines are not
+rendered there (the run has no frontend); `UI_NCURSES_PRINTER_HELPERS` covers them over a reset record.
+
 The simulcast case (`DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC`) is derived from the
 clean CQPSK control-channel capture by summing a delayed (62.5 µs), attenuated
 (-4.4 dB), frequency-offset (+1.5 Hz) second ray, so the composite sweeps

@@ -158,7 +158,7 @@ ncurses_handle_delta_keys(int c) {
         case DSD_KEY_CONST_GATE_INC: (void)dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, +0.02f); return 1;
         case DSD_KEY_PPM_UP: (void)dsd_app_command_set_i32(DSD_APP_CMD_PPM_DELTA, +1); return 1;
         case DSD_KEY_PPM_DOWN: (void)dsd_app_command_set_i32(DSD_APP_CMD_PPM_DELTA, -1); return 1;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
         case DSD_KEY_SPEC_DEC: {
             dsd_frontend_metrics metrics;
             (void)dsd_app_frontend_get_metrics(&metrics);

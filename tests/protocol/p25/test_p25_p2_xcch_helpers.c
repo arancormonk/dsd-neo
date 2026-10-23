@@ -1089,8 +1089,8 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     rc |= expect_int("validated lcch signal reaches the vpdu", g_vpdu_count, 1);
     rc |= expect_int("validated lcch signal passes its crc", g_vpdu_crc_ok, 1);
 
-    /* Issue #575: under -F a MAC_SIGNAL whose CRC failed still reaches the VPDU decoder, with that verdict, so a
-       network status broadcast in it proves no NAC (process_MAC_VPDU_crc()). */
+    /* Issue #575: under -F a MAC_SIGNAL whose CRC failed still reaches the VPDU decoder, with that verdict, so the
+       system broadcasts in it change no system tables and prove no NAC (process_MAC_VPDU_crc()). */
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;

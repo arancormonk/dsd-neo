@@ -54,6 +54,10 @@ static uint8_t g_last_cac_bit;
 static uint8_t g_last_cac_reliab;
 static dsd_nxdn_variant g_active_nxdn_variant;
 static char g_last_frame_type[16];
+/* The frame channel each channel decoder saw while it ran (dsd_state::nxdn_frame_channel). */
+static int g_cac_frame_channel;
+static int g_facch_frame_channel;
+static int g_sacch_frame_channel;
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -137,6 +141,9 @@ reset_state(void) {
     g_last_cac_reliab = 0;
     g_active_nxdn_variant = DSD_NXDN_VARIANT_NONE;
     g_last_frame_type[0] = '\0';
+    g_cac_frame_channel = -1;
+    g_facch_frame_channel = -1;
+    g_sacch_frame_channel = -1;
 }
 
 void
@@ -225,6 +232,7 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     (void)opts;
     nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
     g_sacch_calls++;
+    g_sacch_frame_channel = state->nxdn_frame_channel;
     g_last_sacch_bit = bits[0];
     g_last_sacch_reliab = reliab[0];
 }
@@ -248,6 +256,7 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
         state->synctype = DSD_SYNC_NONE;
     }
     g_cac_calls++;
+    g_cac_frame_channel = state->nxdn_frame_channel;
     g_last_cac_bit = bits[0];
     g_last_cac_reliab = reliab[0];
 }
@@ -257,6 +266,7 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     (void)opts;
     nxdn_stub_note_crc(state, g_stub_facch_ok, NXDN_EVIDENCE_STRONG);
     g_facch_calls++;
+    g_facch_frame_channel = state->nxdn_frame_channel;
     g_facch_part_mask |= 1 << part;
     g_last_facch_bit = bits[0];
     g_last_facch_reliab = reliab[0];
@@ -728,6 +738,44 @@ test_frame_cut_by_an_input_interruption_is_dropped(void) {
     return rc;
 }
 
+/* The element parsers read the channel a message came on from the frame's own LICH: a CAC is the control channel, a
+ * Type-C or conventional SACCH/FACCH1 a traffic channel, an RTCH2 profile a Type-D one, and nothing outside a frame. */
+static int
+test_frame_channel_follows_the_lich(void) {
+    int rc = 0;
+
+    reset_state();
+    g_state.nxdn_frame_channel = NXDN_FRAME_CHANNEL_TYPE_D;
+    rc |= expect_int("cac frame accepted", route_frame(0x01U), 1);
+    rc |= expect_int("cac frame channel", g_cac_frame_channel, NXDN_FRAME_CHANNEL_CONTROL);
+    rc |= expect_int("cac frame channel cleared", g_state.nxdn_frame_channel, NXDN_FRAME_CHANNEL_NONE);
+
+    reset_state();
+    rc |= expect_int("rtch frame accepted", route_frame(0x32U), 1);
+    rc |= expect_int("rtch sacch channel", g_sacch_frame_channel, NXDN_FRAME_CHANNEL_TRAFFIC);
+    rc |= expect_int("rtch facch channel", g_facch_frame_channel, NXDN_FRAME_CHANNEL_TRAFFIC);
+    rc |= expect_int("rtch frame channel cleared", g_state.nxdn_frame_channel, NXDN_FRAME_CHANNEL_NONE);
+
+    reset_state();
+    rc |= expect_int("rdch frame accepted", route_frame(0x50U), 1);
+    rc |= expect_int("rdch facch channel", g_facch_frame_channel, NXDN_FRAME_CHANNEL_TRAFFIC);
+
+    static const uint8_t type_d_liches[] = {0x60U, 0x62U, 0x70U, 0x72U, 0x75U};
+    for (size_t i = 0U; i < sizeof(type_d_liches); i++) {
+        reset_state();
+        rc |= expect_int("rtch2 frame accepted", route_frame(type_d_liches[i]), 1);
+        rc |= expect_int("rtch2 facch channel", g_facch_frame_channel, NXDN_FRAME_CHANNEL_TYPE_D);
+        rc |= expect_int("rtch2 frame channel cleared", g_state.nxdn_frame_channel, NXDN_FRAME_CHANNEL_NONE);
+    }
+
+    /* A frame rejected at its LICH names no channel. */
+    reset_state();
+    g_state.nxdn_frame_channel = NXDN_FRAME_CHANNEL_CONTROL;
+    rc |= expect_int("rejected frame", route_frame(0x7FU), 0);
+    rc |= expect_int("rejected frame channel", g_state.nxdn_frame_channel, NXDN_FRAME_CHANNEL_NONE);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -742,6 +790,7 @@ main(void) {
     rc |= test_short_crc_confirms_only_when_repeated();
     rc |= test_frame_split_by_a_carrier_boundary_is_dropped();
     rc |= test_frame_cut_by_an_input_interruption_is_dropped();
+    rc |= test_frame_channel_follows_the_lich();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

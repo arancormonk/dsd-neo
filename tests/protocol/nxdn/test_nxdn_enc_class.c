@@ -16,6 +16,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -231,10 +232,15 @@ test_vcall_enc_lockout_requires_corroboration(void) {
     assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
 
     // The matching repeat corroborates and the lockout acts -- in the session
-    // ledger, never as a talkgroup-policy row.
+    // ledger, never as a talkgroup-policy row. The disconnect it synthesizes was
+    // never received, so the received identity keeps what the carrier sent.
+    dsd_rxid_note_nxdn_location(&state, 0U, 0x123U, 7U);
+    const dsd_received_identity before = state.rx_id;
     build_vcall(bits, 2U, 5U, 100U, 1234U);
     NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    assert(state.rx_id.valid == before.valid && state.rx_id.fresh == before.fresh && state.rx_id.epoch == before.epoch);
+    assert(state.rx_id.nxdn_sys == 0x123U && state.rx_id.nxdn_site == 7U);
     dsd_enc_lockout_entry ledger_entry;
     assert(dsd_enc_lockout_lookup(&state, 1234U, 1, &ledger_entry) == 1);
     assert(ledger_entry.algid == 2);

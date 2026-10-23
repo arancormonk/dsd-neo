@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_activity.h>
@@ -16,6 +17,7 @@
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -4436,6 +4438,54 @@ test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
     return rc;
 }
 
+/* The identity received on the carrier (dsd_state::rx_id) lives as long as the carrier: a carrier boundary forgets it,
+   so a carrier that sends only part of an identity shows only that part, and the no-carrier pass keeps the values but
+   marks them stale, so a retained identity never reads as live after a gap. */
+static int
+test_received_identity_lifetime(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+    dsd_rxid_note_p25_site(state, 0x1A3U, 2U, 3U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    const uint32_t parts = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE | DSD_RXID_ACCESS;
+
+    noCarrier(opts, state);
+    rc |= expect_true("rx-id: the no-carrier pass keeps the values",
+                      state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25 && state->rx_id.valid == parts
+                          && state->rx_id.p25_wacn == 0xBEE00U && state->rx_id.access == 0x293U);
+    rc |= expect_true("rx-id: the no-carrier pass marks them stale", state->rx_id.fresh == 0U);
+
+    const uint32_t epoch = state->rx_id.epoch;
+    state->symbol_clock = 5000U;
+    rc |= expect_true("rx-id: no carrier left yet", !dsd_state_carrier_settling(state, 144U));
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= expect_true("rx-id: a carrier boundary forgets the record",
+                      state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE && state->rx_id.valid == 0U
+                          && state->rx_id.epoch != epoch);
+    /* And what the frame sync and the decoders hold buffered is the carrier left's until the new one refills it. */
+    rc |= expect_true("rx-id: the boundary marks the symbol clock", state->carrier_change_seen == 1U
+                                                                        && state->carrier_change_symbol_clock == 5000U
+                                                                        && dsd_state_carrier_settling(state, 144U));
+    state->symbol_clock += 145U;
+    rc |=
+        expect_true("rx-id: settled once the lookback is the new carrier's", !dsd_state_carrier_settling(state, 144U));
+
+    /* Carrier B sends only its NAC: none of A's system reads as B's. */
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x5A5U);
+    rc |= expect_true("rx-id: a partial identity after the boundary is only its own",
+                      state->rx_id.valid == DSD_RXID_ACCESS && state->rx_id.access == 0x5A5U);
+    /* Every boundary kind runs the same reset. */
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+    rc |= expect_true("rx-id: a scan step forgets the record", state->rx_id.valid == 0U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_carrier_boundary_forgets_the_access_codes(void) {
     dsd_opts* opts = NULL;
@@ -6785,6 +6835,7 @@ main(void) {
     rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
+    rc |= test_received_identity_lifetime();
     rc |= test_carrier_boundary_restarts_the_evidence();
     rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_receive_boundary_closes_only_rejected_capture();

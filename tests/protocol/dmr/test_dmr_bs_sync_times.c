@@ -7,12 +7,14 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -92,6 +94,14 @@ static int g_any_voice_open = 0;
 /* Whether the vocoder stub stages decoded media for the stereo mixes, as the vocoder does while the audible-audio stamp
    is armed (issue #574). */
 static int g_stage_mix_media = 0;
+/* A Capacity Plus or XPT rest channel's retune, which the SLCO in a CACH makes: the dmr_cach() call that accepts it
+   (1-based; 0 for none) requests the received identity's drop of the access code, as the engine's trunk tuning does. */
+static unsigned int g_cach_retune_at = 0;
+/* The colour code each burst's checked EMB notes in the received identity, as the confidence gate's evidence does
+   (dmr_confidence_note_evidence()); 0 entries note nothing. */
+static uint8_t g_burst_colour_codes[8];
+/* The received identity each frontend publication copied, in order. */
+static dsd_received_identity g_published_rx_id[8];
 
 static void
 reset_spies(void) {
@@ -138,6 +148,9 @@ reset_spies(void) {
     g_voice_slot_open = 1;
     g_any_voice_open = 0;
     g_stage_mix_media = 0;
+    g_cach_retune_at = 0;
+    DSD_MEMSET(g_burst_colour_codes, 0, sizeof(g_burst_colour_codes));
+    DSD_MEMSET(g_published_rx_id, 0, sizeof(g_published_rx_id));
     exitflag = 0;
 }
 
@@ -331,6 +344,7 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
 
 /* The vocoder's writer creates a slot's capture with the first frame it records (issue #661). */
 void
+// cppcheck-suppress constParameterPointer -- stub; signature fixed by dsd-neo/core/vocoder.h
 processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, char imbe_fr[8][23], char ambe_fr[4][24],
                 char imbe7100_fr[7][24]) {
     assert(protocol == DSD_VOICE_PROTOCOL_DMR);
@@ -371,7 +385,9 @@ dsd_telemetry_is_active(void) {
 void
 dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
-    (void)state;
+    if (state != NULL && g_ui_redraw_calls < sizeof(g_published_rx_id) / sizeof(g_published_rx_id[0])) {
+        g_published_rx_id[g_ui_redraw_calls] = state->rx_id;
+    }
     g_ui_redraw_calls++;
 }
 
@@ -397,6 +413,7 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
 }
 
 void
+// cppcheck-suppress constParameterPointer -- stub; signature fixed by dsd-neo/protocol/dmr/dmr.h
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     DSD_MEMCPY(g_data_sync_reliability, state->dmr_stereo_reliab, sizeof(g_data_sync_reliability));
@@ -425,9 +442,11 @@ dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t slot_
 uint8_t
 dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
     (void)opts;
-    (void)state;
     (void)cach_bits;
     g_cach_calls++;
+    if (g_cach_calls == g_cach_retune_at) {
+        dsd_rxid_request_trunk_tune(state);
+    }
     return 0;
 }
 
@@ -568,9 +587,13 @@ dmr_confidence_note_voice_sync(dsd_state* state, unsigned int slot) {
 
 dmr_confidence_result
 dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned int color_code) {
-    (void)state;
     (void)slot;
     (void)color_code;
+    if (g_confidence_voice_burst_calls < sizeof(g_burst_colour_codes)
+        && g_burst_colour_codes[g_confidence_voice_burst_calls] != 0U) {
+        dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE,
+                             g_burst_colour_codes[g_confidence_voice_burst_calls]);
+    }
     g_confidence_voice_burst_calls++;
     return g_confidence_result;
 }
@@ -1226,6 +1249,47 @@ test_bs_polarity_run_needs_adjacent_bursts(void) {
     }
 }
 
+/* A Capacity Plus rest channel's SLCO in the first burst's CACH retunes the receiver, and the loop goes on to decode
+   the bursts the carrier it reached sends, all within one dispatch (processFrame() marks it). The drop of the access
+   code is applied at the retune: the publication after the retuning burst shows no colour code of the carrier left,
+   and the next burst's checked colour code is the reached carrier's first, not another system on the carrier, so the
+   system (the rest channel's LSN) and the identity's epoch stay, and the code stays noted when the loop ends. */
+static void
+test_bs_retune_in_a_burst_keeps_the_next_bursts_colour_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 1; /* the bootstrap read slot 2's burst A */
+    state.dmr_color_code = 16;
+    load_three_burst_stream(0, 1, 0);
+    g_any_voice_open = 1;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_rest_lsn(&state, 3U);
+    const uint32_t epoch = state.rx_id.epoch;
+    g_burst_colour_codes[0] = 1U; /* the carrier left */
+    g_burst_colour_codes[1] = 2U; /* the carrier reached */
+    g_burst_colour_codes[2] = 2U;
+    g_cach_retune_at = 1U;
+    state.frame_dispatch_active = 1;
+
+    dmrBS(&opts, &state);
+
+    state.frame_dispatch_active = 0;
+    assert(g_confidence_voice_burst_calls >= 3U && g_ui_redraw_calls >= 3U);
+    const dsd_received_identity* after_retune = &g_published_rx_id[0];
+    assert((after_retune->valid & DSD_RXID_ACCESS) == 0U);
+    assert((after_retune->valid & DSD_RXID_DMR_REST_LSN) != 0U && after_retune->dmr_rest_lsn == 3U);
+    for (size_t i = 1; i < 3U; i++) {
+        assert((g_published_rx_id[i].valid & DSD_RXID_ACCESS) != 0U && g_published_rx_id[i].access == 2U);
+    }
+    assert(state.rx_id_trunk_tune_pending == 0U);
+    assert((state.rx_id.valid & DSD_RXID_ACCESS) != 0U && state.rx_id.access == 2U);
+    assert((state.rx_id.valid & DSD_RXID_DMR_REST_LSN) != 0U && state.rx_id.dmr_rest_lsn == 3U);
+    assert(state.rx_id.epoch == epoch);
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(1234567890ULL);
@@ -1250,6 +1314,7 @@ main(void) {
     test_bs_confirmed_alternation_ignores_two_wrong_tacts();
     test_bs_consecutive_colour_code_rejections_end_the_loop();
     test_bs_polarity_run_needs_adjacent_bursts();
+    test_bs_retune_in_a_burst_keeps_the_next_bursts_colour_code();
     dsd_decode_clock_use_system();
     printf("DMR BS sync times: OK\n");
     return 0;

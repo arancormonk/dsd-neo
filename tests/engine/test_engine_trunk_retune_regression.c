@@ -15,11 +15,13 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -257,6 +259,31 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_in_tick(void) {
     return 0;
+}
+
+/* The P25 SM tick guard as the received identity's drop sees it: whether the tuning thread holds it. */
+static int g_tick_guard_held = 0;
+static unsigned int g_tick_guard_enters = 0U;
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_tick_guard_held_by_caller(void) {
+    return g_tick_guard_held;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_tick_guard_enter(void) {
+    assert(!g_tick_guard_held); /* not re-entrant */
+    g_tick_guard_held = 1;
+    g_tick_guard_enters++;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_tick_guard_leave(void) {
+    assert(g_tick_guard_held);
+    g_tick_guard_held = 0;
 }
 
 void
@@ -1804,6 +1831,97 @@ test_rigctl_on_rtl_input_follows_the_frequency_only(void) {
 }
 #endif
 
+/* The received identity across the engine's trunk tuning (dsd_engine_rxid_trunk_tune()), made off the decoder
+   thread. */
+static void
+check_rxid_watchdog_tunes(dsd_opts* opts, dsd_state* state) {
+    /* The received identity across a trunk follow: the voice channel belongs to the control channel's system, so the
+       record keeps the system and drops the carrier's access code, in both directions. The P25 watchdog's tick runs
+       these tunes on its own thread, not the decoder thread, where an accepted one only requests the drop, which the
+       decoder thread applies (dsd_rxid_apply_trunk_tune()). A refused tune leaves the receiver, and the record, where
+       they were. */
+    const uint32_t rxid_system = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+    dsd_engine_set_decoder_thread(0);
+    g_tick_guard_held = 1;
+    g_tick_guard_enters = 0U;
+    dsd_rxid_reset(state);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x1A3U);
+    dsd_rxid_note_p25_site(state, 0x1A3U, 2U, 3U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    opts->trunk_is_tuned = 0;
+    g_setfreq_result = false;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->rx_id_trunk_tune_pending == 0U);
+    dsd_rxid_apply_trunk_tune(state);
+    assert(state->rx_id.valid == (rxid_system | DSD_RXID_ACCESS) && state->rx_id.access == 0x293U);
+    g_setfreq_result = true;
+    const dsd_received_identity before_follow = state->rx_id;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id.valid == before_follow.valid && state->rx_id.fresh == before_follow.fresh
+           && state->rx_id.epoch == before_follow.epoch && state->rx_id.access == 0x293U);
+    assert(state->rx_id_trunk_tune_pending == 1U);
+    dsd_rxid_apply_trunk_tune(state);
+    assert(state->rx_id.valid == rxid_system && state->rx_id.p25_wacn == 0xBEE00U && state->rx_id.p25_site == 3U);
+    assert(state->rx_id_trunk_tune_pending == 0U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id_trunk_tune_pending == 1U && state->rx_id.access == 0x293U);
+    dsd_rxid_apply_trunk_tune(state);
+    assert(state->rx_id.valid == rxid_system && state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25);
+    opts->trunk_is_tuned = 0;
+
+    /* The watchdog's return to the control channel (the return-to-CC hook): a refused one keeps the voice channel's
+       access code, an accepted one drops it once the decoder applies it, and writes nothing of the record itself. */
+    opts->trunk_enable = 1;
+    state->p25_cc_freq = 851000000;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    opts->trunk_is_tuned = 1;
+    g_setfreq_result = false;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_rxid_apply_trunk_tune(state);
+    assert(state->rx_id.valid == (rxid_system | DSD_RXID_ACCESS) && state->rx_id.access == 0x293U);
+    g_setfreq_result = true;
+    const dsd_received_identity before_return = state->rx_id;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id.valid == before_return.valid && state->rx_id.fresh == before_return.fresh
+           && state->rx_id.epoch == before_return.epoch && state->rx_id.access == 0x293U);
+    dsd_rxid_apply_trunk_tune(state);
+    assert(state->rx_id.valid == rxid_system && state->rx_id.p25_sysid == 0x1A3U);
+    assert(g_tick_guard_enters == 0U);
+    g_tick_guard_held = 0;
+}
+
+/* The decoder thread's own retunes between frames (a frame sync release, a tick, the no-carrier pass, a command) drop
+   the code at once, under the guard: its own hold, or one taken for the drop and left after it. Nothing it publishes
+   next shows the carrier left's code, and the next carrier's code is its first, not a change. Runs on the record
+   check_rxid_watchdog_tunes() leaves: the system without an access code, trunking on. */
+static void
+check_rxid_decoder_tunes(dsd_opts* opts, dsd_state* state) {
+    const uint32_t rxid_system = DSD_RXID_P25_WACN | DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+    dsd_engine_set_decoder_thread(1);
+    g_tick_guard_held = 0;
+    g_tick_guard_enters = 0U;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    const uint32_t epoch_before_decoder_tunes = state->rx_id.epoch;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id_trunk_tune_pending == 0U && state->rx_id.valid == rxid_system);
+    assert(g_tick_guard_enters == 1U && !g_tick_guard_held);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x5A5U);
+    g_tick_guard_held = 1;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rx_id_trunk_tune_pending == 0U && state->rx_id.valid == rxid_system);
+    assert(g_tick_guard_enters == 1U && g_tick_guard_held);
+    g_tick_guard_held = 0;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2F0U);
+    assert(state->rx_id.valid == (rxid_system | DSD_RXID_ACCESS) && state->rx_id.access == 0x2F0U);
+    assert(state->rx_id.epoch == epoch_before_decoder_tunes);
+    dsd_engine_set_decoder_thread(0);
+    opts->trunk_enable = 0;
+    state->p25_cc_freq = 0;
+    opts->trunk_is_tuned = 0;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2049,6 +2167,9 @@ main(void) {
     assert(g_forget_codes_calls == 1 && g_forget_code_values_calls == 1);
     assert(state->receive_codes_fresh_freq == 853012500);
     opts->receive.filters[DSD_RECEIVE_NAC].enabled = 0;
+
+    check_rxid_watchdog_tunes(opts, state);
+    check_rxid_decoder_tunes(opts, state);
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */

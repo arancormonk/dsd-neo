@@ -11,12 +11,14 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/time_format.h>
@@ -175,6 +177,7 @@ dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], 
         uint8_t cc = (uint8_t)((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
         power = emb_pdu[4];
         state->dmr_color_code = state->color_code = cc;
+        dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, cc);
     }
     return power;
 }
@@ -392,8 +395,9 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18, 0);
         dmr_ms_collect_sync_bits(opts, state, syncdata, vc, internalslot);
         /* The EMB decodes as soon as it is read, before the check below: one an input interruption cut is erasures,
-           and all-zero bits are a valid QR(16,7,6) codeword, so it would publish colour code 0. */
-        if (state->input_interrupted) {
+           and all-zero bits are a valid QR(16,7,6) codeword, so it would publish colour code 0; one the carrier boundary
+           split is half another carrier's, and its colour code would be noted as the new carrier's. */
+        if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }
         voice_syncs_after_a = dmr_ms_sync_is_voice(syncdata) ? voice_syncs_after_a + 1 : 0;

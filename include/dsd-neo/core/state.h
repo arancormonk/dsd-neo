@@ -30,6 +30,7 @@
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/tetra_publication.h>
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -911,6 +912,9 @@ struct dsd_state {
     /* Symbols the grid produced, on every input path, since the state was set up. Unlike symbolcnt no protocol resets
        it, so a DMR slot measures elapsed superframes on it (issue #729). Only DSP advances it. */
     uint64_t symbol_clock;
+    /* 1 while getSymbol() reads a symbol's samples: a carrier change that runs then (an I/Q replay retune) splits that
+       symbol between the two carriers (dsd_state_note_carrier_change()). */
+    uint8_t symbol_read_active;
     /* Bumped whenever symbol_clock stops describing one continuous received stream: an RTL stream flush or an input
        switch (DSP bumps it) or a scan target change (the engine does). Carrier changes are compared on carrier_seq. A
        span measured across two epochs is no span. */
@@ -1164,7 +1168,7 @@ struct dsd_state {
     unsigned int dmr_t3_syscode;
     unsigned int nxdn_last_ran;
     /* 1 while nxdn_last_ran holds a value that is not a decoded RAN, which the terminal shows in its place: an IDAS
-     * (Type-D) carrier's SCCH area bit or site type, or the fixed 7 a DCR transmission is given. 0 once a RAN field
+     * (Type-D) carrier's SCCH area bit, or the fixed 7 a DCR transmission is given. 0 once a RAN field
      * (CAC, FACCH2/UDCH, SACCH, site information) writes it. Every write of a value sets it (the (unsigned)-1 resets
      * need not), and only a RAN is read as the carrier's access code (issue #575). */
     uint8_t nxdn_last_ran_stand_in;
@@ -1841,6 +1845,12 @@ struct dsd_state {
        and drops what it buffered, as on a sync loss, when it moved meanwhile: those bursts belong to the carrier left.
        It drops them as well when an input interruption cut them (dsd_state_frame_read_lost()). */
     uint32_t carrier_seq;
+    /* The symbol_clock of the last symbol not wholly the new carrier's when the receiver last left a carrier
+       (dsd_state_note_carrier_change(): a carrier boundary or a trunk-scan target switch; one more than the clock when
+       the change split the symbol being read), valid once carrier_change_seen is set. What the frame sync's history and the
+       decoders' rolling buffers hold from before it is the carrier left's (dsd_state_carrier_settling()). */
+    uint64_t carrier_change_symbol_clock;
+    uint8_t carrier_change_seen;
     /* The frame processFrame() is dispatching (issue #661): its synctype, which a decoder borrowing another protocol's
        vocoder (YSF, scrambled dPMR) leaves alone while it changes synctype, and carrier_seq when dispatch began.
        frame_dispatch_active is 0 outside a dispatch. MBE capture attributes a frame to this protocol, and refuses one
@@ -1913,6 +1923,10 @@ struct dsd_state {
     int nxdn_sf;
     uint8_t
         nxdn_sacch_non_superframe; //flag to indicate whether or not a sacch is a part of a superframe, or an individual piece
+    /* The channel the NXDN frame being decoded is on, from its LICH (nxdn_frame(), one of nxdn_frame_channel in
+     * <dsd-neo/protocol/nxdn/nxdn.h>), set only while that frame's channels decode: element parsers whose layout or
+     * meaning depends on the channel read it, never anything retained from an earlier frame. */
+    uint8_t nxdn_frame_channel;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
     uint8_t nxdn_alias_block_number;
@@ -1927,6 +1941,12 @@ struct dsd_state {
     char nxdn_location_category[14];
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;
+    /* An IDAS (Type-D) site's identity, kept apart from the Type-C location ID above, whose categories it does not
+     * share (NXDN TS 1-E §6.6.2, §6.6.5): the 19-bit System ID of a Type-D SRV_INFO, and the 8-bit Site Code (1-250)
+     * of that message or of an SCCH site ID message. 0 is "not received" for both (System ID 0 is the null ID, Site
+     * Code 0 is reserved). Written only from confirmed content. */
+    uint32_t nxdn_idas_system_id;
+    uint8_t nxdn_idas_site_code;
 
     //channel access information
     uint8_t nxdn_rcn;
@@ -2218,9 +2238,19 @@ struct dsd_state {
     /* What the TETRA decoder shows every frontend (dsd_tetra_publication), copied from its private state extension at
        the end of each burst. Rides the vertex_ks_count..ui_msg range. */
     dsd_tetra_publication tetra_pub;
+    /* The system identity received on the carrier being decoded (<dsd-neo/core/received_identity.h>), which every
+       frontend shows in place of decoder state that seeds, presets and other carriers also write. Decoder-thread
+       owned; rides the vertex_ks_count..ui_msg range. */
+    dsd_received_identity rx_id;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
+    /* 1 while an accepted trunking retune's drop of the access code waits for the decoder thread to apply it to rx_id
+       (dsd_rxid_request_trunk_tune(), dsd_rxid_apply_trunk_tune()): the P25 watchdog's retunes run on its thread.
+       One the decoder thread makes never waits. Written and read under the P25 SM tick guard, or on the decoder
+       thread where no watchdog tick runs; outside every snapshot copy range (ui_snapshot.c pins it), so no frontend
+       copy reads it. */
+    uint8_t rx_id_trunk_tune_pending;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];
@@ -2248,6 +2278,27 @@ struct dsd_state {
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
+
+/* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
+   input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
+   (an I/Q replay retune) splits that symbol, which counts as the carrier left's. */
+static inline void
+dsd_state_note_carrier_change(dsd_state* state) {
+    state->carrier_change_symbol_clock = state->symbol_clock + (state->symbol_read_active != 0U ? 1U : 0U);
+    state->carrier_change_seen = 1U;
+}
+
+/* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word
+   and what a decoder takes from the hunt's history or a rolling buffer before it) may hold a symbol of the carrier left:
+   fewer than @p lookback whole symbols of the new carrier have been read. */
+static inline int
+dsd_state_carrier_settling(const dsd_state* state, uint64_t lookback) {
+    if (state->carrier_change_seen == 0U) {
+        return 0;
+    }
+    const uint64_t last_left = state->carrier_change_symbol_clock;
+    return (state->symbol_clock < last_left || state->symbol_clock - last_left < lookback) ? 1 : 0;
 }
 
 static inline int

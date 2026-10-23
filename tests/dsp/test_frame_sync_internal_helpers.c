@@ -158,6 +158,38 @@ test_tetra_uplink_control_burst_is_not_a_normal_burst(void) {
     free(opts);
 }
 
+/* After a carrier change each TETRA burst waits only for what it reads back: a synchronisation burst its 79 symbols
+   (block 1 and the training), a downlink normal burst block 1, AACH half 1 and the training (126). A synchronisation
+   burst wholly the new carrier's is taken; a normal burst whose block 1 reaches before the change is not. */
+static void
+test_tetra_bursts_wait_for_their_own_look_back(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->frame_tetra = 1;
+    char stream[160];
+    uint32_t seed = 11u;
+    state->carrier_change_seen = 1U;
+    state->carrier_change_symbol_clock = 1000U;
+
+    tetra_data_dibits(stream, 60, &seed);
+    DSD_MEMCPY(stream + 60, TETRA_SB_SSB_SYNC, 19);
+    state->symbol_clock = 1000U + 78U;
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 79) == DSD_SYNC_NONE);
+    state->symbol_clock = 1000U + 79U;
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 79) == DSD_SYNC_TETRA_SB_POS);
+
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    tetra_data_dibits(stream, 125, &seed);
+    DSD_MEMCPY(stream + 125, TETRA_NDB_NTS_SYNC, 11);
+    state->symbol_clock = 1000U + 125U;
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 136) == DSD_SYNC_NONE);
+    state->symbol_clock = 1000U + 126U;
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 136) == DSD_SYNC_TETRA_NDB_POS);
+    free(state);
+    free(opts);
+}
+
 static int g_vc_sync_hook_calls;
 static int g_vc_no_sync_hook_calls;
 static int g_release_hook_calls;
@@ -3496,6 +3528,7 @@ main(void) {
     test_tetra_soft_history_capture();
     test_tetra_inverted_sync_patterns_flip_only_dibit_msb();
     test_tetra_uplink_control_burst_is_not_a_normal_burst();
+    test_tetra_bursts_wait_for_their_own_look_back();
     test_scan_class_matchers_and_no_sync();
     test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();

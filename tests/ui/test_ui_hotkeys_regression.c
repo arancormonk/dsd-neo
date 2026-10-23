@@ -7,11 +7,14 @@
  * Regression coverage for ncurses hotkeys:
  *  - 'h' (event history cycle) must work without queue drain latency.
  *  - 'k'/'l' (TG hold) must capture slot TG deterministically at keypress time.
+ *  - ','/'.' (spectrum FFT size) must work in a radio build without librtlsdr
+ *    (SoapySDR or Airspy only), so the handler is compiled with USE_RADIO alone.
  */
 
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -24,6 +27,13 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef USE_RTLSDR
+#error "This test must compile the hotkey handler with USE_RADIO only."
+#endif
+#ifndef USE_RADIO
+#error "This test must compile the hotkey handler with USE_RADIO."
+#endif
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -106,6 +116,13 @@ dsd_app_command_set_u32(int cmd_id, uint32_t value) { // NOLINT(misc-use-interna
 int
 dsd_app_command_set_float(int cmd_id, float value) { // NOLINT(misc-use-internal-linkage)
     return capture_command(cmd_id, &value, sizeof value);
+}
+
+int
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->spectrum_size = 256;
+    return 0;
 }
 
 void
@@ -410,6 +427,19 @@ main(void) {
     assert(dsd_terminal_handle_input(opts, state, DSD_KEY_PROVOICE_MODE) == 1);
     assert(g_cap.calls == 1);
     assert(g_cap.id == DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+
+    /* The spectrum FFT size keys halve and double the running size on every radio backend. */
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SPEC_DEC) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_SPEC_SIZE_DELTA);
+    assert(cap_i32() == -128);
+
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SPEC_INC) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_SPEC_SIZE_DELTA);
+    assert(cap_i32() == 256);
 
     /* Unknown keys are still consumed but do not enqueue command work. */
     cap_reset();

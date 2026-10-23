@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Window
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 // Tap-to-tune is the one thing on this screen that moves hardware, and the two
 // ways it can be wrong are both invisible to a C++ model test: a tap could map
@@ -63,6 +64,35 @@ Item {
             var readout = findChild(screenLoader.item, "spectrumCenterReadout")
             verify(readout !== null, "the frequency readout is missing")
             compare(readout.text, (spectrum.centerFreqHz / 1.0e6).toFixed(4) + " MHz")
+        }
+
+        // The readout is never elided, so at large text on a narrow phone the
+        // status pill has to make room rather than sit on top of the digits.
+        function test_01b_the_status_pill_never_covers_the_readout() {
+            var screen = screenLoader.item
+            var readout = findChild(screen, "spectrumCenterReadout")
+            var pill = findChild(screen, "spectrumStatusPill")
+            var widths = [360, 420]
+            var scales = [1.0, 1.3, 1.6]
+            for (var w = 0; w < widths.length; w++) {
+                root.width = widths[w]
+                for (var s = 0; s < scales.length; s++) {
+                    Ui.Theme.fontScale = scales[s]
+                    // The strip's rows move over more than one polish pass after a
+                    // width or text-size change: judge the layout once it settles.
+                    tryVerify(function () {
+                        var r = readout.mapToItem(screen, 0, 0)
+                        var p = pill.mapToItem(screen, 0, 0)
+                        return r.x + readout.width <= p.x || p.y >= r.y + readout.height
+                    }, 2000, "the pill covers the readout at " + widths[w] + " px, scale " + scales[s])
+                    var r = readout.mapToItem(screen, 0, 0)
+                    var p = pill.mapToItem(screen, 0, 0)
+                    verify(p.x + pill.width <= screen.width, "the pill runs off screen at " + widths[w] + " px, scale " + scales[s])
+                    verify(r.x + readout.width <= screen.width, "the readout runs off screen")
+                }
+            }
+            root.width = 420
+            Ui.Theme.resetFontScale()
         }
 
         // A fingertip is far wider than a channel, so a tap that lands near a
@@ -740,6 +770,180 @@ Item {
 
             testContext.setMetric("cfoHz",0.0)
             testContext.setMetric("syncedHere",false)
+        }
+
+        function setIdentity(protocol, tokens, text, live) {
+            testContext.setMetric("carrierIdentityProtocol", protocol)
+            testContext.setMetric("carrierIdentityTokens", tokens)
+            testContext.setMetric("carrierIdentityText", text)
+            testContext.setMetric("carrierIdentityLive", live)
+        }
+
+        function clearIdentity() {
+            tc.setIdentity("", [], "", false)
+            testContext.setMetric("syncedHere", false)
+            testContext.setMetric("syncLabel", "")
+            testContext.setMetric("radioInput", true)
+            testContext.setMetric("slot1CallState", 0)
+            testContext.setMetric("slot1TgText", "")
+            testContext.setMetric("cfoHz", 0.0)
+            root.width = 420
+            Ui.Theme.resetFontScale()
+        }
+
+        // The right edge of an item, in the strip's coordinates.
+        function rightIn(strip, item) {
+            return item.mapToItem(strip, item.width, 0).x
+        }
+
+        // Discovering systems means telling one site from the next: the colour
+        // code, NAC or RAN the carrier sent goes on the line under the lock.
+        function test_17c_the_strip_names_the_system_on_this_carrier() {
+            var screen = screenLoader.item
+            var identity = findChild(screen, "spectrumIdentityLabel")
+            verify(identity !== null, "the identity line is missing")
+            tc.clearIdentity()
+            compare(identity.text, "", "a carrier with no identity showed one")
+
+            testContext.setMetric("syncLabel", "DMR")
+            testContext.setMetric("syncedHere", true)
+            tc.setIdentity("DMR", ["CC 1", "Rest LSN 3"], "DMR · CC 1 · Rest LSN 3 · Capacity Plus", true)
+            tryVerify(function () { return identity.text === "CC 1 · Rest LSN 3" }, 2000,
+                      "a live identity was not shown under its lock: " + identity.text)
+            compare(identity.color, Ui.Theme.textPrimary)
+            verify(identity.Accessible.name.indexOf("CC 1") >= 0, "the identity has no accessible name")
+            verify(identity.Accessible.name.indexOf("last heard") < 0)
+
+            // Lost: what was last heard here, dimmed and named, since line 1 no
+            // longer says which protocol it belongs to.
+            testContext.setMetric("syncedHere", false)
+            tryVerify(function () { return identity.text === "DMR · CC 1 · Rest LSN 3" }, 2000,
+                      "a retained identity did not name its protocol: " + identity.text)
+            compare(identity.color, Ui.Theme.textSubdued)
+            verify(identity.Accessible.name.indexOf("last heard") >= 0, "a retained identity read as live")
+
+            // A sync hold naming another protocol is the same case.
+            testContext.setMetric("syncLabel", "YSF")
+            testContext.setMetric("syncedHere", true)
+            tc.setIdentity("DMR", ["CC 1", "Rest LSN 3"], "DMR · CC 1 · Rest LSN 3", false)
+            tryVerify(function () { return identity.text === "DMR · CC 1 · Rest LSN 3" }, 2000,
+                      "an identity was attributed to the protocol on line 1")
+            tc.clearIdentity()
+        }
+
+        // Whole tokens or none: "SYS" cut from its value is worse than no "SYS".
+        function test_17d_a_narrow_strip_drops_whole_tokens() {
+            var screen = screenLoader.item
+            var identity = findChild(screen, "spectrumIdentityLabel")
+            var lines = findChild(screen, "spectrumStatusLines")
+            var tokens = ["NAC 293", "SYS 348", "RFSS 3", "SITE 21", "WACN BEE00"]
+            tc.clearIdentity()
+            testContext.setMetric("syncLabel", "P25")
+            testContext.setMetric("syncedHere", true)
+            tc.setIdentity("P25", tokens, "P25 · NAC 293 · SYS 348 · RFSS 3 · SITE 21 · WACN BEE00", true)
+
+            var widths = [420, 360, 300, 240]
+            for (var w = 0; w < widths.length; w++) {
+                root.width = widths[w]
+                tryVerify(function () { return identity.text.length > 0 })
+                wait(0)
+                var text = identity.text
+                var cut = text.length > 2 && text.slice(-2) === " …"
+                var shown = (cut ? text.slice(0, -2) : text).split(" · ")
+                for (var i = 0; i < shown.length; i++)
+                    compare(shown[i], tokens[i], "token " + i + " was cut at " + widths[w] + " px: " + text)
+                compare(cut, shown.length < tokens.length, "an ellipsis disagrees with what was dropped: " + text)
+                verify(identity.implicitWidth <= lines.width + 0.5,
+                       "the line overflows at " + widths[w] + " px: " + identity.implicitWidth + " > " + lines.width)
+                verify(!identity.truncated, "the Text elided a token at " + widths[w] + " px")
+            }
+            verify(identity.text.slice(-2) === " …", "the narrowest strip kept every token")
+            tc.clearIdentity()
+        }
+
+        // The ellipsis needs room too: a first token that fits only without it
+        // is shown alone rather than handed to the Text to cut.
+        function test_17d2_the_ellipsis_never_cuts_a_token_that_fits() {
+            var fm = { advanceWidth: function (s) { return s.length * 10 } }
+            var tokens = ["SITE 255 [FF]", "SYS 3"]
+            compare(Util.fitTokens(tokens, 135, fm, " · ", " …"), "SITE 255 [FF]")
+            compare(Util.fitTokens(tokens, 150, fm, " · ", " …"), "SITE 255 [FF] …")
+            compare(Util.fitTokens(tokens, 210, fm, " · ", " …"), "SITE 255 [FF] · SYS 3")
+            // Wider than the line on its own: the Text elides it.
+            compare(Util.fitTokens(tokens, 100, fm, " · ", " …"), "SITE 255 [FF] …")
+            compare(Util.fitTokens([], 100, fm, " · ", " …"), "")
+        }
+
+        // Both lines end where the Radio button begins; with no button, at the
+        // strip's edge. The talkgroup gives way first, then the offset.
+        function test_17e_both_lines_stay_clear_of_the_radio_button() {
+            var screen = screenLoader.item
+            var strip = findChild(screen, "spectrumStatusStrip")
+            var lines = findChild(screen, "spectrumStatusLines")
+            var button = findChild(screen, "spectrumRadioButton")
+            var call = findChild(screen, "spectrumCallLabel")
+            var cfo = findChild(screen, "spectrumCfoLabel")
+            var identity = findChild(screen, "spectrumIdentityLabel")
+            tc.clearIdentity()
+            testContext.setMetric("syncLabel", "P25")
+            testContext.setMetric("syncedHere", true)
+            testContext.setMetric("cfoHz", -900.0)
+            testContext.setMetric("slot1TgText", "Fire Dispatch North Mutual Aid 3")
+            testContext.setMetric("slot1CallState", 2)
+            tc.setIdentity("P25", ["NAC 293", "SYS 348", "RFSS 3", "SITE 21", "WACN BEE00"], "P25 · NAC 293", true)
+
+            var widths = [420, 360]
+            for (var w = 0; w < widths.length; w++) {
+                root.width = widths[w]
+                tryVerify(function () { return button.visible && call.visible })
+                wait(0)
+                var edge = button.mapToItem(strip, 0, 0).x
+                verify(tc.rightIn(strip, lines) <= edge, "the lines run under the button at " + widths[w] + " px")
+                verify(tc.rightIn(strip, call) <= tc.rightIn(strip, lines) + 0.5,
+                       "the talkgroup overflows at " + widths[w] + " px")
+                verify(call.truncated || call.width >= call.implicitWidth, "the talkgroup neither fits nor elides")
+                if (cfo.visible)
+                    verify(tc.rightIn(strip, cfo) <= tc.rightIn(strip, lines) + 0.5)
+                verify(identity.implicitWidth <= lines.width + 0.5)
+            }
+
+            testContext.setMetric("radioInput", false)
+            tryVerify(function () { return !button.visible })
+            verify(Math.abs(tc.rightIn(strip, lines) - strip.width) < 0.5, "without the button the lines stopped short")
+            tc.clearIdentity()
+        }
+
+        // Large text grows the strip instead of overlapping the waterfall, and
+        // the first line stays put whether or not the second has anything to say.
+        function test_17f_large_text_grows_the_strip_and_line_one_holds_still() {
+            var screen = screenLoader.item
+            var strip = findChild(screen, "spectrumStatusStrip")
+            var lines = findChild(screen, "spectrumStatusLines")
+            var sync = findChild(screen, "spectrumSyncLabel")
+            var area = findChild(screen, "spectrumTapArea")
+            var button = findChild(screen, "spectrumRadioButton")
+            tc.clearIdentity()
+            testContext.setMetric("syncLabel", "DMR")
+            testContext.setMetric("syncedHere", true)
+            wait(0)
+            var height = strip.height
+            compare(height, button.height, "the strip grew at the default text size")
+            var before = sync.mapToItem(strip, 0, 0).y
+
+            tc.setIdentity("DMR", ["CC 1", "Rest LSN 3"], "DMR · CC 1 · Rest LSN 3", true)
+            tryVerify(function () { return findChild(screen, "spectrumIdentityLabel").text.length > 0 })
+            wait(0)
+            compare(strip.height, height, "an identity changed the strip's height")
+            compare(sync.mapToItem(strip, 0, 0).y, before, "line 1 moved when line 2 filled")
+
+            var scales = [1.3, 1.6]
+            for (var s = 0; s < scales.length; s++) {
+                Ui.Theme.fontScale = scales[s]
+                wait(0)
+                verify(strip.height >= lines.implicitHeight, "two lines do not fit at " + scales[s])
+                verify(area.mapToItem(strip, 0, 0).y >= lines.implicitHeight, "the waterfall overlaps the lines at " + scales[s])
+            }
+            tc.clearIdentity()
         }
 
         // Gain, squelch, modulation and decode are what decide whether a signal

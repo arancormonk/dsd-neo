@@ -25,12 +25,24 @@ Item {
             testContext.setMetric("dmrColorCode", -1);
             testContext.setMetric("dmrSiteText", "");
             testContext.setMetric("dmrRestLsn", 0);
+            testContext.setMetric("dmrXptFreeLcn", -1);
             testContext.setMetric("ccFreqHz", 0);
             testContext.setMetric("vcFreqHz", 0);
             testContext.setMetric("nxdnRan", -1);
             testContext.setMetric("nxdnSiteCode", 0);
             testContext.setMetric("nxdnSysCode", 0);
             testContext.setMetric("edacsSiteText", "");
+            testContext.setMetric("edacsSystem", -1);
+            testContext.setMetric("edacsArea", -1);
+            testContext.setMetric("edacsCcLcn", -1);
+            testContext.setMetric("dmrBrand", "");
+            testContext.setMetric("dmrT3Syscode", -1);
+            testContext.setMetric("siteAccessCode", -1);
+            testContext.setMetric("tetraSiteMcc", -1);
+            testContext.setMetric("tetraSiteMnc", -1);
+            testContext.setMetric("tetraSiteLa", -1);
+            testContext.setMetric("p25Phase2Seed", "");
+            testContext.setMetric("p25Phase2SeedSet", false);
             Ui.Theme.resetFontScale();
             root.width = 411;
             root.height = 700;
@@ -71,6 +83,25 @@ Item {
             tryCompare(row, "visible", false);
             tryCompare(item("siteSheet"), "visible", false);
         }
+        // The Phase 2 seed is configuration, apart from the NAC the carrier sent: "(set)" when set by hand.
+        function test_phase2_seed_row() {
+            testContext.setMetric("siteProtocol", "P25");
+            testContext.setMetric("siteLine", "P25 · NAC 2A1");
+            testContext.setMetric("p25NacValid", true);
+            testContext.setMetric("p25Nac", 0x2A1);
+            item("siteSheet").visible = true;
+            tryCompare(item("siteNac"), "visible", true);
+            compare(item("siteNac").text, "2A1");
+            verify(!item("sitePhase2Seed").visible);
+            testContext.setMetric("p25Phase2Seed", "BEE00.348.293");
+            testContext.setMetric("p25Phase2SeedSet", true);
+            tryCompare(item("sitePhase2Seed"), "visible", true);
+            compare(item("sitePhase2Seed").text, "BEE00.348.293 (set)");
+            testContext.setMetric("p25Phase2SeedSet", false);
+            tryCompare(item("sitePhase2Seed"), "text", "BEE00.348.293");
+            compare(item("siteNac").text, "2A1");
+            item("siteSheet").visible = false;
+        }
         function test_protocol_grids_and_frequencies() {
             testContext.setMetric("siteLine", "DMR · CC 7");
             testContext.setMetric("siteProtocol", "DMR");
@@ -86,6 +117,11 @@ Item {
             compare(item("siteDmrText").textFormat, Text.PlainText);
             compare(item("siteCcFreq").text, "851.012500 MHz");
             compare(item("siteVcFreq").text, "852.000000 MHz");
+            // A Hytera XPT site's free channel, 0 included, once received.
+            verify(!item("siteDmrXptFree").visible);
+            testContext.setMetric("dmrXptFreeLcn", 0);
+            tryCompare(item("siteDmrXptFree"), "visible", true);
+            compare(item("siteDmrXptFree").text, "0");
             testContext.setMetric("siteProtocol", "IDAS");
             testContext.setMetric("nxdnRan", -1);
             verify(!item("siteDmrColor").visible);
@@ -96,10 +132,69 @@ Item {
             tryCompare(item("siteRan"), "visible", true);
             compare(item("siteRan").text, "0");
             compare(item("siteNxdnSys").text, "12");
+            // An SCCH site ID message names an IDAS site's code without its System ID.
+            testContext.setMetric("nxdnSysCode", 0);
+            tryCompare(item("siteNxdnSys"), "visible", false);
+            verify(item("siteNxdnSite").visible);
             testContext.setMetric("siteProtocol", "EDACS");
             testContext.setMetric("edacsSiteText", "SITE 007 [07]");
             tryCompare(item("siteEdacs"), "visible", true);
             compare(item("siteEdacs").text, "SITE 007 [07]");
+        }
+        // Every protocol whose site row opens the sheet shows there what the carrier sent: dPMR's colour code, M17's
+        // CAN, TETRA's network, colour code and location area, and the parts of a DMR or EDACS site with no site text.
+        function test_access_tetra_and_part_rows() {
+            testContext.setMetric("siteProtocol", "M17");
+            testContext.setMetric("siteLine", "M17 · CAN 3");
+            testContext.setMetric("siteAccessCode", 3);
+            item("siteSheet").visible = true;
+            tryCompare(item("siteAccess"), "visible", true);
+            compare(item("siteAccess").text, "3");
+            compare(item("siteAccess").parent.children[0].text, "CAN");
+            testContext.setMetric("siteProtocol", "dPMR");
+            testContext.setMetric("siteLine", "dPMR · CC 0");
+            testContext.setMetric("siteAccessCode", 0);
+            tryCompare(item("siteAccess"), "text", "0");
+            compare(item("siteAccess").parent.children[0].text, "Color code");
+            verify(item("siteAccess").visible);
+            testContext.setMetric("siteAccessCode", -1);
+            tryCompare(item("siteAccess"), "visible", false);
+
+            testContext.setMetric("siteProtocol", "TETRA");
+            testContext.setMetric("siteLine", "TETRA · MCC 262 · MNC 1001 · CC 25 · LA 4242");
+            testContext.setMetric("tetraSiteMcc", 262);
+            testContext.setMetric("tetraSiteMnc", 1001);
+            testContext.setMetric("siteAccessCode", 25);
+            testContext.setMetric("tetraSiteLa", 4242);
+            tryCompare(item("siteTetraMcc"), "visible", true);
+            verify(!item("siteAccess").visible);
+            compare(item("siteTetraMcc").text, "262");
+            compare(item("siteTetraMnc").text, "1001");
+            compare(item("siteTetraColor").text, "25");
+            compare(item("siteTetraLa").text, "4242");
+            testContext.setMetric("tetraSiteLa", -1);
+            tryCompare(item("siteTetraLa"), "visible", false);
+
+            testContext.setMetric("siteProtocol", "DMR");
+            testContext.setMetric("siteLine", "DMR · Hytera XPT · SYS 0A3F");
+            testContext.setMetric("dmrBrand", "Hytera XPT");
+            testContext.setMetric("dmrT3Syscode", 0x0A3F);
+            tryCompare(item("siteDmrBrand"), "visible", true);
+            verify(!item("siteTetraMcc").visible);
+            compare(item("siteDmrBrand").text, "Hytera XPT");
+            compare(item("siteDmrSyscode").text, "0A3F");
+
+            testContext.setMetric("siteProtocol", "EDACS");
+            testContext.setMetric("siteLine", "EDACS · SYS 3 · Area 0 · CC LCN 12");
+            testContext.setMetric("edacsSystem", 3);
+            testContext.setMetric("edacsArea", 0);
+            testContext.setMetric("edacsCcLcn", 12);
+            tryCompare(item("siteEdacsSystem"), "visible", true);
+            verify(!item("siteEdacs").visible);
+            compare(item("siteEdacsSystem").text, "3");
+            compare(item("siteEdacsArea").text, "0");
+            compare(item("siteEdacsCcLcn").text, "12");
+            item("siteSheet").visible = false;
         }
         function test_compact_site_reachable() {
             root.width = 320;

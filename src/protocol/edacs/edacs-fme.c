@@ -34,6 +34,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1447,6 +1448,14 @@ edacs_handle_extended_mt2_system_info(const dsd_opts* opts, dsd_state* state, un
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " System Information");
     if (lcn != 0) {
+        /* Every caller holds a frame both of whose messages re-derived their BCH (edacs_process_valid_frame()): the
+           received identity takes the system and the control channel's LCN, and this carrier as that control
+           channel, before anything here retunes. */
+        if (system != 0) {
+            dsd_rxid_note_edacs_system(state, (uint16_t)system);
+        }
+        dsd_rxid_note_edacs_cc_lcn(state, (uint16_t)lcn);
+        dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_EDACS, dsd_opts_tuned_freq_hz(opts));
         state->edacs_cc_lcn = lcn;
         edacs_update_lcn_count(state, lcn);
         DSD_FPRINTF(stderr, " :: System ID [%04X] CC LCN [%02d]%s", system, state->edacs_cc_lcn,
@@ -1473,6 +1482,8 @@ edacs_handle_extended_mt2_site_id(dsd_state* state, unsigned long long int msg_1
     DSD_FPRINTF(stderr, "%s", KNRM);
     state->edacs_site_id = site_id;
     state->edacs_area_code = area;
+    dsd_rxid_note_edacs_site(state, (uint16_t)site_id);
+    dsd_rxid_note_edacs_area(state, (uint16_t)area);
 }
 
 static void
@@ -2293,8 +2304,13 @@ edacs_handle_standard_mt_d_site_id(const dsd_opts* opts, dsd_state* state, unsig
 
     state->edacs_site_id = site_id;
     edacs_update_lcn_count(state, cc_lcn);
+    /* The received identity: the site, with the control channel's LCN and this carrier as that control channel unless
+       the message names an auxiliary one, before anything here retunes. */
+    dsd_rxid_note_edacs_site(state, (uint16_t)site_id);
 
     if (is_auxiliary == 0) {
+        dsd_rxid_note_edacs_cc_lcn(state, (uint16_t)cc_lcn);
+        dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_EDACS, dsd_opts_tuned_freq_hz(opts));
         state->edacs_cc_lcn = cc_lcn;
         edacs_capture_current_lcn_frequency(opts, state, cc_lcn);
         edacs_update_trunk_cc_frequency(opts, state, cc_lcn);

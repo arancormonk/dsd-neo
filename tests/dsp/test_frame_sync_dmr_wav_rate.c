@@ -9,6 +9,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -23,6 +24,11 @@
 
 static size_t g_symbol_index;
 static const char* g_sync_pattern = DMR_BS_DATA_SYNC;
+/* The symbol a carrier boundary runs at, SIZE_MAX for none: inside its read (an I/Q replay retune, which the real
+   reader runs while that symbol's samples are read, so the symbol straddles the two carriers), or, with
+   g_boundary_between, just before its read (an input switch or a menu tune the engine runs between reads). */
+static size_t g_boundary_at = SIZE_MAX;
+static int g_boundary_between;
 
 static float
 symbol_level_for_dibit(char dibit) {
@@ -34,12 +40,18 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     (void)opts;
     (void)have_sync;
 
+    if (g_symbol_index == g_boundary_at) {
+        state->symbol_read_active = g_boundary_between ? 0U : 1U;
+        dsd_state_note_carrier_change(state);
+        state->symbol_read_active = 0U;
+    }
     const size_t pattern_len = strlen(g_sync_pattern);
     char dibit = (g_symbol_index < pattern_len) ? g_sync_pattern[g_symbol_index] : '1';
     g_symbol_index++;
 
     float symbol = symbol_level_for_dibit(dibit);
     dsd_symbol_history_push(state, symbol);
+    state->symbol_clock++;
     return symbol;
 }
 
@@ -551,6 +563,95 @@ run_nxdn_sync_confirmation_matrix(void) {
     return rc;
 }
 
+/* A carrier boundary while the hunt reads (an I/Q replay retune inside getSymbol()): a sync word that ends soon after
+   it heads a frame whose decoder reads back from before the sync (DMR's 66 buffered dibits, X2-TDMA's 144, TETRA's
+   block 1) what the carrier left sent, so such a sync is held until everything that protocol reads back is the new
+   carrier's; the next one is taken. A protocol that reads nothing before its sync (P25 Phase 1) takes a sync word of
+   the new carrier at once: holding it would lose the frame (an HDU's call and encryption metadata). */
+static int
+run_boundary_sync(const char* label, const char* sync, int expected_sync, int profile_index, size_t lead_fill,
+                  size_t boundary_at, size_t want_at) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char pattern[160 + 24 + 200 + 24 + 1];
+    const size_t sync_len = strlen(sync);
+    DSD_MEMSET(pattern, '1', lead_fill);
+    DSD_MEMCPY(pattern + lead_fill, sync, sync_len);
+    DSD_MEMSET(pattern + lead_fill + sync_len, '1', 200U);
+    DSD_MEMCPY(pattern + lead_fill + sync_len + 200U, sync, sync_len);
+    pattern[lead_fill + (2U * sync_len) + 200U] = '\0';
+
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate frame-sync state buffers\n");
+        return 1;
+    }
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = 0;
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_dpmr = opts.frame_provoice = 0;
+    opts.frame_ysf = opts.frame_m17 = 0;
+    if (DSD_SYNC_IS_DMR(expected_sync)) {
+        opts.frame_dmr = 1;
+    } else if (DSD_SYNC_IS_P25P1(expected_sync)) {
+        opts.frame_p25p1 = 1;
+    } else {
+        opts.frame_x2tdma = 1;
+    }
+    state.sps_hunt_idx = profile_index;
+    set_profile_timing(&opts, &state, profile_index);
+    g_symbol_index = 0U;
+    g_sync_pattern = pattern;
+    g_boundary_at = boundary_at;
+    dsd_frame_sync_reset_mod_state();
+
+    const int got = getFrameSync(&opts, &state);
+    int rc = 0;
+    if (got != expected_sync || g_symbol_index != want_at) {
+        DSD_FPRINTF(stderr, "%s: sync %d after %zu symbols, expected %d after %zu\n", label, got, g_symbol_index,
+                    expected_sync, want_at);
+        rc = 1;
+    }
+    free_state_buffers(&state);
+    g_boundary_at = SIZE_MAX;
+    return rc;
+}
+
+static int
+run_sync_after_carrier_boundary_case(void) {
+    int rc = 0;
+    rc |= run_boundary_sync("dmr, no boundary", DMR_BS_DATA_SYNC, DSD_SYNC_DMR_BS_DATA_POS, 0, 0U, SIZE_MAX, 24U);
+    rc |= run_boundary_sync("dmr, boundary inside the first sync", DMR_BS_DATA_SYNC, DSD_SYNC_DMR_BS_DATA_POS, 0, 0U,
+                            10U, 248U);
+    rc |= run_boundary_sync("p25 phase 1 right after a boundary", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0, 32U, 30U, 56U);
+    /* At the exact edge: a sync word whose 24 symbols all follow a change between reads is taken; one whose first
+       symbol was being read when the change ran is not (the next is), and one that starts on the symbol after is. */
+    g_boundary_between = 1;
+    rc |= run_boundary_sync("p25 sync right after a change between reads", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0, 30U, 30U,
+                            54U);
+    g_boundary_between = 0;
+    rc |= run_boundary_sync("p25 sync from the symbol a change ran inside", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0, 30U, 30U,
+                            278U);
+    rc |= run_boundary_sync("p25 sync right after the symbol a change ran inside", P25P1_SYNC, DSD_SYNC_P25P1_POS, 0,
+                            30U, 29U, 54U);
+    rc |= run_boundary_sync("x2-tdma right after a boundary", X2TDMA_BS_DATA_SYNC, DSD_SYNC_X2TDMA_DATA_POS, 3, 32U,
+                            30U, 280U);
+    /* Each burst by what its own decoder reads back: an X2-TDMA data burst 90 dibits, a voice burst 144. A data sync
+       whose 90 are all the new carrier's is taken; a voice sync there is not (the next is). */
+    g_boundary_between = 1;
+    rc |= run_boundary_sync("x2-tdma data after 90 new symbols", X2TDMA_BS_DATA_SYNC, DSD_SYNC_X2TDMA_DATA_POS, 3, 100U,
+                            34U, 124U);
+    rc |= run_boundary_sync("x2-tdma voice after 90 new symbols", X2TDMA_BS_VOICE_SYNC, DSD_SYNC_X2TDMA_VOICE_POS, 3,
+                            100U, 34U, 348U);
+    g_boundary_between = 0;
+    /* NXDN reads its frame forward from its 10-symbol sync word: one wholly the new carrier's is taken at once (its
+       first sighting stages it). */
+    g_boundary_at = 0U;
+    g_boundary_between = 1;
+    rc |= run_nxdn_two_pass_case("NXDN48 sync right after a change", NXDN_FSW, 1, 0, DSD_SYNC_NXDN_POS);
+    g_boundary_at = SIZE_MAX;
+    g_boundary_between = 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -559,6 +660,7 @@ main(void) {
     rc |= run_wav_protocol_sync_matrix();
     rc |= run_wav_protocol_extended_sync_matrix();
     rc |= run_nxdn_sync_confirmation_matrix();
+    rc |= run_sync_after_carrier_boundary_case();
     return rc;
 }
 

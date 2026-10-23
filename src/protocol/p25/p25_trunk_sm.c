@@ -14,6 +14,7 @@
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -350,6 +351,11 @@ p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     p25_sm_note_cc_activity(state);
+    /* A checked control channel message on this carrier: in the received identity it is the control channel of the
+       system the record names, where the receiver is tuned (never an anchor or a return hint). */
+    if (state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25 && (state->rx_id.valid & DSD_RXID_P25_SYSID) != 0U) {
+        dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_P25, dsd_opts_tuned_freq_hz(opts));
+    }
     if (opts && opts->trunk_enable == 1) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         // Here, before any handler of the same block (a grant) can end the probe's acquisition.
@@ -7370,6 +7376,9 @@ p25_lockout_snapshot_from_observation(const p25_sm_ctx_t* ctx, const dsd_state* 
     call->frequency_hz = p25_lockout_grant_frequency(ctx, slot, target, is_group);
     call->service_options = (uint16_t)svc_bits;
     call->crypto = DSD_CALL_CRYPTO_ENCRYPTED;
+    /* The grant was heard on this carrier: its row names the system the record received here, as a canonical call's
+       does (dsd_call_snapshot::rx_id_epoch). */
+    call->rx_id_epoch = state->rx_id.epoch;
 }
 
 static int

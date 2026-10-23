@@ -27,6 +27,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -8874,6 +8875,127 @@ test_provoice_toggle_closes_nfm_recording_named(void) {
     return rc | expect_named_nfm_recording("nfm call ended by the provoice toggle", &state, dir);
 }
 
+/* The commands that forget or reinterpret a site's identity forget the received identity record with it, so no frontend
+   keeps showing what they dropped: the DMR reset (the DMR trunking site and the NXDN location and RAN; the DMR colour
+   code, which the reset keeps, stays), the EDACS addressing mode toggle (the site, area, system and control channel LCN
+   were read under the other mode; the calls it ends keep the site they ended with), and a decode mode change onto
+   settings that no longer decode the record's protocol. */
+static int
+test_identity_forgetting_commands_clear_the_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site_text(&state, "Cap+ \xC2\xB7 Site 2");
+    dsd_rxid_note_dmr_rest_lsn(&state, 3U);
+    dsd_rxid_note_dmr_brand(&state, "Capacity Plus");
+    dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_DMR, 451000000U);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("dmr reset forgets the dmr site", (int)state.rx_id.valid, DSD_RXID_ACCESS);
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    dsd_rxid_note_nxdn_location(&state, 1U, 12U, 3U);
+    dsd_rxid_note_cc_freq(&state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained again", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("dmr reset forgets the nxdn location and ran", (int)state.rx_id.valid, 0);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    opts.frame_provoice = 1;
+    state.ea_mode = 0;
+    dsd_rxid_note_edacs_site(&state, 12U);
+    dsd_rxid_note_edacs_area(&state, 3U);
+    dsd_rxid_note_edacs_cc_lcn(&state, 7U);
+    post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+    rc |= expect_int("addressing toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("addressing toggled", state.ea_mode, 1);
+    rc |= expect_int("addressing toggle forgets the edacs site", (int)state.rx_id.valid, 0);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("dmr session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    rc |= expect_int("mode change to p25 queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mode change to p25 drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a mode that decodes no dmr forgets it", (int)state.rx_id.valid, 0);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    rc |= expect_int("mode change to auto queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AUTO),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mode change to auto drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a mode that still decodes p25 keeps it", (int)state.rx_id.valid, DSD_RXID_ACCESS);
+    freeState(&state);
+    return rc;
+}
+
+/* A tune the user asked for while trunking (D4) forgets the received identity, as a carrier boundary does: a frequency
+   entry that selects a P25 control channel, a return to the control channel, a channel cycle. The calls it ends keep
+   the identity they ended with; a refused selection keeps the record. */
+static void
+seed_p25_record(dsd_state* state) {
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_note_p25_network(state, 0xBEE00U, 0x348U);
+    dsd_rxid_note_p25_site(state, 0x348U, 3U, 21U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_P25, 851000000U);
+}
+
+static int
+test_user_moves_while_trunking_forget_the_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+#ifdef USE_RADIO // the frequency entry is a radio build's command
+    for (int refused = 0; refused < 2; refused++) {
+        init_test_context(&opts, &state);
+        seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+        seed_p25_record(&state);
+        reset_cc_tune_stub(refused ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_int("p25 control channel entry queued",
+                         dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("p25 control channel entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("p25 control channel entry tuned the control channel", g_cc_tune_calls, 1);
+        rc |= expect_int(refused ? "a refused selection keeps the record" : "a selection forgets the record",
+                         (int)(state.rx_id.valid != 0U), refused ? 1 : 0);
+        freeState(&state);
+    }
+#endif
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    seed_p25_record(&state);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
+    rc |= expect_int("user return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("user return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a user return-to-CC forgets the record", (int)state.rx_id.valid, 0);
+    rc |= expect_true("the ended call keeps the system it ended with",
+                      state.event_history_s[0].Event_History_Items[1].sys_id2 == 0x348U);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.p25_prefer_candidates = 0;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 851000000L;
+    state.trunk_lcn_freq[1] = 851500000L;
+    seed_p25_record(&state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("trunked channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunked channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunked channel cycle tuned", g_io_control_tune_calls, 1);
+    rc |= expect_int("a trunked channel cycle forgets the record", (int)state.rx_id.valid, 0);
+    freeState(&state);
+    return rc;
+}
+
 /*
  * A [mode] preset also carries an audio layout, but the session's output streams keep the one they were opened with,
  * so a config apply keeps the session's layout as DECODE_MODE_SET does. A config that moves a -fA session (mono) to
@@ -14664,6 +14786,57 @@ test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
     return rc;
 }
 
+/* A mode change ends the outgoing calls before it forgets the received identity of a protocol it stops decoding: a
+   SYSID received after the call's last render still reaches its history row. And a switch onto the analog monitor the
+   front end has queued forgets nothing until it is taken: refused where it lands, the digital session it goes back to
+   keeps its identity; taken, the identity of a protocol the monitor does not decode goes. */
+static int
+test_mode_change_forgets_identity_once_it_stands(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x348U);
+    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "p25 -> dmr");
+    rc |= expect_int("p25 -> dmr: the outgoing call keeps the SYSID received after its last render",
+                     (int)state.event_history_s[0].Event_History_Items[1].sys_id2, 0x348);
+    rc |= expect_int("p25 -> dmr: the p25 identity goes", (int)state.rx_id.valid, 0);
+    freeState(&state);
+
+    for (int taken = 0; taken < 2; taken++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_DMR, "dmr session");
+        reset_rx_family_wrap();
+        g_fake_analog_family = 0;
+        dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        dsd_rxid_note_dmr_rest_lsn(&state, 3U);
+        rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "dmr -> analog queued");
+        rc |= expect_int("dmr -> analog queued: the identity waits", (int)(state.rx_id.valid != 0U), 1);
+        if (taken) {
+            demod_thread_lands(0);
+            g_fake_analog_family = 1;
+        } else {
+            demod_thread_refuses_analog_keeping(0, 0);
+        }
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int(taken ? "dmr -> analog taken: the dmr identity goes"
+                               : "dmr -> analog refused where it landed: back on dmr with its identity",
+                         (int)state.rx_id.valid, taken ? 0 : DSD_RXID_ACCESS | DSD_RXID_DMR_REST_LSN);
+        if (!taken) {
+            rc |= expect_int("refused: back on dmr", opts.frame_dmr == 1 && opts.analog_only == 0, 1);
+        }
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
 /* A switch from TETRA onto the analog monitor, or onto AM, the front end has queued and not yet taken (@p mode, from
    DECODE_MODE_SET or a config's [mode] as @p config says), or NULL when the TETRA session could not be set up. */
 static tetra_state_t*
@@ -19220,6 +19393,8 @@ main(void) {
     rc |= test_decode_mode_set_ensures_family_sink();
     rc |= test_decode_mode_set_closes_nfm_recording_named();
     rc |= test_provoice_toggle_closes_nfm_recording_named();
+    rc |= test_identity_forgetting_commands_clear_the_record();
+    rc |= test_user_moves_while_trunking_forget_the_record();
     rc |= test_config_apply_keeps_session_output_layout();
 #endif
     rc |= test_family_change_discards_partial_analog_block();
@@ -19304,6 +19479,7 @@ main(void) {
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
     rc |= test_queued_switch_off_tetra_commits_once_taken();
+    rc |= test_mode_change_forgets_identity_once_it_stands();
     rc |= test_refused_switch_off_tetra_keeps_the_follow();
     rc |= test_refused_switch_onto_analog_with_a_width_set_after_it();
     rc |= test_refused_switch_onto_analog_under_a_row();

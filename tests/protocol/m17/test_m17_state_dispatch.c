@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -608,6 +609,25 @@ test_rf_lsf_crc_policy_preserves_relaxed_decode(void) {
     err |= expect_u8("relaxed RF LSF decodes encryption", state->m17_enc, 1U);
     dsd_call_snapshot call;
     err |= expect_int("relaxed RF LSF CRC does not publish call", get_m17_call(state, &call), 0);
+    err |= expect_int("relaxed RF LSF notes no received identity", (int)state->rx_id.valid, 0);
+
+    /* A checked LSF's CAN is the carrier's; a later one -F decoded despite its failed CRC never replaces it. */
+    uint8_t checked_bits[TEST_M17_LSF_BITS];
+    uint8_t checked_packed[M17_LSF_BYTES];
+    build_lsf_bits(checked_bits, dst, src, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 0U, 0U), NULL);
+    const uint16_t checked_crc = m17_attach_lsf_crc(checked_bits, checked_packed);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMCPY(state->m17_lsf, checked_bits, sizeof(checked_bits));
+    err |= expect_int("checked RF LSF passes", m17_finalize_lsf_crc(opts, state, checked_packed, checked_crc), 0);
+    err |= expect_int("checked RF LSF identity parts", (int)state->rx_id.valid, (int)DSD_RXID_ACCESS);
+    err |= expect_u8("checked RF LSF identity CAN", (uint8_t)state->rx_id.access, 3U);
+    err |= expect_u8("checked RF LSF identity kind", state->rx_id.access_kind, DSD_ACCESS_CODE_CAN);
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    (void)m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U);
+    err |= expect_u8("relaxed RF LSF decodes its CAN", state->m17_can, 5U);
+    err |= expect_u8("relaxed RF LSF keeps the checked CAN", (uint8_t)state->rx_id.access, 3U);
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -2221,6 +2241,8 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     err |= expect_u64("packet LSF monitor destination", call.ota_target_id, dst);
     err |= expect_u64("packet LSF monitor source", call.ota_source_id, src);
     err |= expect_u8("packet LSF monitor CAN", state->m17_can, 7U);
+    /* What this station transmits is no identity received on the carrier. */
+    err |= expect_int("packet LSF monitor notes no received identity", (int)state->rx_id.valid, 0);
     err |= expect_int("packet encoder clears current event",
                       event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
     err |= expect_int("packet encoder commits event history",

@@ -3,10 +3,12 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
@@ -156,6 +158,10 @@ static void
 p25p1_apply_nac_update(dsd_state* state, int new_nac) {
     int valid_nac = p25p1_valid_decoded_nac(new_nac);
 
+    /* The NAC of a NID the BCH accepted is the carrier's received access code, an unchanged repeat included. */
+    if (valid_nac) {
+        dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, (uint16_t)new_nac);
+    }
     if (new_nac != state->nac) {
         if (valid_nac) {
             state->nac = new_nac;

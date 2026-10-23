@@ -19,6 +19,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_presence.h>
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -28,6 +29,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
@@ -395,6 +397,8 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
      * path, whether or not a caller identity decoded with it. The engine puts it back to -1 between carriers. */
     if (state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1)) {
         state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
+        dsd_rxid_note_access(state, DSD_RXID_FAMILY_DPMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE,
+                             (uint16_t)state->dPMRVoiceFS2Frame.ColorCode[0]);
     }
     dsd_call_observation observation = {
         .protocol = state->synctype,

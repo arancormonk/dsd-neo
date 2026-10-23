@@ -3163,8 +3163,8 @@ symbol_search_yields(const dsd_opts* opts, dsd_state* state) {
     return (state->symbolcnt & 63) == 0 && dsd_frame_sync_hook_signal_search_should_yield(opts, state);
 }
 
-float
-getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
+static float
+symbol_read(dsd_opts* opts, dsd_state* state, int have_sync) {
     /* Long protocol readers also leave a search visit at its deadline, or once a read gave up on a stalled input.
        Completing their bounded frame with unusable symbols lets the engine regain its tick guard safely. The recorded
        interruption marks them on every input: the frame decoders drop the frame it cut (dsd_state_frame_read_lost())
@@ -3200,4 +3200,13 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
 
     symbol_apply_replay_overrides(opts, state, &symbol, work.hunting);
     return symbol_commit_symbol(opts, state, have_sync, &work, symbol);
+}
+
+/* A carrier change that runs while the symbol's samples are read splits it (dsd_state_note_carrier_change()). */
+float
+getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
+    state->symbol_read_active = 1U;
+    const float symbol = symbol_read(opts, state, have_sync);
+    state->symbol_read_active = 0U;
+    return symbol;
 }
