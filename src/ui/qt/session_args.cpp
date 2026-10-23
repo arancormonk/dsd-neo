@@ -850,6 +850,9 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host) const {
     SessionArgsError error = SessionArgsError::None;
     const QStringList args = buildArgs(system, &error);
     auto result = validationResult(error);
+    if (error == SessionArgsError::None && host) {
+        host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
+    }
     const bool started = error == SessionArgsError::None && host && host->start(args);
     result.insert(QStringLiteral("started"), started);
     if (started && host->sessionActive() && m_profiles) {

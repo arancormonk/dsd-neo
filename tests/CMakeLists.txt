@@ -17846,6 +17846,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             engine_stop
     )
+    add_test(
+        NAME ANDROID_EXIT_FACTS_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            exit_facts
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -17853,6 +17860,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_DOCUMENT_TRANSFER_JVM
         ANDROID_USB_RECEIVER_JVM
         ANDROID_ENGINE_STOP_JVM
+        ANDROID_EXIT_FACTS_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

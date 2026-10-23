@@ -432,6 +432,29 @@ aaudio_stream_open(dsd_audio_stream* stream) {
 }
 
 /**
+ * @brief The first open of a stream, with an entry and a result line in the diagnostics.
+ *
+ * Reopens after a route change go through aaudio_stream_open() unlogged: they retry on a
+ * backoff for as long as a device is unavailable. The first open is one of the steps Play
+ * takes into the platform, so a phone that falls over inside it still shows how far the start
+ * got (issue #745).
+ */
+static int
+aaudio_stream_open_logged(dsd_audio_stream* stream) {
+    const char* direction = stream->is_input ? "input" : "output";
+    DSD_FPRINTF(stderr, "AAudio: opening %s (%d Hz, %d ch)\n", direction, stream->sample_rate, stream->channels);
+    if (aaudio_stream_open(stream) != 0) {
+        DSD_FPRINTF(stderr, "AAudio: %s open failed (%s)\n", direction, dsd_audio_get_error());
+        return -1;
+    }
+    DSD_FPRINTF(stderr, "AAudio: %s started (device %d Hz, %d ch, capacity %d frames, sharing %d, performance %d)\n",
+                direction, stream->device_sample_rate, stream->device_channels,
+                (int)AAudioStream_getBufferCapacityInFrames(stream->handle),
+                (int)AAudioStream_getSharingMode(stream->handle), (int)AAudioStream_getPerformanceMode(stream->handle));
+    return 0;
+}
+
+/**
  * @brief Tear the device stream down and schedule a reopen.
  *
  * Route changes (headphones, Bluetooth) disconnect the stream, and a device in
@@ -1392,7 +1415,7 @@ dsd_audio_open_input(const dsd_audio_params* params) {
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
 
-    if (aaudio_stream_open(stream) != 0) {
+    if (aaudio_stream_open_logged(stream) != 0) {
         free(stream);
         return NULL;
     }
@@ -1416,7 +1439,7 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
 
-    if (aaudio_stream_open(stream) != 0) {
+    if (aaudio_stream_open_logged(stream) != 0) {
         free(stream);
         return NULL;
     }

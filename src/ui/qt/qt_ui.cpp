@@ -7,6 +7,7 @@
 #include <QVariantMap>
 #include "qt_ui.h"
 
+#include <QCoreApplication>
 #include <QFontDatabase>
 #include <QLatin1String>
 #include <QObject>
@@ -194,6 +195,9 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* network = new P25NetworkModel(&engine); // WP-F2
     auto* commands = new CommandBridge(&engine);
     DiagnosticsLog::installTap();
+    // The log is process-lifetime and never destroyed, so its last records are made durable here.
+    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                     [] { (void)DiagnosticsLog::instance().flush(DiagnosticsLog::kShutdownFlushMs); });
     auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
     auto* prefs = new AppPrefs(&engine);
     auto* backupModel = new BackupModel(host, restoreOutcome, &engine);

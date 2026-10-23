@@ -167,6 +167,9 @@ void
 DecoderHostAndroid::requestLocalDeviceAccess() {}
 
 void
+DecoderHostAndroid::noteStartAttempt(const QString&) {}
+
+void
 DecoderHostAndroid::setScreenPolicy(int, int) {}
 
 QString

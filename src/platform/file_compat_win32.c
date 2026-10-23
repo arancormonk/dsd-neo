@@ -399,6 +399,11 @@ dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_
     return fp;
 }
 
+void
+dsd_fsync_parent_dir(const char* path) {
+    (void)path;
+}
+
 int
 dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     if (!tmp_path || tmp_path[0] == '\0' || !final_path || final_path[0] == '\0') {

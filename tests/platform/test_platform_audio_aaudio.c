@@ -432,6 +432,18 @@ AAudioStream_getBufferCapacityInFrames(AAudioStream* stream) {
     return g.buffer_capacity_frames;
 }
 
+aaudio_sharing_mode_t
+AAudioStream_getSharingMode(AAudioStream* stream) {
+    (void)stream;
+    return AAUDIO_SHARING_MODE_SHARED;
+}
+
+aaudio_performance_mode_t
+AAudioStream_getPerformanceMode(AAudioStream* stream) {
+    (void)stream;
+    return AAUDIO_PERFORMANCE_MODE_NONE;
+}
+
 void
 AAudioStreamBuilder_setBufferCapacityInFrames(AAudioStreamBuilder* builder, int32_t frames) {
     (void)builder;

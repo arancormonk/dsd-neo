@@ -224,6 +224,9 @@ QVariantMap
 ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
     auto result = prepare(list, true);
     const auto args = result.take("args").toStringList();
+    if (result.value("ok").toBool() && host) {
+        host->noteStartAttempt(list.value("sourceType").toString());
+    }
     const bool started = result.value("ok").toBool() && host && host->start(args);
     result.insert("started", started);
     if (started && host->sessionActive() && m_profiles) {

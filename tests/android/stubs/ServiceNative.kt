@@ -40,7 +40,13 @@ object DsdNative {
     fun nativeDestroy() = STATUS_OK
     fun nativeLifecycleStatus(): LongArray? = null
     fun nativeHostDiagnostic(line: String) { diagnostics += line }
+    fun nativeArmStartupDiagnostics() {}
+    fun nativeFlushDiagnostics() {}
     fun nativeNotificationStatus(): String? = null
+}
+
+object ProcessFacts {
+    fun attach(context: Context) {}
 }
 
 object ScreenSupport {

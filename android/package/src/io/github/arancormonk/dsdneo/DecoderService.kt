@@ -37,6 +37,7 @@ class DecoderService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        ProcessFacts.attach(this)
         ensureNotificationChannel()
     }
 
@@ -53,7 +54,16 @@ class DecoderService : Service() {
         // startForeground() for that start — including the ones we go on to reject
         // (a duplicate START while already RUNNING) and the ones we do not
         // recognise. Skipping it there risks ForegroundServiceDidNotStartInTime.
+        val starting = intent?.action == ACTION_START
+        if (starting) {
+            // Each step a start takes into the platform is logged on entry and on return, so a phone that falls over
+            // inside one still shows in the durable diagnostics how far the start got (issue #745).
+            DsdNative.nativeHostDiagnostic("service: entering the foreground")
+        }
         startForegroundNotification(currentStatusText())
+        if (starting) {
+            DsdNative.nativeHostDiagnostic("service: in the foreground")
+        }
 
         when (intent?.action) {
             ACTION_START -> {
@@ -160,6 +170,8 @@ class DecoderService : Service() {
             lastError = ""
         }
 
+        // The device is about to be opened: keep the diagnostics start window open through it.
+        DsdNative.nativeArmStartupDiagnostics()
         updateNotification(getString(R.string.decoder_starting))
         acquireWakeLock(this)
 
@@ -172,7 +184,9 @@ class DecoderService : Service() {
             initialized = true
         }
 
+        DsdNative.nativeHostDiagnostic("service: configuring the engine")
         val configureRc = DsdNative.nativeConfigure(args, synchronized(lock) { sessionId })
+        DsdNative.nativeHostDiagnostic("service: engine configuration returned $configureRc")
         if (configureRc == DsdNative.STATUS_CONFIG_EXIT) {
             // Help and other successful one-shot configuration flows did not
             // initialize a session; publish completion without stamping recency.
@@ -194,6 +208,7 @@ class DecoderService : Service() {
         }
 
         val thread = Thread({
+            DsdNative.nativeHostDiagnostic("service: engine run starting")
             val rc = DsdNative.nativeRun()
             Log.i(TAG, "engine run returned $rc")
             DsdNative.nativeHostDiagnostic("engine run returned $rc")

@@ -39,6 +39,12 @@ object DsdNative {
     /** Lifecycle/USB messages only, never argv, credentials or key material. */
     external fun nativeHostDiagnostic(line: String)
 
+    /** Re-arms the diagnostics startup window at a device boundary (issue #745). */
+    external fun nativeArmStartupDiagnostics()
+
+    /** Bounded flush of the persistent diagnostics before the process may go. */
+    external fun nativeFlushDiagnostics()
+
     external fun nativeRun(): Int
 
     /**

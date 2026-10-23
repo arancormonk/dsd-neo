@@ -125,6 +125,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     }
 
     void requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) override;
+    void noteStartAttempt(const QString& sourceType) override;
     QString localDeviceStatus() const override;
     int localDeviceFailureKind() const override;
     void hostDiagnostic(const QString& line) override;

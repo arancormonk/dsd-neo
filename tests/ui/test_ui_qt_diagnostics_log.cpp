@@ -4,12 +4,15 @@
 #include <QByteArrayView>
 #include <QChar>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -19,6 +22,7 @@
 #include <Qt>
 #include <QtEnvironmentVariables>
 #include <QtGlobal>
+#include <atomic>
 #include <cstdio>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/init.h>
@@ -28,6 +32,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
 #include <string.h>
@@ -518,6 +523,430 @@ test_live_formatted_keys(void) {
     DSD_SECURE_ZERO(state.get(), sizeof(*state));
 }
 
+// --- Persistent tail: append-only segments (issue #745) ---
+
+static std::atomic<quint64> g_clock{0};
+
+static DiagnosticsLog::TestOptions
+manualOptions() {
+    DiagnosticsLog::TestOptions options;
+    options.clockMs = [] { return g_clock.load(); };
+    options.manualDrain = true;
+    return options;
+}
+
+static QByteArray
+readFile(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+static void
+writeFile(const QString& path, const QByteArray& bytes) {
+    QFile file(path);
+    check(file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size(),
+          "fixture write failed");
+}
+
+static QStringList
+withoutDivider(QStringList rows) {
+    if (!rows.isEmpty() && rows.first() == QLatin1String("--- previous run ---")) {
+        rows.removeFirst();
+    }
+    return rows;
+}
+
+// Every flush used to replace tail.log with a rewritten copy (one rename per batch). An append-only
+// tail keeps the file a reader already holds open. Uses only the long-standing API, so it runs on
+// either writer.
+static void
+appendKeepsTheFile() {
+#ifndef _WIN32
+    QTemporaryDir dir;
+    DiagnosticsLog log(dir.path());
+    log.submit("host", "info", "first record");
+    log.flush();
+    const QString path = dir.filePath("tail.log");
+    QFile held(path);
+    check(held.open(QIODevice::ReadOnly), "tail exists after the first flush");
+    for (int round = 0; round < 20; ++round) {
+        for (int i = 0; i < 10; ++i) {
+            log.submit("host", "info", QStringLiteral("record %1.%2").arg(round).arg(i));
+        }
+        log.flush();
+        dsd_stat_t heldStat{};
+        dsd_stat_t pathStat{};
+        check(dsd_fstat(held.handle(), &heldStat) == 0
+                  && dsd_stat_path(QFile::encodeName(path).constData(), &pathStat) == 0,
+              "stat of the tail failed");
+        check(heldStat.st_nlink == 1 && heldStat.st_ino == pathStat.st_ino,
+              "the tail was replaced instead of appended to");
+    }
+#endif
+}
+
+static void
+writeVolumeIsTheLogItself() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    quint64 payload = 0;
+    for (int i = 0; i < 2000; ++i) {
+        const QString text = QStringLiteral("Sync: +P25p1 NAC [0x006] frame %1").arg(i);
+        payload += static_cast<quint64>(QStringLiteral("[stderr] [info] %1").arg(text).toUtf8().size()) + 1U;
+        log.submit("stderr", "info", text);
+        if (i % 50 == 49) {
+            g_clock += DiagnosticsLog::kWriteIntervalMs;
+            log.pump();
+        }
+    }
+    check(log.flush(), "flush after a write burst");
+    const auto stats = log.ioStats();
+    check(stats.bytes <= payload + payload / 20, "write volume exceeds the log's own bytes");
+    check(stats.appends <= 41, "appends were not coalesced");
+    check(stats.syncs <= 2 + static_cast<quint64>(g_clock.load() / DiagnosticsLog::kSyncIntervalMs),
+          "syncs exceed one per interval");
+}
+
+static void
+rotationKeepsTheBound() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    int written = 0;
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        // Two queue-sized bursts of maximum-length records, then mixed sizes.
+        for (int burst = 0; burst < 2; ++burst) {
+            for (int i = 0; i < 2000; ++i) {
+                log.submit("host", "info", QStringLiteral("seq %1 ").arg(written++) + QString(600, QLatin1Char('m')));
+            }
+            check(log.flush(), "burst flush");
+            check(QFileInfo(dir.filePath("tail.log")).size() <= DiagnosticsLog::kSegmentLimit, "tail over the cap");
+            check(QFileInfo(dir.filePath("tail.prev.log")).size() <= DiagnosticsLog::kSegmentLimit,
+                  "previous segment over the cap");
+        }
+        for (int i = 0; i < 4000; ++i) {
+            log.submit("host", "info", QStringLiteral("seq %1 ").arg(written++) + QString(i % 300, QLatin1Char('v')));
+            if (i % 100 == 99) {
+                g_clock += DiagnosticsLog::kWriteIntervalMs;
+                log.pump();
+            }
+        }
+        check(log.flush(), "mixed flush");
+        const auto stats = log.ioStats();
+        check(stats.rotations > 0 && stats.syncs >= stats.rotations, "a segment rotated before its data was synced");
+    }
+    check(QFileInfo(dir.filePath("tail.log")).size() <= DiagnosticsLog::kSegmentLimit, "tail over the cap");
+    check(QFileInfo(dir.filePath("tail.prev.log")).size() <= DiagnosticsLog::kSegmentLimit, "previous over the cap");
+    DiagnosticsLog reopened(dir.path(), manualOptions());
+    const auto rows = withoutDivider(reopened.snapshot());
+    check(!rows.isEmpty() && rows.last().contains(QStringLiteral("seq %1 ").arg(written - 1)),
+          "reload lost the newest record");
+    int last = -1;
+    static const QRegularExpression seq(QStringLiteral("seq (\\d+) "));
+    for (const auto& row : rows) {
+        const auto match = seq.match(row);
+        if (match.hasMatch()) {
+            check(match.captured(1).toInt() > last, "reload out of order");
+            last = match.captured(1).toInt();
+        }
+    }
+}
+
+static void
+legacyTailIsSplit() {
+    QTemporaryDir dir;
+    QByteArray legacy;
+    QStringList lines;
+    for (int i = 0; legacy.size() < 250 * 1024; ++i) {
+        const QString line = QStringLiteral("[host] [info] legacy %1 ").arg(i) + QString(200, QChar(0x03bb));
+        lines.append(line);
+        legacy += line.toUtf8() + '\n';
+    }
+    writeFile(dir.filePath("tail.log"), legacy);
+    g_clock = 0;
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        check(QFileInfo(dir.filePath("tail.log")).size() <= DiagnosticsLog::kSegmentLimit, "legacy tail not split");
+        check(QFileInfo(dir.filePath("tail.prev.log")).size() <= DiagnosticsLog::kSegmentLimit, "legacy prev too big");
+        const auto rows = withoutDivider(log.snapshot());
+        check(!rows.isEmpty() && rows.size() <= lines.size() && lines.mid(lines.size() - rows.size()) == rows,
+              "legacy text changed on load");
+        check(QString::fromUtf8(readFile(dir.filePath("tail.prev.log")) + readFile(dir.filePath("tail.log")))
+                      .split('\n', Qt::SkipEmptyParts)
+                  == rows,
+              "segments are not the loaded lines");
+        for (int i = 0; i < 300; ++i) {
+            log.submit("host", "info", QString(400, QLatin1Char('n')));
+        }
+        check(log.flush(), "flush after legacy load");
+    }
+    check(QFileInfo(dir.filePath("tail.log")).size() + QFileInfo(dir.filePath("tail.prev.log")).size() <= 256 * 1024,
+          "legacy tail grew past the bound");
+}
+
+static void
+crashFragmentIsDropped() {
+    QTemporaryDir dir;
+    writeFile(dir.filePath("tail.log"), QByteArray("[host] [info] complete\n") + QByteArray(500, 'f'));
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    check(!log.snapshot().join('\n').contains(QStringLiteral("fff")), "fragment loaded as a record");
+    log.submit("host", "info", "after the crash");
+    check(log.flush(), "flush after the crash");
+    const auto text = readFile(dir.filePath("tail.log"));
+    check(!text.contains("fff"), "fragment kept in the tail");
+    for (const auto& line : text.split('\n')) {
+        check(line.size() <= 512, "a record grew past the bound");
+    }
+    check(text.contains("\n[host] [info] after the crash\n"), "new record not on its own line");
+}
+
+// The shape a kernel panic left on an emulator: the tail's size reached the journal before its last unsynced
+// second of data, which reads back as NUL bytes.
+static void
+crashZeroRunIsDropped() {
+    QTemporaryDir dir;
+    writeFile(dir.filePath("tail.log"), QByteArray("[host] [info] before the crash\n[host] [info] zeroed")
+                                            + QByteArray(3000, '\0') + QByteArray("\n[host] [info] after the run\n"));
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    const auto rows = log.snapshot().join('\n');
+    check(rows.contains(QStringLiteral("before the crash")) && rows.contains(QStringLiteral("after the run")),
+          "intact lines around a zeroed run lost");
+    check(!rows.contains(QChar(0)) && !rows.contains(QStringLiteral("zeroed")), "a zeroed run loaded as a record");
+}
+
+static void
+flushReportsFailures() {
+    QTemporaryDir dir;
+    {
+        DiagnosticsLog log(dir.path());
+        check(log.flush(), "an empty flush completes");
+        log.submit("host", "info", "durable record");
+        check(log.flush(), "a flush is durable");
+        DiagnosticsLog reader(dir.path(), manualOptions());
+        check(reader.snapshot().join('\n').contains(QStringLiteral("durable record")), "flushed record not on disk");
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::Write);
+        log.submit("host", "info", "lost record");
+        check(!log.flush(), "a failed write reported durable");
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
+        log.submit("host", "info", "unsynced record");
+        check(!log.flush(), "a failed sync reported durable");
+        log.noteSessionAttempt(QStringLiteral("rtl"));
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+        log.submit("host", "info", "recovered record");
+        check(log.flush(), "writing resumes after a fault");
+    }
+    {
+        // A record lost in an ordinary drain makes the next flush non-durable too.
+        QTemporaryDir drained;
+        g_clock = 0;
+        DiagnosticsLog log(drained.path(), manualOptions());
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::Write);
+        log.submit("host", "info", "lost in a drain");
+        g_clock = DiagnosticsLog::kWriteIntervalMs;
+        log.pump();
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+        check(!log.flush(), "a flush after a failed drain reported durable");
+        check(log.flush(), "the failure is reported once");
+    }
+    QTemporaryDir blocked;
+    check(QDir(blocked.path()).mkpath(QStringLiteral("tail.log/inner")), "fixture directory");
+    DiagnosticsLog log(blocked.path());
+    log.submit("host", "info", "nowhere to go");
+    check(!log.flush(), "an unopenable tail reported durable");
+}
+
+static void
+syncCadenceAndStartupWindow() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.submit("host", "info", "quiet record");
+    g_clock = DiagnosticsLog::kWriteIntervalMs;
+    log.pump();
+    check(log.ioStats().appends == 1 && log.ioStats().syncs == 0, "an append was synced before its interval");
+    g_clock = DiagnosticsLog::kSyncIntervalMs;
+    log.pump();
+    check(log.ioStats().syncs == 1, "dirty data not synced at its deadline");
+    log.pump();
+    check(log.ioStats().syncs == 1, "a clean tail was synced again");
+
+    g_clock = 5000;
+    log.noteSessionAttempt(QStringLiteral("rtl, boot 3"));
+    check(readFile(dir.filePath("tail.log")).contains("--- session starting: rtl, boot 3 ---"),
+          "the attempt marker is not on disk when the note returns");
+    auto syncs = log.ioStats().syncs;
+    for (int i = 0; i < 5; ++i) {
+        g_clock += 100;
+        log.submit("stderr", "info", QStringLiteral("stage %1").arg(i));
+        log.pump();
+        check(log.ioStats().syncs == ++syncs, "a startup-window record waited for the drain or the sync interval");
+    }
+    g_clock = 5000 + DiagnosticsLog::kStartupSyncWindowMs + 1;
+    syncs = log.ioStats().syncs;
+    for (int i = 0; i < 40; ++i) {
+        g_clock += 50;
+        log.submit("stderr", "info", QStringLiteral("steady %1").arg(i));
+        log.pump();
+    }
+    check(log.ioStats().syncs - syncs <= 3, "steady-state syncs exceed one per second");
+
+    // A start path's explicit note absorbs the plain marker of the Starting transition after it.
+    log.noteSessionAttempt(QStringLiteral("rtl, boot 3"));
+    log.noteSessionAttempt(QString());
+    log.noteSessionAttempt(QString());
+    const auto rows = log.snapshot().join('\n');
+    check(rows.count(QStringLiteral("--- session starting: rtl, boot 3 ---")) == 1,
+          "a repeated note was not deduplicated");
+    check(rows.count(QStringLiteral("--- session starting ---")) == 1, "plain markers miscounted");
+}
+
+static void
+segmentsStartWithTheirContext() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        log.noteProcess(QStringLiteral("1, test os, boot 7"));
+        log.noteSessionAttempt(QStringLiteral("rtltcp"));
+        for (int i = 0; i < 1200; ++i) {
+            log.submit("stderr", "info", QString(300, QLatin1Char('s')));
+        }
+        check(log.flush(), "header flush");
+        check(log.ioStats().rotations >= 2, "the fixture did not rotate");
+    }
+    for (const char* name : {"tail.log", "tail.prev.log"}) {
+        const auto lines = readFile(dir.filePath(QLatin1String(name))).split('\n');
+        check(lines.size() > 2 && lines.at(0).startsWith("[process] [info] pid 1, test os, boot 7")
+                  && lines.at(1).contains("--- session starting: rtltcp ---"),
+              "a segment does not start with its process and session");
+    }
+}
+
+// A full segment rotates on the run's first record, which is its own process line: written once, not again
+// in the header ahead of it.
+static void
+contextLineWrittenOnce() {
+    QTemporaryDir dir;
+    QByteArray full;
+    while (full.size() < DiagnosticsLog::kSegmentLimit - 40) {
+        full += "[stderr] [info] earlier run line\n";
+    }
+    writeFile(dir.filePath("tail.log"), full);
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.noteProcess(QStringLiteral("1, test os, boot 2"), {QStringLiteral("exit: one")});
+    log.noteSessionAttempt(QStringLiteral("usb"));
+    check(log.flush(), "context flush");
+    const auto tail = readFile(dir.filePath("tail.log"));
+    check(log.ioStats().rotations == 1, "the fixture did not rotate on the first record");
+    check(tail.count("[process] [info] pid 1, test os, boot 2") == 1 && tail.startsWith("[process] [info] pid 1"),
+          "the process line was written twice or not first");
+    check(tail.count("--- session starting: usb ---") == 1, "the session line was written twice");
+}
+
+static void
+previousRunBootFact() {
+    const auto run = [](const QByteArray& previous, const QString& facts) {
+        QTemporaryDir dir;
+        writeFile(dir.filePath("tail.log"), previous);
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        log.noteProcess(facts);
+        return log.snapshot().join('\n');
+    };
+    const QByteArray before("[process] [info] pid 1, android, boot 5\n[stderr] [info] streaming\n");
+    check(run(before, QStringLiteral("2, android, boot 6"))
+              .contains(QStringLiteral("previous run: Android has restarted since (boot 5 -> 6)")),
+          "boot change not reported");
+    check(!run(before, QStringLiteral("2, android, boot 5")).contains(QStringLiteral("previous run:")),
+          "same boot reported as a restart");
+    check(!run(before, QStringLiteral("2, desktop")).contains(QStringLiteral("previous run:")),
+          "unknown boot reported as a restart");
+}
+
+static void
+contextSurvivesTheRingLimit() {
+    QTemporaryDir dir;
+    QByteArray previous("[process] [info] pid 9, android, boot 4\n[session] [info] --- session starting: rtl ---\n");
+    for (int i = 0; i < 2500; ++i) {
+        previous += QStringLiteral("[stderr] [info] short %1\n").arg(i).toUtf8();
+    }
+    writeFile(dir.filePath("tail.log"), previous);
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    DiagnosticsLogModel model(&log);
+    model.refresh();
+    const auto rows = model.allText().split('\n');
+    check(rows.size() <= 2000, "ring over its limit");
+    check(rows.size() > 3 && rows.at(1).startsWith(QStringLiteral("[process] [info] pid 9"))
+              && rows.at(2).contains(QStringLiteral("session starting: rtl")),
+          "context dropped by the ring limit");
+    check(rows.last().contains(QStringLiteral("short 2499")), "newest previous-run line missing");
+    log.noteProcess(QStringLiteral("10, android, boot 5"));
+    check(log.snapshot().join('\n').contains(QStringLiteral("boot 4 -> 5")), "boot fact lost to the ring limit");
+}
+
+static void
+unicodeDirectory() {
+    QTemporaryDir root;
+    const QString path = root.filePath(QStringLiteral("диагностика-診断"));
+    check(QDir().mkpath(path), "unicode directory");
+    QByteArray legacy;
+    while (legacy.size() < 200 * 1024) {
+        legacy += "[host] [info] legacy line with some length to it\n";
+    }
+    writeFile(path + QStringLiteral("/tail.log"), legacy);
+    g_clock = 0;
+    DiagnosticsLog log(path, manualOptions());
+    check(QFile::exists(path + QStringLiteral("/tail.prev.log")), "legacy split failed in a unicode directory");
+    for (int i = 0; i < 2000; ++i) {
+        log.submit("host", "info", QString(200, QLatin1Char('u')));
+    }
+    check(log.flush() && log.ioStats().rotations > 0, "rotation failed in a unicode directory");
+    check(QFileInfo(path + QStringLiteral("/tail.log")).size() <= DiagnosticsLog::kSegmentLimit,
+          "unicode tail over cap");
+    check(!log.snapshot().join('\n').contains(QStringLiteral("could not be rotated")), "unicode rotation fell back");
+}
+
+static void
+orphansAndExpiry() {
+    QTemporaryDir dir;
+    writeFile(dir.filePath("tail.log.AbC123"), "orphan");
+    writeFile(dir.filePath("tail.prev.log.Xy9z00"), "orphan");
+    writeFile(dir.filePath("tail.log.toolong7"), "kept");
+    writeFile(dir.filePath("notes.txt"), "kept");
+    writeFile(dir.filePath("tail.prev.log"), "[host] [info] stale\n");
+    QFile stale(dir.filePath("tail.prev.log"));
+    check(stale.open(QIODevice::ReadWrite)
+          && stale.setFileTime(QDateTime::currentDateTimeUtc().addDays(-8), QFileDevice::FileModificationTime));
+    stale.close();
+    DiagnosticsLog log(dir.path(), manualOptions());
+    check(!QFile::exists(dir.filePath("tail.log.AbC123")) && !QFile::exists(dir.filePath("tail.prev.log.Xy9z00")),
+          "orphaned temporaries kept");
+    check(QFile::exists(dir.filePath("tail.log.toolong7")) && QFile::exists(dir.filePath("notes.txt")),
+          "unrelated files removed");
+    check(!QFile::exists(dir.filePath("tail.prev.log")), "an expired previous segment kept");
+}
+
+static void
+rotationFailureKeepsTheBound() {
+    QTemporaryDir dir;
+    check(QDir(dir.path()).mkpath(QStringLiteral("tail.prev.log/inner")), "fixture directory");
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    for (int i = 0; i < 3000; ++i) {
+        log.submit("host", "info", QStringLiteral("seq %1 ").arg(i) + QString(100, QLatin1Char('r')));
+    }
+    log.flush();
+    check(QFileInfo(dir.filePath("tail.log")).size() <= DiagnosticsLog::kSegmentLimit, "tail grew past the cap");
+    check(log.snapshot().join('\n').count(QStringLiteral("could not be rotated")) == 1,
+          "rotation failure not noted once");
+    check(readFile(dir.filePath("tail.log")).contains("seq 2999 "), "newest record lost after a failed rotation");
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir earlyDir;
@@ -536,6 +965,21 @@ main(int argc, char** argv) {
     clearAndReopen();
     test_live_formatted_keys();
     realKeySources();
+    appendKeepsTheFile();
+    writeVolumeIsTheLogItself();
+    rotationKeepsTheBound();
+    legacyTailIsSplit();
+    crashFragmentIsDropped();
+    crashZeroRunIsDropped();
+    flushReportsFailures();
+    syncCadenceAndStartupWindow();
+    segmentsStartWithTheirContext();
+    contextLineWrittenOnce();
+    previousRunBootFact();
+    contextSurvivesTheRingLimit();
+    unicodeDirectory();
+    orphansAndExpiry();
+    rotationFailureKeepsTheBound();
     {
         DiagnosticsLog log(dir.path());
         DiagnosticsLogModel model(&log);

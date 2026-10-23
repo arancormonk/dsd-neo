@@ -52,6 +52,8 @@ object UsbSourceManager {
     // WP-D5: Android openDevice supplies no claim-owner information.
     private var failureKind: String = ""
     private var deviceLabel: String = "RTL-SDR"
+    /** Product and VID:PID of the last device opened, for the diagnostics session line. */
+    private var diagnosticsLabel: String? = null
     private var requestedSource: String = "usb"
     private var connectedSource: String = ""
     private var connectedSerial: String = ""
@@ -363,9 +365,21 @@ object UsbSourceManager {
         }
     }
 
+    /** Product and VID:PID of the last device opened, or null before any open. */
+    @JvmStatic
+    fun diagnosticsLabel(): String? = synchronized(lock) { diagnosticsLabel }
+
     /** Body of [open], with the open slot claimed so nothing else can install one. */
     private fun openClaimed(manager: UsbManager, device: UsbDevice) {
-        synchronized(lock) { deviceLabel = describe(device) }
+        val label = String.format("%s %04x:%04x", describe(device), device.vendorId, device.productId)
+        synchronized(lock) {
+            deviceLabel = describe(device)
+            diagnosticsLabel = label
+        }
+        // The open is a step into the kernel's USB stack: re-arm the durable start window here too, since a
+        // permission dialog can outlast the one the start opened (issue #745).
+        DsdNative.nativeArmStartupDiagnostics()
+        DsdNative.nativeHostDiagnostic("usb: opening $label")
         val opened = try {
             manager.openDevice(device)
         } catch (e: SecurityException) {
