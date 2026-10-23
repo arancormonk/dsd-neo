@@ -49,6 +49,71 @@ set_bits(uint8_t* bits, size_t start, size_t len, uint32_t value) {
     }
 }
 
+/* ---- Record encoder ---------------------------------------------------------------------------------------- */
+
+enum { RECORD_MAX_BITS = 56 + (200 * 8) + 16 };
+
+typedef struct {
+    uint8_t bits[RECORD_MAX_BITS];
+    size_t nbits;
+} alias_record;
+
+/* The encoded octets that descramble to @p text (UTF-16BE octets). */
+static void
+find_encoding(const uint8_t* text, size_t count, uint8_t* encoded) {
+    uint8_t decoded[200];
+    DSD_MEMSET(encoded, 0, count);
+    for (size_t i = 0; i < count; i++) {
+        int found = 0;
+        for (unsigned candidate = 0; candidate < 256U && !found; candidate++) {
+            encoded[i] = (uint8_t)candidate;
+            apx_embedded_alias_unscramble(encoded, count, (uint16_t)count, decoded, sizeof decoded);
+            found = decoded[i] == text[i];
+        }
+        if (!found) {
+            DSD_FPRINTF(stderr, "find_encoding: no encoding for octet %zu\n", i);
+            exit(2);
+        }
+    }
+}
+
+/* FQ-SUID, the encoded alias octets, then the CRC the decoder checks. */
+static void
+build_record_encoded(alias_record* r, uint32_t wacn, uint32_t sys, uint32_t rid, const uint8_t* encoded, size_t count) {
+    DSD_MEMSET(r, 0, sizeof(*r));
+    set_bits(r->bits, 0, 20, wacn);
+    set_bits(r->bits, 20, 12, sys);
+    set_bits(r->bits, 32, 24, rid);
+    for (size_t i = 0; i < count; i++) {
+        set_bits(r->bits, 56U + (i * 8U), 8, encoded[i]);
+    }
+    const size_t body = 56U + (count * 8U);
+    set_bits(r->bits, body, 16, dsd_crc_ccitt16_bits(r->bits, body));
+    r->nbits = body + 16U;
+}
+
+static void
+build_record_units(alias_record* r, uint32_t wacn, uint32_t sys, uint32_t rid, const uint16_t* units, size_t n) {
+    uint8_t text[200];
+    uint8_t encoded[200];
+    for (size_t i = 0; i < n; i++) {
+        text[(i * 2U) + 0U] = (uint8_t)(units[i] >> 8);
+        text[(i * 2U) + 1U] = (uint8_t)(units[i] & 0xFFU);
+    }
+    find_encoding(text, n * 2U, encoded);
+    build_record_encoded(r, wacn, sys, rid, encoded, n * 2U);
+}
+
+static void
+build_record_ascii(alias_record* r, uint32_t rid, const char* ascii) {
+    uint16_t units[100];
+    size_t n = strlen(ascii);
+    for (size_t i = 0; i < n; i++) {
+        units[i] = (uint16_t)(unsigned char)ascii[i];
+    }
+    build_record_units(r, 0xBEE00U, 0x4C9U, rid, units, n);
+}
+
 /* ---- Phase 2: MAC messages through process_MAC_VPDU_crc() ------------------------------------------------- */
 
 static void
@@ -59,6 +124,50 @@ p2_send_bits(dsd_opts* opts, dsd_state* st, int currentslot, const uint8_t* msg_
     }
     st->currentslot = currentslot;
     process_MAC_VPDU_crc(opts, st, 1, P25_MAC_PDU_SIGNAL, mac, crc_ok);
+}
+
+static size_t
+p2_block_count(const alias_record* r) {
+    return r->nbits <= 64U ? 0U : ((r->nbits - 64U) + 99U) / 100U;
+}
+
+static void
+p2_send_header(dsd_opts* opts, dsd_state* st, int currentslot, const alias_record* r, uint8_t sn) {
+    uint8_t bits[136];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    set_bits(bits, 0, 8, 0x91U);
+    set_bits(bits, 8, 8, 0x90U);
+    set_bits(bits, 16, 8, 17U);
+    set_bits(bits, 40, 8, (uint32_t)p2_block_count(r));
+    set_bits(bits, 64, 4, sn);
+    for (size_t i = 0; i < 64U && i < r->nbits; i++) {
+        bits[72U + i] = r->bits[i];
+    }
+    p2_send_bits(opts, st, currentslot, bits, 17U, 1);
+}
+
+static void
+p2_send_block(dsd_opts* opts, dsd_state* st, int currentslot, const alias_record* r, uint8_t sn, size_t bn) {
+    uint8_t bits[136];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    set_bits(bits, 0, 8, 0x95U);
+    set_bits(bits, 8, 8, 0x90U);
+    set_bits(bits, 16, 8, 17U);
+    set_bits(bits, 24, 8, (uint32_t)bn);
+    set_bits(bits, 32, 4, sn);
+    for (size_t i = 0; i < 100U; i++) {
+        const size_t at = 64U + ((bn - 1U) * 100U) + i;
+        bits[36U + i] = at < r->nbits ? r->bits[at] : 0U;
+    }
+    p2_send_bits(opts, st, currentslot, bits, 17U, 1);
+}
+
+static void
+p2_send_record(dsd_opts* opts, dsd_state* st, int currentslot, const alias_record* r, uint8_t sn) {
+    p2_send_header(opts, st, currentslot, r, sn);
+    for (size_t bn = 1U; bn <= p2_block_count(r); bn++) {
+        p2_send_block(opts, st, currentslot, r, sn, bn);
+    }
 }
 
 /* Harris 0xA8: seven alias characters after the opcode, MFID and length octets. */
@@ -195,6 +304,24 @@ file_count(const char* path, const char* needle) {
 
 /* ---- Tests ------------------------------------------------------------------------------------------------- */
 
+/* A Phase 2 SACCH message describes the other slot's call: the alias attaches to that voice slot, never to the slot
+ * the SACCH was received on. */
+static void
+test_phase2_sacch_alias_uses_voice_slot(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x0012D1U;
+    begin_call(&f, DSD_SYNC_P25P2_POS, 1U, 5204U, rid);
+    alias_record r;
+    build_record_ascii(&r, rid, "VOICE ONE");
+    /* SACCH on slot 0 carries slot 1's signalling. */
+    p2_send_record(f.opts, f.st, 0, &r, 0x3U);
+    expect_true("p2 SACCH alias lands on the voice slot's row", history_has_alias(f.st, 1U, "VOICE ONE"));
+    expect_true("p2 SACCH alias never lands on the receiving slot", !history_has_alias(f.st, 0U, "VOICE ONE"));
+    expect_true("p2 SACCH alias learned for the voice slot's talker", policy_name_is(f.st, rid, "VOICE ONE"));
+    fixture_close(&f);
+}
+
 /* A Harris alias or position from a MAC that failed its CRC (-F) reaches no event row, no learned policy, no group
  * file and no position. */
 static void
@@ -223,6 +350,7 @@ test_phase2_harris_failed_crc_publishes_nothing(void) {
 
 int
 main(void) {
+    test_phase2_sacch_alias_uses_voice_slot();
     test_phase2_harris_failed_crc_publishes_nothing();
     if (g_fail) {
         return 1;

@@ -2181,7 +2181,8 @@ p25p2_vpdu_iter_block_19(p25p2_vpdu_ctx* ctx) {
         // so a malformed length is truncated rather than trusted.
         dsd_unpack_bytes_to_bits_truncating(bytes + 1, sizeof(bytes) - 1U, mac_bits, sizeof(mac_bits), len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Header");
-        apx_embedded_alias_header_phase2(opts, state, state->currentslot, mac_bits);
+        // The voice slot the message describes: on SACCH that is the other slot (ctx->slot), not currentslot.
+        apx_embedded_alias_header_phase2(opts, state, (uint8_t)slot, mac_bits);
     }
 
     if (len_b < 0) {
@@ -2221,7 +2222,7 @@ p25p2_vpdu_iter_block_20(p25p2_vpdu_ctx* ctx) {
         // so a malformed length is truncated rather than trusted.
         dsd_unpack_bytes_to_bits_truncating(bytes + 1, sizeof(bytes) - 1U, mac_bits, sizeof(mac_bits), len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Blocks");
-        apx_embedded_alias_blocks_phase2(opts, state, state->currentslot, mac_bits);
+        apx_embedded_alias_blocks_phase2(opts, state, (uint8_t)slot, mac_bits);
     }
 
     if (len_b < 0) {
