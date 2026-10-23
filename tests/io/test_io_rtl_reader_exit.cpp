@@ -91,7 +91,8 @@ expect_report(input_ring_state* ring, int reader_rc) {
     ring_waiter waiter;
     waiter.ring = ring;
     dsd_thread_t waiter_thread;
-    assert(dsd_thread_create(&waiter_thread, wait_for_ring_wake, &waiter) == 0);
+    const int created = dsd_thread_create(&waiter_thread, wait_for_ring_wake, &waiter);
+    assert(created == 0);
     while (!waiter.waiting.load(std::memory_order_acquire)) {
         dsd_sleep_ms(1);
     }
