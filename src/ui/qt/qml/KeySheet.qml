@@ -54,16 +54,20 @@ ModalSheet {
             return qsTr("Automatic keys");
         return qsTr("No keys");
     }
-    function open() {
+    // An empty direct draft showing the session's configured identifier policy.
+    function resetDraft() {
         editor.reset();
-        notice = "";
-        selectedProfileUid = materialProfile.uid || "";
-        profileScope = (metrics.scanTargetId || "").length ? 1 : 0;
-        context = commands.decryptionContext(metrics.scanTargetId || "", metrics.keyEpoch || "0");
         var force = metrics.configuredForce || 0;
         editor.forceMode = force === 33 ? 2 : force <= 1 ? force : 0;
         editor.forceChanged = false;
         editor.currentForceSummary = force === 0 ? qsTr("normal identifiers") : force === 1 ? qsTr("privacy forcing") : qsTr("algorithm %1 fallback").arg(force.toString(16).toUpperCase());
+    }
+    function open() {
+        resetDraft();
+        notice = "";
+        selectedProfileUid = materialProfile.uid || "";
+        profileScope = (metrics.scanTargetId || "").length ? 1 : 0;
+        context = commands.decryptionContext(metrics.scanTargetId || "", metrics.keyEpoch || "0");
         advancedOpen = false;
         savingDraft = false;
         systemRevision++;
@@ -244,10 +248,9 @@ ModalSheet {
         onSaved: function (uid) {
             sheet.selectedProfileUid = uid;
             if (sheet.savingDraft) {
-                // The key now lives in the profile: the session draft is done.
+                // The key and its identifier policy now live in the profile: the session draft is done.
                 sheet.savingDraft = false;
-                editor.keyType = "";
-                editor.keyValue = "";
+                sheet.resetDraft();
                 sheet.notice = qsTr("Profile saved and selected. Apply it to use it in this session.");
             }
         }

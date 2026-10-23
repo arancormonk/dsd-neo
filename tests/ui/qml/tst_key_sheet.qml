@@ -588,6 +588,12 @@ Item {
             compare(saved.protocol, "dmr");
             compare(saved.directType, "rc4");
             compare(saved.force, data.force);
+            // The policy moved into the profile with the key: nothing is left to apply or discard.
+            verify(!editor().forceChanged, "the policy edit is consumed");
+            verify(!sheet.draftEdited(), "Cancel has nothing to discard");
+            verify(sheet.visible, "the sheet stays open after the save");
+            findChild(sheet, "applySessionKeyButton").activate();
+            compare(commands.keyApplyCalls(), 0, "Apply changed defaults submits nothing");
         }
         // A protocol that offers no identifier policy saves the plain default.
         function test_save_as_profile_drops_a_policy_the_protocol_lacks() {
