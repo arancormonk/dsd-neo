@@ -29,6 +29,13 @@ dsd_key_hytera_present(const dsd_state* state) {
     return state && (state->hytera_key_segments != 0U || state->K1 != 0ULL);
 }
 
+// The direct multi-word key (K1..K4: -H, a direct AES or TDEA key) that data paths fall back to when nothing was
+// imported for the key ID. Its loaders record the word count; material written without one is judged by value.
+static inline int
+dsd_key_direct_words_present(const dsd_state* state) {
+    return state && (state->hytera_key_segments != 0U || (state->K1 | state->K2 | state->K3 | state->K4) != 0ULL);
+}
+
 // DMR forced clear: Baofeng AP, CSI EE and the Kenwood scrambler are static keys forced onto every voice frame, so
 // the vocoder's verdict counts a frame under them as decrypted (issue #655): an encrypted one plays, and reverse mute
 // (-q) mutes only one that is clear.

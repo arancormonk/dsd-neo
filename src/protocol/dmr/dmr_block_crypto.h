@@ -15,6 +15,7 @@ typedef struct {
     int signaled_kid; /* OTA: what gets printed */
     int mapped;       /* 1 when --dmr-tg-key-csv replaced the signaled id */
     int aes_key_loaded;
+    int rkey_present; /* rkey is a key: imported (an imported zero included) or entered directly */
     int start;
     int end;
     unsigned long long mi;

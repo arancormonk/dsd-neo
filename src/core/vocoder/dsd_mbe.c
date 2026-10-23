@@ -1266,10 +1266,11 @@ mbeslot_left_autoload_keys(dsd_state* state) {
                               ? (uint32_t)call.ota_target_id
                               : 0U;
         uint32_t hash = mbe_hash_tg_for_key(target);
-        if (state->rkey_array[hash] != 0) {
+        if (keyring_kid_scalar_present(state, (int)hash)) {                // an imported zero is a key too
             state->K = state->rkey_array[hash] & 0xFF;                     //doesn't exceed 255
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
             state->K2 = state->K3 = state->K4 = 0ULL;
+            state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
             (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);
@@ -1285,10 +1286,11 @@ mbeslot_right_autoload_keys(dsd_state* state) {
                               ? (uint32_t)call.ota_target_id
                               : 0U;
         uint32_t hash = mbe_hash_tg_for_key(target);
-        if (state->rkey_array[hash] != 0) {
+        if (keyring_kid_scalar_present(state, (int)hash)) { // an imported zero is a key too
             state->K = state->rkey_array[hash] & 0xFF;
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
             state->K2 = state->K3 = state->K4 = 0ULL;
+            state->basic_key_present = 1U;
             state->hytera_key_segments = 1U;
             (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
                                                     (int)target, 1, 0);

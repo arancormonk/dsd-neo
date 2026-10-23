@@ -312,6 +312,32 @@ test_p25_pdu_missing_keys_stay_encrypted(void) {
     return rc;
 }
 
+/* An imported zero key is a key: DES, RC4 and AES-128 PDUs decrypt with it, as with the same value entered directly. */
+static int
+test_p25_pdu_imported_zero_keys_decrypt(void) {
+    static const uint8_t cipher[] = {0xC0, 0xDE, 0x12, 0x34};
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    const int algs[3] = {0x81, 0xAA, 0x89};
+    const char* names[3] = {"DES", "RC4", "AES-128"};
+    for (int i = 0; i < 3; i++) {
+        uint8_t input[sizeof cipher];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
+        DSD_MEMCPY(input, cipher, sizeof cipher);
+        st.rkey_array_loaded[0x4321] = 1U;
+        if (algs[i] == 0x89) {
+            st.rkey_array_loaded[0x4321 + 0x101] = 1U;
+        }
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof tag, "P25 PDU %s imported zero key decrypts", names[i]);
+        rc |= expect_u8(
+            tag, p25_decrypt_pdu(&opts, &st, input, algs[i], 0x4321, 0x0123456789ABCDEFULL, (int)sizeof input), 0);
+    }
+    return rc;
+}
+
 static int
 test_p25_pdu_label_helpers(void) {
     char label[48];
@@ -570,6 +596,7 @@ main(void) {
     rc |= test_p25_pdu_rc4_decrypt_vector();
     rc |= test_p25_pdu_aes128_decrypt_vector();
     rc |= test_p25_pdu_missing_keys_stay_encrypted();
+    rc |= test_p25_pdu_imported_zero_keys_decrypt();
     rc |= test_p25_pdu_label_helpers();
     rc |= test_p25_pdu_header_state_updates();
     rc |= test_p25_pdu_es_header_decrypt_and_advance();

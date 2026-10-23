@@ -27,6 +27,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
@@ -1411,13 +1412,12 @@ sdrtrunk_build_rc4_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
         return 0;
     }
 
-    unsigned long long int rc4_key = state->rkey_array[key_id];
-    if (rc4_key == 0ULL) {
-        rc4_key = state->R;
-    }
-    if (rc4_key == 0ULL) {
+    // The imported key when present (an imported zero included), else the direct one.
+    const int imported = keyring_kid_scalar_present(state, key_id);
+    if (!imported && !dsd_key_scalar_present(state, 0)) {
         return 0;
     }
+    unsigned long long int rc4_key = imported ? state->rkey_array[key_id] : state->R;
 
     uint8_t rc4_kiv[13];
     DSD_MEMSET(rc4_kiv, 0, sizeof(rc4_kiv));
@@ -1443,13 +1443,14 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
         return 0;
     }
 
-    unsigned long long int des_key = (protocol == 3 && state->keyloader != 1) ? state->R : state->rkey_array[key_id];
-    if (des_key == 0ULL && (protocol != 3 || state->keyloader != 1)) {
-        des_key = state->R;
-    }
-    if (des_key == 0ULL) {
+    // NXDN without the keyloader keys from the direct key alone; otherwise the imported key when present (an imported
+    // zero included), and the direct one when nothing was imported, except for NXDN under the keyloader.
+    const int imported = !(protocol == 3 && state->keyloader != 1) && keyring_kid_scalar_present(state, key_id);
+    const int direct_allowed = protocol != 3 || state->keyloader != 1;
+    if (!imported && !(direct_allowed && dsd_key_scalar_present(state, 0))) {
         return 0;
     }
+    unsigned long long int des_key = imported ? state->rkey_array[key_id] : state->R;
 
     unsigned long long int iv_u64 = sdrtrunk_u64_from_be8(iv64);
     // codeql[cpp/weak-cryptographic-algorithm] DES is required for active radio protocol interoperability.
@@ -1472,15 +1473,18 @@ sdrtrunk_load_aes_key(const dsd_state* state, uint16_t key_id, int strict_lookup
         words[2] = state->rkey_array[key_id + 0x201];
         words[3] = state->rkey_array[key_id + 0x301];
     }
-    uint64_t present = words[0] | words[1] | words[2] | words[3];
+    // Imported material is present by its import flags (an all-zero key included), the direct K1..K4 key by
+    // dsd_key_direct_words_present().
+    int present = (strict_lookup && state->keyloader != 1) ? dsd_key_direct_words_present(state)
+                                                           : keyring_kid_aes_present(state, key_id);
     if (!present && !strict_lookup) {
         words[0] = state->K1;
         words[1] = state->K2;
         words[2] = state->K3;
         words[3] = state->K4;
-        present = words[0] | words[1] | words[2] | words[3];
+        present = dsd_key_direct_words_present(state);
     }
-    if (!present && !(strict_lookup && state->keyloader == 1 && state->rkey_array_loaded[key_id])) {
+    if (!present) {
         return 0;
     }
     for (unsigned word = 0; word < 4U; word++) {
@@ -1999,12 +2003,11 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
                     effective_kid = (uint16_t)kid;
                 }
             }
-            if (!mapped && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU
-                && state->rkey_array[ctx->target_id] != 0) {
+            if (!mapped && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU) {
                 // Pre-existing implicit "key indexed by talkgroup" replay convention. Kept as the
                 // fallback so replay workflows that depend on it are unchanged when no row matches.
-                state->R = state->rkey_array[ctx->target_id];
-                state->scalar_key_present[0] = 0;
+                // An imported zero key is a key too (keyring_kid_scalar_present()).
+                (void)keyring_load_scalar_key(state, 0, (int)ctx->target_id);
             }
         }
         if (ctx->alg_id == 0x21) {
@@ -2254,7 +2257,9 @@ sdrtrunk_json_build_keystreams(const dsd_opts* opts, const dsd_state* state, sdr
         }
         if (ctx->alg_id == 1) {
             const uint64_t key = state->keyloader == 1 ? state->rkey_array[key_id] : state->R;
-            if (key == 0U || key > 0x7FFFU) {
+            const int present =
+                state->keyloader == 1 ? keyring_kid_scalar_present(state, key_id) : dsd_key_scalar_present(state, 0);
+            if (!present || key > 0x7FFFU) {
                 return 0;
             }
             nxdn_pdu_scrambler_keystream_creation(ctx->ks, (int)key, 16 * 49);

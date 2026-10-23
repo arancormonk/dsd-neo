@@ -15,6 +15,8 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
@@ -447,17 +449,9 @@ p25_store_u64_be(uint64_t value, uint8_t* out) {
     }
 }
 
+// The imported key for the key ID when one is present (by its import flags, an all-zero key included), else the
+// direct K1..K4 key. Returns 0 when neither holds a key.
 static int
-p25_bytes_any_nonzero(const uint8_t* bytes, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        if (bytes[i] != 0U) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static void
 p25_load_aes_key(const dsd_state* state, uint16_t key_id, uint8_t aes_key[32]) {
     unsigned long long int parts[4] = {
         state->rkey_array[key_id + 0x000],
@@ -465,17 +459,19 @@ p25_load_aes_key(const dsd_state* state, uint16_t key_id, uint8_t aes_key[32]) {
         state->rkey_array[key_id + 0x201],
         state->rkey_array[key_id + 0x301],
     };
-
-    if ((parts[0] == 0) && (parts[1] == 0) && (parts[2] == 0) && (parts[3] == 0)) {
+    int present = keyring_kid_aes_present(state, key_id);
+    if (!present) {
         parts[0] = state->K1;
         parts[1] = state->K2;
         parts[2] = state->K3;
         parts[3] = state->K4;
+        present = dsd_key_direct_words_present(state);
     }
 
     for (int part = 0; part < 4; part++) {
         p25_store_u64_be((uint64_t)parts[part], aes_key + ((size_t)part * sizeof(uint64_t)));
     }
+    return present;
 }
 
 static uint8_t
@@ -487,8 +483,7 @@ p25_build_aes_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint8_
     DSD_MEMSET(aes_key, 0, sizeof(aes_key));
 
     *ks_idx = 16; // offset for OFB discard round
-    p25_load_aes_key(state, key_id, aes_key);
-    if (!p25_bytes_any_nonzero(aes_key, sizeof(aes_key))) {
+    if (!p25_load_aes_key(state, key_id, aes_key)) {
         return 1;
     }
 
@@ -508,13 +503,12 @@ p25_build_aes_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint8_
 static uint8_t
 p25_build_des_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16_t key_id, unsigned long long int mi,
                             int len, uint8_t* ks_bytes, int* ks_idx) {
-    unsigned long long int des_key = state->rkey_array[key_id];
-    if (des_key == 0) {
-        des_key = state->R;
-    }
+    // The imported key when present (an imported zero included), else the direct one.
+    const int imported = keyring_kid_scalar_present(state, key_id);
+    unsigned long long int des_key = imported ? state->rkey_array[key_id] : state->R;
 
     *ks_idx = 8; // offset for OFB discard round
-    if (des_key == 0) {
+    if (!imported && !dsd_key_scalar_present(state, 0)) {
         return 1;
     }
 
@@ -531,10 +525,9 @@ p25_build_des_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
 static uint8_t
 p25_build_rc4_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16_t key_id, unsigned long long int mi,
                             int len, uint8_t* ks_bytes, int* ks_idx) {
-    unsigned long long int rc4_key = state->rkey_array[key_id];
-    if (rc4_key == 0) {
-        rc4_key = state->R;
-    }
+    // The imported key when present (an imported zero included), else the direct one.
+    const int imported = keyring_kid_scalar_present(state, key_id);
+    unsigned long long int rc4_key = imported ? state->rkey_array[key_id] : state->R;
 
     uint8_t rc4_kiv[13];
     DSD_MEMSET(rc4_kiv, 0, sizeof(rc4_kiv));
@@ -546,7 +539,7 @@ p25_build_rc4_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
     p25_store_u64_be((uint64_t)mi, rc4_kiv + 5);
 
     *ks_idx = 0;
-    if (rc4_key == 0) {
+    if (!imported && !dsd_key_scalar_present(state, 0)) {
         return 1;
     }
 

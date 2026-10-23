@@ -409,6 +409,36 @@ test_basic_privacy_decrypts_window(void) {
     return rc;
 }
 
+/* An imported zero key is a key: the data RC4, DES and AES-256 paths decrypt with it; nothing imported, nothing does. */
+static int
+test_imported_zero_keys_decrypt(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    const uint8_t slot = 0;
+    const int kid = 0x46;
+    const int algs[3] = {1, 2, 5};
+    int rc = 0;
+    for (int i = 0; i < 3; i++) {
+        for (int imported = 1; imported >= 0; imported--) {
+            seed_window(&state, slot, 2, 14);
+            state.payload_algid = algs[i];
+            state.payload_keyid = kid;
+            state.payload_mi = 0x01020304ULL;
+            state.rkey_array_loaded[kid + 0x000] = (unsigned char)imported;
+            if (algs[i] == 5) {
+                state.rkey_array_loaded[kid + 0x101] = (unsigned char)imported;
+                state.rkey_array_loaded[kid + 0x201] = (unsigned char)imported;
+                state.rkey_array_loaded[kid + 0x301] = (unsigned char)imported;
+            }
+            dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+            char tag[64];
+            DSD_SNPRINTF(tag, sizeof tag, "alg %d %s zero key decrypts", algs[i], imported ? "imported" : "absent");
+            rc |= expect_int(tag, dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), imported);
+        }
+    }
+    return rc;
+}
+
 static int
 test_aes_missing_key_still_normalizes_alg(void) {
     static dsd_state state;
@@ -466,6 +496,7 @@ main(void) {
     rc |= test_des_decrypts_window_with_manual_key_fallback();
     rc |= test_basic_privacy_decrypts_window();
     rc |= test_aes_missing_key_still_normalizes_alg();
+    rc |= test_imported_zero_keys_decrypt();
     rc |= test_malformed_window_decrypt_rejects_without_mutating_payload();
     return rc;
 }

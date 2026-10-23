@@ -797,9 +797,15 @@ suite runs under this compiler.
   the Kirisun quartet alone keeps its all-non-zero rule (`keyring_kid_kirisun_complete()`). NXDN keys its material by
   the VCALL key ID, the destination or the frequency hash outside that activation, and applies the same rule through
   `keyring_load_scalar_key()` (scrambler and DES, voice and data) and `keyring_kid_aes_present()` (AES voice and data,
-  the signalled-key selection). Tests: `P25_CRYPTO_STATE` (zero keys on both phases, key ID 0, a key ID with hex
-  letters, an incomplete AES-256 collection), `NXDN_ELEMENT_BOUNDS` (imported zero AES-256, DES, NXDN48 scrambler and
-  data DES; absent keys refused), `CORE_DMR_TG_KEY_MAP`, `CORE_MBE_TRANSFORM_CONTEXT`.
+  the signalled-key selection). Every other loader that reads `rkey_array` by key ID decides presence the same way
+  and falls back to the direct key only when nothing was imported, judging that one by `dsd_key_scalar_present()`
+  (R/RR) or `dsd_key_direct_words_present()` (K1..K4): the DMR Basic Privacy talkgroup autoload in `dsd_mbe.c` (which
+  also sets `basic_key_present`), the DMR data block crypto (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt
+  (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and talkgroup-keyed lookup (`dsd_file.c`). Tests:
+  `P25_CRYPTO_STATE` (zero keys on both phases, key ID 0, a key ID with hex letters, an incomplete AES-256 collection),
+  `NXDN_ELEMENT_BOUNDS` (imported zero AES-256, DES, NXDN48 scrambler and data DES; absent keys refused),
+  `CORE_MBE_TRANSFORM_CONTEXT` (Basic Privacy autoload), `DMR_BLOCK_CRYPTO`, `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO`,
+  `CORE_DMR_TG_KEY_MAP`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the
