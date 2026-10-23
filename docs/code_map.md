@@ -796,8 +796,11 @@ suite runs under this compiler.
   (scalar and AES needs) and the mapped DMR material (`dsd_dmr_slot_key_material()`) use the same flag-or-value rule;
   the Kirisun quartet alone keeps its all-non-zero rule (`keyring_kid_kirisun_complete()`). NXDN keys its material by
   the VCALL key ID, the destination or the frequency hash outside that activation, and applies the same rule through
-  `keyring_load_scalar_key()` (scrambler and DES, voice and data) and `keyring_kid_aes_present()` (AES voice and data,
-  the signalled-key selection). Every other loader that reads `rkey_array` by key ID decides presence the same way
+  `keyring_load_scalar_key()` (scrambler and DES, voice and data) and `keyring_kid_aes_present()` (AES voice and data).
+  Whether a VCALL's own key ID holds its key, for the loader and the key source the call reports alike, is
+  cipher-specific (`nxdn_vcall_kid_holds_key()`): a scalar for the scrambler and DES, all four AES-256 segments for
+  AES, so another ID's scalar parked on one of this ID's AES cells (ID + 0x101 ...) never reads as this ID's key.
+  Every other loader that reads `rkey_array` by key ID decides presence the same way
   and falls back to the direct key only when nothing was imported, judging that one by `dsd_key_scalar_present()`
   (R/RR) or `dsd_key_direct_words_present()` (K1..K4): the DMR Basic Privacy talkgroup autoload in `dsd_mbe.c` (which
   also sets `basic_key_present`), the DMR data block crypto (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt

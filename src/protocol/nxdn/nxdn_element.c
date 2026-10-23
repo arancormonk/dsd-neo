@@ -2301,6 +2301,17 @@ nxdn_vcall_load_aes_key(dsd_state* state, uint32_t key_index) {
     state->scalar_key_present[0] = 0;
 }
 
+// Whether the VCALL's own key ID holds the key its cipher needs: a scalar for the scrambler and DES, all four AES-256
+// segments for AES. Cipher-specific, so another ID's scalar key parked on one of this ID's AES cells (ID + 0x101 ...)
+// never makes the ID look keyed for a scrambler or DES call, nor a lone scalar an AES key.
+static int
+nxdn_vcall_kid_holds_key(const dsd_state* state, uint8_t cipher_type, int key_id) {
+    if (cipher_type == 3U) {
+        return keyring_aes_segments_complete(state, key_id, 4U);
+    }
+    return keyring_kid_scalar_present(state, key_id);
+}
+
 static void
 nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (state->keyloader != 1) {
@@ -2315,7 +2326,7 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
         (void)keyring_load_scalar_key(state, 0, (int)info->key_id);
     } else if (info->cipher_type == 3U) {
         uint32_t key_index = 0;
-        if (keyring_kid_aes_present(state, (int)info->key_id)) {
+        if (nxdn_vcall_kid_holds_key(state, 3U, (int)info->key_id)) {
             key_index = info->key_id;
         }
         nxdn_vcall_load_aes_key(state, key_index);
@@ -2402,8 +2413,9 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
             int selected = -1;
             if (state->keyloader == 1) {
                 source = DSD_CALL_KEY_DEFAULT;
-                // The key ID holds an imported key, a zero one included (the keyring's presence rule).
-                if (keyring_kid_material(state, key_id, NULL, NULL)) {
+                // The same choice nxdn_vcall_load_key() made: the signalled ID when it holds this cipher's key
+                // (an imported zero included), else the destination's scrambler key, else AES key 0.
+                if (nxdn_vcall_kid_holds_key(state, cipher_type, key_id)) {
                     source = DSD_CALL_KEY_SIGNALED;
                     selected = key_id;
                 } else if (cipher_type == 1

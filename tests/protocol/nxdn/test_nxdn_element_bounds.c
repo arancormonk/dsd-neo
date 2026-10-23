@@ -1743,6 +1743,63 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
 
 /* An imported key is present by its import flags, an all-zero one included, as the same value entered directly is;
  * a key ID nothing was imported for is still refused. */
+/* The key a call reports is the one its cipher selected. A scrambler call on NXDN48 whose key ID 0x2A holds no key
+ * takes the destination's key (0x4567); another destination's scalar key at 0x12B sits on 0x2A's first AES cell
+ * (0x2A + 0x101) and must not make 0x2A read as keyed. An AES call needs all four segments at its key ID: a scalar
+ * alone there is no AES key. */
+static int
+test_vcall_reports_the_key_its_cipher_selected(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    dsd_call_snapshot call;
+
+    state->nxdn_confirmed = 1;
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->keyloader = 1;
+    state->rkey_array[0x4567U] = 0x1234U;
+    state->rkey_array_loaded[0x4567U] = 1U;
+    state->rkey_array[0x12BU] = 0x0777U;
+    state->rkey_array_loaded[0x12BU] = 1U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 1U, 0x2AU);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_u64("scrambler-loads-destination-key", (uint64_t)state->R, 0x1234U);
+    rc |= expect_int("scrambler-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("scrambler-reports-destination-source", call.key_selection.source, DSD_CALL_KEY_DESTINATION);
+    rc |= expect_int("scrambler-reports-destination-key", call.key_selection.effective_id, 0x4567);
+    dsd_state_ext_free_all(state);
+
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->frame_nxdn48 = 0;
+    opts->frame_nxdn96 = 0;
+    state->nxdn_confirmed = 1;
+    state->keyloader = 1;
+    state->rkey_array[0x13U] = 0x0101010101010101ULL;
+    state->rkey_array_loaded[0x13U] = 1U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("aes-scalar-only-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("aes-scalar-only-not-signaled", call.key_selection.source, DSD_CALL_KEY_DEFAULT);
+    rc |= expect_int("aes-scalar-only-reports-key-0", call.key_selection.effective_id, 0);
+    rc |= expect_u64("aes-scalar-only-loads-key-0", (uint64_t)state->A1[0], 0U);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_vcall_imported_zero_keys_are_present(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2837,6 +2894,7 @@ main(void) {
     rc |= test_vcall_aes_keyloader_and_iv_signal();
     rc |= test_vcall_aes_key_flag_drives_crypto_state();
     rc |= test_vcall_imported_zero_keys_are_present();
+    rc |= test_vcall_reports_the_key_its_cipher_selected();
     rc |= test_type_d_scch_publishes_crypto_fragments();
     rc |= test_type_d_scch_values_are_not_access_codes();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
