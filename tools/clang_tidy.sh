@@ -180,7 +180,7 @@ def normalize_file(entry):
 
     if rel.parts and rel.parts[0] == "build":
         return None, None
-    if len(rel.parts) >= 2 and rel.parts[0] == "src" and rel.parts[1] == "third_party":
+    if len(rel.parts) >= 2 and rel.parts[0] in ("src", "android") and rel.parts[1] == "third_party":
         return None, None
 
     return str(rel), str(file_path)
@@ -280,7 +280,7 @@ def normalize_requested(path_str):
     rel_str = rel.as_posix()
     if rel.parts and rel.parts[0] == "build":
         return None
-    if len(rel.parts) >= 2 and rel.parts[0] == "src" and rel.parts[1] == "third_party":
+    if len(rel.parts) >= 2 and rel.parts[0] in ("src", "android") and rel.parts[1] == "third_party":
         return None
     return rel_str
 
@@ -356,7 +356,7 @@ else
     for f in "${REQUESTED_FILES[@]}"; do
       f="${f#./}"
       case "$f" in
-        build/* | src/third_party/*) continue ;;
+        build/* | src/third_party/* | android/third_party/*) continue ;;
       esac
       case "$f" in
         *.c | *.cc | *.cpp | *.cxx) FILES+=("$f") ;;
@@ -364,7 +364,7 @@ else
     done
   else
     echo "python3 not found; falling back to git ls-files (may include files not in compile database)." >&2
-    mapfile -t FILES < <(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' ':!:build/**' ':!:src/third_party/**')
+    mapfile -t FILES < <(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' ':!:build/**' ':!:src/third_party/**' ':!:android/third_party/**')
   fi
 fi
 if [ ${#FILES[@]} -eq 0 ]; then

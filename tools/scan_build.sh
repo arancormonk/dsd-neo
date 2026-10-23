@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Run Clang Static Analyzer via scan-build on a dedicated temporary build tree.
 # Intended for CI or explicit local runs (heavier than per-file analyzers).
-# Excludes vendored third-party code under src/third_party.
+# Excludes vendored third-party code under src/third_party and android/third_party
+# (a desktop test builds the vendored librtlsdr against stub libusb).
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
@@ -133,6 +134,7 @@ SCAN_ARGS=(
   --keep-empty
   -o "$OUTPUT_DIR"
   --exclude "$ROOT_DIR/src/third_party"
+  --exclude "$ROOT_DIR/android/third_party"
 )
 if [[ $STRICT -eq 1 ]]; then
   SCAN_ARGS+=(
@@ -175,7 +177,7 @@ set +e
 {
   echo "scan-build version:"
   print_scan_build_version
-  echo "Excluding analyzer path: $ROOT_DIR/src/third_party"
+  echo "Excluding analyzer paths: $ROOT_DIR/src/third_party $ROOT_DIR/android/third_party"
   if [[ ${#TARGETS[@]} -gt 0 ]]; then
     echo "Scoped build targets: ${TARGETS[*]}"
   else

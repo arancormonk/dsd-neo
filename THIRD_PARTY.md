@@ -27,8 +27,10 @@ not a finding that every component is cleared for redistribution.
 - **Tiny AES** (`src/crypto/crypt-aes.c`) - Unlicense/public domain; original upstream https://github.com/kokke/tiny-AES-c.
 - **librtlsdr** (`android/third_party/librtlsdr`; osmocom, https://gitea.osmocom.org/sdr/rtl-sdr) - GPL-2.0-or-later;
   license text `android/third_party/librtlsdr/COPYING`. Trimmed v2.0.3 snapshot (library sources only) built into the
-  Android app; carries one project patch adding `rtlsdr_open_fd()` for USB-OTG descriptor injection, kept as
-  `android/third_party/patches/0001-librtlsdr-add-rtlsdr_open_fd.patch`. Not part of any non-Android build.
+  Android app; carries two project patches, kept in `android/third_party/patches/`:
+  `0001-librtlsdr-add-rtlsdr_open_fd.patch` adds `rtlsdr_open_fd()` for USB-OTG descriptor injection, and
+  `0002-librtlsdr-check-async-buffer-allocation.patch` makes the async reader check its transfer allocations and
+  return `-ENOMEM` instead of submitting NULL transfers. Not part of any non-Android build.
 - **libusb** (`android/third_party/libusb`; https://github.com/libusb/libusb) - LGPL-2.1-or-later; license text
   `android/third_party/libusb/COPYING`. Trimmed v1.0.30 snapshot (the `linux_usbfs` backend and POSIX shims upstream's
   own Android build uses) built into the Android app. Not part of any non-Android build.

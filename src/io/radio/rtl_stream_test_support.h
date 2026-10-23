@@ -186,6 +186,19 @@ typedef struct {
 int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
                                       size_t* output_count, int* out_phase);
 
+struct input_ring_state;
+
+typedef struct {
+    struct input_ring_state* ring; /* the ring the demod reads; its waiters see the reader's exit */
+    int reader_rc;                 /* what the reader returns, in place of rtlsdr_read_async()'s result */
+    int stop_while_reading;        /* the reader returns only after rtl_device_stop_async() asked it to end */
+} rtl_device_test_usb_reader_request;
+
+/* Start a USB device's reader (rtl_device_start_async()) whose rtlsdr_read_async() returns @p request->reader_rc, and
+ * join it: through rtl_device_stop_async() when @p request->stop_while_reading is set, else once it returned by
+ * itself. 0 on success, -1 when the reader could not start. */
+int rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */

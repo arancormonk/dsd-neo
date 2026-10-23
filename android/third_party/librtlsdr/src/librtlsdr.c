@@ -1833,6 +1833,8 @@ int rtlsdr_wait_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx)
 	return rtlsdr_read_async(dev, cb, ctx, 0, 0);
 }
 
+static int _rtlsdr_free_async_buffers(rtlsdr_dev_t *dev);
+
 static int _rtlsdr_alloc_async_buffers(rtlsdr_dev_t *dev)
 {
 	unsigned int i;
@@ -1840,19 +1842,28 @@ static int _rtlsdr_alloc_async_buffers(rtlsdr_dev_t *dev)
 	if (!dev)
 		return -1;
 
+	/* Both arrays start zeroed, so that after a failed allocation
+	 * _rtlsdr_free_async_buffers() releases exactly what was obtained
+	 * and leaves dev->xfer and dev->xfer_buf NULL. */
 	if (!dev->xfer) {
-		dev->xfer = malloc(dev->xfer_buf_num *
+		dev->xfer = calloc(dev->xfer_buf_num,
 				   sizeof(struct libusb_transfer *));
+		if (!dev->xfer)
+			return -ENOMEM;
 
-		for(i = 0; i < dev->xfer_buf_num; ++i)
+		for(i = 0; i < dev->xfer_buf_num; ++i) {
 			dev->xfer[i] = libusb_alloc_transfer(0);
+			if (!dev->xfer[i])
+				goto err_nomem;
+		}
 	}
 
 	if (dev->xfer_buf)
 		return -2;
 
-	dev->xfer_buf = malloc(dev->xfer_buf_num * sizeof(unsigned char *));
-	memset(dev->xfer_buf, 0, dev->xfer_buf_num * sizeof(unsigned char *));
+	dev->xfer_buf = calloc(dev->xfer_buf_num, sizeof(unsigned char *));
+	if (!dev->xfer_buf)
+		goto err_nomem;
 
 #if defined(ENABLE_ZEROCOPY) && defined (__linux__) && LIBUSB_API_VERSION >= 0x01000105
 	fprintf(stderr, "Allocating %d zero-copy buffers\n", dev->xfer_buf_num);
@@ -1894,6 +1905,7 @@ static int _rtlsdr_alloc_async_buffers(rtlsdr_dev_t *dev)
 				libusb_dev_mem_free(dev->devh,
 						    dev->xfer_buf[i],
 						    dev->xfer_buf_len);
+			dev->xfer_buf[i] = NULL;
 		}
 	}
 #endif
@@ -1904,11 +1916,15 @@ static int _rtlsdr_alloc_async_buffers(rtlsdr_dev_t *dev)
 			dev->xfer_buf[i] = malloc(dev->xfer_buf_len);
 
 			if (!dev->xfer_buf[i])
-				return -ENOMEM;
+				goto err_nomem;
 		}
 	}
 
 	return 0;
+
+err_nomem:
+	_rtlsdr_free_async_buffers(dev);
+	return -ENOMEM;
 }
 
 static int _rtlsdr_free_async_buffers(rtlsdr_dev_t *dev)
@@ -1982,7 +1998,14 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	else
 		dev->xfer_buf_len = DEFAULT_BUF_LENGTH;
 
-	_rtlsdr_alloc_async_buffers(dev);
+	r = _rtlsdr_alloc_async_buffers(dev);
+	if (r < 0) {
+		/* nothing was submitted: release what was allocated and
+		 * report the failure instead of filling NULL transfers */
+		_rtlsdr_free_async_buffers(dev);
+		dev->async_status = RTLSDR_INACTIVE;
+		return r;
+	}
 
 	for(i = 0; i < dev->xfer_buf_num; ++i) {
 		libusb_fill_bulk_transfer(dev->xfer[i],

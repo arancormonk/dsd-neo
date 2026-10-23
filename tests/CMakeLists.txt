@@ -13986,6 +13986,22 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
 
+    # The USB reader's return code: an allocation failure, or a lost device on a
+    # desktop build, ends the session as a device failure; a stop in flight does not.
+    add_executable(
+        dsd-neo_test_io_rtl_reader_exit
+        io/test_io_rtl_reader_exit.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_reader_exit
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_reader_exit
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_READER_EXIT COMMAND dsd-neo_test_io_rtl_reader_exit)
+
     # Exercise Android's production run-result collector with a real RTL open
     # failure. The driver boundary is wrapped; no Qt, JNI or USB hardware needed.
     if(
@@ -14013,6 +14029,66 @@ if(DSD_HAS_RADIO)
         )
         add_test(NAME IO_RTL_RUN_RESULT COMMAND dsd-neo_test_io_rtl_run_result)
     endif()
+endif()
+
+# The Android app's vendored librtlsdr, async reader setup under allocation
+# failure. The test includes librtlsdr.c itself against stub libusb entry points,
+# so it needs only a POSIX host and the vendored headers, not an SDR library;
+# Windows and macOS skip it.
+if(
+    UNIX
+    AND NOT APPLE
+    AND NOT ANDROID
+    AND NOT CYGWIN
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
+    set(_DSD_NEO_VENDORED_RTLSDR
+        "${PROJECT_SOURCE_DIR}/android/third_party/librtlsdr"
+    )
+    # The tuner drivers stay in upstream style, built without the project
+    # warnings as android/third_party/CMakeLists.txt builds them.
+    add_library(
+        dsd-neo_test_vendored_rtlsdr_tuners
+        STATIC
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_e4k.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0012.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0013.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc2580.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_r82xx.c
+    )
+    set_property(
+        TARGET dsd-neo_test_vendored_rtlsdr_tuners
+        PROPERTY LINK_LIBRARIES ""
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_rtlsdr_tuners
+        SYSTEM
+        PRIVATE ${_DSD_NEO_VENDORED_RTLSDR}/include
+    )
+
+    add_executable(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        io/test_vendored_librtlsdr_async_alloc.c
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        SYSTEM
+        PRIVATE
+            ${_DSD_NEO_VENDORED_RTLSDR}/include
+            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    )
+    target_compile_definitions(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        PRIVATE rtlsdr_STATIC
+    )
+    target_link_libraries(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        PRIVATE dsd-neo_test_vendored_rtlsdr_tuners ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME VENDORED_LIBRTLSDR_ASYNC_ALLOC
+        COMMAND dsd-neo_test_vendored_librtlsdr_async_alloc
+    )
 endif()
 
 add_executable(
