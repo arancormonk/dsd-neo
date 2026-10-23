@@ -5786,7 +5786,12 @@ single "current call".
   an 80-bit key covers every carrier, a TEA1 reduced key its own) and release a call it can;
   `dsd_tg_policy_evaluate_group_call()` / `_private_call()` decide `tune_allowed`; while another call is followed, a
   held talkgroup takes over a call of another one, else `dsd_tg_policy_should_preempt()` (route: carrier, any
-  timeslot). `tetra_sm_on_grant()` then follows it and the route is noted active. A header-only allocation, one to an
+  timeslot), asked after the followed call is described to the preemption ledger
+  (`dsd_tg_policy_describe_followed_call()`) from when it was followed (`tetra_call_t::followed_m`, stamped when
+  `tetra_sm_on_grant()` follows it), so a ledger cleared or restarted meanwhile neither restarts its dwell nor reads
+  as a takeover. `tetra_sm_on_grant()` then follows it and the route is noted active; a preemption it accepted is
+  committed (`dsd_tg_policy_commit_preemption()`, the cooldown), and leaving the followed call clears the ledger
+  (`tetra_calls_unfollowed()`). A header-only allocation, one to an
   unknown party or one of a call without a called party never tunes. A followed call that turns undecryptable (its
   encryption control, an encrypted allocation to its party, its basic service, or its speech) while encrypted calls
   are not followed is locked out and left (`call_followed_excluded()`), and its own reallocation is not followed: a
