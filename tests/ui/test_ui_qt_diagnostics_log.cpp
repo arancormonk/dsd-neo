@@ -1069,6 +1069,30 @@ identicalSessionLinesPinOnce() {
           "a repeated line was pinned twice");
 }
 
+// A previous run that never started a session pins no session line: an older run's session line stays with that
+// run's process line, so neither is pinned beside the newer process.
+static void
+pinnedSessionBelongsToThePinnedProcess() {
+    QTemporaryDir dir;
+    QByteArray saved("[process] [info] pid 7, android, boot 4\n[session] [info] --- session starting: older ---\n"
+                     "[process] [info] pid 8, android, boot 4\n");
+    for (int i = 0; i < 2500; ++i) {
+        saved += QStringLiteral("[stderr] [info] short %1\n").arg(i).toUtf8();
+    }
+    writeFile(dir.filePath("tail.log"), saved);
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.noteProcess(QStringLiteral("9, android, boot 4"));
+    for (int i = 0; i < 2100; ++i) {
+        log.submit("stderr", "info", QStringLiteral("live %1").arg(i));
+    }
+    const auto text = log.snapshot().join('\n');
+    check(text.contains(QStringLiteral("pid 8, android")) && text.contains(QStringLiteral("pid 9, android")),
+          "a process line was evicted from the front");
+    check(!text.contains(QStringLiteral("session starting: older")),
+          "an older run's session line was pinned beside a newer process line");
+}
+
 // A reload that reserves a slot for the process line moves its cutoff past the session line: that line is kept too.
 static void
 reloadCutoffKeepsBothContextLines() {
@@ -1221,6 +1245,7 @@ main(int argc, char** argv) {
     interruptedLegacySplit();
     lostSegmentDoesNotSpin();
     pinsFollowTheCurrentSession();
+    pinnedSessionBelongsToThePinnedProcess();
     reloadCutoffKeepsBothContextLines();
     identicalSessionLinesPinOnce();
     previousRunBootFact();

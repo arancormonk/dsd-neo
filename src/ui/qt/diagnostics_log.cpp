@@ -352,12 +352,14 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
     if (lines.isEmpty()) {
         return;
     }
-    // The previous run's identity, read before the ring limit can drop it.
+    // The previous run's identity, read before the ring limit can drop it. A session line belongs to the process line
+    // before it, so a newer process line forgets an older run's session.
     qsizetype lastProcessAt = -1;
     qsizetype lastSessionAt = -1;
     for (qsizetype i = 0; i < lines.size(); ++i) {
         if (lines.at(i).startsWith(kProcessPrefix)) {
             lastProcessAt = i;
+            lastSessionAt = -1;
         } else if (lines.at(i).startsWith(kSessionPrefix)) {
             lastSessionAt = i;
         }
