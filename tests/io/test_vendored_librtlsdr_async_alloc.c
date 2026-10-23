@@ -103,8 +103,12 @@ test_free(void* p) {
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #endif
 #if defined(__GNUC__) && !defined(__clang__)
-/* tools/gcc_fanalyzer.sh: rtlsdr_read_reg() reads its reply buffer after a failed control transfer, upstream. */
+/* Upstream reads reply bytes after a failed transfer: rtlsdr_read_reg() and rtlsdr_demod_read_reg() their reply
+ * buffer, rtlsdr_write_eeprom() the byte it read back. tools/gcc_fanalyzer.sh reports it, and so does GCC 13's
+ * -Wuninitialized (-O1) or -Wmaybe-uninitialized (-O2), since this file's libusb stubs never fill the buffer. */
 #pragma GCC diagnostic ignored "-Wanalyzer-use-of-uninitialized-value"
+#pragma GCC diagnostic ignored "-Wuninitialized"
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
 // The test needs the source's private struct rtlsdr_dev and static helpers, so it compiles the file itself.
 // NOLINTNEXTLINE(bugprone-suspicious-include)
