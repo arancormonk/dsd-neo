@@ -81,8 +81,10 @@ dmr_block_crypto_clamp_window(const dsd_state* state, uint8_t slot, dmr_block_cr
         ctx->start = cap;
     }
     const int max_end = cap - ctx->start;
-    if (ctx->end < 0 || ctx->end > max_end) {
-        /* Malformed lengths consume the remaining bounded buffer window. */
+    if (ctx->end < 0) {
+        /* More pad and offset octets than were received: nothing is ciphertext. */
+        ctx->end = 0;
+    } else if (ctx->end > max_end) {
         ctx->end = max_end;
     }
 }
@@ -104,8 +106,7 @@ dmr_block_alg_key_need(int alg) {
 }
 
 void
-dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint8_t block_len,
-                          dmr_block_crypto_ctx* ctx) {
+dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, uint16_t received_octets, dmr_block_crypto_ctx* ctx) {
     if (ctx == NULL) {
         return;
     }
@@ -115,7 +116,8 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint
     }
 
     ctx->start = (int)state->data_ks_start[slot];
-    ctx->end = ((blocks + 1) * block_len) - 4 - (int)state->data_block_poc[slot] - ctx->start;
+    // TS 102 361-1 9.3.22: the ciphertext ends before the pad octets and the CRC32.
+    ctx->end = (int)received_octets - 4 - (int)state->data_block_poc[slot] - ctx->start;
     dmr_block_crypto_clamp_window(state, slot, ctx);
 
     // The caller passes `slot`; the identity fields are selected by state->currentslot. They
@@ -263,7 +265,11 @@ dmr_block_crypto_apply_aes_ecb(const dsd_state* state, uint8_t* slot_payload, ui
                                const dmr_block_crypto_ctx* ctx) {
     const int cap = (int)(sizeof(state->dmr_pdu_sf[slot]) / sizeof(state->dmr_pdu_sf[slot][0]));
     const int available = (ctx->start < cap) ? (cap - ctx->start) : 0;
-    const int reference_blocks = (int)state->data_byte_ctr[slot] / DMR_AES_BLOCK_BYTES;
+    // Whole cipher blocks of what was received from `start` on; a block reaching past the received
+    // octets would be decrypted from bytes that never arrived.
+    const int received =
+        ((int)state->data_byte_ctr[slot] > ctx->start) ? (int)state->data_byte_ctr[slot] - ctx->start : 0;
+    const int reference_blocks = received / DMR_AES_BLOCK_BYTES;
     const int nblocks =
         (reference_blocks < (available / DMR_AES_BLOCK_BYTES)) ? reference_blocks : (available / DMR_AES_BLOCK_BYTES);
     if (nblocks <= 0) {

@@ -24,7 +24,8 @@ typedef struct {
     uint8_t rc4_iv[9];
 } dmr_block_crypto_ctx;
 
-void dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint8_t block_len,
+/* `received_octets` is what the data blocks carried, CRC32 and pad octets included (data_byte_ctr). */
+void dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, uint16_t received_octets,
                                dmr_block_crypto_ctx* ctx);
 void dmr_block_crypto_print_info(const dmr_block_crypto_ctx* ctx, int show_keys);
 uint8_t dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block_crypto_ctx* ctx,

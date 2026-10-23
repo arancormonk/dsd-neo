@@ -565,15 +565,40 @@ dmr_dheader_handle_by_format(dsd_opts* opts, dsd_state* state, uint8_t dheader[]
 // A proprietary header (dpf 15) is a second header, and a response header with nothing to
 // follow (an ACK or NACK) is complete in itself; arming the assembler for either would hand
 // the next stray continuation block to a payload parser.
+// Only formats whose blocks follow the header arm it (TS 102 361-1 table 9.30): DPF 4-12 are reserved,
+// and an SP_HEAD carries its status in the header, its Appended Blocks "shall be set to 0" (table 9.17A).
 static uint8_t
 dmr_dheader_arms_assembler(const dmr_dheader_fields* f) {
-    if (f->dpf == 15) {
-        return 0;
+    switch (f->dpf) {
+        case 0: return 1;
+        case 1:
+        case 2:
+        case 3: return (uint8_t)(f->bf != 0);
+        case 13:
+        case 14: return (uint8_t)(f->s_ab_fin != 0);
+        default: return 0;
     }
-    if (f->dpf == 1 && f->bf == 0) {
-        return 0;
+}
+
+// A standard header starts a new packet: confirmed mode and a proprietary header belong to the one they
+// were signalled in, and an interrupted packet must not lend them to this one. The format handlers set
+// confirmed mode again; an MNIS P_HEAD that follows sets data_p_head. A proprietary header continues the
+// standard one and keeps both.
+static void
+dmr_dheader_start_packet(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
+    if (f->dpf != 15) {
+        state->data_conf_data[slot] = 0;
+        state->data_p_head[slot] = 0;
     }
-    return 1;
+}
+
+// A header that does not arm the assembler disarms it, so a stray continuation after it cannot complete
+// the packet it interrupted. A proprietary header leaves the standard header's arming alone.
+static void
+dmr_dheader_set_armed(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
+    if (f->dpf != 15) {
+        state->data_header_valid[slot] = dmr_dheader_arms_assembler(f);
+    }
 }
 
 void
@@ -624,6 +649,7 @@ dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8
         // --dmr-tg-key-csv lookup degrades to unmapped rather than to the wrong talkgroup.
         state->dmr_data_target_is_group[slot] = 0;
     }
+    dmr_dheader_start_packet(state, slot, &f);
     state->data_header_crc_invalid[slot] |= crc_flags;
     state->data_block_crc_valid[slot][0] = (uint8_t)(state->data_header_crc_invalid[slot] == 0);
     const uint8_t saved_crc_invalid = state->event_crc_invalid[slot];
@@ -641,9 +667,7 @@ dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8
     dmr_dheader_set_strings(&f);
     dmr_dheader_handle_by_format(opts, state, dheader, dheader_bits, slot, &f);
     dmr_dheader_sanitize_blocks(state, slot);
-    if (dmr_dheader_arms_assembler(&f)) {
-        state->data_header_valid[slot] = 1;
-    }
+    dmr_dheader_set_armed(state, slot, &f);
     if (f.dpf != 1 && f.dpf != 15) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Data Call - %s TGT: %d SRC: %d ",
                      f.sap_string, f.target, f.source);
@@ -1063,11 +1087,11 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, ui
 }
 
 static void DSD_ATTR_USED
-dmr_block_type1_decrypt_pdu(const dsd_opts* opts, dsd_state* state, uint8_t slot, int blocks, uint8_t block_len,
+dmr_block_type1_decrypt_pdu(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t received_octets,
                             uint8_t* decrypted_pdu) {
     dmr_block_crypto_ctx ctx;
 
-    dmr_block_crypto_load_ctx(state, slot, blocks, block_len, &ctx);
+    dmr_block_crypto_load_ctx(state, slot, received_octets, &ctx);
     dmr_block_crypto_print_info(&ctx, opts ? opts->show_keys : 0);
 
     *decrypted_pdu = dmr_block_crypto_decrypt_payload(state, slot, &ctx, opts ? opts->show_keys : 0);
@@ -1129,6 +1153,17 @@ dmr_block_assembler_init_ctx(dmr_block_assembler_ctx* ctx, dsd_opts* opts, dsd_s
     if (ctx->block_len > 24) {
         ctx->block_len = 24;
     }
+}
+
+// Octets the packet's data blocks carried, CRC32 and pad octets included: what was appended, not
+// (blocks + 1) * block_len, which counted one block too many for a single-block packet and could wrap
+// on a malformed block width. An encryption P_HEAD restarts the count; an MNIS P_HEAD's ten stored
+// octets stay in it, as the MNIS payload offsets expect.
+static uint16_t
+dmr_block_type1_received_octets(const dmr_block_assembler_ctx* ctx) {
+    const uint16_t cap = (uint16_t)sizeof(ctx->state->dmr_pdu_sf[ctx->slot]);
+    const uint16_t received = ctx->state->data_byte_ctr[ctx->slot];
+    return (received > cap) ? cap : received;
 }
 
 static uint8_t
@@ -1249,8 +1284,9 @@ dmr_block_type1_block_crc_flags(const dsd_state* state, uint8_t slot) {
 
     int start = state->data_p_head[slot] ? 2 : 1;
     int end = state->data_header_blocks[slot];
-    if (end > 126) {
-        end = 126;
+    const int last = (int)sizeof(state->data_block_crc_valid[slot]) - 1;
+    if (end > last) {
+        end = last;
     }
     if (end < start) {
         return DSD_CRC_FAILED;
@@ -1440,7 +1476,16 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
     }
 
     uint8_t sap = ctx->state->data_header_sap[ctx->slot];
-    uint16_t len = ((ctx->blocks + 1) * ctx->block_len) - 4;
+    // TS 102 361-1 9.3.22: the user data is what the blocks carried less the CRC32 and the pad octets.
+    // SAP 3 has no length of its own (TS 102 361-3 table 7.2 derives the UDP length from it). A pad
+    // count larger than the data, possible only from a header accepted under relaxed CRC, is ignored
+    // as on the MNIS path, so the header still prints.
+    const uint16_t received = dmr_block_type1_received_octets(ctx);
+    uint16_t len = (received >= 4U) ? (uint16_t)(received - 4U) : 0U;
+    const uint8_t poc = ctx->state->data_block_poc[ctx->slot];
+    if (poc <= len) {
+        len = (uint16_t)(len - poc);
+    }
 
     if (sap == 4) {
         decode_ip_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
@@ -1475,7 +1520,8 @@ dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx) {
     uint8_t decrypted_pdu = enc_check ? 0 : 1;
 
     if (enc_check) {
-        dmr_block_type1_decrypt_pdu(ctx->opts, ctx->state, ctx->slot, ctx->blocks, ctx->block_len, &decrypted_pdu);
+        dmr_block_type1_decrypt_pdu(ctx->opts, ctx->state, ctx->slot, dmr_block_type1_received_octets(ctx),
+                                    &decrypted_pdu);
     }
     if (enc_check == 1 && decrypted_pdu == 0) {
         dmr_block_type1_handle_encrypted_notice(ctx);
@@ -1496,7 +1542,8 @@ dmr_block_type1_log_crc_and_payload(dmr_block_assembler_ctx* ctx) {
     if (ctx->opts->payload == 1) {
         DSD_FPRINTF(stderr, "%s", KGRN);
         DSD_FPRINTF(stderr, "\n Slot %d - Multi Block PDU Message\n  ", ctx->slot + 1);
-        for (int i = 0; i < ((ctx->blocks + 1) * ctx->block_len); i++) {
+        const uint16_t received = dmr_block_type1_received_octets(ctx);
+        for (uint16_t i = 0; i < received; i++) {
             if ((i != 0) && (i % 12 == 0)) {
                 DSD_FPRINTF(stderr, "\n  ");
             }
