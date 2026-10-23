@@ -1127,11 +1127,10 @@ The writer keeps the newest 256 KiB as two append-only segments in
 
 **Durable start.** A phone that restarts while listening loses whatever was not
 yet on flash. So a start records itself before it touches the device:
-- **When:** before the USB access request and before the decoder starts, a
-  `session starting:` line records the source, the boot count and, for a dongle,
-  its product and VID:PID. A USB access request and the start that follows it are
-  one attempt with one line; every other Play, the same source again included,
-  gets its own.
+- **When:** a USB access request records a `usb access requested:` line first.
+  Before the decoder starts, a `session starting:` line records the source, the
+  boot count and, for a dongle, its product and VID:PID. Every Play, the same
+  source again included, gets its own `session starting:` line.
 - **The window:** for the next 10 s every record is written at once and synced.
   The window opens again at `UsbManager.openDevice` and when the service starts
   decoding, and the steps in between log on entry and on return: the foreground
@@ -1152,8 +1151,9 @@ PSS and Android's description. These are repeated on every launch. Each new
 segment starts again with the current `process:` and `session starting:` lines.
 The screen, Copy and Share keep the previous run's and this run's `process:` and
 `session starting:` lines at the top, however many records the 2000-row limit
-drops after them. So a shared report always says which process, boot and session its lines
-belong to.
+drops after them. Each run keeps its own lines, even when two runs started the
+same source and wrote identical ones. So a shared report always says which
+process, boot and session its lines belong to.
 
 If the boot count changed since the previous run, the run adds `previous run:
 Android has restarted since (boot 5 -> 6)`. That is a fact, not a cause. Android

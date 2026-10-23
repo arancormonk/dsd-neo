@@ -372,29 +372,29 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
     // which process, boot and session the remaining lines belong to.
     qsizetype keepFrom = 0;
     const QStringList context = droppedContext(lines, {lastProcessAt, lastSessionAt}, &keepFrom);
-    m_ring.append(QStringLiteral("--- previous run ---"));
-    m_ring.append(context);
-    for (qsizetype i = keepFrom; i < lines.size(); ++i) {
-        m_ring.append(redact(QString::fromUtf8(lines.at(i))));
+    // The divider and the previous run's identity (those very lines, wherever they sit) stay at the front while this
+    // run's records arrive.
+    m_protectedPrevious.append(pushRingLocked(QStringLiteral("--- previous run ---")));
+    for (const auto& line : context) {
+        m_protectedPrevious.append(pushRingLocked(line));
     }
-    m_generation = static_cast<quint64>(m_ring.size());
-    // The divider and the previous run's identity stay at the front while this run's records arrive.
-    m_pinned = static_cast<int>(1 + context.size());
-    m_protectedPrevious.append(QStringLiteral("--- previous run ---"));
-    for (const qsizetype at : {lastProcessAt, lastSessionAt}) {
-        if (at >= 0) {
-            m_protectedPrevious.append(redact(QString::fromUtf8(lines.at(at))));
+    for (qsizetype i = keepFrom; i < lines.size(); ++i) {
+        const quint64 id = pushRingLocked(redact(QString::fromUtf8(lines.at(i))));
+        if (i == lastProcessAt || i == lastSessionAt) {
+            m_protectedPrevious.append(id);
         }
     }
+    m_generation = static_cast<quint64>(m_ring.size());
+    m_pinned = static_cast<int>(1 + context.size());
 }
 
 void
-DiagnosticsLog::enqueue(const QByteArray& record) {
+DiagnosticsLog::enqueue(const QByteArray& record, Pin pin) {
     // Queue lock orders concurrent submit operations, but no I/O holds it.
     std::lock_guard<std::mutex> queueLock(m_queueMutex);
     {
         std::lock_guard<std::mutex> ringLock(m_ringMutex);
-        appendRingLocked(QString::fromUtf8(record));
+        appendRingLocked(QString::fromUtf8(record), pin);
     }
     // Bounded backpressure: retaining newest queued records matches ring semantics.
     if (m_queue.size() >= queueLimit) {
@@ -410,41 +410,54 @@ DiagnosticsLog::ringNote(const QString& line) {
     appendRingLocked(line);
 }
 
-void
-DiagnosticsLog::appendRingLocked(const QString& line) {
+quint64
+DiagnosticsLog::pushRingLocked(const QString& line) {
     m_ring.append(line);
+    m_ringIds.append(++m_lastRingId);
+    return m_lastRingId;
+}
+
+void
+DiagnosticsLog::appendRingLocked(const QString& line, Pin pin) {
+    const quint64 id = pushRingLocked(line);
+    if (pin == Pin::Process) {
+        m_protectedProcess = id;
+    } else if (pin == Pin::Session) {
+        m_protectedSession = id;
+    }
     while (m_ring.size() > ringLimit) {
         // A pinned line no longer protected (a session line a newer one replaced) is the oldest line: it goes first.
         int released = -1;
         for (int i = 0; i < m_pinned && released < 0; ++i) {
-            if (!isProtectedLocked(m_ring.at(i))) {
+            if (!isProtectedLocked(i)) {
                 released = i;
             }
         }
         if (released >= 0) {
             m_ring.removeAt(released);
+            m_ringIds.removeAt(released);
             --m_pinned;
             continue;
         }
         if (m_pinned >= m_ring.size()) {
             break;
         }
-        // Otherwise evict the oldest unpinned line; a protected line reaching the front is pinned there instead,
-        // once: repeats of the same text (the same source started again) are evicted like any other line.
-        const QString& oldest = m_ring.at(m_pinned);
-        if (m_pinned < pinnedLimit && isProtectedLocked(oldest)
-            && std::find(m_ring.cbegin(), m_ring.cbegin() + m_pinned, oldest) == m_ring.cbegin() + m_pinned) {
+        // Otherwise evict the oldest unpinned line; a protected line reaching the front is pinned there instead.
+        // Repeats of a protected line's text (the same source started again) are other lines, evicted like any other.
+        if (m_pinned < pinnedLimit && isProtectedLocked(m_pinned)) {
             ++m_pinned;
             continue;
         }
         m_ring.removeAt(m_pinned);
+        m_ringIds.removeAt(m_pinned);
     }
     ++m_generation;
 }
 
 bool
-DiagnosticsLog::isProtectedLocked(const QString& line) const {
-    return line == m_protectedProcess || line == m_protectedSession || m_protectedPrevious.contains(line);
+DiagnosticsLog::isProtectedLocked(int index) const {
+    const quint64 id = m_ringIds.at(index);
+    return id == m_protectedProcess || id == m_protectedSession || m_protectedPrevious.contains(id);
 }
 
 void
@@ -466,11 +479,7 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
         m_processLine = record;
         previous = m_previousProcessLine;
     }
-    {
-        std::lock_guard<std::mutex> ringLock(m_ringMutex);
-        m_protectedProcess = QString::fromUtf8(record);
-    }
-    enqueue(record);
+    enqueue(record, Pin::Process);
     for (const auto& line : followingLines) {
         submit(QStringLiteral("process"), QStringLiteral("info"), line);
     }
@@ -484,31 +493,30 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
 }
 
 void
-DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage, const QString& attemptKey) {
-    const QString key = attemptKey.isEmpty() ? context : attemptKey;
+DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage) {
     const quint64 now = nowMs();
-    bool mark = true;
+    const bool usbAccess = !context.isEmpty() && stage == AttemptStage::UsbAccess;
+    bool mark = !usbAccess;
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
         if (context.isEmpty()) {
             // The plain marker of the Starting transition, unless an explicit start note just described this attempt.
             mark = !(m_attemptAbsorb && now - m_startNoteAt < kAttemptDedupeMs);
             m_attemptAbsorb = false;
-        } else if (stage == AttemptStage::UsbAccess) {
-            m_usbAttemptKey = key;
-            m_usbAttemptAt = now;
+        } else if (usbAccess) {
             m_attemptAbsorb = false;
         } else {
-            // The start that follows this attempt's own USB access request adds no second marker; every other
-            // start, a repeat of the same source included, is a new attempt.
-            mark = !(key == m_usbAttemptKey && now - m_usbAttemptAt < kAttemptDedupeMs);
-            m_usbAttemptKey.clear();
             m_startNoteAt = now;
             m_attemptAbsorb = true;
         }
         m_startupUntil = now + kStartupSyncWindowMs;
     }
-    if (mark) {
+    if (usbAccess) {
+        // Not a session marker: the start that follows records its own, and a request whose start never comes (denied,
+        // abandoned) leaves nothing a later start could be mistaken for.
+        submit(QStringLiteral("session"), QStringLiteral("info"),
+               QStringLiteral("usb access requested: %1").arg(context));
+    } else if (mark) {
         const QByteArray record =
             formatRecord(QStringLiteral("session"), QStringLiteral("info"),
                          context.isEmpty() ? QStringLiteral("--- session starting ---")
@@ -517,11 +525,7 @@ DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage, c
             std::lock_guard<std::mutex> lock(m_queueMutex);
             m_sessionLine = record;
         }
-        {
-            std::lock_guard<std::mutex> ringLock(m_ringMutex);
-            m_protectedSession = QString::fromUtf8(record);
-        }
-        enqueue(record);
+        enqueue(record, Pin::Session);
     }
     // Best effort: a slow or failing store must never hold up listening.
     (void)flush(kAttemptFlushMs);
@@ -554,6 +558,7 @@ DiagnosticsLog::clear() {
     // The cleared session's marker must not come back as a later segment's header.
     m_sessionLine.clear();
     m_ring.clear();
+    m_ringIds.clear();
     m_pinned = 0;
     m_ready.notify_one();
     return ++m_generation;

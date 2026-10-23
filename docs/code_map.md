@@ -6703,14 +6703,16 @@ Qt Quick frontend (`src/ui/qt`):
   `session starting:` line, including the first segment after Clear (which forgets the cleared session's line). The
   ring keeps the previous run's divider and identity and this run's process line and current session line pinned at
   its front through eviction (`appendRingLocked()`); a session line a newer one replaces is released and evicted first.
+  Pins name ring lines by id (`m_ringIds`), not text, so identical session lines from two runs stay apart, and the
+  previous run's session line is the one after its last process line.
   Copy and Share therefore always carry them. The only derived line is
   "previous run: Android has restarted since (boot a -> b)", from the previous run's last `process:` line.
   Session attempts are recorded where a start is about to touch a device:
   - `DecoderHost::noteStartAttempt()`, called by `SessionArgsBuilder::start` and `ScanListStarter::start`, and Android's
-    USB access request (stage `UsbAccess`) call `noteSessionAttempt()`. That records the marker, arms the 10 s startup
-    window, in which every append is drained at once and synced, and waits up to 200 ms for it to be durable (best
-    effort, never blocking listening). Only a USB access note and the start note of the same attempt share a marker; they
-    pair by source type, since the context gains the dongle's label once the access request has opened it.
+    USB access request (stage `UsbAccess`) call `noteSessionAttempt()`. That records the start's marker (a USB access
+    request records a `usb access requested:` line instead, so a request whose start never comes merges with nothing),
+    arms the 10 s startup window, in which every append is drained at once and synced, and waits up to 200 ms for it to
+    be durable (best effort, never blocking listening).
   - `UiController`'s Starting transition calls it with no context. It records the plain marker only when no start note
     just described the attempt.
   - Android re-arms the window at `UsbManager.openDevice` and the service's `startDecoding` (`armStartupWindow()`).

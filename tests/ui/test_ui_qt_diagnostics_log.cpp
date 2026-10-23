@@ -794,9 +794,9 @@ syncCadenceAndStartupWindow() {
     check(log.ioStats().syncs - syncs <= 3, "steady-state syncs exceed one per second");
 }
 
-// One marker per attempt: a USB access note and the start of the same attempt share one, and a start note absorbs
-// the plain marker of the Starting transition after it. Every new attempt, the same source again included, gets
-// its own.
+// One marker per attempt: a USB access request records its own line and only the start records the marker; a start
+// note absorbs the plain marker of the Starting transition after it. Every new attempt, the same source again included,
+// gets its own.
 static void
 oneMarkerPerAttempt() {
     QTemporaryDir dir;
@@ -804,12 +804,14 @@ oneMarkerPerAttempt() {
     DiagnosticsLog log(dir.path(), manualOptions());
     const auto count = [&log](const QString& marker) { return log.snapshot().join('\n').count(marker); };
     const QString usb = QStringLiteral("--- session starting: usb, boot 3 ---");
+    const QString access = QStringLiteral("usb access requested: usb, boot 3");
     const QString plain = QStringLiteral("--- session starting ---");
 
     log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess);
     log.noteSessionAttempt(QStringLiteral("usb, boot 3"));
     log.noteSessionAttempt(QString());
-    check(count(usb) == 1 && count(plain) == 0, "one attempt through USB access logged more than one marker");
+    check(count(access) == 1 && count(usb) == 1 && count(plain) == 0,
+          "one attempt through USB access logged other than one marker");
 
     // Stop, then Play the same source again within the dedupe window: a new attempt.
     g_clock += 5000;
@@ -818,13 +820,25 @@ oneMarkerPerAttempt() {
     log.noteSessionAttempt(QString());
     check(count(usb) == 2 && count(plain) == 0, "a second Play of the same source lost its marker");
 
-    // The first Play of a dongle: its label joins the context once the access request has opened it.
+    // A USB access request whose start never came (denied, or abandoned for a backup flow), then a Play of the device
+    // it opened: that start is its own attempt and keeps its marker.
     g_clock += 5000;
-    log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess,
-                           QStringLiteral("usb"));
-    log.noteSessionAttempt(QStringLiteral("usb, boot 3, RTL2838UHIDIR 0bda:2838"), DiagnosticsLog::AttemptStage::Start,
-                           QStringLiteral("usb"));
-    check(count(usb) == 3 && count(QStringLiteral("0bda:2838")) == 0, "a dongle's label split one attempt in two");
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess);
+    log.submit("host", "info", QStringLiteral("between the attempts"));
+    g_clock += 5000;
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"));
+    log.noteSessionAttempt(QString());
+    const auto rows = log.snapshot();
+    check(count(usb) == 3 && count(plain) == 0 && rows.value(rows.size() - 1).contains(usb)
+              && rows.value(rows.size() - 2).contains(QStringLiteral("between the attempts")),
+          "an abandoned USB access request swallowed a later start's marker");
+
+    // The first Play of a dongle: its label joins the start's context once the access request has opened it.
+    g_clock += 5000;
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess);
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3, RTL2838UHIDIR 0bda:2838"));
+    check(count(QStringLiteral("--- session starting: usb, boot 3, RTL2838UHIDIR 0bda:2838 ---")) == 1,
+          "a dongle's first start lost its labelled marker");
 
     g_clock += 5000;
     log.noteSessionAttempt(QStringLiteral("rtltcp, boot 3"));
@@ -1093,6 +1107,59 @@ pinnedSessionBelongsToThePinnedProcess() {
           "an older run's session line was pinned beside a newer process line");
 }
 
+// Runs on one boot that start the same source write identical session lines; each run's own line stays pinned after
+// its own process line.
+static void
+identicalSessionLinesAcrossRuns() {
+    const QString session = QStringLiteral("--- session starting: usb, boot 4 ---");
+    {
+        QTemporaryDir dir;
+        writeFile(dir.filePath("tail.log"), "[process] [info] pid 9, android, boot 4\n"
+                                            "[session] [info] --- session starting: usb, boot 4 ---\n");
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        log.noteProcess(QStringLiteral("10, android, boot 4"));
+        log.noteSessionAttempt(QStringLiteral("usb, boot 4"));
+        for (int i = 0; i < 2100; ++i) {
+            log.submit("stderr", "info", QStringLiteral("live %1").arg(i));
+        }
+        const auto rows = log.snapshot();
+        const auto text = rows.join('\n');
+        const auto at = [&rows](const QString& needle, int from) {
+            for (int i = from; i < rows.size(); ++i) {
+                if (rows.at(i).contains(needle)) {
+                    return i;
+                }
+            }
+            return -1;
+        };
+        const int current = at(QStringLiteral("pid 10, android"), 0);
+        check(text.count(session) == 2 && current >= 0 && at(session, current) > current,
+              "the current run's session line was evicted as a repeat of the previous run's");
+    }
+    {
+        QTemporaryDir dir;
+        QByteArray saved(
+            "[process] [info] pid 7, android, boot 4\n[session] [info] --- session starting: usb, boot 4 ---\n"
+            "[process] [info] pid 8, android, boot 4\n[session] [info] --- session starting: usb, boot 4 ---\n");
+        // Few enough to stay in the reloaded ring: the live records evict them later, past the pinning.
+        for (int i = 0; i < 1000; ++i) {
+            saved += QStringLiteral("[stderr] [info] short %1\n").arg(i).toUtf8();
+        }
+        writeFile(dir.filePath("tail.log"), saved);
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        log.noteProcess(QStringLiteral("9, android, boot 4"));
+        for (int i = 0; i < 2100; ++i) {
+            log.submit("stderr", "info", QStringLiteral("live %1").arg(i));
+        }
+        const auto rows = log.snapshot();
+        check(rows.value(1).contains(QStringLiteral("pid 8, android")) && rows.value(2).contains(session)
+                  && rows.join('\n').count(session) == 1,
+              "the pinned previous session line is not the one after the pinned process line");
+    }
+}
+
 // A reload that reserves a slot for the process line moves its cutoff past the session line: that line is kept too.
 static void
 reloadCutoffKeepsBothContextLines() {
@@ -1246,6 +1313,7 @@ main(int argc, char** argv) {
     lostSegmentDoesNotSpin();
     pinsFollowTheCurrentSession();
     pinnedSessionBelongsToThePinnedProcess();
+    identicalSessionLinesAcrossRuns();
     reloadCutoffKeepsBothContextLines();
     identicalSessionLinesPinOnce();
     previousRunBootFact();

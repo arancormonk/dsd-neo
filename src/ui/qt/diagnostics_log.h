@@ -55,7 +55,7 @@ class DiagnosticsLog {
     enum class IoFault { None, Write, Sync, SyncAndOpen };
 
     // Where in a start an attempt note comes from: the USB access request that precedes a start of a local dongle,
-    // or the start itself. Only that pair, for one attempt, shares a marker.
+    // or the start itself. Only the start records a session marker.
     enum class AttemptStage { UsbAccess, Start };
 
     // Extra platform facts for the process line (Android: boot count, device) and any lines that
@@ -80,12 +80,10 @@ class DiagnosticsLog {
     bool flush(int timeoutMs = -1);
     // Records the process line (also the head of every later segment). Once per instance.
     void noteProcess(const QString& facts, const QStringList& followingLines = {});
-    // A session attempt is about to touch the device: records the marker (once per attempt context
-    // within kAttemptDedupeMs), arms the startup window and waits up to kAttemptFlushMs for it to be durable.
-    // attemptKey pairs a USB access note with its start note (the source type: the context text can gain the dongle's
-    // label between the two); empty means the context itself.
-    void noteSessionAttempt(const QString& context, AttemptStage stage = AttemptStage::Start,
-                            const QString& attemptKey = QString());
+    // A session attempt is about to touch the device: records the line for the stage (a USB access request, or the
+    // start's session marker; an empty context is the plain marker of a Starting transition, which a start note in the
+    // last kAttemptDedupeMs absorbs), arms the startup window and waits up to kAttemptFlushMs for it to be durable.
+    void noteSessionAttempt(const QString& context, AttemptStage stage = AttemptStage::Start);
     // Re-arms the startup window at a device boundary without a new marker.
     void armStartupWindow();
     IoStats ioStats() const;
@@ -112,10 +110,14 @@ class DiagnosticsLog {
     bool writeBatch(const std::deque<QByteArray>& batch);
     QByteArray headerExcluding(std::deque<QByteArray>::const_iterator from,
                                std::deque<QByteArray>::const_iterator end) const;
-    void enqueue(const QByteArray& record);
+    // Which of this run's identity lines a record is, if any: the ring pins that very line, not its text.
+    enum class Pin { None, Process, Session };
+
+    void enqueue(const QByteArray& record, Pin pin = Pin::None);
     void ringNote(const QString& line);
-    void appendRingLocked(const QString& line);
-    bool isProtectedLocked(const QString& line) const;
+    quint64 pushRingLocked(const QString& line);
+    void appendRingLocked(const QString& line, Pin pin = Pin::None);
+    bool isProtectedLocked(int index) const;
 
     // What one writer step takes from the queue state, so its I/O runs without the queue lock.
     struct StepWork {
@@ -139,6 +141,10 @@ class DiagnosticsLog {
 
     mutable std::mutex m_ringMutex;
     QStringList m_ring;
+    // One id per ring line, in step with m_ring: lines with the same text (the same source started by two runs) are
+    // still different lines.
+    QList<quint64> m_ringIds;
+    quint64 m_lastRingId = 0;
     quint64 m_generation = 0;
 
     // Queue state, under m_queueMutex.
@@ -154,18 +160,15 @@ class DiagnosticsLog {
     quint64 m_lastDrain = 0;
     QByteArray m_processLine;
     QByteArray m_sessionLine;
-    // A USB access note waiting for the start note of the same attempt, which then adds no second marker.
-    QString m_usbAttemptKey;
-    quint64 m_usbAttemptAt = 0;
     // An explicit start note absorbs the plain marker of the Starting transition that follows it.
     quint64 m_startNoteAt = 0;
     bool m_attemptAbsorb = false;
     // Ring lines eviction keeps at the front: the previous run's divider and identity, and this run's process line and
     // current session line. Copy and Share therefore always say which process, boot and session the rest belong to.
-    // A session line a newer one replaces is released from the front.
-    QStringList m_protectedPrevious;
-    QString m_protectedProcess;
-    QString m_protectedSession;
+    // A session line a newer one replaces is released from the front. Ring ids; 0 is none.
+    QList<quint64> m_protectedPrevious;
+    quint64 m_protectedProcess = 0;
+    quint64 m_protectedSession = 0;
     int m_pinned = 0;
     bool m_processNoted = false;
     QByteArray m_previousProcessLine;
