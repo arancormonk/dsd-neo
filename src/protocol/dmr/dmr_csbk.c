@@ -2073,6 +2073,14 @@ dmr_cspdu_cap_plus_3e_reconcile_seeds(const dmr_cap_plus_3e_ctx* ctx) {
         const uint32_t tg = (ctx->ch[lsn - 1] == 1) ? ctx->group_tg[lsn - 1] : 0U;
         dmr_sm_capplus_seed_reconcile(sm, slot, lsn, tg);
     }
+    /* The followed slots' identities a seed gave (not a checked LC) take the group the status now names on their LSN,
+       so a preemption candidate is compared with the call actually on the slot. */
+    for (int slot = 0; slot < 2; slot++) {
+        const int lsn = sm->slots[slot].channel;
+        if (lsn >= 1 && lsn <= 16) {
+            dmr_sm_status_identity_reconcile(sm, slot, lsn, (ctx->ch[lsn - 1] == 1) ? ctx->group_tg[lsn - 1] : 0U);
+        }
+    }
 }
 
 /* Whether a grant this module tunes itself may go to @p freq_hz: not to a voice channel whose verified colour code the
@@ -2083,12 +2091,72 @@ dmr_csbk_receive_carrier_allowed(const dsd_opts* opts, long freq_hz) {
     return !ctx || !dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, freq_hz);
 }
 
+/* Whether status candidate @p a outranks @p b: Hold first, then priority. The caller walks the channels in order and
+   keeps the first of equals, so with no priorities configured the first eligible channel is followed, as before. */
+static int
+dmr_status_candidate_outranks(const dsd_tg_policy_decision* a, const dsd_tg_policy_decision* b) {
+    if (a->tg_hold_match != b->tg_hold_match) {
+        return a->tg_hold_match > b->tg_hold_match;
+    }
+    return a->priority > b->priority;
+}
+
+/* Follow the status's LSN @p j (one tune per status): a carrier the machine already follows is only reseeded. */
 static void
-dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
-    if ((dsd_decode_time() - state->last_vc_sync_time) <= 2) {
+dmr_cspdu_cap_plus_3e_follow(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx, int j,
+                             const dsd_tg_policy_decision* decision, dmr_sm_displace_e how) {
+    const long int grant_freq = state->trunk_chan_map[j + 1];
+    if (dmr_sm_follows(dmr_sm_get_ctx(), grant_freq)) {
+        /* The carrier followed already satisfies this status: no retune, and its deadlines stand. A slot whose seed
+           reconciliation dropped (another group now) is named anew, for the carrier as it is now tuned. */
+        dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, dsd_trunk_tuning_generation() - 1U, 1);
         return;
     }
+    const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
+    const uint64_t generation_before = dsd_trunk_tuning_generation();
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        return;
+    }
+    dmr_sm_note_status_follow(opts, state, grant_freq);
+    dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before, 0);
+    const dsd_tg_policy_call_route route = {
+        .target_id = ctx->t_tg[j],
+        .source_id = 0U,
+        .freq_hz = grant_freq,
+        .channel = j + 1,
+        .slot = j & 1,
+        .requires_tuner_retune = 0,
+    };
+    dmr_sm_policy_note_follow(state, &route, decision, how == DMR_SM_DISPLACE_PREEMPT, dsd_decode_now_mono_s());
+    if (old_rtl_center_freq != (uint32_t)grant_freq) {
+        dmr_reset_blocks(opts, state);
+    }
+}
 
+/* Pick the one LSN this status follows. While the receiver holds a call (the state machine's busy view, or the
+   status's own two-second voice window), an LSN on another carrier is eligible only by Hold over a non-held call or by
+   preemption, and one on the held carrier is never a displacement; otherwise every allowed LSN is. Among the eligible,
+   Hold, then priority, then channel order decides. */
+static void
+dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
+    const int trunking = state->trunk_cc_freq != 0 && opts->trunk_enable == 1;
+    const double now_m = dsd_decode_now_mono_s();
+    const int caller_busy = (dsd_decode_time() - state->last_vc_sync_time) <= 2;
+    dmr_sm_busy_view_t view;
+    DSD_MEMSET(&view, 0, sizeof(view));
+    if (trunking) {
+        (void)dmr_sm_describe_held_calls(dmr_sm_get_ctx(), opts, state, now_m, &view);
+    }
+    const int busy = view.held || caller_busy;
+
+    int best = -1;
+    int own = -1;
+    dsd_tg_policy_decision best_decision;
+    dsd_tg_policy_decision own_decision;
+    dmr_sm_displace_e best_how = DMR_SM_DISPLACE_NONE;
+    DSD_MEMSET(&best_decision, 0, sizeof(best_decision));
+    DSD_MEMSET(&own_decision, 0, sizeof(own_decision));
     for (int j = ctx->start; j < ctx->end; j++) {
         const int is_group_call = (ctx->pch[j] == 1) ? 0 : 1;
         dsd_tg_policy_decision policy_decision;
@@ -2096,40 +2164,54 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
 
         dmr_csbk_print_group_label(state, (uint32_t)ctx->t_tg[j]);
         policy_allowed = dmr_policy_tune_allowed(opts, state, ctx->t_tg[j], 0, is_group_call, 0, &policy_decision);
-        if (ctx->t_tg[j] == 0 || state->trunk_cc_freq == 0 || opts->trunk_enable != 1
-            || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, j & 1)) {
+        if (ctx->t_tg[j] == 0 || !trunking || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, j & 1)) {
             continue;
         }
         if (!policy_allowed) {
             dmr_policy_log_block(opts, is_group_call, ctx->t_tg[j], 0, &policy_decision);
             continue;
         }
-        if (state->trunk_chan_map[j + 1] == 0) {
-            continue;
-        }
-
         const long int grant_freq = state->trunk_chan_map[j + 1];
-        if (!dmr_csbk_receive_carrier_allowed(opts, grant_freq)) {
+        if (grant_freq == 0 || !dmr_csbk_receive_carrier_allowed(opts, grant_freq)) {
             continue;
         }
-        if (dmr_sm_follows(dmr_sm_get_ctx(), grant_freq)) {
-            /* The carrier followed already satisfies this status: no retune, and its deadlines stand. A slot whose seed
-               reconciliation dropped (another group now) is named anew, for the carrier as it is now tuned. */
-            dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, dsd_trunk_tuning_generation() - 1U, 1);
-            break;
+        dmr_sm_displace_e how = DMR_SM_DISPLACE_NONE;
+        if (busy && grant_freq == view.carrier_hz) {
+            if (own < 0) {
+                own = j;
+                own_decision = policy_decision;
+            }
+            continue;
         }
-        const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
-        const uint64_t generation_before = dsd_trunk_tuning_generation();
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
-        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-            break;
+        if (busy) {
+            const dsd_tg_policy_call_route candidate = {
+                .target_id = ctx->t_tg[j],
+                .source_id = 0U,
+                .freq_hz = grant_freq,
+                .channel = j + 1,
+                .slot = j & 1,
+                .requires_tuner_retune = 1,
+            };
+            how = dmr_sm_may_displace(&view, opts, state, &candidate, &policy_decision, 1, 1, now_m);
+            if (how == DMR_SM_DISPLACE_NONE) {
+                continue;
+            }
         }
-        dmr_sm_note_status_follow(opts, state, grant_freq);
-        dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before, 0);
-        if (old_rtl_center_freq != (uint32_t)grant_freq) {
-            dmr_reset_blocks(opts, state);
+        if (best < 0 || dmr_status_candidate_outranks(&policy_decision, &best_decision)) {
+            best = j;
+            best_decision = policy_decision;
+            best_how = how;
         }
-        break;
+    }
+    if (best >= 0) {
+        dmr_cspdu_cap_plus_3e_follow(opts, state, ctx, best, &best_decision, best_how);
+        return;
+    }
+    /* Nothing displaces what is held. Outside the status's voice window (which leaves the carrier alone, as it always
+       did) a status naming the held carrier reseeds a followed one, and a call heard where the receiver is parked is
+       followed in place, as a tune to that frequency did. */
+    if (own >= 0 && !caller_busy) {
+        dmr_cspdu_cap_plus_3e_follow(opts, state, ctx, own, &own_decision, DMR_SM_DISPLACE_NONE);
     }
 }
 
@@ -2205,13 +2287,8 @@ dmr_cspdu_cap_plus_handle_3e(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     dmr_cspdu_cap_plus_3e_set_branding(state);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    if (opts->trunk_use_allow_list == 1) {
-        state->last_vc_sync_time = 0;
-        state->last_vc_sync_time_m = 0.0;
-    }
-    if (state->tg_hold != 0) {
-        state->last_vc_sync_time = 0;
-    }
+    /* An allow-list or a Hold is admission, never a reason to wipe the voice-sync stamp: a listed or held group on
+       another carrier takes the receiver only by Hold or preemption (dmr_cspdu_cap_plus_3e_try_tune_grants()). */
     if ((dsd_decode_time() - state->last_vc_sync_time) > 2) {
         rotate_symbol_out_file(opts, state);
     }
@@ -2528,13 +2605,20 @@ dmr_cspdu_xpt_update_cc_from_input(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* One LSN of an XPT site status: its status kind (3 group, 2 private, 1 unknown, 0 idle) and 8-bit value. */
+typedef struct {
+    uint8_t kind;
+    uint8_t id8;
+} dmr_xpt_entry;
+
+enum { DMR_XPT_ENTRY_COUNT = 18, DMR_XPT_KIND_PRIVATE = 2, DMR_XPT_KIND_GROUP = 3 };
+
 static void
-dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t xpt_seq,
-                                uint8_t xpt_bank, const uint8_t xpt_ch[6], uint8_t t_tg[18]) {
+dmr_cspdu_xpt_print_and_collect(dsd_state* state, uint8_t cs_pdu_bits[], uint8_t xpt_seq, uint8_t xpt_bank,
+                                const uint8_t xpt_ch[6], dmr_xpt_entry entries[DMR_XPT_ENTRY_COUNT]) {
     char xpt_active[20];
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE] = {0};
     int xpt_lcn = dmr_cspdu_xpt_lcn_start(xpt_seq);
-    const int t_tg_count = 18;
 
     if (xpt_seq == 0) {
         DSD_SNPRINTF(notice, sizeof notice, "XPT ");
@@ -2542,10 +2626,12 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
 
     for (int i = 0; i < 6; i++) {
         int slot_idx = i + xpt_bank;
-        if (slot_idx >= t_tg_count) {
+        if (slot_idx >= DMR_XPT_ENTRY_COUNT) {
             continue;
         }
         uint16_t tg = (uint16_t)convert_bits_into_output(&cs_pdu_bits[i * 8 + 32], 8);
+        entries[slot_idx].kind = xpt_ch[i];
+        entries[slot_idx].id8 = (uint8_t)tg;
 
         if (i == 0 || i == 2 || i == 4) {
             DSD_FPRINTF(stderr, "\n LCN %d - ", xpt_lcn);
@@ -2555,7 +2641,6 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
         DSD_FPRINTF(stderr, "ST-%X", xpt_ch[i]);
         if (tg != 0) {
             DSD_FPRINTF(stderr, " %03d;  ", tg);
-            t_tg[slot_idx] = (uint8_t)tg;
             if (xpt_ch[i] == 3) {
                 DSD_SNPRINTF(xpt_active, sizeof(xpt_active), "LSN:%d TG:%d; ", slot_idx + 1, tg);
             } else if (xpt_ch[i] == 2) {
@@ -2568,60 +2653,148 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
         }
 
         DSD_FPRINTF(stderr, "%s", dmr_cspdu_xpt_status_label(xpt_ch[i]));
-        if (xpt_ch[i] == 2 && opts->trunk_tune_private_calls == 1) {
-            t_tg[slot_idx] = 1;
-        }
     }
     dmr_csbk_publish_activity(state, xpt_seq, xpt_seq & 1U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notice);
 }
 
+/* An XPT private status names no radio: its 8-bit value is a hash or a placeholder (the 16-bit target only comes with
+   the voice LC). Its decision is built without any endpoint lookup, so no row (an ID-0 row or a hash collision
+   included) can admit or rank it: private tuning off, the allow-list and an active Hold each block it, and it has
+   priority 0 and never preempts. */
 static void
-dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const uint8_t t_tg[18], uint8_t xpt_bank) {
-    if ((dsd_decode_time() - state->last_vc_sync_time) <= 2) {
-        return;
+dmr_xpt_unknown_private_decision(const dsd_opts* opts, const dsd_state* state, dsd_tg_policy_decision* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->private_call = 1;
+    out->match = DSD_TG_POLICY_MATCH_NONE;
+    if (opts->trunk_tune_private_calls != 1) {
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED;
     }
+    if (opts->trunk_use_allow_list == 1) {
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_ALLOWLIST;
+    }
+    if (state->tg_hold != 0) {
+        out->tg_hold_active = 1;
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_HOLD;
+    }
+    out->tune_allowed = out->block_reasons == DSD_TG_POLICY_BLOCK_NONE;
+    out->audio_allowed = out->tune_allowed;
+    out->record_allowed = out->tune_allowed;
+    out->stream_allowed = out->tune_allowed;
+}
 
-    const int t_tg_count = 18;
+/* The candidate an XPT entry is: a group status with a talkgroup (XPT talkgroups are 8-bit, so the value is the real
+   ID), or a private status with private tuning on, judged as an unknown identity. Unknown (1) and idle (0) statuses are
+   never followed. Returns 0 when the entry is no candidate. */
+static int
+dmr_cspdu_xpt_entry_decision(const dsd_opts* opts, const dsd_state* state, const dmr_xpt_entry* e,
+                             dsd_tg_policy_decision* out, int* allowed) {
+    if (e->kind == DMR_XPT_KIND_GROUP && e->id8 != 0U) {
+        dmr_csbk_print_group_label(state, e->id8);
+        *allowed = dmr_policy_tune_allowed(opts, state, e->id8, 0, 1, 0, out);
+        return 1;
+    }
+    if (e->kind == DMR_XPT_KIND_PRIVATE && opts->trunk_tune_private_calls == 1) {
+        dmr_xpt_unknown_private_decision(opts, state, out);
+        *allowed = out->tune_allowed;
+        return 1;
+    }
+    return 0;
+}
+
+/* One XPT status bank: as for Capacity Plus (dmr_cspdu_cap_plus_3e_try_tune_grants()), at most one entry is handed to
+   the trunk state machine, the best by Hold, priority and channel order among those eligible, and while the receiver
+   holds a call only Hold over a non-held call or a preemption is eligible. An unknown private identity never is. */
+static void
+dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const dmr_xpt_entry entries[DMR_XPT_ENTRY_COUNT],
+                       uint8_t xpt_bank) {
+    const int trunking = state->trunk_cc_freq != 0 && opts->trunk_enable == 1;
+    const double now_m = dsd_decode_now_mono_s();
+    const int caller_busy = (dsd_decode_time() - state->last_vc_sync_time) <= 2;
+    dmr_sm_busy_view_t view;
+    DSD_MEMSET(&view, 0, sizeof(view));
+    if (trunking) {
+        (void)dmr_sm_describe_held_calls(dmr_sm_get_ctx(), opts, state, now_m, &view);
+    }
+    const int busy = view.held || caller_busy;
+
+    int best = -1;
+    dsd_tg_policy_decision best_decision;
+    DSD_MEMSET(&best_decision, 0, sizeof(best_decision));
     for (int j = 0; j < 6; j++) {
-        int slot_idx = j + xpt_bank;
-        if (slot_idx >= t_tg_count) {
+        const int slot_idx = j + xpt_bank;
+        if (slot_idx >= DMR_XPT_ENTRY_COUNT) {
             continue;
         }
-        uint32_t tg = t_tg[slot_idx];
+        const dmr_xpt_entry* e = &entries[slot_idx];
         dsd_tg_policy_decision policy_decision;
-        int policy_allowed;
+        int policy_allowed = 0;
 
         /* A candidate the receive policy rejects (its slot, or its channel's verified colour code) is passed over for
            the next one, as on Cap+ (issue #637): the state machine would refuse it and this loop stop at it. */
-        if (tg == 0 || state->trunk_cc_freq == 0 || opts->trunk_enable != 1
-            || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, slot_idx & 1)) {
+        if (!trunking || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, slot_idx & 1)) {
             continue;
         }
-
-        dmr_csbk_print_group_label(state, tg);
-        policy_allowed = dmr_policy_tune_allowed(opts, state, tg, 0, 1, 0, &policy_decision);
+        if (!dmr_cspdu_xpt_entry_decision(opts, state, e, &policy_decision, &policy_allowed)) {
+            continue;
+        }
+        const int identity_known = e->kind == DMR_XPT_KIND_GROUP;
         if (!policy_allowed) {
-            dmr_policy_log_block(opts, 1, tg, 0, &policy_decision);
+            dmr_policy_log_block(opts, identity_known, identity_known ? e->id8 : 0U, 0, &policy_decision);
             continue;
         }
-        if (state->trunk_chan_map[slot_idx + 1] == 0
-            || !dmr_csbk_receive_carrier_allowed(opts, state->trunk_chan_map[slot_idx + 1])) {
+        const long freq = state->trunk_chan_map[slot_idx + 1];
+        if (freq == 0 || !dmr_csbk_receive_carrier_allowed(opts, freq)) {
             continue;
         }
         if (!(opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL)) {
             continue;
         }
-
-        DSD_FPRINTF(stderr, "\n LSN/TG to tune to: %d - %d", slot_idx + 1, tg);
-        dmr_sm_emit_group_grant_slot(opts, state, state->trunk_chan_map[slot_idx + 1], 0, slot_idx & 1, tg, 0);
-        break;
+        if (busy && freq != view.carrier_hz) {
+            const dsd_tg_policy_call_route candidate = {
+                .target_id = identity_known ? e->id8 : 0U,
+                .source_id = 0U,
+                .freq_hz = freq,
+                .channel = slot_idx + 1,
+                .slot = slot_idx & 1,
+                .requires_tuner_retune = 1,
+            };
+            if (dmr_sm_may_displace(&view, opts, state, &candidate, &policy_decision, 1, identity_known, now_m)
+                == DMR_SM_DISPLACE_NONE) {
+                continue;
+            }
+        }
+        if (best < 0 || dmr_status_candidate_outranks(&policy_decision, &best_decision)) {
+            best = slot_idx;
+            best_decision = policy_decision;
+        }
     }
+    if (best < 0) {
+        return;
+    }
+
+    const dmr_xpt_entry* e = &entries[best];
+    const long freq = state->trunk_chan_map[best + 1];
+    dmr_sm_event_t ev;
+    if (e->kind == DMR_XPT_KIND_GROUP) {
+        DSD_FPRINTF(stderr, "\n LSN/TG to tune to: %d - %d", best + 1, e->id8);
+        ev = dmr_sm_ev_group_grant(freq, 0, e->id8, 0);
+    } else {
+        DSD_FPRINTF(stderr, "\n LSN to tune to: %d - private call", best + 1);
+        ev = dmr_sm_ev_indiv_grant(freq, 0, 0, 0);
+        ev.identity_known = 0; // the 8-bit value is no radio ID: the voice LC names the call
+    }
+    ev.slot = best & 1;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    ev.caller_busy = caller_busy;
+    ev.policy_valid = 1;
+    ev.policy = best_decision;
+    (void)dmr_sm_submit_grant(opts, state, &ev);
 }
 
 static void
 dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
     uint8_t xpt_ch[6];
-    uint8_t t_tg[18];
+    dmr_xpt_entry entries[DMR_XPT_ENTRY_COUNT];
     uint8_t xpt_seq;
     uint8_t xpt_free;
     uint8_t xpt_bank;
@@ -2632,7 +2805,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_MEMSET(t_tg, 0, sizeof(t_tg));
+    DSD_MEMSET(entries, 0, sizeof(entries));
 
     xpt_seq = (uint8_t)convert_bits_into_output(&cs_pdu_bits[0], 2);
     xpt_free = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 4);
@@ -2650,25 +2823,20 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         }
     }
 
-    dmr_cspdu_xpt_print_and_collect(opts, state, cs_pdu_bits, xpt_seq, xpt_bank, xpt_ch, t_tg);
+    dmr_cspdu_xpt_print_and_collect(state, cs_pdu_bits, xpt_seq, xpt_bank, xpt_ch, entries);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "Free LCN - %d ", xpt_free);
     if (dmr_csbk_crc_checked(state)) {
         dsd_rxid_note_dmr_xpt_free_lcn(state, xpt_free);
     }
     dmr_cspdu_xpt_update_cc_from_input(opts, state);
 
-    if (opts->trunk_tune_group_calls == 1) {
-        if (opts->trunk_use_allow_list == 1) {
-            state->last_vc_sync_time = 0;
-            state->last_vc_sync_time_m = 0.0;
-        }
-        if (state->tg_hold != 0) {
-            state->last_vc_sync_time = 0;
-        }
+    /* Group and private statuses are admitted each by their own decision, so private calls are followed with group
+       tuning off; an allow-list or a Hold never wipes the voice-sync stamp (dmr_cspdu_xpt_try_tune()). */
+    if (opts->trunk_tune_group_calls == 1 || opts->trunk_tune_private_calls == 1) {
         if ((dsd_decode_time() - state->last_vc_sync_time) > 2) {
             rotate_symbol_out_file(opts, state);
         }
-        dmr_cspdu_xpt_try_tune(opts, state, t_tg, xpt_bank);
+        dmr_cspdu_xpt_try_tune(opts, state, entries, xpt_bank);
     }
 
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");

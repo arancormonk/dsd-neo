@@ -637,6 +637,362 @@ test_accepted_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
     dmr_sm_emit_voice_sync(opts, state, slot);
 }
 
+/* ---- Status selection (Capacity Plus, Hytera XPT): hold, priority, preemption, busy view ---- */
+
+#define ST_F1 853000000L
+#define ST_F3 853250000L
+#define ST_F4 853500000L
+
+static const uint64_t k_status_t0_ns = 1000000ULL * 1000000000ULL;
+static int g_status_tunes = 0;
+
+static void
+status_clock_at(double seconds) {
+    dsd_decode_clock_test_set_ns(k_status_t0_ns + (uint64_t)(seconds * 1e9));
+}
+
+static dsd_trunk_tune_result
+status_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)ted_sps;
+    (void)request_id;
+    g_status_tunes++;
+    opts->rtlsdr_center_freq = (uint32_t)freq;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    state->last_vc_sync_time = dsd_decode_time();
+    state->last_vc_sync_time_m = dsd_decode_now_mono_s();
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+status_env(dsd_opts* opts, dsd_state* state) {
+    dsd_decode_clock_use_test(k_status_t0_ns);
+    init_env(opts, state);
+    opts->trunk_hangtime = 2.0f;
+    state->trunk_chan_map[1] = ST_F1;
+    state->trunk_chan_map[2] = ST_F1;
+    state->trunk_chan_map[3] = ST_F3;
+    state->trunk_chan_map[4] = ST_F4;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_sm_init(opts, state);
+    g_status_tunes = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = status_tune_request,
+        .tune_to_cc_request = status_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
+
+static void
+status_env_done(dsd_state* state) {
+    install_trunk_tuning_hooks();
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(state);
+}
+
+/* The status's two-second voice window closed: what holds the receiver is the trunk state machine's busy view. */
+static void
+status_window_closed(dsd_state* state) {
+    state->last_vc_sync_time = dsd_decode_time() - 10;
+}
+
+static void
+seed_policy_row(dsd_state* st, uint32_t id, const char* mode, int priority, int preempt) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, mode, "ROW", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        abort();
+    }
+    row.priority = priority;
+    row.preempt = preempt ? 1U : 0U;
+    if (dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0) {
+        abort();
+    }
+}
+
+/* A single-block Cap+ channel status with group calls on bank-one LSNs 1..4 (@p tgs[i] on LSN i + 1, 0: idle). */
+static void
+run_cap_plus_groups(dsd_opts* opts, dsd_state* state, const uint8_t tgs[4]) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+    write_bits_u32(bits, 16U, 3U, 2U);
+    write_bits_u32(bits, 19U, 1U, 5U); // rest LSN 1
+    size_t at = 32U;
+    for (int i = 0; i < 4; i++) {
+        if (tgs[i] != 0U) {
+            bits[24U + (size_t)i] = 1U;
+            write_bits_u32(bits, at, tgs[i], 8U);
+            at += 8U;
+        }
+    }
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+}
+
+static void
+accepted_voice_now(dsd_opts* opts, dsd_state* state, int slot) {
+    state->dmr_confidence_voice_open[slot] = 1;
+    state->dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, slot);
+}
+
+/* R13: an allow-listed group on another carrier no longer hops the receiver off a live followed call, and the status
+   leaves the voice-sync stamp alone. */
+static int
+test_cap_plus_allow_list_does_not_hop(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    opts->trunk_use_allow_list = 1;
+    seed_policy_row(st, 42, "A", 0, 0);
+    seed_policy_row(st, 43, "A", 0, 0);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 0U, 0U, 0U});
+    int rc = expect_true("cap+ follows the listed group", st->trunk_vc_freq[0] == ST_F1 && g_status_tunes == 1);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    status_window_closed(st);
+    const time_t stamp = st->last_vc_sync_time;
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 43U, 0U});
+    rc |= expect_true("cap+ allow-list: a listed group elsewhere does not hop a live call",
+                      st->trunk_vc_freq[0] == ST_F1 && g_status_tunes == 1);
+    rc |= expect_true("cap+ allow-list keeps the voice-sync stamp", st->last_vc_sync_time == stamp);
+    status_env_done(st);
+    return rc;
+}
+
+/* Preemption ranking: of two eligible candidates in one status the higher priority is followed, in either order,
+   with exactly one tune. */
+static int
+test_cap_plus_preempt_ranking(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        status_env(opts, st);
+        seed_policy_row(st, 42, "A", 10, 0);
+        seed_policy_row(st, 43, "A", 60, 1);
+        seed_policy_row(st, 44, "A", 70, 1);
+        run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 0U, 0U, 0U});
+        status_clock_at(1.0);
+        accepted_voice_now(opts, st, 0);
+        status_window_closed(st);
+        g_status_tunes = 0;
+        run_cap_plus_groups(opts, st,
+                            order ? (const uint8_t[4]){0U, 0U, 44U, 43U} : (const uint8_t[4]){0U, 0U, 43U, 44U});
+        const long want = order ? ST_F3 : ST_F4;
+        rc |= expect_true("cap+ ranking follows the higher priority once",
+                          st->trunk_vc_freq[0] == want && g_status_tunes == 1);
+        status_env_done(st);
+    }
+
+    // Idle: with no priorities channel order stands; with one, priority decides.
+    status_env(opts, st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 43U, 44U});
+    rc |= expect_true("cap+ idle keeps channel order", st->trunk_vc_freq[0] == ST_F3);
+    status_env_done(st);
+    status_env(opts, st);
+    seed_policy_row(st, 44, "A", 70, 0);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 43U, 44U});
+    rc |= expect_true("cap+ idle ranks by priority", st->trunk_vc_freq[0] == ST_F4);
+    status_env_done(st);
+    return rc;
+}
+
+/* A carrier followed on its seeds alone (slot 0 group 42 p10, slot 1 group 77 p90): a candidate must outrank both. */
+static int
+test_cap_plus_seed_only_carrier(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 77, "A", 90, 0);
+    seed_policy_row(st, 43, "A", 60, 1);
+    seed_policy_row(st, 45, "A", 95, 1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 77U, 0U, 0U});
+    int rc = expect_true("cap+ seed-only follow", st->trunk_vc_freq[0] == ST_F1);
+    status_clock_at(1.0);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 43U, 0U});
+    rc |= expect_true("cap+ p60 does not outrank the p90 seed", st->trunk_vc_freq[0] == ST_F1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 45U, 0U});
+    rc |= expect_true("cap+ p95 outranks both seeds", st->trunk_vc_freq[0] == ST_F3);
+    status_env_done(st);
+    return rc;
+}
+
+/* Hold takes the receiver from a non-held carrier; a carrier whose companion slot carries the Hold group keeps it. */
+static int
+test_cap_plus_hold(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 77U, 0U, 0U});
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    st->tg_hold = 43;
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 43U, 0U});
+    int rc = expect_true("cap+ hold over a non-held carrier hops", st->trunk_vc_freq[0] == ST_F3);
+    status_env_done(st);
+
+    status_env(opts, st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 77U, 0U, 0U});
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    accepted_voice_now(opts, st, 1); // the companion's call (seeded 77) is live too
+    st->tg_hold = 77;
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 77U, 0U});
+    rc |= expect_true("cap+ a held companion keeps the carrier", st->trunk_vc_freq[0] == ST_F1);
+    status_env_done(st);
+    return rc;
+}
+
+/* A seed's identity is replaced by a later status naming another group on its LSN; a checked LC's is not. */
+static int
+test_cap_plus_seed_identity_reconcile(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 0U, 0U, 0U});
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("seeded slot identity", sm->slots[0].target == 42U && sm->slots[0].prov == DMR_SM_ID_SEED);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0); // voice without an LC
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){50U, 0U, 0U, 0U});
+    rc |= expect_true("a later status replaces the seed's group",
+                      sm->slots[0].target == 50U && sm->slots[0].prov == DMR_SM_ID_SEED);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 50U, 4321U);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){51U, 0U, 0U, 0U});
+    rc |= expect_true("a checked LC's identity wins over a later status",
+                      sm->slots[0].target == 50U && sm->slots[0].prov == DMR_SM_ID_LC);
+    status_env_done(st);
+    return rc;
+}
+
+/* XPT entry kinds: a private status is an unknown identity, followed only with private tuning on and never admitted or
+   ranked by a row; unknown statuses are not followed; a busy carrier yields only to an outranking preempt. */
+static int
+test_xpt_entry_kinds(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+
+    // Private with private tuning off (group on): not followed.
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    opts->trunk_tune_private_calls = 0;
+    st->trunk_chan_map[1] = 461262500L;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){2U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){88U, 0U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt private with private tuning off is not followed", g_status_tunes == 0);
+    status_env_done(st);
+
+    // Private with private tuning on and group tuning off: followed as an unknown private identity.
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    opts->trunk_tune_group_calls = 0;
+    st->trunk_chan_map[1] = 461262500L;
+    status_window_closed(st);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt private follows with group tuning off", st->trunk_vc_freq[0] == 461262500L
+                                                                       && dmr_sm_get_ctx()->vc_is_group == 0
+                                                                       && dmr_sm_get_ctx()->vc_dst == 0);
+    status_env_done(st);
+
+    // Under the allow-list, a priority-100 row equal to the 8-bit value and an ID-0 row admit nothing.
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    opts->trunk_use_allow_list = 1;
+    seed_policy_row(st, 88, "A", 100, 1);
+    seed_policy_row(st, 0, "A", 100, 1);
+    st->trunk_chan_map[1] = 461262500L;
+    status_window_closed(st);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt private hash collision admits nothing under the allow-list", g_status_tunes == 0);
+    status_env_done(st);
+
+    // Unknown (kind 1) with a value: not followed.
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    st->trunk_chan_map[1] = 461262500L;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){1U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){66U, 0U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt unknown status is not followed", g_status_tunes == 0);
+    status_env_done(st);
+    return rc;
+}
+
+/* XPT ranks one bank's group entries by priority, in either order, with one grant. */
+static int
+test_xpt_ranking(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        status_env(opts, st);
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 461250000U;
+        seed_policy_row(st, 44, "A", 70, 0);
+        st->trunk_chan_map[1] = 461262500L;
+        st->trunk_chan_map[3] = 461287500L;
+        status_window_closed(st);
+        build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 3U, 0U, 0U, 0U},
+                              order ? (const uint8_t[6]){44U, 0U, 43U, 0U, 0U, 0U}
+                                    : (const uint8_t[6]){43U, 0U, 44U, 0U, 0U, 0U});
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        rc |= expect_true("xpt ranking follows the higher priority once",
+                          st->trunk_vc_freq[0] == (order ? 461262500L : 461287500L) && g_status_tunes == 1
+                              && dmr_sm_get_ctx()->vc_tg == 44);
+        status_env_done(st);
+    }
+    return rc;
+}
+
+static int
+test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    seed_policy_row(st, 77, "A", 10, 0);
+    seed_policy_row(st, 99, "A", 60, 1);
+    st->trunk_chan_map[1] = 461262500L;
+    st->trunk_chan_map[3] = 461287500L;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){77U, 0U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    int rc = expect_true("xpt follows group 77", st->trunk_vc_freq[0] == 461262500L);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 88U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt busy carrier refuses a candidate without preempt", st->trunk_vc_freq[0] == 461262500L);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 99U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt busy carrier yields to an outranking preempt", st->trunk_vc_freq[0] == 461287500L);
+    status_env_done(st);
+
+    // Parked (no call followed) where a wanted call is heard: a candidate elsewhere is busy.
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    st->trunk_cc_freq = 461250000L;
+    dmr_sm_init(opts, st);
+    st->trunk_chan_map[3] = 461287500L;
+    accepted_voice_now(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 55U, 5U);
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 88U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt resident parking call is busy", g_status_tunes == 0);
+    status_env_done(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1344,7 +1700,11 @@ main(void) {
     uint8_t xpt_private_tg[6] = {0U, 0U, 0U, 0U, 0U, 0U};
     build_xpt_site_status(bits, bytes, 1U, 0U, xpt_private_status, xpt_private_tg);
     dmr_cspdu(&xpt_opts, &xpt_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("xpt seq1 status-only private emits placeholder grant", dmr_sm_get_ctx()->vc_tg == 1);
+    /* An XPT private status names no radio: the grant carries an unknown private identity, not the placeholder group 1
+       it used to be followed as. */
+    rc |= expect_true("xpt seq1 status-only private follows an unknown private identity",
+                      dmr_sm_get_ctx()->vc_is_group == 0 && dmr_sm_get_ctx()->vc_dst == 0
+                          && dmr_sm_get_ctx()->vc_tg == 0 && dmr_sm_get_ctx()->vc_identity_known == 0);
     rc |= expect_true("xpt seq1 private uses banked LSN map", xpt_st.trunk_vc_freq[0] == 462012500L);
     rc |= expect_true("xpt seq1 learns rtl control channel", xpt_st.trunk_cc_freq == 462000000L);
     rc |= expect_true("xpt seq1 rotates symbols before tune", g_rotate_symbol_out_file_calls == 1);
@@ -1395,6 +1755,14 @@ main(void) {
     rc |= test_receive_rejected_carrier_grant(opts, st);
     rc |= test_receive_csbk_tuned_carrier_window(opts, st);
     rc |= test_receive_vc_code_differs_from_cc(opts, st);
+    rc |= test_cap_plus_allow_list_does_not_hop(opts, st);
+    rc |= test_cap_plus_preempt_ranking(opts, st);
+    rc |= test_cap_plus_seed_only_carrier(opts, st);
+    rc |= test_cap_plus_hold(opts, st);
+    rc |= test_cap_plus_seed_identity_reconcile(opts, st);
+    rc |= test_xpt_entry_kinds(opts, st);
+    rc |= test_xpt_ranking(opts, st);
+    rc |= test_xpt_busy_carrier(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }
