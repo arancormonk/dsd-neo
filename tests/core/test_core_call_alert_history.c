@@ -1944,6 +1944,56 @@ test_event_log_unstamped_row_keeps_bare_detail_lines(void) {
     return rc;
 }
 
+/* Issue #637: the single-slot DMR decoder carries both over-the-air slots on lane 0, so a row's log line names the slot
+   its received identity proved, and the lane only while none is proven. */
+static int
+test_event_log_names_the_proven_over_the_air_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    static const struct {
+        uint8_t lane;
+        uint8_t proven;
+        const char* expected;
+    } cases[] = {
+        {0U, 2U, "TEST EVENT; Slot 2;"},
+        {0U, 1U, "TEST EVENT; Slot 1;"},
+        {0U, 0U, "TEST EVENT; Slot 1;"},
+        {1U, 0U, "TEST EVENT; Slot 2;"},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        reset_fixture(&opts, &state, event_history);
+        char path[DSD_TEST_PATH_MAX];
+        int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-events");
+        if (fd < 0) {
+            DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for event log slot test\n");
+            return 1;
+        }
+        close(fd);
+        remove(path);
+        DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+        state.event_history_s[cases[i].lane].Event_History_Items[0].receive_identity.slot = cases[i].proven;
+        char event_string[] = "2026-04-30 00:00:00 TEST EVENT;";
+        write_event_to_log_file(&opts, &state, cases[i].lane, 1, event_string);
+        FILE* f = fopen(path, "rb");
+        if (f == NULL) {
+            remove(path);
+            DSD_FPRINTF(stderr, "event log slot test: no log\n");
+            return 1;
+        }
+        char buf[4096];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        remove(path);
+        buf[n] = '\0';
+        rc |= expect_has_substr("log line names the proven over-the-air slot", buf, cases[i].expected);
+    }
+    return rc;
+}
+
 static int
 test_source_transition_rotates_slot_wav_files(void) {
     static dsd_opts opts;
@@ -6460,6 +6510,69 @@ test_merge_continuation_annotates_from_the_row(void) {
     return rc;
 }
 
+// Issue #637: the single-slot DMR decoder carries a TS2 call on lane 0, and its continuation names the slot the row
+// proved, though the reacquired segment arrives while the decoder's slot proof is pending again.
+static int
+test_merge_continuation_names_the_rows_proven_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-continuation-ota-slot");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for continuation over-the-air slot test\n");
+        return 1;
+    }
+    close(fd);
+    (void)remove(path);
+    DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    int rc = expect_int("lane 0 segment on TS2 begins",
+                        observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U,
+                                          0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                        1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("lane 0 segment ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+    rc |= expect_int("reacquired lane 0 segment continues",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U,
+                                       0U, DSD_CALL_BOUNDARY_CONTINUE),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("reacquired lane 0 segment ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        (void)remove(path);
+        DSD_FPRINTF(stderr, "continuation over-the-air slot event log was not created\n");
+        return 1;
+    }
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    (void)remove(path);
+    buf[n] = '\0';
+
+    const char* continuation = strstr(buf, " Reacquired: ");
+    rc |= expect_int("the reacquired lane 0 segment merged into one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_has_substr("the first line names TS2", buf, "SRC: 00000000; CC: 00; Group;  Slot 2;");
+    if (continuation == NULL) {
+        DSD_FPRINTF(stderr, "expected a continuation line in the event log\n");
+        rc |= 1;
+    } else {
+        rc |= expect_has_substr("continuation names the row's proven slot", continuation, "Slot 2;");
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // Optional detail a reacquired segment contributes reaches the event log even when it does not
 // change the rendered row -- otherwise it would show in the UI history and be missing from the
 // log. The continuation also carries the slot annotation that every normal commit carries.
@@ -7740,6 +7853,8 @@ main(void) {
     rc |= test_source_less_current_event_updates_history_metadata();
     rc |= test_event_log_writes_optional_metadata_lines();
     rc |= test_event_log_unstamped_row_keeps_bare_detail_lines();
+    rc |= test_event_log_names_the_proven_over_the_air_slot();
+    rc |= test_merge_continuation_names_the_rows_proven_slot();
     rc |= test_source_transition_rotates_slot_wav_files();
     rc |= test_ysf_current_sanitizes_ids_and_text_message();
     rc |= test_m17_dstar_dpmr_current_strings();

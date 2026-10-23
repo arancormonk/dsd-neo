@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/ambe_interleave.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
@@ -58,6 +59,9 @@ typedef struct dmr_data_sync_ctx_s {
     int confidence_reject;
     /* The carrier count (state->carrier_seq) the burst began on (issue #575). */
     uint32_t carrier_seq;
+    /* The slot (DSD_DMR_MONO_RX_TS1/TS2) a checked TACT names for a standalone burst the single-slot output folds onto
+       lane 0; DSD_DMR_MONO_RX_NONE otherwise (issue #637). */
+    uint8_t folded_slot;
 } dmr_data_sync_ctx;
 
 static void
@@ -162,7 +166,8 @@ dmr_data_collect_cach(dmr_data_sync_ctx* ctx) {
     } else if (ctx->opts->dmr_mono == 1 && ctx->state->dmr_stereo == 0) {
         /* A standalone burst the single-slot output folds onto lane 0 (dmr_flco_ctx_init()) is judged by its own CACH
            slot for its dispatch: dmr_data_sync() set the voice lane's proof aside and restores it after. */
-        ctx->state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
+        ctx->folded_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
+        ctx->state->dmr_mono_rx_slot = ctx->folded_slot;
     }
     return 1;
 }
@@ -396,6 +401,45 @@ dmr_data_note_polarity_evidence(dsd_opts* opts, dsd_state* state, const dmr_data
                 opts->inverted_dmr ? "inverted" : "normal", KNRM);
 }
 
+/* Whether the burst was a voice LC header, folded onto lane 0, that the lane's call took (issue #637): the call is active
+   on the header's slot and this dispatch observed it (a new epoch, or the epoch @p before held moved on). That call is
+   the one the lane carries next, so the proof the previous call left must not end it. A header the LC check refused
+   observed nothing, and a PI header does not open the call. */
+static int
+dmr_data_header_opened_lane_call(const dsd_state* state, const dmr_data_sync_ctx* ctx,
+                                 const dsd_call_snapshot* before) {
+    if (ctx->burst != 1U || ctx->folded_slot == DSD_DMR_MONO_RX_NONE) {
+        return 0;
+    }
+    dsd_call_snapshot after;
+    if (dsd_call_state_get(state, 0U, &after) <= 0 || after.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    const uint8_t slot = (uint8_t)(ctx->folded_slot - DSD_DMR_MONO_RX_TS1 + 1U);
+    return after.receive_identity.slot == slot && (after.epoch != before->epoch || after.revision != before->revision);
+}
+
+/* After a standalone burst (issue #637): what one the receive policy rejects or is still checking left in its lane's
+   position cache (an LRRP fix, a data call line) goes before the voice lane's proof @p mono_slot / @p mono_candidate
+   comes back, since the terminal judges that lane by the proof, not by the slot the burst was heard on. The proof comes
+   back only onto the carrier it was proven on (a boundary during the burst, a replay retune, forgot it for good), and a
+   voice LC header the lane's call @p lane_call took applies the mono-slot rule on top of it. */
+static void
+dmr_data_restore_voice_lane(const dsd_opts* opts, dsd_state* state, const dmr_data_sync_ctx* ctx, uint8_t mono_slot,
+                            uint8_t mono_candidate, const dsd_call_snapshot* lane_call) {
+    if (state->carrier_seq != ctx->carrier_seq) {
+        return;
+    }
+    if (ctx->cach_okay == 1 && !dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, state->currentslot & 1)) {
+        state->dmr_lrrp_gps[state->currentslot & 1][0] = '\0';
+    }
+    state->dmr_mono_rx_slot = mono_slot;
+    state->dmr_mono_rx_candidate = mono_candidate;
+    if (dmr_data_header_opened_lane_call(state, ctx, lane_call)) {
+        dmr_mono_slot_note(state, 1, (unsigned int)(ctx->folded_slot - DSD_DMR_MONO_RX_TS1));
+    }
+}
+
 void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     dmr_data_sync_ctx ctx;
@@ -409,6 +453,12 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     const int standalone = state->dmr_ms_mode != 1;
     const uint8_t mono_slot = state->dmr_mono_rx_slot;
     const uint8_t mono_candidate = state->dmr_mono_rx_candidate;
+    /* The lane's call before the burst, for a header the single-slot output folds onto it (issue #637). */
+    dsd_call_snapshot lane_call;
+    DSD_MEMSET(&lane_call, 0, sizeof(lane_call));
+    if (standalone && opts->dmr_mono == 1 && state->dmr_stereo == 0) {
+        (void)dsd_call_state_get(state, 0U, &lane_call);
+    }
     if (standalone) {
         dmr_mono_slot_forget(state);
     } else {
@@ -439,17 +489,8 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 
     dmr_data_finalize(opts, state, ctx.SlotTypeOk, ctx.cach_okay);
     dmr_data_note_polarity_evidence(opts, state, &ctx);
-    /* What a standalone burst the receive policy rejects or is still checking left in its lane's position cache (an
-       LRRP fix, a data call line) goes before the voice lane's proof comes back: the terminal judges that lane by the
-       proof, not by the slot the burst was heard on (issue #637). */
-    if (standalone && ctx.cach_okay == 1 && state->carrier_seq == ctx.carrier_seq
-        && !dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, state->currentslot & 1)) {
-        state->dmr_lrrp_gps[state->currentslot & 1][0] = '\0';
-    }
-    /* Only onto the carrier it was proven on: a boundary during the burst (a replay retune) forgot it for good. */
-    if (standalone && state->carrier_seq == ctx.carrier_seq) {
-        state->dmr_mono_rx_slot = mono_slot;
-        state->dmr_mono_rx_candidate = mono_candidate;
+    if (standalone) {
+        dmr_data_restore_voice_lane(opts, state, &ctx, mono_slot, mono_candidate, &lane_call);
     }
     if (debug_line[0] != '\0') {
         DSD_FPRINTF(stderr, "%s\n", debug_line);

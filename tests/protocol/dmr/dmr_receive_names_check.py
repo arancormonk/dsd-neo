@@ -9,7 +9,10 @@ The calls come from dsd-neo_test_dmr_synth_gen, each with its own talkgroup, sou
 - silence-between: the three calls with two seconds of silence between them (a carrier boundary);
 - back-to-back: the three calls joined as generated (each ends with a terminator and idle bursts);
 - colour-code-change: one continuous call whose colour code changes twice (--cc-change), with no header, talkgroup or
-  source change, so only the received colour code can separate the services.
+  source change, so only the received colour code can separate the services;
+- slot-change: calls on TS1, TS2 and TS1 again, named by slot. The single-slot decoder (-fr) carries both slots on its
+  one lane, so a call on the other slot than the one before must still be one call: one row, logged with its own
+  over-the-air slot, and one recording.
 
 Audio oracle: each recording correlates (at least MIN_CORRELATION) with the audio it must hold, and a recording one
 burst off correlates near zero. A separate call's recording is as long as that call decoded alone and matches it. The
@@ -54,8 +57,9 @@ class Runner:
         with wave.open(str(directory / name)) as source:
             return source.getparams(), source.readframes(source.getnframes())
 
-    def decode(self, case, params, signal):
-        """Decode @p signal with the naming rules; return the call lines and {name: (path, pcm)} of the recordings."""
+    def decode(self, case, params, signal, names=NAMES, key=r"_SVC_([A-Za-z]+)_GROUP_", decoder=("-fr",)):
+        """Decode @p signal with the naming rules; return the call lines and {key: (path, pcm)} of the recordings,
+        keyed by what @p key captures from each recording's name (by default its service)."""
         directory = self.root / case
         directory.mkdir(exist_ok=True)
         with wave.open(str(directory / "input.wav"), "wb") as joined:
@@ -63,8 +67,8 @@ class Runner:
             joined.writeframes(signal)
         events = directory / "events.log"
         result = subprocess.run(
-            [self.binary, "--frontend", "none", "-fr", "-i", "input.wav", "-o", "null", "-P", "-J", str(events),
-             *NAMES],
+            [self.binary, "--frontend", "none", *decoder, "-i", "input.wav", "-o", "null", "-P", "-J", str(events),
+             *names],
             cwd=directory, capture_output=True, text=True, timeout=120, check=False)
         output = result.stdout + result.stderr
         assert result.returncode == 0, output
@@ -74,7 +78,7 @@ class Runner:
         calls = [line for line in history.splitlines() if " DMR TGT: " in line]
         recordings = {}
         for path in sorted((directory / "WAV").glob("*.wav")):
-            match = re.search(r"_DMR_CC_\d+_SVC_([A-Za-z]+)_GROUP_", path.name)
+            match = re.search(r"_DMR_CC_\d+" + key, path.name)
             assert match and match.group(1) not in recordings, f"{case}: {path.name}"
             with wave.open(str(path)) as recording:
                 assert recording.getframerate() == RATE, path.name
@@ -158,6 +162,63 @@ def colour_code_change(runner):
     assert start == len(reference) // 2, f"the pieces cover {start} of {len(reference) // 2} samples"
 
 
+def slot_change(runner):
+    """TS1, TS2 and TS1 calls in a row on the single-slot decoder (-fr, and -nm under the two-slot preset): each is one
+    named row on its own slot, and one recording of its own audio. Under a slot filter the TS2 call is Checking until two
+    bursts prove its slot: after one voice header the first voice burst is withheld, after a repeated header none is."""
+    directory = runner.root / "slots"
+    directory.mkdir()
+    names = ["--slot-name", "1=SlotOne", "--slot-name", "2=SlotTwo"]
+    # name, over-the-air slot, generator --tg (its slot 2 carries --tg + 1), seconds, voice offset
+    calls = [("SlotOne", 1, 100, 4, 0), ("SlotTwo", 2, 200, 5, 7), ("SlotOne", 1, 300, 4, 14)]
+    key = r"_SVC_[A-Za-z]+_GROUP_TGT_(\d+)_"
+    params = None
+    generated = []
+    for i, (_, slot, tg, seconds, offset) in enumerate(calls):
+        contents = ["--s1", "voice", "--s2", "idle"] if slot == 1 else ["--s1", "idle", "--s2", "voice"]
+        params, signal = runner.generate(directory, f"call{i}.wav", [
+            "-t", str(seconds), "--cc", "1", "--tg", str(tg), "--seed", str(i + 11), "--voice-t0", str(offset),
+            *contents])
+        generated.append(signal)
+    _, repeated = runner.generate(directory, "call1h.wav", [
+        "-t", "5", "--cc", "1", "--tg", "200", "--seed", "12", "--voice-t0", "7", "--s1", "idle", "--s2", "voice",
+        "--hdr-repeat", "2"])
+    for decoder in (("-fr",), ("-fs", "-nm")):
+        tag = "nm" if "-nm" in decoder else "fr"
+        references = {}
+        for i, (_, slot, tg, _, _) in enumerate(calls):
+            on_air = str(tg + slot - 1)
+            _, alone, history = runner.decode(f"slot-alone-{tag}-{i}", params, generated[i], names, key, decoder)
+            assert list(alone) == [on_air], f"{tag} call {i} alone: {list(alone)}\n{history}"
+            references[on_air] = alone[on_air][1]
+        for case, gap_s in (("slot-back-to-back", 0.0), ("slot-silence-between", 2.0)):
+            case = f"{case}-{tag}"
+            silence = b"\0\0" * int(params.framerate * gap_s)
+            lines, recordings, history = runner.decode(case, params, silence.join(generated), names, key, decoder)
+            assert len(lines) == len(calls), f"{case}: {len(lines)} rows for {len(calls)} calls\n{history}"
+            for line, (name, slot, tg, _, _) in zip(lines, calls):
+                on_air = tg + slot - 1
+                assert f"[{name}] DMR TGT: {on_air:08d};" in line and line.rstrip().endswith(f"Slot {slot};"), \
+                    f"{case}: {line!r} is not {name}'s TG {on_air} on slot {slot}\n{history}"
+            assert sorted(recordings) == sorted(references), f"{case}: {[r[0] for r in recordings.values()]}"
+            for tg, (path, pcm) in recordings.items():
+                assert matches(pcm, references[tg]), f"{case}: {path} is not TG {tg}'s own audio"
+        # Only TS2 passes the filter: one row, its audio less the Checking burst at its start (the bootstrap burst a
+        # single voice header leaves unproven), and nothing at all once a repeated header has proven the slot.
+        for case, second, withheld in (("slot-allow-2", generated[1], BURST), ("slot-allow-2-repeat", repeated, 0)):
+            case = f"{case}-{tag}"
+            _, alone, _ = runner.decode(case + "-alone", params, second, names, key, decoder)
+            reference = alone["201"][1]
+            joined = b"".join([generated[0], second, generated[2]])
+            lines, recordings, history = runner.decode(case, params, joined, names + ["--slot-allow", "2"], key, decoder)
+            assert len(lines) == 1 and "[SlotTwo] DMR TGT: 00000201;" in lines[0], f"{case}: {lines}\n{history}"
+            assert list(recordings) == ["201"], f"{case}: {[r[0] for r in recordings.values()]}"
+            path, pcm = recordings["201"]
+            assert len(pcm) // 2 == len(reference) // 2 - withheld, \
+                f"{case}: {path} holds {len(pcm) // 2} samples, expected {len(reference) // 2 - withheld}"
+            assert matches(pcm, reference[len(reference) - len(pcm):]), f"{case}: {path} is not the call's own audio"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary")
@@ -167,6 +228,7 @@ def main():
         runner = Runner(str(Path(args.binary).resolve()), str(Path(args.generator).resolve()), Path(temporary))
         separate_calls(runner)
         colour_code_change(runner)
+        slot_change(runner)
 
 
 if __name__ == "__main__":

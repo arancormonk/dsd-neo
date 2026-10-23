@@ -6,12 +6,14 @@
 #include "dsd-neo/core/safe_api.h"
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -38,6 +40,10 @@ static int g_handler_slot;
 static int g_handler_mono_slot;
 static int g_handler_moves_carrier;
 static int g_handler_writes_fix;
+/* The handler observes the lane-0 call as a voice LC header the single-slot output folds there does (issue #637):
+   0 none, 1 a new epoch for g_handler_target, 2 that epoch again (a repeated header). */
+static int g_handler_observes;
+static uint32_t g_handler_target;
 static int g_live_dibit_index;
 static int g_live_dibits[64];
 static uint8_t g_live_reliability[64];
@@ -159,6 +165,21 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     }
     g_handler_burst = databurst;
     g_handler_rxid = state->rx_id;
+    if (g_handler_observes) {
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_DMR_BS_DATA_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = g_handler_target,
+            .policy_target_id = g_handler_target,
+            .ota_source_id = 1001U,
+        };
+        (void)dsd_call_state_observe(state, &observation,
+                                     g_handler_observes == 1 ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE);
+        /* The header's crypto publication, which moves the revision again as the real one does. */
+        const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
+        (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    }
     if (g_handler_writes_fix) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s", "lrrp-fix");
     }
@@ -383,6 +404,108 @@ test_data_burst_receive_slot(void) {
     dmr_data_sync(&opts, &state);
     assert(g_handler_calls == 1 && g_handler_mono_slot == DSD_DMR_MONO_RX_TS2);
     assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS1);
+    opts.dmr_mono = 0;
+
+    /* A voice LC header folded onto the lane opens the call the lane carries next, on the header's slot: when the call
+       took it, naming the other slot sends the lane back to Checking, with that slot the candidate the next burst
+       proves, so the proof the previous call left does not end the call. One naming the proven slot keeps it proven. A
+       PI header, a header the call did not take (its LC refused), idle and terminator bursts put the proof back. */
+    static const struct {
+        uint8_t burst;
+        uint8_t lane;
+        uint8_t slot;
+        int observes;
+        uint8_t proof;
+        uint8_t candidate;
+    } headers[] = {
+        {1U, DSD_DMR_MONO_RX_TS1, 1U, 1, DSD_DMR_MONO_RX_PENDING, DSD_DMR_MONO_RX_TS2},
+        {1U, DSD_DMR_MONO_RX_TS2, 0U, 1, DSD_DMR_MONO_RX_PENDING, DSD_DMR_MONO_RX_TS1},
+        {1U, DSD_DMR_MONO_RX_TS1, 0U, 1, DSD_DMR_MONO_RX_TS1, DSD_DMR_MONO_RX_TS1},
+        {1U, DSD_DMR_MONO_RX_NONE, 1U, 1, DSD_DMR_MONO_RX_PENDING, DSD_DMR_MONO_RX_TS2},
+        {1U, DSD_DMR_MONO_RX_TS1, 1U, 0, DSD_DMR_MONO_RX_TS1, DSD_DMR_MONO_RX_NONE}, /* LC refused */
+        {0U, DSD_DMR_MONO_RX_TS1, 1U, 0, DSD_DMR_MONO_RX_TS1, DSD_DMR_MONO_RX_NONE}, /* PI */
+        {9U, DSD_DMR_MONO_RX_TS1, 1U, 0, DSD_DMR_MONO_RX_TS1, DSD_DMR_MONO_RX_NONE}, /* idle */
+        {2U, DSD_DMR_MONO_RX_TS1, 1U, 0, DSD_DMR_MONO_RX_TS1, DSD_DMR_MONO_RX_NONE}, /* terminator */
+    };
+
+    for (size_t i = 0; i < sizeof(headers) / sizeof(headers[0]); i++) {
+        prepare_state(&state, payload, reliab);
+        reset_fixture();
+        opts.dmr_mono = 1;
+        state.dmr_stereo = 0;
+        state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+        state.dmr_mono_rx_slot = headers[i].lane;
+        state.dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
+        g_decoded_slot = headers[i].slot;
+        g_decoded_burst = headers[i].burst;
+        g_handler_observes = headers[i].observes;
+        g_handler_target = 100U + (uint32_t)i;
+        dmr_data_sync(&opts, &state);
+        assert(g_handler_calls == 1 && g_handler_burst == headers[i].burst);
+        assert(state.dmr_mono_rx_slot == headers[i].proof);
+        assert(state.dmr_mono_rx_candidate == headers[i].candidate);
+        dsd_state_ext_free_all(&state);
+    }
+    /* The call a header took is recognised by its epoch as well as its revision: a new epoch starts from a zeroed
+       snapshot, so a header-only call can end on the very revision the call before it ended on. And a repeated header
+       continues the epoch it opened. */
+    for (int round = 0; round < 3; round++) {
+        prepare_state(&state, payload, reliab);
+        reset_fixture();
+        opts.dmr_mono = 1;
+        state.dmr_stereo = 0;
+        state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+        g_handler_target = 501U;
+        if (round > 0) {
+            /* An earlier TS2 header-only call with the same revision a new epoch reaches, or the epoch to continue. */
+            state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+            g_decoded_slot = 1;
+            g_decoded_burst = 1;
+            g_handler_observes = 1;
+            dmr_data_sync(&opts, &state);
+            reset_fixture();
+        }
+        state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+        state.dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
+        g_decoded_slot = 1;
+        g_decoded_burst = 1;
+        g_handler_target = 501U;
+        g_handler_observes = round == 2 ? 2 : 1;
+        dmr_data_sync(&opts, &state);
+        assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_PENDING && state.dmr_mono_rx_candidate == DSD_DMR_MONO_RX_TS2);
+        dsd_state_ext_free_all(&state);
+    }
+    g_handler_observes = 0;
+    /* A header that never reaches its handler (the confidence gate rejects it) or whose TACT fails proves nothing. */
+    for (int failure = 0; failure < 2; failure++) {
+        prepare_state(&state, payload, reliab);
+        reset_fixture();
+        opts.dmr_mono = 1;
+        state.dmr_stereo = 0;
+        state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+        state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+        g_decoded_slot = 1;
+        g_decoded_burst = 1;
+        if (failure == 0) {
+            g_confidence_result = DMR_CONFIDENCE_REJECT;
+        } else {
+            g_hamming_ok = 0;
+        }
+        dmr_data_sync(&opts, &state);
+        assert(g_handler_calls == 0);
+        assert(state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS1);
+    }
+    /* The two-slot output judges every burst by its own slot: no lane to send back to Checking. */
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    opts.dmr_mono = 0;
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    g_decoded_slot = 1;
+    g_decoded_burst = 1;
+    dmr_data_sync(&opts, &state);
+    assert(g_handler_calls == 1 && state.dmr_mono_rx_slot == DSD_DMR_MONO_RX_TS1);
+    g_decoded_slot = 0;
     opts.dmr_mono = 0;
 
     prepare_state(&state, payload, reliab);
