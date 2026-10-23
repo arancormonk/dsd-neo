@@ -776,6 +776,10 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) { // NOLINT(misc-u
     (void)mod;
 }
 
+void
+print_snr_meter_blank(void) { // NOLINT(misc-use-internal-linkage)
+}
+
 ui_snr_readout
 ui_snr_readout_for_mod(int rf_mod) { // NOLINT(misc-use-internal-linkage)
     (void)rf_mod;
