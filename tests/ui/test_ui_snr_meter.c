@@ -31,10 +31,11 @@ struct render_capture {
 };
 
 static struct render_capture g_capture;
+static int g_block_glyphs_supported;
 
 int
 dsd_unicode_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_block_glyphs_supported;
 }
 
 static void
@@ -138,7 +139,7 @@ assert_ascii(double snr_db, const char* expected) {
         DSD_FPRINTF(stderr, "ASCII meter for %.1f dB: expected '%s', got '%s'\n", snr_db, expected, actual);
     }
     assert(strcmp(actual, expected) == 0);
-    assert(actual[9] == '\0');
+    assert(actual[DSD_NCURSES_SNR_METER_WIDTH] == '\0');
 }
 
 static void
@@ -150,19 +151,64 @@ test_snr_public_meter_rendering_ascii_and_color_restore(void) {
     capture_reset(cap);
     install_capture();
     print_snr_meter(&opts, 12.0, 0);
-    assert(strcmp(cap->out, "| | | |  ") == 0);
+    assert(strcmp(cap->out, "||||||  ") == 0);
     assert(cap->attr_get_calls == 1);
-    assert(cap->attron_count == 4);
-    assert(cap->attroff_count == 4);
+    assert(cap->attron_count == 6);
+    assert(cap->attroff_count == 6);
     for (int i = 0; i < cap->attron_count; i++) {
         assert(cap->attron_values[i] == (unsigned long)COLOR_PAIR(6));
         assert(cap->attroff_values[i] == (unsigned long)COLOR_PAIR(6));
     }
-    assert(cap->attr_set_calls == 5);
+    assert(cap->attr_set_calls == 7);
     assert(cap->last_attr_set_attrs == cap->saved_attrs);
     assert(cap->last_attr_set_pair == cap->saved_pair);
     clear_capture_hooks();
 }
+
+/* Every level, and the blank used when there is no estimate, fills exactly the advertised width. */
+static void
+test_snr_meter_and_blank_keep_the_row_width(void) {
+    struct render_capture* cap = &g_capture;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    static const double k_levels[] = {NAN, -60.0, -10.0, 0.0, 5.0, 10.0, 15.0, 20.0, 25.0};
+
+    install_capture();
+    for (size_t i = 0; i < sizeof(k_levels) / sizeof(k_levels[0]); i++) {
+        capture_reset(cap);
+        print_snr_meter(&opts, k_levels[i], 0);
+        assert(cap->len == (size_t)DSD_NCURSES_SNR_METER_WIDTH);
+    }
+
+    capture_reset(cap);
+    print_snr_meter_blank();
+    assert(strcmp(cap->out, "        ") == 0);
+    assert(cap->len == (size_t)DSD_NCURSES_SNR_METER_WIDTH);
+    clear_capture_hooks();
+}
+
+#if !defined(DSD_USE_PDCURSES)
+/* With block glyphs on, the meter is one rising ramp of eighth blocks with no gaps between levels. */
+static void
+test_snr_meter_unicode_ramp(void) {
+    struct render_capture* cap = &g_capture;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frontend_terminal_display.eye_unicode = 1;
+    g_block_glyphs_supported = 1;
+
+    install_capture();
+    capture_reset(cap);
+    print_snr_meter(&opts, 30.0, 0);
+    assert(strcmp(cap->out, "▁▂▃▄▅▆▇█") == 0);
+
+    capture_reset(cap);
+    print_snr_meter(&opts, 0.0, 0);
+    assert(strcmp(cap->out, "▁▂▃     ") == 0);
+    clear_capture_hooks();
+    g_block_glyphs_supported = 0;
+}
+#endif
 
 int
 main(void) {
@@ -179,33 +225,47 @@ main(void) {
     assert(dsd_ncurses_snr_meter_bar_count_for_test(INFINITY) == 0);
     assert(dsd_ncurses_snr_meter_bar_count_for_test(-INFINITY) == 0);
     assert_bars(-50.0, 0);
+    assert_bars(-49.9, 1);
     assert_bars(-20.0, 1);
-    assert_bars(-15.0, 1);
+    assert_bars(-6.1, 1);
     assert_bars(-6.0, 2);
-    assert_bars(3.0, 3);
-    assert_bars(12.0, 4);
-    assert_bars(21.0, 5);
-    assert_bars(30.0, 5);
-    assert_bars(60.0, 5);
+    assert_bars(-1.6, 2);
+    assert_bars(-1.5, 3);
+    assert_bars(2.9, 3);
+    assert_bars(3.0, 4);
+    assert_bars(7.4, 4);
+    assert_bars(7.5, 5);
+    assert_bars(11.9, 5);
+    assert_bars(12.0, 6);
+    assert_bars(16.4, 6);
+    assert_bars(16.5, 7);
+    assert_bars(20.9, 7);
+    assert_bars(21.0, 8);
+    assert_bars(30.0, 8);
+    assert_bars(60.0, 8);
 
-    assert_ascii(NAN, "         ");
-    assert_ascii(INFINITY, "         ");
-    assert_ascii(-50.0, "         ");
-    assert_ascii(-15.0, "|        ");
-    assert_ascii(-6.0, "| |      ");
-    assert_ascii(3.0, "| | |    ");
-    assert_ascii(12.0, "| | | |  ");
-    assert_ascii(21.0, "| | | | |");
+    assert_ascii(NAN, "        ");
+    assert_ascii(INFINITY, "        ");
+    assert_ascii(-50.0, "        ");
+    assert_ascii(-15.0, "|       ");
+    assert_ascii(-6.0, "||      ");
+    assert_ascii(3.0, "||||    ");
+    assert_ascii(12.0, "||||||  ");
+    assert_ascii(21.0, "||||||||");
 
     {
         char tiny[3];
         DSD_MEMSET(tiny, 'X', sizeof(tiny));
         dsd_ncurses_snr_meter_ascii_for_test(21.0, tiny, sizeof(tiny));
-        assert(strcmp(tiny, "| ") == 0);
+        assert(strcmp(tiny, "||") == 0);
         assert(tiny[2] == '\0');
     }
 
     test_snr_public_meter_rendering_ascii_and_color_restore();
+    test_snr_meter_and_blank_keep_the_row_width();
+#if !defined(DSD_USE_PDCURSES)
+    test_snr_meter_unicode_ramp();
+#endif
 
     printf("UI_SNR_METER: OK\n");
     return 0;

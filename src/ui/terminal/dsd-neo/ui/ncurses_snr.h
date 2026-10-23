@@ -28,8 +28,14 @@ typedef int (*dsd_ncurses_snr_emit_attr_set_fn)(unsigned long attrs, short pair)
 extern "C" {
 #endif
 
+/** Terminal cells print_snr_meter() and print_snr_meter_blank() always draw. */
+enum { DSD_NCURSES_SNR_METER_WIDTH = 8 };
+
 /** Render a compact SNR meter. */
 void print_snr_meter(const dsd_opts* opts, double snr_db, int mod);
+
+/** Draw blank cells the width of the SNR meter, so a row without an estimate keeps its layout. */
+void print_snr_meter_blank(void);
 
 #ifdef DSD_NEO_TEST_HOOKS
 int dsd_ncurses_snr_meter_bar_count_for_test(double snr_db);

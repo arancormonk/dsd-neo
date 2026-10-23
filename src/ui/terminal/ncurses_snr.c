@@ -23,7 +23,8 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 
-enum { SNR_METER_BARS = 5, SNR_METER_WIDTH = (SNR_METER_BARS * 2) - 1 };
+/* One cell per level, eighth-block steps from U+2581 to the full block U+2588. */
+enum { SNR_METER_BARS = DSD_NCURSES_SNR_METER_WIDTH, SNR_METER_WIDTH = SNR_METER_BARS };
 
 #ifdef DSD_NEO_TEST_HOOKS
 struct snr_emit_hooks {
@@ -131,11 +132,15 @@ snr_emit_attr_set(attr_t attrs, short pair) {
 
 #if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
 static const wchar_t snr_block_glyphs[SNR_METER_BARS][2] = {
-    {(wchar_t)0x2581, 0}, {(wchar_t)0x2582, 0}, {(wchar_t)0x2583, 0}, {(wchar_t)0x2584, 0}, {(wchar_t)0x2585, 0},
+    {(wchar_t)0x2581, 0}, {(wchar_t)0x2582, 0}, {(wchar_t)0x2583, 0}, {(wchar_t)0x2584, 0},
+    {(wchar_t)0x2585, 0}, {(wchar_t)0x2586, 0}, {(wchar_t)0x2587, 0}, {(wchar_t)0x2588, 0},
 };
 #else
-static const char* const snr_block_glyphs[SNR_METER_BARS] = {"▁", "▂", "▃", "▄", "▅"};
+static const char* const snr_block_glyphs[SNR_METER_BARS] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
 #endif
+
+/* Lower edges of levels 2..8: 4.5 dB steps over the meter's -6..21 dB span. */
+static const double snr_meter_thresholds_db[SNR_METER_BARS - 1] = {-6.0, -1.5, 3.0, 7.5, 12.0, 16.5, 21.0};
 
 static int
 snr_meter_bar_count(double snr_db) {
@@ -143,19 +148,11 @@ snr_meter_bar_count(double snr_db) {
     if (!isfinite(snr_db) || snr_db <= -50.0) {
         return 0;
     }
-    if (snr_db < -6.0) {
-        return 1;
+    int bars = 1;
+    while (bars < SNR_METER_BARS && snr_db >= snr_meter_thresholds_db[bars - 1]) {
+        bars++;
     }
-    if (snr_db < 3.0) {
-        return 2;
-    }
-    if (snr_db < 12.0) {
-        return 3;
-    }
-    if (snr_db < 21.0) {
-        return 4;
-    }
-    return SNR_METER_BARS;
+    return bars;
 }
 
 #ifdef PRETTY_COLORS
@@ -178,12 +175,8 @@ snr_meter_ascii(double snr_db, char* out, size_t out_size) {
     for (size_t i = 0; i < n; i++) {
         out[i] = ' ';
     }
-    for (int i = 0; i < bars; i++) {
-        size_t pos = (size_t)i * 2;
-        if (pos >= n) {
-            break;
-        }
-        out[pos] = '|';
+    for (int i = 0; i < bars && (size_t)i < n; i++) {
+        out[i] = '|';
     }
     out[n] = '\0';
 }
@@ -221,9 +214,6 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     short cp = SNR_METER_COLOR_PAIR;
 #endif
     for (int i = 0; i < SNR_METER_BARS; i++) {
-        if (i > 0) {
-            snr_emit_ch(' ');
-        }
         if (i >= bars) {
             snr_emit_ch(' ');
             continue;
@@ -233,7 +223,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
 #endif
         if (use_unicode) {
 #if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
-            // snr_block_glyphs is a compile-time table of U+2581..U+2585, never radio-sourced
+            // snr_block_glyphs is a compile-time table of U+2581..U+2588, never radio-sourced
             // text, so there is no code unit here the runtime can fail to encode; PDCurses has no
             // narrow path for these glyphs.
             // nosemgrep: dsd-neo.no-wide-character-output
@@ -253,4 +243,12 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     /* Padding belongs to the caller's line styling, not the temporary SNR color. */
     snr_emit_attr_set(saved_attrs, saved_pair);
 #endif
+}
+
+/* Blank cells the width of the meter, for rows that have no SNR estimate. */
+void
+print_snr_meter_blank(void) {
+    for (int i = 0; i < SNR_METER_WIDTH; i++) {
+        snr_emit_ch(' ');
+    }
 }

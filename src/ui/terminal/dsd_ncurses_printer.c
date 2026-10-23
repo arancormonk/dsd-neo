@@ -1379,7 +1379,9 @@ ui_render_demod_snr_line(const dsd_opts* opts, const dsd_state* state) {
         } else {
             /* Show placeholder so users can see the field even when no estimate */
             ui_print_snr_db_field("n/a");
-            printw("      (%s)", m[0] ? m : "-");
+            addch(' ');
+            print_snr_meter_blank();
+            printw(" (%s)", m[0] ? m : "-");
         }
     }
 #endif
