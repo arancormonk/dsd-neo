@@ -1388,6 +1388,36 @@ test_sdrtrunk_json_imported_zero_key_is_a_key(void) {
     return rc;
 }
 
+// A P25 AES-256 replay record needs the whole key: with all four segments imported (zero values allowed) the
+// records decrypt and are written; with three of them they stay undecrypted and none is.
+static int
+test_sdrtrunk_json_incomplete_aes_key_refused(void) {
+    int rc = 0;
+    static dsd_state state;
+    static const char json[] =
+        "{\"version\":\"1\",\"protocol\":\"APCO25-PHASE1\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"132\",\"encryption_key_id\":\"7\",\"encryption_mi\":\"0011223344556677\","
+        "\"hex\":\"000000000000000000000000000000000000\"}";
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    unsigned char out[SDRTRUNK_MAP_RECORD_CAP];
+    size_t complete_len = 0;
+    size_t partial_len = 0;
+    for (int segments = 4; segments >= 3; segments--) {
+        DSD_MEMSET(&state, 0, sizeof state);
+        state.keyloader = 1;
+        for (int seg = 0; seg < segments; seg++) {
+            state.rkey_array_loaded[7 + offsets[seg]] = 1U;
+        }
+        rc |= capture_sdrtrunk_replay_records(segments == 4 ? "sdrtrunk aes256 complete" : "sdrtrunk aes256 partial",
+                                              json, &state, out, sizeof out,
+                                              segments == 4 ? &complete_len : &partial_len);
+        dsd_state_ext_free_all(&state);
+    }
+    rc |= expect_true("sdrtrunk aes256 complete key decrypts the records", complete_len >= 12U);
+    rc |= expect_true("sdrtrunk aes256 three segments leave them undecrypted", partial_len == 0U);
+    return rc;
+}
+
 // sdrtrunk_json_handle_mi() also serves P25 replay, where ctx->key_id (a uint16_t; P25 signals a
 // full 16-bit KID) must reach keyring_activate_slot_with_kid() at full width, not narrowed to
 // the DMR resolver's uint8_t. Neither P25 fixture above sets state.keyloader = 1, so nothing
@@ -3666,6 +3696,7 @@ main(void) {
     rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_imported_zero_key_is_a_key();
+    rc |= test_sdrtrunk_json_incomplete_aes_key_refused();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width();
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row();

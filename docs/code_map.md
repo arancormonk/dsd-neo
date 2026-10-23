@@ -787,30 +787,36 @@ suite runs under this compiler.
   drops before the vocoder (non-standard C0 or the crypto gate) still consumes its keystream position through
   `dsd_mbe_p25p1_skip_voice_frame()`. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`.
   Tests: `CORE_MBE_CRYPTO_SCOPE`, `P25_P1_LDU_HELPERS`.
-- Invariant (keyring presence, `<dsd-neo/core/keyring.h>`, `src/core/vocoder/keyring.c`): an imported key is present
-  by its import flag, not its value. `keyring_activate_slot_with_kid()` sets `scalar_key_present[]` from
-  `keyring_kid_scalar_present()` (the scalar cell is `rkey_array_loaded`, or non-zero for material stored without the
-  flag) and `aes_key_loaded[]` from the segment count (flagged segments, else non-zero ones), so an imported all-zero
-  DES, RC4 or AES key decrypts as the same value entered directly does, and a key ID nothing was imported for stays
-  refused. The predictions agree with activation: `keyring_kid_material()`'s `aes_loaded`, `keyring_kid_satisfies_need()`
-  (scalar and AES needs) and the mapped DMR material (`dsd_dmr_slot_key_material()`) use the same flag-or-value rule;
-  the Kirisun quartet alone keeps its all-non-zero rule (`keyring_kid_kirisun_complete()`). NXDN keys its material by
-  the VCALL key ID, the destination or the frequency hash outside that activation, and applies the same rule through
-  `keyring_load_scalar_key()` (scrambler and DES, voice and data) and `keyring_kid_aes_present()` (AES voice and data).
-  Whether a VCALL's own key ID holds its key, for the loader and the key source the call reports alike, is
-  cipher-specific (`nxdn_vcall_kid_holds_key()`): a scalar for the scrambler and DES, all four AES-256 segments for
-  AES, so another ID's scalar parked on one of this ID's AES cells (ID + 0x101 ...) never reads as this ID's key. The
-  DMR talkgroup map reports a matched but unapplied row by the same reasoning: the mapped ID holds a key of another
-  kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
-  Every other loader that reads `rkey_array` by key ID decides presence the same way
-  and falls back to the direct key only when nothing was imported, judging that one by `dsd_key_scalar_present()`
-  (R/RR) or `dsd_key_direct_words_present()` (K1..K4): the DMR Basic Privacy talkgroup autoload in `dsd_mbe.c` (which
-  also sets `basic_key_present`), the DMR data block crypto (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt
-  (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and talkgroup-keyed lookup (`dsd_file.c`). Tests:
-  `P25_CRYPTO_STATE` (zero keys on both phases, key ID 0, a key ID with hex letters, an incomplete AES-256 collection),
-  `NXDN_ELEMENT_BOUNDS` (imported zero AES-256, DES, NXDN48 scrambler and data DES; absent keys refused),
-  `CORE_MBE_TRANSFORM_CONTEXT` (Basic Privacy autoload), `DMR_BLOCK_CRYPTO`, `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO`,
-  `CORE_DMR_TG_KEY_MAP`.
+- Invariant (keyring presence and width, `<dsd-neo/core/keyring.h>`, `src/core/vocoder/keyring.c`): a keyring cell
+  is present by its import flag (`rkey_array_loaded`), whatever its value, or by a non-zero value for material stored
+  without the flag (`keyring_kid_scalar_present()`), so an imported all-zero DES, RC4 or AES key decrypts as the same
+  value entered directly does, and a key ID nothing was imported for stays refused. An AES key's width is its leading
+  present segment cells (ID, +0x101, +0x201, +0x301; `keyring_kid_aes_segments()`): a cell after a missing one is
+  another ID's key aliased onto it and is never counted. An AES ALG can use a key only at its full width (AES-128 2,
+  TDEA 3, AES-256 4; `dsd_key_need_aes_width()`), never "any segment". `keyring_activate_slot_with_kid()` sets
+  `scalar_key_present[]` from the scalar cell, `aes_key_segments[]` to the width and `aes_key_loaded[]` when the
+  first segment is present; it does not know the ALG, so every consumer that decides decryptability checks the width:
+  `p25_crypto_has_complete_key()` (`aes_key_segments[]` and the keyring's first N cells), the DMR voice verdict
+  (`dsd_dmr_voice_kid_can_decrypt()` with `dsd_dmr_key_material::aes_segments`), and NXDN through
+  `dsd_key_aes_slot_complete()` (`<dsd-neo/core/key_presence.h>`; a legacy writer that set `aes_key_loaded[]` without a
+  width keeps the old rule). Classification agrees with activation: `keyring_kid_material()`, `keyring_kid_satisfies_need()`
+  and the mapped DMR material use the same cells and width; the Kirisun quartet also requires every word non-zero
+  (`keyring_kid_kirisun_complete()`).
+  NXDN keys its material by the VCALL key ID, the destination or the frequency hash outside that activation. The VCALL
+  and VCALL_IV loaders and the key source the call reports share one choice, `nxdn_select_key()`: the signalled ID
+  when it holds the cipher's key (a scalar for the scrambler and DES, all four AES-256 segments for AES), else the
+  destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
+  full width. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
+  another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
+  Every other loader that reads `rkey_array` by key ID decides presence the same way, requires the ALG's width for
+  AES, and falls back to the direct key only when nothing usable was imported, judging that one by
+  `dsd_key_scalar_present()` (R/RR) or `dsd_key_direct_words_complete()` (K1..K4, its recorded word count): the DMR
+  Basic Privacy talkgroup autoload in `dsd_mbe.c` (which also sets `basic_key_present`), the DMR data block crypto
+  (`dmr_block_crypto.c`), the P25 Phase 1 PDU decrypt (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and
+  talkgroup-keyed lookup (`dsd_file.c`). Tests: `P25_CRYPTO_STATE`, `NXDN_ELEMENT_BOUNDS` (imported zero keys, the
+  narrow AES fallback, VCALL_IV keeping the VCALL's key), `CORE_MBE_TRANSFORM_CONTEXT`, `DMR_BLOCK_CRYPTO`,
+  `P25_P1_PDU_ES_EXT`, `CORE_MBE_FILE_IO` (incomplete AES keys refused on the data and replay paths),
+  `CORE_DMR_VOICE_ALG_GATE` (DMR voice width), `CORE_DMR_TG_KEY_MAP`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the

@@ -538,9 +538,11 @@ test_kid_material_reports_without_activating(void) {
     // activation, not with a tidier definition.
     rc |= expect_eq("mat-scalar-aes", aes_loaded, 1);
 
-    rc |= expect_eq("mat-segment-only", keyring_kid_material(&state, 0x22, &rkey, &aes_loaded), 1);
+    // A cell after the key ID's own missing one is another ID's key aliased onto it, never this ID's material.
+    rc |= expect_eq("mat-segment-only", keyring_kid_material(&state, 0x22, &rkey, &aes_loaded), 0);
     rc |= expect_eq("mat-segment-only-rkey", (long long)rkey, 0LL);
-    rc |= expect_eq("mat-segment-only-aes", aes_loaded, 1);
+    rc |= expect_eq("mat-segment-only-aes", aes_loaded, 0);
+    rc |= expect_eq("mat-segment-only-width", keyring_kid_aes_segments(&state, 0x22), 0);
 
     rc |= expect_eq("mat-none", keyring_kid_material(&state, 0x33, &rkey, &aes_loaded), 0);
     rc |= expect_eq("mat-none-rkey", (long long)rkey, 0LL);
@@ -588,9 +590,9 @@ test_mapped_kid_without_material_falls_back(void) {
 //
 // Exhaustive over the four AES segments x {rkey_array_loaded, value non-zero} -- 4^4 = 256
 // combinations, both slots -- because the asymmetric cases are where a plausible-looking predicate
-// breaks: keyring_aes_segment_count() returns the loaded-flag count whenever any flag is set and
-// the non-zero count otherwise, so "loaded but zero" and "unloaded but non-zero" pull the segment
-// count and the A1..A4 non-zero test in opposite directions. keyring_aes_segments_complete(.., 4)
+// breaks: keyring_aes_segment_count() counts the leading cells present by flag or value, so "loaded
+// but zero" and "unloaded but non-zero" pull the segment count and the A1..A4 non-zero test in
+// opposite directions. keyring_aes_segments_complete(.., 4)
 // accepts the loaded-but-zero case and is NOT this predicate.
 static int
 test_kirisun_kid_predicate_matches_activation(void) {
@@ -676,16 +678,15 @@ test_kid_satisfies_need(void) {
     rc |= expect_eq("need-aes4-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4), 1);
     rc |= expect_eq("need-quartet-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 1);
 
-    // AES_4 and QUARTET diverge exactly here: four non-zero values satisfy AES_4 regardless of
-    // rkey_array_loaded, but QUARTET also requires keyring_aes_segment_count() to read 4, which
-    // needs the loaded flags too. That divergence is why key_material.h documents the two needs
-    // as distinct rather than one collapsing into the other.
+    // Every cell is present by its flag or by a non-zero value, so four non-zero cells, flagged or not, are a key four
+    // segments wide: AES_4 and the quartet both hit. They diverge on a flagged zero cell, below: present for AES_4,
+    // not non-zero for the quartet.
     state.rkey_array_loaded[0x40] = 0U;
     state.rkey_array_loaded[0x241] = 0U;
     rc |= expect_eq("need-aes4-partial-loaded-still-hits", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4),
                     1);
-    rc |= expect_eq("need-quartet-partial-loaded-misses",
-                    keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 0);
+    rc |= expect_eq("need-quartet-partial-loaded-hits-by-value",
+                    keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 1);
 
     // A loaded-but-zero cell is an imported key and activates as present (aes_key_loaded), so it
     // satisfies an AES need: classification has to predict activation. The Kirisun quartet keeps

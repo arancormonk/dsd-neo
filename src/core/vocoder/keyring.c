@@ -33,25 +33,25 @@ keyring_rkey_index_valid(const dsd_state* state, int index) {
     return state != NULL && index >= 0 && (size_t)index < (sizeof(state->rkey_array) / sizeof(state->rkey_array[0]));
 }
 
+// A cell holds a key when it was imported (rkey_array_loaded) or, for material stored without the
+// flag, when its value is non-zero. Presence comes from the flag rather than the value so an imported
+// all-zero key is a key, exactly as the same value entered directly is (key_presence.h).
+static int
+keyring_cell_present(const dsd_state* state, int index) {
+    return keyring_rkey_index_valid(state, index)
+           && (state->rkey_array_loaded[index] != 0U || state->rkey_array[index] != 0ULL);
+}
+
+// The key's width in AES segments: how many of its leading segment cells are present. A key is as wide as its
+// contiguous cells from the ID's own; a later cell after a missing one belongs to another ID aliased onto it, never
+// to this key, so it is not counted.
 static uint8_t
 keyring_aes_segment_count(const dsd_state* state, int key_id) {
-    uint8_t present = 0U;
-    uint8_t nonzero = 0U;
-
-    for (size_t i = 0; i < 4U; i++) {
-        const int index = key_id + k_aes_segment_offsets[i];
-        if (!keyring_rkey_index_valid(state, index)) {
-            continue;
-        }
-        if (state->rkey_array_loaded[index] != 0U) {
-            present++;
-        }
-        if (state->rkey_array[index] != 0ULL) {
-            nonzero++;
-        }
+    uint8_t width = 0U;
+    while (width < 4U && keyring_cell_present(state, key_id + k_aes_segment_offsets[width])) {
+        width++;
     }
-
-    return present != 0U ? present : nonzero;
+    return width;
 }
 
 int
@@ -97,23 +97,14 @@ keyring_kid_kirisun_complete(const dsd_state* state, int key_id) {
     return 1;
 }
 
-// A cell holds a key when it was imported (rkey_array_loaded) or, for material stored without the
-// flag, when its value is non-zero. Presence comes from the flag rather than the value so an imported
-// all-zero key is a key, exactly as the same value entered directly is (key_presence.h).
-static int
-keyring_cell_present(const dsd_state* state, int index) {
-    return keyring_rkey_index_valid(state, index)
-           && (state->rkey_array_loaded[index] != 0U || state->rkey_array[index] != 0ULL);
-}
-
 int
 keyring_kid_scalar_present(const dsd_state* state, int key_id) {
     return state != NULL && keyring_cell_present(state, key_id);
 }
 
 int
-keyring_kid_aes_present(const dsd_state* state, int key_id) {
-    return state != NULL && keyring_aes_segment_count(state, key_id) != 0U;
+keyring_kid_aes_segments(const dsd_state* state, int key_id) {
+    return state != NULL ? (int)keyring_aes_segment_count(state, key_id) : 0;
 }
 
 int

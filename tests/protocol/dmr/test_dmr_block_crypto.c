@@ -105,6 +105,7 @@ seed_window(dsd_state* state, uint8_t slot, uint8_t start, uint8_t poc) {
     state->data_byte_ctr[slot] = 48;
 }
 
+/* An imported four-segment key, as the hex importer stores it: every cell flagged, zero words included. */
 static void
 seed_key_array(dsd_state* state, int kid, unsigned long long k1, unsigned long long k2, unsigned long long k3,
                unsigned long long k4) {
@@ -112,6 +113,10 @@ seed_key_array(dsd_state* state, int kid, unsigned long long k1, unsigned long l
     state->rkey_array[kid + 0x101] = k2;
     state->rkey_array[kid + 0x201] = k3;
     state->rkey_array[kid + 0x301] = k4;
+    state->rkey_array_loaded[kid + 0x000] = 1U;
+    state->rkey_array_loaded[kid + 0x101] = 1U;
+    state->rkey_array_loaded[kid + 0x201] = 1U;
+    state->rkey_array_loaded[kid + 0x301] = 1U;
 }
 
 static void
@@ -410,6 +415,34 @@ test_basic_privacy_decrypts_window(void) {
 }
 
 /* An imported zero key is a key: the data RC4, DES and AES-256 paths decrypt with it; nothing imported, nothing does. */
+/* Data AES needs its ALG's full key width: three of AES-256's segments, or one of AES-128's, stay refused. */
+static int
+test_incomplete_aes_key_refused(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    const uint8_t slot = 0;
+    const int kid = 0x47;
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    const int algs[2] = {5, 4};
+    const int loaded[2] = {3, 1};
+    int rc = 0;
+    for (int i = 0; i < 2; i++) {
+        seed_window(&state, slot, 2, 14);
+        state.payload_algid = algs[i];
+        state.payload_keyid = kid;
+        state.payload_mi = 0x01020304ULL;
+        for (int seg = 0; seg < loaded[i]; seg++) {
+            state.rkey_array[kid + offsets[seg]] = 0x2222222222222222ULL;
+            state.rkey_array_loaded[kid + offsets[seg]] = 1U;
+        }
+        dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+        rc |= expect_int(algs[i] == 5 ? "aes256 three segments not loaded" : "aes128 one segment not loaded",
+                         ctx.aes_key_loaded, 0);
+        rc |= expect_int("incomplete aes key refused", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 0);
+    }
+    return rc;
+}
+
 static int
 test_imported_zero_keys_decrypt(void) {
     static dsd_state state;
@@ -497,6 +530,7 @@ main(void) {
     rc |= test_basic_privacy_decrypts_window();
     rc |= test_aes_missing_key_still_normalizes_alg();
     rc |= test_imported_zero_keys_decrypt();
+    rc |= test_incomplete_aes_key_refused();
     rc |= test_malformed_window_decrypt_rejects_without_mutating_payload();
     return rc;
 }

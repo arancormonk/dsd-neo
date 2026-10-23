@@ -784,7 +784,7 @@ test_imported_key_activation_is_slot_aware(void) {
     rc |= expect_int("sparse imported AES-128 blocked",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x89, sparse_aes_kid, 0x2223, 201),
                      DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("sparse imported AES segment count", state.aes_key_segments[1], 2);
+    rc |= expect_int("sparse imported AES key width", state.aes_key_segments[1], 1);
 
     state.currentslot = 1;
     state.payload_keyidR = aes_kid;

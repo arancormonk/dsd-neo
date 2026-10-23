@@ -436,8 +436,10 @@ test_keyring_tracks_aes_segment_metadata(void) {
     rc |= expect_eq_int("keyring-slot1-fallback-a2", (int)state.A2[1], 0x111);
     rc |= expect_eq_int("keyring-slot1-fallback-a3", (int)state.A3[1], 0);
     rc |= expect_eq_int("keyring-slot1-fallback-a4", (int)state.A4[1], 0x222);
-    rc |= expect_eq_int("keyring-slot1-fallback-nonzero-count", state.aes_key_segments[1], 2);
-    rc |= expect_eq_int("keyring-slot1-fallback-loaded", state.aes_key_loaded[1], 1);
+    /* The key's width is its leading present cells: with the ID's own cell empty, the cells at +0x101 and +0x301 are
+     * other IDs' keys aliased onto it, so the key ID holds no AES key at all. */
+    rc |= expect_eq_int("keyring-slot1-fallback-width", state.aes_key_segments[1], 0);
+    rc |= expect_eq_int("keyring-slot1-fallback-not-loaded", state.aes_key_loaded[1], 0);
     /* Neither imported nor non-zero at the scalar cell: absent. */
     rc |= expect_eq_int("keyring-slot1-fallback-scalar-absent", state.scalar_key_present[1], 0);
 

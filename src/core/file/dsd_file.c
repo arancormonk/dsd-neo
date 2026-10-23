@@ -1459,37 +1459,38 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
     return 1;
 }
 
+// @p words: the ALG's key width in 64-bit segments; the key must be that wide (by import flags, zero values allowed).
 static int
-sdrtrunk_load_aes_key(const dsd_state* state, uint16_t key_id, int strict_lookup, uint8_t key[32]) {
-    uint64_t words[4];
+sdrtrunk_load_aes_key(const dsd_state* state, uint16_t key_id, int strict_lookup, unsigned int words, uint8_t key[32]) {
+    uint64_t key_words[4];
     if (strict_lookup && state->keyloader != 1) {
-        words[0] = state->K1;
-        words[1] = state->K2;
-        words[2] = state->K3;
-        words[3] = state->K4;
+        key_words[0] = state->K1;
+        key_words[1] = state->K2;
+        key_words[2] = state->K3;
+        key_words[3] = state->K4;
     } else {
-        words[0] = state->rkey_array[key_id];
-        words[1] = state->rkey_array[key_id + 0x101];
-        words[2] = state->rkey_array[key_id + 0x201];
-        words[3] = state->rkey_array[key_id + 0x301];
+        key_words[0] = state->rkey_array[key_id];
+        key_words[1] = state->rkey_array[key_id + 0x101];
+        key_words[2] = state->rkey_array[key_id + 0x201];
+        key_words[3] = state->rkey_array[key_id + 0x301];
     }
-    // Imported material is present by its import flags (an all-zero key included), the direct K1..K4 key by
-    // dsd_key_direct_words_present().
-    int present = (strict_lookup && state->keyloader != 1) ? dsd_key_direct_words_present(state)
-                                                           : keyring_kid_aes_present(state, key_id);
+    // Imported material is present by its import flags (an all-zero key included) and must reach the ALG's width; the
+    // direct K1..K4 key by dsd_key_direct_words_complete().
+    int present = (strict_lookup && state->keyloader != 1) ? dsd_key_direct_words_complete(state, words)
+                                                           : keyring_kid_aes_segments(state, key_id) >= (int)words;
     if (!present && !strict_lookup) {
-        words[0] = state->K1;
-        words[1] = state->K2;
-        words[2] = state->K3;
-        words[3] = state->K4;
-        present = dsd_key_direct_words_present(state);
+        key_words[0] = state->K1;
+        key_words[1] = state->K2;
+        key_words[2] = state->K3;
+        key_words[3] = state->K4;
+        present = dsd_key_direct_words_complete(state, words);
     }
     if (!present) {
         return 0;
     }
     for (unsigned word = 0; word < 4U; word++) {
         for (unsigned byte = 0; byte < 8U; byte++) {
-            key[word * 8U + byte] = (uint8_t)(words[word] >> (56U - byte * 8U));
+            key[word * 8U + byte] = (uint8_t)(key_words[word] >> (56U - byte * 8U));
         }
     }
     return 1;
@@ -1522,7 +1523,8 @@ sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint
     const int dmr_aes = alg_id == 0x24 || alg_id == 0x25;
     const int nxdn = protocol == 3;
     uint8_t aes_key[32];
-    if (!sdrtrunk_load_aes_key(state, key_id, dmr_aes || nxdn, aes_key)) {
+    const unsigned int words = (alg_id == 0x89 || alg_id == 0x24) ? 2U : 4U;
+    if (!sdrtrunk_load_aes_key(state, key_id, dmr_aes || nxdn, words, aes_key)) {
         return 0;
     }
     uint8_t aes_iv[16] = {0};

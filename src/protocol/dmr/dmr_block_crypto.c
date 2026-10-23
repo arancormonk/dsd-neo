@@ -40,10 +40,10 @@ dmr_block_store_u64_be(unsigned long long value, uint8_t* out) {
     }
 }
 
-// Returns whether a key was loaded: the key ID's imported one (present by its import flags, an all-zero key included),
-// else the direct K1..K4 key.
+// Returns whether a key @p words segments wide was loaded: the key ID's imported one (present by its import flags, an
+// all-zero key included), else the direct K1..K4 key. 0 words (no AES ALG) loads nothing usable.
 static int
-dmr_block_load_aes_key(const dsd_state* state, int key_id, uint8_t aes_key[32]) {
+dmr_block_load_aes_key(const dsd_state* state, int key_id, unsigned int words, uint8_t aes_key[32]) {
     unsigned long long parts[4] = {
         dmr_block_rkey_at(state, key_id + 0x000),
         dmr_block_rkey_at(state, key_id + 0x101),
@@ -56,13 +56,13 @@ dmr_block_load_aes_key(const dsd_state* state, int key_id, uint8_t aes_key[32]) 
     // kid+0x000 and kid+0x101 are present, and for alg 5 when all four are -- exactly the cells
     // read above. So an explicit --dmr-tg-key-csv row beats -2/-H without the row ever being able
     // to silently substitute an unusable key for a working manual one.
-    int present = keyring_kid_aes_present(state, key_id);
+    int present = words != 0U && keyring_kid_aes_segments(state, key_id) >= (int)words;
     if (!present) {
         parts[0] = state->K1;
         parts[1] = state->K2;
         parts[2] = state->K3;
         parts[3] = state->K4;
-        present = dsd_key_direct_words_present(state);
+        present = dsd_key_direct_words_complete(state, words);
     }
 
     for (int i = 0; i < 4; i++) {
@@ -142,7 +142,8 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint
     ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
     ctx->rkey_present = keyring_kid_scalar_present(state, ctx->kid);
 
-    ctx->aes_key_loaded = dmr_block_load_aes_key(state, ctx->kid, ctx->aes_key);
+    ctx->aes_key_loaded =
+        dmr_block_load_aes_key(state, ctx->kid, dsd_key_need_aes_width(dmr_block_alg_key_need(ctx->alg)), ctx->aes_key);
 
     // Slot-correct fallback: RR keys slot 2. Reading R for both slots decrypted slot 2 with
     // slot 1's key whenever the resolved id had nothing imported. No DMR key source is lost by

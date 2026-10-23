@@ -313,6 +313,34 @@ test_p25_pdu_missing_keys_stay_encrypted(void) {
 }
 
 /* An imported zero key is a key: DES, RC4 and AES-128 PDUs decrypt with it, as with the same value entered directly. */
+/* An AES PDU needs its ALG's full key width: three of AES-256's four segments, or one of AES-128's two, stay
+ * refused (no direct key to fall back to). */
+static int
+test_p25_pdu_incomplete_aes_key_refused(void) {
+    static const uint8_t cipher[] = {0xC0, 0xDE, 0x12, 0x34};
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    const int algs[2] = {0x84, 0x89};
+    const int loaded[2] = {3, 1};
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    for (int i = 0; i < 2; i++) {
+        uint8_t input[sizeof cipher];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
+        DSD_MEMCPY(input, cipher, sizeof cipher);
+        for (int seg = 0; seg < loaded[i]; seg++) {
+            st.rkey_array[0x4321 + offsets[seg]] = 0x1111111111111111ULL;
+            st.rkey_array_loaded[0x4321 + offsets[seg]] = 1U;
+        }
+        rc |= expect_u8(
+            algs[i] == 0x84 ? "P25 PDU AES-256 three segments refused" : "P25 PDU AES-128 one segment refused",
+            p25_decrypt_pdu(&opts, &st, input, algs[i], 0x4321, 0x0123456789ABCDEFULL, (int)sizeof input), 1);
+        rc |= expect_bytes("P25 PDU incomplete AES key leaves the payload", input, cipher, sizeof cipher);
+    }
+    return rc;
+}
+
 static int
 test_p25_pdu_imported_zero_keys_decrypt(void) {
     static const uint8_t cipher[] = {0xC0, 0xDE, 0x12, 0x34};
@@ -570,6 +598,10 @@ main(void) {
     fseek(rf, 0, SEEK_SET);
     size_t alloc = (size_t)sz + 1;
     char* buf = (char*)calloc(alloc, 1);
+    if (buf == NULL) {
+        fclose(rf);
+        return 104;
+    }
     size_t nread = fread(buf, 1, alloc - 1, rf);
     if (nread >= alloc) {
         nread = alloc - 1;
@@ -597,6 +629,7 @@ main(void) {
     rc |= test_p25_pdu_aes128_decrypt_vector();
     rc |= test_p25_pdu_missing_keys_stay_encrypted();
     rc |= test_p25_pdu_imported_zero_keys_decrypt();
+    rc |= test_p25_pdu_incomplete_aes_key_refused();
     rc |= test_p25_pdu_label_helpers();
     rc |= test_p25_pdu_header_state_updates();
     rc |= test_p25_pdu_es_header_decrypt_and_advance();

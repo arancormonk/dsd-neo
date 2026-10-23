@@ -59,7 +59,8 @@ int keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_sna
  *
  * @param out_rkey       scalar key value, 0 when none or when the key is zero (may be NULL); whether
  *                       a zero value is a key is keyring_kid_scalar_present()'s answer
- * @param out_aes_loaded 1 when any AES segment is present (may be NULL)
+ * @param out_aes_loaded 1 when the key's first AES segment (its own cell) is present (may be NULL); whether
+ *                       the key is wide enough for an ALG is keyring_kid_aes_segments()'s answer
  * @return 1 when the key ID has any material at all.
  */
 int keyring_kid_material(const dsd_state* state, int key_id, unsigned long long* out_rkey, int* out_aes_loaded);
@@ -70,8 +71,12 @@ int keyring_kid_material(const dsd_state* state, int key_id, unsigned long long*
  */
 int keyring_kid_scalar_present(const dsd_state* state, int key_id);
 
-/** Whether any AES segment of the key ID is present, by the same rule (aes_key_loaded after activation). */
-int keyring_kid_aes_present(const dsd_state* state, int key_id);
+/**
+ * The key ID's width in AES segments (0..4): how many of its leading segment cells (ID, +0x101, +0x201, +0x301) are
+ * present by the same rule. An AES ALG can use the key only when this reaches its width (AES-128 2, TDEA 3, AES-256
+ * 4); a cell after a missing one is another ID's key aliased onto it and is never counted.
+ */
+int keyring_kid_aes_segments(const dsd_state* state, int key_id);
 
 /**
  * Load the key ID's scalar key into the slot (R or RR, scalar_key_present[]) when keyring_kid_scalar_present() says
@@ -141,9 +146,10 @@ int keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int targe
  * Activate imported key material for a slot using an explicit key ID.
  *
  * R/RR and A1..A4 take the stored values; scalar_key_present[] and aes_key_loaded[] take presence
- * from the import flags (keyring_kid_scalar_present(), any present AES segment), so an imported
- * all-zero key activates as present and an absent one as absent. aes_key_segments[] counts the
- * flagged segments, or the non-zero ones for material stored without flags.
+ * from the import flags (keyring_kid_scalar_present(), the key's first AES segment), so an imported
+ * all-zero key activates as present and an absent one as absent. aes_key_segments[] is the key's width
+ * (keyring_kid_aes_segments()). Activation does not know the ALG, so every consumer that decides
+ * decryptability for an AES ALG requires aes_key_segments[] to reach the ALG's width.
  */
 void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
 

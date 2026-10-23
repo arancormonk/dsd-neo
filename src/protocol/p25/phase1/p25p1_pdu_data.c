@@ -449,23 +449,23 @@ p25_store_u64_be(uint64_t value, uint8_t* out) {
     }
 }
 
-// The imported key for the key ID when one is present (by its import flags, an all-zero key included), else the
-// direct K1..K4 key. Returns 0 when neither holds a key.
+// The imported key for the key ID when it holds all @p words segments the ALG needs (by their import flags, an
+// all-zero key included), else the direct K1..K4 key when that is as wide. Returns 0 when neither is.
 static int
-p25_load_aes_key(const dsd_state* state, uint16_t key_id, uint8_t aes_key[32]) {
+p25_load_aes_key(const dsd_state* state, uint16_t key_id, unsigned int words, uint8_t aes_key[32]) {
     unsigned long long int parts[4] = {
         state->rkey_array[key_id + 0x000],
         state->rkey_array[key_id + 0x101],
         state->rkey_array[key_id + 0x201],
         state->rkey_array[key_id + 0x301],
     };
-    int present = keyring_kid_aes_present(state, key_id);
+    int present = keyring_kid_aes_segments(state, key_id) >= (int)words;
     if (!present) {
         parts[0] = state->K1;
         parts[1] = state->K2;
         parts[2] = state->K3;
         parts[3] = state->K4;
-        present = dsd_key_direct_words_present(state);
+        present = dsd_key_direct_words_complete(state, words);
     }
 
     for (int part = 0; part < 4; part++) {
@@ -483,7 +483,7 @@ p25_build_aes_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint8_
     DSD_MEMSET(aes_key, 0, sizeof(aes_key));
 
     *ks_idx = 16; // offset for OFB discard round
-    if (!p25_load_aes_key(state, key_id, aes_key)) {
+    if (!p25_load_aes_key(state, key_id, (alg_id == 0x84) ? 4U : 2U, aes_key)) {
         return 1;
     }
 

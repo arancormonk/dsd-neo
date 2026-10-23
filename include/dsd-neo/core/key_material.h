@@ -23,19 +23,33 @@ extern "C" {
 /**
  * @brief Key material an ALG requires before a key ID can serve it.
  *
- * DSD_KEY_NEED_AES_4 and DSD_KEY_NEED_QUARTET are not redundant. AES_4 asks only that all four
- * segment cells be non-zero; QUARTET additionally requires keyring_aes_segment_count() to report
- * four, which is what keyring_kid_kirisun_complete() predicts about activation. Four non-zero
- * cells of which only two are flagged rkey_array_loaded satisfies the first and not the second.
+ * A cell is present when it was imported (rkey_array_loaded), whatever its value, or holds a non-zero value
+ * (keyring_kid_scalar_present()). DSD_KEY_NEED_AES_4 and DSD_KEY_NEED_QUARTET are not redundant: AES_4 asks that
+ * all four segment cells be present; QUARTET asks that they also be non-zero, which is what
+ * keyring_kid_kirisun_complete() predicts about activation.
  */
 typedef enum {
     DSD_KEY_NEED_NONE = 0, /**< ALG consumes no keyring material; a map row cannot help it. */
-    DSD_KEY_NEED_SCALAR,   /**< rkey_array[kid] non-zero. */
-    DSD_KEY_NEED_AES_2,    /**< First 2 segments non-zero (DMR AES-128, P25 AES-128). */
-    DSD_KEY_NEED_AES_3,    /**< First 3 segments non-zero (P25 TDEA). */
-    DSD_KEY_NEED_AES_4,    /**< All 4 segments non-zero (DMR/P25 AES-256). */
+    DSD_KEY_NEED_SCALAR,   /**< The key ID's own cell present. */
+    DSD_KEY_NEED_AES_2,    /**< First 2 segments present (DMR AES-128, P25 AES-128). */
+    DSD_KEY_NEED_AES_3,    /**< First 3 segments present (P25 TDEA). */
+    DSD_KEY_NEED_AES_4,    /**< All 4 segments present (DMR/P25 AES-256). */
     DSD_KEY_NEED_QUARTET,  /**< Kirisun 0x36/0x37: a complete, all-non-zero quartet. */
 } dsd_key_material_need;
+
+/** The AES key width, in 64-bit segments, an AES need requires (2, 3 or 4); 0 for any other need. */
+static inline unsigned int
+dsd_key_need_aes_width(dsd_key_material_need need) {
+    switch (need) {
+        case DSD_KEY_NEED_AES_2: return 2U;
+        case DSD_KEY_NEED_AES_3: return 3U;
+        case DSD_KEY_NEED_AES_4: return 4U;
+        case DSD_KEY_NEED_NONE:
+        case DSD_KEY_NEED_SCALAR:
+        case DSD_KEY_NEED_QUARTET: break;
+    }
+    return 0U;
+}
 
 #ifdef __cplusplus
 }

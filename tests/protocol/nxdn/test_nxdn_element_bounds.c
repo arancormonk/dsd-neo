@@ -1747,6 +1747,85 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
  * takes the destination's key (0x4567); another destination's scalar key at 0x12B sits on 0x2A's first AES cell
  * (0x2A + 0x101) and must not make 0x2A read as keyed. An AES call needs all four segments at its key ID: a scalar
  * alone there is no AES key. */
+/* AES is usable only at its full width. With nothing at the call's key ID 0x13 and only an imported zero scalar at
+ * ID 0, the AES fallback to key 0 finds one segment, not four: the call stays muted and undecryptable. */
+static int
+test_vcall_aes_fallback_needs_a_full_key(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    dsd_call_snapshot call;
+    state->nxdn_confirmed = 1;
+    state->keyloader = 1;
+    state->rkey_array_loaded[0x00U] = 1U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("aes-narrow-fallback-not-loaded", state->aes_key_loaded[0], 0);
+    rc |= expect_int("aes-narrow-fallback-muted", state->dmr_encL, 1);
+    rc |= expect_int("aes-narrow-fallback-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("aes-narrow-fallback-not-decryptable", call.crypto != DSD_CALL_CRYPTO_DECRYPTABLE, 1);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* VCALL and VCALL_IV load the same key and the call reports it: with only a scalar at the signalled ID 0x13 and a
+ * complete AES key at 0, both load key 0, and the report says 0 throughout. */
+static int
+test_vcall_iv_keeps_the_vcall_key_choice(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    uint8_t iv_bits[96];
+    static const uint64_t key0[4] = {0x0102030405060708ULL, 0x1112131415161718ULL, 0x2122232425262728ULL,
+                                     0x3132333435363738ULL};
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    dsd_call_snapshot call;
+    state->nxdn_confirmed = 1;
+    state->keyloader = 1;
+    for (int i = 0; i < 4; i++) {
+        state->rkey_array[offsets[i]] = key0[i];
+        state->rkey_array_loaded[offsets[i]] = 1U;
+    }
+    state->rkey_array[0x13U] = 0x5555ULL;
+    state->rkey_array_loaded[0x13U] = 1U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(iv_bits, 0, sizeof(iv_bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_u64("vcall-loads-key-0", (uint64_t)state->A1[0], key0[0]);
+    rc |= expect_int("vcall-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-reports-key-0", call.key_selection.effective_id, 0);
+
+    write_vcall_iv_fields(iv_bits, 0xA1A2A3A4A5A6A7A8ULL);
+    NXDN_Elements_Content_decode(opts, state, iv_bits, sizeof(iv_bits));
+    rc |= expect_u64("vcall-iv-keeps-key-0", (uint64_t)state->A1[0], key0[0]);
+    rc |= expect_u64("vcall-iv-keeps-key-0-last-word", (uint64_t)state->A4[0], key0[3]);
+    rc |= expect_int("vcall-iv-key-loaded", state->aes_key_loaded[0], 1);
+    rc |= expect_int("vcall-iv-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-iv-reports-key-0", call.key_selection.effective_id, 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_vcall_reports_the_key_its_cipher_selected(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2895,6 +2974,8 @@ main(void) {
     rc |= test_vcall_aes_key_flag_drives_crypto_state();
     rc |= test_vcall_imported_zero_keys_are_present();
     rc |= test_vcall_reports_the_key_its_cipher_selected();
+    rc |= test_vcall_aes_fallback_needs_a_full_key();
+    rc |= test_vcall_iv_keeps_the_vcall_key_choice();
     rc |= test_type_d_scch_publishes_crypto_fragments();
     rc |= test_type_d_scch_values_are_not_access_codes();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();

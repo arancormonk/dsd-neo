@@ -643,8 +643,8 @@ nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[3
             out_key[i + 16] = (uint8_t)((state->rkey_array[key_id + 0x201] >> (56 - (i * 8))) & 0xFFU);
             out_key[i + 24] = (uint8_t)((state->rkey_array[key_id + 0x301] >> (56 - (i * 8))) & 0xFFU);
         }
-        // An imported key is present by its import flags, an all-zero one included.
-        return keyring_kid_aes_present(state, key_id);
+        // NXDN AES is AES-256: usable only with all four segments present (by their import flags, zero allowed).
+        return keyring_kid_aes_segments(state, key_id) >= 4;
     } else {
         for (int i = 0; i < 8; i++) {
             out_key[i + 0] = (uint8_t)((state->K1 >> (56 - (i * 8))) & 0xFFU);
@@ -2282,14 +2282,16 @@ nxdn_vcall_print_summary(dsd_state* state, const struct nxdn_vcall_info* info) {
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
+// Load the AES-256 key at @p key_index for an NXDN cipher 3 call. It is usable only when all four segments are present
+// (by their import flags, zero values allowed): a narrower key, or another ID's scalar on one of its cells, never is.
 static void
-nxdn_vcall_load_aes_key(dsd_state* state, uint32_t key_index) {
+nxdn_load_aes_key_index(dsd_state* state, uint32_t key_index) {
     state->A1[0] = state->rkey_array[key_index + 0x000];
     state->A2[0] = state->rkey_array[key_index + 0x101];
     state->A3[0] = state->rkey_array[key_index + 0x201];
     state->A4[0] = state->rkey_array[key_index + 0x301];
-    // Present by the import flags, an all-zero key included; value fallback for material stored without them.
-    state->aes_key_loaded[0] = keyring_kid_aes_present(state, (int)key_index);
+    state->aes_key_segments[0] = (uint8_t)keyring_kid_aes_segments(state, (int)key_index);
+    state->aes_key_loaded[0] = state->aes_key_segments[0] >= 4U ? 1 : 0;
 
     for (int i = 0; i < 8; i++) {
         state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
@@ -2301,36 +2303,61 @@ nxdn_vcall_load_aes_key(dsd_state* state, uint32_t key_index) {
     state->scalar_key_present[0] = 0;
 }
 
-// Whether the VCALL's own key ID holds the key its cipher needs: a scalar for the scrambler and DES, all four AES-256
-// segments for AES. Cipher-specific, so another ID's scalar key parked on one of this ID's AES cells (ID + 0x101 ...)
-// never makes the ID look keyed for a scrambler or DES call, nor a lone scalar an AES key.
-static int
-nxdn_vcall_kid_holds_key(const dsd_state* state, uint8_t cipher_type, int key_id) {
+/** The keyring key an NXDN call decrypts with under the keyloader, and where it came from. */
+typedef struct {
+    int key_id; /* -1: the call's ID and destination hold none of this cipher's key */
+    dsd_call_key_source source;
+} nxdn_key_choice;
+
+// The one choice the VCALL and VCALL_IV loaders and the key source the call reports all make, so loading and
+// reporting cannot disagree. Cipher-specific presence: a scalar (an imported zero included) for the scrambler and DES,
+// all four AES-256 segments for AES, so another ID's scalar parked on one of this ID's AES cells (ID + 0x101 ...)
+// never reads as this ID's key. The scrambler on NXDN48 falls back to the destination's key; AES to key 0.
+static nxdn_key_choice
+nxdn_select_key(const dsd_opts* opts, const dsd_state* state, uint8_t cipher_type, int key_id, uint64_t destination) {
+    nxdn_key_choice choice = {-1, DSD_CALL_KEY_DEFAULT};
     if (cipher_type == 3U) {
-        return keyring_aes_segments_complete(state, key_id, 4U);
+        choice.key_id = 0;
+        if (keyring_kid_aes_segments(state, key_id) >= 4) {
+            choice.key_id = key_id;
+            choice.source = DSD_CALL_KEY_SIGNALED;
+        }
+    } else if (cipher_type == 2U) {
+        if (keyring_kid_scalar_present(state, key_id)) {
+            choice.key_id = key_id;
+            choice.source = DSD_CALL_KEY_SIGNALED;
+        }
+    } else if (cipher_type == 1U && opts != NULL
+               && dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
+        if (keyring_kid_scalar_present(state, key_id)) {
+            choice.key_id = key_id;
+            choice.source = DSD_CALL_KEY_SIGNALED;
+        } else if (destination < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
+                   && keyring_kid_scalar_present(state, (int)destination)) {
+            choice.key_id = (int)destination;
+            choice.source = DSD_CALL_KEY_DESTINATION;
+        }
     }
-    return keyring_kid_scalar_present(state, key_id);
+    return choice;
+}
+
+// Load what nxdn_select_key() chose: the scalar for the scrambler and DES, the AES key for AES.
+static void
+nxdn_load_selected_key(const dsd_opts* opts, dsd_state* state, uint8_t cipher_type, int key_id, uint64_t destination) {
+    if (state->keyloader != 1) {
+        return;
+    }
+    const nxdn_key_choice choice = nxdn_select_key(opts, state, cipher_type, key_id, destination);
+    if (cipher_type == 3U) {
+        nxdn_load_aes_key_index(state, (uint32_t)choice.key_id);
+    } else if (choice.key_id >= 0) {
+        (void)keyring_load_scalar_key(state, 0, choice.key_id);
+    }
 }
 
 static void
 nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
-    if (state->keyloader != 1) {
-        return;
-    }
-    // An imported key is present by its import flag, a zero one included (keyring_kid_scalar_present()).
-    if (info->cipher_type == 1U && dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
-        if (!keyring_load_scalar_key(state, 0, (int)info->key_id)) {
-            (void)keyring_load_scalar_key(state, 0, (int)info->destination_id);
-        }
-    } else if (info->cipher_type == 2U) {
-        (void)keyring_load_scalar_key(state, 0, (int)info->key_id);
-    } else if (info->cipher_type == 3U) {
-        uint32_t key_index = 0;
-        if (nxdn_vcall_kid_holds_key(state, 3U, (int)info->key_id)) {
-            key_index = info->key_id;
-        }
-        nxdn_vcall_load_aes_key(state, key_index);
-    }
+    nxdn_load_selected_key(opts, state, info->cipher_type, (int)info->key_id, info->destination_id);
 }
 
 static void
@@ -2381,7 +2408,7 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
         return 0;
     }
     if (cipher_type == 3U) {
-        return state->aes_key_loaded[0] == 1;
+        return dsd_key_aes_slot_complete(state, 0, 4U);
     }
     if (cipher_type == 1U || cipher_type == 2U) {
         return dsd_key_scalar_present(state, 0);
@@ -2412,20 +2439,10 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
             dsd_call_key_source source = DSD_CALL_KEY_DIRECT;
             int selected = -1;
             if (state->keyloader == 1) {
-                source = DSD_CALL_KEY_DEFAULT;
-                // The same choice nxdn_vcall_load_key() made: the signalled ID when it holds this cipher's key
-                // (an imported zero included), else the destination's scrambler key, else AES key 0.
-                if (nxdn_vcall_kid_holds_key(state, cipher_type, key_id)) {
-                    source = DSD_CALL_KEY_SIGNALED;
-                    selected = key_id;
-                } else if (cipher_type == 1
-                           && call.ota_target_id < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
-                           && keyring_kid_scalar_present(state, (int)call.ota_target_id)) {
-                    source = DSD_CALL_KEY_DESTINATION;
-                    selected = (int)call.ota_target_id;
-                } else if (cipher_type == 3) {
-                    selected = 0;
-                }
+                // The loaders' own choice (nxdn_select_key()), so the report names the key that decrypts.
+                const nxdn_key_choice choice = nxdn_select_key(opts, state, cipher_type, key_id, call.ota_target_id);
+                source = choice.source;
+                selected = choice.key_id;
             }
             (void)dsd_call_state_note_key_selection(state, 0, call.epoch, source, key_id, selected,
                                                     cipher_type ? has_key : -1, 0);
@@ -2627,41 +2644,19 @@ nxdn_vcall_iv_extract(const dsd_state* state, const uint8_t* Message) {
 }
 
 static void
-nxdn_vcall_iv_load_aes_key(dsd_state* state) {
-    state->A1[0] = state->rkey_array[state->nxdn_key + 0x000];
-    state->A2[0] = state->rkey_array[state->nxdn_key + 0x101];
-    state->A3[0] = state->rkey_array[state->nxdn_key + 0x201];
-    state->A4[0] = state->rkey_array[state->nxdn_key + 0x301];
-    // Present by the import flags, an all-zero key included; value fallback for material stored without them.
-    state->aes_key_loaded[0] = keyring_kid_aes_present(state, state->nxdn_key);
-
-    for (int i = 0; i < 8; i++) {
-        state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
-        state->aes_key[i + 8] = (state->A2[0] >> (56 - (i * 8))) & 0xFF;
-        state->aes_key[i + 16] = (state->A3[0] >> (56 - (i * 8))) & 0xFF;
-        state->aes_key[i + 24] = (state->A4[0] >> (56 - (i * 8))) & 0xFF;
-    }
-
-    state->R = state->A1[0];
-
-    state->scalar_key_present[0] = 0;
-}
-
-static void
 nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
-    if (state->nxdn_cipher_type == 0x03 && state->keyloader == 1) {
-        nxdn_vcall_iv_load_aes_key(state);
+    // The VCALL's choice again (nxdn_select_key()), never the signalled ID unconditionally: the key the IV keys
+    // stays the one the VCALL loaded and reported.
+    if ((state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) && state->keyloader == 1) {
+        nxdn_load_selected_key(NULL, state, (uint8_t)state->nxdn_cipher_type, state->nxdn_key, 0U);
     }
     if (state->nxdn_cipher_type == 0x03) {
         LFSR128n(state);
     }
-    if (state->nxdn_cipher_type == 0x02 && state->keyloader == 1) {
-        (void)keyring_load_scalar_key(state, 0, state->nxdn_key);
-    }
     if (state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0)) {
         state->nxdn_new_iv = 1;
     }
-    if (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1) {
+    if (state->nxdn_cipher_type == 0x03 && dsd_key_aes_slot_complete(state, 0, 4U)) {
         state->nxdn_new_iv = 1;
     }
 }

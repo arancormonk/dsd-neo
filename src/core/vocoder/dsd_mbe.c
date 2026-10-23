@@ -1239,7 +1239,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     //NXDN Generic Cipher 2 and Cipher 3 Keystream Application (to be tested)
     else if (nxdn_crypto
              && ((state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0))
-                 || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1))) {
+                 || (state->nxdn_cipher_type == 0x03 && dsd_key_aes_slot_complete(state, 0, 4U)))) {
         if (mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d) < 0) {
             mbe_mute_exhausted_frame(opts, state, 0, frame_ctx);
             return;
