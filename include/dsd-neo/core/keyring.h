@@ -53,13 +53,22 @@ int keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_sna
  *
  * Segment 0 shares the scalar key's index, so a scalar key also reports aes_loaded -- this
  * deliberately mirrors keyring_activate_slot_with_kid() so classification and activation
- * cannot disagree.
+ * cannot disagree. A segment is present when it was imported (rkey_array_loaded), whatever its
+ * value, or, for material stored without that flag, when it is non-zero: an imported all-zero key
+ * is a key, as the same value entered directly is.
  *
- * @param out_rkey       scalar key, 0 when none (may be NULL)
+ * @param out_rkey       scalar key value, 0 when none or when the key is zero (may be NULL); whether
+ *                       a zero value is a key is keyring_kid_scalar_present()'s answer
  * @param out_aes_loaded 1 when any AES segment is present (may be NULL)
  * @return 1 when the key ID has any material at all.
  */
 int keyring_kid_material(const dsd_state* state, int key_id, unsigned long long* out_rkey, int* out_aes_loaded);
+
+/**
+ * Whether the key ID holds a scalar key, by the rule activation applies to
+ * dsd_state::scalar_key_present: imported (rkey_array_loaded) whatever its value, or non-zero.
+ */
+int keyring_kid_scalar_present(const dsd_state* state, int key_id);
 
 /**
  * Report whether a key ID holds a complete Kirisun (ALG 0x36/0x37) quartet.
@@ -85,8 +94,10 @@ int keyring_kid_kirisun_complete(const dsd_state* state, int key_id);
  * import can make an empty key ID look populated. Requiring the ALG's actual material answers
  * both -- an accidental match then needs as many colliding keys as the ALG needs segments.
  *
- * Tests non-zero segment cells rather than rkey_array_loaded, because a loaded-but-zero cell
- * activates as A_i == 0. Classification must predict activation.
+ * Presence follows activation: a cell counts when it was imported (rkey_array_loaded) whatever its
+ * value, or when it is non-zero, so a loaded all-zero key satisfies the need it covers. The Kirisun
+ * quartet keeps its all-non-zero rule (keyring_kid_kirisun_complete()). Classification must predict
+ * activation.
  *
  * @return 1 when @p key_id satisfies @p need; 0 otherwise, including for DSD_KEY_NEED_NONE.
  */
@@ -115,7 +126,14 @@ int keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_mater
 int keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group, dsd_key_material_need need,
                               int signaled_kid, int* out_mapped);
 
-/** Activate imported key material for a slot using an explicit key ID. */
+/**
+ * Activate imported key material for a slot using an explicit key ID.
+ *
+ * R/RR and A1..A4 take the stored values; scalar_key_present[] and aes_key_loaded[] take presence
+ * from the import flags (keyring_kid_scalar_present(), any present AES segment), so an imported
+ * all-zero key activates as present and an absent one as absent. aes_key_segments[] counts the
+ * flagged segments, or the non-zero ones for material stored without flags.
+ */
 void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
 
 /**

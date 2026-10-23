@@ -97,12 +97,26 @@ keyring_kid_kirisun_complete(const dsd_state* state, int key_id) {
     return 1;
 }
 
+// A cell holds a key when it was imported (rkey_array_loaded) or, for material stored without the
+// flag, when its value is non-zero. Presence comes from the flag rather than the value so an imported
+// all-zero key is a key, exactly as the same value entered directly is (key_presence.h).
+static int
+keyring_cell_present(const dsd_state* state, int index) {
+    return keyring_rkey_index_valid(state, index)
+           && (state->rkey_array_loaded[index] != 0U || state->rkey_array[index] != 0ULL);
+}
+
+int
+keyring_kid_scalar_present(const dsd_state* state, int key_id) {
+    return state != NULL && keyring_cell_present(state, key_id);
+}
+
 void
 keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
     if (state == NULL || slot < 0 || slot > 1) {
         return;
     }
-    state->scalar_key_present[slot] = 0;
+    state->scalar_key_present[slot] = (uint8_t)(keyring_kid_scalar_present(state, key_id) ? 1U : 0U);
     const unsigned long long int scalar_key = keyring_rkey_value(state, key_id);
     if (slot == 0) {
         state->R = scalar_key;
@@ -115,9 +129,7 @@ keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
     state->A3[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[2]);
     state->A4[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[3]);
     state->aes_key_segments[slot] = keyring_aes_segment_count(state, key_id);
-    state->aes_key_loaded[slot] =
-        (state->A1[slot] != 0ULL || state->A2[slot] != 0ULL || state->A3[slot] != 0ULL || state->A4[slot] != 0ULL) ? 1
-                                                                                                                   : 0;
+    state->aes_key_loaded[slot] = state->aes_key_segments[slot] != 0U ? 1 : 0;
 }
 
 int
@@ -127,12 +139,7 @@ keyring_kid_material(const dsd_state* state, int key_id, unsigned long long* out
 
     if (state != NULL) {
         rkey = keyring_rkey_value(state, key_id);
-        for (size_t i = 0; i < 4U; i++) {
-            if (keyring_rkey_value(state, key_id + k_aes_segment_offsets[i]) != 0ULL) {
-                aes_loaded = 1;
-                break;
-            }
-        }
+        aes_loaded = keyring_aes_segment_count(state, key_id) != 0U ? 1 : 0;
     }
 
     if (out_rkey != NULL) {
@@ -144,33 +151,19 @@ keyring_kid_material(const dsd_state* state, int key_id, unsigned long long* out
     return (rkey != 0ULL || aes_loaded != 0) ? 1 : 0;
 }
 
-// All of the first `count` AES segment cells non-zero. Distinct from
-// keyring_aes_segments_complete(), which accepts a cell that is rkey_array_loaded but zero-valued:
-// such a cell activates as A_i == 0, so accepting it here would let the map install a key the
-// decryptability gate then rejects -- exactly the divergence this predicate exists to prevent.
-static int
-keyring_aes_segments_nonzero(const dsd_state* state, int key_id, unsigned int count) {
-    if (state == NULL || count > 4U) {
-        return 0;
-    }
-    for (unsigned int i = 0; i < count; i++) {
-        if (keyring_rkey_value(state, key_id + k_aes_segment_offsets[i]) == 0ULL) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
+// A loaded cell counts whatever its value: activation reports a loaded all-zero key as present, so
+// accepting only non-zero cells here would refuse a key the decryptability gate then accepts. The
+// Kirisun quartet is the exception and keeps its own all-non-zero rule.
 int
 keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_material_need need) {
     if (state == NULL) {
         return 0;
     }
     switch (need) {
-        case DSD_KEY_NEED_SCALAR: return keyring_rkey_value(state, key_id) != 0ULL ? 1 : 0;
-        case DSD_KEY_NEED_AES_2: return keyring_aes_segments_nonzero(state, key_id, 2U);
-        case DSD_KEY_NEED_AES_3: return keyring_aes_segments_nonzero(state, key_id, 3U);
-        case DSD_KEY_NEED_AES_4: return keyring_aes_segments_nonzero(state, key_id, 4U);
+        case DSD_KEY_NEED_SCALAR: return keyring_kid_scalar_present(state, key_id);
+        case DSD_KEY_NEED_AES_2: return keyring_aes_segments_complete(state, key_id, 2U);
+        case DSD_KEY_NEED_AES_3: return keyring_aes_segments_complete(state, key_id, 3U);
+        case DSD_KEY_NEED_AES_4: return keyring_aes_segments_complete(state, key_id, 4U);
         case DSD_KEY_NEED_QUARTET: return keyring_kid_kirisun_complete(state, key_id);
         case DSD_KEY_NEED_NONE: break;
     }

@@ -225,7 +225,7 @@ dsd_dmr_slot_key_material(const dsd_state* state, int slot, int key_id, int mapp
     material.aes_loaded = state->aes_key_loaded[slot];
     material.kirisun_complete = dsd_dmr_kirisun_slot_key_complete(state, slot);
     if (mapped) {
-        material.scalar_present = 0;
+        material.scalar_present = keyring_kid_scalar_present(state, key_id);
         (void)keyring_kid_material(state, key_id, &material.r_key, &material.aes_loaded);
         material.kirisun_complete = keyring_kid_kirisun_complete(state, key_id);
     }

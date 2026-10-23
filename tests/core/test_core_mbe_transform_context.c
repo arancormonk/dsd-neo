@@ -398,7 +398,9 @@ test_keyring_tracks_aes_segment_metadata(void) {
     rc |= expect_eq_int("keyring-slot0-zero-a3", (int)state.A3[0], 0);
     rc |= expect_eq_int("keyring-slot0-zero-a4", (int)state.A4[0], 0);
     rc |= expect_eq_int("keyring-slot0-zero-present-count", state.aes_key_segments[0], 4);
-    rc |= expect_eq_int("keyring-slot0-zero-not-loaded", state.aes_key_loaded[0], 0);
+    /* Imported, so present: an all-zero key is a key, as the same value entered directly is. */
+    rc |= expect_eq_int("keyring-slot0-zero-loaded", state.aes_key_loaded[0], 1);
+    rc |= expect_eq_int("keyring-slot0-zero-scalar-present", state.scalar_key_present[0], 1);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
@@ -416,7 +418,9 @@ test_keyring_tracks_aes_segment_metadata(void) {
     rc |= expect_eq_int("keyring-slot1-zero-a3", (int)state.A3[1], 0);
     rc |= expect_eq_int("keyring-slot1-zero-a4", (int)state.A4[1], 0);
     rc |= expect_eq_int("keyring-slot1-zero-present-count", state.aes_key_segments[1], 4);
-    rc |= expect_eq_int("keyring-slot1-zero-not-loaded", state.aes_key_loaded[1], 0);
+    /* Imported, so present: an all-zero key is a key, as the same value entered directly is. */
+    rc |= expect_eq_int("keyring-slot1-zero-loaded", state.aes_key_loaded[1], 1);
+    rc |= expect_eq_int("keyring-slot1-zero-scalar-present", state.scalar_key_present[1], 1);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
@@ -433,6 +437,18 @@ test_keyring_tracks_aes_segment_metadata(void) {
     rc |= expect_eq_int("keyring-slot1-fallback-a4", (int)state.A4[1], 0x222);
     rc |= expect_eq_int("keyring-slot1-fallback-nonzero-count", state.aes_key_segments[1], 2);
     rc |= expect_eq_int("keyring-slot1-fallback-loaded", state.aes_key_loaded[1], 1);
+    /* Neither imported nor non-zero at the scalar cell: absent. */
+    rc |= expect_eq_int("keyring-slot1-fallback-scalar-absent", state.scalar_key_present[1], 0);
+
+    /* Nothing imported for the key id at all: still absent. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.payload_keyid = slot0_zero_key;
+    state.scalar_key_present[0] = 1U;
+    keyring_activate_slot(&opts, &state, state.currentslot);
+    rc |= expect_eq_int("keyring-absent-not-loaded", state.aes_key_loaded[0], 0);
+    rc |= expect_eq_int("keyring-absent-no-segments", state.aes_key_segments[0], 0);
+    rc |= expect_eq_int("keyring-absent-scalar-cleared", state.scalar_key_present[0], 0);
 
     return rc;
 }

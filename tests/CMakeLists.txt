@@ -11683,7 +11683,10 @@ target_include_directories(
     dsd-neo_test_p25_crypto_state
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_p25_crypto_state PRIVATE dsd-neo_proto_p25)
+target_link_libraries(
+    dsd-neo_test_p25_crypto_state
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
 add_test(NAME P25_CRYPTO_STATE COMMAND dsd-neo_test_p25_crypto_state)
 
 # P25 SM core behaviors (monotonic/backoff/cc-hunt)

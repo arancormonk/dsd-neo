@@ -687,11 +687,32 @@ test_kid_satisfies_need(void) {
     rc |= expect_eq("need-quartet-partial-loaded-misses",
                     keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 0);
 
-    // A loaded-but-zero cell activates as A_i == 0, so it must not satisfy an AES need. This is
-    // the distinction keyring_kid_kirisun_complete()'s comment already draws against
-    // keyring_aes_segments_complete(): classification has to predict activation.
+    // A loaded-but-zero cell is an imported key and activates as present (aes_key_loaded), so it
+    // satisfies an AES need: classification has to predict activation. The Kirisun quartet keeps
+    // its all-non-zero rule. A cell neither imported nor non-zero is absent.
     state.rkey_array[0x141] = 0ULL;
-    rc |= expect_eq("need-aes2-loaded-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 0);
+    rc |= expect_eq("need-aes2-loaded-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 1);
+    rc |= expect_eq("need-quartet-loaded-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 0);
+    state.rkey_array_loaded[0x141] = 0U;
+    rc |= expect_eq("need-aes2-absent-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 0);
+
+    // The same rule for a scalar: an imported zero is a key, an unimported zero is not.
+    state.rkey_array[0x05] = 0ULL;
+    state.rkey_array_loaded[0x05] = 1U;
+    rc |= expect_eq("need-scalar-loaded-zero", keyring_kid_satisfies_need(&state, 0x05, DSD_KEY_NEED_SCALAR), 1);
+    rc |= expect_eq("scalar-present-loaded-zero", keyring_kid_scalar_present(&state, 0x05), 1);
+    rc |= expect_eq("need-scalar-absent", keyring_kid_satisfies_need(&state, 0x06, DSD_KEY_NEED_SCALAR), 0);
+    rc |= expect_eq("scalar-present-absent", keyring_kid_scalar_present(&state, 0x06), 0);
+
+    // The mapped key material a call is classified with agrees with what activation installs.
+    const dsd_dmr_key_material mapped = dsd_dmr_slot_key_material(&state, 0, 0x05, 1);
+    keyring_activate_slot_with_kid(&state, 0, 0x05);
+    rc |= expect_eq("mapped-zero-scalar-present", mapped.scalar_present, 1);
+    rc |= expect_eq("activated-zero-scalar-present", state.scalar_key_present[0], 1);
+    rc |= expect_eq("mapped-zero-scalar-agrees", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &mapped),
+                    dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x21, state.R));
+    const dsd_dmr_key_material mapped_absent = dsd_dmr_slot_key_material(&state, 0, 0x06, 1);
+    rc |= expect_eq("mapped-absent-scalar", mapped_absent.scalar_present, 0);
 
     // NONE never maps, and a NULL state never maps.
     rc |= expect_eq("need-none", keyring_kid_satisfies_need(&state, 0x03, DSD_KEY_NEED_NONE), 0);

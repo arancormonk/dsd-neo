@@ -787,6 +787,16 @@ suite runs under this compiler.
   drops before the vocoder (non-standard C0 or the crypto gate) still consumes its keystream position through
   `dsd_mbe_p25p1_skip_voice_frame()`. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`.
   Tests: `CORE_MBE_CRYPTO_SCOPE`, `P25_P1_LDU_HELPERS`.
+- Invariant (keyring presence, `<dsd-neo/core/keyring.h>`, `src/core/vocoder/keyring.c`): an imported key is present
+  by its import flag, not its value. `keyring_activate_slot_with_kid()` sets `scalar_key_present[]` from
+  `keyring_kid_scalar_present()` (the scalar cell is `rkey_array_loaded`, or non-zero for material stored without the
+  flag) and `aes_key_loaded[]` from the segment count (flagged segments, else non-zero ones), so an imported all-zero
+  DES, RC4 or AES key decrypts as the same value entered directly does, and a key ID nothing was imported for stays
+  refused. The predictions agree with activation: `keyring_kid_material()`'s `aes_loaded`, `keyring_kid_satisfies_need()`
+  (scalar and AES needs) and the mapped DMR material (`dsd_dmr_slot_key_material()`) use the same flag-or-value rule;
+  the Kirisun quartet alone keeps its all-non-zero rule (`keyring_kid_kirisun_complete()`). NXDN loads its keys from
+  its VCALL by value and is not covered. Tests: `P25_CRYPTO_STATE` (zero keys on both phases, key ID 0, a key ID with
+  hex letters, an incomplete AES-256 collection), `CORE_DMR_TG_KEY_MAP`, `CORE_MBE_TRANSFORM_CONTEXT`.
 - Invariant (audio sinks, `<dsd-neo/core/audio_sink.h>`, `src/core/audio/audio_sink.c`, issue #659): every writer of
   decoded or analog audio applies its own gates and picks the output type, then writes the local device streams only
   through `dsd_audio_sink_write_device()` and the `-o -` descriptor only through `dsd_audio_sink_write_fd()`: the
