@@ -1040,7 +1040,10 @@ suite runs under this compiler.
   resets clear the store with the rest of the slot state. The record's length is not the first zero word: scrambled
   alias octets and the CRC can be zero, so the candidate lengths run from the last non-zero 16-bit word to the
   received extent (bounded by the store and the 200-octet decoder scratch) and the first one whose CRC checks wins
-  (`apx_alias_record_bits()`). Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
+  (`apx_alias_record_bits()`). The name the event row, the learned policy row and the group file store is the decoded
+  UTF-16BE as UTF-8 (`apx_embedded_alias_dump()`), bounded to the policy name on a scalar boundary: C0, C1 and NUL
+  become spaces (`dsd_unicode_scalar_is_control()`), a comma a dot for the CSV, an unpaired surrogate U+FFFD.
+  Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
   target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the

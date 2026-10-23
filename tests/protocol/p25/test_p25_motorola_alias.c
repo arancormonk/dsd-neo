@@ -519,6 +519,30 @@ test_record_length_with_zero_words(void) {
     }
 }
 
+/* The stored name is the decoded UTF-16 as UTF-8: controls (C0, NUL, C1) become spaces, a comma a dot, a surrogate
+ * pair one scalar and an unpaired half U+FFFD. */
+static void
+test_stored_name_is_utf8(void) {
+    static const uint16_t units[] = {'A', 0x001BU, 0x0000U, 0x0085U, 'B', 0x00E9U, ',', 0xD83DU, 0xDE00U, 0xD800U, 'C'};
+    static const char want[] = "A   B\xC3\xA9."
+                               "\xF0\x9F\x98\x80"
+                               "\xEF\xBF\xBD"
+                               "C";
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00D001U;
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 600U, rid);
+    alias_record r;
+    build_record_units(&r, 0xBEE00U, 0x4C9U, rid, units, sizeof units / sizeof units[0]);
+    p2_send_record(f.opts, f.st, 1, &r, 0x4U);
+    char want_row[64];
+    DSD_SNPRINTF(want_row, sizeof want_row, "%s; ", want);
+    expect_true("UTF-16 alias stored as UTF-8 in the learned policy", policy_name_is(f.st, rid, want));
+    expect_true("UTF-16 alias stored as UTF-8 in the event row", history_has_alias(f.st, 0U, want_row));
+    expect_true("UTF-16 alias stored as UTF-8 in the group file", file_count(f.group_path, want) == 1);
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_phase2_sacch_alias_uses_voice_slot();
@@ -527,6 +551,7 @@ main(void) {
     test_phase1_identical_header_in_new_call_restarts();
     test_phase2_harris_failed_crc_publishes_nothing();
     test_record_length_with_zero_words();
+    test_stored_name_is_utf8();
     if (g_fail) {
         return 1;
     }

@@ -550,29 +550,59 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     }
 }
 
+// One decoded scalar into the stored name, whole or not at all, so the name stays valid UTF-8 when it fills. A
+// control (C0, C1, NUL) becomes a space so off-air bytes put no escape sequence on a terminal or in a log, and a comma
+// a dot so the group file's CSV columns hold.
+static void
+apx_alias_name_append_scalar(char* name, size_t name_size, size_t* len, uint32_t scalar) {
+    if (scalar == 0x2CU) {
+        scalar = 0x2EU;
+    } else if (dsd_unicode_scalar_is_control(scalar)) {
+        scalar = 0x20U;
+    }
+    char utf8[DSD_UTF8_MAX_BYTES + 1];
+    const size_t n = dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8);
+    if (n == 0U || *len + n >= name_size) {
+        *len = name_size; //full: later, shorter scalars must not land after a dropped one
+        return;
+    }
+    DSD_MEMCPY(name + *len, utf8, n);
+    *len += n;
+    name[*len] = '\0';
+}
+
+// The alias text the event row, the learned policy row and the group file store: the decoded UTF-16BE units as UTF-8,
+// surrogate pairs combined and unpaired halves as U+FFFD (the same decode the operator's terminal line gets).
+static void
+apx_alias_name_from_utf16(const uint8_t* decoded, uint16_t num_bytes, char* name, size_t name_size) {
+    dsd_utf16_decoder decoder;
+    uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+    size_t len = 0;
+    name[0] = '\0';
+    dsd_utf16_decoder_reset(&decoder);
+    for (int i = 0; i < num_bytes / 2; i++) {
+        uint16_t unit = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
+        size_t n = dsd_utf16_decoder_push(&decoder, unit, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        for (size_t k = 0; k < n && len < name_size; k++) {
+            apx_alias_name_append_scalar(name, name_size, &len, scalars[k]);
+        }
+    }
+    if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U && len < name_size) {
+        apx_alias_name_append_scalar(name, name_size, &len, scalars[0]);
+    }
+}
+
 void
 apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t num_bytes, const uint8_t* input,
                         const uint8_t* decoded) {
 
+    // Sized to the policy row's name (dsd_tg_policy_entry::name), which the alias is learned into.
     char str[50];
     DSD_MEMSET(str, 0, sizeof(str));
     char fqs[50];
     DSD_MEMSET(fqs, 0, sizeof(fqs));
 
-    //check num_bytes, if greter than 100, then set to 100
-    if (num_bytes >= 98) {
-        num_bytes = 98;
-    }
-
-    for (int i = 0; i < num_bytes / 2; i++) {
-        if (decoded[(i * 2) + 1] == 0x2C) { //remove a comma if it exists, change it to a 0x2E dot
-            str[i] = 0x2E;
-        } else if (decoded[(i * 2) + 1] > 0x1F && decoded[(i * 2) + 1] < 0x7F) { //may not need or use this restriction
-            str[i] = decoded[(i * 2) + 1];
-        } else {
-            str[i] = 0x20; //space
-        }
-    }
+    apx_alias_name_from_utf16(decoded, num_bytes, str, sizeof str);
 
     //fully qualified SUID
     uint32_t wacn = (uint32_t)convert_bits_into_output(&input[72], 20);
