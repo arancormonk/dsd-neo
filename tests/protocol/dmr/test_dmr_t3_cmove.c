@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -110,6 +111,8 @@ crc8(uint8_t bits[], unsigned int len) {
 // --- Helpers ---
 static void
 init_env(dsd_opts* opts, dsd_state* state) {
+    // Free what an earlier step attached (the call-state extension) before the wipe drops its pointer
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
@@ -201,6 +204,7 @@ main(int argc, char** argv) {
     assert(state.trunk_cc_freq == 851012500);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_state_ext_free_all(&state);
     printf("DMR_T3_CMOVE: OK\n");
     return 0;
 }
