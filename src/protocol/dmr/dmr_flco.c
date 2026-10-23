@@ -939,6 +939,8 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     const int was_active = dsd_call_state_get(ctx->state, slot, &before) > 0 && before.phase == DSD_CALL_PHASE_ACTIVE;
     const dsd_call_boundary boundary = dmr_flco_voice_boundary(ctx);
     (void)dsd_call_state_observe(ctx->state, &observation, boundary);
+    // The checked LC names the slot's call for the trunk state machine: what a preemption candidate is compared with.
+    dmr_sm_note_lc_identity(ctx->opts, ctx->state, (int)slot, observation.kind, ctx->target, ctx->source);
     dsd_call_snapshot after;
     const int have_after = dsd_call_state_get(ctx->state, slot, &after) > 0;
     const int epoch_forked = was_active && have_after && after.epoch != before.epoch;

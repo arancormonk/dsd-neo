@@ -462,18 +462,15 @@ dmr_cspdu_pf0_publish_active_grant(dsd_state* state, uint8_t lcn, uint16_t lpcha
 }
 
 static int
-dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk_o, int* data_call, long int freq,
-                               uint32_t target) {
+dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk_o, int* data_call, long int freq) {
     if (dmr_cspdu_pf0_should_skip_call(opts, csbk_o, data_call)) {
         return 0;
     }
     if (!(*csbk_o == 48 || *csbk_o == 49 || *csbk_o == 50 || *csbk_o == 53)) {
         return 0;
     }
-    if (state->tg_hold != 0 && state->tg_hold == target) {
-        state->last_vc_sync_time = 0;
-        state->last_vc_sync_time_m = 0.0;
-    }
+    // A Hold grant is admitted by its own decision (tg_hold_match), never by wiping the voice-sync stamp the
+    // no-carrier return reads.
     if (opts->trunk_enable == 0 && freq != 0) {
         state->trunk_vc_freq[0] = freq;
         state->trunk_vc_freq[1] = freq;
@@ -508,6 +505,9 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     res.opcode = (uint8_t)csbk_o;
     res.target = target;
     res.source = source;
+    res.data_call = data_call;
+    res.policy_valid = 1;
+    res.policy = policy_decision;
     dmr_csbk_handle(&res, opts, state);
 }
 
@@ -546,7 +546,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, target, source, csbk_o, st2);
 
     int data_call = 0;
-    if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq, target)) {
+    if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq)) {
         return;
     }
 
@@ -616,12 +616,26 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
                                   mv_source, move_lpcn, move_freq, 0, notice);
     }
 
-    dmr_cspdu_pf0_move_debounce_slot(state, tslot);
-
+    /* While a voice channel is followed the move goes to the trunk state machine first: a move of the followed call
+       keeps following it (judged as it was followed), any other is an ordinary grant under the talkgroup policy and
+       the busy gate. Its effects on the carrier being decoded (the burst indicators, the other slot's activity row)
+       apply only once it was accepted: a refused move leaves the call being heard alone. */
     if (opts->trunk_enable == 1 && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1
         && (move_freq > 0 || (move_lpcn > 0 && move_lpcn < 0xFFFF))) {
-        dmr_sm_emit_group_grant_slot(opts, state, move_freq, move_lpcn, tslot, mv_target, mv_source);
+        dsd_tg_policy_decision policy_decision;
+        (void)dmr_policy_tune_allowed(opts, state, mv_target, mv_source, 1, 0, &policy_decision);
+        dmr_sm_event_t ev = dmr_sm_ev_group_grant(move_freq, move_lpcn, (int)mv_target, (int)mv_source);
+        ev.slot = tslot;
+        ev.origin = DMR_SM_ORIGIN_MOVE;
+        ev.policy_valid = 1;
+        ev.policy = policy_decision;
+        const dmr_sm_grant_result_e result = dmr_sm_submit_grant(opts, state, &ev);
+        if (result == DMR_SM_GRANT_FOLLOWED || result == DMR_SM_GRANT_IN_PLACE) {
+            dmr_cspdu_pf0_move_debounce_slot(state, tslot);
+        }
+        return;
     }
+    dmr_cspdu_pf0_move_debounce_slot(state, tslot);
 }
 
 static void

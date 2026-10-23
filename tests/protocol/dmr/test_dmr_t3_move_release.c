@@ -107,6 +107,8 @@ init_env(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
+    // The followed call is a group call: a C_MOVE of it is judged with its own classification, as it was followed.
+    opts->trunk_tune_group_calls = 1;
     opts->trunk_hangtime = 0.0f;      // immediate release on clear
     state->trunk_cc_freq = 851000000; // mock CC
 }
@@ -114,7 +116,7 @@ init_env(dsd_opts* opts, dsd_state* state) {
 // Compose a minimal C_MOVE CSBK + MBC absolute channel parms
 static void
 build_cmove_apcn(uint8_t* bits, uint8_t* bytes, uint16_t apcn, uint16_t rx_int_mhz, uint16_t rx_step_125hz,
-                 uint8_t slot) {
+                 uint8_t slot, uint32_t target) {
     DSD_MEMSET(bits, 0, 256);
     DSD_MEMSET(bytes, 0, 48);
     // Opcode (low 6 bits of first byte) = 57
@@ -125,6 +127,10 @@ build_cmove_apcn(uint8_t* bits, uint8_t* bytes, uint16_t apcn, uint16_t rx_int_m
     }
     // Slot bit (bit 28) — 0 => TS1, 1 => TS2
     bits[28] = (slot & 1u);
+    // Target (bits 32..55): the call the move is for
+    for (int i = 0; i < 24; i++) {
+        bits[32 + i] = (uint8_t)((target >> (23 - i)) & 1u);
+    }
     // MBC CDEFTYPE (bits 112..115) = 0 (absolute channel parms)
     // APCN (bits 118..129)
     for (int i = 0; i < 12; i++) {
@@ -170,14 +176,15 @@ main(int argc, char** argv) {
     state.dmrburstR = 16;  // voice on TS2
     state.dmrburstL = 9;   // idle on TS1
 
-    // Step 2: issue C_MOVE to TS1 with new absolute channel (e.g., 853.500000 MHz)
+    // Step 2: issue C_MOVE of the followed call (TG 1001) to TS1 with new absolute channel (e.g., 853.500000 MHz). A
+    // move naming another call would be an ordinary grant, which the followed call's acquisition keeps out.
     uint8_t bits[256];
     uint8_t bytes[48];
     uint16_t apcn = 0x0456;
-    uint16_t rx_int = 853;                                            // MHz
-    uint16_t rx_step = 4000;                                          // 4000 * 125 Hz = 500 kHz
-    long f2 = 853000000 + 4000 * 125;                                 // 853.500000 MHz
-    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0); // TS1
+    uint16_t rx_int = 853;                                                             // MHz
+    uint16_t rx_step = 4000;                                                           // 4000 * 125 Hz = 500 kHz
+    long f2 = 853000000 + 4000 * 125;                                                  // 853.500000 MHz
+    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 1001); // TS1
     dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
     assert(opts.trunk_is_tuned == 1);
     assert(state.trunk_vc_freq[0] == f2);

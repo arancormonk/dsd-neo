@@ -208,6 +208,22 @@ __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, 
     return g_skip_arm_refused ? -1 : __real_dsd_tg_policy_call_skip_arm(state, id, src, fallback, now_mono_s);
 }
 
+/* The followed-call ledger is written under the P25 SM tick guard (talkgroup_policy.h), which the watchdog's own
+   releases hold: a protocol releasing a call from a command counts here when it clears the ledger without it. */
+static int g_ledger_clear_calls = 0;
+static int g_ledger_clear_unguarded = 0;
+int __real_dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
+int __wrap_dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
+
+int
+__wrap_dsd_tg_policy_clear_active_call(dsd_state* state, int slot) {
+    g_ledger_clear_calls++;
+    if (!p25_sm_tick_guard_held_by_caller()) {
+        g_ledger_clear_unguarded++;
+    }
+    return __real_dsd_tg_policy_clear_active_call(state, slot);
+}
+
 /* An armed connect succeeds or fails without a socket; a success leaves the options as the
    real service's input switch does (issue #634): TCP input on the requested endpoint, named for it, a new stream. */
 int
@@ -5366,7 +5382,11 @@ test_manual_moves_hand_a_dmr_follow_over(void) {
         reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
         const int cmd = cycle ? DSD_APP_CMD_CHANNEL_CYCLE : DSD_APP_CMD_RETURN_CC;
         rc |= expect_int("manual move queued", dsd_app_command_action(cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        g_ledger_clear_calls = 0;
+        g_ledger_clear_unguarded = 0;
         rc |= expect_int("manual move drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true("giving the followed call up clears the followed-call ledger under the tick guard",
+                          g_ledger_clear_calls > 0 && g_ledger_clear_unguarded == 0);
         rc |= expect_true("manual move tunes", g_io_control_tune_freq == (cycle ? 853000000L : 851000000L));
         rc |= expect_true(cycle ? "a channel cycle gives the followed call up and listens on the new frequency"
                                 : "Return to CC gives the followed call up and listens on the control channel",

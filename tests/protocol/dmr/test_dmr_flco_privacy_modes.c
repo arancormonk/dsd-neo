@@ -614,6 +614,41 @@ test_unfollowed_grant_frequency_stays_off_the_voice_call(void) {
 
 // The voice channel a trunking receiver followed is this carrier, so a voice LC heard there stamps it. The engine sets
 // trunk_vc_freq[] and trunk_is_tuned together when it tunes a grant (dsd_engine_update_vc_tune_state()).
+/* A voice LC that passed its check names the slot's call for the DMR trunk state machine (the identity a preemption
+   candidate is compared with), with LC provenance; an LC that failed its check names nothing. */
+static void
+test_checked_voice_lc_names_the_trunk_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lc_bits[80];
+    uint32_t irr = 0U;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    state.trunk_cc_freq = 851012500L;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_sm_init(&opts, &state);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+
+    state.currentslot = 1;
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(sm->slots[1].target == 1001U && sm->slots[1].source == 2002U);
+    assert(sm->slots[1].prov == (uint8_t)DMR_SM_ID_LC && sm->slots[1].judged_group == 1U);
+    assert(sm->slots[1].carrier_hz == 851012500L);
+
+    state.currentslot = 0;
+    irr = 0U;
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 3003U, 4004U);
+    dmr_flco(&opts, &state, lc_bits, 0U, &irr, 1U);
+    assert(sm->slots[0].target == 0U && sm->slots[0].prov == (uint8_t)DMR_SM_ID_NONE);
+
+    dmr_sm_init(NULL, NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_followed_voice_channel_frequency_reaches_the_voice_call(void) {
     static dsd_opts opts;
@@ -3872,6 +3907,7 @@ main(void) {
     test_flco_canonical_crypto_uses_algorithm_aware_keys();
     test_unfollowed_grant_frequency_stays_off_the_voice_call();
     test_followed_voice_channel_frequency_reaches_the_voice_call();
+    test_checked_voice_lc_names_the_trunk_slot();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     test_flco_scan_hook_reports_encrypted_service_option();
     test_hytera_flco_scan_hook_uses_final_call_type();

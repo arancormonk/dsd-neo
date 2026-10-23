@@ -1,0 +1,620 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * DMR talkgroup priority and preemption: a Tier III grant for another carrier while the receiver holds a call is
+ * followed only by Hold over a non-held call or by preemption over every held call, with the busy view taken from the
+ * trunk state machine's own retention rule (live voice, hangtime tail, acquisition, pending receive check) and from
+ * calls resident on a parked carrier. Driven through dmr_cspdu() grants on the decode clock's TEST source.
+ */
+
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
+
+/* ---- Stubs for symbols dmr_csbk.c references ---- */
+
+void
+watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+void
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)observation;
+    (void)notice;
+    (void)slot;
+    return 0;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+uint8_t
+crc8(uint8_t bits[], unsigned int len) {
+    (void)bits;
+    (void)len;
+    return 0xFF;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_drain_audio_output(dsd_opts* opts) {
+    (void)opts;
+}
+
+extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
+
+/* ---- Fixture ---- */
+
+#define CC_HZ  851000000L
+#define VC_A   852000000L
+#define VC_B   853000000L
+#define VC_C   854000000L
+#define LPCN_A 0x0010U
+#define LPCN_B 0x0011U
+#define LPCN_C 0x0012U
+
+static const uint64_t k_t0_ns = 1000000ULL * 1000000000ULL; // the TEST clock's origin, well past any zero sentinel
+static double g_now_s = 0.0;
+
+static int g_tunes = 0;
+static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+static int
+expect_true(const char* tag, int cond) {
+    if (!cond) {
+        DSD_FPRINTF(stderr, "FAIL: %s\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+clock_at(double seconds) {
+    g_now_s = seconds;
+    dsd_decode_clock_test_set_ns(k_t0_ns + (uint64_t)(seconds * 1e9));
+}
+
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)ted_sps;
+    (void)request_id;
+    if (g_tune_result != DSD_TRUNK_TUNE_RESULT_OK) {
+        return g_tune_result;
+    }
+    g_tunes++;
+    opts->rtlsdr_center_freq = (uint32_t)freq;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    state->last_vc_sync_time = dsd_decode_time();
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    opts->trunk_is_tuned = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+init_env(dsd_opts* opts, dsd_state* state, double hangtime_s) {
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_tune_data_calls = 1;
+    opts->trunk_hangtime = (float)hangtime_s;
+    state->trunk_cc_freq = CC_HZ;
+    state->trunk_chan_map[LPCN_A] = VC_A;
+    state->trunk_chan_map[LPCN_B] = VC_B;
+    state->trunk_chan_map[LPCN_C] = VC_C;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_tunes = 0;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    clock_at(0.0);
+    dmr_sm_init(opts, state);
+}
+
+static void
+seed_row(dsd_state* st, uint32_t id, const char* mode, int priority, int preempt) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, mode, "ROW", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        abort();
+    }
+    row.priority = priority;
+    row.preempt = preempt ? 1U : 0U;
+    if (dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0) {
+        abort();
+    }
+}
+
+static void
+write_bits_u32(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        bits[start + i] = (uint8_t)((value >> ((nbits - 1U) - i)) & 1U);
+    }
+}
+
+/* A CRC-valid Tier III talkgroup voice grant (TV_GRANT) through the CSBK layer, which judges its policy. */
+static void
+tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, uint8_t slot, uint32_t tg, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 49U;
+    write_bits_u32(bits, 16U, lpcn, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    write_bits_u32(bits, 32U, tg, 24U);
+    write_bits_u32(bits, 56U, src, 24U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+}
+
+/* Accepted voice on @p slot: its own voice passed the colour-code gate just now. */
+static void
+voice(dsd_opts* opts, dsd_state* st, int slot) {
+    st->dmr_confidence_voice_open[slot] = 1;
+    st->dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, st, slot);
+}
+
+static long
+vc(const dsd_state* st) {
+    return st->trunk_vc_freq[0];
+}
+
+static dmr_sm_ctx_t*
+sm(void) {
+    return dmr_sm_get_ctx();
+}
+
+/* ---- Cases ---- */
+
+/* 1, 2: live voice holds the carrier against a grant without preemption; an outranking preempt candidate takes it
+   after its dwell, and its takeover's cooldown keeps a third candidate out until it runs out. */
+static int
+test_live_voice_and_cooldown(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 200, "A", 50, 0);
+    seed_row(st, 300, "A", 60, 1);
+    seed_row(st, 400, "A", 80, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    int rc = expect_true("A followed", vc(st) == VC_A && g_tunes == 1);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("live voice: a grant without preempt is busy", vc(st) == VC_A && g_tunes == 1);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    rc |= expect_true("p60 preempt displaces p10 after its dwell", vc(st) == VC_B && sm()->vc_tg == 300);
+    clock_at(1.8);
+    tv_grant(opts, st, LPCN_C, 0, 400, 4);
+    rc |= expect_true("p80 preempt inside the takeover's cooldown is refused", vc(st) == VC_B && sm()->vc_tg == 300);
+    clock_at(2.1);
+    tv_grant(opts, st, LPCN_C, 0, 400, 4);
+    rc |= expect_true("p80 preempt past the cooldown is followed", vc(st) == VC_C && sm()->vc_tg == 400);
+    return rc;
+}
+
+/* 3: dwell runs from the held call's grant. */
+static int
+test_dwell(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 300, "A", 60, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.4);
+    voice(opts, st, 0);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    int rc = expect_true("preempt within the dwell is refused", vc(st) == VC_A);
+    clock_at(0.8);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    rc |= expect_true("the same preempt past the dwell is followed", vc(st) == VC_B);
+    return rc;
+}
+
+/* 4: with zero hangtime only live voice holds the carrier (voice 0.2 s stale, no tick needed). */
+static int
+test_zero_hangtime(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 0.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    clock_at(1.1);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    int rc = expect_true("zero hangtime: live voice is busy", vc(st) == VC_A);
+    clock_at(1.3);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("zero hangtime: voice 0.3 s old is not busy", vc(st) == VC_B);
+    return rc;
+}
+
+/* 5: before its first voice the followed grant holds the carrier for the grant timeout. */
+static int
+test_acquisition(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(1.0);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    int rc = expect_true("acquisition: another grant is busy", vc(st) == VC_A);
+    clock_at(4.1);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("past the grant timeout the grant is followed", vc(st) == VC_B);
+    return rc;
+}
+
+/* 6: the hangtime tail holds the carrier; an outranking preempt passes with its dwell measured from the grant. */
+static int
+test_tail(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 300, "A", 60, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    clock_at(1.0);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    int rc = expect_true("tail: a grant without preempt is busy", vc(st) == VC_A);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    rc |= expect_true("tail: an outranking preempt is followed (dwell from the grant)", vc(st) == VC_B);
+    return rc;
+}
+
+/* 7, 8: a call heard on the control channel's carrier (composite TSCC plus payload) holds the receiver while its
+   identity is admitted; a blocked one never makes it busy. */
+static int
+test_resident(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    clock_at(1.0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    int rc = expect_true("resident TS2 call: a grant elsewhere is busy", g_tunes == 0 && opts->trunk_is_tuned == 0);
+    clock_at(3.1);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("resident call past its hangtime: followed", vc(st) == VC_B);
+
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "B", 0, 0);
+    clock_at(1.0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("a resident call the policy blocks is not busy", vc(st) == VC_B);
+    return rc;
+}
+
+/* 9: Hold takes the receiver from a non-held call, not from a carrier whose companion slot carries the Hold group. */
+static int
+test_hold(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    int rc = expect_true("hold over a non-held call is followed", vc(st) == VC_B && sm()->vc_tg == 200);
+
+    /* A Hold takeover is no preemption: it stamps no cooldown, even for a group that asks to preempt, so an outranking
+       candidate past its dwell is followed. */
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 200, "A", 60, 1);
+    seed_row(st, 400, "A", 80, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("hold takeover of a preempt group", vc(st) == VC_B && sm()->vc_tg == 200);
+    st->tg_hold = 0;
+    clock_at(1.0);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_C, 0, 400, 4);
+    rc |= expect_true("a hold takeover leaves no cooldown", vc(st) == VC_C && sm()->vc_tg == 400);
+
+    init_env(opts, st, 2.0);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_A, 0, 200, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 200, 9);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("a held carrier carrying the Hold group keeps it", vc(st) == VC_A);
+    return rc;
+}
+
+/* 10, 11: a cross-carrier candidate must outrank both held slots; an unknown companion is displaced only by Hold. */
+static int
+test_both_slots(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 500, "A", 90, 0);
+    seed_row(st, 300, "A", 50, 1);
+    seed_row(st, 310, "A", 95, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 500, 5);
+    clock_at(1.8);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    int rc = expect_true("p50 does not outrank the p90 companion", vc(st) == VC_A);
+    tv_grant(opts, st, LPCN_B, 0, 310, 3);
+    rc |= expect_true("p95 outranks both slots", vc(st) == VC_B && sm()->vc_tg == 310);
+
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 320, "A", 100, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    voice(opts, st, 1); // the companion's call has no identity yet
+    tv_grant(opts, st, LPCN_B, 0, 320, 3);
+    rc |= expect_true("an unknown companion is not preempted", vc(st) == VC_A);
+    st->tg_hold = 330;
+    tv_grant(opts, st, LPCN_B, 0, 330, 3);
+    rc |= expect_true("an unknown companion yields to Hold", vc(st) == VC_B && sm()->vc_tg == 330);
+    return rc;
+}
+
+/* 12: a preemption whose tune is not accepted keeps the held call and stamps no cooldown; the retry is followed. */
+static int
+test_deferred_preemption(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 300, "A", 60, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    int rc = expect_true("deferred preemption keeps the held call", vc(st) == VC_A && sm()->vc_tg == 100);
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    clock_at(1.1);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    rc |= expect_true("the retry is followed (no cooldown from the deferred attempt)", vc(st) == VC_B);
+    return rc;
+}
+
+/* 13: a decision-less grant (dmr_sm_emit_group_grant()) is never a hold or preempt candidate. */
+static int
+test_decision_less(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->tg_hold = 200;
+    dmr_sm_emit_group_grant(opts, st, VC_A, LPCN_A, 100, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dmr_sm_emit_group_grant(opts, st, VC_B, LPCN_B, 200, 2);
+    int rc = expect_true("decision-less grant is busy while held", vc(st) == VC_A);
+    clock_at(3.0);
+    dmr_sm_emit_group_grant(opts, st, VC_B, LPCN_B, 200, 2);
+    rc |= expect_true("decision-less grant is followed once nothing is held", vc(st) == VC_B);
+    return rc;
+}
+
+/* A carrier whose colour code is still being checked (the receive policy cannot admit it yet) is held while the tick's
+   receive window runs, even past the acquisition window: an ordinary grant is busy. A carrier whose verified code the
+   policy rejects is not held. */
+static int
+test_receive_check_is_acquisition(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    opts->frame_dmr = 1; // the DMR tick runs only while DMR trunking can recover
+    int rc = expect_true("dcc filter parsed",
+                         dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "", "7", "", NULL, 0) == 0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    rc |= expect_true("followed while the code is unknown", vc(st) == VC_A);
+    st->dmr_color_code = 16U; // unknown, as the voice-channel tune leaves it
+    clock_at(3.0);
+    dmr_sm_tick_ctx(sm(), opts, st); // opens the receive window
+    rc |= expect_true("the receive window runs", sm()->state == DMR_SM_TUNED && sm()->receive_check_started_m > 0.0);
+    clock_at(4.5);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("a pending receive check keeps the carrier past the acquisition window", vc(st) == VC_A);
+    sm()->receive_carriers.entries[0] = (dsd_receive_carrier){.freq_hz = VC_A, .value = 7, .kind = DSD_RECEIVE_DCC};
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("a carrier whose verified code is rejected is not held", vc(st) == VC_B);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    return rc;
+}
+
+/* Following a call into a ledger a stale record still occupies stamps no cooldown: only a takeover does. */
+static int
+test_follow_stamps_no_false_cooldown(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 300, "A", 60, 1);
+    seed_row(st, 400, "A", 80, 1);
+    const dsd_tg_policy_call_route stale_route = {.target_id = 77, .freq_hz = VC_C, .channel = 3, .slot = 0};
+    dsd_tg_policy_decision stale = {0};
+    stale.priority = 0;
+    (void)dsd_tg_policy_note_active_call(st, &stale_route, &stale, dsd_decode_now_mono_s());
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    int rc = expect_true("idle follow of a preempt group", vc(st) == VC_A);
+    clock_at(0.8);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 400, 4);
+    rc |= expect_true("no false cooldown: an outranking preempt past the dwell is followed", vc(st) == VC_B);
+    return rc;
+}
+
+/* A release clears the ledger: nothing is left for a later candidate to preempt. */
+static int
+test_release_clears_ledger(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 300, "A", 60, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    dmr_sm_abandon_carrier(sm(), opts, st, "test");
+    dsd_tg_policy_decision d;
+    (void)dsd_tg_policy_evaluate_group_call(opts, st, 300, 3, 0, 0, &d);
+    const dsd_tg_policy_call_route candidate = {
+        .target_id = 300, .freq_hz = VC_B, .channel = LPCN_B, .slot = 0, .requires_tuner_retune = 1};
+    return expect_true("released carrier leaves nothing to preempt",
+                       dsd_tg_policy_should_preempt(opts, st, &candidate, &d, dsd_decode_now_mono_s()) == 0);
+}
+
+/* Slot identities live in the machine's context, which trunk scan keeps per target: each target's context holds its own,
+   and the acquisition a target switch starts (dmr_sm_begin_cc_acquisition()) or an abandoned carrier clears them. */
+static dmr_sm_ctx_t g_scan_ctx[2];
+static int g_scan_active = 0;
+
+static void*
+scan_dmr_ctx(void) {
+    return &g_scan_ctx[g_scan_active];
+}
+
+static int
+test_scan_target_contexts(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    dmr_sm_init_ctx(&g_scan_ctx[0], opts, st);
+    dmr_sm_init_ctx(&g_scan_ctx[1], opts, st);
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.dmr_ctx = scan_dmr_ctx;
+    dsd_trunk_scan_hooks_set(&hooks);
+    opts->trunk_scan_enabled = 1;
+    g_scan_active = 0;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    int rc = expect_true("target A follows with a slot identity",
+                         g_scan_ctx[0].state == DMR_SM_TUNED && g_scan_ctx[0].slots[0].target == 100U
+                             && g_scan_ctx[0].slots[0].prov == (uint8_t)DMR_SM_ID_GRANT);
+    rc |= expect_true("target B's context holds nothing", g_scan_ctx[1].slots[0].target == 0U);
+    // Rotation to B: the switch restarts B's acquisition; A's context keeps its call while parked elsewhere.
+    g_scan_active = 1;
+    opts->trunk_is_tuned = 0;
+    dmr_sm_begin_cc_acquisition(&g_scan_ctx[1], opts, st, CC_HZ, 0U);
+    dmr_sm_busy_view_t view;
+    rc |= expect_true("target B is not held by A's call",
+                      dmr_sm_describe_held_calls(&g_scan_ctx[1], opts, st, dsd_decode_now_mono_s(), &view) == 0);
+    rc |= expect_true("A's identity survives the rotation", g_scan_ctx[0].slots[0].target == 100U);
+    // Back to A: its revisit starts a new acquisition, which forgets the call.
+    g_scan_active = 0;
+    dmr_sm_begin_cc_acquisition(&g_scan_ctx[0], opts, st, CC_HZ, 0U);
+    rc |= expect_true("A's revisit forgets the slot identity",
+                      g_scan_ctx[0].slots[0].target == 0U && g_scan_ctx[0].slots[0].prov == (uint8_t)DMR_SM_ID_NONE);
+    // An abandoned carrier (a visit limit) clears them too.
+    opts->trunk_is_tuned = 0;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    dmr_sm_abandon_carrier(&g_scan_ctx[0], opts, st, "scan-visit-limit");
+    rc |= expect_true("an abandoned carrier forgets the slot identity", g_scan_ctx[0].slots[0].target == 0U);
+    dsd_trunk_scan_hooks_set(NULL);
+    opts->trunk_scan_enabled = 0;
+    return rc;
+}
+
+int
+main(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!opts || !st) {
+        free(opts);
+        free(st);
+        return 1;
+    }
+    dsd_decode_clock_use_test(k_t0_ns);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+
+    int rc = 0;
+    rc |= test_live_voice_and_cooldown(opts, st);
+    rc |= test_dwell(opts, st);
+    rc |= test_zero_hangtime(opts, st);
+    rc |= test_acquisition(opts, st);
+    rc |= test_tail(opts, st);
+    rc |= test_resident(opts, st);
+    rc |= test_hold(opts, st);
+    rc |= test_both_slots(opts, st);
+    rc |= test_deferred_preemption(opts, st);
+    rc |= test_decision_less(opts, st);
+    rc |= test_receive_check_is_acquisition(opts, st);
+    rc |= test_follow_stamps_no_false_cooldown(opts, st);
+    rc |= test_release_clears_ledger(opts, st);
+    rc |= test_scan_target_contexts(opts, st);
+
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(st);
+    free(st);
+    free(opts);
+    if (rc == 0) {
+        printf("DMR_PREEMPT: OK\n");
+    }
+    return rc;
+}
+
+#if defined(__GNUC__) && !defined(__cplusplus)
+#pragma GCC diagnostic pop
+#endif

@@ -59,11 +59,17 @@ dmr_csbk_handle(const struct dmr_csbk_result* res, dsd_opts* opts, dsd_state* st
         long freq = res->freq_hz;
         int lpcn = (int)res->lpcn;
 
-        /* Voice vs data grant distinction is made on opcode. */
-        if (res->opcode == 49) {
-            dmr_sm_emit_group_grant_slot(opts, state, freq, lpcn, (int)res->lcn, (int)res->target, (int)res->source);
-        } else {
-            dmr_sm_emit_indiv_grant_slot(opts, state, freq, lpcn, (int)res->lcn, (int)res->target, (int)res->source);
+        /* Group vs individual is made on opcode (a data grant followed as a group was rewritten to 49); the data
+           classification and the policy verdict travel with it. */
+        dmr_sm_event_t ev = (res->opcode == 49) ? dmr_sm_ev_group_grant(freq, lpcn, (int)res->target, (int)res->source)
+                                                : dmr_sm_ev_indiv_grant(freq, lpcn, (int)res->target, (int)res->source);
+        ev.slot = (int)(res->lcn & 1U);
+        if (res->data_call) {
+            ev.kind = DSD_CALL_KIND_DATA;
         }
+        ev.origin = DMR_SM_ORIGIN_GRANT;
+        ev.policy_valid = res->policy_valid;
+        ev.policy = res->policy;
+        (void)dmr_sm_submit_grant(opts, state, &ev);
     }
 }

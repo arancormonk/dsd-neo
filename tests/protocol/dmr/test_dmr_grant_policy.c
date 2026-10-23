@@ -732,8 +732,10 @@ main(void) {
     opts->trunk_is_tuned = 0;
     build_grant(bits, bytes, 49U, lpcn, 3330U, 4430U, 0U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-    rc |= expect_true("tg hold grant clears wall-clock vc sync", st->last_vc_sync_time == 0);
-    rc |= expect_true("tg hold grant clears monotonic vc sync", st->last_vc_sync_time_m == 0.0);
+    /* A Hold grant is admitted by its own decision: it no longer wipes the voice-sync stamps the no-carrier return
+       reads (that zeroing made a live voice channel look dead). */
+    rc |= expect_true("tg hold grant keeps wall-clock vc sync", st->last_vc_sync_time == 123);
+    rc |= expect_true("tg hold grant keeps monotonic vc sync", st->last_vc_sync_time_m > 455.9);
     rc |= expect_true("trunk disabled hold grant records vc frequency", st->trunk_vc_freq[0] == freq);
     rc |= expect_true("trunk disabled hold grant does not tune", opts->trunk_is_tuned == 0);
     st->tg_hold = 0;
