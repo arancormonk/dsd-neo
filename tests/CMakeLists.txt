@@ -17885,6 +17885,12 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pffft_metadata.py
     )
     add_test(
+        NAME TOOLS_SARIF_DROP_IGNORED_PATHS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_sarif_drop_ignored_paths.py
+    )
+    add_test(
         NAME TOOLS_TETRA_CRYPTO_METADATA
         COMMAND
             ${Python3_EXECUTABLE}
