@@ -649,13 +649,9 @@ struct ManagedSlot {
 
 /* The ID, lookup and format checks for one key, in the order compile() applies them; @p idParsed / @p id is its key
    ID as parsed. Fills @p slot on success. */
+/* The lookup and ID range checks of managedSlotError(). */
 QString
-managedSlotError(const QVariantMap& key, bool idParsed, quint32 id, const QString& protocol, ManagedSlot* slot) {
-    const ManagedKind* kind = managedKind(keyKindOf(key));
-    if (!kind) {
-        return QObject::tr("Choose a key format.");
-    }
-    const bool destination = key.value("lookup").toString() == "destination";
+managedIdError(bool destination, bool idParsed, quint32 id, const QString& protocol) {
     if (destination && protocol == "p25") {
         return QObject::tr("P25 selects keys by the received key ID; destination lookup is not available.");
     }
@@ -665,6 +661,20 @@ managedSlotError(const QVariantMap& key, bool idParsed, quint32 id, const QStrin
     if (!destination && (!idParsed || id > (protocol == "dmr" ? 0xFFU : 0xFFFFU))) {
         return protocol == "dmr" ? QObject::tr("DMR key IDs are hex 0 to FF.")
                                  : QObject::tr("Key IDs are hex 0 to FFFF.");
+    }
+    return {};
+}
+
+QString
+managedSlotError(const QVariantMap& key, bool idParsed, quint32 id, const QString& protocol, ManagedSlot* slot) {
+    const ManagedKind* kind = managedKind(keyKindOf(key));
+    if (!kind) {
+        return QObject::tr("Choose a key format.");
+    }
+    const bool destination = key.value("lookup").toString() == "destination";
+    const QString idError = managedIdError(destination, idParsed, id, protocol);
+    if (!idError.isEmpty()) {
+        return idError;
     }
     if (!managedKindAllowed(QLatin1String(kind->id), protocol)) {
         return QObject::tr("%1 keys are not available for this profile protocol.").arg(kindName(*kind));
@@ -1178,65 +1188,49 @@ entryKeyId(const QVariant& raw, bool destination, bool* parsed, quint32* id) {
     return {};
 }
 
-QString
-DecryptionProfilesModel::keyEntryError(const QString& profileUid, const QVariantList& draftKeys, int index,
-                                       const QVariantMap& entry) const {
-    const int stored = rowForUid(profileUid);
-    QString protocol = entry.value("protocol").toString();
-    if (protocol.isEmpty()) {
-        protocol = stored >= 0 ? m_rows[stored].value("protocol", "mixed").toString() : QStringLiteral("mixed");
+/* The protocol a typed key is judged under: the draft's, else the stored profile's, else mixed. */
+static QString
+entryProtocol(const QVariantMap& entry, const QVariantMap* storedRow) {
+    const QString protocol = entry.value("protocol").toString();
+    if (!protocol.isEmpty()) {
+        return protocol;
     }
-    const QVariantMap edited = index >= 0 && index < draftKeys.size() ? draftKeys[index].toMap() : QVariantMap();
+    return storedRow ? storedRow->value("protocol", "mixed").toString() : QStringLiteral("mixed");
+}
+
+/* The typed key with a reference: its own, else the edited row's, else a fresh one (a new key). */
+static QVariantMap
+entryWithUid(const QVariantMap& entry, const QVariantMap& edited) {
     QVariantMap key = entry;
     if (key.value("uid").toString().isEmpty()) {
         key.insert("uid", edited.value("uid").toString().isEmpty() ? uuid() : edited.value("uid").toString());
     }
-    bool parsed = false;
-    quint32 id = 0;
-    QString problem = entryKeyId(entry.value("keyId"), key.value("lookup").toString() == "destination", &parsed, &id);
-    ManagedSlot slot;
-    if (problem.isEmpty()) {
-        problem = managedSlotError(key, parsed, id, protocol, &slot);
-    }
-    if (!problem.isEmpty()) {
-        return problem;
-    }
+    return key;
+}
 
-    /* Blank material keeps what the key holds: an unsaved row's own material, else the stored key's (saveProfile()
-       refills it by key UID), and only under the format it was entered for. */
-    QString material = entry.value("material").toString();
-    bool retained = false;
-    if (material.isEmpty() && !edited.isEmpty()) {
-        QString keptKind;
-        if (!edited.value("material").toString().isEmpty()) {
-            material = edited.value("material").toString();
-            keptKind = keyKindOf(edited);
-        } else if (stored >= 0) {
-            for (const auto& value : m_rows[stored].value("keys").toList()) {
-                const auto storedKey = value.toMap();
-                if (storedKey.value("uid").toString() == key.value("uid").toString()) {
-                    material = storedKey.value("material").toString();
-                    keptKind = keyKindOf(storedKey);
-                    break;
-                }
+/* What blank material keeps for the edited row: an unsaved row's own material, else the stored key's with @p uid
+   (saveProfile() refills it by key UID). *keptKind is the format it was entered for. */
+static QString
+retainedMaterial(const QVariantMap& edited, const QVariantMap* storedRow, const QString& uid, QString* keptKind) {
+    if (!edited.value("material").toString().isEmpty()) {
+        *keptKind = keyKindOf(edited);
+        return edited.value("material").toString();
+    }
+    if (storedRow) {
+        for (const auto& value : storedRow->value("keys").toList()) {
+            const auto storedKey = value.toMap();
+            if (storedKey.value("uid").toString() == uid) {
+                *keptKind = keyKindOf(storedKey);
+                return storedKey.value("material").toString();
             }
         }
-        retained = !material.isEmpty();
-        if (retained && keptKind != keyKindOf(key)) {
-            return QObject::tr("Enter replacement material when changing the key format.");
-        }
     }
-    QStringList words;
-    problem = managedMaterialError(*managedKind(keyKindOf(key)), protocol, material, &words);
-    if (!problem.isEmpty()) {
-        return retained ? QObject::tr("The kept material does not fit this key. Enter replacement material.") : problem;
-    }
-    problem = legacyDestinationError(slot, words);
-    if (!problem.isEmpty()) {
-        return problem;
-    }
+    return {};
+}
 
-    // The other draft rows, as compile() reserves them: each format's cells follow from its width.
+/* The other draft rows, as compile() reserves them: each format's cells follow from its width. */
+static ManagedCollection
+otherDraftKeys(const QVariantList& draftKeys, int index, const QString& protocol) {
     ManagedCollection others;
     for (int i = 0; i < draftKeys.size(); ++i) {
         if (i == index) {
@@ -1254,6 +1248,49 @@ DecryptionProfilesModel::keyEntryError(const QString& profileUid, const QVariant
             others.references.insert(other.value("uid").toString());
         }
     }
+    return others;
+}
+
+QString
+DecryptionProfilesModel::keyEntryError(const QString& profileUid, const QVariantList& draftKeys, int index,
+                                       const QVariantMap& entry) const {
+    const int stored = rowForUid(profileUid);
+    const QString protocol = entryProtocol(entry, stored >= 0 ? &m_rows[stored] : nullptr);
+    const QVariantMap edited = index >= 0 && index < draftKeys.size() ? draftKeys[index].toMap() : QVariantMap();
+    const QVariantMap key = entryWithUid(entry, edited);
+    bool parsed = false;
+    quint32 id = 0;
+    QString problem = entryKeyId(entry.value("keyId"), key.value("lookup").toString() == "destination", &parsed, &id);
+    ManagedSlot slot;
+    if (problem.isEmpty()) {
+        problem = managedSlotError(key, parsed, id, protocol, &slot);
+    }
+    if (!problem.isEmpty()) {
+        return problem;
+    }
+
+    QString material = entry.value("material").toString();
+    bool retained = false;
+    if (material.isEmpty() && !edited.isEmpty()) {
+        QString keptKind;
+        material =
+            retainedMaterial(edited, stored >= 0 ? &m_rows[stored] : nullptr, key.value("uid").toString(), &keptKind);
+        retained = !material.isEmpty();
+        if (retained && keptKind != keyKindOf(key)) {
+            return QObject::tr("Enter replacement material when changing the key format.");
+        }
+    }
+    QStringList words;
+    problem = managedMaterialError(*managedKind(keyKindOf(key)), protocol, material, &words);
+    if (!problem.isEmpty()) {
+        return retained ? QObject::tr("The kept material does not fit this key. Enter replacement material.") : problem;
+    }
+    problem = legacyDestinationError(slot, words);
+    if (!problem.isEmpty()) {
+        return problem;
+    }
+
+    ManagedCollection others = otherDraftKeys(draftKeys, index, protocol);
     (void)reserveManagedKey(others, key, slot.base, static_cast<int>(words.size()), &problem);
     return problem;
 }
