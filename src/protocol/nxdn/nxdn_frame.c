@@ -25,7 +25,6 @@
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_presence.h>
-#include <dsd-neo/core/keyring.h>
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -50,6 +49,7 @@
 #include "nxdn_confirm.h"
 
 #ifdef LIMAZULUTWEAKS
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include "dsd-neo/core/secret_redaction.h"
 #endif
