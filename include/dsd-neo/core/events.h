@@ -235,6 +235,15 @@ int dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_
 /** Commit an informational system notice without attributing it to radio traffic. */
 int dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice);
 int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
+/**
+ * dsd_event_enrich_alias() with the options the event log is written through. An alias that lands on the epoch's
+ * already committed row (a Motorola alias sent in hangtime) also re-resolves that row's source label through the
+ * source-alias/group-list precedence -- so a policy row the alias just taught names the row it arrived for, and an
+ * imported name keeps precedence -- re-renders the row, caches the label on the call (dsd_call_snapshot::source_label)
+ * and appends one "Enriched:" continuation to the event log carrying the row's own stamp. dsd_event_enrich_alias()
+ * does the same without the log line. Call it after the alias has updated the learned policy row.
+ */
+int dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
 int dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps);
 int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text);
 

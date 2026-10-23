@@ -2504,6 +2504,31 @@ watchdog_event_drop_verdict_held(dsd_call_event_lifecycle* lifecycle, const dsd_
     return now_m < lifecycle->drop_hold_due_m;
 }
 
+// Keep the label the epoch's row resolved for its source on the canonical call (dsd_call_snapshot::source_label), so a
+// view of the ended call can still name the talker once the staged row has committed, and without searching the
+// source tables per render. Keyed by epoch and source, so it never names another call. Caller holds the call-state
+// lock.
+static void
+watchdog_event_cache_source_label(dsd_state* state, uint8_t slot, uint64_t epoch, const Event_History* row) {
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (ext == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || row == NULL || row->source_id == 0U) {
+        return;
+    }
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (call->epoch != epoch || call->ota_source_id != row->source_id) {
+        return;
+    }
+    char label[sizeof call->source_label];
+    DSD_SNPRINTF(label, sizeof label, "%s", row->s_name);
+    if (call->source_label_id == call->ota_source_id && strcmp(call->source_label, label) == 0) {
+        return;
+    }
+    DSD_MEMCPY(call->source_label, label, sizeof call->source_label);
+    call->source_label_id = call->ota_source_id;
+    call->revision = call->revision == UINT64_MAX ? 1U : call->revision + 1U;
+    ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
+}
+
 static void
 watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                               dsd_call_event_lifecycle* lifecycle, Event_History_I* event_struct, int finalize_ended) {
@@ -2531,6 +2556,8 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         if (watchdog_event_drop_verdict_held(lifecycle, call, event_struct, deferred_end)) {
             return;
         }
+        // The staged row is about to leave index 0, where views of the ended call read its source label.
+        watchdog_event_cache_source_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
         // A new row, a merge into the row the interrupted transmission already owns, or -- for
         // a voice epoch that never learned an identity -- a drop. The empty-staged-row branch
         // has nothing to commit; enrichment resolves that case by push sequence and declines.
@@ -3038,8 +3065,41 @@ dsd_event_enrich_unopened(dsd_state* state, uint8_t slot, dsd_call_state_ext* ex
     }
 }
 
+// A talker alias that lands on the epoch's committed row: Motorola sends it in hangtime, after the row committed, and
+// the alias may have just taught the source's policy row a name. The row's source label is resolved again through the
+// usual precedence (dsd_source_label_lookup(): an imported source alias, else the group-list exact row, where an
+// imported row outranks a learned one), the row re-rendered against the environment it committed under, the label
+// cached on the call for views of the ended call, and one continuation appended to the event log -- the row's own
+// stamp, no end effects. opts NULL writes no log line. Caller holds the call-state lock.
+static void
+dsd_event_enrich_committed_alias(const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                 const dsd_call_event_lifecycle* lifecycle, uint64_t epoch, Event_History* item,
+                                 int alias_changed) {
+    int rendered_changed = 0;
+    if (item->source_id != 0U) {
+        char mode[sizeof item->s_mode];
+        char name[sizeof item->s_name];
+        if (dsd_source_label_lookup(state, item->source_id, mode, sizeof mode, name, sizeof name) && name[0] != '\0'
+            && (strcmp(name, item->s_name) != 0 || strcmp(mode, item->s_mode) != 0)) {
+            DSD_SNPRINTF(item->s_name, sizeof item->s_name, "%s", name);
+            DSD_SNPRINTF(item->s_mode, sizeof item->s_mode, "%s", mode);
+            (void)watchdog_event_rerender_row(&lifecycle->committed_env, item, &rendered_changed);
+        }
+        watchdog_event_cache_source_label(state, slot, epoch, item);
+    }
+    if (opts == NULL || (!alias_changed && !rendered_changed)) {
+        return;
+    }
+    watchdog_event_merge_added added;
+    DSD_MEMSET(&added, 0, sizeof added);
+    added.alias = alias_changed ? 1U : 0U;
+    const char* rendered = (rendered_changed && item->event_string[0] != '\0') ? item->event_string : NULL;
+    watchdog_event_write_log_entry(opts, slot, (uint8_t)(dsd_event_systype_has_slots(item->systype) ? 1U : 0U),
+                                   "Enriched: ", rendered, item, &added);
+}
+
 static int
-dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
+dsd_event_enrich_epoch(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
                        dsd_event_enrichment_kind kind) {
     if (!state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U || !value) {
         return -1;
@@ -3067,12 +3127,17 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
         return 0;
     }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
+    const int alias_changed =
+        kind == DSD_EVENT_ENRICH_ALIAS && strncmp(item->alias, value, sizeof(item->alias) - 1U) != 0;
     dsd_event_enrich_apply(state, slot, item, value, kind);
     if (state->event_crc_invalid[slot]) {
         dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
     }
     if (history_index != 0U) {
         // Late enrichment landed on a committed row, not the staged one.
+        if (kind == DSD_EVENT_ENRICH_ALIAS) {
+            dsd_event_enrich_committed_alias(opts, state, slot, &ext->events[slot], epoch, item, alias_changed);
+        }
         state->event_history_s[slot].commit_rev++;
     }
     dsd_event_history_mark_dirty(&state->event_history_s[slot]);
@@ -3082,17 +3147,22 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
 
 int
 dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
-    return dsd_event_enrich_epoch(state, slot, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
+    return dsd_event_enrich_epoch(NULL, state, slot, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
+}
+
+int
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+    return dsd_event_enrich_epoch(opts, state, slot, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
 }
 
 int
 dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps) {
-    return dsd_event_enrich_epoch(state, slot, epoch, gps, DSD_EVENT_ENRICH_GPS);
+    return dsd_event_enrich_epoch(NULL, state, slot, epoch, gps, DSD_EVENT_ENRICH_GPS);
 }
 
 int
 dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text) {
-    return dsd_event_enrich_epoch(state, slot, epoch, text, DSD_EVENT_ENRICH_TEXT);
+    return dsd_event_enrich_epoch(NULL, state, slot, epoch, text, DSD_EVENT_ENRICH_TEXT);
 }
 
 void

@@ -306,6 +306,12 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
 }
 
 int
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+    (void)opts;
+    return dsd_event_enrich_alias(state, slot, epoch, alias);
+}
+
+int
 dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps) {
     dsd_call_snapshot call;
     if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U

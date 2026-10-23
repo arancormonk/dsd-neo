@@ -12,11 +12,13 @@
  * encoded octet and the ones before it), then framed and CRC'd the way the decoder reads them.
  */
 
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -591,6 +593,141 @@ test_learned_alias_row(void) {
     fixture_close(&f);
 }
 
+/* The committed row the slot's last call pushed, right behind the staged row. */
+static const Event_History*
+committed_row(const fixture* f, uint8_t slot) {
+    return &f->st->event_history_s[slot].Event_History_Items[1];
+}
+
+static void
+end_call_and_commit(fixture* f, uint8_t slot) {
+    if (dsd_call_state_end_ex(f->st, slot, 0.0, DSD_CALL_END_TERMINATOR) <= 0) {
+        DSD_FPRINTF(stderr, "call did not end\n");
+        exit(2);
+    }
+    dsd_event_sync_slot(f->opts, f->st, slot);
+}
+
+static void
+held_view(const fixture* f, uint8_t slot, dsd_app_slot_call* out) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(f->st, slot, &call) <= 0) {
+        DSD_FPRINTF(stderr, "no call to view\n");
+        exit(2);
+    }
+    dsd_app_slot_call_view(f->st, slot, call.ended_m + 0.5, out);
+}
+
+/* Motorola sends the alias in hangtime, after the call's row has committed. The alias still names that row (its source
+ * label, its re-rendered line and one continuation in the event log, on the row's own stamp) and the held view of the
+ * ended call, which reads the label the event layer cached rather than resolving it per render. */
+static void
+test_late_alias_names_the_committed_call(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00F001U;
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 800U, rid);
+    end_call_and_commit(&f, 0U);
+    expect_true("call row committed", committed_row(&f, 0U)->source_id == rid);
+    expect_true("committed row has no name yet", committed_row(&f, 0U)->s_name[0] == '\0');
+
+    alias_record r;
+    build_record_ascii(&r, rid, "TRUCK 9");
+    p2_send_record(f.opts, f.st, 1, &r, 0x1U);
+    expect_true("late alias reaches the committed row", strstr(committed_row(&f, 0U)->alias, "TRUCK 9; ") != NULL);
+    expect_true("late alias names the committed row", strcmp(committed_row(&f, 0U)->s_name, "TRUCK 9") == 0);
+    expect_true("late alias re-renders the committed row",
+                strstr(committed_row(&f, 0U)->event_string, "SName: TRUCK 9;") != NULL);
+    expect_true("late alias logged once", file_count(f.log_path, "Talker Alias: TRUCK 9") == 1);
+    expect_true("late alias continuation logged once", file_count(f.log_path, "Enriched: ") == 1);
+    expect_true("late alias continuation carries the new name", file_count(f.log_path, "SName: TRUCK 9;") == 1);
+
+    dsd_app_slot_call view;
+    held_view(&f, 0U, &view);
+    expect_true("held view of the ended call is still held", view.state == DSD_APP_CALL_LINE_ENDED);
+    expect_true("held view names the late alias", strstr(view.src_text, "TRUCK 9") != NULL);
+
+    /* The repeated alias Motorola sends through hangtime changes nothing and logs nothing more. */
+    p2_send_record(f.opts, f.st, 1, &r, 0x2U);
+    expect_true("repeated late alias logged once", file_count(f.log_path, "Talker Alias: TRUCK 9") == 1);
+    expect_true("repeated late alias adds no continuation", file_count(f.log_path, "Enriched: ") == 1);
+
+    /* The held view reads the cached label: with the source tables emptied, it still names the talker. */
+    (void)dsd_tg_policy_clear(f.st);
+    held_view(&f, 0U, &view);
+    expect_true("held view needs no source lookup per render", strstr(view.src_text, "TRUCK 9") != NULL);
+    fixture_close(&f);
+}
+
+/* An imported name keeps precedence over the learned alias on the committed row: a source alias list entry, then an
+ * imported group-list row. */
+static void
+test_late_alias_keeps_imported_names(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00F002U;
+    dsd_source_alias_store* store = dsd_source_alias_store_create();
+    dsd_source_alias_entry entry;
+    DSD_MEMSET(&entry, 0, sizeof entry);
+    entry.id_start = entry.id_end = rid;
+    DSD_SNPRINTF(entry.name, sizeof entry.name, "%s", "Rescue Two");
+    if (store == NULL || dsd_source_alias_store_append(store, &entry) != 0) {
+        DSD_FPRINTF(stderr, "source alias store not built\n");
+        exit(2);
+    }
+    dsd_source_alias_install(f.st, store);
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 801U, rid);
+    end_call_and_commit(&f, 0U);
+    alias_record r;
+    build_record_ascii(&r, rid, "RESCUE 2 OTA");
+    p2_send_record(f.opts, f.st, 1, &r, 0x1U);
+    expect_true("late alias reaches the row under a source alias",
+                strstr(committed_row(&f, 0U)->alias, "RESCUE 2 OTA") != NULL);
+    expect_true("source alias keeps the row's name", strcmp(committed_row(&f, 0U)->s_name, "Rescue Two") == 0);
+    fixture_close(&f);
+
+    fixture_open(&f);
+    dsd_tg_policy_entry imported;
+    if (dsd_tg_policy_make_exact_entry(rid, "A", "Rescue Imported", DSD_TG_POLICY_SOURCE_IMPORTED, &imported) != 0
+        || dsd_tg_policy_append_exact(f.st, &imported) != 0) {
+        DSD_FPRINTF(stderr, "imported row not stored\n");
+        exit(2);
+    }
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 801U, rid);
+    end_call_and_commit(&f, 0U);
+    dsd_app_slot_call view;
+    held_view(&f, 0U, &view);
+    expect_true("held view keeps a known name once the row commits", strstr(view.src_text, "Rescue Imported") != NULL);
+    p2_send_record(f.opts, f.st, 1, &r, 0x1U);
+    expect_true("imported group-list row keeps the row's name",
+                strcmp(committed_row(&f, 0U)->s_name, "Rescue Imported") == 0);
+    fixture_close(&f);
+}
+
+/* A renamed radio: its next call's row commits under the old learned name, and the alias that follows renames it. */
+static void
+test_late_alias_renames_a_learned_name(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00F003U;
+    alias_record old_name;
+    alias_record new_name;
+    build_record_ascii(&old_name, rid, "UNIT OLD");
+    build_record_ascii(&new_name, rid, "UNIT NEW");
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 802U, rid);
+    p2_send_record(f.opts, f.st, 1, &old_name, 0x1U);
+    end_call_and_commit(&f, 0U);
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 802U, rid);
+    end_call_and_commit(&f, 0U);
+    expect_true("next call commits under the learned name", strcmp(committed_row(&f, 0U)->s_name, "UNIT OLD") == 0);
+    p2_send_record(f.opts, f.st, 1, &new_name, 0x2U);
+    expect_true("renamed alias renames the committed row", strcmp(committed_row(&f, 0U)->s_name, "UNIT NEW") == 0);
+    dsd_app_slot_call view;
+    held_view(&f, 0U, &view);
+    expect_true("held view follows the rename", strstr(view.src_text, "UNIT NEW") != NULL);
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_phase2_sacch_alias_uses_voice_slot();
@@ -601,6 +738,9 @@ main(void) {
     test_record_length_with_zero_words();
     test_stored_name_is_utf8();
     test_learned_alias_row();
+    test_late_alias_names_the_committed_call();
+    test_late_alias_keeps_imported_names();
+    test_late_alias_renames_a_learned_name();
     if (g_fail) {
         return 1;
     }

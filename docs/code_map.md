@@ -1043,6 +1043,16 @@ suite runs under this compiler.
   (`apx_alias_record_bits()`). The name the event row, the learned policy row and the group file store is the decoded
   UTF-16BE as UTF-8 (`apx_embedded_alias_dump()`), bounded to the policy name on a scalar boundary: C0, C1 and NUL
   become spaces (`dsd_unicode_scalar_is_control()`), a comma a dot for the CSV, an unpaired surrogate U+FFFD.
+  The learned policy row is updated before the event row is enriched (`dsd_event_enrich_alias_ex()`), because the
+  alias usually lands after its call's row committed: an alias on the epoch's committed row re-resolves that row's
+  source label through `dsd_source_label_lookup()` (an imported source alias, else the group-list exact row, where an
+  imported row outranks a learned one), re-renders the row against its `committed_env`, and appends one `Enriched:`
+  continuation (the re-rendered line when it changed, and the new `Talker Alias:` line) carrying the row's own stamp,
+  with no end effects; a repeat that changes nothing logs nothing. Lines already written stay as written (the log is
+  append-only). The event layer caches the label of the epoch's row on the call (`dsd_call_snapshot::source_label`,
+  keyed by `source_label_id`) when the row commits and when a late alias renames it, and the shared call view
+  (`slot_source_text()`) reads that cache for an ended call whose staged row is gone, so the held Monitor view names
+  the talker without a source-table search per render.
   Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan

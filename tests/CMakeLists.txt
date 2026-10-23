@@ -11704,6 +11704,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
         dsd-neo_test_p25_motorola_alias
         PRIVATE
+            dsd-neo_app_control
             "-Wl,--start-group"
             dsd-neo_proto_p25
             dsd-neo_proto_dmr
@@ -11715,6 +11716,7 @@ else()
     target_link_libraries(
         dsd-neo_test_p25_motorola_alias
         PRIVATE
+            dsd-neo_app_control
             dsd-neo_proto_p25
             dsd-neo_proto_dmr
             dsd-neo_core

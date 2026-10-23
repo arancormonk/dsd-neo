@@ -60,6 +60,12 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
 }
 
 int
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+    (void)opts;
+    return dsd_event_enrich_alias(state, slot, epoch, alias);
+}
+
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_unicode_supported(void) {
     return g_unicode_supported;

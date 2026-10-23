@@ -622,7 +622,7 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
         policy_learn_alias(opts, state, rid, "D", str, metadata);
         char alias[500];
         DSD_SNPRINTF(alias, sizeof(alias), "%s; %s", str, fqs);
-        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, alias);
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, alias);
     } else if (rid != 0) {
         DSD_FPRINTF(stderr, " Alias Deferred: current call source mismatch;");
     }
@@ -997,7 +997,7 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
         }
-        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, str);
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, str);
     } else {
         DSD_FPRINTF(stderr, " Alias Deferred: no attributable call for this slot;");
     }
@@ -1043,7 +1043,7 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
         char metadata[64];
         DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
         policy_learn_alias(opts, state, rid, "D", (const char*)alias, metadata);
-        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, (const char*)alias);
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, (const char*)alias);
     }
 }
 
