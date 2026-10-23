@@ -1026,6 +1026,19 @@ suite runs under this compiler.
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
   Windows CRT turns that failed conversion into an unbounded write of the stack. Semgrep blocks `%lc`/`%ls`
+- Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
+  MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
+  (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
+  `dmr_pdu_sf` scratch, so an LCW Call Termination or Motorola Talker EOT (which clear that scratch) or the DMR and
+  Harris assemblers cannot wipe a record in flight. Phase 2 handlers take the dispatcher's voice slot (`ctx->slot`, the
+  SACCH-inverted slot), never `currentslot`. Blocks are stored by number and the record completes once blocks
+  1..N are all present, in any order. An assembly is bound to the call epoch (the slot's current or retained ended
+  call) and the tuning generation its header arrived in, and survives that epoch's ACTIVE -> ENDED, since Motorola
+  sends the alias in hangtime: a header identical in every received bit within the same epoch and generation is a
+  repeat and keeps the blocks, any other header restarts, and a block from another epoch or generation, a block whose
+  sequence or number the header does not cover, or one past the store's end abandons the record. The engine's carrier
+  resets clear the store with the rest of the slot state. Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
+  `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
   target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the
   IDEN tables it seeds. `src/core/file/p25_bandplan_csv.c` parses and writes the CSV

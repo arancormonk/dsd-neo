@@ -32,6 +32,8 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
+void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
+
 static int g_fail;
 
 static void
@@ -112,6 +114,48 @@ build_record_ascii(alias_record* r, uint32_t rid, const char* ascii) {
         units[i] = (uint16_t)(unsigned char)ascii[i];
     }
     build_record_units(r, 0xBEE00U, 0x4C9U, rid, units, n);
+}
+
+/* ---- Phase 1: LCWs through p25_lcw() ----------------------------------------------------------------------- */
+
+static size_t
+p1_block_count(const alias_record* r) {
+    return (r->nbits + 43U) / 44U;
+}
+
+static void
+p1_send_header(dsd_opts* opts, dsd_state* st, const alias_record* r, uint8_t sn) {
+    uint8_t lcw[72];
+    DSD_MEMSET(lcw, 0, sizeof lcw);
+    set_bits(lcw, 0, 8, 0x15U);
+    set_bits(lcw, 8, 8, 0x90U);
+    set_bits(lcw, 32, 8, (uint32_t)p1_block_count(r));
+    set_bits(lcw, 56, 4, sn);
+    p25_lcw(opts, st, lcw, 0);
+}
+
+static void
+p1_send_block(dsd_opts* opts, dsd_state* st, const alias_record* r, uint8_t sn, size_t bn) {
+    uint8_t lcw[72];
+    DSD_MEMSET(lcw, 0, sizeof lcw);
+    set_bits(lcw, 0, 8, 0x17U);
+    set_bits(lcw, 8, 8, 0x90U);
+    set_bits(lcw, 16, 8, (uint32_t)bn);
+    set_bits(lcw, 24, 4, sn);
+    for (size_t i = 0; i < 44U; i++) {
+        const size_t at = ((bn - 1U) * 44U) + i;
+        lcw[28U + i] = at < r->nbits ? r->bits[at] : 0U;
+    }
+    p25_lcw(opts, st, lcw, 0);
+}
+
+static void
+p1_send_call_termination(dsd_opts* opts, dsd_state* st, uint32_t tgt) {
+    uint8_t lcw[72];
+    DSD_MEMSET(lcw, 0, sizeof lcw);
+    set_bits(lcw, 0, 8, 0x4FU);
+    set_bits(lcw, 48, 24, tgt);
+    p25_lcw(opts, st, lcw, 0);
 }
 
 /* ---- Phase 2: MAC messages through process_MAC_VPDU_crc() ------------------------------------------------- */
@@ -322,6 +366,84 @@ test_phase2_sacch_alias_uses_voice_slot(void) {
     fixture_close(&f);
 }
 
+/* An LCW Call Termination between the blocks (the call ends, the alias goes on in hangtime) keeps the record. */
+static void
+test_phase1_call_termination_between_blocks_keeps_record(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00A001U;
+    begin_call(&f, DSD_SYNC_P25P1_POS, 0U, 300U, rid);
+    alias_record r;
+    build_record_ascii(&r, rid, "ENGINE 7");
+    const size_t blocks = p1_block_count(&r);
+    expect_true("p1 record spans several blocks", blocks >= 2U);
+    p1_send_header(f.opts, f.st, &r, 0x5U);
+    p1_send_block(f.opts, f.st, &r, 0x5U, 1U);
+    p1_send_call_termination(f.opts, f.st, 300U);
+    for (size_t bn = 2U; bn <= blocks; bn++) {
+        p1_send_block(f.opts, f.st, &r, 0x5U, bn);
+    }
+    expect_true("p1 alias completes after a Call Termination", history_has_alias(f.st, 0U, "ENGINE 7"));
+    fixture_close(&f);
+}
+
+/* A repeated identical header mid-record keeps the blocks already stored; a different header restarts. */
+static void
+test_phase1_repeated_and_changed_headers(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00A002U;
+    begin_call(&f, DSD_SYNC_P25P1_POS, 0U, 301U, rid);
+    alias_record r;
+    build_record_ascii(&r, rid, "LADDER 12");
+    const size_t blocks = p1_block_count(&r);
+    p1_send_header(f.opts, f.st, &r, 0x6U);
+    p1_send_block(f.opts, f.st, &r, 0x6U, 1U);
+    p1_send_header(f.opts, f.st, &r, 0x6U);
+    for (size_t bn = 2U; bn <= blocks; bn++) {
+        p1_send_block(f.opts, f.st, &r, 0x6U, bn);
+    }
+    expect_true("p1 repeated header completes the record", history_has_alias(f.st, 0U, "LADDER 12"));
+
+    fixture_close(&f);
+    fixture_open(&f);
+    begin_call(&f, DSD_SYNC_P25P1_POS, 0U, 301U, rid);
+    p1_send_header(f.opts, f.st, &r, 0x6U);
+    p1_send_block(f.opts, f.st, &r, 0x6U, 1U);
+    p1_send_header(f.opts, f.st, &r, 0x7U);
+    for (size_t bn = 2U; bn <= blocks; bn++) {
+        p1_send_block(f.opts, f.st, &r, 0x7U, bn);
+    }
+    expect_true("p1 changed header restarts the record", !history_has_alias(f.st, 0U, "LADDER 12"));
+    p1_send_block(f.opts, f.st, &r, 0x7U, 1U);
+    expect_true("p1 restarted record completes on its own blocks", history_has_alias(f.st, 0U, "LADDER 12"));
+    fixture_close(&f);
+}
+
+/* An identical header heard in another call is that call's record: blocks of the earlier call do not complete it. */
+static void
+test_phase1_identical_header_in_new_call_restarts(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00A003U;
+    begin_call(&f, DSD_SYNC_P25P1_POS, 0U, 302U, rid);
+    alias_record r;
+    build_record_ascii(&r, rid, "MEDIC 4");
+    const size_t blocks = p1_block_count(&r);
+    p1_send_header(f.opts, f.st, &r, 0x8U);
+    p1_send_block(f.opts, f.st, &r, 0x8U, 1U);
+    expect_true("first call ends", dsd_call_state_end_ex(f.st, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0);
+    dsd_event_sync_slot(f.opts, f.st, 0U);
+    begin_call(&f, DSD_SYNC_P25P1_POS, 0U, 302U, rid);
+    p1_send_header(f.opts, f.st, &r, 0x8U);
+    for (size_t bn = 2U; bn <= blocks; bn++) {
+        p1_send_block(f.opts, f.st, &r, 0x8U, bn);
+    }
+    expect_true("p1 header in a new call does not reuse the old call's blocks",
+                !history_has_alias(f.st, 0U, "MEDIC 4"));
+    fixture_close(&f);
+}
+
 /* A Harris alias or position from a MAC that failed its CRC (-F) reaches no event row, no learned policy, no group
  * file and no position. */
 static void
@@ -351,6 +473,9 @@ test_phase2_harris_failed_crc_publishes_nothing(void) {
 int
 main(void) {
     test_phase2_sacch_alias_uses_voice_slot();
+    test_phase1_call_termination_between_blocks_keeps_record();
+    test_phase1_repeated_and_changed_headers();
+    test_phase1_identical_header_in_new_call_restarts();
     test_phase2_harris_failed_crc_publishes_nothing();
     if (g_fail) {
         return 1;

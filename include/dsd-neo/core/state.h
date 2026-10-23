@@ -167,11 +167,30 @@ typedef struct {
     uint8_t data[DSD_P25_MAC_FRAGMENT_MAX_OCTETS];
 } p25_mac_fragment_state_t;
 
+/** Capacity of one Motorola alias assembly, in bit entries: the stored header layout, then the blocks by number. */
+#define P25_APX_ALIAS_STORE_BITS  (24 * 128)
+/** Longest received header kept for the benign-repeat compare (the Phase 2 MAC header; Phase 1 uses 72). */
+#define P25_APX_ALIAS_HEADER_BITS 136
+
+/**
+ * One slot's Motorola (MFID 0x90) talker alias assembly. It owns its storage, so nothing that clears the shared
+ * dmr_pdu_sf scratch (an LCW Call Termination or Talker EOT, the DMR and Harris assemblers) can wipe it. Blocks are
+ * stored by number; the assembly completes once blocks 1..block_count are all present. It is bound to the call epoch
+ * and tuning generation its header arrived in and survives that epoch's ACTIVE -> ENDED (Motorola sends the alias in
+ * hangtime): a block from another epoch or carrier abandons it, and a header restarts it unless it repeats the one in
+ * progress bit for bit within the same epoch and generation.
+ */
 typedef struct {
     uint8_t valid;
+    uint8_t phase; /* 1 or 2: the header layout held in bits[] */
     uint8_t sequence;
     uint8_t block_count;
-    uint8_t next_block;
+    uint8_t blocks_seen[32]; /* bit n set when block n (1..255) is stored */
+    uint16_t header_len;     /* bits of header[] in use */
+    uint64_t epoch;          /* call epoch the header arrived in; 0 when the slot had none */
+    uint64_t tune_generation;
+    uint8_t header[P25_APX_ALIAS_HEADER_BITS];
+    uint8_t bits[P25_APX_ALIAS_STORE_BITS];
 } p25_apx_alias_rx_state_t;
 
 typedef struct {

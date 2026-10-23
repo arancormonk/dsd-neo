@@ -350,6 +350,9 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* The Motorola assembly owns its store (p25_apx_alias_rx_state_t::bits): it copies within that store's bounds,
+ * clears it whenever it abandons a record, and never touches the dmr_pdu_sf scratch the DMR and Harris assemblers
+ * (and an LCW Call Termination) share. */
 static int
 test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
@@ -357,16 +360,21 @@ test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     uint8_t block1[72];
     uint8_t header2[136];
     uint8_t block2[144];
+    p25_apx_alias_rx_state_t* rx0 = &st->p25_apx_alias_rx[0];
+    p25_apx_alias_rx_state_t* rx1 = &st->p25_apx_alias_rx[1];
 
     DSD_MEMSET(header1, 0, sizeof(header1));
     value_to_bits_msb(header1, 0, sizeof(header1), 0x1590U, 16);
     value_to_bits_msb(header1, 32, sizeof(header1), 2U, 8);
     value_to_bits_msb(header1, 56, sizeof(header1), 0x0AU, 4);
     DSD_MEMSET(st->dmr_pdu_sf[0], 0xA5, sizeof(st->dmr_pdu_sf[0]));
+    DSD_MEMSET(rx0->bits, 0xA5, sizeof(rx0->bits));
     apx_embedded_alias_header_phase1(opts, st, 0, header1);
-    rc |= expect_u8(st->dmr_pdu_sf[0][0], header1[0], "apx-p1-header-copy-first");
-    rc |= expect_u8(st->dmr_pdu_sf[0][32], header1[32], "apx-p1-header-len-copy");
-    rc |= expect_u8(st->dmr_pdu_sf[0][71], header1[71], "apx-p1-header-copy-last");
+    rc |= expect_u8(rx0->bits[0], header1[0], "apx-p1-header-copy-first");
+    rc |= expect_u8(rx0->bits[32], header1[32], "apx-p1-header-len-copy");
+    rc |= expect_u8(rx0->bits[71], header1[71], "apx-p1-header-copy-last");
+    rc |= expect_u8(rx0->bits[72], 0U, "apx-p1-header-clears-block-store");
+    rc |= expect_u8(st->dmr_pdu_sf[0][0], 0xA5U, "apx-p1-header-leaves-shared-scratch");
 
     DSD_MEMSET(block1, 0, sizeof(block1));
     value_to_bits_msb(block1, 16, sizeof(block1), 1U, 8);
@@ -376,21 +384,46 @@ test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     }
     apx_embedded_alias_blocks_phase1(opts, st, 0, block1);
     for (size_t i = 0U; i < 44U; i++) {
-        rc |= expect_u8(st->dmr_pdu_sf[0][72U + i], block1[28U + i], "apx-p1-block-copy");
+        rc |= expect_u8(rx0->bits[72U + i], block1[28U + i], "apx-p1-block-copy");
     }
+    rc |= expect_u8(st->dmr_pdu_sf[0][72], 0xA5U, "apx-p1-block-leaves-shared-scratch");
 
+    /* A header that differs from the one in progress restarts the record. */
+    value_to_bits_msb(header1, 56, sizeof(header1), 0x0BU, 4);
     apx_embedded_alias_header_phase1(opts, st, 0, header1);
+    rc |= expect_u8(rx0->bits[73], 0U, "apx-p1-changed-header-clears-blocks");
+
+    /* Blocks are kept by number: block 2 ahead of block 1 is stored, and the record waits for block 1. */
     DSD_MEMSET(block1, 0, sizeof(block1));
     value_to_bits_msb(block1, 16, sizeof(block1), 2U, 8);
-    value_to_bits_msb(block1, 24, sizeof(block1), 0x0AU, 4);
+    value_to_bits_msb(block1, 24, sizeof(block1), 0x0BU, 4);
+    block1[28] = 1U;
     apx_embedded_alias_blocks_phase1(opts, st, 0, block1);
-    rc |= expect_u8(st->dmr_pdu_sf[0][0], 0U, "apx-p1-out-of-order-clears-first");
+    rc |= expect_u8(rx0->valid, 1U, "apx-p1-out-of-order-block-kept");
+    rc |= expect_u8(rx0->bits[72U + 44U], 1U, "apx-p1-out-of-order-block-stored-by-number");
+    rc |= expect_u8(rx0->bits[0], header1[0], "apx-p1-out-of-order-keeps-header");
 
-    DSD_MEMSET(st->dmr_pdu_sf[0], 0xA5, sizeof(st->dmr_pdu_sf[0]));
+    /* Block 1 completes the record, which is decoded and the store cleared. */
+    value_to_bits_msb(block1, 16, sizeof(block1), 1U, 8);
+    apx_embedded_alias_blocks_phase1(opts, st, 0, block1);
+    rc |= expect_u8(rx0->valid, 0U, "apx-p1-complete-ends-record");
+    rc |= expect_u8(rx0->bits[0], 0U, "apx-p1-complete-clears-first");
+
+    DSD_MEMSET(rx0->bits, 0xA5, sizeof(rx0->bits));
     DSD_MEMSET(block1, 0, sizeof(block1));
     apx_embedded_alias_blocks_phase1(opts, st, 0, block1);
-    rc |= expect_u8(st->dmr_pdu_sf[0][0], 0U, "apx-p1-missing-header-clears-first");
-    rc |= expect_u8(st->dmr_pdu_sf[0][120], 0U, "apx-p1-missing-header-clears-later");
+    rc |= expect_u8(rx0->bits[0], 0U, "apx-p1-missing-header-clears-first");
+    rc |= expect_u8(rx0->bits[120], 0U, "apx-p1-missing-header-clears-later");
+
+    /* A header claiming more blocks than the store holds: the block past its end is refused, not copied. */
+    value_to_bits_msb(header1, 32, sizeof(header1), 0xFFU, 8);
+    apx_embedded_alias_header_phase1(opts, st, 0, header1);
+    DSD_MEMSET(block1, 0, sizeof(block1));
+    value_to_bits_msb(block1, 16, sizeof(block1), 0xFFU, 8);
+    value_to_bits_msb(block1, 24, sizeof(block1), 0x0BU, 4);
+    apx_embedded_alias_blocks_phase1(opts, st, 0, block1);
+    rc |= expect_u8(rx0->valid, 0U, "apx-p1-overflow-block-abandons-record");
+    rc |= expect_u8(rx0->bits[0], 0U, "apx-p1-overflow-block-clears-store");
 
     DSD_MEMSET(header2, 0, sizeof(header2));
     value_to_bits_msb(header2, 0, sizeof(header2), 0x9190U, 16);
@@ -399,9 +432,10 @@ test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(header2, 64, sizeof(header2), 0x0BU, 4);
     DSD_MEMSET(st->dmr_pdu_sf[1], 0xA5, sizeof(st->dmr_pdu_sf[1]));
     apx_embedded_alias_header_phase2(opts, st, 1, header2);
-    rc |= expect_u8(st->dmr_pdu_sf[1][0], header2[0], "apx-p2-header-copy-first");
-    rc |= expect_u8(st->dmr_pdu_sf[1][32], header2[40], "apx-p2-header-len-repacked");
-    rc |= expect_u8(st->dmr_pdu_sf[1][56], header2[56], "apx-p2-header-tail-copy");
+    rc |= expect_u8(rx1->bits[0], header2[0], "apx-p2-header-copy-first");
+    rc |= expect_u8(rx1->bits[32], header2[40], "apx-p2-header-len-repacked");
+    rc |= expect_u8(rx1->bits[56], header2[56], "apx-p2-header-tail-copy");
+    rc |= expect_u8(st->dmr_pdu_sf[1][0], 0xA5U, "apx-p2-header-leaves-shared-scratch");
 
     DSD_MEMSET(block2, 0, sizeof(block2));
     value_to_bits_msb(block2, 24, sizeof(block2), 1U, 8);
@@ -411,21 +445,26 @@ test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     }
     apx_embedded_alias_blocks_phase2(opts, st, 1, block2);
     for (size_t i = 0U; i < 100U; i++) {
-        rc |= expect_u8(st->dmr_pdu_sf[1][136U + i], block2[36U + i], "apx-p2-block-copy");
+        rc |= expect_u8(rx1->bits[136U + i], block2[36U + i], "apx-p2-block-copy");
     }
 
+    /* The same header again is a repeat: block 1 survives it. */
     apx_embedded_alias_header_phase2(opts, st, 1, header2);
+    rc |= expect_u8(rx1->bits[137], block2[37], "apx-p2-repeated-header-keeps-block");
+
     DSD_MEMSET(block2, 0, sizeof(block2));
-    value_to_bits_msb(block2, 24, sizeof(block2), 1U, 8);
+    value_to_bits_msb(block2, 24, sizeof(block2), 2U, 8);
     value_to_bits_msb(block2, 32, sizeof(block2), 0x0CU, 4);
     apx_embedded_alias_blocks_phase2(opts, st, 1, block2);
-    rc |= expect_u8(st->dmr_pdu_sf[1][0], 0U, "apx-p2-sequence-mismatch-clears-first");
+    rc |= expect_u8(rx1->bits[0], 0U, "apx-p2-sequence-mismatch-clears-first");
+    rc |= expect_u8(rx1->valid, 0U, "apx-p2-sequence-mismatch-ends-record");
 
-    DSD_MEMSET(st->dmr_pdu_sf[1], 0xA5, sizeof(st->dmr_pdu_sf[1]));
+    DSD_MEMSET(rx1->bits, 0xA5, sizeof(rx1->bits));
     DSD_MEMSET(block2, 0, sizeof(block2));
     apx_embedded_alias_blocks_phase2(opts, st, 1, block2);
-    rc |= expect_u8(st->dmr_pdu_sf[1][0], 0U, "apx-p2-missing-header-clears-first");
-    rc |= expect_u8(st->dmr_pdu_sf[1][200], 0U, "apx-p2-missing-header-clears-later");
+    rc |= expect_u8(rx1->bits[0], 0U, "apx-p2-missing-header-clears-first");
+    rc |= expect_u8(rx1->bits[200], 0U, "apx-p2-missing-header-clears-later");
+    rc |= expect_u8(st->dmr_pdu_sf[1][200], 0xA5U, "apx-p2-blocks-leave-shared-scratch");
     return rc;
 }
 
@@ -632,7 +671,7 @@ test_alias_sequence_state_is_per_decoder(dsd_opts* opts) {
     value_to_bits_msb(block, 24, sizeof(block), 0x0AU, 4);
     block[28] = 1U;
     apx_embedded_alias_blocks_phase1(opts, st_a, 0, block);
-    rc |= expect_u8(st_a->dmr_pdu_sf[0][72], 1U, "apx state A accepts block after state B header");
+    rc |= expect_u8(st_a->p25_apx_alias_rx[0].bits[72], 1U, "apx state A accepts block after state B header");
 
     seed_active_call(st_a, 0U, 720001U, 52U);
     seed_active_call(st_b, 0U, 720002U, 53U);
