@@ -30,6 +30,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -1016,9 +1017,11 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
             dsd_request_shutdown(opts, state);
             break;
         }
-        /* The engine owns scan advances. Unwind at a burst boundary before it retunes,
-         * so finalization cannot clear the next target's decoder/audio state. */
-        if (dsd_frame_sync_hook_scan_visit_should_yield(opts, state)) {
+        /* The engine owns scan advances, and the frame loop applies the commands that move the receiver or change what
+         * it decodes (a scan advance, hold or avoid among them): a carrier that keys for minutes would otherwise hold
+         * them off until it drops (issue #637). Unwind at a burst boundary before either runs, so finalization cannot
+         * clear the next target's decoder/audio state. Other commands wait for the carrier to end. */
+        if (dsd_frame_sync_hook_scan_visit_should_yield(opts, state) || dsd_runtime_controls_need_frame_loop()) {
             /* An intentional scan departure is not a CACH/EMB decode failure. */
             ctx.tact_okay = 1;
             ctx.emb_ok = 1;
