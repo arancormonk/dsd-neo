@@ -6726,6 +6726,20 @@ Qt Quick frontend (`src/ui/qt`):
     legacy migration's `protocolFor()`.
   - Tests: `UI_QT_DECRYPTION_PROFILES` (entry table, format change, named errors, normalisation, AES-256 through the
     hex importer, restore recompile, `-mq`), `UI_QT_CONTROLLER` (`test_spaced_direct_profile_applies_live()`).
+  - QML: `DecryptionProfileEditor.qml`'s key dialog lists `keyKinds()` (the choice kept by id, `kindId`) and gates
+    "Use this key" on `keyEntryError()` (`inputValid`, so the #718 composing gate holds). It places the message with
+    two narrower calls: the ID alone as a one-digit scalar with no other keys (`idError`) and the key without the other
+    draft rows (`ownError`); what remains is a shared-cell clash, shown at the key ID. Material is mono, masked, with
+    `RevealButton.qml` (shared with `EncryptionEditor.qml`). `EncryptionEditor.qml` checks only the format list itself
+    and leaves shape and protocol width to `sessionArgs.keyError(..., protocol)`. Sheet errors scroll into view
+    through `ModalSheet.reveal()`.
+  - `KeySheet.qml`: Main's `sessionSavedSystemUid` (also the radio persistence target: empty for scan lists, Explore,
+    signal search and wizard tests) reaches it through `MonitorScreen.sessionSystemUid`. "Use for <system> on future
+    starts" resolves the system again by UID at the tap, asks through `ConfirmDialog` before replacing another
+    profile, refuses a removed system, and writes `decryptionProfileUid` with `update()`; Main then refreshes
+    `sessionSystem`. "Save as profile…" opens the editor's `openDirect()` with the typed draft (QML fields only until
+    Save profile) and selects the saved profile. Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
+    `tst_history_session_identity.qml`.
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
