@@ -191,6 +191,28 @@ int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
 int dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route* route,
                                    const dsd_tg_policy_decision* decision, double now_mono_s);
 int dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
+/**
+ * @brief Record the call a protocol is holding, right before it asks dsd_tg_policy_should_preempt().
+ *
+ * A record that already matches @p route (target, channel, slot) keeps its start and cooldown and takes the fresh
+ * priority; a missing or different one is replaced with @p start_mono_s, the time the protocol started following that
+ * call, so dwell runs from the call rather than from now. Never stamps a preemption cooldown: describing what is held
+ * is not a takeover. Slot -1 describes both slots.
+ *
+ * @return 0 recorded, 1 invalid arguments or an incomplete route.
+ */
+int dsd_tg_policy_describe_followed_call(dsd_state* state, const dsd_tg_policy_call_route* route,
+                                         const dsd_tg_policy_decision* decision, double start_mono_s,
+                                         double now_mono_s);
+/**
+ * @brief Commit an accepted takeover's cooldown once the preempting call was acquired.
+ *
+ * A protocol's release clears the displaced records before the preempting call is noted, so the takeover is committed
+ * explicitly: this stamps the global cooldown and the records now held.
+ *
+ * @return 0 committed, 1 invalid state.
+ */
+int dsd_tg_policy_commit_preemption(dsd_state* state, double now_mono_s);
 
 int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
 

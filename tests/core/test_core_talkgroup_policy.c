@@ -869,6 +869,117 @@ test_preemption_helpers(void) {
 }
 
 static int
+write_policy_file(const char* path, const char* rows) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return 1;
+    }
+    DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n%s", rows);
+    fclose(fp);
+    return 0;
+}
+
+/* The held call is what a protocol describes right before asking, the cooldown is what an accepted takeover commits,
+ * and a list reload or clear keeps both. */
+static int
+test_followed_call_bookkeeping(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_tg_policy_call_route held;
+    dsd_tg_policy_call_route cand;
+    dsd_tg_policy_decision held_dec;
+    dsd_tg_policy_decision cand_dec;
+    char path_template[64];
+    int fd = -1;
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+
+    init_route(&held, 100, 1, 851000000L, 10, -1, 0);
+    init_decision(&held_dec, 100, 1, 50, 1, 1);
+    init_route(&cand, 200, 2, 852000000L, 20, -1, 1);
+    init_decision(&cand_dec, 200, 2, 60, 1, 1);
+
+    /* Describing a held call that itself has preempt is not a takeover: no cooldown, and dwell runs from the start the
+     * protocol gives, not from now. */
+    rc |= expect_true("describe held call", dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0) == 0);
+    rc |= expect_true("described call outranked after its dwell",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 1);
+    rc |= expect_true("describe matching call keeps start",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0) == 0);
+    rc |= expect_true("matching describe kept dwell", dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0));
+    held_dec.priority = 70;
+    rc |= expect_true("describe refreshes priority",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0) == 0);
+    rc |= expect_true("refreshed priority outranks candidate",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 0);
+    held_dec.priority = 50;
+    (void)dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0);
+
+    /* Noting into an empty ledger stamps nothing either: there was no call to take over. */
+    rc |= expect_true("clear ledger", dsd_tg_policy_clear_active_call(st, -1) == 0);
+    rc |= expect_true("note into empty ledger", dsd_tg_policy_note_active_call(st, &held, &held_dec, 10.0) == 0);
+    rc |= expect_true("note into empty ledger stamps no cooldown",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 10.8) == 1);
+
+    /* An accepted takeover commits the cooldown even though the release already cleared the displaced record. */
+    rc |= expect_true("release clears ledger", dsd_tg_policy_clear_active_call(st, -1) == 0);
+    rc |= expect_true("note preempting call", dsd_tg_policy_note_active_call(st, &cand, &cand_dec, 11.0) == 0);
+    rc |= expect_true("commit takeover", dsd_tg_policy_commit_preemption(st, 11.0) == 0);
+    {
+        dsd_tg_policy_call_route third;
+        dsd_tg_policy_decision third_dec;
+        init_route(&third, 300, 3, 853000000L, 30, -1, 1);
+        init_decision(&third_dec, 300, 3, 90, 1, 1);
+        rc |= expect_true("committed cooldown refuses next takeover",
+                          dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 11.8) == 0);
+        rc |= expect_true("cooldown expires", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 12.1) == 1);
+
+        /* A list reload keeps the held call and the committed cooldown, with priorities from the new rows. */
+        DSD_SNPRINTF(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-follow-XXXXXX");
+        fd = dsd_mkstemp(path_template);
+        if (fd < 0) {
+            free_test_state(st);
+            free(opts);
+            return 1;
+        }
+        (void)dsd_close(fd);
+        rc |=
+            expect_true("write reload file", write_policy_file(path_template, "200,A,HELD,95,false,on,on,on,\n") == 0);
+        DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+        rc |= expect_true("commit takeover before reload", dsd_tg_policy_commit_preemption(st, 20.0) == 0);
+        rc |= expect_true("reload", dsd_tg_policy_reload_group_file(opts, st) == 0);
+        third_dec.priority = 100;
+        rc |=
+            expect_true("reload keeps cooldown", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 20.5) == 0);
+        third_dec.priority = 90;
+        rc |= expect_true("reload keeps held call with new priority",
+                          dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5) == 0);
+        third_dec.priority = 100;
+        rc |=
+            expect_true("reload held call outranked", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5));
+        rc |= expect_true("clear list", dsd_tg_policy_clear(st) == 0);
+        rc |= expect_true("clear keeps held call", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5));
+        third_dec.priority = 0;
+        third_dec.preempt_requested = 1;
+        rc |= expect_true("clear refreshed held priority to zero",
+                          dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5) == 0);
+        (void)remove(path_template);
+    }
+
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
+static int
 test_reload_group_file(void) {
     int rc = 0;
     dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
@@ -1712,6 +1823,7 @@ main(void) {
     rc |= test_preemption_helpers();
     rc |= test_live_active_priority();
     rc |= test_reload_group_file();
+    rc |= test_followed_call_bookkeeping();
     rc |= test_mode_edits_and_enumeration();
     rc |= test_group_file_rewrite();
     rc |= test_scan_row_policy_activity();

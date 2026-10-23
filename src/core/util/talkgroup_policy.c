@@ -2165,7 +2165,7 @@ tg_policy_should_note_preempt(const dsd_tg_policy_active_call* c, const dsd_tg_p
     if (!c || !route || !decision) {
         return 0;
     }
-    if (tg_policy_active_call_matches_route(c, route)) {
+    if (!c->valid || tg_policy_active_call_matches_route(c, route)) {
         return 0;
     }
     return decision->preempt_requested && decision->priority > c->priority;
@@ -2204,6 +2204,54 @@ dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route*
         tg_policy_note_active_slot(ctx, 1, route, decision, now_mono_s);
     } else {
         tg_policy_note_active_slot(ctx, route->slot, route, decision, now_mono_s);
+    }
+    return 0;
+}
+
+static void
+tg_policy_describe_slot(dsd_tg_policy_context* ctx, int slot, const dsd_tg_policy_call_route* route,
+                        const dsd_tg_policy_decision* decision, double start_mono_s, double now_mono_s) {
+    dsd_tg_policy_active_call* c = &ctx->active.calls[slot];
+    if (tg_policy_active_call_matches_route(c, route)) {
+        c->priority = decision->priority;
+        c->private_call = decision->private_call;
+        c->src = route->source_id;
+        c->freq_hz = route->freq_hz;
+        c->last_seen_mono_s = now_mono_s;
+        return;
+    }
+    DSD_MEMSET(c, 0, sizeof(*c));
+    tg_policy_active_call_assign_from_route(c, route, decision, now_mono_s);
+    c->start_mono_s = start_mono_s;
+}
+
+int
+dsd_tg_policy_describe_followed_call(dsd_state* state, const dsd_tg_policy_call_route* route,
+                                     const dsd_tg_policy_decision* decision, double start_mono_s, double now_mono_s) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx || !route || !decision || !tg_policy_route_is_complete(route)) {
+        return 1;
+    }
+    if (route->slot == -1) {
+        tg_policy_describe_slot(ctx, 0, route, decision, start_mono_s, now_mono_s);
+        tg_policy_describe_slot(ctx, 1, route, decision, start_mono_s, now_mono_s);
+    } else {
+        tg_policy_describe_slot(ctx, route->slot, route, decision, start_mono_s, now_mono_s);
+    }
+    return 0;
+}
+
+int
+dsd_tg_policy_commit_preemption(dsd_state* state, double now_mono_s) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return 1;
+    }
+    ctx->active.last_global_preempt_mono_s = now_mono_s;
+    for (int slot = 0; slot < 2; slot++) {
+        if (ctx->active.calls[slot].valid) {
+            ctx->active.calls[slot].last_preempt_mono_s = now_mono_s;
+        }
     }
     return 0;
 }
@@ -2262,6 +2310,17 @@ tg_policy_reload_validate_candidate(const dsd_state* imported) {
     return 0;
 }
 
+/* A list reload or clear replaces the rows, not the calls being followed: the held calls and the last takeover's
+ * cooldown move to the new context, re-ranked by its rows. */
+static void
+tg_policy_carry_active(dsd_tg_policy_context* dst, const dsd_tg_policy_context* src, unsigned int next_generation) {
+    if (src) {
+        dst->active = src->active;
+    }
+    dst->active.generation = next_generation;
+    tg_policy_refresh_active_priorities(dst);
+}
+
 int
 dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
     dsd_state* imported = NULL;
@@ -2316,7 +2375,7 @@ dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
 
     imported_ctx = (dsd_tg_policy_context*)imported_policy;
     imported_ctx->table.generation = next_table_generation;
-    imported_ctx->active.generation = next_active_generation;
+    tg_policy_carry_active(imported_ctx, current_ctx, next_active_generation);
 
     if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, imported_policy, imported_cleanup) != 0) {
         if (imported_cleanup) {
@@ -2358,7 +2417,7 @@ dsd_tg_policy_clear(dsd_state* state) {
         return -1;
     }
     empty_ctx->table.generation = next_table_generation;
-    empty_ctx->active.generation = next_active_generation;
+    tg_policy_carry_active(empty_ctx, current_ctx, next_active_generation);
 
     if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, empty_ctx, tg_policy_context_free) != 0) {
         tg_policy_context_free(empty_ctx);
