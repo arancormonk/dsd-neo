@@ -860,6 +860,21 @@ failingSyncBacksOff() {
     g_clock += DiagnosticsLog::kSyncIntervalMs;
     log.pump();
     check(log.ioStats().syncs == 1, "the sync did not recover");
+
+    // A failure, then a forced sync that succeeds (a Play checkpoint) within the backoff: the startup window's
+    // next append is synced at once rather than after the old failure's retry time.
+    log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
+    log.submit("host", "info", "before the failure");
+    g_clock += DiagnosticsLog::kSyncIntervalMs;
+    log.pump();
+    log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+    g_clock += 100;
+    log.noteSessionAttempt(QStringLiteral("rtl"));
+    const auto syncs = log.ioStats().syncs;
+    g_clock += 100;
+    log.submit("stderr", "info", "startup stage");
+    log.pump();
+    check(log.ioStats().syncs == syncs + 1, "a startup append waited out a recovered failure's backoff");
 }
 
 static void

@@ -709,6 +709,8 @@ DiagnosticsLog::syncCurrent() {
     }
     m_dirtyBytes = 0;
     m_lastSync = nowMs();
+    // Storage recovered: the startup window's per-append syncs must not wait out an earlier failure's backoff.
+    m_syncRetryAt = 0;
     std::lock_guard<std::mutex> lock(m_statsMutex);
     ++m_stats.syncs;
     return true;
