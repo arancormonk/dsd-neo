@@ -5225,6 +5225,12 @@ Private per-protocol modules worth knowing about:
   new-transmission handling (the identity-pending wait, Phase 2 post-END retention) is unchanged. Phase 2 needs none
   of it: the MAC_ACTIVE's own observation reopens and classifies the call before the SM sees it. Test:
   `P25_VOICE_RESUME_IDENTITY`.
+- Documented limit (P25 Phase 2 fast release and late aliases, `p25_trunk_sm.c` `handle_facch_voice_end()`): while
+  trunking, two FACCH ENDs for the same call within 1 s, with no newer grant and both slots idle, release the voice
+  channel at once (`facch-double-end`) instead of waiting out hangtime. A Motorola talker alias sent in hangtime after
+  that release is never received, so that call keeps whatever name its row had. The fast release is kept (maintainer
+  decision): it returns the tuner to the control channel early, and an alias sent before the second END, or on a
+  channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
