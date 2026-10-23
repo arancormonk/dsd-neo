@@ -35,6 +35,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/runtime/log.h>
+#include <iterator>
 
 namespace dsd_qt {
 namespace {
@@ -538,12 +539,10 @@ const ManagedKind kManagedKinds[] = {
 
 const ManagedKind*
 managedKind(const QString& id) {
-    for (const auto& kind : kManagedKinds) {
-        if (id == QLatin1String(kind.id)) {
-            return &kind;
-        }
-    }
-    return nullptr;
+    const auto* end = std::end(kManagedKinds);
+    const auto* found = std::find_if(std::begin(kManagedKinds), end,
+                                     [&id](const ManagedKind& kind) { return id == QLatin1String(kind.id); });
+    return found == end ? nullptr : found;
 }
 
 QString
@@ -621,12 +620,14 @@ managedMaterialError(const ManagedKind& kind, const QString& protocol, const QSt
     }
     const int digits = static_cast<int>(material.size());
     if (kind.hexDigits == 16 && digits > 16) {
-        for (const auto& wider : kManagedKinds) {
-            if (wider.hexDigits == digits && managedKindAllowed(QLatin1String(wider.id), protocol)) {
-                return QLatin1String(wider.id) == "tdea"
-                           ? QObject::tr("%1 hex digits is a %2 key. Choose %2.").arg(digits).arg(kindName(wider))
-                           : QObject::tr("%1 hex digits is an %2 key. Choose %2.").arg(digits).arg(kindName(wider));
-            }
+        const auto* end = std::end(kManagedKinds);
+        const auto* wider = std::find_if(std::begin(kManagedKinds), end, [digits, &protocol](const ManagedKind& kind) {
+            return kind.hexDigits == digits && managedKindAllowed(QLatin1String(kind.id), protocol);
+        });
+        if (wider != end) {
+            return QLatin1String(wider->id) == "tdea"
+                       ? QObject::tr("%1 hex digits is a %2 key. Choose %2.").arg(digits).arg(kindName(*wider))
+                       : QObject::tr("%1 hex digits is an %2 key. Choose %2.").arg(digits).arg(kindName(*wider));
         }
         return QObject::tr("%1 takes up to 16 hex digits; %2 entered.").arg(kindName(kind)).arg(digits);
     }
