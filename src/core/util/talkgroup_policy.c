@@ -741,9 +741,10 @@ dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
         return DSD_TG_POLICY_LEARN_FAILED;
     }
     tg_policy_copy_entry_normalized(&normalized, entry);
+    // No policy context yet means no row for this ID either: appending creates the context.
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
-    const int policy_idx = tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start);
-    if (policy_idx < 0) {
+    const int policy_idx = ctx != NULL ? tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start) : -1;
+    if (ctx == NULL || policy_idx < 0) {
         return dsd_tg_policy_append_exact(state, &normalized) == 0 ? DSD_TG_POLICY_LEARN_ADDED
                                                                    : DSD_TG_POLICY_LEARN_FAILED;
     }

@@ -338,7 +338,9 @@ test_learn_exact(void) {
     }
 
     init_entry(&e, 700, "D", "UNIT 1", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
-    rc |= expect_true("learn adds", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    // A fresh state has no policy context yet: the first learned row creates it.
+    rc |= expect_true("learn adds to a state with no policy context",
+                      dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
     dsd_tg_policy_table_version(st, &context, &before);
     rc |= expect_true("learn repeat unchanged", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_UNCHANGED);
     dsd_tg_policy_table_version(st, &context, &after);
