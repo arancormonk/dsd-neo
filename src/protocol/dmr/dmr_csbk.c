@@ -2382,6 +2382,10 @@ dmr_cspdu_con_plus_skip_voice_tune(const dsd_opts* opts, uint8_t opt) {
     return opts->trunk_tune_group_calls == 0 && opt != 2 && opt != 3;
 }
 
+/* A Connect Plus voice grant. Its policy is judged before the voice window, which still refuses an ordinary grant while
+   voice was heard within 2 s (4 s with data calls followed), as it always did; a Hold or preempt grant goes to the trunk
+   state machine with that window as its busy hint, where it is followed only by Hold over a non-held call or by
+   preemption over every call the receiver holds. Group tuning off still refuses every grant, private ones included. */
 static void
 dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_con_plus_voice_grant* g) {
     dsd_tg_policy_decision policy_decision;
@@ -2391,17 +2395,17 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
     if (opts->trunk_tune_group_calls != 1) {
         return;
     }
-    if (dsd_decode_time() - state->last_vc_sync_time <= (opts->trunk_tune_data_calls == 1 ? 4 : 2)) {
-        return;
-    }
-
-    policy_allowed =
-        dmr_policy_tune_allowed(opts, state, g->grp_addr, g->src_addr, (g->opt == 3) ? 0 : 1, 0, &policy_decision);
+    const int is_group = (g->opt == 3) ? 0 : 1;
+    policy_allowed = dmr_policy_tune_allowed(opts, state, g->grp_addr, g->src_addr, is_group, 0, &policy_decision);
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1) {
         return;
     }
     if (!policy_allowed) {
-        dmr_policy_log_block(opts, (g->opt == 3) ? 0 : 1, g->grp_addr, g->src_addr, &policy_decision);
+        dmr_policy_log_block(opts, is_group, g->grp_addr, g->src_addr, &policy_decision);
+        return;
+    }
+    const int window = dsd_decode_time() - state->last_vc_sync_time <= (opts->trunk_tune_data_calls == 1 ? 4 : 2);
+    if (window && !policy_decision.tg_hold_match && !policy_decision.preempt_requested) {
         return;
     }
 
@@ -2410,11 +2414,16 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
         return;
     }
 
-    state->is_con_plus = 1;
-    if (g->opt == 3) {
-        dmr_sm_emit_indiv_grant_slot(opts, state, f, g->lcn, g->tslot, g->grp_addr, g->src_addr);
-    } else {
-        dmr_sm_emit_group_grant_slot(opts, state, f, g->lcn, g->tslot, g->grp_addr, g->src_addr);
+    dmr_sm_event_t ev = is_group ? dmr_sm_ev_group_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr)
+                                 : dmr_sm_ev_indiv_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr);
+    ev.slot = g->tslot;
+    ev.origin = DMR_SM_ORIGIN_GRANT;
+    ev.caller_busy = window;
+    ev.policy_valid = 1;
+    ev.policy = policy_decision;
+    const dmr_sm_grant_result_e result = dmr_sm_submit_grant(opts, state, &ev);
+    if (result == DMR_SM_GRANT_FOLLOWED || result == DMR_SM_GRANT_IN_PLACE) {
+        state->is_con_plus = 1;
     }
 }
 
@@ -2446,10 +2455,6 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     if (opts->trunk_enable == 0 && state->trunk_chan_map[g.lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[g.lcn];
         state->trunk_vc_freq[1] = state->trunk_chan_map[g.lcn];
-    }
-    if (state->tg_hold != 0 && state->tg_hold == g.grp_addr) {
-        state->last_vc_sync_time = 0;
-        state->last_vc_sync_time_m = 0.0;
     }
 
     dmr_csbk_print_group_label(state, g.grp_addr);

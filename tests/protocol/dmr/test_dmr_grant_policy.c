@@ -946,6 +946,98 @@ test_xpt_ranking(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* ---- Connect Plus: policy before the voice window ---- */
+
+#define CP_FA 855125000L
+#define CP_FB 855250000L
+#define CP_FC 855375000L
+
+static void
+con_plus_voice(dsd_opts* opts, dsd_state* st, uint32_t src, uint32_t tg, uint8_t lcn, uint8_t slot, uint8_t opt) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_con_plus_voice(bits, bytes, src, tg, lcn, slot, opt);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+}
+
+static void
+con_plus_env(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    opts->trunk_tune_data_calls = 0; // the 2 s window
+    st->trunk_chan_map[5] = CP_FA;
+    st->trunk_chan_map[6] = CP_FB;
+    st->trunk_chan_map[7] = CP_FC;
+}
+
+static int
+test_con_plus_policy_before_window(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+
+    // Window open with a live call: an ordinary grant is refused as before; an outranking preempt is followed.
+    con_plus_env(opts, st);
+    seed_policy_row(st, 100, "A", 10, 0);
+    seed_policy_row(st, 300, "A", 60, 1);
+    con_plus_voice(opts, st, 1, 100, 5, 0, 2);
+    rc |= expect_true("con+ follows A", st->trunk_vc_freq[0] == CP_FA && st->is_con_plus == 1);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    st->last_vc_sync_time = dsd_decode_time();
+    con_plus_voice(opts, st, 2, 200, 6, 0, 2);
+    rc |= expect_true("con+ window refuses a grant without preempt", st->trunk_vc_freq[0] == CP_FA);
+    con_plus_voice(opts, st, 3, 300, 6, 0, 2);
+    rc |= expect_true("con+ preempt past the dwell is followed inside the window",
+                      st->trunk_vc_freq[0] == CP_FB && dmr_sm_get_ctx()->vc_tg == 300);
+    status_env_done(st);
+
+    // Hold: followed over a non-held call, refused while the held call is the Hold group.
+    con_plus_env(opts, st);
+    con_plus_voice(opts, st, 1, 100, 5, 0, 2);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    st->last_vc_sync_time = dsd_decode_time();
+    st->tg_hold = 400;
+    con_plus_voice(opts, st, 4, 400, 6, 0, 2);
+    rc |= expect_true("con+ hold over a non-held call is followed", st->trunk_vc_freq[0] == CP_FB);
+    status_clock_at(2.0);
+    accepted_voice_now(opts, st, 0);
+    st->last_vc_sync_time = dsd_decode_time();
+    con_plus_voice(opts, st, 4, 400, 7, 0, 2);
+    rc |= expect_true("con+ hold is refused while the Hold group is held", st->trunk_vc_freq[0] == CP_FB);
+    st->tg_hold = 0;
+    status_env_done(st);
+
+    // A data channel the CSBK path tuned itself (the machine follows no call there): a preempt is refused inside the
+    // window, a Hold is followed.
+    con_plus_env(opts, st);
+    opts->trunk_tune_data_calls = 1;
+    seed_policy_row(st, 300, "A", 60, 1);
+    st->trunk_chan_map[4] = 856250000L;
+    status_window_closed(st);
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("con+ data channel tuned", st->trunk_vc_freq[0] == 856250000L);
+    status_clock_at(1.0);
+    st->last_vc_sync_time = dsd_decode_time();
+    con_plus_voice(opts, st, 3, 300, 6, 0, 2);
+    rc |= expect_true("con+ preempt is refused on a CSBK-tuned data channel", st->trunk_vc_freq[0] == 856250000L);
+    st->tg_hold = 400;
+    con_plus_voice(opts, st, 4, 400, 6, 0, 2);
+    rc |= expect_true("con+ hold is followed from a CSBK-tuned data channel", st->trunk_vc_freq[0] == CP_FB);
+    st->tg_hold = 0;
+    status_env_done(st);
+
+    // Group tuning off still refuses a private grant.
+    con_plus_env(opts, st);
+    opts->trunk_tune_group_calls = 0;
+    status_window_closed(st);
+    con_plus_voice(opts, st, 0x001122U, 0x003344U, 6, 0, 3);
+    rc |= expect_true("con+ private with group tuning off is refused", g_status_tunes == 0);
+    status_env_done(st);
+    return rc;
+}
+
 static int
 test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
     uint8_t bits[256];
@@ -1762,6 +1854,7 @@ main(void) {
     rc |= test_cap_plus_seed_identity_reconcile(opts, st);
     rc |= test_xpt_entry_kinds(opts, st);
     rc |= test_xpt_ranking(opts, st);
+    rc |= test_con_plus_policy_before_window(opts, st);
     rc |= test_xpt_busy_carrier(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
