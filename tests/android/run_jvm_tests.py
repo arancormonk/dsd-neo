@@ -206,6 +206,9 @@ SUITES = {
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
     "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
+    # How Android says recent app processes ended, as diagnostics lines. Plain Kotlin with no Android imports, so no
+    # stubs; ProcessFacts reads the records off ActivityManager.
+    "exit_facts": Suite(builds=(Build(sources=("ExitFacts.kt",), tests=("ExitFactsTest.kt",)),)),
     # The reason mapping builds without Android; the actual service also runs against a deferred-intent transport.
     "engine_stop": Suite(
         builds=(

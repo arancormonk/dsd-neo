@@ -61,7 +61,7 @@ Item {
 
         Text {
             width: parent.width
-            text: qsTr("Current-process decoder and host diagnostics plus a bounded redacted persistent tail from previous runs. Not a native-crash or ANR capture.")
+            text: qsTr("Current-process decoder and host diagnostics plus a bounded redacted persistent tail from previous runs, including how Android says recent app processes ended. No crash stacks.")
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)

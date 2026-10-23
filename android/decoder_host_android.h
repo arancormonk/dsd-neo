@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 #include "decoder_host.h"
+#include "diagnostics_log.h"
 #include "local_device_state.h"
 #include "session_state_map.h"
 
@@ -125,6 +126,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     }
 
     void requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) override;
+    void noteStartAttempt(const QString& sourceType) override;
     QString localDeviceStatus() const override;
     int localDeviceFailureKind() const override;
     void hostDiagnostic(const QString& line) override;
@@ -203,6 +205,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void abortDocumentTransfers() override;
 
   private:
+    /** @brief Records a start attempt in the persistent diagnostics, with the platform's context. */
+    void noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLog::AttemptStage stage);
     // JNI supplies one coherent record; desktop tests exercise the same publication path.
     void applyLifecycleStatus(const QJsonObject& status, bool running);
     bool acknowledgeFailure(const QJsonObject& status);

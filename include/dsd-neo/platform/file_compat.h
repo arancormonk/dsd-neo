@@ -200,6 +200,17 @@ FILE* dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path,
                                          const char* mode);
 
 /**
+ * @brief Make a directory entry change under @p path's parent durable (best effort).
+ *
+ * Syncs the parent directory of @p path after a file there was created, renamed or removed, so the change survives a
+ * crash or power loss as well as the file's data does. Failures are ignored. A no-op on Windows, where the
+ * filesystem gives no directory handle to sync.
+ *
+ * @param path  A path whose parent directory changed.
+ */
+void dsd_fsync_parent_dir(const char* path);
+
+/**
  * @brief Atomically replace a destination path with a sibling temporary file.
  *
  * @param tmp_path    Existing temporary file created in the destination directory.

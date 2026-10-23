@@ -8,6 +8,7 @@
 #include <QJsonValue>
 #include <QList>
 #include <QObject>
+#include <QStringList>
 #include <Qt>
 #include <functional>
 #include <qcoreapplication_platform.h>
@@ -27,6 +28,7 @@
 #include <cmath>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <utility>
 
 #include <jni.h>
 
@@ -128,6 +130,32 @@ hold_content_resolver() {
 }
 
 /** @brief Prose for the toolbar and the platform notification. */
+
+constexpr const char* kFactsClass = "io/github/arancormonk/dsdneo/ProcessFacts";
+
+/** @brief Boot count, device and recent app exits for the diagnostics process line (issue #745). */
+std::pair<QString, QStringList>
+android_process_facts() {
+    const QJniObject facts = QJniObject::callStaticObjectMethod(kFactsClass, "processFacts", "()Ljava/lang/String;");
+    QStringList exits;
+    const QJniObject lines = QJniObject::callStaticObjectMethod(kFactsClass, "exitLines", "()[Ljava/lang/String;");
+    if (lines.isValid()) {
+        QJniEnvironment env;
+        const auto array = static_cast<jobjectArray>(lines.object());
+        const jsize count = env->GetArrayLength(array);
+        for (jsize i = 0; i < count; ++i) {
+            const QJniObject line = QJniObject::fromLocalRef(env->GetObjectArrayElement(array, i));
+            if (line.isValid()) {
+                exits.append(line.toString());
+            }
+        }
+    }
+    return {facts.isValid() ? facts.toString() : QString(), exits};
+}
+
+/* Registered at load, before either installTap() call site (the UI or the service's nativeInit) can run. */
+[[maybe_unused]] const bool g_process_facts_registered =
+    (dsd_qt::DiagnosticsLog::setPlatformFactsProvider(&android_process_facts), true);
 
 } // namespace
 
@@ -290,7 +318,21 @@ DecoderHostAndroid::requestLocalDeviceAccess() {
 }
 
 void
+DecoderHostAndroid::noteStartAttempt(const QString& sourceType) {
+    noteAttempt(sourceType, dsd_qt::DiagnosticsLog::AttemptStage::Start);
+}
+
+void
+DecoderHostAndroid::noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLog::AttemptStage stage) {
+    QJniObject kind = QJniObject::fromString(sourceType);
+    const QJniObject context = QJniObject::callStaticObjectMethod(
+        kFactsClass, "attemptContext", "(Ljava/lang/String;)Ljava/lang/String;", kind.object());
+    dsd_qt::DiagnosticsLog::instance().noteSessionAttempt(context.isValid() ? context.toString() : sourceType, stage);
+}
+
+void
 DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, const QString& serial) {
+    noteAttempt(source, dsd_qt::DiagnosticsLog::AttemptStage::UsbAccess);
     QJniObject context = android_context();
     if (!context.isValid()) {
         return;
@@ -544,6 +586,22 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeHostDiagnostic(JNIEnv* env, jc
     (void)env;
     (void)clazz;
     dsd_qt::DiagnosticsLog::submitHostDiagnostic(QJniObject(line).toString());
+}
+
+/** @brief Re-arms the diagnostics startup window at a device boundary (USB open, service start). */
+JNIEXPORT void JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeArmStartupDiagnostics(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    dsd_qt::DiagnosticsLog::instance().armStartupWindow();
+}
+
+/** @brief Bounded flush of the persistent diagnostics before the process may go (Activity teardown). */
+JNIEXPORT void JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeFlushDiagnostics(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    (void)dsd_qt::DiagnosticsLog::instance().flush(dsd_qt::DiagnosticsLog::kShutdownFlushMs);
 }
 
 /**

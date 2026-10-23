@@ -55,6 +55,12 @@
     public static void share(android.content.Context, java.lang.String, java.lang.String);
 }
 
+-keep,allowoptimization class io.github.arancormonk.dsdneo.ProcessFacts {
+    public static java.lang.String processFacts();
+    public static java.lang.String[] exitLines();
+    public static java.lang.String attemptContext(java.lang.String);
+}
+
 # The exported Java_io_github_arancormonk_dsdneo_DsdNative_* symbols use these
 # names. This also keeps any native entry point not reached from Kotlin today.
 -keep,includedescriptorclasses class io.github.arancormonk.dsdneo.DsdNative {

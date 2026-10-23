@@ -54,6 +54,8 @@ class DsdNeoActivity : QtActivity() {
 
     // WP-S2: intents carry only a validated USB attachment, never start options.
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Before Qt starts: native diagnostics ask it for the process facts as soon as they start.
+        ProcessFacts.attach(this)
         super.onCreate(savedInstanceState)
         ScreenSupport.attach(this)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -191,6 +193,8 @@ class DsdNeoActivity : QtActivity() {
             // about to block.
             stopService(Intent(this, DecoderService::class.java))
 
+            // The process may end with Qt's teardown; make the last diagnostics durable first (bounded).
+            DsdNative.nativeFlushDiagnostics()
             DsdNative.nativeQuitUi()
         }
         super.onDestroy()

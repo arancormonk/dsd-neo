@@ -90,6 +90,12 @@ int32_t AAudioStream_getDeviceId(AAudioStream* stream);
 int32_t AAudioStream_getChannelCount(AAudioStream* stream);
 int32_t AAudioStream_getFramesPerBurst(AAudioStream* stream);
 int32_t AAudioStream_getBufferCapacityInFrames(AAudioStream* stream);
+typedef int32_t aaudio_sharing_mode_t;
+
+enum { AAUDIO_SHARING_MODE_EXCLUSIVE = 0, AAUDIO_SHARING_MODE_SHARED = 1 };
+
+aaudio_sharing_mode_t AAudioStream_getSharingMode(AAudioStream* stream);
+aaudio_performance_mode_t AAudioStream_getPerformanceMode(AAudioStream* stream);
 int32_t AAudioStream_getXRunCount(AAudioStream* stream);
 int64_t AAudioStream_getFramesWritten(AAudioStream* stream);
 int64_t AAudioStream_getFramesRead(AAudioStream* stream);

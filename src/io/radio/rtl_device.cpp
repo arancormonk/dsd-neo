@@ -2928,6 +2928,73 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
     rtl_publish_cu8_input_level_moments(s, &moments);
 }
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* USB reader seam (rtl_stream_test_support.h): while set, the reader returns the code a test chose in place of running
+ * rtlsdr_read_async(), after the device's stop request when the test asked for one. */
+static std::atomic<int> g_test_usb_reader_active{0};
+static std::atomic<int> g_test_usb_reader_rc{0};
+static std::atomic<int> g_test_usb_reader_wait_stop{0};
+#endif
+
+/* Whether a USB reader can start: the device is open, or a test stands in for the reader. */
+static int
+rtl_usb_reader_available(const struct rtl_device* s) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_reader_active.load(std::memory_order_acquire)) {
+        return 1;
+    }
+#endif
+    return s->dev != NULL;
+}
+
+/* Run the USB reader until it is cancelled, the device is lost or its transfers cannot be set up; returns
+ * rtlsdr_read_async()'s result. */
+static int
+rtl_usb_read_async(struct rtl_device* s) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_reader_active.load(std::memory_order_acquire)) {
+        if (g_test_usb_reader_wait_stop.load(std::memory_order_acquire)) {
+            /* Bounded, so a stop that never reaches the reader fails the test rather than hanging it. */
+            for (int waited_ms = 0; waited_ms < 5000 && s->run.load(std::memory_order_acquire); ++waited_ms) {
+                dsd_sleep_ms(1);
+            }
+        }
+        return g_test_usb_reader_rc.load(std::memory_order_acquire);
+    }
+#endif
+    return rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
+}
+
+/* What the USB reader's return means for the session. -ENOMEM: librtlsdr could not allocate its transfers and
+ * submitted none, so no sample will ever arrive. -1: librtlsdr lost the device (unplugged, or so many transfer errors
+ * that it gave up). Either way, unless a stop already asked the reader to end, it is a device failure of the input:
+ * the session ends, and the demod waiting on the input ring is woken as for an Airspy stream that stopped. Before
+ * this, a lost dongle left the session waiting on samples that never came. On Android a lost device stays with the
+ * USB detach broadcast, which owns an unplug's outcome whichever side notices first; a cancel's return is left alone
+ * everywhere. */
+static void
+rtl_usb_reader_finished(struct rtl_device* s, int rc) {
+#ifdef __ANDROID__
+    const bool reported = rc == -ENOMEM;
+#else
+    const bool reported = rc == -ENOMEM || rc == -1;
+#endif
+    if (!reported) {
+        return;
+    }
+    if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()) {
+        return;
+    }
+    if (rc == -ENOMEM) {
+        LOG_ERROR("RTL-SDR: could not allocate USB transfer buffers (rc=%d)\n", rc);
+    } else {
+        LOG_ERROR("RTL-SDR: the USB device was lost; the stream stops (rc=%d)\n", rc);
+    }
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, rc);
+    dsd_exitflag_store(1);
+    replay_signal_input_waiters(s);
+}
+
 /**
  * @brief RTL-SDR USB thread entry: reads samples asynchronously into the input ring.
  * Applies optional realtime scheduling/affinity if configured.
@@ -2942,9 +3009,10 @@ static DSD_THREAD_RETURN_TYPE
     dongle_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
+    int rc = 0;
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
     __try {
-        rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
+        rc = rtl_usb_read_async(s);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         DSD_FPRINTF(
             stderr,
@@ -2953,8 +3021,9 @@ static DSD_THREAD_RETURN_TYPE
         dsd_exitflag_store(1);
     }
 #else
-    rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
+    rc = rtl_usb_read_async(s);
 #endif
+    rtl_usb_reader_finished(s, rc);
     DSD_THREAD_RETURN;
 }
 
@@ -6273,7 +6342,11 @@ rtl_device_create_iq_replay(const dsd_iq_replay_config* cfg, struct input_ring_s
 
 static void
 rtl_device_stop_usb_backend_thread(struct rtl_device* dev) {
-    if (!dev || !dev->dev) {
+    if (!dev) {
+        return;
+    }
+    dev->run.store(0, std::memory_order_release);
+    if (!dev->dev) {
         return;
     }
     rtlsdr_cancel_async(dev->dev);
@@ -7172,10 +7245,12 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
             (void)airspy_source_stop(dev->airspy);
         }
     } else if (dev->backend == RTL_BACKEND_USB) {
-        if (!dev->dev) {
+        if (!rtl_usb_reader_available(dev)) {
             dev->thread_started = 0;
             return -1;
         }
+        /* Cleared by a stop request, before it cancels the reader. */
+        dev->run.store(1, std::memory_order_release);
         r = dsd_thread_create(&dev->thread, dongle_thread_fn, dev);
     } else if (dev->backend == RTL_BACKEND_TCP) {
         dev->run.store(1);
@@ -7218,6 +7293,7 @@ rtl_device_stop_async(struct rtl_device* dev) {
         return -1;
     }
     if (dev->backend == RTL_BACKEND_USB) {
+        dev->run.store(0, std::memory_order_release);
         if (dev->dev) {
             rtlsdr_cancel_async(dev->dev);
         }
@@ -7242,6 +7318,35 @@ rtl_device_stop_async(struct rtl_device* dev) {
     rtl_reset_capture_state_on_stream_boundary(dev);
     return 0;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request) {
+    if (!request || !request->ring) {
+        return -1;
+    }
+    rtl_device dev{};
+    rtl_device_init_common_state(&dev);
+    dev.backend = RTL_BACKEND_USB;
+    dev.input_ring = request->ring;
+    g_test_usb_reader_rc.store(request->reader_rc, std::memory_order_relaxed);
+    g_test_usb_reader_wait_stop.store(request->stop_while_reading ? 1 : 0, std::memory_order_relaxed);
+    g_test_usb_reader_active.store(1, std::memory_order_release);
+    int rc = rtl_device_start_async(&dev, 16U * 32U * 512U);
+    if (rc == 0) {
+        if (request->stop_while_reading) {
+            rc = rtl_device_stop_async(&dev);
+        } else {
+            /* The reader returns by itself; the session's stop comes after it. */
+            dsd_thread_join(dev.thread);
+            dev.thread_started = 0;
+        }
+    }
+    g_test_usb_reader_active.store(0, std::memory_order_release);
+    rtl_device_cleanup_common_state(&dev);
+    return rc;
+}
+#endif
 
 /**
  * @brief Mute the incoming raw input stream for a specified number of bytes.

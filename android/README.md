@@ -117,7 +117,12 @@ nothing upstream invalidates the published snapshot on stop, so
 `MetricsModel::clear()` is what stops the last live SNR and carrier lock from
 sitting on screen for a decoder that is no longer running. `UiController` drives
 it from the session-state edges. The call history is deliberately different — it
-is persistent and never cleared on session boundaries, only fed.
+is persistent and never cleared on session boundaries, only fed. Its two stores
+are rewritten whole, so their saves are paced by size: a small history saves 3 s
+after a change, a full one about once a minute (at most 16 KiB/s of flash; it
+was ~1 GB/hour on a busy system before issue #745). A stop, a failed session, the
+app going to the background and quitting all save at once, so a hard crash or a
+phone restart can lose at most the last minute of rows.
 
 The service state machine, the native `g_running` atomic and the failure path are
 folded into that one phase by `session_state_map.h`, which is deliberately free of
@@ -1015,22 +1020,28 @@ These trees keep upstream formatting and are excluded from every repo tool
 reformat or "fix" them — the point is that they stay diffable against the release
 they came from.
 
-### The librtlsdr patch
+### The librtlsdr patches
 
-`third_party/patches/0001-librtlsdr-add-rtlsdr_open_fd.patch` is already applied to
-the vendored copy; it is kept as a file so the delta stays reviewable and can be
-re-applied when the snapshot is refreshed. It adds `rtlsdr_open_fd()` and splits
-the claim/probe tail of `rtlsdr_open()` into a shared helper so both open paths run
-identical initialisation.
+The patches in `third_party/patches/` are already applied to the vendored copy, in
+order; they are kept as files so the delta stays reviewable and can be re-applied
+when the snapshot is refreshed.
+
+- `0001-librtlsdr-add-rtlsdr_open_fd.patch` adds `rtlsdr_open_fd()` and splits the
+  claim/probe tail of `rtlsdr_open()` into a shared helper so both open paths run
+  identical initialisation.
+- `0002-librtlsdr-check-async-buffer-allocation.patch` makes the async reader check
+  every transfer and buffer allocation: a failure frees what was obtained and
+  `rtlsdr_read_async()` returns `-ENOMEM` instead of submitting NULL transfers.
+  `VENDORED_LIBRTLSDR_ASYNC_ALLOC` (a desktop test) fails each allocation in turn.
 
 To move to a newer librtlsdr:
 
 ```sh
 git clone https://gitea.osmocom.org/sdr/rtl-sdr.git /tmp/rtlsdr
 git -C /tmp/rtlsdr checkout <new-tag>
-cd /tmp/rtlsdr && patch -p1 < <repo>/android/third_party/patches/0001-librtlsdr-add-rtlsdr_open_fd.patch
+cd /tmp/rtlsdr && for p in <repo>/android/third_party/patches/*.patch; do patch -p1 < "$p"; done
 # then copy src/librtlsdr.c, src/tuner_*.c and include/* over the vendored tree,
-# regenerate the patch against the new baseline, and update the table above
+# regenerate the patches against the new baseline, and update the table above
 ```
 
 ## Codec2, libcurl and expat
@@ -1081,11 +1092,12 @@ module behind it, so androiddeployqt has nothing extra to package.
 ## Diagnostics
 
 Settings → Diagnostics shows current-process decoder and host diagnostics plus a
-bounded redacted persistent tail from previous runs. It is not a native-crash or
-ANR capture. The process ring holds at most 2000 entries, each at most 512 UTF-8
-bytes. Pause freezes the displayed list while capture continues; Copy and Share
+bounded redacted persistent tail from previous runs, including how Android says
+recent app processes ended. It captures no crash stacks or tombstones. The process
+ring holds at most 2000 entries, each at most 512 UTF-8 bytes. Pause freezes the displayed list while capture continues; Copy and Share
 include the current ring. Clear removes the ring, pending earlier records and the persistent
-tail; records captured after Clear remain available. Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
+tail; records captured after Clear remain available, and the saved tail starts again with the
+running process's `process:` line (never the cleared session's). Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
 
 Host records arriving before the first decode start do not depend on the runtime sink or
 stderr pump. Tap installation drains their bounded buffer to the ring and the tail at
@@ -1093,11 +1105,65 @@ Qt's initialized application-data location.
 
 A process-lifetime runtime log tap, the stderr pump, and host messages all enter
 `DiagnosticsLog::submit()`. It filters sensitive records before ring insertion and
-queues only redacted bytes to one asynchronous writer. The writer retains the
-newest 256 KiB in `files/diagnostics/tail.log`; a tail untouched for seven days is
-deleted at startup. Its bounded queue drops oldest queued records under sustained
-storage backpressure. Disk failures do not stop decoding. Oversized stderr lines
+queues only redacted bytes to one asynchronous writer. Oversized stderr lines
 are omitted rather than split into potentially unlabelled secret fragments.
+
+### The persistent tail
+
+The writer keeps the newest 256 KiB as two append-only segments in
+`files/diagnostics/`: `tail.prev.log`, then `tail.log`, at most 128 KiB each.
+- **Writing:** records are appended, never rewritten. The writer drains every
+  250 ms and syncs at most once a second, so a trunked session that prints about
+  70 lines a second writes those lines and nothing more. Before issue #745 the
+  whole 256 KiB tail was rewritten and synced for every line, about 12 MB/s on a
+  P25 trunk.
+- **Rotation:** a full segment is synced and becomes the previous one.
+- **Limits:** a segment untouched for seven days is deleted at startup. The bounded
+  queue drops its oldest records under sustained storage backpressure, and disk
+  failures never stop decoding.
+- **Recovery at load:** the loader drops a record a crash left half-written,
+  deletes temporaries a kill left behind, and splits an older build's single
+  `tail.log` at line starts.
+
+**Durable start.** A phone that restarts while listening loses whatever was not
+yet on flash. So a start records itself before it touches the device:
+- **When:** a USB access request records a `usb access requested:` line first.
+  Before the decoder starts, a `session starting:` line records the source, the
+  boot count and, for a dongle, its product and VID:PID. Every Play, the same
+  source again included, gets its own `session starting:` line.
+- **The window:** for the next 10 s every record is written at once and synced.
+  The window opens again at `UsbManager.openDevice` and when the service starts
+  decoding, and the steps in between log on entry and on return: the foreground
+  promotion, engine configuration, the USB open and the first AAudio open and
+  start. A start that never returned from one of them still shows how far it got.
+- **Best effort:** the start waits at most 200 ms for its line to reach flash.
+  Listening never waits longer. A store that refuses to sync is retried once a
+  second, never in a loop.
+- **Leaving:** quitting and the Activity's teardown flush the tail, with a bounded
+  wait.
+
+**How the previous run ended.** Each run starts with a `process:` line: pid,
+Android version, boot count (`Settings.Global.BOOT_COUNT`), manufacturer and
+model, app version. Android 11 and later add up to three `exit:` lines from
+`ActivityManager.getHistoricalProcessExitReasons()`, newest first, each with time,
+pid, reason (`CRASH_NATIVE`, `LOW_MEMORY`, `ANR`, `SIGNALED`, ...), importance,
+PSS and Android's description. These are repeated on every launch. Each new
+segment starts again with the current `process:` and `session starting:` lines.
+The screen, Copy and Share keep the previous run's and this run's `process:` and
+`session starting:` lines at the top, however many records the 2000-row limit
+drops after them. Each run keeps its own lines, even when two runs started the
+same source and wrote identical ones. So a shared report always says which
+process, boot and session its lines belong to.
+
+If the boot count changed since the previous run, the run adds `previous run:
+Android has restarted since (boot 5 -> 6)`. That is a fact, not a cause. Android
+records no app exit when the phone itself restarts, and the boot count rises for
+a full reboot and for a restart of the Android framework alike. Read it together
+with the previous run's last lines: a session start or decode lines followed by
+nothing, then a higher boot count, means Android restarted while or after that
+session ran. An `exit:` line timed inside that run means the app process ended
+first, for the reason given. The app cannot read why the device restarted; an
+`adb bugreport` taken right after the restart has the boot reason.
 
 Sharing creates a temporary text file in `cacheDir/diagnostics/`, exposed through
 our separate, non-exported diagnostics FileProvider with a temporary read grant.

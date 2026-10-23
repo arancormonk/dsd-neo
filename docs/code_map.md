@@ -3981,6 +3981,15 @@ Key public headers:
   Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
+  - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): `rtlsdr_read_async()` returns `-ENOMEM` when
+    librtlsdr could not allocate its USB transfers and submitted none (the vendored Android librtlsdr does since
+    `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`). With no stop in flight (the
+    device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) that is logged, latched
+    as `DSD_INPUT_FAILURE_DEVICE` with that code, and ends the session (exit flag, input ring waiters woken). A lost
+    device (-1: unplugged, or librtlsdr gave up after repeated transfer errors) is handled the same way on desktop
+    builds, where it used to leave the session waiting for samples that never came. On Android it is left to the USB
+    detach broadcast, which owns an unplug's outcome whichever side notices first. Tests: `IO_RTL_READER_EXIT`, and
+    `VENDORED_LIBRTLSDR_ASYNC_ALLOC` for the vendored allocation path.
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
   `include/dsd-neo/io/m17_udp.h`
 - UDP control API: `include/dsd-neo/io/udp_control.h`
@@ -6373,12 +6382,23 @@ Qt Quick frontend (`src/ui/qt`):
     merged call whose seen entries were evicted or lost is logged again as new rows, one per fragment. A state an
     embedding host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
     session's.
-  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order),
-    saved 3 s after the last change. The UI thread hands the single save worker (`m_savePool`, one thread) copies of
-    `m_rows` and `m_seen`; the worker builds the JSON and writes both files, reading nothing live (issue #718: the
-    build alone cost ~62 ms per save at a full log). One save in flight at a time (`m_saveInFlight`); a change during
-    it marks the stores dirty and re-arms the debounce when it finishes. `clearAll()` saves at once through the same
-    path. The destructor waits for the worker, then writes any owed save synchronously (`saveNow()`).
+  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order).
+    Both are rewritten whole, so the debounce follows their size (issue #745):
+    - **Debounce:** after a save, the next waits the longer of 3 s and the time the last save's bytes take at
+      `kSaveBudgetBytesPerSec` (16 KiB/s). A small log still saves 3 s after a change; a full one, ~860 KB, saves about
+      once a minute instead of every 3 s, which was ~1 GB/hour of flash on a busy system.
+    - **Worker:** the UI thread hands the single save worker (`m_savePool`, one thread) copies of `m_rows` and `m_seen`.
+      The worker builds the JSON and writes both files, reading nothing live (issue #718: the build alone cost ~62 ms
+      per save at a full log). It reports the bytes written to `onSaveFinished()`.
+    - **Ordinary saves:** the debounce and `clearAll()` never queue a second save while one is in flight
+      (`m_savesInFlight`); a change during it marks the stores dirty and re-arms the debounce when the last one finishes.
+    - **Forced saves:** `saveNow()`, when something is owed, copies the stores at once and queues the save straight onto
+      the pool. It runs right after any save in flight, without waiting for the GUI event loop, which Qt pauses on
+      Android in the background. It runs:
+      - when a session ends, from `UiController::tick()` after that tick's final history ingest;
+      - when the application turns Suspended or Hidden;
+      - at `aboutToQuit`.
+    - **Destructor:** waits for the worker, then writes any owed save synchronously (`saveSync()`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
     (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
@@ -6669,6 +6689,43 @@ Qt Quick frontend (`src/ui/qt`):
   the pause.
   Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
   platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
+  The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
+  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains
+  every 250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything
+  before it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
+  - drops a crash's unterminated last record;
+  - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log`;
+  - expires each segment after seven days;
+  - splits an older build's single tail at line starts.
+
+  `installTap()` records the run's `process:` line (pid, OS, app version, plus Android's boot count, device and recent
+  `exit:` lines from the platform facts provider). Each new segment starts with that line and the current
+  `session starting:` line, including the first segment after Clear (which forgets the cleared session's line). The
+  ring keeps the previous run's divider and identity and this run's process line and current session line pinned at
+  its front through eviction (`appendRingLocked()`); a session line a newer one replaces is released and evicted first.
+  Pins name ring lines by id (`m_ringIds`), not text, so identical session lines from two runs stay apart, and the
+  previous run's session line is the one after its last process line.
+  Copy and Share therefore always carry them. The only derived line is
+  "previous run: Android has restarted since (boot a -> b)", from the previous run's last `process:` line.
+  Session attempts are recorded where a start is about to touch a device:
+  - `DecoderHost::noteStartAttempt()`, called by `SessionArgsBuilder::start` and `ScanListStarter::start`, and Android's
+    USB access request (stage `UsbAccess`) call `noteSessionAttempt()`. That records the start's marker (a USB access
+    request records a `usb access requested:` line instead, so a request whose start never comes merges with nothing),
+    arms the 10 s startup window, in which every append is drained at once and synced, and waits up to 200 ms for it to
+    be durable (best effort, never blocking listening).
+  - `UiController`'s Starting transition calls it with no context. It records the plain marker only when no start note
+    just described the attempt.
+  - Android re-arms the window at `UsbManager.openDevice` and the service's `startDecoding` (`armStartupWindow()`).
+  - `aboutToQuit` and the Activity teardown make the tail durable with a bounded flush.
+
+  A failed sync is retried after `kSyncIntervalMs`, never in a loop, and a file given up on (`closeCurrent()`) drops its
+  unsynced count, so a lost segment never leaves the writer due. A failed append, sync, open or Clear makes the next
+  `flush()` report false. On Windows `QFile::handle()` is a C runtime descriptor, so `dsd_fsync()` (`_commit`) is a
+  real flush there too. A current segment over the cap is an older build's unsplit tail and alone is authoritative,
+  so a split interrupted by a crash is redone without duplicating records. The split rewrites it only after the
+  previous segment holds its prefix, so a failed write of that segment loses nothing.
+
+  `dsd_fsync_parent_dir()` (platform `file_compat`) makes a created, renamed or removed entry durable on POSIX.
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
   crypto's `backup_seal`; everything inside it is Qt code.
   - Archive (`backup_archive.{h,cpp}` public surface, `backup_archive_build.cpp` export, `backup_archive_parse.cpp`

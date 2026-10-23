@@ -434,8 +434,8 @@ RadioReferenceModel::RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* im
 
     /* AppDataLocation is persistent storage on Android, not cache, so a process
      * kill between the library commit and the staging remove leaves a file
-     * behind. Sweep it here rather than trusting a queued cleanup: nothing
-     * installs an aboutToQuit handler, and Android tears the engine down with a
+     * behind. Sweep it here rather than trusting a queued cleanup: this model
+     * installs no aboutToQuit handler, and Android tears the engine down with a
      * queued exit that drops pending invocations. */
     QDir staging(staging_dir_path());
     if (staging.exists()) {

@@ -9,41 +9,188 @@
 #include <QStringList>
 #include <QtGlobal>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
+#include <vector>
+
+class QFile;
 
 namespace dsd_qt {
 // Process diagnostics survive decoder session transitions. QString copies cannot
 // promise erasure: only redacted text may enter the ring or the writer queue.
+//
+// The persistent tail is two append-only segments (tail.prev.log, then tail.log), each at
+// most kSegmentLimit bytes. Records are appended, never rewritten, and synced at most once a
+// second, except during the startup window after a session attempt, when every append is
+// synced so a phone that falls over seconds after Play keeps its start sequence (issue #745).
 class DiagnosticsLog {
   public:
+    static constexpr qint64 kSegmentLimit = 128 * 1024;
+    static constexpr int kWriteIntervalMs = 250;
+    static constexpr int kSyncIntervalMs = 1000;
+    static constexpr int kStartupSyncWindowMs = 10000;
+    static constexpr int kAttemptFlushMs = 200;
+    static constexpr int kShutdownFlushMs = 500;
+
+    struct IoStats {
+        quint64 appends = 0;
+        quint64 syncs = 0;
+        quint64 bytes = 0;
+        quint64 rotations = 0;
+        quint64 syncFailures = 0;
+    };
+
+    // Test seam: a monotonic millisecond clock, and a manual mode in which nothing is written
+    // until pump() or flush() runs the writer step on the calling thread.
+    struct TestOptions {
+        std::function<quint64()> clockMs;
+        bool manualDrain = false;
+    };
+
+    enum class IoFault { None, Write, Sync, SyncAndOpen };
+
+    // Where in a start an attempt note comes from: the USB access request that precedes a start of a local dongle,
+    // or the start itself. Only the start records a session marker.
+    enum class AttemptStage { UsbAccess, Start };
+
+    // Extra platform facts for the process line (Android: boot count, device) and any lines that
+    // follow it (Android: recent app exits). Registered before installTap().
+    using PlatformFactsProvider = std::pair<QString, QStringList> (*)();
+
     static DiagnosticsLog& instance();
     static void installTap();
+    static void setPlatformFactsProvider(PlatformFactsProvider provider);
     // Safe before Qt/nativeInit: bounded redacted records wait for installTap().
     static void submitHostDiagnostic(const QString& text);
     // Explicit directory supports isolated stores in restart/retention tests.
     explicit DiagnosticsLog(const QString& directory);
+    DiagnosticsLog(const QString& directory, TestOptions options);
     ~DiagnosticsLog();
     void submit(const QString& source, const QString& level, const QString& text);
     QStringList snapshot(quint64* generation = nullptr) const;
     // Return the generation of the cleared ring while still holding its lock.
     quint64 clear();
-    void flush();
+    // True once everything submitted before the call is appended and synced. A negative timeout
+    // waits for the writer; on timeout or a write/sync failure it returns false.
+    bool flush(int timeoutMs = -1);
+    // Records the process line (also the head of every later segment). Once per instance.
+    void noteProcess(const QString& facts, const QStringList& followingLines = {});
+    // A session attempt is about to touch the device: records the line for the stage (a USB access request, or the
+    // start's session marker; an empty context is the plain marker of a Starting transition, which a start note in the
+    // last kAttemptDedupeMs absorbs), arms the startup window and waits up to kAttemptFlushMs for it to be durable.
+    void noteSessionAttempt(const QString& context, AttemptStage stage = AttemptStage::Start);
+    // Re-arms the startup window at a device boundary without a new marker.
+    void armStartupWindow();
+    IoStats ioStats() const;
+    // Manual-drain mode only: run one writer step now if the writer thread would at this clock reading, and say
+    // whether it did.
+    bool pump();
+    void setIoFaultForTest(IoFault fault);
     static QString redact(QString text);
 
   private:
+    static constexpr int kAttemptDedupeMs = 60000;
+
+    void load();
+    void cleanDirectory() const;
+    QByteArray loadSegments() const;
+    void seedRing(const QByteArray& text);
+    void openCurrent();
+    void closeCurrent();
+    bool appendBytes(const QByteArray& bytes);
+    bool syncCurrent();
+    void rotate(const QByteArray& header);
+    bool clearFiles();
+    static void trimFragment(const QString& path);
+    bool writeBatch(const std::deque<QByteArray>& batch);
+    QByteArray headerExcluding(std::deque<QByteArray>::const_iterator from,
+                               std::deque<QByteArray>::const_iterator end) const;
+    // Which of this run's identity lines a record is, if any: the ring pins that very line, not its text.
+    enum class Pin { None, Process, Session };
+
+    void enqueue(const QByteArray& record, Pin pin = Pin::None);
+    void ringNote(const QString& line);
+    quint64 pushRingLocked(const QString& line);
+    void appendRingLocked(const QString& line, Pin pin = Pin::None);
+    bool isProtectedLocked(int index) const;
+
+    // What one writer step takes from the queue state, so its I/O runs without the queue lock.
+    struct StepWork {
+        std::deque<QByteArray> batch;
+        QByteArray header;
+        quint64 now = 0;
+        bool clear = false;
+        bool window = false;
+        bool flushing = false;
+    };
+
+    void step(std::unique_lock<std::mutex>& lock, bool forceSync);
+    bool writeStep(const StepWork& work, bool forceSync);
+    bool dueLocked(quint64 now) const;
+    void completeFlushes(quint64 through, bool ok);
+    bool flushResult(quint64 ticket) const;
+    QString filePath(const char* name) const;
     void writeLoop();
+    quint64 nowMs() const;
+    bool inStartupWindow(quint64 now) const;
+
     mutable std::mutex m_ringMutex;
     QStringList m_ring;
+    // One id per ring line, in step with m_ring: lines with the same text (the same source started by two runs) are
+    // still different lines.
+    QList<quint64> m_ringIds;
+    quint64 m_lastRingId = 0;
     quint64 m_generation = 0;
+
+    // Queue state, under m_queueMutex.
     std::mutex m_queueMutex;
     std::condition_variable m_ready, m_flushed;
     std::deque<QByteArray> m_queue;
-    bool m_stop = false, m_writing = false;
+    bool m_stop = false;
     bool m_clearPending = false;
-    QByteArray m_initialTail;
+    quint64 m_flushRequested = 0;
+    quint64 m_flushDone = 0;
+    std::vector<std::pair<quint64, bool>> m_flushResults;
+    quint64 m_startupUntil = 0;
+    quint64 m_lastDrain = 0;
+    QByteArray m_processLine;
+    QByteArray m_sessionLine;
+    // An explicit start note absorbs the plain marker of the Starting transition that follows it.
+    quint64 m_startNoteAt = 0;
+    bool m_attemptAbsorb = false;
+    // Ring lines eviction keeps at the front: the previous run's divider and identity, and this run's process line and
+    // current session line. Copy and Share therefore always say which process, boot and session the rest belong to.
+    // A session line a newer one replaces is released from the front. Ring ids; 0 is none.
+    QList<quint64> m_protectedPrevious;
+    quint64 m_protectedProcess = 0;
+    quint64 m_protectedSession = 0;
+    int m_pinned = 0;
+    bool m_processNoted = false;
+    QByteArray m_previousProcessLine;
+
+    // Writer state: touched only by the writer step, which runs on one thread at a time.
+    std::mutex m_stepMutex;
+    std::unique_ptr<QFile> m_file;
+    qint64 m_fileSize = 0;
+    quint64 m_dirtyBytes = 0;
+    quint64 m_lastSync = 0;
+    // After a failed sync, the next attempt waits until here rather than retrying at once.
+    quint64 m_syncRetryAt = 0;
+    bool m_ioFailed = false;
+    bool m_rotationFailureNoted = false;
+    QByteArray m_header;
+    IoFault m_fault = IoFault::None;
+
+    mutable std::mutex m_statsMutex;
+    IoStats m_stats;
+
     QString m_directory;
+    TestOptions m_options;
     std::thread m_writer;
 };
 

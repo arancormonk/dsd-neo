@@ -3984,6 +3984,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_talkgroup_list_model
         PRIVATE
             Qt6::Core
+            Qt6::Gui
             dsd-neo_core
             dsd-neo_runtime
             dsd-neo_feature_codec2
@@ -4005,7 +4006,8 @@ if(DSD_ENABLE_QT_UI)
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
     # commit_rev rescan gate, and the relaunch (Activity restart) path. The
-    # access-code text comes from app-control (issue #575).
+    # access-code text comes from app-control (issue #575). A QGuiApplication,
+    # so the app-state saves see the real applicationStateChanged signal.
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(
         dsd-neo_test_ui_qt_call_history_model
@@ -4021,7 +4023,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_call_history_model
-        PRIVATE Qt6::Core Qt6::Test dsd-neo_test_receive_support
+        PRIVATE Qt6::Core Qt6::Gui Qt6::Test dsd-neo_test_receive_support
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_call_history_model
@@ -4034,6 +4036,10 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_CALL_HISTORY_MODEL
         COMMAND dsd-neo_test_ui_qt_call_history_model
+    )
+    set_tests_properties(
+        UI_QT_CALL_HISTORY_MODEL
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
     # The session-args builder: the rtl/rtltcp input specs and flag set a saved
@@ -13986,6 +13992,22 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
 
+    # The USB reader's return code: an allocation failure, or a lost device on a
+    # desktop build, ends the session as a device failure; a stop in flight does not.
+    add_executable(
+        dsd-neo_test_io_rtl_reader_exit
+        io/test_io_rtl_reader_exit.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_reader_exit
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_reader_exit
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_READER_EXIT COMMAND dsd-neo_test_io_rtl_reader_exit)
+
     # Exercise Android's production run-result collector with a real RTL open
     # failure. The driver boundary is wrapped; no Qt, JNI or USB hardware needed.
     if(
@@ -14013,6 +14035,66 @@ if(DSD_HAS_RADIO)
         )
         add_test(NAME IO_RTL_RUN_RESULT COMMAND dsd-neo_test_io_rtl_run_result)
     endif()
+endif()
+
+# The Android app's vendored librtlsdr, async reader setup under allocation
+# failure. The test includes librtlsdr.c itself against stub libusb entry points,
+# so it needs only a POSIX host and the vendored headers, not an SDR library;
+# Windows and macOS skip it.
+if(
+    UNIX
+    AND NOT APPLE
+    AND NOT ANDROID
+    AND NOT CYGWIN
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
+    set(_DSD_NEO_VENDORED_RTLSDR
+        "${PROJECT_SOURCE_DIR}/android/third_party/librtlsdr"
+    )
+    # The tuner drivers stay in upstream style, built without the project
+    # warnings as android/third_party/CMakeLists.txt builds them.
+    add_library(
+        dsd-neo_test_vendored_rtlsdr_tuners
+        STATIC
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_e4k.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0012.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc0013.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_fc2580.c
+        ${_DSD_NEO_VENDORED_RTLSDR}/src/tuner_r82xx.c
+    )
+    set_property(
+        TARGET dsd-neo_test_vendored_rtlsdr_tuners
+        PROPERTY LINK_LIBRARIES ""
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_rtlsdr_tuners
+        SYSTEM
+        PRIVATE ${_DSD_NEO_VENDORED_RTLSDR}/include
+    )
+
+    add_executable(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        io/test_vendored_librtlsdr_async_alloc.c
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        SYSTEM
+        PRIVATE
+            ${_DSD_NEO_VENDORED_RTLSDR}/include
+            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    )
+    target_compile_definitions(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        PRIVATE rtlsdr_STATIC
+    )
+    target_link_libraries(
+        dsd-neo_test_vendored_librtlsdr_async_alloc
+        PRIVATE dsd-neo_test_vendored_rtlsdr_tuners ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME VENDORED_LIBRTLSDR_ASYNC_ALLOC
+        COMMAND dsd-neo_test_vendored_librtlsdr_async_alloc
+    )
 endif()
 
 add_executable(
@@ -17609,6 +17691,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_controller
         PRIVATE
             QT_NO_KEYWORDS
+            DSD_NEO_TEST_HOOKS
             DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
     )
     set_target_properties(dsd-neo_test_ui_qt_controller PROPERTIES AUTOMOC ON)
@@ -17846,6 +17929,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             engine_stop
     )
+    add_test(
+        NAME ANDROID_EXIT_FACTS_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            exit_facts
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -17853,6 +17943,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_DOCUMENT_TRANSFER_JVM
         ANDROID_USB_RECEIVER_JVM
         ANDROID_ENGINE_STOP_JVM
+        ANDROID_EXIT_FACTS_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

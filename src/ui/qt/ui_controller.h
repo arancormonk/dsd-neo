@@ -106,6 +106,8 @@ class UiController : public QObject {
   private:
     bool sessionIsLive() const;
     void tick();
+    /** @brief The redraw-driven part of tick(): metrics, network, history and talkgroups. */
+    void refreshModels();
     void pollTalkgroupExport();
     void pollDecryptionResult();
     void invalidateForTarget(const dsd_state* snapshot);
@@ -127,6 +129,8 @@ class UiController : public QObject {
     quint64 m_decryptionSequence = 0;
     unsigned int m_active_ordinal = 0;
     DecoderHost::SessionState m_session = DecoderHost::Idle;
+    /* A session ended since the last tick: the history is saved after that tick ingests. */
+    bool m_historySaveOwed = false;
 };
 
 } // namespace dsd_qt

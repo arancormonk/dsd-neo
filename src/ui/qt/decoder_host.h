@@ -475,6 +475,18 @@ class DecoderHost : public QObject {
     requestLocalDeviceAccess() {}
 
     /**
+     * @brief A start is about to touch the device: record it durably (issue #745).
+     *
+     * Called before a USB access request and before start(), so a phone that falls over seconds
+     * after Play keeps the attempt and its start sequence in the persistent diagnostics. Hosts
+     * with no persistent diagnostics do nothing.
+     */
+    virtual void
+    noteStartAttempt(const QString& sourceType) {
+        (void)sourceType;
+    }
+
+    /**
      * @brief Hand the platform the screen policy the user chose (#574).
      *
      * @param mode An AppPrefs::ScreenMode code.

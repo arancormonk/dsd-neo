@@ -288,8 +288,8 @@ dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_
     return fp;
 }
 
-static void
-dsd_fsync_parent_dir_best_effort(const char* path) {
+void
+dsd_fsync_parent_dir(const char* path) {
     if (!path || path[0] == '\0') {
         return;
     }
@@ -332,7 +332,7 @@ dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     if (rename(tmp_path, final_path) != 0) {
         return -1;
     }
-    dsd_fsync_parent_dir_best_effort(final_path);
+    dsd_fsync_parent_dir(final_path);
     return 0;
 }
 
