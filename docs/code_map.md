@@ -322,7 +322,9 @@ as a startup hunt settles): at the move when nothing gated frames, else when the
 it waited for. A replaced rigctl connection drops the attribution too (`dmr_sm_note_receiver_unknown()`); a rigctl
 read that failed is not repeated for `DMR_RX_QUERY_RETRY_S` of real time. Under `--trunk-scan`, Return to CC restarts
 the parked target's own acquisition on its control channel instead, unless a park the coordinator tracks is still
-pending. A Capacity Plus status follow is the machine's call (`dmr_sm_note_status_follow()`); a
+pending. Each target's `dmr_sm_ctx_t` also holds its per-slot call identities (talkgroup priority and preemption,
+below), which the switch's acquisition restarts. A Capacity Plus status follow is the machine's call
+(`dmr_sm_note_status_follow()`); a
 repeated status naming the followed carrier neither retunes nor moves its deadlines (it only seeds a slot whose group
 changed), a call followed after an operator move ends that move's listening window, and its release goes to the rest
 channel announced last (`dsd_state::dmr_rest_channel`, by a status or a checked voice LC), as the no-carrier return
@@ -5296,7 +5298,62 @@ Private per-protocol modules worth knowing about:
   by a later tune (the tuning generation, read before the follow tune: the seed belongs to the next completion), by
   a receiver frequency other than the one the follow tune left (an operator retune moves no generation), after
   `DMR_CAPPLUS_SEED_WINDOW_S`, and under single-slot decoding. Group calls only: a bank-two private ID's layout is
-  inferred from bank one's, not published. Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+  inferred from bank one's, not published. The seed also names the slot's identity record (`dmr_sm_slot_ctx_t`,
+  provenance SEED, below) unless a checked LC already named the call there; a later status naming another group on
+  the slot's LSN replaces a seed's identity (`dmr_sm_status_identity_reconcile()`), never an LC's, and an idle LSN
+  leaves it. Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+- DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
+  stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
+  group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
+  identity and origin travel on `dmr_sm_event_t` to `dmr_sm_submit_grant()` (FOLLOWED / IN_PLACE / REFUSED / BUSY /
+  DEFERRED), which never re-evaluates a grant. The `dmr_sm_emit_*_grant*` wrappers carry no decision and are never a
+  Hold or preemption candidate.
+  - Busy view (`dmr_sm_describe_held_calls()`). TUNED: the tick's own retention rule, factored out of `tick_tuned()`
+    without changing the tick (`dmr_sm_tuned_retention()`): live voice on an admitted slot (0.2 s stale) whatever the
+    hangtime, the hangtime tail, acquisition before the first voice (the grant timeout; a carrier a channel status
+    selected, Cap+ or XPT, keeps `DMR_CAPPLUS_SEED_WINDOW_S`), and a receive check still pending on a carrier no slot of
+    which the policy admits yet (not once its verified code is rejected). ON_CC: calls heard on the carrier the
+    receiver listens on (composite TSCC payload, XPT parking, late entry) whose identity is known there and admitted by
+    the policy; an unknown or blocked resident call never makes it busy. Held slots are described into the policy's
+    followed-call ledger (`dsd_tg_policy_describe_followed_call()`, start = the slot's follow time) and every other
+    ledger slot is cleared; a held carrier whose slots name nothing yet is described by the grant's identity (slot -1).
+  - Gate. A candidate on another carrier while held (or while the caller's own legacy window says busy:
+    `caller_busy`) is followed only by Hold over a non-held call (`tg_hold_match` and no held slot on the Hold group)
+    or by preemption (`dmr_sm_may_displace()`: a decision the caller evaluated for a known identity, no held call of
+    unknown identity, and `dsd_tg_policy_should_preempt()` over every held slot); otherwise `grant-busy`. A candidate
+    on the held carrier is followed as before.
+  - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
+    carrier, follow time) come from the followed grant (a slotless grant's at its first accepted voice), Cap+ seeds
+    and status reconciliation, and a voice LC only at its checked publication (`dmr_sm_note_lc_identity()` from
+    `dmr_flco_publish_voice()`). The follow time moves only when the call (policy class, target, carrier) changes, so a
+    candidate's dwell runs from the conversation's first follow. They live in each trunk-scan target's `dmr_sm_ctx_t`
+    and are dropped by a release, an abandoned carrier, an operator move and the acquisition a target switch starts.
+  - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
+    commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
+    takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger
+    (`dmr_sm_clear_released_carrier()`). Writers run under the P25 SM tick guard (frame dispatch, the DMR tick, the
+    carrier boundary, the trunk-scan switch); an operator move from a command takes it unless held
+    (`dmr_sm_note_operator_move()` in `app_command_queue.c`).
+  - C_MOVE. A move of the followed call (its talkgroup, either party of its private call, or the followed slot's
+    identity), whatever slot it names, is judged with that call's own classification: refused only when tuning is
+    denied for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier ->
+    IN_PLACE on the new slot, another carrier -> a new acquisition keeping the follow time. A move of any other call is
+    an ordinary grant under its group decision and the gate. Its burst indicators and companion-row clear apply only
+    once accepted (as before when it is not submitted: trunking off or not on a voice channel).
+  - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
+    voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
+    preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order
+    decides (with no priorities, channel order as before). XPT entries keep their status kind: 3 (group, 8-bit ID) is a
+    group candidate; 2 (private, the value a hash or placeholder) only with private tuning on, as an unknown identity
+    whose decision is built without any endpoint lookup (allow-list, Hold and private-off block it; priority 0, no
+    preemption) and published by the voice LC only; 1 and 0 are not followed; private needs no group tuning.
+  - Connect Plus evaluates policy before its 2/4 s window: an ordinary grant inside it is refused as before, a Hold or
+    preempt grant goes to the gate with the window as `caller_busy`, and `is_con_plus` is set only once taken.
+  - Decided limits: a candidate preempts only on a repeat after the dwell of every held slot and outside the cooldown;
+    a held call of unknown identity (a Cap+ private LSN, an XPT private call, late entry before the LC) yields only to
+    Hold; a Connect Plus data channel the CSBK path tuned itself has nothing to describe, so only Hold leaves it inside
+    its window; the ranking covers one status message (one XPT bank). Tests: `DMR_PREEMPT`, `DMR_GRANT_POLICY`,
+    `DMR_T3_CMOVE`, `DMR_T3_MOVE_RELEASE`, `DMR_CSBK_HELPERS`, `DMR_FLCO_PRIVACY_MODES`, `APP_COMMAND_QUEUE`.
 - P25 preemption (`p25_trunk_sm.c`, `p25p2_vpdu.c`, `p25_lcw.c`). While the SM holds a voice channel, grants and
   updates for another carrier that the voice channel carries (Phase 2 FACCH/SACCH MAC grants, Phase 1 LC `0x42`,
   `0x44` with `-j` off, Motorola LCGRGU) reach it with `p25_sm_event_t.preempt_only`. `handle_grant` drops such an
@@ -7653,8 +7710,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   checking keeps decoding, muted and unqueued (`dsd_p25p2_decode_policy_verdict()`), so cipher positions stay in step
   for the frames admitted once the NAC is proven. A `-Y` scan is held by an admitted call only while it is still heard
   (its latest observation within the voice hold). A decode-mode change ends an NFM call through its own lifecycle
-  (`ui_end_calls()`), so its recording keeps its name. Hytera XPT grant selection skips candidates the receive policy
-  rejects. The API's empty-row fingerprint has receive kind "none"; the Qt seen map tracks receive evidence and the
+  (`ui_end_calls()`), so its recording keeps its name. Hytera XPT and Capacity Plus status selection skip candidates the
+  receive policy rejects.
+  The API's empty-row fingerprint has receive kind "none"; the Qt seen map tracks receive evidence and the
   service name, and a tg-0 row's name that is only a label (service, channel) is no destination of its own
   (`row_textual_destination()`). Holds from an admitted call (`dsd_call_state_admitted_call_active()`, the `-Y` receive
   leave) need it still heard within the hangtime or voice hold; followed DMR data's monotonic stamp counts too. A
