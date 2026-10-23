@@ -782,6 +782,16 @@ dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
         state->trunk_sm_force_release = 0;
     }
     sm_log(opts, reason);
+    /* Where an ordinary release would return survives the teardown (issue #637): a call a Capacity Plus status followed
+     * returns to the rest channel announced last, which a voice LC may be the only one to have named, so the caller's
+     * fallback park and the target's revisit land there rather than on a rest channel the system has left. */
+    if (state && ctx->vc_status_follow) {
+        const long destination = dmr_sm_release_destination(ctx, state);
+        if (destination > 0) {
+            state->p25_cc_freq = 0;
+            state->trunk_cc_freq = destination;
+        }
+    }
     /* ON_CC, not HUNTING: nothing about this release says the control channel was lost, and a
      * revisit expects to find the target resting exactly where an ordinary release leaves it. */
     dmr_sm_clear_released_carrier(ctx, opts, state, 0, had_carrier, DMR_SM_ON_CC, reason ? reason : "abandon-carrier");

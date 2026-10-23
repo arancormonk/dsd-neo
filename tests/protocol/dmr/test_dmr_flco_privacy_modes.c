@@ -2355,6 +2355,37 @@ test_capacity_plus_release_takes_rest_only_from_a_checked_lc(void) {
     }
 }
 
+// Issue #637: a caller that abandons the followed carrier (the scan's visit cap, an operator's advance) keeps where the
+// release would have returned: the rest channel a checked voice LC named last, not the one the status named.
+static void
+test_capacity_plus_abandon_keeps_the_rest_channel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    capplus_follow_env(&opts, &state, history);
+    opts.frame_dmr = 1;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = capplus_tune_to_freq,
+        .tune_to_cc_request = capplus_tune_to_freq,
+        .return_to_cc_request = capplus_return_to_cc,
+    });
+    capplus_run_status(&opts, &state, CAPPLUS_LSN_SLOT0, CAPPLUS_TG_SLOT0, 0, 0U);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    assert(dmr->state == DMR_SM_TUNED && state.dmr_rest_channel == 1);
+    state.currentslot = 0;
+    build_cap_plus_group_lc(bits, 0U, CAPPLUS_TG_SLOT0, 5U, 4321U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0 && state.dmr_rest_channel == 5);
+    const uint32_t tuned = opts.rtlsdr_center_freq;
+    dmr_sm_abandon_carrier(dmr, &opts, &state, "scan-visit-limit");
+    assert(dmr->state == DMR_SM_ON_CC && opts.trunk_is_tuned == 0);
+    assert(opts.rtlsdr_center_freq == tuned); /* the caller owns the tuner */
+    assert(state.trunk_cc_freq == CAPPLUS_OTHER_VC);
+    capplus_env_done(&state);
+}
+
 // A Hytera XPT LC names the site XPT, which changes how later LCs and data headers are read, and its free channel;
 // one that failed its check does neither.
 static void
@@ -3852,6 +3883,7 @@ main(void) {
     test_capacity_plus_rest_lsn_needs_a_checked_lc();
     test_capacity_plus_terminator_reports_rest_lsn_and_ends_call();
     test_capacity_plus_release_takes_rest_only_from_a_checked_lc();
+    test_capacity_plus_abandon_keeps_the_rest_channel();
     test_capacity_plus_status_names_calls_no_lc_named();
     test_capacity_plus_status_seed_yields_to_lc_identity();
     test_capacity_plus_status_seed_expires_with_its_carrier();

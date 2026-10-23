@@ -177,6 +177,11 @@ static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;
 static unsigned int g_fake_rtl_output_rate_hz = 0;
 static int g_explicit_call_ends = 0;
+/* The target published when a release last ended calls, and when the calls' own end (dsd_engine_end_calls(), which
+   ends the NFM reception first) last ran: both must still name the outgoing target (issue #637). */
+static char g_release_seen_target[DSD_CHANNEL_LABEL_SIZE];
+static char g_end_calls_seen_target[DSD_CHANNEL_LABEL_SIZE];
+static int g_end_calls_runs = 0;
 /* Issue #526: a front end whose output rate follows its receive family -- the analog monitor resampled to 48 kHz, the
    digital family at a 24 kHz DSP rate (the RTL bw=24 case) -- and which a landed scan tune moves between them. */
 static int g_fake_family_tracking = 0;
@@ -396,6 +401,7 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
             g_explicit_call_ends++;
+            DSD_SNPRINTF(g_release_seen_target, sizeof g_release_seen_target, "%s", state->trunk_scan_active_id);
         }
     }
     state->p25_vc_freq[0] = 0;
@@ -1919,9 +1925,19 @@ seed_call_identity(dsd_state* state, int target0, int source0, int target1, int 
     }
 }
 
+static int expect_call_identity_phase(const char* label, const dsd_state* state, int target0, int source0, int target1,
+                                      int source1, int private0, int private1, dsd_call_phase phase);
+
 static int
 expect_call_identity(const char* label, const dsd_state* state, int target0, int source0, int target1, int source1,
                      int private0, int private1) {
+    return expect_call_identity_phase(label, state, target0, source0, target1, source1, private0, private1,
+                                      DSD_CALL_PHASE_ACTIVE);
+}
+
+static int
+expect_call_identity_phase(const char* label, const dsd_state* state, int target0, int source0, int target1,
+                           int source1, int private0, int private1, dsd_call_phase phase) {
     dsd_call_snapshot calls[2];
     const int have0 = dsd_call_state_get(state, 0U, &calls[0]);
     const int have1 = dsd_call_state_get(state, 1U, &calls[1]);
@@ -1934,7 +1950,7 @@ expect_call_identity(const char* label, const dsd_state* state, int target0, int
     }
     const dsd_call_kind kind0 = private0 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
     const dsd_call_kind kind1 = private1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
-    if (have0 <= 0 || have1 <= 0 || calls[0].phase != DSD_CALL_PHASE_ACTIVE || calls[1].phase != DSD_CALL_PHASE_ACTIVE
+    if (have0 <= 0 || have1 <= 0 || calls[0].phase != phase || calls[1].phase != phase
         || calls[0].ota_target_id != (uint64_t)target0 || calls[0].ota_source_id != (uint64_t)source0
         || calls[1].ota_target_id != (uint64_t)target1 || calls[1].ota_source_id != (uint64_t)source1
         || calls[0].kind != kind0 || calls[1].kind != kind1) {
@@ -1995,7 +2011,9 @@ test_call_identity_state_isolated_per_target(void) {
         DSD_FPRINTF(stderr, "call identity scan did not rotate back to first target\n");
         test_rc = 1;
     }
-    test_rc |= expect_call_identity("restored target", &state, 101, 201, 102, 202, 0, 1);
+    /* Each departure ended the outgoing target's calls (issue #637): the receiver left their carrier. The target comes
+       back with its own calls, ended, and none of the other target's. */
+    test_rc |= expect_call_identity_phase("restored target", &state, 101, 201, 102, 202, 0, 1, DSD_CALL_PHASE_ENDED);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -10217,6 +10235,175 @@ test_visit_limit_failed_retune_cools_down_not_capped(void) {
  * stays released: rollback preserves the ended call and its event bookkeeping, without
  * resurrecting a phantom ACTIVE call or ending the same epoch twice (requirement 8).
  */
+/* Issue #637: an operator's advance or avoid away from a call in progress ends it as the visit cap does, with the
+ * carrier handed back while the outgoing target is still the one published (its row and recordings close under its own
+ * label and names), and the revisit restores no call. @p avoid takes the avoid control instead of the advance. */
+static int
+test_manual_departure_releases_the_call_in_progress(int avoid) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n"
+                        "c,p25-trunk,853000000,,250,,\n",
+                        0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    const char* label = avoid ? "manual avoid" : "manual advance";
+    int test_rc = 0;
+    opts.trunk_is_tuned = 1;
+    state.p25_vc_freq[0] = 851112500;
+    state.trunk_vc_freq[0] = 851112500;
+    test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.10);
+    const int ends_before = g_explicit_call_ends;
+    g_release_seen_target[0] = '\0';
+    trunk_scan_test_set_now(0.20);
+    test_rc |= expect_control_rc(
+        label,
+        dsd_engine_trunk_scan_control(&opts, &state,
+                                      avoid ? DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE : DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+        0);
+    test_rc |= expect_active_target(&state, label, 1U);
+    if (g_explicit_call_ends != ends_before + 1 || strcmp(g_release_seen_target, "a") != 0) {
+        DSD_FPRINTF(stderr, "%s ended %d calls under '%s', want 1 under 'a'\n", label,
+                    g_explicit_call_ends - ends_before, g_release_seen_target);
+        test_rc = 1;
+    }
+    if (opts.trunk_is_tuned != 0) {
+        DSD_FPRINTF(stderr, "%s left trunk_is_tuned=%d\n", label, opts.trunk_is_tuned);
+        test_rc = 1;
+    }
+    test_rc |= expect_vc_mirrors_clear(&state, label);
+    if (!avoid) {
+        /* b and c run out their idle dwells and the rotation comes back to a, which holds no call. */
+        trunk_scan_test_set_now(0.46);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        trunk_scan_test_set_now(0.72);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "revisit after a manual advance", 0U);
+        test_rc |= expect_no_active_call_row(&state, "revisit after a manual advance");
+        if (g_explicit_call_ends != ends_before + 1) {
+            DSD_FPRINTF(stderr, "revisit after a manual advance ended the call again\n");
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_manual_advance_releases_the_call_in_progress(void) {
+    return test_manual_departure_releases_the_call_in_progress(0);
+}
+
+static int
+test_manual_avoid_releases_the_call_in_progress(void) {
+    return test_manual_departure_releases_the_call_in_progress(1);
+}
+
+/* Issue #637: a park still in flight has no visit to hand back, so an operator's advance from it is an ordinary
+ * departure: no release, and its request is left to the switch; the ordinary departure still ends the calls the row
+ * holds, under the outgoing target. */
+static int
+test_manual_advance_from_a_pending_park_ends_calls_without_release(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        return 1;
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    int test_rc = seed_active_call_row(&state, 1001U, 2002U, 0.05);
+    const int ends_before = g_explicit_call_ends;
+    const int end_calls_before = g_end_calls_runs;
+    g_end_calls_seen_target[0] = '\0';
+    trunk_scan_test_set_now(0.10);
+    test_rc |= expect_control_rc("advance from a pending park",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance from a pending park", 1U);
+    if (g_explicit_call_ends != ends_before) {
+        DSD_FPRINTF(stderr, "advance from a pending park released the carrier\n");
+        test_rc = 1;
+    }
+    if (g_end_calls_runs != end_calls_before + 1 || strcmp(g_end_calls_seen_target, "a") != 0) {
+        DSD_FPRINTF(stderr, "advance from a pending park ended calls %d times under '%s', want once under 'a'\n",
+                    g_end_calls_runs - end_calls_before, g_end_calls_seen_target);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.40);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "revisit after a pending-park advance", 0U);
+    test_rc |= expect_no_active_call_row(&state, "revisit after a pending-park advance");
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #637: an operator's advance whose alternate and fallback parks both fail rolls back with the call it released
+ * still ended, ends it once, and a later departure and revisit neither revive nor end it again. */
+static int
+test_manual_advance_rollback_keeps_the_release(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    opts.trunk_is_tuned = 1;
+    state.p25_vc_freq[0] = 851112500;
+    state.trunk_vc_freq[0] = 851112500;
+    test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.10);
+    g_counting_tune_to_cc_failures_remaining = 2;
+    const int ends_before = g_explicit_call_ends;
+    trunk_scan_test_set_now(0.20);
+    test_rc |= expect_control_rc("manual advance rollback",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 1);
+    test_rc |= expect_active_target(&state, "manual advance rollback", 0U);
+    test_rc |= expect_no_active_call_row(&state, "manual advance rollback");
+    test_rc |= expect_vc_mirrors_clear(&state, "manual advance rollback");
+    if (g_explicit_call_ends != ends_before + 1) {
+        DSD_FPRINTF(stderr, "failed manual advance ended the call %d times\n", g_explicit_call_ends - ends_before);
+        test_rc = 1;
+    }
+    /* Out of the cooldown, another advance (its re-park never landed, so an ordinary departure) and the revisit. */
+    opts.trunk_is_tuned = 0;
+    trunk_scan_test_set_now(3.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(3.35);
+    (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    trunk_scan_test_set_now(3.70);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_no_active_call_row(&state, "revisit after the manual rollback");
+    if (g_explicit_call_ends != ends_before + 1) {
+        DSD_FPRINTF(stderr, "the manual rollback's call ended again (%d ends)\n", g_explicit_call_ends - ends_before);
+        test_rc = 1;
+    }
+    g_counting_tune_to_cc_failures_remaining = 0;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_visit_limit_forced_advance_rollback_rearms(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -10283,9 +10470,9 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
         }
     }
 
-    /* An ordinary departure now, once the alternates are out of their cooldown: the operator's
-     * advance carries no forced release, so it saves whatever the rolled-back row is holding into
-     * that row's snapshot. This is the path a phantom call would become permanent on. */
+    /* An ordinary departure now, once the alternates are out of their cooldown: the rolled-back row's park never
+     * landed, so the operator's advance carries no forced release and saves whatever that row is holding into its
+     * snapshot. This is the path a phantom call would become permanent on. */
     opts.trunk_is_tuned = 0;
     trunk_scan_test_set_now(3.05);
     test_rc |= expect_control_rc("ordinary advance after the rollback",
@@ -13690,6 +13877,10 @@ main(void) {
     rc |= run_with_default_tune_hook(test_visit_limit_pending_retune_does_not_fire);
     rc |= run_with_default_tune_hook(test_visit_limit_failed_retune_cools_down_not_capped);
     rc |= run_with_default_tune_hook(test_visit_limit_forced_advance_rollback_rearms);
+    rc |= run_with_default_tune_hook(test_manual_advance_releases_the_call_in_progress);
+    rc |= run_with_default_tune_hook(test_manual_avoid_releases_the_call_in_progress);
+    rc |= run_with_default_tune_hook(test_manual_advance_from_a_pending_park_ends_calls_without_release);
+    rc |= run_with_default_tune_hook(test_manual_advance_rollback_keeps_the_release);
     rc |= run_with_default_tune_hook(test_visit_failed_fallback_recovers);
     rc |= run_with_default_tune_hook(test_visit_pending_fallback_anchors_on_completion);
     /* Issue #521 */
@@ -13745,7 +13936,8 @@ main(void) {
 void
 dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    g_end_calls_runs++;
+    DSD_SNPRINTF(g_end_calls_seen_target, sizeof g_end_calls_seen_target, "%s", state->trunk_scan_active_id);
 }
 
 void
