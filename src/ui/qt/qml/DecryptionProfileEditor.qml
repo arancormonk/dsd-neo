@@ -110,16 +110,22 @@ ModalSheet {
         mappingDialog.openedForm = mappingDialog.fingerprint();
     }
     // A new direct-override profile holding a key typed elsewhere (the session
-    // override): the material stays in the field until Save profile.
-    function openDirect(protocol, type, material, label) {
-        open("", protocol);
+    // override): the material stays in the field until Save profile. An M17
+    // key typed in a mixed session saves under M17, the protocol that takes
+    // it. @p force is the identifier policy in effect (a profile force value);
+    // one the profile protocol does not offer becomes the plain default.
+    function openDirect(protocol, type, material, label, force) {
+        var profileProtocol = protocol === "mixed" && (type === "m17Scrambler" || type === "m17Aes") ? "m17" : protocol;
+        open("", profileProtocol);
         if (modes.indexOf("direct") < 0)
             return;
+        var policy = force === undefined ? 0 : force;
         loading = true;
         draft = Object.assign({}, draft, {
             label: label || "",
             mode: "direct",
-            directType: type
+            directType: type,
+            force: forceValues.indexOf(policy >= 32 ? 33 : policy) >= 0 ? policy : 0
         });
         profileName.text = draft.label;
         loading = false;

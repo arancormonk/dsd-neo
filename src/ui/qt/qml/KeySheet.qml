@@ -106,6 +106,15 @@ ModalSheet {
         id: discard
         parent: sheet
     }
+    /**
+     * The identifier policy the draft runs with, as a profile force value: a
+     * changed policy as apply() submits it, else the session's configured one.
+     */
+    function draftForce() {
+        if (editor.forceChanged)
+            return editor.forceMode === 2 ? 33 : editor.forceMode;
+        return metrics.configuredForce || 0;
+    }
     function apply() {
         if (!visible || !sessionRunning || !editor.valid || applyFlow.pending)
             return;
@@ -328,7 +337,7 @@ ModalSheet {
         enabled: !applyFlow.pending && (inputValid || Navigation.composing)
         onClicked: {
             sheet.savingDraft = true;
-            matchingEditor.openDirect(sheet.protocol, editor.keyType, editor.keyValue, sheet.systemUid.length ? sheet.savedSystemName : "");
+            matchingEditor.openDirect(sheet.protocol, editor.keyType, editor.keyValue, sheet.systemUid.length ? sheet.savedSystemName : "", sheet.draftForce());
         }
     }
     Text {

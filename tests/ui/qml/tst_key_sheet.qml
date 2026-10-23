@@ -45,6 +45,7 @@ Item {
             }
             profileSavedSpy.clear();
             testContext.setMetric("optionsKnown", false);
+            testContext.setMetric("configuredForce", 0);
             testContext.setMetric("directKeys", false);
             testContext.setMetric("automaticKeys", false);
             testContext.setMetric("keyProfileRef", "");
@@ -541,6 +542,70 @@ Item {
             compare(draft.errorText, "P25 AES needs 32 or 64 hex digits.");
             draft.keyValue = "";
             draft.keyType = "";
+        }
+        // Save the session draft as a profile through the real editor and
+        // return what was stored.
+        function saveDraftAsProfile(protocol, type, value, configure) {
+            sheet.visible = false;
+            sheet.protocol = protocol;
+            sheet.open();
+            var draft = editor();
+            draft.keyType = type;
+            draft.keyValue = value;
+            if (configure)
+                configure(draft);
+            var save = findChild(sheet, "saveDirectAsProfile");
+            verify(save.inputValid, "the draft is valid: " + draft.errorText);
+            save.activate();
+            var profileEditor = findChild(sheet, "keySheetProfileEditor");
+            verify(profileEditor.visible);
+            findChild(profileEditor, "profileName").text = "Saved " + type;
+            findChild(profileEditor, "profileSave").activate();
+            verify(!profileEditor.visible, "saved: " + findChild(profileEditor, "profileError").text);
+            var saved = decryptionProfiles.get(sheet.selectedProfileUid);
+            verify(decryptionProfiles.removeProfile(sheet.selectedProfileUid).ok);
+            return saved;
+        }
+        // The draft's identifier policy is part of what works now: the
+        // profile keeps it, as Apply would submit it.
+        function test_save_as_profile_keeps_the_identifier_policy_data() {
+            return [
+                {tag: "RC4 fallback", mode: 2, changed: true, configured: 0, force: 33},
+                {tag: "force privacy", mode: 1, changed: true, configured: 0, force: 1},
+                {tag: "changed back to normal", mode: 0, changed: true, configured: 1, force: 0},
+                {tag: "unchanged privacy", changed: false, configured: 1, force: 1},
+                {tag: "unchanged fallback", changed: false, configured: 0x24, force: 0x24}
+            ];
+        }
+        function test_save_as_profile_keeps_the_identifier_policy(data) {
+            testContext.setMetric("configuredForce", data.configured);
+            var saved = saveDraftAsProfile("dmr", "rc4", "0123456789", function (draft) {
+                if (data.changed) {
+                    draft.forceChanged = true;
+                    draft.forceMode = data.mode;
+                }
+            });
+            compare(saved.protocol, "dmr");
+            compare(saved.directType, "rc4");
+            compare(saved.force, data.force);
+        }
+        // A protocol that offers no identifier policy saves the plain default.
+        function test_save_as_profile_drops_a_policy_the_protocol_lacks() {
+            testContext.setMetric("configuredForce", 1);
+            var saved = saveDraftAsProfile("p25", "hex", hexDigits(64));
+            compare(saved.protocol, "p25");
+            compare(saved.force, 0);
+        }
+        // An M17 key typed in a mixed session saves as an M17 profile, the
+        // protocol that takes it.
+        function test_mixed_session_m17_key_saves_as_m17() {
+            var saved = saveDraftAsProfile("mixed", "m17Scrambler", "ABCDEF");
+            compare(saved.protocol, "m17");
+            compare(saved.mode, "direct");
+            compare(saved.directType, "m17Scrambler");
+            verify(saved.keyConfigured);
+            saved = saveDraftAsProfile("mixed", "scrambler", "1234");
+            compare(saved.protocol, "mixed", "a type mixed takes keeps mixed");
         }
         function test_unchanged_apply_preserves_force_and_keyloader() {
             sheet.apply();
