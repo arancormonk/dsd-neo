@@ -330,12 +330,13 @@ DiagnosticsLog::loadSegments() const {
         const QByteArray all = boundedTail(tail.size() > kSegmentLimit ? tail : prev + tail);
         tail = lineAlignedTail(all, kSegmentLimit);
         prev = lineAlignedTail(all.left(all.size() - tail.size()), kSegmentLimit);
-        if (prev.isEmpty()) {
-            QFile::remove(prevPath);
-        } else {
-            (void)replaceFile(prevPath, prev);
+        // The current segment is rewritten only once the previous one holds its prefix: until then the unsplit tail
+        // stays the record, and the next load splits it again.
+        const bool prevWritten =
+            prev.isEmpty() ? (!QFileInfo::exists(prevPath) || QFile::remove(prevPath)) : replaceFile(prevPath, prev);
+        if (prevWritten) {
+            (void)replaceFile(tailPath, tail);
         }
-        (void)replaceFile(tailPath, tail);
     }
     return boundedTail(prev + tail);
 }

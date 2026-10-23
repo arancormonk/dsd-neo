@@ -6722,7 +6722,8 @@ Qt Quick frontend (`src/ui/qt`):
   unsynced count, so a lost segment never leaves the writer due. A failed append, sync, open or Clear makes the next
   `flush()` report false. On Windows `QFile::handle()` is a C runtime descriptor, so `dsd_fsync()` (`_commit`) is a
   real flush there too. A current segment over the cap is an older build's unsplit tail and alone is authoritative,
-  so a split interrupted by a crash is redone without duplicating records.
+  so a split interrupted by a crash is redone without duplicating records. The split rewrites it only after the
+  previous segment holds its prefix, so a failed write of that segment loses nothing.
 
   `dsd_fsync_parent_dir()` (platform `file_compat`) makes a created, renamed or removed entry durable on POSIX.
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is

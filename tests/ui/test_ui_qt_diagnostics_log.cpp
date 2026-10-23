@@ -1010,6 +1010,31 @@ interruptedLegacySplit() {
     check(saved.count("legacy 200 ") == 1, "the re-split segments duplicate records");
 }
 
+// A split of an older build's tail whose previous segment cannot be written leaves the unsplit tail as it was, so the
+// prefix is not lost; the next load splits it again.
+static void
+failedLegacySplitKeepsTheTail() {
+    QTemporaryDir dir;
+    QByteArray legacy;
+    for (int i = 0; i < 500; ++i) {
+        legacy += QStringLiteral("[host] [info] legacy %1 ").arg(i).toUtf8() + QByteArray(400, 'l') + '\n';
+    }
+    writeFile(dir.filePath("tail.log"), legacy);
+    // A directory where the previous segment goes: replacing it fails on every platform.
+    check(QDir(dir.path()).mkdir(QStringLiteral("tail.prev.log")), "blocker setup");
+    g_clock = 0;
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        check(readFile(dir.filePath("tail.log")).startsWith("[host] [info] legacy 0 "),
+              "a failed split truncated the unsplit tail");
+    }
+    check(QDir(dir.filePath(QStringLiteral("tail.prev.log"))).removeRecursively(), "blocker cleanup");
+    DiagnosticsLog log(dir.path(), manualOptions());
+    const auto text = log.snapshot().join('\n');
+    check(text.count(QStringLiteral("legacy 0 ")) == 1 && text.count(QStringLiteral("legacy 499 ")) == 1,
+          "records were lost or duplicated after a failed split");
+}
+
 // A rotation whose sync fails and whose new segment cannot be opened leaves no dirty count behind with no file to
 // sync it, so the writer does not stay due forever.
 static void
@@ -1310,6 +1335,7 @@ main(int argc, char** argv) {
     clearForgetsTheCleared();
     pinnedContextOutlivesTheRing();
     interruptedLegacySplit();
+    failedLegacySplitKeepsTheTail();
     lostSegmentDoesNotSpin();
     pinsFollowTheCurrentSession();
     pinnedSessionBelongsToThePinnedProcess();
