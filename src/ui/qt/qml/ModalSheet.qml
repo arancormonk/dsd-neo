@@ -128,6 +128,11 @@ Rectangle {
     function revealFocus() {
         Theme.revealFocus(scroll, column, sheet.Window.window ? sheet.Window.window.activeFocusItem : null);
     }
+    /** Scroll @p item, one of the panel's children, into view: an error that appeared below the fold. */
+    function reveal(item) {
+        column.forceLayout();
+        Theme.revealFocus(scroll, column, item);
+    }
 
     Connections {
         target: sheet.Window.window
