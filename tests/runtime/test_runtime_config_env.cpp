@@ -118,6 +118,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_IQ_DC_SHIFT",
         "DSD_NEO_MT",
         "DSD_NEO_NO_BOOTSTRAP",
+        "DSD_NEO_NO_SIGNAL_HANDLERS",
         "DSD_NEO_OUTPUT_CLEAR_ON_RETUNE",
         "DSD_NEO_P25_AFC_STATUS_GATE",
         "DSD_NEO_P25_CC_GRACE",
@@ -201,6 +202,38 @@ expect_backoff(int is_set, int value, int rc_base) {
         return rc;
     }
     return 0;
+}
+
+/* Issue #637: a later init that turns DSD_NEO_NO_SIGNAL_HANDLERS on or off publishes the change; the snapshot comparison
+   used to leave the field out, so the earlier snapshot stayed in force. */
+static int
+test_no_signal_handlers_republished(void) {
+    unsetenv("DSD_NEO_NO_SIGNAL_HANDLERS");
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rc = expect(cfg != NULL, 90, "cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->no_signal_handlers_enable, 0, 91, "no_signal_handlers_enable (unset)");
+    if (rc != 0) {
+        return rc;
+    }
+    setenv("DSD_NEO_NO_SIGNAL_HANDLERS", "1", 1);
+    dsd_neo_config_init();
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->no_signal_handlers_is_set, 1, 92, "no_signal_handlers_is_set (1)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->no_signal_handlers_enable, 1, 93, "no_signal_handlers_enable (1)");
+    if (rc != 0) {
+        return rc;
+    }
+    unsetenv("DSD_NEO_NO_SIGNAL_HANDLERS");
+    dsd_neo_config_init();
+    cfg = dsd_neo_get_config();
+    return expect_int_eq(cfg->no_signal_handlers_enable, 0, 94, "no_signal_handlers_enable (unset again)");
 }
 
 static int
@@ -2469,6 +2502,10 @@ main(void) {
 
     unsetenv("DSD_NEO_TCPIN_BACKOFF_MS");
 
+    rc = test_no_signal_handlers_republished();
+    if (rc != 0) {
+        return rc;
+    }
     rc = test_tcp_rcvtimeo_ms();
     if (rc != 0) {
         return rc;

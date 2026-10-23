@@ -3785,6 +3785,14 @@ dsd_engine_install_signal_handlers(void) {
     }
     signal(SIGINT, dsd_engine_signal_handler);
     signal(SIGTERM, dsd_engine_signal_handler);
+#ifdef SIGHUP
+    /* A hangup (the terminal closed, an SSH session dropped) ends the session as SIGINT does, so the per-call
+       recordings and the call in progress are finalized rather than left behind (issue #637). A hangup the session
+       started ignoring (nohup) stays ignored. */
+    if (signal(SIGHUP, dsd_engine_signal_handler) == SIG_IGN) {
+        signal(SIGHUP, SIG_IGN);
+    }
+#endif
 #ifdef SIGPIPE
     /* A reader that goes away (`-o - | head`, a closed log pipe, a dropped socket) costs that output an error return,
        never the process: decoding, recording and trunk following carry on, and a shutdown still finalizes the WAV
