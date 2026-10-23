@@ -152,32 +152,10 @@ Column {
             input.echoMode: editor.revealed ? TextInput.Normal : TextInput.Password
             inputMethodHints: Qt.ImhHiddenText | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
         }
-        OutlineButton {
+        RevealButton {
             id: eye
             objectName: "encryptionKeyEye"
-            width: 82
-            // Eye affordance plus a readable label; avoids relying on emoji fonts.
-            Canvas {
-                x: 5
-                anchors.verticalCenter: parent.verticalCenter
-                width: 14
-                height: 10
-                onPaint: {
-                    var ctx = getContext("2d");
-                    ctx.reset();
-                    ctx.strokeStyle = Theme.textSecondary;
-                    ctx.lineWidth = 1;
-                    ctx.beginPath();
-                    ctx.moveTo(0, 5);
-                    ctx.quadraticCurveTo(7, -3, 14, 5);
-                    ctx.quadraticCurveTo(7, 13, 0, 5);
-                    ctx.stroke();
-                    ctx.beginPath();
-                    ctx.arc(7, 5, 2, 0, 2 * Math.PI);
-                    ctx.stroke();
-                }
-            }
-            text: editor.revealed ? qsTr("Hide") : qsTr("Show")
+            revealed: editor.revealed
             onClicked: editor.revealed = !editor.revealed
         }
     }

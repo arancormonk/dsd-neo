@@ -109,6 +109,7 @@ qt_add_resources(
         # WP-D2 encryption entry surfaces.
         qml/EncryptionEditor.qml
         qml/KeySheet.qml
+        qml/RevealButton.qml
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml
