@@ -16,6 +16,7 @@
 
 #include <QJsonArray>
 #include <QString>
+#include <QtGlobal>
 
 namespace dsd_qt {
 
@@ -31,8 +32,11 @@ QString json_store_path(const QString& fileName);
  */
 QJsonArray json_store_load_array(const QString& fileName);
 
-/** @brief Atomically write @p array to @p fileName, creating directories as needed. */
-bool json_store_save_array(const QString& fileName, const QJsonArray& array);
+/**
+ * @brief Atomically write @p array to @p fileName, creating directories as needed.
+ * @param bytes When non-null, receives the size of the serialized array (0 when the file could not be opened).
+ */
+bool json_store_save_array(const QString& fileName, const QJsonArray& array, qint64* bytes = nullptr);
 
 } // namespace dsd_qt
 

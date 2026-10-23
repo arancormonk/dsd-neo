@@ -117,6 +117,8 @@ UiController::onSessionStateChanged() {
     if (m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
         pollTalkgroupExport();
         pollDecryptionResult();
+        // Not saved here: the session's last rows are ingested later in the tick.
+        m_historySaveOwed = true;
     }
 
     if (m_session == DecoderHost::Starting && m_diagnostics != nullptr) {
@@ -231,6 +233,19 @@ UiController::tick() {
         pollDecryptionResult();
     }
 
+    const bool sessionEnded = std::exchange(m_historySaveOwed, false);
+    refreshModels();
+    if (sessionEnded && m_history != nullptr) {
+        /* A stop is often the last thing before the app goes away, and a full log's
+         * save waits up to a minute. Ingest the final snapshot even on a tick without a
+         * redraw (a row the refresh above read is not read twice), then write it now. */
+        flushHistory();
+        m_history->saveNow();
+    }
+}
+
+void
+UiController::refreshModels() {
     const bool redraw = dsd_app_frontend_redraw_consume() != 0;
     const bool live = sessionIsLive();
     // Once this session has supplied its first redraw, age its held deadlines on

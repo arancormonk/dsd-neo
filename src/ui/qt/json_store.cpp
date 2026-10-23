@@ -38,7 +38,10 @@ json_store_load_array(const QString& fileName) {
 }
 
 bool
-json_store_save_array(const QString& fileName, const QJsonArray& array) {
+json_store_save_array(const QString& fileName, const QJsonArray& array, qint64* bytes) {
+    if (bytes != nullptr) {
+        *bytes = 0;
+    }
     const QString path = json_store_path(fileName);
     QDir().mkpath(QFileInfo(path).absolutePath());
     QSaveFile file(path);
@@ -46,6 +49,9 @@ json_store_save_array(const QString& fileName, const QJsonArray& array) {
         return false;
     }
     const QByteArray data = QJsonDocument(array).toJson(QJsonDocument::Compact);
+    if (bytes != nullptr) {
+        *bytes = data.size();
+    }
     return file.write(data) == data.size() && file.commit();
 }
 

@@ -3984,6 +3984,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_talkgroup_list_model
         PRIVATE
             Qt6::Core
+            Qt6::Gui
             dsd-neo_core
             dsd-neo_runtime
             dsd-neo_feature_codec2
@@ -4005,7 +4006,8 @@ if(DSD_ENABLE_QT_UI)
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
     # commit_rev rescan gate, and the relaunch (Activity restart) path. The
-    # access-code text comes from app-control (issue #575).
+    # access-code text comes from app-control (issue #575). A QGuiApplication,
+    # so the app-state saves see the real applicationStateChanged signal.
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(
         dsd-neo_test_ui_qt_call_history_model
@@ -4021,7 +4023,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_call_history_model
-        PRIVATE Qt6::Core Qt6::Test dsd-neo_test_receive_support
+        PRIVATE Qt6::Core Qt6::Gui Qt6::Test dsd-neo_test_receive_support
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_call_history_model
@@ -4034,6 +4036,10 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_CALL_HISTORY_MODEL
         COMMAND dsd-neo_test_ui_qt_call_history_model
+    )
+    set_tests_properties(
+        UI_QT_CALL_HISTORY_MODEL
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
     # The session-args builder: the rtl/rtltcp input specs and flag set a saved
@@ -17685,6 +17691,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_controller
         PRIVATE
             QT_NO_KEYWORDS
+            DSD_NEO_TEST_HOOKS
             DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
     )
     set_target_properties(dsd-neo_test_ui_qt_controller PROPERTIES AUTOMOC ON)

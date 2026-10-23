@@ -17,13 +17,17 @@
  * fresh, and a full log or seen map gives up the oldest session first. Each call's
  * frequency and access code (issue #575) reach the roles, survive a save and reload,
  * fold across fragments by the fragment they came from, fill in place, and fill a
- * notice heard again. */
+ * notice heard again. Saves are bounded by bytes written, not by calls: a large store
+ * waits longer between saves, and the moments the log must reach the disk (saveNow(),
+ * the app leaving the screen) write it at once, even with a save already in flight. */
 
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
 #include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
@@ -41,6 +45,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <Qt>
 #include <QtGlobal>
 #include <atomic>
 #include <dsd-neo/core/access_code.h>
@@ -2148,11 +2153,150 @@ test_stores_serialise_off_the_gui_thread(void) {
     expect("the saved log reloads", restored.count() == 41);
 }
 
+/** Total bytes of both stores on disk. */
+qint64
+stores_bytes(void) {
+    return QFileInfo(dsd_qt::json_store_path("call_history.json")).size()
+           + QFileInfo(dsd_qt::json_store_path("call_history_seen.json")).size();
+}
+
+/** Let the save worker finish and deliver its completion, as the event loop would. */
+void
+settle_save(CallHistoryModel& model) {
+    model.waitForSaveForTest();
+    QCoreApplication::processEvents();
+}
+
+bool
+stored_tg(qulonglong tg) {
+    return !stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), tg).isEmpty();
+}
+
+/* A full log rewrote most of a megabyte every 3 s on a busy system. The delay after a save now
+ * grows with what that save wrote (16 KiB/s of both stores), and a small log keeps 3 s. */
+void
+test_save_delay_follows_the_bytes_written(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754513000;
+    CallHistoryModel model;
+    ring.commit(0, 14000U, 800U, when, when + 4);
+    model.refresh(ring.state);
+    model.startSaveForTest();
+    settle_save(model);
+    expect("a small store keeps the 3 s delay", model.saveDelayMsForTest() == 3000);
+
+    ring.commitBatch(0, 200, 14100U, 900U, when + 100);
+    ring.commitBatch(1, 200, 14400U, 1200U, when + 100);
+    model.refresh(ring.state);
+    expect("the batch lands", model.count() == 401);
+    model.startSaveForTest();
+    settle_save(model);
+    const qint64 bytes = stores_bytes();
+    expect("the stores are large", bytes > 48 * 1024);
+    expect("a large store waits as long as its bytes take at 16 KiB/s",
+           model.saveDelayMsForTest() > 3000 && model.saveDelayMsForTest() >= bytes * 1000 / (16 * 1024));
+    ring.commit(0, 14900U, 1900U, when + 9000, when + 9004);
+    model.refresh(ring.state);
+    expect("the next call waits out the longer delay",
+           model.savePendingForTest() && model.saveDelayMsForTest() >= bytes * 1000 / (16 * 1024));
+}
+
+std::atomic<int> g_saveNowBuilds{0};
+
+void
+count_save_now_build(const QThread*) {
+    g_saveNowBuilds++;
+}
+
+/* saveNow() writes the newest row without waiting out the delay, and writes nothing when nothing is owed. */
+void
+test_save_now_writes_at_once(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754514000;
+    CallHistoryModel model;
+    ring.commit(0, 14201U, 801U, when, when + 4);
+    model.refresh(ring.state);
+    expect("the call arms the debounced save", model.savePendingForTest());
+    model.saveNow();
+    expect("saveNow leaves no save waiting", !model.savePendingForTest());
+    settle_save(model);
+    expect("saveNow writes the newest row", stored_tg(14201U));
+
+    g_saveNowBuilds = 0;
+    CallHistoryModel::setStoreBuildObserverForTest(count_save_now_build);
+    model.saveNow();
+    settle_save(model);
+    CallHistoryModel::setStoreBuildObserverForTest(nullptr);
+    expect("nothing owed, nothing written", g_saveNowBuilds == 0);
+}
+
+/* A saveNow() that lands mid-write copies the stores at once and queues their save behind the one in
+ * flight. It runs as that one finishes, with no GUI event loop in between (Qt pauses it on Android in
+ * the background), and the two completions leave ordinary debounced saves working. */
+void
+test_save_now_mid_write_queues_the_next_save(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754515000;
+    CallHistoryModel model;
+    ring.commit(0, 14301U, 802U, when, when + 4);
+    model.refresh(ring.state);
+    g_saveNowBuilds = 0;
+    CallHistoryModel::setStoreBuildObserverForTest(count_save_now_build);
+    model.startSaveForTest();
+    ring.commit(0, 14302U, 803U, when + 60, when + 64);
+    model.refresh(ring.state);
+    model.saveNow();
+    expect("no delayed retry", !model.savePendingForTest());
+    model.waitForSaveForTest(); // the pool alone; no event is processed between the saves
+    CallHistoryModel::setStoreBuildObserverForTest(nullptr);
+    expect("both saves ran on the pool", g_saveNowBuilds == 4);
+    expect("the queued save carries the row added mid-write", stored_tg(14301U) && stored_tg(14302U));
+
+    // Both completions delivered, the next call takes the debounced path and is written.
+    QCoreApplication::processEvents();
+    expect("nothing is owed after the queued save", !model.savePendingForTest());
+    ring.commit(0, 14303U, 804U, when + 120, when + 124);
+    model.refresh(ring.state);
+    expect("the next call arms the debounced save", model.savePendingForTest());
+    model.startSaveForTest();
+    settle_save(model);
+    expect("the debounced save still writes after two queued saves", stored_tg(14303U));
+}
+
+/* Android may kill a process off screen without notice: leaving the screen writes the log. That holds
+ * when it lands between a save's write and its completion reaching the GUI thread. */
+void
+test_leaving_the_screen_saves(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754516000;
+    CallHistoryModel model;
+    ring.commit(0, 14401U, 804U, when, when + 4);
+    model.refresh(ring.state);
+    Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationSuspended);
+    settle_save(model);
+    expect("a suspend writes the newest row", stored_tg(14401U));
+
+    ring.commit(0, 14402U, 805U, when + 60, when + 64);
+    model.refresh(ring.state);
+    model.startSaveForTest();
+    model.waitForSaveForTest(); // written; the completion is still queued
+    ring.commit(0, 14403U, 806U, when + 120, when + 124);
+    model.refresh(ring.state);
+    Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationHidden);
+    model.waitForSaveForTest(); // no event loop: the completion above is still undelivered
+    expect("a hide before the completion still writes the newest row", stored_tg(14403U));
+    QCoreApplication::processEvents();
+}
+
 } // namespace
 
 int
 main(int argc, char** argv) {
-    QCoreApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
     /* Isolated, disposable storage, same pattern as the persistence test. */
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
@@ -2220,6 +2364,10 @@ main(int argc, char** argv) {
     test_unconfirmed_fragment_joins_named_service();
     test_anonymous_rows_on_different_frequencies_stay_separate();
     test_stores_serialise_off_the_gui_thread();
+    test_save_delay_follows_the_bytes_written();
+    test_save_now_writes_at_once();
+    test_save_now_mid_write_queues_the_next_save();
+    test_leaving_the_screen_saves();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

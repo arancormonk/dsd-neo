@@ -8,7 +8,9 @@
 #include "call_history_model.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -26,6 +28,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <iterator>
+#include <limits>
 #include <stdint.h>
 #include <utility>
 
@@ -65,6 +68,11 @@ constexpr int kMaxRows = 1000;
  * re-ingested and is dead weight in the store. */
 constexpr int kMaxSeenEntries = 2048;
 constexpr int kSaveDelayMs = 3000;
+/* Each save rewrites both stores whole, most of a megabyte at a full log. On a busy system a fixed
+ * delay rewrites that every few seconds, about a gigabyte of flash an hour. The delay after a save
+ * therefore stretches to what writing its bytes at this rate takes: a full log saves about once a
+ * minute, while a small one keeps kSaveDelayMs. */
+constexpr qint64 kSaveBudgetBytesPerSec = 16 * 1024;
 /* How far down the log a live fragment looks for the call it continues: fragments arrive while
  * their call is among the newest rows. */
 constexpr int kMergeScanRows = 32;
@@ -137,6 +145,13 @@ day_label(qint64 when) {
     return QLocale().toString(day, QStringLiteral("ddd d MMM")).toUpper();
 }
 
+/** @brief The wait before the next debounced save, once the last save wrote @p bytes. */
+int
+save_delay_ms(qint64 bytes) {
+    const qint64 budgetMs = bytes * 1000 / kSaveBudgetBytesPerSec;
+    return static_cast<int>(qMin<qint64>(qMax<qint64>(kSaveDelayMs, budgetMs), std::numeric_limits<int>::max()));
+}
+
 } // namespace
 
 CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent) {
@@ -155,6 +170,18 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
     /* One worker: saves must not overlap (two writers racing on the same
      * QSaveFile target), and a second thread would buy nothing for two files. */
     m_savePool.setMaxThreadCount(1);
+    /* The save delay can be a minute long, and these are the moments it may never run out: Android
+     * can kill a process off screen without notice, and a quit ends the event loop the timer needs. */
+    if (QCoreApplication* app = QCoreApplication::instance()) {
+        connect(app, &QCoreApplication::aboutToQuit, this, &CallHistoryModel::saveNow);
+    }
+    if (QGuiApplication* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(app, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) {
+                saveNow();
+            }
+        });
+    }
     /* Day sections are derived from the current date at read time; when midnight
      * passes, every "TODAY" on screen is wrong until the rows are re-read. */
     m_dayTimer.setSingleShot(true);
@@ -201,14 +228,14 @@ CallHistoryModel::scheduleDayRollover() {
 }
 
 CallHistoryModel::~CallHistoryModel() {
-    /* A debounced or coalesced save may still be owed; the in-flight one (if any)
-     * already carries the current stores. Wait it out, then flush what remains
+    /* A debounced or coalesced save may still be owed; the queued ones (if any)
+     * already carry the stores they copied. Wait them out, then flush what remains
      * synchronously — the worker must never outlive this object. */
     const bool owedSave = m_saveTimer.isActive() || m_saveDirty;
     m_saveTimer.stop();
     m_savePool.waitForDone();
     if (owedSave) {
-        saveNow();
+        saveSync();
     }
 }
 
@@ -1566,21 +1593,26 @@ CallHistoryModel::seenToJson(const QHash<QString, SeenState>& seen) {
 }
 
 void
-CallHistoryModel::saveNow() const {
+CallHistoryModel::saveSync() const {
     json_store_save_array(QLatin1String(kStoreFileName), rowsToJson(m_rows));
     json_store_save_array(QLatin1String(kSeenStoreFileName), seenToJson(m_seen));
 }
 
 void
 CallHistoryModel::startAsyncSave() {
-    if (m_saveInFlight) {
+    if (m_savesInFlight > 0) {
         // The worker is mid-write with an older frame; remember that the stores
         // moved again rather than race a second writer onto the same files.
         m_saveDirty = true;
         return;
     }
-    m_saveInFlight = true;
     m_saveDirty = false;
+    queueSave();
+}
+
+void
+CallHistoryModel::queueSave() {
+    m_savesInFlight++;
     // Snapshots the worker owns outright. Detached here, on the GUI thread, so the GUI thread's later
     // edits of m_rows and m_seen and the worker's reads never touch one container block: an implicitly
     // shared copy would leave the GUI thread deciding whether to detach from a relaxed reference count
@@ -1591,18 +1623,39 @@ CallHistoryModel::startAsyncSave() {
     QHash<QString, SeenState> seen = m_seen;
     seen.detach();
     m_savePool.start([this, rows = std::move(rows), seen = std::move(seen)]() {
-        json_store_save_array(QLatin1String(kStoreFileName), rowsToJson(rows));
-        json_store_save_array(QLatin1String(kSeenStoreFileName), seenToJson(seen));
+        qint64 rowBytes = 0;
+        qint64 seenBytes = 0;
+        json_store_save_array(QLatin1String(kStoreFileName), rowsToJson(rows), &rowBytes);
+        json_store_save_array(QLatin1String(kSeenStoreFileName), seenToJson(seen), &seenBytes);
+        const qint64 bytes = rowBytes + seenBytes;
         // Back to the GUI thread; the destructor's waitForDone() keeps `this`
         // alive for the worker's whole run.
-        QMetaObject::invokeMethod(this, &CallHistoryModel::onSaveFinished, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, [this, bytes]() { onSaveFinished(bytes); }, Qt::QueuedConnection);
     });
 }
 
 void
-CallHistoryModel::onSaveFinished() {
-    m_saveInFlight = false;
-    if (m_saveDirty) {
+CallHistoryModel::saveNow() {
+    // Owed is what the destructor flushes too. Otherwise the files, or the save in
+    // flight, already hold the stores, and a rewrite would only cost flash.
+    if (!m_saveTimer.isActive() && !m_saveDirty) {
+        return;
+    }
+    m_saveTimer.stop();
+    m_saveDirty = false;
+    // Snapshot now and queue behind any save in flight. The pool's one thread runs them in
+    // order, so the writes never overlap, and this one starts as the last finishes, with no
+    // GUI event loop in between: Qt pauses it on Android while the app is in the background.
+    queueSave();
+}
+
+void
+CallHistoryModel::onSaveFinished(qint64 bytes) {
+    m_savesInFlight--;
+    // A debounced save already waiting restarts with it, so the delay counts from this write.
+    m_saveTimer.setInterval(save_delay_ms(bytes));
+    // What moved during the queued saves is owed once the last of them is done.
+    if (m_savesInFlight == 0 && m_saveDirty) {
         m_saveDirty = false;
         scheduleSave();
     }

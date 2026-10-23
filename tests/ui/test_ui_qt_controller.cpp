@@ -5,6 +5,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMap>
@@ -57,6 +58,7 @@
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "json_store.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
 #include "qml_gc_policy.h"
@@ -651,6 +653,70 @@ test_spaced_direct_profile_applies_live() {
     dsd_app_frontend_runtime_stop();
     freeState(&state);
 }
+
+// A full log's save can wait a minute, and a stop often comes just before the app goes away. The
+// tick that sees the session end saves the history, after it ingests the session's last rows: the
+// host publishes Idle or Failed inside its refresh, before this tick reads the snapshot. With or
+// without a redraw, the stored log holds the final row as soon as the save worker is done.
+static void
+test_session_end_saves_after_final_ingest() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::CallHistoryModel history;
+    Host host;
+    dsd_qt::UiController controller(&host, nullptr, &history, nullptr);
+    controller.setPollIntervalMs(50);
+    const auto stored = [](unsigned long long tg) {
+        for (const auto& value : dsd_qt::json_store_load_array("call_history.json")) {
+            if (value.toObject().value("tg").toVariant().toULongLong() == tg) {
+                return true;
+            }
+        }
+        return false;
+    };
+    unsigned int tg = 9201;
+    for (const bool redraw : {true, false}) {
+        for (const auto phase : {Host::Idle, Host::Failed}) {
+            host.setPhase(Host::Running);
+            const int before = history.count();
+            const unsigned int finalTg = tg++;
+            host.onRefresh = [&]() {
+                if (host.phase != Host::Running) {
+                    return;
+                }
+                auto& ring = state.event_history_s[0];
+                auto& item = ring.Event_History_Items[1];
+                item.category = DSD_EVENT_CATEGORY_VOICE;
+                item.target_id = finalTg;
+                item.source_id = 8101;
+                item.event_start_time = 1754600000 + static_cast<time_t>(finalTg) * 10;
+                item.event_time = item.event_start_time + 4;
+                ++ring.push_seq;
+                ++ring.commit_rev;
+                ++ring.revision;
+                dsd_app_telemetry_publish_opts_snapshot(&opts);
+                dsd_app_telemetry_publish_snapshot(&state);
+                if (redraw) {
+                    dsd_app_request_redraw();
+                }
+                host.setPhase(phase);
+            };
+            (void)dsd_app_frontend_redraw_consume();
+            QEventLoop loop;
+            QTimer::singleShot(65, &loop, &QEventLoop::quit);
+            controller.start();
+            loop.exec();
+            controller.stop();
+            host.onRefresh = {};
+            history.waitForSaveForTest();
+            check(history.count() == before + 1);
+            check(stored(finalTg));
+        }
+    }
+    freeState(&state);
+}
 } // namespace
 
 int
@@ -661,6 +727,7 @@ main(int argc, char** argv) {
     QCoreApplication::setApplicationName("dsd-neo-controller");
     dsd_test_qt_isolate_paths();
     test_history_receives_effective_scan_options();
+    test_session_end_saves_after_final_ingest();
     test_startup_options_wait_for_redraw();
     test_metrics_age_without_decoder_redraw();
     test_sheet_policy_edits();

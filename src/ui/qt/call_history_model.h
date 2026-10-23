@@ -194,6 +194,17 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     Q_INVOKABLE void clearAll();
 
+    /**
+     * @brief Write what the stores owe now, without waiting out the save delay.
+     *
+     * For the moments the log must reach the disk: a session that just ended, the app leaving the
+     * screen (applicationStateChanged to Suspended or Hidden, connected here), and aboutToQuit. Runs
+     * on the save worker like every other save. A save in flight is not raced: the stores are
+     * copied now and their save queued behind it, so it runs the moment that one finishes, with no
+     * GUI event loop needed in between. Nothing owed, nothing written.
+     */
+    void saveNow();
+
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief Call @p observer with the thread each store's JSON is built on (nullptr stops). */
     static void setStoreBuildObserverForTest(void (*observer)(const QThread* thread));
@@ -209,6 +220,18 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void
     waitForSaveForTest() {
         m_savePool.waitForDone();
+    }
+
+    /** @brief The delay the next debounced save waits. */
+    int
+    saveDelayMsForTest() const {
+        return m_saveTimer.interval();
+    }
+
+    /** @brief Whether a debounced save is waiting on its timer. */
+    bool
+    savePendingForTest() const {
+        return m_saveTimer.isActive();
     }
 #endif
 
@@ -401,7 +424,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void load();
     void scheduleSave();
     /** @brief Serialize and write both stores on the calling thread. */
-    void saveNow() const;
+    void saveSync() const;
     /**
      * @brief Hand the current stores to the save worker.
      *
@@ -410,10 +433,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * the JSON — tens of milliseconds at a full log (issue #718) — and the two file writes run on
      * m_savePool, which reads nothing but those copies. One save in flight at a time; a request
      * that lands mid-write marks the stores dirty, and the save re-arms the debounce timer when
-     * it finishes.
+     * it finishes. saveNow() is the one caller that queues behind a save in flight.
      */
     void startAsyncSave();
-    void onSaveFinished();
+    /** @brief Snapshot the stores and queue their save on m_savePool, behind any save in flight. */
+    void queueSave();
+    /** @brief A save of @p bytes (both stores) finished: set the next delay, then start or arm what is owed. */
+    void onSaveFinished(qint64 bytes);
     /** @brief The rows store; reads only its argument, so the save worker may call it. */
     static QJsonArray rowsToJson(const QList<Row>& rows);
     /** @brief The seen store, newest first and capped; reads only its argument, so the save worker may call it. */
@@ -469,7 +495,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     bool m_seeded = false;
     QTimer m_saveTimer;
     QThreadPool m_savePool;
-    bool m_saveInFlight = false;
+    /* Saves queued on m_savePool and not yet finished (onSaveFinished()); saveNow() can queue a
+     * second behind the one in flight, and the pool's one thread runs them in order. */
+    int m_savesInFlight = 0;
     bool m_saveDirty = false;
     /* Fires at local midnight: "TODAY"/"YESTERDAY" section labels are derived
      * from the current date, and nothing else re-reads them when it rolls over. */
