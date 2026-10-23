@@ -22,6 +22,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
@@ -642,6 +643,8 @@ nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[3
             out_key[i + 16] = (uint8_t)((state->rkey_array[key_id + 0x201] >> (56 - (i * 8))) & 0xFFU);
             out_key[i + 24] = (uint8_t)((state->rkey_array[key_id + 0x301] >> (56 - (i * 8))) & 0xFFU);
         }
+        // An imported key is present by its import flags, an all-zero one included.
+        return keyring_kid_aes_present(state, key_id);
     } else {
         for (int i = 0; i < 8; i++) {
             out_key[i + 0] = (uint8_t)((state->K1 >> (56 - (i * 8))) & 0xFFU);
@@ -1063,14 +1066,17 @@ nxdn_dcall_apply_decryption(const dsd_opts* opts, dsd_state* state, const struct
     DSD_MEMSET(aes_key, 0, sizeof(aes_key));
 
     uint64_t key = 0ULL;
+    int key_present = 0;
     int aes_key_loaded = 0;
     if (state->payload_algid != 0) {
         if (state->payload_algid == 3) {
             aes_key_loaded = nxdn_load_data_aes_key(state, (uint8_t)state->payload_keyid, aes_key);
         } else if (state->keyloader == 1) {
             key = state->rkey_array[state->payload_keyid];
+            key_present = keyring_kid_scalar_present(state, state->payload_keyid);
         } else {
             key = state->R;
+            key_present = dsd_key_scalar_present(state, 0);
         }
 
         DSD_FPRINTF(stderr, "\n Encrypted Data; Cipher: %d; Key ID: %02X;", state->payload_algid, state->payload_keyid);
@@ -1079,12 +1085,12 @@ nxdn_dcall_apply_decryption(const dsd_opts* opts, dsd_state* state, const struct
         }
     }
 
-    if (state->payload_algid == 1 && key != 0ULL) {
+    if (state->payload_algid == 1 && key_present) {
         char key_text[16];
         DSD_FPRINTF(stderr, " Key: %s;",
                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, key, 5U));
         nxdn_pdu_scrambler_keystream_creation(ks, (int)(key & 0x7FFFU), ctx->total_bits);
-    } else if (state->payload_algid == 2 && key != 0ULL) {
+    } else if (state->payload_algid == 2 && key_present) {
         char key_text[17];
         DSD_FPRINTF(stderr, " Key: %s;",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, key, 16U, 0));
@@ -1642,14 +1648,11 @@ nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, long int fre
 
 static void
 nxdn_vcall_assgn_load_scrambler_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
-    if (state->rkey_array[info->destination_id] != 0) {
-        state->R = state->rkey_array[info->destination_id];
-        state->scalar_key_present[0] = 0;
+    if (keyring_load_scalar_key(state, 0, (int)info->destination_id)) {
         DSD_FPRINTF(stderr, " %s", KYEL);
         char key_text[24];
         DSD_FPRINTF(stderr, " Key Loaded: %s",
-                    dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys,
-                                              state->rkey_array[info->destination_id], 0U));
+                    dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
         state->payload_miN = state->R;
     }
     if (state->M == 1) {
@@ -2285,8 +2288,8 @@ nxdn_vcall_load_aes_key(dsd_state* state, uint32_t key_index) {
     state->A2[0] = state->rkey_array[key_index + 0x101];
     state->A3[0] = state->rkey_array[key_index + 0x201];
     state->A4[0] = state->rkey_array[key_index + 0x301];
-    state->aes_key_loaded[0] =
-        (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) ? 0 : 1;
+    // Present by the import flags, an all-zero key included; value fallback for material stored without them.
+    state->aes_key_loaded[0] = keyring_kid_aes_present(state, (int)key_index);
 
     for (int i = 0; i < 8; i++) {
         state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
@@ -2303,20 +2306,16 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
     if (state->keyloader != 1) {
         return;
     }
+    // An imported key is present by its import flag, a zero one included (keyring_kid_scalar_present()).
     if (info->cipher_type == 1U && dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
-        if (state->rkey_array[info->key_id] != 0) {
-            state->R = state->rkey_array[info->key_id];
-            state->scalar_key_present[0] = 0;
-        } else if (state->rkey_array[info->destination_id] != 0) {
-            state->R = state->rkey_array[info->destination_id];
-            state->scalar_key_present[0] = 0;
+        if (!keyring_load_scalar_key(state, 0, (int)info->key_id)) {
+            (void)keyring_load_scalar_key(state, 0, (int)info->destination_id);
         }
-    } else if (info->cipher_type == 2U && state->rkey_array[info->key_id] != 0) {
-        state->R = state->rkey_array[info->key_id];
-        state->scalar_key_present[0] = 0;
+    } else if (info->cipher_type == 2U) {
+        (void)keyring_load_scalar_key(state, 0, (int)info->key_id);
     } else if (info->cipher_type == 3U) {
         uint32_t key_index = 0;
-        if (state->rkey_array[info->key_id] != 0) {
+        if (keyring_kid_aes_present(state, (int)info->key_id)) {
             key_index = info->key_id;
         }
         nxdn_vcall_load_aes_key(state, key_index);
@@ -2403,12 +2402,13 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
             int selected = -1;
             if (state->keyloader == 1) {
                 source = DSD_CALL_KEY_DEFAULT;
-                if (state->rkey_array[key_id] != 0) {
+                // The key ID holds an imported key, a zero one included (the keyring's presence rule).
+                if (keyring_kid_material(state, key_id, NULL, NULL)) {
                     source = DSD_CALL_KEY_SIGNALED;
                     selected = key_id;
                 } else if (cipher_type == 1
                            && call.ota_target_id < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
-                           && state->rkey_array[call.ota_target_id] != 0) {
+                           && keyring_kid_scalar_present(state, (int)call.ota_target_id)) {
                     source = DSD_CALL_KEY_DESTINATION;
                     selected = (int)call.ota_target_id;
                 } else if (cipher_type == 3) {
@@ -2620,8 +2620,8 @@ nxdn_vcall_iv_load_aes_key(dsd_state* state) {
     state->A2[0] = state->rkey_array[state->nxdn_key + 0x101];
     state->A3[0] = state->rkey_array[state->nxdn_key + 0x201];
     state->A4[0] = state->rkey_array[state->nxdn_key + 0x301];
-    state->aes_key_loaded[0] =
-        (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) ? 0 : 1;
+    // Present by the import flags, an all-zero key included; value fallback for material stored without them.
+    state->aes_key_loaded[0] = keyring_kid_aes_present(state, state->nxdn_key);
 
     for (int i = 0; i < 8; i++) {
         state->aes_key[i + 0] = (state->A1[0] >> (56 - (i * 8))) & 0xFF;
@@ -2643,9 +2643,8 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
     if (state->nxdn_cipher_type == 0x03) {
         LFSR128n(state);
     }
-    if (state->nxdn_cipher_type == 0x02 && state->keyloader == 1 && state->rkey_array[state->nxdn_key] != 0) {
-        state->R = state->rkey_array[state->nxdn_key];
-        state->scalar_key_present[0] = 0;
+    if (state->nxdn_cipher_type == 0x02 && state->keyloader == 1) {
+        (void)keyring_load_scalar_key(state, 0, state->nxdn_key);
     }
     if (state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0)) {
         state->nxdn_new_iv = 1;
@@ -2836,10 +2835,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         state->lastsynctype = DSD_SYNC_NONE;
-        if (state->rkey_array[info->id] != 0) {
-            state->R = state->rkey_array[info->id];
-            state->scalar_key_present[0] = 0;
-        }
+        (void)keyring_load_scalar_key(state, 0, (int)info->id);
         if (state->M == 1) {
             nxdn_cipher_force(state, 0x1);
         }

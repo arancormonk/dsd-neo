@@ -1373,6 +1373,49 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     return rc;
 }
 
+/* Data DES with an imported zero key decrypts (the import flag makes it a key); with nothing imported it does not. */
+static int
+test_sdcall_des_imported_zero_key(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t header_bits[96];
+    uint8_t final_bits[80];
+    uint8_t payload[8] = {0x12U, 0x34U, 0x56U, 0x78U, 0x9AU, 0xBCU, 0xDEU, 0xF0U};
+    const uint8_t key_id = 0x05U;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    state->event_history_s = (Event_History_I*)calloc(1, sizeof(*state->event_history_s));
+    if (state->event_history_s == NULL) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    for (int imported = 1; imported >= 0; imported--) {
+        DSD_MEMSET(header_bits, 0, sizeof(header_bits));
+        DSD_MEMSET(final_bits, 0, sizeof(final_bits));
+        reset_datacall_capture();
+        reset_crypto_stub_capture();
+        g_des_fill_enabled = 1;
+        state->keyloader = 1;
+        state->rkey_array_loaded[key_id] = (unsigned char)imported;
+        write_data_call_header_fields(header_bits, 0x38U, 2U, key_id, 0x1234U, 0x4567U, 1U, 0U);
+        NXDN_Elements_Content_decode(opts, state, header_bits, sizeof(header_bits));
+        state->data_header_format[0] = 3U;
+        write_data_payload_frame(final_bits, 0x39U, 0U, 0U, payload, 8U);
+        NXDN_Elements_Content_decode(opts, state, final_bits, sizeof(final_bits));
+        rc |= expect_int(imported ? "sdcall-zero-des-decrypts" : "sdcall-absent-des-refused", g_des_calls, imported);
+    }
+    free(state->event_history_s);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1691,6 +1734,91 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
     rc |= expect_int("vcall-aes-canonical", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_int("vcall-aes-canonical-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
     rc |= expect_int("vcall-aes-canonical-audio", call.audio_permitted, 1);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* An imported key is present by its import flags, an all-zero one included, as the same value entered directly is;
+ * a key ID nothing was imported for is still refused. */
+static int
+test_vcall_imported_zero_keys_are_present(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+
+    /* AES-256, key ID 0x13: four imported zero segments. */
+    state->nxdn_confirmed = 1;
+    state->keyloader = 1;
+    state->rkey_array_loaded[0x13U + 0x000U] = 1U;
+    state->rkey_array_loaded[0x13U + 0x101U] = 1U;
+    state->rkey_array_loaded[0x13U + 0x201U] = 1U;
+    state->rkey_array_loaded[0x13U + 0x301U] = 1U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("vcall-zero-aes-loaded", state->aes_key_loaded[0], 1);
+    rc |= expect_int("vcall-zero-aes-unmutes", state->dmr_encL, 0);
+    dsd_call_snapshot call;
+    rc |= expect_int("vcall-zero-aes-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-zero-aes-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("vcall-zero-aes-signaled-key", call.key_selection.effective_id, 0x13);
+    rc |= expect_int("vcall-zero-aes-signaled-source", call.key_selection.source, DSD_CALL_KEY_SIGNALED);
+    dsd_state_ext_free_all(state);
+
+    /* DES, key ID 0x2A: one imported zero key. */
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->keyloader = 1;
+    state->rkey_array_loaded[0x2AU] = 1U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 2U, 0x2AU);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("vcall-zero-des-present", state->scalar_key_present[0], 1);
+    rc |= expect_u64("vcall-zero-des-key", (uint64_t)state->R, 0ULL);
+    rc |= expect_int("vcall-zero-des-unmutes", state->dmr_encL, 0);
+    dsd_state_ext_free_all(state);
+
+    /* Scrambler on NXDN48, key ID 0x2A: one imported zero key. */
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->keyloader = 1;
+    state->rkey_array_loaded[0x2AU] = 1U;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 1U, 0x2AU);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("vcall-zero-scrambler-present", state->scalar_key_present[0], 1);
+    rc |= expect_int("vcall-zero-scrambler-unmutes", state->dmr_encL, 0);
+    dsd_state_ext_free_all(state);
+
+    /* Nothing imported for the key ID: DES and AES stay refused. */
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->frame_nxdn48 = 0;
+    opts->frame_nxdn96 = 0;
+    state->keyloader = 1;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 2U, 0x2AU);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("vcall-absent-des-absent", state->scalar_key_present[0], 0);
+    rc |= expect_int("vcall-absent-des-muted", state->dmr_encL, 1);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->keyloader = 1;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("vcall-absent-aes-unloaded", state->aes_key_loaded[0], 0);
+    rc |= expect_int("vcall-absent-aes-muted", state->dmr_encL, 1);
 
     dsd_state_ext_free_all(state);
     free(state);
@@ -2702,11 +2830,13 @@ main(void) {
     rc |= test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions();
     rc |= test_sdcall_des_data_decrypts_and_resets();
     rc |= test_dcall_aes_data_decrypts_with_manual_key_and_iv();
+    rc |= test_sdcall_des_imported_zero_key();
     rc |= test_arib_vcall_uses_shifted_fields();
     rc |= test_vcall_des_keyloader_and_iv_signal();
     rc |= test_vcall_scrambler_keyloader_uses_active_nxdn48_profile();
     rc |= test_vcall_aes_keyloader_and_iv_signal();
     rc |= test_vcall_aes_key_flag_drives_crypto_state();
+    rc |= test_vcall_imported_zero_keys_are_present();
     rc |= test_type_d_scch_publishes_crypto_fragments();
     rc |= test_type_d_scch_values_are_not_access_codes();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();

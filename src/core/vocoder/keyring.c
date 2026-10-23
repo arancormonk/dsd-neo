@@ -111,6 +111,25 @@ keyring_kid_scalar_present(const dsd_state* state, int key_id) {
     return state != NULL && keyring_cell_present(state, key_id);
 }
 
+int
+keyring_kid_aes_present(const dsd_state* state, int key_id) {
+    return state != NULL && keyring_aes_segment_count(state, key_id) != 0U;
+}
+
+int
+keyring_load_scalar_key(dsd_state* state, int slot, int key_id) {
+    if (state == NULL || slot < 0 || slot > 1 || !keyring_kid_scalar_present(state, key_id)) {
+        return 0;
+    }
+    if (slot == 0) {
+        state->R = state->rkey_array[key_id];
+    } else {
+        state->RR = state->rkey_array[key_id];
+    }
+    state->scalar_key_present[slot] = 1U;
+    return 1;
+}
+
 void
 keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
     if (state == NULL || slot < 0 || slot > 1) {

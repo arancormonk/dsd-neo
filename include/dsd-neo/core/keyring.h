@@ -70,6 +70,17 @@ int keyring_kid_material(const dsd_state* state, int key_id, unsigned long long*
  */
 int keyring_kid_scalar_present(const dsd_state* state, int key_id);
 
+/** Whether any AES segment of the key ID is present, by the same rule (aes_key_loaded after activation). */
+int keyring_kid_aes_present(const dsd_state* state, int key_id);
+
+/**
+ * Load the key ID's scalar key into the slot (R or RR, scalar_key_present[]) when keyring_kid_scalar_present() says
+ * it holds one, an imported zero included. Leaves the slot untouched and returns 0 when it holds none; 1 when loaded.
+ * For the protocols that key a scalar by a signalled ID or destination outside keyring_activate_slot_with_kid()
+ * (NXDN).
+ */
+int keyring_load_scalar_key(dsd_state* state, int slot, int key_id);
+
 /**
  * Report whether a key ID holds a complete Kirisun (ALG 0x36/0x37) quartet.
  *
