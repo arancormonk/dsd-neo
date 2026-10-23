@@ -21,7 +21,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <limits.h>
 #include <math.h>
@@ -1435,7 +1434,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     p25p2_xcch_handle_facch_mac_end(&opts, &state, 2, mac);
     p25p2_xcch_handle_facch_mac_idle(&opts, &state, 2, mac);
     p25p2_xcch_handle_facch_mac_active(&opts, &state, 2, mac);
-    p25p2_xcch_clear_idle_metadata_if_stale(&state, 2, dsd_decode_now_mono_s(), 1);
+    p25p2_xcch_clear_idle_metadata_if_stale(&state, 2, p25_sm_slot_grant_seq(2), 1);
     rc |= expect_int("facch invalid no end", g_end_count[0] + g_end_count[1], 0);
     rc |= expect_int("facch invalid no idle", g_idle_count[0] + g_idle_count[1], 0);
     rc |= expect_int("facch invalid no active", g_active_count[0] + g_active_count[1], 0);
