@@ -3098,6 +3098,28 @@ dsd_event_enrich_committed_alias(const dsd_opts* opts, dsd_state* state, uint8_t
                                    "Enriched: ", rendered, item, &added);
 }
 
+// Caller holds the call-state lock. Write the enrichment into the row the epoch found, staged or committed.
+static void
+dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot, dsd_call_state_ext* ext,
+                            dsd_call_snapshot* call, uint64_t epoch, uint8_t history_index, const char* value,
+                            dsd_event_enrichment_kind kind) {
+    Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
+    const int alias_changed =
+        kind == DSD_EVENT_ENRICH_ALIAS && strncmp(item->alias, value, sizeof(item->alias) - 1U) != 0;
+    dsd_event_enrich_apply(state, slot, item, value, kind);
+    if (state->event_crc_invalid[slot]) {
+        dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
+    }
+    if (history_index != 0U) {
+        // Late enrichment landed on a committed row, not the staged one.
+        if (kind == DSD_EVENT_ENRICH_ALIAS) {
+            dsd_event_enrich_committed_alias(opts, state, slot, &ext->events[slot], epoch, item, alias_changed);
+        }
+        state->event_history_s[slot].commit_rev++;
+    }
+    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+}
+
 static int
 dsd_event_enrich_epoch(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
                        dsd_event_enrichment_kind kind) {
@@ -3126,21 +3148,7 @@ dsd_event_enrich_epoch(const dsd_opts* opts, dsd_state* state, uint8_t slot, uin
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
-    const int alias_changed =
-        kind == DSD_EVENT_ENRICH_ALIAS && strncmp(item->alias, value, sizeof(item->alias) - 1U) != 0;
-    dsd_event_enrich_apply(state, slot, item, value, kind);
-    if (state->event_crc_invalid[slot]) {
-        dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
-    }
-    if (history_index != 0U) {
-        // Late enrichment landed on a committed row, not the staged one.
-        if (kind == DSD_EVENT_ENRICH_ALIAS) {
-            dsd_event_enrich_committed_alias(opts, state, slot, &ext->events[slot], epoch, item, alias_changed);
-        }
-        state->event_history_s[slot].commit_rev++;
-    }
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    dsd_event_enrich_row_locked(opts, state, slot, ext, call, epoch, history_index, value, kind);
     dsd_call_state_ext_unlock(ext);
     return 1;
 }
