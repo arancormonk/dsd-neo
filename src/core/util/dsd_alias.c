@@ -30,23 +30,26 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static int
-policy_try_append_alias(dsd_state* state, uint32_t id, const char* mode, const char* name) {
+/**
+ * @brief Learn an over-the-air alias as the source's policy row, and give a new row its group file line.
+ *
+ * An imported row for the source wins, a repeat of the learned name changes nothing, and a renamed radio's alias
+ * replaces the learned one (dsd_tg_policy_learn_exact()). Only a first-learned row is appended to the group file: the
+ * file is append-only and its first row for an ID is the one a reload keeps, so a rename stays session-only.
+ */
+static void
+policy_learn_alias(const dsd_opts* opts, dsd_state* state, uint32_t id, const char* mode, const char* name,
+                   const char* metadata) {
     dsd_tg_policy_entry entry;
-    dsd_tg_policy_lookup lookup;
     if (!state || id == 0 || !mode || !name) {
-        return 0;
+        return;
     }
-
-    if (dsd_tg_policy_lookup_id(state, id, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_EXACT) {
-        return 0;
-    }
-
     if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
-        return 0;
+        return;
     }
-
-    return dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0 ? 1 : 0;
+    if (dsd_tg_policy_learn_exact(state, &entry) == DSD_TG_POLICY_LEARN_ADDED) {
+        (void)dsd_tg_policy_append_group_file_row(opts, &entry, metadata);
+    }
 }
 
 static void
@@ -614,21 +617,13 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
     dsd_call_snapshot call;
     int current_call_match = alias_current_call_snapshot(state, slot, rid, 0, &call);
     if (current_call_match) {
+        char metadata[128];
+        DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
+        policy_learn_alias(opts, state, rid, "D", str, metadata);
         char alias[500];
         DSD_SNPRINTF(alias, sizeof(alias), "%s; %s", str, fqs);
         (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, alias);
-    }
-
-    if (current_call_match
-        && policy_try_append_alias(state, rid, "D", str)) //not already in there, so save it there now
-    {
-        dsd_tg_policy_entry row;
-        if (dsd_tg_policy_make_exact_entry(rid, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
-            char metadata[128];
-            DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
-            (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
-        }
-    } else if (rid != 0 && !current_call_match) {
+    } else if (rid != 0) {
         DSD_FPRINTF(stderr, " Alias Deferred: current call source mismatch;");
     }
 }
@@ -954,17 +949,10 @@ l3h_alias_sanitize_char(uint8_t value) {
 
 static void
 l3h_alias_append_policy_row(const dsd_opts* opts, dsd_state* state, uint32_t tsrc, uint32_t ttg, const char* alias) {
-    if (!policy_try_append_alias(state, tsrc, "D", alias)) {
-        return;
-    }
-
-    dsd_tg_policy_entry row;
-    if (dsd_tg_policy_make_exact_entry(tsrc, "D", alias, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
-        char metadata[160];
-        DSD_SNPRINTF(metadata, sizeof(metadata), "TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris", ttg, state->p2_sysid,
-                     state->p2_rfssid, state->p2_siteid);
-        (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
-    }
+    char metadata[160];
+    DSD_SNPRINTF(metadata, sizeof(metadata), "TG:%d,SYS:%03llX,RFSS:%lld,SITE:%lld,Harris", ttg, state->p2_sysid,
+                 state->p2_rfssid, state->p2_siteid);
+    policy_learn_alias(opts, state, tsrc, "D", alias, metadata);
 }
 
 static int
@@ -1005,11 +993,11 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
 
     uint8_t slot_idx = alias_slot_index(slot);
     if (attach) {
-        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, str);
         if (save_policy) {
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
         }
+        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, str);
     } else {
         DSD_FPRINTF(stderr, " Alias Deferred: no attributable call for this slot;");
     }
@@ -1052,20 +1040,10 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
     uint16_t nac = state->nac;
 
     if (rid != 0U) {
+        char metadata[64];
+        DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
+        policy_learn_alias(opts, state, rid, "D", (const char*)alias, metadata);
         (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, (const char*)alias);
-    }
-
-    if (rid != 0) {
-        if (policy_try_append_alias(state, rid, "D", (const char*)alias)) //not already in there, so save it there now
-        {
-            dsd_tg_policy_entry row;
-            if (dsd_tg_policy_make_exact_entry(rid, "D", (const char*)alias, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row)
-                == 0) {
-                char metadata[64];
-                DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
-                (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
-            }
-        }
     }
 }
 

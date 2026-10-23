@@ -58,7 +58,7 @@ static int g_lcw_calls;
 /* state->p25_p1_lcw_soft as the last p25_lcw() call found it. */
 static int g_lcw_soft_seen = -1;
 static int g_policy_make_calls;
-static int g_policy_upsert_calls;
+static int g_policy_learn_calls;
 static int g_soft_dibit_value;
 static int g_get_dibit_soft_calls;
 static int g_read_dibit_soft_calls;
@@ -79,7 +79,6 @@ static int g_interrupt_at_imbe = -1;
 static int g_last_status_dibit;
 static uint32_t g_last_policy_id;
 static uint8_t g_last_policy_source;
-static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
 static char g_last_policy_mode[8];
 static char g_last_policy_name[32];
 
@@ -249,18 +248,17 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
     return 0;
 }
 
-int
-dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode) {
+dsd_tg_policy_learn_result
+dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
     (void)state;
-    g_policy_upsert_calls++;
-    g_last_policy_upsert_mode = mode;
+    g_policy_learn_calls++;
     if (entry != NULL) {
         g_last_policy_id = entry->id_start;
         g_last_policy_source = entry->source;
         (void)DSD_SNPRINTF(g_last_policy_mode, sizeof(g_last_policy_mode), "%s", entry->mode);
         (void)DSD_SNPRINTF(g_last_policy_name, sizeof(g_last_policy_name), "%s", entry->name);
     }
-    return 0;
+    return DSD_TG_POLICY_LEARN_ADDED;
 }
 
 #include "../../../src/protocol/p25/phase1/p25p1_ldu1.c"
@@ -290,7 +288,7 @@ reset_hook_counters(void) {
     g_lsd_soft_result = 1;
     g_lcw_calls = 0;
     g_policy_make_calls = 0;
-    g_policy_upsert_calls = 0;
+    g_policy_learn_calls = 0;
     g_soft_dibit_value = 0;
     g_get_dibit_soft_calls = 0;
     g_read_dibit_soft_calls = 0;
@@ -306,7 +304,6 @@ reset_hook_counters(void) {
     g_last_status_dibit = -1;
     g_last_policy_id = 0U;
     g_last_policy_source = 0U;
-    g_last_policy_upsert_mode = 0;
     g_last_policy_mode[0] = '\0';
     g_last_policy_name[0] = '\0';
 }
@@ -713,11 +710,9 @@ test_ldu1_softid_alias_state(void) {
     p25p1_ldu1_handle_softid(&opts, &state, &ctx);
     rc |= expect_int("softid counter after segment", state.data_block_counter[0], 2);
     rc |= expect_int("softid policy make", g_policy_make_calls, 1);
-    rc |= expect_int("softid policy upserts", g_policy_upsert_calls, 2);
+    rc |= expect_int("softid policy learns once", g_policy_learn_calls, 1);
     rc |= expect_int("softid policy id", (int)g_last_policy_id, 1357);
     rc |= expect_int("softid policy source", (int)g_last_policy_source, (int)DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
-    rc |=
-        expect_int("softid last upsert mode", (int)g_last_policy_upsert_mode, (int)DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
     rc |= expect_cstr("softid clear mode", g_last_policy_mode, "D");
     rc |= expect_cstr("softid alias name", g_last_policy_name, "AB");
 
@@ -750,7 +745,7 @@ test_ldu1_softid_alias_state(void) {
     rc |= expect_int("softid invalid chars advance counter", state.data_block_counter[0], 2);
     rc |= expect_int("softid invalid chars kept zero", state.dmr_alias_block_segment[0][0][0][0], 0);
     rc |= expect_int("softid encrypted policy make", g_policy_make_calls, 1);
-    rc |= expect_int("softid encrypted policy upserts", g_policy_upsert_calls, 2);
+    rc |= expect_int("softid encrypted policy learns once", g_policy_learn_calls, 1);
     rc |= expect_cstr("softid encrypted no-key mode", g_last_policy_mode, "DE");
     rc |= expect_cstr("softid invalid alias name empty", g_last_policy_name, "");
 

@@ -543,6 +543,54 @@ test_stored_name_is_utf8(void) {
     fixture_close(&f);
 }
 
+static unsigned int
+policy_generation(const dsd_state* st) {
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(st, &context, &generation);
+    return generation;
+}
+
+/* The learned row follows the radio's alias: a repeat changes nothing (the policy generation stays put), a renamed
+ * radio's alias replaces the learned name, and an imported row for the radio always wins. */
+static void
+test_learned_alias_row(void) {
+    fixture f;
+    fixture_open(&f);
+    const uint32_t rid = 0x00E001U;
+    alias_record first;
+    alias_record renamed;
+    build_record_ascii(&first, rid, "BATT 3");
+    build_record_ascii(&renamed, rid, "BATT 3 CHIEF");
+
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 700U, rid);
+    p2_send_record(f.opts, f.st, 1, &first, 0x1U);
+    expect_true("first alias learned", policy_name_is(f.st, rid, "BATT 3"));
+    const unsigned int learned_generation = policy_generation(f.st);
+    p2_send_record(f.opts, f.st, 1, &first, 0x1U);
+    p2_send_record(f.opts, f.st, 1, &first, 0x2U);
+    expect_true("repeated alias keeps the policy generation", policy_generation(f.st) == learned_generation);
+    expect_true("repeated alias writes one group file row", file_count(f.group_path, "BATT 3") == 1);
+
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 700U, rid);
+    p2_send_record(f.opts, f.st, 1, &renamed, 0x3U);
+    expect_true("renamed radio's alias replaces the learned one", policy_name_is(f.st, rid, "BATT 3 CHIEF"));
+    fixture_close(&f);
+
+    fixture_open(&f);
+    dsd_tg_policy_entry imported;
+    if (dsd_tg_policy_make_exact_entry(rid, "A", "Chief Battalion 3", DSD_TG_POLICY_SOURCE_IMPORTED, &imported) != 0
+        || dsd_tg_policy_append_exact(f.st, &imported) != 0) {
+        DSD_FPRINTF(stderr, "imported row not stored\n");
+        exit(2);
+    }
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 700U, rid);
+    p2_send_record(f.opts, f.st, 1, &first, 0x1U);
+    expect_true("imported row wins over the alias", policy_name_is(f.st, rid, "Chief Battalion 3"));
+    expect_true("alias still reaches the event row", history_has_alias(f.st, 0U, "BATT 3; "));
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_phase2_sacch_alias_uses_voice_slot();
@@ -552,6 +600,7 @@ main(void) {
     test_phase2_harris_failed_crc_publishes_nothing();
     test_record_length_with_zero_words();
     test_stored_name_is_utf8();
+    test_learned_alias_row();
     if (g_fail) {
         return 1;
     }

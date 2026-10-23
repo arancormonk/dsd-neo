@@ -1126,6 +1126,15 @@ suite runs under this compiler.
   both snapshot hops, reuses an unchanged clone, and preserves an owned destination store on allocation failure.
   A shallow alias of the source is detached so destination cleanup cannot free the source. `CORE_SOURCE_ALIAS`
   tests matching, precedence, lifecycle and policy isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
+- Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`): every over-the-air alias publisher (Motorola,
+  Harris and Tait in `dsd_alias.c`, the P25 Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c`) learns its row
+  through `dsd_tg_policy_learn_exact()`: the first exact row for the source wins when it was imported or entered by the
+  user, a learned row is replaced only when its normalised name or mode (D vs DE) changed, and a repeat changes
+  nothing, so the policy generation (and every frontend's snapshot copy keyed on it) stays put while a radio keeps
+  sending the same alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same compare. Only a first-learned
+  row is appended to the group file, which is append-only and whose first row for an ID is the one a reload keeps:
+  a renamed radio's new alias holds for the session, and after a restart the file's earlier name loads as an imported
+  row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
 - Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while
   `ota_target_id` is the supergroup every frontend shows. `DSD_TG_POLICY_BLOCK_OTA_FINAL` in
   `<dsd-neo/core/talkgroup_policy.h>` names the supergroup blocks no member overrides (call skip, encryption
