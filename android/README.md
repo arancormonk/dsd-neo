@@ -1096,7 +1096,8 @@ bounded redacted persistent tail from previous runs, including how Android says
 recent app processes ended. It captures no crash stacks or tombstones. The process
 ring holds at most 2000 entries, each at most 512 UTF-8 bytes. Pause freezes the displayed list while capture continues; Copy and Share
 include the current ring. Clear removes the ring, pending earlier records and the persistent
-tail; records captured after Clear remain available. Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
+tail; records captured after Clear remain available, and the saved tail starts again with the
+running process's `process:` line (never the cleared session's). Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
 
 Host records arriving before the first decode start do not depend on the runtime sink or
 stderr pump. Tap installation drains their bounded buffer to the ring and the tail at
@@ -1128,14 +1129,17 @@ The writer keeps the newest 256 KiB as two append-only segments in
 yet on flash. So a start records itself before it touches the device:
 - **When:** before the USB access request and before the decoder starts, a
   `session starting:` line records the source, the boot count and, for a dongle,
-  its product and VID:PID.
+  its product and VID:PID. A USB access request and the start that follows it are
+  one attempt with one line; every other Play, the same source again included,
+  gets its own.
 - **The window:** for the next 10 s every record is written at once and synced.
   The window opens again at `UsbManager.openDevice` and when the service starts
   decoding, and the steps in between log on entry and on return: the foreground
   promotion, engine configuration, the USB open and the first AAudio open and
   start. A start that never returned from one of them still shows how far it got.
 - **Best effort:** the start waits at most 200 ms for its line to reach flash.
-  Listening never waits longer.
+  Listening never waits longer. A store that refuses to sync is retried once a
+  second, never in a loop.
 - **Leaving:** quitting and the Activity's teardown flush the tail, with a bounded
   wait.
 
@@ -1145,9 +1149,10 @@ model, app version. Android 11 and later add up to three `exit:` lines from
 `ActivityManager.getHistoricalProcessExitReasons()`, newest first, each with time,
 pid, reason (`CRASH_NATIVE`, `LOW_MEMORY`, `ANR`, `SIGNALED`, ...), importance,
 PSS and Android's description. These are repeated on every launch. Each new
-segment starts again with the current `process:` and `session starting:` lines,
-and the screen keeps them even when the 2000-row limit drops the lines around
-them. So a shared report always says which process, boot and session its lines
+segment starts again with the current `process:` and `session starting:` lines.
+The screen, Copy and Share keep the previous run's and this run's `process:` and
+`session starting:` lines at the top, however many records the 2000-row limit
+drops after them. So a shared report always says which process, boot and session its lines
 belong to.
 
 If the boot count changed since the previous run, the run adds `previous run:

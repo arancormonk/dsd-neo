@@ -6700,17 +6700,24 @@ Qt Quick frontend (`src/ui/qt`):
 
   `installTap()` records the run's `process:` line (pid, OS, app version, plus Android's boot count, device and recent
   `exit:` lines from the platform facts provider). Each new segment starts with that line and the current
-  `session starting:` line, and the loader keeps both through the 2000-row ring limit. The only derived line is
+  `session starting:` line, including the first segment after Clear (which forgets the cleared session's line). The
+  ring keeps the previous run's divider and identity and this run's process and session lines pinned at its front
+  through eviction (`appendRingLocked()`, at most eight), so Copy and Share always carry them. The only derived line is
   "previous run: Android has restarted since (boot a -> b)", from the previous run's last `process:` line.
   Session attempts are recorded where a start is about to touch a device:
-  - `DecoderHost::noteStartAttempt()`, called by `SessionArgsBuilder::start`, `ScanListStarter::start` and Android's
-    USB access request, calls `noteSessionAttempt()`. That records the marker, arms the 10 s startup window, in which
-    every append is drained at once and synced, and waits up to 200 ms for it to be durable (best effort, never
-    blocking listening).
-  - `UiController`'s Starting transition calls it with no context. It records the plain marker only when no explicit
-    note just described the attempt.
+  - `DecoderHost::noteStartAttempt()`, called by `SessionArgsBuilder::start` and `ScanListStarter::start`, and Android's
+    USB access request (stage `UsbAccess`) call `noteSessionAttempt()`. That records the marker, arms the 10 s startup
+    window, in which every append is drained at once and synced, and waits up to 200 ms for it to be durable (best
+    effort, never blocking listening). Only a USB access note and the start note of the same attempt share a marker.
+  - `UiController`'s Starting transition calls it with no context. It records the plain marker only when no start note
+    just described the attempt.
   - Android re-arms the window at `UsbManager.openDevice` and the service's `startDecoding` (`armStartupWindow()`).
   - `aboutToQuit` and the Activity teardown make the tail durable with a bounded flush.
+
+  A failed sync is retried after `kSyncIntervalMs`, never in a loop. A failed append, sync or Clear makes the next
+  `flush()` report false. On Windows `QFile::handle()` is a C runtime descriptor, so `dsd_fsync()` (`_commit`) is a
+  real flush there too. A current segment over the cap is an older build's unsplit tail and alone is authoritative,
+  so a split interrupted by a crash is redone without duplicating records.
 
   `dsd_fsync_parent_dir()` (platform `file_compat`) makes a created, renamed or removed entry durable on POSIX.
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is

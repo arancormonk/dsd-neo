@@ -42,6 +42,7 @@ class DiagnosticsLog {
         quint64 syncs = 0;
         quint64 bytes = 0;
         quint64 rotations = 0;
+        quint64 syncFailures = 0;
     };
 
     // Test seam: a monotonic millisecond clock, and a manual mode in which nothing is written
@@ -52,6 +53,10 @@ class DiagnosticsLog {
     };
 
     enum class IoFault { None, Write, Sync };
+
+    // Where in a start an attempt note comes from: the USB access request that precedes a start of a local dongle,
+    // or the start itself. Only that pair, for one attempt, shares a marker.
+    enum class AttemptStage { UsbAccess, Start };
 
     // Extra platform facts for the process line (Android: boot count, device) and any lines that
     // follow it (Android: recent app exits). Registered before installTap().
@@ -77,12 +82,13 @@ class DiagnosticsLog {
     void noteProcess(const QString& facts, const QStringList& followingLines = {});
     // A session attempt is about to touch the device: records the marker (once per attempt context
     // within kAttemptDedupeMs), arms the startup window and waits up to kAttemptFlushMs for it to be durable.
-    void noteSessionAttempt(const QString& context);
+    void noteSessionAttempt(const QString& context, AttemptStage stage = AttemptStage::Start);
     // Re-arms the startup window at a device boundary without a new marker.
     void armStartupWindow();
     IoStats ioStats() const;
-    // Manual-drain mode only: run one writer step now, as the writer thread would at this clock reading.
-    void pump();
+    // Manual-drain mode only: run one writer step now if the writer thread would at this clock reading, and say
+    // whether it did.
+    bool pump();
     void setIoFaultForTest(IoFault fault);
     static QString redact(QString text);
 
@@ -90,15 +96,22 @@ class DiagnosticsLog {
     static constexpr int kAttemptDedupeMs = 60000;
 
     void load();
+    void cleanDirectory() const;
+    QByteArray loadSegments() const;
+    void seedRing(const QByteArray& text);
     void openCurrent();
     bool appendBytes(const QByteArray& bytes);
     bool syncCurrent();
     void rotate(const QByteArray& header);
-    void clearFiles();
+    bool clearFiles();
     void trimFragment(const QString& path) const;
     bool writeBatch(const std::deque<QByteArray>& batch);
+    QByteArray headerExcluding(std::deque<QByteArray>::const_iterator from,
+                               std::deque<QByteArray>::const_iterator end) const;
     void enqueue(const QByteArray& record);
     void ringNote(const QString& line);
+    void appendRingLocked(const QString& line);
+    void protectLocked(const QString& line);
     void step(std::unique_lock<std::mutex>& lock, bool forceSync);
     bool dueLocked(quint64 now) const;
     void completeFlushes(quint64 through, bool ok);
@@ -125,10 +138,16 @@ class DiagnosticsLog {
     quint64 m_lastDrain = 0;
     QByteArray m_processLine;
     QByteArray m_sessionLine;
-    QString m_lastAttemptContext;
-    quint64 m_lastAttemptAt = 0;
-    // An explicit attempt note absorbs the plain marker of the Starting transition that follows it.
+    // A USB access note waiting for the start note of the same attempt, which then adds no second marker.
+    QString m_usbAttemptContext;
+    quint64 m_usbAttemptAt = 0;
+    // An explicit start note absorbs the plain marker of the Starting transition that follows it.
+    quint64 m_startNoteAt = 0;
     bool m_attemptAbsorb = false;
+    // Ring lines eviction keeps at the front (the previous run's divider and identity, this run's process and
+    // session lines), so Copy and Share always say which process, boot and session the rest belong to.
+    QStringList m_protectedLines;
+    int m_pinned = 0;
     bool m_processNoted = false;
     QByteArray m_previousProcessLine;
 
@@ -138,6 +157,8 @@ class DiagnosticsLog {
     qint64 m_fileSize = 0;
     quint64 m_dirtyBytes = 0;
     quint64 m_lastSync = 0;
+    // After a failed sync, the next attempt waits until here rather than retrying at once.
+    quint64 m_syncRetryAt = 0;
     bool m_ioFailed = false;
     bool m_rotationFailureNoted = false;
     QByteArray m_header;

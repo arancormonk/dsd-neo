@@ -688,14 +688,14 @@ legacyTailIsSplit() {
 static void
 crashFragmentIsDropped() {
     QTemporaryDir dir;
-    writeFile(dir.filePath("tail.log"), QByteArray("[host] [info] complete\n") + QByteArray(500, 'f'));
+    writeFile(dir.filePath("tail.log"), QByteArray("[host] [info] complete\n") + QByteArray(500, 'z'));
     g_clock = 0;
     DiagnosticsLog log(dir.path(), manualOptions());
-    check(!log.snapshot().join('\n').contains(QStringLiteral("fff")), "fragment loaded as a record");
+    check(!log.snapshot().join('\n').contains(QStringLiteral("zzz")), "fragment loaded as a record");
     log.submit("host", "info", "after the crash");
     check(log.flush(), "flush after the crash");
     const auto text = readFile(dir.filePath("tail.log"));
-    check(!text.contains("fff"), "fragment kept in the tail");
+    check(!text.contains("zzz"), "fragment kept in the tail");
     for (const auto& line : text.split('\n')) {
         check(line.size() <= 512, "a record grew past the bound");
     }
@@ -792,15 +792,66 @@ syncCadenceAndStartupWindow() {
         log.pump();
     }
     check(log.ioStats().syncs - syncs <= 3, "steady-state syncs exceed one per second");
+}
 
-    // A start path's explicit note absorbs the plain marker of the Starting transition after it.
-    log.noteSessionAttempt(QStringLiteral("rtl, boot 3"));
+// One marker per attempt: a USB access note and the start of the same attempt share one, and a start note absorbs
+// the plain marker of the Starting transition after it. Every new attempt, the same source again included, gets
+// its own.
+static void
+oneMarkerPerAttempt() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    const auto count = [&log](const QString& marker) { return log.snapshot().join('\n').count(marker); };
+    const QString usb = QStringLiteral("--- session starting: usb, boot 3 ---");
+    const QString plain = QStringLiteral("--- session starting ---");
+
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess);
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"));
+    log.noteSessionAttempt(QString());
+    check(count(usb) == 1 && count(plain) == 0, "one attempt through USB access logged more than one marker");
+
+    // Stop, then Play the same source again within the dedupe window: a new attempt.
+    g_clock += 5000;
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess);
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"));
+    log.noteSessionAttempt(QString());
+    check(count(usb) == 2 && count(plain) == 0, "a second Play of the same source lost its marker");
+
+    g_clock += 5000;
+    log.noteSessionAttempt(QStringLiteral("rtltcp, boot 3"));
+    log.noteSessionAttempt(QStringLiteral("rtltcp, boot 3"));
+    check(count(QStringLiteral("--- session starting: rtltcp, boot 3 ---")) == 2, "two starts shared one marker");
+
+    // Starting transitions with no start note before them each get the plain marker.
     log.noteSessionAttempt(QString());
     log.noteSessionAttempt(QString());
-    const auto rows = log.snapshot().join('\n');
-    check(rows.count(QStringLiteral("--- session starting: rtl, boot 3 ---")) == 1,
-          "a repeated note was not deduplicated");
-    check(rows.count(QStringLiteral("--- session starting ---")) == 1, "plain markers miscounted");
+    log.noteSessionAttempt(QString());
+    check(count(plain) == 2, "plain markers miscounted");
+}
+
+// A sync that keeps failing is retried after an interval, never in a loop (the writer thread runs the same
+// due check pump() does).
+static void
+failingSyncBacksOff() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
+    log.submit("host", "info", "record");
+    g_clock = DiagnosticsLog::kSyncIntervalMs;
+    check(log.pump() && log.ioStats().syncFailures == 1, "the due sync was not attempted");
+    for (int i = 0; i < 100; ++i) {
+        check(!log.pump(), "the writer would step again at once after a failed sync");
+    }
+    check(log.ioStats().syncFailures == 1, "a failed sync was retried at once");
+    g_clock += DiagnosticsLog::kSyncIntervalMs;
+    log.pump();
+    check(log.ioStats().syncFailures == 2, "a failed sync was not retried after its interval");
+    log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+    g_clock += DiagnosticsLog::kSyncIntervalMs;
+    log.pump();
+    check(log.ioStats().syncs == 1, "the sync did not recover");
 }
 
 static void
@@ -845,6 +896,81 @@ contextLineWrittenOnce() {
     check(tail.count("[process] [info] pid 1, test os, boot 2") == 1 && tail.startsWith("[process] [info] pid 1"),
           "the process line was written twice or not first");
     check(tail.count("--- session starting: usb ---") == 1, "the session line was written twice");
+}
+
+// After Clear the saved tail starts again with this process's line, and the cleared session's marker never comes
+// back as a later segment's header. A clear that does not reach the disk is reported by the next flush.
+static void
+clearForgetsTheCleared() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.noteProcess(QStringLiteral("1, test os, boot 4"));
+    log.noteSessionAttempt(QStringLiteral("cleared source"));
+    check(log.flush(), "pre-clear flush");
+    log.clear();
+    // About one and a half segments: exactly one rotation, so the previous segment is the first one after Clear.
+    for (int i = 0; i < 900; ++i) {
+        log.submit("stderr", "info", QString(200, QLatin1Char('q')));
+    }
+    check(log.flush(), "post-clear flush");
+    check(log.ioStats().rotations == 1, "post-clear writes did not rotate exactly once");
+    const auto saved = readFile(dir.filePath("tail.prev.log")) + readFile(dir.filePath("tail.log"));
+    check(!saved.contains("cleared source"), "a cleared session marker came back in a header");
+    check(readFile(dir.filePath("tail.prev.log")).startsWith("[process] [info] pid 1, test os, boot 4"),
+          "the first segment after Clear does not start with the process line");
+    log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
+    log.clear();
+    check(!log.flush(), "a clear that did not reach the disk reported durable");
+}
+
+// The previous run's identity and this run's process and session lines stay at the front of what Copy and Share
+// export, however many records arrive after them.
+static void
+pinnedContextOutlivesTheRing() {
+    QTemporaryDir dir;
+    QByteArray previous("[process] [info] pid 9, android, boot 4\n[session] [info] --- session starting: rtl ---\n");
+    for (int i = 0; i < 2500; ++i) {
+        previous += QStringLiteral("[stderr] [info] short %1\n").arg(i).toUtf8();
+    }
+    writeFile(dir.filePath("tail.log"), previous);
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.noteProcess(QStringLiteral("10, android, boot 4"), {QStringLiteral("exit: one"), QStringLiteral("exit: two")});
+    log.noteSessionAttempt(QStringLiteral("rtltcp, boot 4"));
+    for (int i = 0; i < 2100; ++i) {
+        log.submit("stderr", "info", QStringLiteral("live %1").arg(i));
+    }
+    const auto rows = log.snapshot();
+    check(rows.size() <= 2000, "ring over its limit");
+    const auto head = rows.mid(0, 6).join('\n');
+    check(rows.value(0) == QLatin1String("--- previous run ---") && head.contains(QStringLiteral("pid 9, android"))
+              && head.contains(QStringLiteral("session starting: rtl ---"))
+              && head.contains(QStringLiteral("pid 10, android"))
+              && head.contains(QStringLiteral("session starting: rtltcp, boot 4")),
+          "context lines were evicted from the ring");
+    check(rows.last().contains(QStringLiteral("live 2099")), "newest record missing");
+}
+
+// A split of an older build's tail that a crash interrupted after writing the previous segment is redone from the
+// unsplit tail, without duplicating its records.
+static void
+interruptedLegacySplit() {
+    QTemporaryDir dir;
+    QByteArray legacy;
+    for (int i = 0; i < 500; ++i) {
+        legacy += QStringLiteral("[host] [info] legacy %1 ").arg(i).toUtf8() + QByteArray(400, 'l') + '\n';
+    }
+    writeFile(dir.filePath("tail.log"), legacy);
+    writeFile(dir.filePath("tail.prev.log"), legacy.left(legacy.indexOf('\n', 100 * 1024) + 1));
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    const auto text = log.snapshot().join('\n');
+    // Record 200 lies inside the interrupted split's prefix, so a reload that joined both would carry it twice.
+    check(text.count(QStringLiteral("legacy 499 ")) == 1 && text.count(QStringLiteral("legacy 200 ")) == 1,
+          "an interrupted split duplicated records");
+    const auto saved = readFile(dir.filePath("tail.prev.log")) + readFile(dir.filePath("tail.log"));
+    check(saved.count("legacy 200 ") == 1, "the re-split segments duplicate records");
 }
 
 static void
@@ -975,6 +1101,11 @@ main(int argc, char** argv) {
     syncCadenceAndStartupWindow();
     segmentsStartWithTheirContext();
     contextLineWrittenOnce();
+    oneMarkerPerAttempt();
+    failingSyncBacksOff();
+    clearForgetsTheCleared();
+    pinnedContextOutlivesTheRing();
+    interruptedLegacySplit();
     previousRunBootFact();
     contextSurvivesTheRingLimit();
     unicodeDirectory();

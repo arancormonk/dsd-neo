@@ -319,15 +319,20 @@ DecoderHostAndroid::requestLocalDeviceAccess() {
 
 void
 DecoderHostAndroid::noteStartAttempt(const QString& sourceType) {
+    noteAttempt(sourceType, dsd_qt::DiagnosticsLog::AttemptStage::Start);
+}
+
+void
+DecoderHostAndroid::noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLog::AttemptStage stage) {
     QJniObject kind = QJniObject::fromString(sourceType);
     const QJniObject context = QJniObject::callStaticObjectMethod(
         kFactsClass, "attemptContext", "(Ljava/lang/String;)Ljava/lang/String;", kind.object());
-    dsd_qt::DiagnosticsLog::instance().noteSessionAttempt(context.isValid() ? context.toString() : sourceType);
+    dsd_qt::DiagnosticsLog::instance().noteSessionAttempt(context.isValid() ? context.toString() : sourceType, stage);
 }
 
 void
 DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, const QString& serial) {
-    noteStartAttempt(source);
+    noteAttempt(source, dsd_qt::DiagnosticsLog::AttemptStage::UsbAccess);
     QJniObject context = android_context();
     if (!context.isValid()) {
         return;

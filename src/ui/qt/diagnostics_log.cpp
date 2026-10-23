@@ -32,6 +32,8 @@ constexpr int tailLimit = 256 * 1024;
 constexpr int ringLimit = 2000;
 constexpr int queueLimit = 2000;
 constexpr int flushResultLimit = 64;
+// At most this many ring lines are kept at the front through eviction (see appendRingLocked()).
+constexpr int pinnedLimit = 8;
 const char kTailName[] = "tail.log";
 const char kPrevName[] = "tail.prev.log";
 const QByteArray kProcessPrefix = QByteArrayLiteral("[process] [info] pid ");
@@ -267,6 +269,12 @@ DiagnosticsLog::inStartupWindow(quint64 now) const {
 
 void
 DiagnosticsLog::load() {
+    cleanDirectory();
+    seedRing(loadSegments());
+}
+
+void
+DiagnosticsLog::cleanDirectory() const {
     QDir dir(m_directory);
     // Temporaries a kill or crash left behind: QSaveFile's from older builds' whole-tail rewrites and from
     // normalization below. Nothing else in the directory is touched.
@@ -276,20 +284,26 @@ DiagnosticsLog::load() {
             dir.remove(name);
         }
     }
-    const QString tailPath = filePath(kTailName);
-    const QString prevPath = filePath(kPrevName);
-    for (const auto& path : {prevPath, tailPath}) {
+    for (const auto& path : {filePath(kPrevName), filePath(kTailName)}) {
         QFileInfo info(path);
         if (info.exists() && info.lastModified().secsTo(realtimeCurrentDateTime()) > 7LL * 24 * 3600) {
             QFile::remove(path);
         }
     }
+}
+
+QByteArray
+DiagnosticsLog::loadSegments() const {
+    const QString tailPath = filePath(kTailName);
+    const QString prevPath = filePath(kPrevName);
     QByteArray prev = withoutFragment(readTail(prevPath, 2LL * tailLimit));
     QByteArray tail = withoutFragment(readTail(tailPath, 2LL * tailLimit));
     if (prev.size() > kSegmentLimit || tail.size() > kSegmentLimit) {
         // An older build's single tail (up to 256 KiB), or anything else over a segment: split at line starts
-        // into the two bounded segments, keeping no more than before.
-        const QByteArray all = boundedTail(prev + tail);
+        // into the two bounded segments, keeping no more than before. A current segment over the cap is an
+        // older build's tail that was never split (this writer rotates first), so it alone is the record: a
+        // previous segment beside it can only be the prefix a split interrupted by a crash already wrote.
+        const QByteArray all = boundedTail(tail.size() > kSegmentLimit ? tail : prev + tail);
         tail = lineAlignedTail(all, kSegmentLimit);
         prev = lineAlignedTail(all.left(all.size() - tail.size()), kSegmentLimit);
         if (prev.isEmpty()) {
@@ -299,9 +313,13 @@ DiagnosticsLog::load() {
         }
         (void)replaceFile(tailPath, tail);
     }
+    return boundedTail(prev + tail);
+}
 
+void
+DiagnosticsLog::seedRing(const QByteArray& text) {
     QList<QByteArray> lines;
-    for (const auto& line : boundedTail(prev + tail).split('\n')) {
+    for (const auto& line : text.split('\n')) {
         // NUL bytes are what a crash leaves where data the filesystem had sized was never written.
         if (!line.isEmpty() && !line.contains('\0')) {
             lines.append(line);
@@ -311,38 +329,43 @@ DiagnosticsLog::load() {
         return;
     }
     // The previous run's identity, read before the ring limit can drop it.
-    QByteArray lastProcess;
-    QByteArray lastSession;
     qsizetype lastProcessAt = -1;
     qsizetype lastSessionAt = -1;
     for (qsizetype i = 0; i < lines.size(); ++i) {
         if (lines.at(i).startsWith(kProcessPrefix)) {
-            lastProcess = lines.at(i);
             lastProcessAt = i;
         } else if (lines.at(i).startsWith(kSessionPrefix)) {
-            lastSession = lines.at(i);
             lastSessionAt = i;
         }
     }
-    m_previousProcessLine = lastProcess;
+    if (lastProcessAt >= 0) {
+        m_previousProcessLine = lines.at(lastProcessAt);
+    }
 
-    QStringList context;
-    qsizetype keepFrom = std::max<qsizetype>(0, lines.size() - (ringLimit - 1));
     // Context the ring limit would drop goes back in right after the divider, so Copy and Share keep
     // which process, boot and session the remaining lines belong to.
-    if (lastProcessAt >= 0 && lastProcessAt < keepFrom) {
-        context.append(redact(QString::fromUtf8(lastProcess)));
+    QStringList context;
+    const qsizetype keepAll = std::max<qsizetype>(0, lines.size() - (ringLimit - 1));
+    for (const qsizetype at : {lastProcessAt, lastSessionAt}) {
+        if (at >= 0 && at < keepAll) {
+            context.append(redact(QString::fromUtf8(lines.at(at))));
+        }
     }
-    if (lastSessionAt >= 0 && lastSessionAt < keepFrom) {
-        context.append(redact(QString::fromUtf8(lastSession)));
-    }
-    keepFrom = std::max<qsizetype>(0, lines.size() - (ringLimit - 1 - context.size()));
+    const qsizetype keepFrom = std::max<qsizetype>(0, lines.size() - (ringLimit - 1 - context.size()));
     m_ring.append(QStringLiteral("--- previous run ---"));
     m_ring.append(context);
     for (qsizetype i = keepFrom; i < lines.size(); ++i) {
         m_ring.append(redact(QString::fromUtf8(lines.at(i))));
     }
     m_generation = static_cast<quint64>(m_ring.size());
+    // The divider and the previous run's identity stay at the front while this run's records arrive.
+    m_pinned = static_cast<int>(1 + context.size());
+    m_protectedLines.append(QStringLiteral("--- previous run ---"));
+    for (const qsizetype at : {lastProcessAt, lastSessionAt}) {
+        if (at >= 0) {
+            m_protectedLines.append(redact(QString::fromUtf8(lines.at(at))));
+        }
+    }
 }
 
 void
@@ -351,11 +374,7 @@ DiagnosticsLog::enqueue(const QByteArray& record) {
     std::lock_guard<std::mutex> queueLock(m_queueMutex);
     {
         std::lock_guard<std::mutex> ringLock(m_ringMutex);
-        m_ring.append(QString::fromUtf8(record));
-        if (m_ring.size() > ringLimit) {
-            m_ring.removeFirst();
-        }
-        ++m_generation;
+        appendRingLocked(QString::fromUtf8(record));
     }
     // Bounded backpressure: retaining newest queued records matches ring semantics.
     if (m_queue.size() >= queueLimit) {
@@ -368,11 +387,31 @@ DiagnosticsLog::enqueue(const QByteArray& record) {
 void
 DiagnosticsLog::ringNote(const QString& line) {
     std::lock_guard<std::mutex> ringLock(m_ringMutex);
+    appendRingLocked(line);
+}
+
+void
+DiagnosticsLog::appendRingLocked(const QString& line) {
     m_ring.append(line);
-    if (m_ring.size() > ringLimit) {
-        m_ring.removeFirst();
+    // Evict the oldest unpinned line; a protected line reaching the front is pinned there instead.
+    while (m_ring.size() > ringLimit && m_pinned < m_ring.size()) {
+        if (m_pinned < pinnedLimit && m_protectedLines.contains(m_ring.at(m_pinned))) {
+            ++m_pinned;
+            continue;
+        }
+        m_ring.removeAt(m_pinned);
     }
     ++m_generation;
+}
+
+void
+DiagnosticsLog::protectLocked(const QString& line) {
+    if (!m_protectedLines.contains(line)) {
+        m_protectedLines.append(line);
+        while (m_protectedLines.size() > pinnedLimit) {
+            m_protectedLines.removeFirst();
+        }
+    }
 }
 
 void
@@ -394,6 +433,10 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
         m_processLine = record;
         previous = m_previousProcessLine;
     }
+    {
+        std::lock_guard<std::mutex> ringLock(m_ringMutex);
+        protectLocked(QString::fromUtf8(record));
+    }
     enqueue(record);
     for (const auto& line : followingLines) {
         submit(QStringLiteral("process"), QStringLiteral("info"), line);
@@ -408,20 +451,25 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
 }
 
 void
-DiagnosticsLog::noteSessionAttempt(const QString& context) {
+DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage) {
     const quint64 now = nowMs();
     bool mark = true;
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
         if (context.isEmpty()) {
-            // The plain marker of the Starting transition, unless an explicit note just described this attempt.
-            mark = !(m_attemptAbsorb && now - m_lastAttemptAt < kAttemptDedupeMs);
+            // The plain marker of the Starting transition, unless an explicit start note just described this attempt.
+            mark = !(m_attemptAbsorb && now - m_startNoteAt < kAttemptDedupeMs);
+            m_attemptAbsorb = false;
+        } else if (stage == AttemptStage::UsbAccess) {
+            m_usbAttemptContext = context;
+            m_usbAttemptAt = now;
             m_attemptAbsorb = false;
         } else {
-            // A USB access request and the start that follows it note the same attempt twice.
-            mark = context != m_lastAttemptContext || now - m_lastAttemptAt >= kAttemptDedupeMs;
-            m_lastAttemptContext = context;
-            m_lastAttemptAt = now;
+            // The start that follows this attempt's own USB access request adds no second marker; every other
+            // start, a repeat of the same source included, is a new attempt.
+            mark = !(context == m_usbAttemptContext && now - m_usbAttemptAt < kAttemptDedupeMs);
+            m_usbAttemptContext.clear();
+            m_startNoteAt = now;
             m_attemptAbsorb = true;
         }
         m_startupUntil = now + kStartupSyncWindowMs;
@@ -434,6 +482,10 @@ DiagnosticsLog::noteSessionAttempt(const QString& context) {
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);
             m_sessionLine = record;
+        }
+        {
+            std::lock_guard<std::mutex> ringLock(m_ringMutex);
+            protectLocked(QString::fromUtf8(record));
         }
         enqueue(record);
     }
@@ -465,7 +517,10 @@ DiagnosticsLog::clear() {
     std::lock_guard<std::mutex> ringLock(m_ringMutex);
     m_queue.clear();
     m_clearPending = true;
+    // The cleared session's marker must not come back as a later segment's header.
+    m_sessionLine.clear();
     m_ring.clear();
+    m_pinned = 0;
     m_ready.notify_one();
     return ++m_generation;
 }
@@ -523,16 +578,18 @@ DiagnosticsLog::setIoFaultForTest(IoFault fault) {
 bool
 DiagnosticsLog::dueLocked(quint64 now) const {
     const bool drainDue = !m_queue.empty() && (inStartupWindow(now) || now - m_lastDrain >= kWriteIntervalMs);
-    const bool syncDue = m_dirtyBytes > 0 && now - m_lastSync >= kSyncIntervalMs;
+    const bool syncDue = m_dirtyBytes > 0 && now - m_lastSync >= kSyncIntervalMs && now >= m_syncRetryAt;
     return m_clearPending || m_flushRequested > m_flushDone || drainDue || syncDue;
 }
 
-void
+bool
 DiagnosticsLog::pump() {
     std::unique_lock<std::mutex> lock(m_queueMutex);
-    if (m_options.manualDrain && dueLocked(nowMs())) {
-        step(lock, false);
+    if (!m_options.manualDrain || !dueLocked(nowMs())) {
+        return false;
     }
+    step(lock, false);
+    return true;
 }
 
 void
@@ -581,9 +638,11 @@ DiagnosticsLog::appendBytes(const QByteArray& bytes) {
         return false;
     }
     if (m_fault == IoFault::Write || m_file->write(bytes) != bytes.size()) {
-        // Reopened (and any partial record trimmed) on the next append.
+        // Reopened (and any partial record trimmed) on the next append. What it held unsynced is past syncing now;
+        // the failure, not a retry, is what the next flush reports.
         m_ioFailed = true;
         m_file.reset();
+        m_dirtyBytes = 0;
         return false;
     }
     m_fileSize += bytes.size();
@@ -599,14 +658,13 @@ DiagnosticsLog::syncCurrent() {
     if (!m_file) {
         return false;
     }
-#ifdef Q_OS_WIN
-    // QFile gives no descriptor the platform sync can use here; unbuffered writes have reached the OS.
-    const bool synced = m_fault != IoFault::Sync;
-#else
-    const bool synced = m_fault != IoFault::Sync && dsd_fsync(m_file->handle()) == 0;
-#endif
-    if (!synced) {
+    // On Windows QFile's handle() is a C runtime descriptor over the file, so this is _commit(), a real flush to disk.
+    if (m_fault == IoFault::Sync || dsd_fsync(m_file->handle()) != 0) {
         m_ioFailed = true;
+        // Retried after an interval, never in a loop: a store that keeps failing must not spin the writer.
+        m_syncRetryAt = nowMs() + kSyncIntervalMs;
+        std::lock_guard<std::mutex> lock(m_statsMutex);
+        ++m_stats.syncFailures;
         return false;
     }
     m_dirtyBytes = 0;
@@ -650,18 +708,40 @@ DiagnosticsLog::rotate(const QByteArray& header) {
     }
 }
 
-void
+bool
 DiagnosticsLog::clearFiles() {
     m_file.reset();
     const QString tailPath = filePath(kTailName);
-    QFile::remove(filePath(kPrevName));
+    const QString prevPath = filePath(kPrevName);
+    bool ok = !QFile::exists(prevPath) || QFile::remove(prevPath);
     QFile file(tailPath);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        (void)dsd_fsync(file.handle());
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || m_fault == IoFault::Sync
+        || dsd_fsync(file.handle()) != 0) {
+        ok = false;
     }
     dsd_fsync_parent_dir(QFile::encodeName(tailPath).constData());
     m_fileSize = 0;
     m_dirtyBytes = 0;
+    if (!ok) {
+        // A clear that did not reach the disk is not durable, and the next flush says so.
+        m_ioFailed = true;
+    }
+    return ok;
+}
+
+QByteArray
+DiagnosticsLog::headerExcluding(std::deque<QByteArray>::const_iterator from,
+                                std::deque<QByteArray>::const_iterator end) const {
+    // A context line still waiting in the batch (the process or session line itself) is written once, as the
+    // record it is, not again in the header ahead of it.
+    QByteArray header;
+    for (const auto& line : m_header.split('\n')) {
+        const QByteArray entry = line + '\n';
+        if (!line.isEmpty() && std::find(from, end, entry) == end) {
+            header += entry;
+        }
+    }
+    return header;
 }
 
 bool
@@ -671,6 +751,10 @@ DiagnosticsLog::writeBatch(const std::deque<QByteArray>& batch) {
         return false;
     }
     QByteArray pending;
+    // An empty segment (a new tail, or the first one after Clear) starts with its context like a rotated one.
+    if (m_fileSize == 0) {
+        pending = headerExcluding(batch.cbegin(), batch.cend());
+    }
     for (auto it = batch.cbegin(); it != batch.cend(); ++it) {
         const QByteArray& record = *it;
         if (m_fileSize + pending.size() + record.size() > kSegmentLimit && m_fileSize + pending.size() > 0) {
@@ -678,16 +762,7 @@ DiagnosticsLog::writeBatch(const std::deque<QByteArray>& batch) {
                 return false;
             }
             pending.clear();
-            // A context line still waiting in this batch (the process or session line itself) is written once, as
-            // the record it is, not again in the header ahead of it.
-            QByteArray header;
-            for (const auto& line : m_header.split('\n')) {
-                const QByteArray entry = line + '\n';
-                if (!line.isEmpty() && std::find(it, batch.cend(), entry) == batch.cend()) {
-                    header += entry;
-                }
-            }
-            rotate(header);
+            rotate(headerExcluding(it, batch.cend()));
             if (!m_file) {
                 return false;
             }
@@ -720,12 +795,13 @@ DiagnosticsLog::step(std::unique_lock<std::mutex>& lock, bool forceSync) {
         std::lock_guard<std::mutex> stepLock(m_stepMutex);
         m_header = header;
         if (clear) {
-            clearFiles();
+            ok = clearFiles();
         }
         if (!batch.empty()) {
-            ok = writeBatch(batch);
+            ok = writeBatch(batch) && ok;
         }
-        if (m_dirtyBytes > 0 && (forceSync || window || clear || now - m_lastSync >= kSyncIntervalMs)) {
+        const bool syncAllowed = forceSync || now >= m_syncRetryAt;
+        if (m_dirtyBytes > 0 && syncAllowed && (forceSync || window || clear || now - m_lastSync >= kSyncIntervalMs)) {
             ok = syncCurrent() && ok;
         }
         // A flush is durable only if nothing failed since the last one completed.
@@ -759,7 +835,8 @@ DiagnosticsLog::writeLoop() {
             waitMs = kWriteIntervalMs - (now - m_lastDrain);
         }
         if (m_dirtyBytes > 0) {
-            waitMs = std::min<quint64>(waitMs, kSyncIntervalMs - (now - m_lastSync));
+            const quint64 due = std::max<quint64>(m_lastSync + kSyncIntervalMs, m_syncRetryAt);
+            waitMs = std::min<quint64>(waitMs, due > now ? due - now : 0U);
         }
         if (waitMs == std::numeric_limits<quint64>::max()) {
             m_ready.wait(lock);
