@@ -1509,12 +1509,13 @@ spectrum_format_system_line(const dsd_state* state, int ascii, char* buf, size_t
     }
     if (ascii) {
         size_t out = 0U;
-        for (size_t in = 0U; buf[in] != '\0'; in++) {
+        size_t in = 0U;
+        while (buf[in] != '\0') {
             if ((unsigned char)buf[in] == 0xC2U && (unsigned char)buf[in + 1U] == 0xB7U) {
                 buf[out++] = '-';
-                in++;
+                in += 2U;
             } else {
-                buf[out++] = buf[in];
+                buf[out++] = buf[in++];
             }
         }
         buf[out] = '\0';

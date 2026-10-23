@@ -2239,12 +2239,13 @@ ui_print_rxid_text(const char* text) {
     }
     char ascii[96];
     size_t used = 0U;
-    for (const char* p = text; *p != '\0' && used + 1U < sizeof ascii; p++) {
+    const char* p = text;
+    while (*p != '\0' && used + 1U < sizeof ascii) {
         if ((unsigned char)p[0] == 0xC2U && (unsigned char)p[1] == 0xB7U) {
             ascii[used++] = '-';
-            p++;
+            p += 2;
         } else {
-            ascii[used++] = *p;
+            ascii[used++] = *p++;
         }
     }
     ascii[used] = '\0';
