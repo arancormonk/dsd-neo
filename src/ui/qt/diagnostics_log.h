@@ -52,7 +52,7 @@ class DiagnosticsLog {
         bool manualDrain = false;
     };
 
-    enum class IoFault { None, Write, Sync };
+    enum class IoFault { None, Write, Sync, SyncAndOpen };
 
     // Where in a start an attempt note comes from: the USB access request that precedes a start of a local dongle,
     // or the start itself. Only that pair, for one attempt, shares a marker.
@@ -82,7 +82,10 @@ class DiagnosticsLog {
     void noteProcess(const QString& facts, const QStringList& followingLines = {});
     // A session attempt is about to touch the device: records the marker (once per attempt context
     // within kAttemptDedupeMs), arms the startup window and waits up to kAttemptFlushMs for it to be durable.
-    void noteSessionAttempt(const QString& context, AttemptStage stage = AttemptStage::Start);
+    // attemptKey pairs a USB access note with its start note (the source type: the context text can gain the dongle's
+    // label between the two); empty means the context itself.
+    void noteSessionAttempt(const QString& context, AttemptStage stage = AttemptStage::Start,
+                            const QString& attemptKey = QString());
     // Re-arms the startup window at a device boundary without a new marker.
     void armStartupWindow();
     IoStats ioStats() const;
@@ -100,6 +103,7 @@ class DiagnosticsLog {
     QByteArray loadSegments() const;
     void seedRing(const QByteArray& text);
     void openCurrent();
+    void closeCurrent();
     bool appendBytes(const QByteArray& bytes);
     bool syncCurrent();
     void rotate(const QByteArray& header);
@@ -111,8 +115,20 @@ class DiagnosticsLog {
     void enqueue(const QByteArray& record);
     void ringNote(const QString& line);
     void appendRingLocked(const QString& line);
-    void protectLocked(const QString& line);
+    bool isProtectedLocked(const QString& line) const;
+
+    // What one writer step takes from the queue state, so its I/O runs without the queue lock.
+    struct StepWork {
+        std::deque<QByteArray> batch;
+        QByteArray header;
+        quint64 now = 0;
+        bool clear = false;
+        bool window = false;
+        bool flushing = false;
+    };
+
     void step(std::unique_lock<std::mutex>& lock, bool forceSync);
+    bool writeStep(const StepWork& work, bool forceSync);
     bool dueLocked(quint64 now) const;
     void completeFlushes(quint64 through, bool ok);
     bool flushResult(quint64 ticket) const;
@@ -139,14 +155,17 @@ class DiagnosticsLog {
     QByteArray m_processLine;
     QByteArray m_sessionLine;
     // A USB access note waiting for the start note of the same attempt, which then adds no second marker.
-    QString m_usbAttemptContext;
+    QString m_usbAttemptKey;
     quint64 m_usbAttemptAt = 0;
     // An explicit start note absorbs the plain marker of the Starting transition that follows it.
     quint64 m_startNoteAt = 0;
     bool m_attemptAbsorb = false;
-    // Ring lines eviction keeps at the front (the previous run's divider and identity, this run's process and
-    // session lines), so Copy and Share always say which process, boot and session the rest belong to.
-    QStringList m_protectedLines;
+    // Ring lines eviction keeps at the front: the previous run's divider and identity, and this run's process line and
+    // current session line. Copy and Share therefore always say which process, boot and session the rest belong to.
+    // A session line a newer one replaces is released from the front.
+    QStringList m_protectedPrevious;
+    QString m_protectedProcess;
+    QString m_protectedSession;
     int m_pinned = 0;
     bool m_processNoted = false;
     QByteArray m_previousProcessLine;

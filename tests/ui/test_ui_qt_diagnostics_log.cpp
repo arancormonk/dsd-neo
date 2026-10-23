@@ -818,6 +818,14 @@ oneMarkerPerAttempt() {
     log.noteSessionAttempt(QString());
     check(count(usb) == 2 && count(plain) == 0, "a second Play of the same source lost its marker");
 
+    // The first Play of a dongle: its label joins the context once the access request has opened it.
+    g_clock += 5000;
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess,
+                           QStringLiteral("usb"));
+    log.noteSessionAttempt(QStringLiteral("usb, boot 3, RTL2838UHIDIR 0bda:2838"), DiagnosticsLog::AttemptStage::Start,
+                           QStringLiteral("usb"));
+    check(count(usb) == 3 && count(QStringLiteral("0bda:2838")) == 0, "a dongle's label split one attempt in two");
+
     g_clock += 5000;
     log.noteSessionAttempt(QStringLiteral("rtltcp, boot 3"));
     log.noteSessionAttempt(QStringLiteral("rtltcp, boot 3"));
@@ -973,6 +981,71 @@ interruptedLegacySplit() {
     check(saved.count("legacy 200 ") == 1, "the re-split segments duplicate records");
 }
 
+// A rotation whose sync fails and whose new segment cannot be opened leaves no dirty count behind with no file to
+// sync it, so the writer does not stay due forever.
+static void
+lostSegmentDoesNotSpin() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    for (int i = 0; i < 590; ++i) {
+        log.submit("stderr", "info", QString(200, QLatin1Char('k')));
+    }
+    check(log.flush(), "fill flush");
+    log.setIoFaultForTest(DiagnosticsLog::IoFault::SyncAndOpen);
+    for (int i = 0; i < 20; ++i) {
+        log.submit("stderr", "info", QString(200, QLatin1Char('k')));
+    }
+    check(!log.flush(), "a lost segment reported durable");
+    for (int i = 0; i < 5; ++i) {
+        g_clock += 10 * DiagnosticsLog::kSyncIntervalMs;
+        check(!log.pump(), "the writer stayed due with no segment to sync");
+    }
+}
+
+// Session lines a newer one replaced give their pinned slot back: after many sessions the front still holds the
+// previous run's identity, this process and the current session.
+static void
+pinsFollowTheCurrentSession() {
+    QTemporaryDir dir;
+    writeFile(dir.filePath("tail.log"),
+              "[process] [info] pid 9, android, boot 4\n[session] [info] --- session starting: old ---\n");
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    log.noteProcess(QStringLiteral("10, android, boot 4"));
+    for (int session = 0; session < 10; ++session) {
+        g_clock += 70000;
+        log.noteSessionAttempt(QStringLiteral("source %1").arg(session));
+        for (int i = 0; i < 2100; ++i) {
+            log.submit("stderr", "info", QStringLiteral("live %1.%2").arg(session).arg(i));
+        }
+    }
+    const auto rows = log.snapshot();
+    const auto head = rows.mid(0, 5).join('\n');
+    check(rows.size() <= 2000, "ring over its limit");
+    check(head.contains(QStringLiteral("pid 9, android")) && head.contains(QStringLiteral("session starting: old"))
+              && head.contains(QStringLiteral("pid 10, android")) && head.contains(QStringLiteral("source 9")),
+          "the current session's line was evicted while older ones stayed pinned");
+    check(!rows.join('\n').contains(QStringLiteral("source 3 ")), "a replaced session line stayed pinned");
+}
+
+// A reload that reserves a slot for the process line moves its cutoff past the session line: that line is kept too.
+static void
+reloadCutoffKeepsBothContextLines() {
+    QTemporaryDir dir;
+    QByteArray saved("[process] [info] pid 9, android, boot 4\n[process] [info] exit: one\n"
+                     "[session] [info] --- session starting: rtl ---\n");
+    for (int i = 0; i < 1998; ++i) {
+        saved += QStringLiteral("[stderr] [info] decoder %1\n").arg(i).toUtf8();
+    }
+    writeFile(dir.filePath("tail.log"), saved);
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    const auto text = log.snapshot().join('\n');
+    check(text.contains(QStringLiteral("pid 9, android")) && text.contains(QStringLiteral("session starting: rtl")),
+          "a context line fell between the reload cutoffs");
+}
+
 static void
 previousRunBootFact() {
     const auto run = [](const QByteArray& previous, const QString& facts) {
@@ -1106,6 +1179,9 @@ main(int argc, char** argv) {
     clearForgetsTheCleared();
     pinnedContextOutlivesTheRing();
     interruptedLegacySplit();
+    lostSegmentDoesNotSpin();
+    pinsFollowTheCurrentSession();
+    reloadCutoffKeepsBothContextLines();
     previousRunBootFact();
     contextSurvivesTheRingLimit();
     unicodeDirectory();

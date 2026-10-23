@@ -23,6 +23,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <initializer_list>
 #include <limits>
 #include "realtime_clock.h"
 
@@ -136,6 +137,29 @@ baseProcessFacts() {
         facts += QStringLiteral(", app ") + version;
     }
     return facts;
+}
+
+/**
+ * @brief The context lines at @p contextAt that the ring limit drops from @p lines, and the first kept line.
+ *
+ * Every slot a context line takes moves the cutoff, so the set is settled against the final cutoff.
+ */
+QStringList
+droppedContext(const QList<QByteArray>& lines, std::initializer_list<qsizetype> contextAt, qsizetype* keepFrom) {
+    QStringList context;
+    for (int reserved = 0;;) {
+        *keepFrom = std::max<qsizetype>(0, lines.size() - (ringLimit - 1 - reserved));
+        context.clear();
+        for (const qsizetype at : contextAt) {
+            if (at >= 0 && at < *keepFrom) {
+                context.append(DiagnosticsLog::redact(QString::fromUtf8(lines.at(at))));
+            }
+        }
+        if (context.size() == reserved) {
+            return context;
+        }
+        reserved = static_cast<int>(context.size());
+    }
 }
 
 void
@@ -344,14 +368,8 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
 
     // Context the ring limit would drop goes back in right after the divider, so Copy and Share keep
     // which process, boot and session the remaining lines belong to.
-    QStringList context;
-    const qsizetype keepAll = std::max<qsizetype>(0, lines.size() - (ringLimit - 1));
-    for (const qsizetype at : {lastProcessAt, lastSessionAt}) {
-        if (at >= 0 && at < keepAll) {
-            context.append(redact(QString::fromUtf8(lines.at(at))));
-        }
-    }
-    const qsizetype keepFrom = std::max<qsizetype>(0, lines.size() - (ringLimit - 1 - context.size()));
+    qsizetype keepFrom = 0;
+    const QStringList context = droppedContext(lines, {lastProcessAt, lastSessionAt}, &keepFrom);
     m_ring.append(QStringLiteral("--- previous run ---"));
     m_ring.append(context);
     for (qsizetype i = keepFrom; i < lines.size(); ++i) {
@@ -360,10 +378,10 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
     m_generation = static_cast<quint64>(m_ring.size());
     // The divider and the previous run's identity stay at the front while this run's records arrive.
     m_pinned = static_cast<int>(1 + context.size());
-    m_protectedLines.append(QStringLiteral("--- previous run ---"));
+    m_protectedPrevious.append(QStringLiteral("--- previous run ---"));
     for (const qsizetype at : {lastProcessAt, lastSessionAt}) {
         if (at >= 0) {
-            m_protectedLines.append(redact(QString::fromUtf8(lines.at(at))));
+            m_protectedPrevious.append(redact(QString::fromUtf8(lines.at(at))));
         }
     }
 }
@@ -393,9 +411,24 @@ DiagnosticsLog::ringNote(const QString& line) {
 void
 DiagnosticsLog::appendRingLocked(const QString& line) {
     m_ring.append(line);
-    // Evict the oldest unpinned line; a protected line reaching the front is pinned there instead.
-    while (m_ring.size() > ringLimit && m_pinned < m_ring.size()) {
-        if (m_pinned < pinnedLimit && m_protectedLines.contains(m_ring.at(m_pinned))) {
+    while (m_ring.size() > ringLimit) {
+        // A pinned line no longer protected (a session line a newer one replaced) is the oldest line: it goes first.
+        int released = -1;
+        for (int i = 0; i < m_pinned && released < 0; ++i) {
+            if (!isProtectedLocked(m_ring.at(i))) {
+                released = i;
+            }
+        }
+        if (released >= 0) {
+            m_ring.removeAt(released);
+            --m_pinned;
+            continue;
+        }
+        if (m_pinned >= m_ring.size()) {
+            break;
+        }
+        // Otherwise evict the oldest unpinned line; a protected line reaching the front is pinned there instead.
+        if (m_pinned < pinnedLimit && isProtectedLocked(m_ring.at(m_pinned))) {
             ++m_pinned;
             continue;
         }
@@ -404,14 +437,9 @@ DiagnosticsLog::appendRingLocked(const QString& line) {
     ++m_generation;
 }
 
-void
-DiagnosticsLog::protectLocked(const QString& line) {
-    if (!m_protectedLines.contains(line)) {
-        m_protectedLines.append(line);
-        while (m_protectedLines.size() > pinnedLimit) {
-            m_protectedLines.removeFirst();
-        }
-    }
+bool
+DiagnosticsLog::isProtectedLocked(const QString& line) const {
+    return line == m_protectedProcess || line == m_protectedSession || m_protectedPrevious.contains(line);
 }
 
 void
@@ -435,7 +463,7 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
     }
     {
         std::lock_guard<std::mutex> ringLock(m_ringMutex);
-        protectLocked(QString::fromUtf8(record));
+        m_protectedProcess = QString::fromUtf8(record);
     }
     enqueue(record);
     for (const auto& line : followingLines) {
@@ -451,7 +479,8 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
 }
 
 void
-DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage) {
+DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage, const QString& attemptKey) {
+    const QString key = attemptKey.isEmpty() ? context : attemptKey;
     const quint64 now = nowMs();
     bool mark = true;
     {
@@ -461,14 +490,14 @@ DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage) {
             mark = !(m_attemptAbsorb && now - m_startNoteAt < kAttemptDedupeMs);
             m_attemptAbsorb = false;
         } else if (stage == AttemptStage::UsbAccess) {
-            m_usbAttemptContext = context;
+            m_usbAttemptKey = key;
             m_usbAttemptAt = now;
             m_attemptAbsorb = false;
         } else {
             // The start that follows this attempt's own USB access request adds no second marker; every other
             // start, a repeat of the same source included, is a new attempt.
-            mark = !(context == m_usbAttemptContext && now - m_usbAttemptAt < kAttemptDedupeMs);
-            m_usbAttemptContext.clear();
+            mark = !(key == m_usbAttemptKey && now - m_usbAttemptAt < kAttemptDedupeMs);
+            m_usbAttemptKey.clear();
             m_startNoteAt = now;
             m_attemptAbsorb = true;
         }
@@ -485,7 +514,7 @@ DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage) {
         }
         {
             std::lock_guard<std::mutex> ringLock(m_ringMutex);
-            protectLocked(QString::fromUtf8(record));
+            m_protectedSession = QString::fromUtf8(record);
         }
         enqueue(record);
     }
@@ -610,6 +639,17 @@ DiagnosticsLog::trimFragment(const QString& path) const {
 }
 
 void
+DiagnosticsLog::closeCurrent() {
+    // Bytes still unsynced in a file being given up on are past syncing: the failure, not a retry, is what the next
+    // flush reports. Without this, a dirty count with no file kept the writer due forever.
+    if (m_dirtyBytes > 0) {
+        m_ioFailed = true;
+        m_dirtyBytes = 0;
+    }
+    m_file.reset();
+}
+
+void
 DiagnosticsLog::openCurrent() {
     if (m_file) {
         return;
@@ -621,7 +661,8 @@ DiagnosticsLog::openCurrent() {
     }
     auto file = std::make_unique<QFile>(path);
     // Unbuffered: a sync must cover every byte written, with nothing left in a userspace buffer.
-    if (!file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Unbuffered)) {
+    if (m_fault == IoFault::SyncAndOpen
+        || !file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Unbuffered)) {
         m_ioFailed = true;
         return;
     }
@@ -638,11 +679,9 @@ DiagnosticsLog::appendBytes(const QByteArray& bytes) {
         return false;
     }
     if (m_fault == IoFault::Write || m_file->write(bytes) != bytes.size()) {
-        // Reopened (and any partial record trimmed) on the next append. What it held unsynced is past syncing now;
-        // the failure, not a retry, is what the next flush reports.
+        // Reopened (and any partial record trimmed) on the next append.
         m_ioFailed = true;
-        m_file.reset();
-        m_dirtyBytes = 0;
+        closeCurrent();
         return false;
     }
     m_fileSize += bytes.size();
@@ -659,7 +698,7 @@ DiagnosticsLog::syncCurrent() {
         return false;
     }
     // On Windows QFile's handle() is a C runtime descriptor over the file, so this is _commit(), a real flush to disk.
-    if (m_fault == IoFault::Sync || dsd_fsync(m_file->handle()) != 0) {
+    if (m_fault == IoFault::Sync || m_fault == IoFault::SyncAndOpen || dsd_fsync(m_file->handle()) != 0) {
         m_ioFailed = true;
         // Retried after an interval, never in a loop: a store that keeps failing must not spin the writer.
         m_syncRetryAt = nowMs() + kSyncIntervalMs;
@@ -680,7 +719,7 @@ DiagnosticsLog::rotate(const QByteArray& header) {
     if (m_dirtyBytes > 0) {
         (void)syncCurrent();
     }
-    m_file.reset();
+    closeCurrent();
     const QString tailPath = filePath(kTailName);
     const QString prevPath = filePath(kPrevName);
     QFile::remove(prevPath);
@@ -710,6 +749,8 @@ DiagnosticsLog::rotate(const QByteArray& header) {
 
 bool
 DiagnosticsLog::clearFiles() {
+    // What the cleared file held unsynced no longer matters: Clear removes it.
+    m_dirtyBytes = 0;
     m_file.reset();
     const QString tailPath = filePath(kTailName);
     const QString prevPath = filePath(kPrevName);
@@ -774,46 +815,47 @@ DiagnosticsLog::writeBatch(const std::deque<QByteArray>& batch) {
 
 void
 DiagnosticsLog::step(std::unique_lock<std::mutex>& lock, bool forceSync) {
-    std::deque<QByteArray> batch;
-    batch.swap(m_queue);
-    const bool clear = m_clearPending;
+    StepWork work;
+    work.batch.swap(m_queue);
+    work.clear = m_clearPending;
     m_clearPending = false;
     const quint64 through = m_flushRequested;
-    const quint64 now = nowMs();
-    const bool window = inStartupWindow(now);
-    m_lastDrain = now;
-    QByteArray header;
-    if (!m_processLine.isEmpty()) {
-        header += m_processLine + '\n';
-    }
-    if (!m_sessionLine.isEmpty()) {
-        header += m_sessionLine + '\n';
+    work.flushing = through > m_flushDone;
+    work.now = nowMs();
+    work.window = inStartupWindow(work.now);
+    m_lastDrain = work.now;
+    for (const QByteArray* line : {&m_processLine, &m_sessionLine}) {
+        if (!line->isEmpty()) {
+            work.header += *line + '\n';
+        }
     }
     lock.unlock();
-    bool ok = true;
-    {
-        std::lock_guard<std::mutex> stepLock(m_stepMutex);
-        m_header = header;
-        if (clear) {
-            ok = clearFiles();
-        }
-        if (!batch.empty()) {
-            ok = writeBatch(batch) && ok;
-        }
-        const bool syncAllowed = forceSync || now >= m_syncRetryAt;
-        if (m_dirtyBytes > 0 && syncAllowed && (forceSync || window || clear || now - m_lastSync >= kSyncIntervalMs)) {
-            ok = syncCurrent() && ok;
-        }
-        // A flush is durable only if nothing failed since the last one completed.
-        if (through > m_flushDone) {
-            ok = ok && !m_ioFailed && m_dirtyBytes == 0;
-            m_ioFailed = false;
-        }
-    }
+    const bool ok = writeStep(work, forceSync);
     lock.lock();
-    if (through > m_flushDone) {
+    if (work.flushing && through > m_flushDone) {
         completeFlushes(through, ok);
     }
+}
+
+bool
+DiagnosticsLog::writeStep(const StepWork& work, bool forceSync) {
+    std::lock_guard<std::mutex> stepLock(m_stepMutex);
+    m_header = work.header;
+    bool ok = !work.clear || clearFiles();
+    if (!work.batch.empty()) {
+        ok = writeBatch(work.batch) && ok;
+    }
+    const bool syncDue = forceSync || work.window || work.clear || work.now - m_lastSync >= kSyncIntervalMs;
+    if (m_dirtyBytes > 0 && syncDue && (forceSync || work.now >= m_syncRetryAt)) {
+        ok = syncCurrent() && ok;
+    }
+    if (!work.flushing) {
+        return ok;
+    }
+    // A flush is durable only if nothing failed since the last one completed.
+    ok = ok && !m_ioFailed && m_dirtyBytes == 0;
+    m_ioFailed = false;
+    return ok;
 }
 
 void

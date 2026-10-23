@@ -327,7 +327,9 @@ DecoderHostAndroid::noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLo
     QJniObject kind = QJniObject::fromString(sourceType);
     const QJniObject context = QJniObject::callStaticObjectMethod(
         kFactsClass, "attemptContext", "(Ljava/lang/String;)Ljava/lang/String;", kind.object());
-    dsd_qt::DiagnosticsLog::instance().noteSessionAttempt(context.isValid() ? context.toString() : sourceType, stage);
+    // Paired by source type: the dongle's label joins the context once the USB access request has opened it.
+    dsd_qt::DiagnosticsLog::instance().noteSessionAttempt(context.isValid() ? context.toString() : sourceType, stage,
+                                                          sourceType);
 }
 
 void
