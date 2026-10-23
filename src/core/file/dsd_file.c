@@ -1514,6 +1514,13 @@ sdrtrunk_expand_aes_iv(const dsd_state* state, uint8_t alg_id, int protocol, con
     return 1;
 }
 
+/* The AES key size a replayed record's algorithm uses: NXDN AES, P25 0x84 and DMR 0x25 are AES-256, the rest
+   (P25 0x89, DMR 0x24) AES-128. */
+static dsd_aes_key_size
+sdrtrunk_aes_key_size(uint8_t alg_id, int nxdn) {
+    return (nxdn || alg_id == 0x84 || alg_id == 0x25) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+}
+
 static int
 sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint8_t alg_id, const uint8_t iv64[8],
                                    int protocol, uint8_t* ks_bytes, size_t ks_cap, size_t* skip_bytes) {
@@ -1522,8 +1529,10 @@ sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint
     }
     const int dmr_aes = alg_id == 0x24 || alg_id == 0x25;
     const int nxdn = protocol == 3;
+    const dsd_aes_key_size key_size = sdrtrunk_aes_key_size(alg_id, nxdn);
     uint8_t aes_key[32];
-    const unsigned int words = (alg_id == 0x89 || alg_id == 0x24) ? 2U : 4U;
+    // The key words the algorithm uses: an AES-128 key is two, an AES-256 key four.
+    const unsigned int words = key_size == DSD_AES_KEY_256 ? 4U : 2U;
     if (!sdrtrunk_load_aes_key(state, key_id, dmr_aes || nxdn, words, aes_key)) {
         return 0;
     }
@@ -1531,7 +1540,6 @@ sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint
     if (!sdrtrunk_expand_aes_iv(state, alg_id, protocol, iv64, aes_iv)) {
         return 0;
     }
-    const dsd_aes_key_size key_size = (nxdn || alg_id == 0x84 || alg_id == 0x25) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
     aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, key_size, SDRTRUNK_KS_BYTES / 16);
     *skip_bytes = (protocol == 1) ? 27u : 16u;
     return 1;
