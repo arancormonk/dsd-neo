@@ -163,7 +163,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - For RTL-family inputs, the optional DSP panel shows post-channel-filter `Squelch` power against the SQL threshold.
   This is separate from the raw receiver `RF Level` health line.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`
-- `-j` P25: force-enable LCW explicit retune (format `0x44`; enabled by default)
+- `-j` P25: force-enable LCW explicit retune (format `0x44`; enabled by default). With it off, an explicit update for
+  a preempt talkgroup still preempts (see [Priority and preemption](csv-formats.md#priority-and-preemption))
 - `-^` P25: prefer CC candidates during control channel hunt
 
 ### P25 Follower (Advanced)
@@ -1788,8 +1789,10 @@ is delayed.
     - `DSD_NEO_DMR_HANGTIME=<seconds>` — post‑voice hangtime before returning to CC
     - `DSD_NEO_DMR_GRANT_TIMEOUT=<seconds>` — max seconds waiting for voice after grant
   - Env (priority preemption):
-    - `DSD_NEO_TG_PREEMPT_MIN_DWELL_MS=<ms>` — minimum active call dwell before displacement (default `750`)
-    - `DSD_NEO_TG_PREEMPT_COOLDOWN_MS=<ms>` — cooldown between displacement attempts (default `1000`)
+    - `DSD_NEO_TG_PREEMPT_MIN_DWELL_MS=<ms>` — minimum time a followed call is held before a preempt talkgroup may
+      displace it, measured from when it was first followed (default `750`)
+    - `DSD_NEO_TG_PREEMPT_COOLDOWN_MS=<ms>` — minimum time between two preemptions (default `1000`)
+    - Rules and per-protocol support: [Priority and preemption](csv-formats.md#priority-and-preemption)
 
 During single-system P25 trunking, **Input > RTL-SDR > Frequency** selects a new control channel and keeps trunk
 following enabled. This also works in mixed `-ft` mode when P25 is active, including after sync loss on a learned

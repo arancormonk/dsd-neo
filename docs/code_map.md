@@ -1158,13 +1158,28 @@ suite runs under this compiler.
   tests matching, precedence, lifecycle and policy isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
 - Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`): every over-the-air alias publisher (Motorola,
   Harris and Tait in `dsd_alias.c`, the P25 Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c`) learns its row
-  through `dsd_tg_policy_learn_exact()`: the first exact row for the source wins when it was imported or entered by the
-  user, a learned row is replaced only when its normalised name or mode (D vs DE) changed, and a repeat changes
-  nothing, so the policy generation (and every frontend's snapshot copy keyed on it) stays put while a radio keeps
-  sending the same alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same compare. Only a first-learned
-  row is appended to the group file, which is append-only and whose first row for an ID is the one a reload keeps:
-  a renamed radio's new alias holds for the session, and after a restart the file's earlier name loads as an imported
-  row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
+  through `dsd_tg_policy_learn_exact()`, always in mode `D` (an encrypted radio is locked out by the encryption ledger,
+  never by its alias row): a talkgroup/user row for the ID wins, a learned row is replaced only when its normalised
+  name changed, and a repeat changes nothing, so the policy generation (and every frontend's snapshot copy keyed on it)
+  stays put while a radio keeps sending the same alias. `DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY` follows the same
+  compare. Only a first-learned row is appended to the group file, which is append-only and whose first row for an ID
+  is the one a reload keeps: a renamed radio's new alias holds for the session, and after a restart the file's earlier
+  name loads as an imported row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
+- Invariant (alias rows are radios, `talkgroup_policy.c` `tg_policy_entry_is_learned_alias()`): a row with source
+  `RUNTIME_ALIAS` or mode `D` (the durable mark a persisted alias keeps) never decides a talkgroup: group evaluation,
+  allow-list membership and the followed calls' priority refresh skip it and fall through to a talkgroup row or the
+  narrowest range. Private evaluation and labels still see it, behind any talkgroup row for the ID. Edits by bounds
+  (`set_fields`, `set_mode`, `remove_bounds`, heard-only selection) address the talkgroup row first and take an
+  alias-only ID over in place. Edit staleness (`dsd_tg_policy_edit_version_valid()`) is judged against the structural
+  generation, which learned aliases and session avoids do not move; a context created in place by decoder writes
+  accepts an edit captured with nothing loaded, and a generation wrap is structural.
+- Invariant (preemption bookkeeping, `dsd_tg_policy_should_preempt()`): the active-call records are what a protocol
+  describes, not a history. Right before asking, a protocol calls `dsd_tg_policy_describe_followed_call()` for each
+  call it holds, with the time it began following that call (dwell runs from it; a matching record keeps its start and
+  cooldown; nothing is stamped). An accepted takeover commits its cooldown with `dsd_tg_policy_commit_preemption()`
+  after the preempting call is acquired, because the release cleared the displaced records. `note_active_call()`
+  stamps a cooldown only when it replaces a valid, different record. A list reload or clear carries the records and
+  the last cooldown into the new context; `install` (a scan target transition) restarts them.
 - Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while
   `ota_target_id` is the supergroup every frontend shows. `DSD_TG_POLICY_BLOCK_OTA_FINAL` in
   `<dsd-neo/core/talkgroup_policy.h>` names the supergroup blocks no member overrides (call skip, encryption
@@ -5241,6 +5256,19 @@ Private per-protocol modules worth knowing about:
   a receiver frequency other than the one the follow tune left (an operator retune moves no generation), after
   `DMR_CAPPLUS_SEED_WINDOW_S`, and under single-slot decoding. Group calls only: a bank-two private ID's layout is
   inferred from bank one's, not published. Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+- P25 preemption (`p25_trunk_sm.c`, `p25p2_vpdu.c`, `p25_lcw.c`). While the SM holds a voice channel, grants and
+  updates for another carrier that the voice channel carries (Phase 2 FACCH/SACCH MAC grants, Phase 1 LC `0x42`,
+  `0x44` with `-j` off, Motorola LCGRGU) reach it with `p25_sm_event_t.preempt_only`. `handle_grant` drops such an
+  event unless the SM is tuned, the frequency differs, and the read-only prospective decision
+  (`p25_grant_prospective_decision()`, also behind `p25_sm_grant_candidate_rank()`) is a tunable preempt talkgroup, so
+  ordinary announcements never touch SM timers. Calls announced together are ranked (audible before probe, admitted,
+  hold, priority, listed order) and the first carrier change ends the update. Before `should_preempt` the SM
+  describes every assigned slot with `followed_since_m` (kept across repeats and re-grants of the same call; reset by
+  `p25_sm_clear_followed_history()`). Duplicates, voice starts and accepted grants describe; only a preemption
+  commits a cooldown, after the candidate is tuned. A preemption whose CC return fails or defers restores the
+  force-release latch and keeps the held call. A clear-bit encryption-lockout release
+  (`p25_grant_commit_enc_release()`) and the stale-regrant guard's probe are spent only on acceptance. Tests:
+  `P25_PREEMPT`, `P25_GRANT_POLICY`, `P25_P2_VPDU_GRANTS`.
 - P25 followed-call identity across a fade (`p25_trunk_sm.c`, `p25_voice_canonical_lacks_identity()`). The engine's
   no-carrier pass ends the canonical calls as a sync loss and resets the P25 crypto without telling the P25 SM, which
   keeps following the assignment. Past the reacquire window a Phase 1 call comes back through the clear ESS with the

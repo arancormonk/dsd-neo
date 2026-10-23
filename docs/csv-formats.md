@@ -775,6 +775,45 @@ id,mode,name,priority,preempt,audio,record,stream,tags
 1300-1399,A,Ops Range,10,false,on,on,on,wide
 ```
 
+### Priority and preemption
+
+`priority` (0..100) and `preempt` decide which call the receiver follows when calls compete for it:
+
+- **Simultaneous announcements.** When the system announces several calls at once (a P25 multi-grant update, a
+  Cap+ or XPT channel status), the held talkgroup goes first, then the highest priority, then the order the system
+  listed them. With every priority at the default `0` this is the system's own order.
+- **Preemption.** A call of a talkgroup with `preempt` set takes the receiver from the call it is following when its
+  priority is strictly higher than that call's, the followed call has been followed for at least 750 ms, and no
+  preemption happened in the last second (`DSD_NEO_TG_PREEMPT_MIN_DWELL_MS` and `DSD_NEO_TG_PREEMPT_COOLDOWN_MS`,
+  see [cli.md](cli.md)). `preempt` is set on the talkgroup that interrupts; a call's own `priority` is what protects
+  it. Priority 100 cannot be preempted.
+- The followed conversation counts as held in the gaps between its transmissions (hangtime), and its dwell runs from
+  when it was first followed. On TDMA carriers the candidate must outrank every followed slot it would displace.
+- A row in mode `B` or `DE` (Not tuned) is never followed, so its priority and preemption do nothing.
+- Learned over-the-air radio aliases (mode `D`) name radios, not talkgroups: they never decide a talkgroup's mode,
+  priority, preemption or allow-list membership, even when a radio's ID equals a talkgroup number. Lists exported by
+  older versions may hold an encrypted radio's alias as a `DE` row, which reads as a talkgroup lockout: delete it if
+  that number is a talkgroup you want.
+
+Preemption needs the system to announce the other call **on the channel being received**. What each protocol
+provides:
+
+| Protocol | Announcement the receiver acts on while following a call |
+| --- | --- |
+| P25 Phase 1 | Link control in the voice frames: group voice channel update (`0x42`), explicit update (`0x44`, also without `-j`), Motorola regroup update |
+| P25 Phase 2 | Grant and grant-update MAC messages on the voice channel's FACCH/SACCH |
+| TETRA | D-SETUP on the control timeslot of the main carrier |
+| DMR Tier III / Connect Plus | Channel grants decoded on the payload carrier (composite or repeated grants) |
+| Capacity Plus / Hytera XPT | Channel status messages on the followed carrier |
+| NXDN Type-C / Type-D | Assignments on the traffic channel (rare on Type-C); Type-D busy messages naming another repeater |
+| EDACS / ProVoice, dPMR, analog | None: the working channel carries nothing about other calls |
+
+A site that sends nothing about other calls on its voice channels (some Harris P25 sites announce only the call in
+progress) cannot be preempted from: the priority call is followed when the current call ends and the receiver is back
+on the control channel. A call whose talkgroup is not yet known (a Cap+ private channel, an XPT private entry, a late
+entry before its link control) can be taken over only by a Hold. Preemption also fires on a repeat of the
+announcement: one heard during the dwell is retried on the next.
+
 ## Source ID List CSV (`--src-csv <file>` / `[trunking] src_csv`)
 
 Purpose: Provide names for source radio IDs (unit IDs), shown as `SName:` in event history and in the terminal

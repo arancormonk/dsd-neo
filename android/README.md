@@ -41,11 +41,13 @@ Long-press a talkgroup card to rename it, change Listening/Not tuned, or set
 priority (0/25/50/100 presets and ±5 steps). **Apply** changes only the fields you
 edited; renaming or changing priority preserves custom audio/record/stream policy.
 Priority changes also update current calls immediately, preserving their dwell and cooldown ages.
-Preempt is available above priority zero and affects P25 trunking only. The card shows `P<n>` and a lightning badge
-when preempt is set. Heard-only rows offer **Add to list**; listed rows require two
-taps on **Remove**. Decoder refusal messages remain visible in the sheet. If the
-policy changed while the sheet was open (including scan rotation), close and reopen
-it before trying again.
+Preempt is available above priority zero: a preempt talkgroup interrupts a lower-priority call when the system
+announces it on the channel being received (P25, TETRA, DMR trunking, NXDN; see
+[Priority and preemption](../docs/csv-formats.md#priority-and-preemption)). The sheet says so, and says that a Not tuned
+row's priority does nothing. The card shows `P<n>` and a lightning badge when preempt is set. Heard-only rows offer
+**Add to list**; listed rows require two taps on **Remove**. An accepted submit closes the sheet; a decoder refusal
+appears in the screen's message line. Over-the-air radio aliases learned while the sheet is open do not make an edit
+stale; a list reload, an edit from another frontend or a scan rotation does, and then the sheet must be reopened.
 
 When the running session has no group file, **Save talkgroup list** exports the
 canonical policy, including aliases and ranges, to app-owned Imports storage.

@@ -138,6 +138,13 @@ Item {
             compare(recorder.last[4].preempt, true);
             compare(Object.keys(recorder.last[4]).sort(), ["preempt", "priority"]);
         }
+        function test_preempt_hint_follows_listening() {
+            var sheet = loader.item;
+            var hint = findChild(sheet, "preemptHint");
+            verify(hint.text.indexOf("lower-priority") >= 0);
+            mouseClick(findChild(sheet, "listeningToggle"));
+            verify(hint.text.indexOf("Not tuned") === 0);
+        }
         function test_only_changed_fields_and_no_op() {
             mouseClick(findChild(loader.item, "saveTalkgroup"));
             compare(recorder.edits, 0);
