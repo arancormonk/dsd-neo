@@ -263,6 +263,18 @@ p25_lcw_trunk_cc_ready_for_grant(p25_lcw_ctx* ctx) {
  * preempt may take the receiver from a lower-priority call, and every other announcement leaves the SM untouched.
  * Several are offered held talkgroup first, then highest priority, and the first to take the receiver ends the
  * offer. */
+/* Whether candidate @p b goes before @p a: admitted first, then the held talkgroup, then the higher priority. */
+static int
+p25_lcw_outranks(const p25_sm_grant_rank_t* b, const p25_sm_grant_rank_t* a) {
+    if (b->tune_allowed != a->tune_allowed) {
+        return b->tune_allowed > a->tune_allowed;
+    }
+    if (b->hold_match != a->hold_match) {
+        return b->hold_match > a->hold_match;
+    }
+    return b->priority > a->priority;
+}
+
 static void
 p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint16_t* groups, const int* svcs,
                          int count) {
@@ -285,11 +297,7 @@ p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint1
         order[n] = n;
         n++;
     }
-    if (n == 2
-        && (ranks[1].tune_allowed > ranks[0].tune_allowed
-            || (ranks[1].tune_allowed == ranks[0].tune_allowed
-                && (ranks[1].hold_match > ranks[0].hold_match
-                    || (ranks[1].hold_match == ranks[0].hold_match && ranks[1].priority > ranks[0].priority))))) {
+    if (n == 2 && p25_lcw_outranks(&ranks[1], &ranks[0])) {
         order[0] = 1;
         order[1] = 0;
     }

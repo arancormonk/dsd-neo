@@ -16,6 +16,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -24,8 +25,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -38,8 +37,6 @@
 #define FREQ_PRIO 851150000L
 
 /* The Phase 2 MAC path links GPS decoding, whose text helper lives in the DMR library. */
-void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input);
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
@@ -50,7 +47,6 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
 }
 
 static dsd_trunk_tune_result g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
-static unsigned g_return_calls = 0;
 
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -66,7 +62,6 @@ test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)opts;
     (void)state;
     (void)request_id;
-    g_return_calls++;
     return g_return_result;
 }
 
@@ -133,7 +128,6 @@ fresh_site(dsd_opts* opts, dsd_state* st) {
     (void)seed_row(st, 250, 60, 1);
     (void)seed_row(st, 200, 100, 1);
     g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
-    g_return_calls = 0;
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, st);
 }
 

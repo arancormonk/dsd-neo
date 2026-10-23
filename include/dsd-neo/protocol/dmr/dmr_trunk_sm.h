@@ -143,6 +143,7 @@ typedef struct {
 
 typedef struct {
     dmr_sm_state_e state;
+    int initialized;
 
     // Per-slot activity (index 0 = TS1/left, index 1 = TS2/right)
     dmr_sm_slot_ctx_t slots[2];
@@ -156,12 +157,10 @@ typedef struct {
     int vc_slot;
     int vc_is_group;
     int vc_identity_published;
-    int vc_status_follow;  // a Capacity Plus status followed it: its release goes to the latest announced rest channel
-    int vc_status_grant;   // a channel status (XPT) selected the grant: acquisition protection is the status window's
-    int vc_identity_known; // vc_tg/vc_dst/vc_src name the call (not an XPT placeholder or a Cap+ status follow)
-    int vc_data_call;      // the grant was a data call (its policy was judged with data_call set)
+    int vc_status_follow; // a Capacity Plus status followed it: its release goes to the latest announced rest channel
     // DSD_CRC_* bits of the CSBK or MBC that granted this channel (a RAS grant under -F). The grant's identity is
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
+    int cc_hunt_index;
     uint8_t vc_crc_flags;
 
     // Timing (monotonic only)
@@ -170,6 +169,7 @@ typedef struct {
     dsd_receive_carriers receive_carriers; // Colour code last verified on each voice channel
     long receive_check_freq_hz;            // The voice channel that window belongs to (a new one starts its own)
     int receive_codes_fresh;               // Its codes were forgotten at its tune: what it holds now it proved
+    int vc_data_call;                      // the grant was a data call (its policy was judged with data_call set)
     double t_voice_m;                      // Time of last voice activity
     double t_cc_sync_m;                    // Time of last CC sync
 
@@ -185,7 +185,6 @@ typedef struct {
     uint64_t cc_tune_request_id;
     int cc_acquiring;
     int cc_confirmed;
-    int cc_hunt_index;
 
     // Startup control-channel hunt (issue #703): a single-system session whose start frequency yields no validated
     // control within cc_grace_s walks its channel map with the ordinary hunt. Decoder thread only.
@@ -197,6 +196,7 @@ typedef struct {
     // walks the map; it only listens where it is, or retunes the frequency it parks on. System-scoped: kept across a
     // same-system re-init (dmr_sm_begin_cc_acquisition()), cleared by dmr_sm_note_system_replaced().
     int site_without_cc;
+    int vc_identity_known; // vc_tg/vc_dst/vc_src name the call (not an XPT placeholder or a Cap+ status follow)
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
@@ -208,6 +208,7 @@ typedef struct {
     // HUNTING was entered because the control-channel window ran out (tick_on_cc()): validated content arriving before
     // the next hunt step opens that window again. 0 in every other state and for any other way into HUNTING.
     int cc_window_lost;
+    int vc_status_grant; // a channel status (XPT) selected the grant: acquisition protection is the status window's
 
     // The receiver frequency last read from rigctl at rx_seen_generation, so a burst does not query it again: dropped
     // at an operator move, and stale once a trunk tune moves the generation on.
@@ -224,7 +225,6 @@ typedef struct {
     dmr_sm_capplus_seed_t capplus_seed[2];
 
     // Initialized flag
-    int initialized;
 } dmr_sm_ctx_t;
 
 /* ============================================================================
@@ -375,8 +375,8 @@ void dmr_sm_policy_note_follow(dsd_state* state, const dsd_tg_policy_call_route*
  *
  * Recorded for the carrier the machine follows (TUNED) or listens on (ON_CC). A same-call LC keeps the follow time.
  */
-void dmr_sm_note_lc_identity(const dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint32_t target,
-                             uint32_t source);
+void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
+                             uint32_t target, uint32_t source);
 
 /**
  * @brief A Capacity Plus status names group @p tg on @p lsn: a status-followed slot whose identity a seed (not an LC)

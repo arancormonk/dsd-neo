@@ -1155,7 +1155,7 @@ p25_grant_enc_release_evidence(const dsd_state* state, const p25_grant_eval_ctx_
 }
 
 static void
-p25_grant_plan_enc_release_on_grant_bit(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+p25_grant_plan_enc_release_on_grant_bit(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state,
                                         p25_grant_eval_ctx_t* eval_ctx, uint32_t target, int is_group) {
     if (!dsd_enc_lockout_is_blocked(opts, state, target, is_group)) {
         // Nothing was blocking -- no entry, or a stale-epoch entry after new key
@@ -1721,6 +1721,12 @@ p25_slot_note_follow(p25_sm_slot_ctx_t* slot_ctx, int target_id, int is_group, l
 static double
 p25_slot_followed_since(const p25_sm_slot_ctx_t* slot_ctx, double now_m) {
     return slot_ctx->followed_since_m > 0.0 ? slot_ctx->followed_since_m : now_m;
+}
+
+/* The follow time of logical slot @p slot, or @p now_m when it names none. */
+static double
+p25_ctx_followed_since(const p25_sm_ctx_t* ctx, int slot, double now_m) {
+    return (slot >= 0 && slot <= 1) ? p25_slot_followed_since(&ctx->slots[slot], now_m) : now_m;
 }
 
 static int
@@ -2472,9 +2478,8 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     p25_grant_refresh_reused_carrier_watchdogs(state, now_m);
     // A repeat describes the call already followed: its dwell runs from when it was first followed, and it is no
     // takeover (dsd_tg_policy_describe_followed_call()).
-    const double followed_since =
-        (call_slot >= 0 && call_slot <= 1) ? p25_slot_followed_since(&ctx->slots[call_slot], now_m) : now_m;
-    (void)dsd_tg_policy_describe_followed_call(state, route, decision, followed_since, now_m);
+    (void)dsd_tg_policy_describe_followed_call(state, route, decision, p25_ctx_followed_since(ctx, call_slot, now_m),
+                                               now_m);
     p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_duplicate", "freq=%ld tg=%d target=%d slot=%d data=%d", freq,
                  ctx->vc_tg, target_id, route->slot, data_call);
     sm_log(opts, state, "grant-same-freq");
@@ -2737,6 +2742,20 @@ p25_grant_start_stale_regrant_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx
     }
 }
 
+/* The accepted call is what the SM now holds; a re-grant of the call it already followed keeps that call's dwell.
+ * Only a preemption is a takeover, and it commits its cooldown explicitly: the release cleared the records of the
+ * call it displaced. */
+static void
+p25_grant_note_followed(const p25_sm_ctx_t* ctx, dsd_state* state, const p25_grant_route_ctx_t* grant,
+                        const dsd_tg_policy_decision* decision, int preempted) {
+    const int follow_slot = grant->logical_slot >= 0 && grant->logical_slot <= 1 ? grant->logical_slot : 0;
+    (void)dsd_tg_policy_describe_followed_call(state, &grant->route, decision,
+                                               p25_ctx_followed_since(ctx, follow_slot, grant->now_m), grant->now_m);
+    if (preempted) {
+        (void)dsd_tg_policy_commit_preemption(state, grant->now_m);
+    }
+}
+
 /* What an assignment would decide for @p ev, without writing anything: no ledger release, no backoff, no call-skip
  * touch, no log. Patch-aware like the assignment path. */
 static int
@@ -2752,10 +2771,13 @@ p25_grant_prospective_decision(const p25_sm_ctx_t* ctx, const dsd_opts* opts, ds
 /* A grant announced on a voice channel for another carrier (ev->preempt_only) only matters as a preemption: it is
  * considered while the SM holds a voice channel, for a talkgroup whose policy asks to preempt. Anything else is
  * dropped before it touches SM state, so the continuous updates a site sends for other calls cannot restart the
- * held call's timers. */
+ * held call's timers. Returns 1 for every other grant. */
 static int
 p25_grant_preempt_only_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
                                  const p25_sm_event_t* ev) {
+    if (!ev->preempt_only) {
+        return 1;
+    }
     if (ctx->state != P25_SM_TUNED || ctx->vc_freq_hz == 0) {
         return 0;
     }
@@ -2783,7 +2805,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
 
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
 
-    if (ev->preempt_only && !p25_grant_preempt_only_candidate(ctx, opts, state, ev)) {
+    if (!p25_grant_preempt_only_candidate(ctx, opts, state, ev)) {
         return;
     }
 
@@ -2841,15 +2863,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     ctx->grant_count++;
     p25_grant_debug_log_tdma(opts, state, ctx, ev, grant.freq, grant.ted_sps);
 
-    // The accepted call is what the SM now holds; a re-grant of the call it already followed keeps that call's dwell.
-    // Only a preemption is a takeover, and it commits its cooldown explicitly: the release cleared the records of
-    // the call it displaced.
-    const int follow_slot = grant.logical_slot >= 0 && grant.logical_slot <= 1 ? grant.logical_slot : 0;
-    (void)dsd_tg_policy_describe_followed_call(
-        state, &grant.route, &decision, p25_slot_followed_since(&ctx->slots[follow_slot], grant.now_m), grant.now_m);
-    if (preempted) {
-        (void)dsd_tg_policy_commit_preemption(state, grant.now_m);
-    }
+    p25_grant_note_followed(ctx, state, &grant, &decision, preempted);
     p25_sm_diagf(opts, state, ctx, "grant_accept",
                  "ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d needs_retune=%d "
                  "prio=%d preempt=%d data=%d reused_carrier=%d stale_probe=%d",

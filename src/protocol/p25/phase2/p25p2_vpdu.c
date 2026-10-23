@@ -500,13 +500,12 @@ p25p2_vpdu_dispatch_grant_event(dsd_opts* opts, dsd_state* state, p25_sm_event_t
 }
 
 static void
-p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
-                       int target, int source, p25_sm_grant_provenance_e provenance, int policy_encrypted_override,
-                       int policy_data_override, int dispatch) {
+p25p2_mac_handle_indiv(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int target, int source,
+                       p25_sm_grant_provenance_e provenance, int policy_encrypted_override, int policy_data_override,
+                       int dispatch) {
     dsd_tg_policy_decision decision;
     int enc_for_policy = 0;
     int data_for_policy = 0;
-    (void)res;
     if (!opts || !state) {
         return;
     }
@@ -947,7 +946,7 @@ p25p2_vpdu_try_group_candidate(dsd_opts* opts, dsd_state* state, const p25p2_vpd
         tuned = (policy->stop_on_tune && !was_tuned && opts && (opts->trunk_is_tuned != 0)) ? 1 : 0;
         // A candidate that took the receiver to another carrier -- a preemption -- ends the update: the rest were
         // ranked below it, and judging them against the call just taken would only restart its dwell.
-        if (was_tuned && opts && opts->trunk_is_tuned != 0 && sm && sm->vc_freq_hz != was_vc_freq) {
+        if (was_tuned && opts->trunk_is_tuned != 0 && sm && sm->vc_freq_hz != was_vc_freq) {
             tuned = 1;
         }
     }
@@ -1482,7 +1481,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_print_group_label(state, target);
         const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
         if (dispatch != P25P2_DISPATCH_NONE) {
-            p25p2_mac_handle_indiv(&mac_res, opts, state, channel, svc, (int)target, /*src*/ 0,
+            p25p2_mac_handle_indiv(opts, state, channel, svc, (int)target, /*src*/ 0,
                                    p25p2_grant_provenance((MAC[1 + len_a] & 0x01) != 0),
                                    /*policy_encrypted*/ -1, /*policy_data*/ -1, dispatch);
         }
@@ -1506,7 +1505,6 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res = *ctx->mac_res;
     int len_a = ctx->len_a;
     int channel = (MAC[2 + len_a] << 8) | MAC[3 + len_a];
     int target = (MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a];
@@ -1539,7 +1537,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
     const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
     if (dispatch != P25P2_DISPATCH_NONE) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-        p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source,
+        p25p2_mac_handle_indiv(opts, state, channel, P25_SM_SVC_UNKNOWN, target, source,
                                opcode == 0x46 ? P25_SM_GRANT_PROVENANCE_UPDATE : P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
                                policy_encrypted, /*policy_data*/ 0, dispatch);
     }
@@ -1551,7 +1549,6 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res = *ctx->mac_res;
     int len_a = ctx->len_a;
     int channelt = (MAC[2 + len_a] << 8) | MAC[3 + len_a];
     int channelr = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
@@ -1588,7 +1585,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
     const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
     if (dispatch != P25P2_DISPATCH_NONE) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-        p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, target, source,
+        p25p2_mac_handle_indiv(opts, state, channelt, P25_SM_SVC_UNKNOWN, target, source,
                                opcode == 0xC6 ? P25_SM_GRANT_PROVENANCE_UPDATE : P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
                                policy_encrypted, /*policy_data*/ 0, dispatch);
     }
@@ -1928,7 +1925,7 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
         const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
         if (dispatch != P25P2_DISPATCH_NONE) {
             const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-            p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, (int)target, /*src*/ 0,
+            p25p2_mac_handle_indiv(opts, state, channelt, P25_SM_SVC_UNKNOWN, (int)target, /*src*/ 0,
                                    P25_SM_GRANT_PROVENANCE_ASSIGNMENT, policy_encrypted, /*policy_data*/ 1, dispatch);
         }
         if (opts->trunk_enable == 0) {
@@ -5182,7 +5179,7 @@ p25p2_vpdu_handle_harris_data_channel_grant(p25p2_vpdu_ctx* ctx, int opcode) {
     const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
     if (dispatch != P25P2_DISPATCH_NONE) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-        p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source,
+        p25p2_mac_handle_indiv(opts, state, channel, P25_SM_SVC_UNKNOWN, target, source,
                                P25_SM_GRANT_PROVENANCE_ASSIGNMENT, policy_encrypted, /*policy_data*/ 1, dispatch);
     }
     p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
@@ -5476,7 +5473,7 @@ p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_servi
     const int dispatch =
         opts->trunk_tune_private_calls ? p25p2_vpdu_can_dispatch_grant(opts, state, freq) : P25P2_DISPATCH_NONE;
     if (dispatch != P25P2_DISPATCH_NONE) {
-        p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channelt, svc, target, source,
+        p25p2_mac_handle_indiv(opts, state, channelt, svc, target, source,
                                is_service_grant ? P25_SM_GRANT_PROVENANCE_ASSIGNMENT : P25_SM_GRANT_PROVENANCE_UPDATE,
                                /*policy_encrypted*/ -1, /*policy_data*/ -1, dispatch);
     }

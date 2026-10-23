@@ -1238,6 +1238,9 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
  * decides a talkgroup's mode, priority, preemption or media. */
 static int
 tg_policy_lookup_group_in_ctx(const dsd_tg_policy_context* ctx, uint32_t tg, dsd_tg_policy_lookup* out) {
+    if (!ctx || !ctx->table.entries || ctx->table.count == 0) {
+        return 0;
+    }
     if (tg_policy_lookup_exact_in_ctx_kind(ctx, tg, 0, out)) {
         return 1;
     }

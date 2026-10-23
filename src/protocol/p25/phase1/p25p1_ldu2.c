@@ -20,7 +20,6 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
-#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>

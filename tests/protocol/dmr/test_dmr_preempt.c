@@ -15,7 +15,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -112,7 +112,6 @@ extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint3
 #define LPCN_C 0x0012U
 
 static const uint64_t k_t0_ns = 1000000ULL * 1000000000ULL; // the TEST clock's origin, well past any zero sentinel
-static double g_now_s = 0.0;
 
 static int g_tunes = 0;
 static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -128,7 +127,6 @@ expect_true(const char* tag, int cond) {
 
 static void
 clock_at(double seconds) {
-    g_now_s = seconds;
     dsd_decode_clock_test_set_ns(k_t0_ns + (uint64_t)(seconds * 1e9));
 }
 

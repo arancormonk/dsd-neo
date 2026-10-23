@@ -845,11 +845,11 @@ voice_live(void) {
  * channel never becomes the control channel. */
 static int
 nxdn_run_refused_duplicate_keeps_tuned_case(void) {
-    static const char* const name = "type-c-refused-duplicate-keeps-tuned";
+    static const char* const test_case = "type-c-refused-duplicate-keeps-tuned";
     const long vc = type_c_freq(19U);
     int rc = 0;
     for (int variant = 0; variant < 3; variant++) {
-        const char* const label = variant == 0 ? "allowlist" : (variant == 1 ? "unmapped" : "no-control-channel");
+        const char* const result_name = variant == 0 ? "allowlist" : (variant == 1 ? "unmapped" : "no-control-channel");
         type_c_fixture();
         g_opts.trunk_is_tuned = 1;
         g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = vc;
@@ -865,14 +865,15 @@ nxdn_run_refused_duplicate_keeps_tuned_case(void) {
             g_state.trunk_cc_freq = 0;
         }
         send_assignment(0x05U, 1100U, 16U);
-        rc |= nxdn_expect(g_tune_count == 0, name, label, "refused duplicate did not tune");
-        rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, name, label, "refused duplicate kept the receiver tuned");
-        rc |= nxdn_expect(variant == 2 ? g_state.p25_cc_freq == 0 : g_state.p25_cc_freq == 935000000L, name, label,
-                          "voice channel not anchored as the control channel");
+        rc |= nxdn_expect(g_tune_count == 0, test_case, result_name, "refused duplicate did not tune");
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, test_case, result_name,
+                          "refused duplicate kept the receiver tuned");
+        rc |= nxdn_expect(variant == 2 ? g_state.p25_cc_freq == 0 : g_state.p25_cc_freq == 935000000L, test_case,
+                          result_name, "voice channel not anchored as the control channel");
         if (variant != 2) {
             send_disc();
-            rc |= nxdn_expect(g_tune_cc_count == 1, name, label, "DISC returned to the control channel");
-            rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, name, label, "DISC untuned the receiver");
+            rc |= nxdn_expect(g_tune_cc_count == 1, test_case, result_name, "DISC returned to the control channel");
+            rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, test_case, result_name, "DISC untuned the receiver");
         }
     }
     return rc;

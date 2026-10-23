@@ -1489,6 +1489,30 @@ dmr_sm_resident_members(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state
     return members;
 }
 
+/* Describe each slot of @p members that holds a call to the preemption ledger by its identity (the slot's record on the
+   held carrier, else the followed grant's); a slot that holds none, or one whose identity is unknown, is cleared. */
+static void
+dmr_sm_describe_member_slots(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m, int members,
+                             dmr_sm_busy_view_t* out) {
+    for (int s = 0; s < 2; s++) {
+        if (!(members & (1 << s))) {
+            (void)dsd_tg_policy_clear_active_call(state, s);
+            continue;
+        }
+        dmr_sm_slot_ctx_t id = ctx->slots[s];
+        const int known = (dmr_sm_slot_identity_known(&id) && id.carrier_hz == out->carrier_hz)
+                          || (s == ctx->vc_slot && ctx->state == DMR_SM_TUNED && dmr_sm_grant_identity(ctx, &id));
+        if (!known) {
+            out->unknown_identity = 1;
+            (void)dsd_tg_policy_clear_active_call(state, s);
+            continue;
+        }
+        if (dmr_sm_describe_identity(opts, state, &id, out->carrier_hz, s, now_m)) {
+            out->holds_hold_target = 1;
+        }
+    }
+}
+
 int
 dmr_sm_describe_held_calls(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m,
                            dmr_sm_busy_view_t* out) {
@@ -1534,23 +1558,7 @@ dmr_sm_describe_held_calls(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
         }
         return 1;
     }
-    for (int s = 0; s < 2; s++) {
-        if (!(members & (1 << s))) {
-            (void)dsd_tg_policy_clear_active_call(state, s);
-            continue;
-        }
-        dmr_sm_slot_ctx_t id = ctx->slots[s];
-        const int known = (dmr_sm_slot_identity_known(&id) && id.carrier_hz == out->carrier_hz)
-                          || (s == ctx->vc_slot && ctx->state == DMR_SM_TUNED && dmr_sm_grant_identity(ctx, &id));
-        if (!known) {
-            out->unknown_identity = 1;
-            (void)dsd_tg_policy_clear_active_call(state, s);
-            continue;
-        }
-        if (dmr_sm_describe_identity(opts, state, &id, out->carrier_hz, s, now_m)) {
-            out->holds_hold_target = 1;
-        }
-    }
+    dmr_sm_describe_member_slots(ctx, opts, state, now_m, members, out);
     return 1;
 }
 
@@ -1601,6 +1609,31 @@ dmr_sm_event_kind(const dmr_sm_event_t* ev) {
     return ev->is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
 }
 
+/* The followed grant names its call: the followed slot's record takes its identity, and the preemption ledger holds the
+   call (a takeover by preemption commits its cooldown); a placeholder leaves both to the voice LC. */
+static void
+dmr_sm_grant_note_identity(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev, dsd_call_kind kind,
+                           int identity_known, long freq, dmr_sm_displace_e displace, double now_m) {
+    const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
+    if (ctx->vc_slot >= 0 && identity_known && target != 0U) {
+        dmr_sm_slot_identity_set(&ctx->slots[ctx->vc_slot], kind, target, (uint32_t)ev->src, ev->is_group,
+                                 ctx->vc_data_call, DMR_SM_ID_GRANT, ev->lpcn, freq, now_m);
+    }
+    if (ev->policy_valid && identity_known) {
+        const dsd_tg_policy_call_route route = {
+            .target_id = target,
+            .source_id = (uint32_t)ev->src,
+            .freq_hz = freq,
+            .channel = ev->lpcn,
+            .slot = ctx->vc_slot,
+            .requires_tuner_retune = 0,
+        };
+        dmr_sm_policy_note_follow(state, &route, &ev->policy, displace == DMR_SM_DISPLACE_PREEMPT, now_m);
+    } else {
+        dmr_sm_policy_note_follow(state, NULL, NULL, 0, now_m);
+    }
+}
+
 /* Tune to an accepted grant's carrier and make its call the machine's. */
 static dmr_sm_grant_result_e
 dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev, long freq,
@@ -1644,24 +1677,7 @@ dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const d
     state->dmr_mono_slot = ctx->vc_slot;
 
     dmr_sm_slots_reset(ctx);
-    const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
-    if (ctx->vc_slot >= 0 && identity_known && target != 0U) {
-        dmr_sm_slot_identity_set(&ctx->slots[ctx->vc_slot], kind, target, (uint32_t)ev->src, ev->is_group,
-                                 ctx->vc_data_call, DMR_SM_ID_GRANT, ev->lpcn, freq, now_m);
-    }
-    if (ev->policy_valid && identity_known) {
-        const dsd_tg_policy_call_route route = {
-            .target_id = target,
-            .source_id = (uint32_t)ev->src,
-            .freq_hz = freq,
-            .channel = ev->lpcn,
-            .slot = ctx->vc_slot,
-            .requires_tuner_retune = 0,
-        };
-        dmr_sm_policy_note_follow(state, &route, &ev->policy, displace == DMR_SM_DISPLACE_PREEMPT, now_m);
-    } else {
-        dmr_sm_policy_note_follow(state, NULL, NULL, 0, now_m);
-    }
+    dmr_sm_grant_note_identity(ctx, state, ev, kind, identity_known, freq, displace, now_m);
 
     dmr_reset_blocks(opts, state);
 
@@ -1712,6 +1728,40 @@ dmr_sm_move_matches(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev) {
     return dmr_sm_followed_identity(ctx, &followed) && followed.target == target;
 }
 
+/* The policy's verdict on the moved call @p moved, in @p decision: 0 when it is denied tuning for a reason other than a
+   Hold mismatch (logged), or cannot be judged; media-only restrictions never stop following it. */
+static int
+dmr_sm_move_decision(const dsd_opts* opts, const dsd_state* state, const dmr_sm_slot_ctx_t* moved,
+                     dsd_tg_policy_decision* decision) {
+    if (!dmr_sm_slot_identity_decision(opts, state, moved, decision)) {
+        return 0;
+    }
+    const uint32_t non_tuning = (uint32_t)DSD_TG_POLICY_BLOCK_HOLD | (uint32_t)DSD_TG_POLICY_BLOCK_AUDIO
+                                | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM;
+    if (!decision->tune_allowed && (decision->block_reasons & ~non_tuning) != 0U) {
+        sm_log(opts, "move-refused-policy");
+        return 0;
+    }
+    return 1;
+}
+
+/* A move on the carrier already tuned: when it names the other slot, the moved call's record goes there with its
+   follow time, and that slot becomes the followed one. */
+static void
+dmr_sm_move_slot_in_place(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_slot_ctx_t* moved, int new_slot) {
+    if (new_slot >= 0 && new_slot != ctx->vc_slot) {
+        if (ctx->vc_slot >= 0) {
+            dmr_sm_slot_identity_clear(&ctx->slots[ctx->vc_slot]);
+        }
+        dmr_sm_slot_identity_set(&ctx->slots[new_slot], (dsd_call_kind)moved->kind, moved->target, moved->source,
+                                 moved->judged_group, moved->data_call, (dmr_sm_identity_prov_e)moved->prov,
+                                 moved->channel, moved->carrier_hz, moved->follow_m);
+        ctx->slots[new_slot].follow_m = moved->follow_m;
+        ctx->vc_slot = new_slot;
+        state->dmr_mono_slot = new_slot;
+    }
+}
+
 /* A matched C_MOVE: the followed call goes where the system moved it unless its own classification is now denied
    tuning for a reason other than a Hold mismatch (a lockout, skip, avoid or mode change since it started); media-only
    restrictions never stop following it. The move keeps the call's follow time, so a later candidate's dwell runs from
@@ -1723,13 +1773,7 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
         return DMR_SM_GRANT_REFUSED;
     }
     dsd_tg_policy_decision decision;
-    if (!dmr_sm_slot_identity_decision(opts, state, &moved, &decision)) {
-        return DMR_SM_GRANT_REFUSED;
-    }
-    const uint32_t non_tuning = (uint32_t)DSD_TG_POLICY_BLOCK_HOLD | (uint32_t)DSD_TG_POLICY_BLOCK_AUDIO
-                                | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM;
-    if (!decision.tune_allowed && (decision.block_reasons & ~non_tuning) != 0U) {
-        sm_log(opts, "move-refused-policy");
+    if (!dmr_sm_move_decision(opts, state, &moved, &decision)) {
         return DMR_SM_GRANT_REFUSED;
     }
     long freq = 0;
@@ -1740,17 +1784,7 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
     const int new_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : ctx->vc_slot;
     const double now_m = dsd_decode_now_mono_s();
     if (resolved == DMR_SM_RESOLVE_SAME_FREQ) {
-        if (new_slot >= 0 && new_slot != ctx->vc_slot) {
-            if (ctx->vc_slot >= 0) {
-                dmr_sm_slot_identity_clear(&ctx->slots[ctx->vc_slot]);
-            }
-            dmr_sm_slot_identity_set(&ctx->slots[new_slot], (dsd_call_kind)moved.kind, moved.target, moved.source,
-                                     moved.judged_group, moved.data_call, (dmr_sm_identity_prov_e)moved.prov,
-                                     moved.channel, moved.carrier_hz, moved.follow_m);
-            ctx->slots[new_slot].follow_m = moved.follow_m;
-            ctx->vc_slot = new_slot;
-            state->dmr_mono_slot = new_slot;
-        }
+        dmr_sm_move_slot_in_place(ctx, state, &moved, new_slot);
         sm_log(opts, "move-in-place");
         return DMR_SM_GRANT_IN_PLACE;
     }
@@ -1801,6 +1835,32 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
     return DMR_SM_GRANT_FOLLOWED;
 }
 
+/* Whether grant @p ev on @p freq may take the receiver, and how (@p displace): one on the held carrier, or while nothing
+   is held (nor the caller's window says so), always; one on another carrier only by a displacement. */
+static int
+dmr_sm_grant_displacement(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev,
+                          long freq, dmr_sm_displace_e* displace) {
+    const double now_m = dsd_decode_now_mono_s();
+    dmr_sm_busy_view_t view;
+    (void)dmr_sm_describe_held_calls(ctx, opts, state, now_m, &view);
+    if (freq != view.carrier_hz && (view.held || ev->caller_busy)) {
+        const dsd_tg_policy_call_route candidate = {
+            .target_id = (uint32_t)(ev->is_group ? ev->tg : ev->dst),
+            .source_id = (uint32_t)ev->src,
+            .freq_hz = freq,
+            .channel = ev->lpcn,
+            .slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : -1,
+            .requires_tuner_retune = 1,
+        };
+        *displace = dmr_sm_may_displace(&view, opts, state, &candidate, &ev->policy, ev->policy_valid,
+                                        dmr_sm_event_identity_known(ev), now_m);
+        if (*displace == DMR_SM_DISPLACE_NONE) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static dmr_sm_grant_result_e
 dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     if (!ctx || !ev || !opts || !state) {
@@ -1827,25 +1887,10 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
 
     /* The receiver holds a call (or the caller's own window says so): a candidate on another carrier takes it only by
        Hold over a non-held call or by preemption. One on the held carrier is followed as before. */
-    const double now_m = dsd_decode_now_mono_s();
-    dmr_sm_busy_view_t view;
-    (void)dmr_sm_describe_held_calls(ctx, opts, state, now_m, &view);
     dmr_sm_displace_e displace = DMR_SM_DISPLACE_NONE;
-    if (freq != view.carrier_hz && (view.held || ev->caller_busy)) {
-        const dsd_tg_policy_call_route candidate = {
-            .target_id = (uint32_t)(ev->is_group ? ev->tg : ev->dst),
-            .source_id = (uint32_t)ev->src,
-            .freq_hz = freq,
-            .channel = ev->lpcn,
-            .slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : -1,
-            .requires_tuner_retune = 1,
-        };
-        displace = dmr_sm_may_displace(&view, opts, state, &candidate, &ev->policy, ev->policy_valid,
-                                       dmr_sm_event_identity_known(ev), now_m);
-        if (displace == DMR_SM_DISPLACE_NONE) {
-            sm_log(opts, "grant-busy");
-            return DMR_SM_GRANT_BUSY;
-        }
+    if (!dmr_sm_grant_displacement(ctx, opts, state, ev, freq, &displace)) {
+        sm_log(opts, "grant-busy");
+        return DMR_SM_GRANT_BUSY;
     }
     return dmr_sm_follow_grant(ctx, opts, state, ev, freq, displace);
 }
@@ -1865,7 +1910,7 @@ dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) 
 }
 
 void
-dmr_sm_note_lc_identity(const dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint32_t target,
+dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind, uint32_t target,
                         uint32_t source) {
     if (!opts || !state || opts->trunk_enable != 1 || slot < 0 || slot > 1 || target == 0U) {
         return;

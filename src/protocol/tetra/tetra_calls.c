@@ -759,6 +759,23 @@ call_log_skip(const tetra_state_t* ts, const tetra_call_t* c, const char* why) {
                       (unsigned)c->alloc.carrier, (unsigned)c->alloc.timeslots, why);
 }
 
+/* Hand @p grant for @p c to the state machine and, when it takes it, record the follow (its start, the policy's
+ * active call and any preemption @p takeover commits) and publish the followed call. */
+static void
+call_follow_grant(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_sm_grant* grant,
+                  const dsd_tg_policy_decision* d, call_takeover takeover) {
+    if (tetra_sm_on_grant(opts, state, grant) == 1) {
+        const double now_m = dsd_decode_now_mono_s();
+        const dsd_tg_policy_call_route route = call_route(c, 0);
+        c->followed_m = now_m;
+        (void)dsd_tg_policy_note_active_call(state, &route, d, now_m);
+        if (takeover == CALL_TAKEOVER_PREEMPT) {
+            (void)dsd_tg_policy_commit_preemption(state, now_m);
+        }
+        calls_publish_followed(opts, state, ts);
+    }
+}
+
 /* Trunking: hand the state machine the channel just allocated to @p c, when the policy lets it be followed. The
  * followed call's own allocation moves it. When the allocation took the followed channel (@p takes_followed,
  * calls_take_channel()), the call followed there holds no channel for @p c to take over, so the policy alone decides.
@@ -797,22 +814,13 @@ call_consider(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t*
                           (unsigned)c->called_ssi, dsd_tg_policy_block_reason_label(d.block_reasons));
         return;
     }
-    const call_takeover takeover =
-        tuned && !takes_followed ? call_takes_over(opts, state, c, &d, &followed) : CALL_TAKEOVER_NONE;
-    if (tuned && !takes_followed && takeover == CALL_TAKEOVER_NONE) {
+    const int contested = tuned && !takes_followed;
+    const call_takeover takeover = contested ? call_takes_over(opts, state, c, &d, &followed) : CALL_TAKEOVER_NONE;
+    if (contested && takeover == CALL_TAKEOVER_NONE) {
         call_log_skip(ts, c, "another call is followed");
         return;
     }
-    if (tetra_sm_on_grant(opts, state, &grant) == 1) {
-        const double now_m = dsd_decode_now_mono_s();
-        const dsd_tg_policy_call_route route = call_route(c, 0);
-        c->followed_m = now_m;
-        (void)dsd_tg_policy_note_active_call(state, &route, &d, now_m);
-        if (takeover == CALL_TAKEOVER_PREEMPT) {
-            (void)dsd_tg_policy_commit_preemption(state, now_m);
-        }
-        calls_publish_followed(opts, state, ts);
-    }
+    call_follow_grant(opts, state, ts, c, &grant, &d, takeover);
 }
 
 /* ---- Traffic channels ------------------------------------------------------------------------------------------ */
