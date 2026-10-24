@@ -5407,7 +5407,9 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_may_displace()`: a decision the caller evaluated for a known identity, no held call of unknown identity,
     and `dsd_tg_policy_should_preempt()` over every held slot); otherwise `grant-busy`. A candidate on the held carrier
     is followed as before (IN_PLACE), and names its slot's call (`dmr_sm_grant_reconcile_in_place()`): another call
-    there takes the slot's record with its follow time now (on the followed slot, the grant identity too); a repeat of
+    there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
+    announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
+    grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
     the call the slot names, or of the grant followed there, keeps record and follow time. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
@@ -5416,9 +5418,10 @@ Private per-protocol modules worth knowing about:
     slot's activity with an unknown identity, and a slot with no identity takes that unknown record on the followed
     carrier, so a later group status names it; an idle one changes nothing), XPT status reconciliation
     (`dmr_sm_status_slot_reconcile()`, from each site status before its busy view and ranking: on the followed carrier
-    a group entry names its slot's call, a private one leaves it unknown and, on the followed slot, withdraws the grant
-    identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a voice LC
-    only at its checked
+    a group entry names its slot's call (on the followed slot the grant identity too, with the status's own CRC
+    provenance, `dmr_sm_vc_identity_group()`), a private one leaves it unknown and, on the followed slot, withdraws
+    the grant identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a
+    voice LC only at its checked
     publication (`dmr_sm_note_lc_identity()` from `dmr_flco_publish_voice()`). The follow time moves only when the call
     (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
     in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and

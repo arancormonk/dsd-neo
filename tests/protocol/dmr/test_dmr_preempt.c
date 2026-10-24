@@ -13,6 +13,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
@@ -762,6 +763,48 @@ test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st
     return rc;
 }
 
+/* The CRC provenance of slot 0's active call (0xFF: none active). */
+static uint8_t
+slot0_call_crc(const dsd_state* st, uint32_t* target) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(st, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0xFFU;
+    }
+    *target = (uint32_t)call.policy_target_id;
+    return call.crc_invalid;
+}
+
+/* A grant that passed its CRC is followed; before its first voice, a RAS-accepted grant (-F) reassigns the followed
+   slot in place. Its identity is published at the first voice with its own provenance, never the verified grant's: the
+   call reads RAS-unverified. And the reverse: a verified reassignment of a RAS grant reads verified. */
+static int
+test_in_place_reassignment_carries_crc_provenance(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        const uint8_t first = variant == 0 ? 0U : (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+        const uint8_t second = variant == 0 ? (uint8_t)DSD_CRC_RAS_UNVERIFIED : 0U;
+        init_env(opts, st, 2.0);
+        st->currentslot = 0;
+        st->event_crc_invalid[0] = first;
+        tv_grant(opts, st, LPCN_A, 0, 100, 1);
+        st->event_crc_invalid[0] = 0U;
+        clock_at(0.2);
+        st->event_crc_invalid[0] = second;
+        tv_grant(opts, st, LPCN_A, 0, 200, 2);
+        st->event_crc_invalid[0] = 0U;
+        rc |= expect_true("the reassignment carries its own provenance",
+                          vc(st) == VC_A && sm()->vc_tg == 200 && sm()->vc_crc_flags == second);
+        clock_at(0.3);
+        voice(opts, st, 0);
+        uint32_t target = 0U;
+        const uint8_t crc = slot0_call_crc(st, &target);
+        rc |= expect_true(variant == 0 ? "the RAS reassignment publishes as unverified"
+                                       : "the verified reassignment publishes as verified",
+                          target == 200U && crc == second);
+    }
+    return rc;
+}
+
 /* A C_MOVE event, as the CSBK layer submits it. */
 static dmr_sm_grant_result_e
 submit_move(dsd_opts* opts, dsd_state* st, long freq, uint16_t lpcn, int slot, int is_group, uint32_t target,
@@ -1104,6 +1147,7 @@ main(void) {
     rc |= test_scan_target_contexts(opts, st);
     rc |= test_in_place_reassignment(opts, st);
     rc |= test_in_place_group_grant_never_binds_private_call(opts, st);
+    rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
     rc |= test_slot_move_republishes(opts, st);
     rc |= test_move_matches_slot_identity(opts, st);
     rc |= test_deferred_move_keeps_identity(opts, st);

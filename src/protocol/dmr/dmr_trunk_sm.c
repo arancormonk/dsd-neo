@@ -1224,9 +1224,11 @@ dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int 
     dmr_sm_slot_name(ctx, state, slot, &named, 0, now_m);
 }
 
-/* The followed grant's identity names group @p tg (a status named the followed slot's call): kept when it already does. */
+/* The followed grant's identity names group @p tg (a status named the followed slot's call): kept when it already does.
+   A new identity carries the naming status's CRC provenance (@p crc_flags, DSD_CRC_*), as a grant's does
+   (dmr_sm_take_grant()): the voice sync publishes it later, outside that burst's scope. */
 static void
-dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg) {
+dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg, uint8_t crc_flags) {
     if (ctx->vc_identity_known && ctx->vc_is_group && (uint32_t)ctx->vc_tg == tg) {
         return;
     }
@@ -1236,6 +1238,7 @@ dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg) {
     ctx->vc_is_group = 1;
     ctx->vc_data_call = 0;
     ctx->vc_identity_known = 1;
+    ctx->vc_crc_flags = crc_flags;
 }
 
 void
@@ -1267,7 +1270,8 @@ dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot
                              now_m);
     dmr_sm_slot_name(ctx, state, slot, &named, 0, now_m);
     if (followed_slot) {
-        dmr_sm_vc_identity_group(ctx, tg);
+        // Reconciled from inside the status burst's CRC scope.
+        dmr_sm_vc_identity_group(ctx, tg, state ? state->event_crc_invalid[state->currentslot & 1] : 0U);
     }
 }
 
@@ -2345,6 +2349,9 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const
         ctx->vc_is_group = ev->is_group != 0;
         ctx->vc_data_call = data_call;
         ctx->vc_identity_known = 1;
+        // The new identity's provenance is this announcement's (dispatched inside its CSBK/MBC burst's CRC scope, as
+        // dmr_sm_take_grant() reads it), never the replaced grant's: the voice sync publishes it with these flags.
+        ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];
     }
 }
 

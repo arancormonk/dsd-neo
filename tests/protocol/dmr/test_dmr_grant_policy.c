@@ -11,6 +11,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
@@ -1463,6 +1464,44 @@ test_xpt_status_after_unverified_terminator_awaits_next(dsd_opts* opts, dsd_stat
     return rc;
 }
 
+/* An XPT site status that passed its CRC follows group 77; before the first voice, a RAS-accepted status (-F) names
+   group 88 on the followed slot. The followed call's identity is the later status's, and so is its provenance: the
+   call published at the first voice reads RAS-unverified, never verified. */
+static int
+test_xpt_status_reassignment_carries_crc_provenance(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    st->trunk_chan_map[1] = 461262500L;
+    st->currentslot = 0;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){77U, 0U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("xpt follows group 77 from a verified status",
+                         st->trunk_vc_freq[0] == 461262500L && sm->vc_tg == 77 && sm->vc_crc_flags == 0U);
+    status_clock_at(0.2);
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){88U, 0U, 0U, 0U, 0U, 0U});
+    st->event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("xpt the RAS status renames the followed call with its provenance",
+                      sm->vc_tg == 88 && sm->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    status_clock_at(0.3);
+    accepted_voice_now(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("xpt the renamed call publishes as unverified",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 88U && call.crc_invalid == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    status_env_done(st);
+    return rc;
+}
+
 /* Parked on an XPT carrier while an admitted resident call plays: inside the status's voice window a status naming that
    same carrier is not followed (no retune, no block reset, the live slot's activity kept). */
 static int
@@ -2537,6 +2576,7 @@ main(void) {
     rc |= test_status_repeat_during_fade_keeps_binding(opts, st, 0);
     rc |= test_status_repeat_during_fade_keeps_binding(opts, st, 1);
     rc |= test_xpt_status_after_unverified_terminator_awaits_next(opts, st);
+    rc |= test_xpt_status_reassignment_carries_crc_provenance(opts, st);
     rc |= test_xpt_resident_same_carrier_in_voice_window(opts, st);
     rc |= test_con_plus_takeover_ends_displaced_calls(opts, st);
     rc |= test_cap_plus_takeover_ends_displaced_calls(opts, st);
