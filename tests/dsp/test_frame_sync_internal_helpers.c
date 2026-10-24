@@ -2990,6 +2990,140 @@ test_p25p1_partial_chain_loses_the_comparison(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* Run a comparison into the other chain's pass: the incumbent reads one TSBK in three (it misses frames). */
+static void
+compare_into_trial(dsd_opts* opts, dsd_state* state, int incumbent_rf_mod) {
+    compare_setup(opts, state, incumbent_rf_mod);
+    compare_pass(opts, state, 3);
+    assert(state->p25_p1_mod_compare.phase == 2);
+    assert(state->rf_mod == !incumbent_rf_mod);
+}
+
+/*
+ * How a comparison ends when its passes are cut short or read nothing, and what it leaves behind.
+ */
+static void
+test_p25p1_comparison_ends_cleanly(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    /* A transmission that ends inside the incumbent's pass: its opening frame is all either pass validated, so there is
+     * nothing to choose between and no verdict. The incumbent's chain is put back, nothing is stamped as learned, and
+     * the carrier's next frame compares afresh. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    const uint32_t stamped = state.p25_p1_validated_symbolcnt;
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state.p25_p1_mod_compare.phase == 2);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 0 && g_profile_cqpsk == 0);
+    assert(state.p25_p1_mod_probe_active == 0);
+    assert(state.p25_p1_validated_symbolcnt == stamped);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 1);
+
+    /* The other chain's pass is the decoder's experiment: the dwell gets back what that pass searched, no more. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    for (int i = 0; i < 2; i++) {
+        compare_frame(&opts, &state, 3 * 180 - 134, 134);
+    }
+    state.sps_hunt_counter = 300;
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 134 - 2 * 3 * 180);
+    assert(state.p25_p1_mod_compare.phase == 2);
+    state.sps_hunt_counter = 2100;
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.rf_mod == 0);
+    assert(state.sps_hunt_counter == 300);
+
+    /* A verdict's own stamp is not a frame: with the verdict gone, the next entry opens nothing until a frame
+     * validates. */
+    state.p25_p1_mod_compare.verdict_valid = 0;
+    compare_idle(&opts, &state, 10);
+    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_mod_compare.phase == 0);
+
+    /* A C4FM verdict is withdrawn the way a learned CQPSK is: by a dwell on that chain that decodes nothing. */
+    compare_setup(&opts, &state, 1);
+    compare_pass(&opts, &state, 3);
+    compare_pass(&opts, &state, 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 0);
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0);
+
+    /* ... and a CQPSK verdict with the learned CQPSK it set. */
+    compare_setup(&opts, &state, 0);
+    compare_pass(&opts, &state, 3);
+    compare_pass(&opts, &state, 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 1);
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0 && state.p25_p1_validated_rf_mod == -1);
+
+    /* An acquisition reset in the other chain's pass ends the comparison without a verdict. Its caller owns the
+     * demodulator and the learned modulation from there (a trunk-scan switch has restored the target's), so neither
+     * is touched. */
+    compare_into_trial(&opts, &state, 1);
+    compare_frame(&opts, &state, 46, 134);
+    state.p25_p1_validated_rf_mod = 1; /* as a target's restored snapshot would leave it */
+    dsd_frame_sync_reset_acquisition(&opts, &state, 0);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_validated_rf_mod == 1);
+
+    /* A dwell expiry that overtakes the other chain's pass ends it on the incumbent's chain, before the hunt decides
+     * where to go: a P25p1-only session re-enters 4800/4 without normalising it. */
+    compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    state.p25_p1_mod_probe_next_qpsk = 0;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+
+    /* A lock taken mid-pass ends it without a verdict and leaves the demodulator to the lock. */
+    compare_into_trial(&opts, &state, 0);
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    compare_idle(&opts, &state, 10);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_validated_rf_mod == 0);
+
+    /* So does a profile change: the demodulator belongs to the new profile. */
+    compare_into_trial(&opts, &state, 0);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.rf_mod = 2;
+    compare_idle(&opts, &state, 10);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 2 && state.p25_p1_validated_rf_mod == 0);
+
+    /* A tune ends a comparison on the chain leading so far: the incumbent unless the other chain has read more. */
+    compare_into_trial(&opts, &state, 1);
+    compare_frame(&opts, &state, 46, 134);
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1 && state.p25_p1_mod_probe_active == 0);
+    compare_into_trial(&opts, &state, 0);
+    for (int i = 0; i < 9; i++) {
+        compare_frame(&opts, &state, 46, 134);
+    }
+    assert(state.p25_p1_mod_compare.phase == 2);
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * Issue #423: a P25p1 sync cannot claim CQPSK -- the sync word is identical on both
  * modulations -- but while the chain is already on it must re-assert the front-end profile the
@@ -3882,6 +4016,7 @@ main(void) {
     test_validated_p25p1_modulation_outranks_the_heuristics();
     test_validated_cqpsk_survives_rotation_but_not_disproof();
     test_p25p1_partial_chain_loses_the_comparison();
+    test_p25p1_comparison_ends_cleanly();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();
     test_decode_mode_profiles_agree_with_the_sps_hunt_table();

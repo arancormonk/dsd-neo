@@ -929,6 +929,7 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
     if (!opts || !state) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
     // Audio drain is handled by dsd_engine_trunk_tune_to_cc_request() before the hardware retune.
 
     // Tune back to the control channel when known (best-effort). Prefer the
@@ -973,6 +974,8 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    /* A P25p1 chain comparison in flight hands the tune the chain leading so far, not the one its pass is trying. */
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
 
     /* Trunking (P25): the SM sets state->rf_mod based on the grant (0=C4FM FDMA,
      * 1=QPSK family for TDMA/CQPSK). For mixed P25P1 C4FM CC + P25P2 TDMA voice,
@@ -1059,6 +1062,8 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    /* As a grant's tune: a P25p1 chain comparison in flight hands the control channel the chain leading so far. */
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
 #ifndef USE_RADIO
     (void)ted_sps;
 #else

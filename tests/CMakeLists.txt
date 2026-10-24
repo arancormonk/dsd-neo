@@ -14894,15 +14894,16 @@ if(DSD_HAS_RADIO)
         -f1
         "Group Voice Channel User"
     )
-    # The CQPSK fixtures run the front end's CQPSK chain only with -mq: -f1 sets C4FM
-    # modulation, so "-f1" alone (as these cases were first registered) demodulates them on
-    # the FSK discriminator path (REPLAY STREAM cqpsk_symbols=0). A -m lock holds on either
-    # side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock until the presets
-    # learned to keep an earlier lock) each read about 9,590 CQPSK symbols and no FSK samples. The clean CC decodes the same either
-    # way (18 implicit grants, no irrecoverable header error, against 17 and 1); the voice
-    # capture improves to 8 grants, 51 audio errors and 5 header errors (from 7, 84 and
-    # 147) and the simulcast one to 18 grants and the site identity 41 times (from 3 and
-    # none).
+    # The CQPSK fixtures run the front end's CQPSK chain throughout only with -mq. A -m lock
+    # holds on either side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock
+    # until the presets learned to keep an earlier lock) each read about 9,590 CQPSK symbols
+    # and no FSK samples. "-f1" alone (as these cases were first registered) starts on the FSK
+    # discriminator, and the P25p1 chain comparison moves it to CQPSK only where C4FM misses
+    # frames. The clean CC decodes about the same either way (18 implicit grants, no
+    # irrecoverable header error, against 17 and 1 under "-f1"); the voice capture improves
+    # to 8 grants, 51 audio errors and 5 header errors (from 7, 84 and 147), and the simulcast
+    # one to 18 grants and the site identity 41 times (from 9 and 9; 3 and none before the
+    # comparison).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_CC
         p25p1_cqpsk_cc

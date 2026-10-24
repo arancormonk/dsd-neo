@@ -180,6 +180,24 @@ int dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* 
 void dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state);
 
 /**
+ * @brief End a P25p1 chain comparison in flight (dsd_p25p1_mod_compare) because the receiver is about to be retuned.
+ *
+ * A trunked grant or control-channel tune inherits the decoder's modulation and the learned P25p1 one, and while the
+ * comparison measures the other chain both name that chain. This puts both back on the chain leading so far -- the
+ * incumbent, unless the other chain has read more -- and ends the comparison without a verdict, so the tune that
+ * follows lands on it. The front end is left to the tune. The engine's tune requests and the P25 grant path call it
+ * before they read the modulation; it does nothing when no comparison runs.
+ */
+void dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state);
+
+/**
+ * @brief The P25p1 modulation the session has learned, as a snapshot of it should record it: while a chain comparison
+ * runs, the chain leading so far rather than dsd_state::p25_p1_validated_rf_mod, which the other chain's frames
+ * overwrite during its pass. -1 for nothing learned.
+ */
+int dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state);
+
+/**
  * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.
  *
  * The decoder's own timing authority on RTL-family FSK input: the front end applies

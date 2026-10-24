@@ -4455,9 +4455,15 @@ test_p25p1_mod_verdict_isolated_per_target(void) {
         test_rc = 1;
     }
 
-    state.p25_p1_validated_rf_mod = 1;
+    /* The first target is mid-comparison when the scan leaves it: the other chain (C4FM) has overwritten the learned
+     * modulation, while the CQPSK incumbent leads. The target keeps the leader. */
+    state.p25_p1_validated_rf_mod = 0;
     state.p25_p1_mod_compare.verdict_valid = 1;
     state.p25_p1_mod_compare.verdict_rf_mod = 1;
+    state.p25_p1_mod_compare.phase = 2;
+    state.p25_p1_mod_compare.incumbent_rf_mod = 1;
+    state.p25_p1_mod_compare.incumbent_read = 1206;
+    state.p25_p1_mod_compare.trial_read = 134;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_p1_mod_compare.verdict_valid != 0
@@ -14171,12 +14177,26 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.
    The received-tone reset is mirrored from the real function (issue #522), so a switch that
    stopped calling it, or restored a target's tone after it, shows up here. */
+/* Mirrors src/dsp/dsd_frame_sync.c (FRAME_SYNC_INTERNAL_HELPERS covers it): a snapshot of a target mid-comparison
+ * keeps the chain leading so far. */
+int
+dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state) {
+    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    if (cmp->phase == 0) {
+        return state->p25_p1_validated_rf_mod;
+    }
+    return (cmp->phase == 2 && cmp->trial_read > cmp->incumbent_read) ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
+}
+
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
     (void)opts;
     (void)forget;
     state->profile_proof_valid = 0;
     state->sps_hunt_counter = 0;
+    /* As the real reset does: a P25p1 chain comparison in flight ends, with no verdict and nothing restored. */
+    state->p25_p1_mod_compare.phase = 0;
+    state->p25_p1_mod_probe_active = 0;
     const uint32_t generation = state->analog_rx.generation + 1U;
     DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
     state->analog_rx.generation = generation;

@@ -3837,11 +3837,34 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   nobody (a one-block TSDU reads 134 of its 180-symbol slot, and the search to the next is 46); a pass without one
   keeps the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that read
   strictly more keeps the profile and becomes the learned modulation, with a verdict that stops a frame on that chain
-  opening another comparison (dropped with the learned modulation, kept per trunk-scan target).
-  A carrier boundary (`carrier_seq`), profile change, lock or trunked voice tune ends a comparison without a verdict.
-  Without it, a chain that reads part of an LSM simulcast carrier (C4FM: about half the 769 MHz control channel's
-  TSBKs) kept the profile for as long as the carrier stayed up. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
-  (`test_p25p1_partial_chain_loses_the_comparison`), `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO`.
+  opening another comparison. The other chain's pass is refunded to the dwell (the counter goes back to its value when
+  that pass began).
+  - A verdict needs the winner to have validated a frame in its own pass: an incumbent whose only frame opened the
+    comparison (the transmission ended, an isolated NID) ends it with no verdict and nothing learned. A verdict is
+    dropped with the learned modulation (a CQPSK dwell that decodes nothing, an acquisition reset that forgets it), by
+    a 4800/4 dwell on its own chain that decodes nothing (so a C4FM verdict cannot outlive its carrier), and is kept per
+    trunk-scan target (the snapshot records the chain leading so far, `dsd_frame_sync_p25p1_learned_rf_mod()`).
+  - A comparison ends without a verdict at a carrier boundary (`carrier_seq`; the incumbent's chain is put back), a
+    profile change, a modulation lock or a trunked voice tune (the demodulator is theirs), a dwell expiry that
+    overtakes it (put back on the incumbent's chain before the hunt moves), and `dsd_frame_sync_reset_acquisition()`
+    (a trunk-scan switch, a row or input boundary; the caller owns the demodulator and the learned modulation). Every
+    engine tune request (`dsd_engine_trunk_tune_to_freq_request()`, `dsd_engine_trunk_tune_to_cc_request()`,
+    `dsd_engine_return_to_cc_request()`) first ends a comparison in flight on the chain leading so far, the incumbent
+    unless the other chain has read more (`dsd_frame_sync_p25p1_mod_compare_end_for_tune()`), so an FDMA grant, which
+    inherits `rf_mod`, and a control-channel tune, which reads the learned modulation, never land on a chain only
+    because its pass was running.
+    A grant tune that fails puts back the P25 machine's profile snapshot, taken before the tune, so `rf_mod` can be
+    left on the other chain then, with the comparison ended and the learned modulation on the leader.
+  - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
+    gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
+    against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The
+    TSBK/MPDU success count (`p25_p1_fec_ok`) would be finer for control channels, but it says nothing about voice
+    frames (HDU, LDU1/2, TDU), so the NID stays the one check that covers every DUID.
+  Without the comparison, a chain that reads part of an LSM simulcast carrier (C4FM: about half the 769 MHz control
+  channel's TSBKs) kept the profile for as long as the carrier stayed up. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_p25p1_partial_chain_loses_the_comparison`, `test_p25p1_comparison_ends_cleanly`),
+  `ENGINE_TRUNK_RETUNE_REGRESSION` (`test_chain_comparison_in_flight_tunes_on_the_leading_chain`), `ENGINE_TRUNK_SCAN`,
+  `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO`.
 - Channel LPF (`demod_pipeline.cpp`): digital profiles design from their protected edge, capped at 144 taps with the
   63-tap fallback. The analog family (`demod_state::analog_family`, not the WIDE profile, which is also the digital
   fallback and the M17 encoder's) designs from `channel_lpf_width_hz` instead: cutoff width/2 + 600 Hz, the fixed
@@ -4919,7 +4942,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   sync never holds it, and neither names an owner. The hunt starts when it exceeds the CC grace (P25
   `--p25-cc-grace`, DMR 6 s).
 - Hunt: `try_next_cc()` (P25) or `dmr_cc_hunt()` (DMR) unchanged, 2 s probes included (too short for the SPS and
-  modulation hunt to reach a CQPSK trial: a simulcast system needs `-mq`, as a RadioReference import writes); a P25
+  modulation hunt to reach a CQPSK trial: a simulcast system whose C4FM chain decodes nothing needs `-mq`, as a
+  RadioReference import writes; one the C4FM chain reads in part reaches CQPSK through the chain comparison); a P25
   startup probe restores `trunk_cc_freq` after each probe tune, as DMR probes do, and records `cold_start_probe_hz`.
   A P25 probe tune takes the P25 chain from the session (`dsd_engine_cc_is_p25()`, above), and while a P25-driven
   probe is in flight (`p25_sm_hunt_probe_in_flight()`: `HUNTING`, or `ON_CC` on a hunt probe not yet decoded, under a

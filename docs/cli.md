@@ -657,9 +657,12 @@ Notes
   whose NID decodes, on either chain, starts one comparison: over the next 1800 symbols (about 0.4 s) the hunt adds up
   what that chain's decoded frames read. A P25p1 carrier sends its frames back to back, so a chain that found every
   frame's sync within a frame of the last one's end is reading all of it and keeps it; one that let a frame go by
-  gives the other chain 1800 symbols of its own, and the chain that read more keeps the profile and is remembered, so returning to that carrier after a voice grant starts on it without comparing again.
-  Without this, a C4FM chain reading about half of a simulcast control channel's TSBKs held it for as long as the
-  channel stayed up. `-mq`, `-mc` and the other modulation locks skip all of it.
+  gives the other chain 1800 symbols of its own, and the chain that read more keeps the profile and is remembered, so
+  returning to that carrier after a voice grant starts on it without comparing again. A transmission that ends before
+  either chain has decoded a second frame decides nothing, and a remembered chain is forgotten once a dwell on it
+  decodes nothing. A trunked tune that comes mid-comparison lands on the chain leading so far. Without this, a C4FM
+  chain reading about half of a simulcast control channel's TSBKs held it for as long as the channel stayed up.
+  `-mq`, `-mc` and the other modulation locks skip all of it, on either side of the `-f` option.
 - D-STAR voice and ProVoice prove a transmission rather than a frame, because neither has a per-frame check worth the
   name. A D-STAR superframe spends 1992 symbols and a ProVoice frame 736, and the vocoder error counts both leave
   behind are soft corrections rather than a verdict. So a CRC-16/X.25 -- the D-STAR RF header, or the header
@@ -1927,9 +1930,10 @@ does.
   startup search where it is, and no search runs after that until a RadioReference apply points the session at another
   system. A Type-D site that is idle and silent at session start is
   searched like a dead one, until a call's confirmed traffic holds the receiver.
-- A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites: each row gets
-  about two seconds, too short for the automatic modulation search to reach CQPSK on a control channel the session has
-  not decoded yet.
+- A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites, when the C4FM
+  chain decodes nothing of its control channel: each row gets about two seconds, too short for the automatic
+  modulation search to reach CQPSK on a control channel the session has not decoded yet. One the C4FM chain reads in
+  part moves to CQPSK by itself (the chain comparison in the hunt notes above).
 - DMR content that passed the colour-code check (a call on a Hytera XPT repeater, say) restarts the P25 and DMR
   windows, and an NXDN frame whose own CRCs confirmed the transmission (a call on a traffic channel) restarts the P25
   and NXDN windows, so a search never leaves a frequency mid-call. Neither names the system. Sync alone, which noise can

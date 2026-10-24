@@ -237,6 +237,23 @@ dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;
 }
 
+/* Mirrors the real helper in src/dsp/dsd_frame_sync.c (FRAME_SYNC_INTERNAL_HELPERS tests it there), so the assertions
+ * below read what the tune does with its answer: the comparison ends on the chain leading so far. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state) {
+    if (!state || state->p25_p1_mod_compare.phase == 0) {
+        return;
+    }
+    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    const int leader =
+        (cmp->phase == 2 && cmp->trial_read > cmp->incumbent_read) ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
+    state->p25_p1_validated_rf_mod = leader;
+    state->rf_mod = leader;
+    state->p25_p1_mod_compare.phase = 0;
+    state->p25_p1_mod_probe_active = 0;
+}
+
 /* Mirrors the real helper in src/dsp/dsd_frame_sync.c so the assertions below read the
  * behavior rather than the stub. */
 void
@@ -881,6 +898,64 @@ test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd
     g_rtl_family_landing_after_pending = 0;
     g_runtime_config_is_set = 0;
     g_trunk_scan_active_p25_cqpsk_is_set = 0;
+    rtl_stream_clear_pending_retune_profile();
+}
+
+/* A P25p1 chain comparison (dsd_p25p1_mod_compare) is in the other chain's pass, with rf_mod and the learned modulation
+ * on that chain, when a tune comes. */
+static void
+seed_chain_comparison_in_trial(dsd_opts* opts, dsd_state* state, int incumbent, uint32_t incumbent_read,
+                               uint32_t trial_read) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->frame_p25p1 = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p2_active_slot = -1;
+    state->lastsynctype = 0;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->p25_p1_mod_compare.phase = 2;
+    state->p25_p1_mod_compare.incumbent_rf_mod = incumbent;
+    state->p25_p1_mod_compare.incumbent_read = incumbent_read;
+    state->p25_p1_mod_compare.trial_read = trial_read;
+    state->p25_p1_mod_probe_active = 1;
+    state->rf_mod = !incumbent;
+    state->p25_p1_validated_rf_mod = !incumbent;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_pending_active = 0;
+    g_rtl_pending_cqpsk = -1;
+    g_rtl_pending_channel_profile = -1;
+}
+
+/* A grant or a control-channel tune that comes while the chain comparison is in the other chain's pass lands on the
+ * chain leading so far, not on the one the pass happens to be trying: a CQPSK incumbent that read an LSM control
+ * channel whole but one faded TSBK must not hand a grant decoded on the C4FM trial a C4FM voice channel. */
+static void
+test_chain_comparison_in_flight_tunes_on_the_leading_chain(dsd_opts* opts, dsd_state* state) {
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->rf_mod == 1 && state->p25_p1_validated_rf_mod == 1);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_mod_compare.verdict_valid == 0);
+    assert(state->p25_p1_mod_probe_active == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* The other chain leads: it is the one the voice channel gets. */
+    seed_chain_comparison_in_trial(opts, state, 0, 402, 1206);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
+    assert(state->p25_p1_mod_compare.phase == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A control-channel tune (a hunt probe, a return) restores the leading chain as the learned modulation too. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 134);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->rf_mod == 1 && state->p25_p1_mod_compare.phase == 0);
     rtl_stream_clear_pending_retune_profile();
 }
 
@@ -3247,6 +3322,7 @@ main(void) {
 #ifdef USE_RADIO
     test_trunked_targets_after_an_analog_target_keep_their_cqpsk(opts, state);
     test_gfsk_retune_decides_its_family_once(opts, state);
+    test_chain_comparison_in_flight_tunes_on_the_leading_chain(opts, state);
 #endif
 
     dsd_decode_clock_use_system();
