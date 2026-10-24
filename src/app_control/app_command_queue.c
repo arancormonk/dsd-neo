@@ -7790,6 +7790,24 @@ cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_i
     }
 }
 
+/* The apply commits here, past everything before it that can put the session back: a [mode] that stands leaves TETRA
+   unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and one
+   put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
+   (dsd_stage_user_config_to_opts()). */
+static void
+cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_edacs_session) {
+    if (cfg->has_mode) {
+        ui_commit_mode_change(opts, state);
+    }
+    /* A [mode], or an EDACS addressing mode the config set with or without one. */
+    ui_commit_mode_identity(opts, state);
+    /* A config that leaves the session an EDACS one it was not (edacs_ea, an EDACS/ProVoice [mode]) gets the -8
+       override startup gives one, as the EA toggle does; read after any rollback put the receive side back. */
+    if (!old_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
+    }
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -7857,20 +7875,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
-    /* The apply commits here, past everything above that can put the session back: a [mode] that stands leaves TETRA
-       unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and
-       one put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
-       (dsd_stage_user_config_to_opts()). */
-    if (cfg.has_mode) {
-        ui_commit_mode_change(opts, state);
-    }
-    /* A [mode], or an EDACS addressing mode the config set with or without one. */
-    ui_commit_mode_identity(opts, state);
-    /* A config that leaves the session an EDACS one it was not (edacs_ea, an EDACS/ProVoice [mode]) gets the -8
-       override startup gives one, as the EA toggle does; read after any rollback above put the receive side back. */
-    if (!old_edacs_session && dsd_edacs_session(opts, state)) {
-        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
-    }
+    cfg_commit_mode(opts, state, &cfg, old_edacs_session);
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);
     if (radio_rc != 0) {
