@@ -683,7 +683,7 @@ changing the selected frame mask. This allows shared presets such as `auto` and
 candidates.
 
 `decode = "auto"` enables every digital candidate in the five-profile hunt
-matrix below (every digital mode but TETRA, NXDN48 and NXDN96 included), exactly
+matrix below (every digital mode except TETRA, so NXDN48 and NXDN96 too), exactly
 as CLI `-fa` and the interactive Auto choice do. Auto is also the default: a
 `[mode]` section without a `decode` key, or no `[mode]` at all, leaves a session
 on the decoder set it starts with, which is this one. All three entry points

@@ -7,8 +7,10 @@
 #include <climits>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fsk_modem.h>
@@ -18,6 +20,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
@@ -1755,25 +1758,26 @@ expect_m17_encoder_unchanged(void) {
     return rc;
 }
 
-/* The options a -fZ session opens with: initOpts()'s digital frame flags (the Auto set) and modulation
-   (src/core/util/dsd_init.c), which -fZ leaves set, and the encoder flag; -fZ clears analog_only and
-   monitor_input_audio. */
-static void
+/* The options a -fZ session opens with: initOpts()'s digital frame flags and modulation, which are the Auto preset's
+   (src/core/util/dsd_init.c) and which -fZ leaves set, and the encoder flag; -fZ clears analog_only and
+   monitor_input_audio. Returns non-zero when the preset cannot be applied. */
+static int
 make_m17_encoder_opts(dsd_opts* opts) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    opts->frame_dstar = 1;
-    opts->frame_x2tdma = 1;
-    opts->frame_p25p1 = 1;
-    opts->frame_p25p2 = 1;
-    opts->frame_nxdn48 = 1;
-    opts->frame_nxdn96 = 1;
-    opts->frame_dmr = 1;
-    opts->frame_dpmr = 1;
-    opts->frame_provoice = 1;
-    opts->frame_ysf = 1;
-    opts->frame_m17 = 1;
-    opts->mod_c4fm = 1;
+    // dsd_state is multi-megabyte; keep it off the stack.
+    dsd_state* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
+    if (!state) {
+        DSD_FPRINTF(stderr, "M17 encoder options: allocation failed\n");
+        return 1;
+    }
+    const int rc = dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    free(state);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "M17 encoder options: the Auto preset did not apply\n");
+        return 1;
+    }
     opts->m17encoder = 1;
+    return 0;
 }
 
 /*
@@ -1797,7 +1801,12 @@ expect_m17_encoder_real_options(void) {
             break;
         }
         static dsd_opts opts;
-        make_m17_encoder_opts(&opts);
+        if (make_m17_encoder_opts(&opts) != 0) {
+            rtl_demod_cleanup(demod);
+            dsd_neo_aligned_free(demod);
+            rc = 1;
+            break;
+        }
         opts.mod_qpsk = variant == 1 ? 1 : 0;
         char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
         char label[128];
@@ -1829,7 +1838,11 @@ expect_m17_encoder_real_options(void) {
         if (kind == 0) {
             make_analog_opts(&opts);
         } else {
-            make_m17_encoder_opts(&opts);
+            if (make_m17_encoder_opts(&opts) != 0) {
+                rtl_demod_cleanup(demod);
+                dsd_neo_aligned_free(demod);
+                return 1;
+            }
             opts.m17encoder = 0;
         }
         char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};

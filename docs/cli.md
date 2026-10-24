@@ -521,8 +521,8 @@ Notes
 
 ## Modes & Decoders (`-f`)
 
-- Auto (the default): `-fa`, or no `-f` at all. Every digital mode but TETRA, NXDN48 and NXDN96 included (see the
-  hunt table below)
+- Auto (the default): `-fa`, or no `-f` at all. Every digital mode except TETRA (NXDN48 and NXDN96 included; see
+  the hunt table below)
 - Passive analog monitor: `-fA` (NFM on a radio input; see [Analog reception](#analog-reception--fa--fm) below)
 - Native AM receiver: `-fM` (I/Q radio inputs only; see [Native AM](#native-am--fm) below)
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)

@@ -4924,16 +4924,16 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
  * selected. Applying a preset ends both call epochs, drops the auto-modulation
  * votes and releases the modulation locks -- so re-applying the mode already in
  * effect would cut a live call and revert an operator's QPSK pick on a tap that
- * asked for nothing to change. Compared through dsd_infer_decode_mode_preset(),
- * which is the same reading the control binds to, so the skip and the selection
- * cannot answer differently.
+ * asked for nothing to change. A single preset is compared through
+ * dsd_infer_decode_mode_preset(), which is the same reading the control binds to, so
+ * for it the skip and the selection cannot answer differently.
  *
- * AUTO is read exactly instead (dsd_infer_decode_mode_preset_exact()): AUTO is the
- * lossy helper's catch-all for any frame set matching no single preset, so a session
- * with one protocol switched off answers AUTO without being it, and "listen for
- * everything" has to stay able to widen such a set back out. A session already on
- * the whole AUTO set (-fa, and the default) is in Auto, and keeps its calls and
- * modulation like any other.
+ * AUTO is read exactly instead (dsd_infer_decode_mode_preset_exact()), so there the
+ * two differ by design: AUTO is the lossy helper's catch-all for any frame set
+ * matching no single preset, so a session with one protocol switched off answers
+ * AUTO (its chip is lit) without being it, and "listen for everything" has to stay
+ * able to widen such a set back out. A session already on the whole AUTO set (-fa,
+ * and the default) is in Auto, and keeps its calls and modulation like any other.
  *
  * @param c        Command whose payload is already known to be wide enough.
  * @param out_mode Receives the requested mode whenever one could be read.
