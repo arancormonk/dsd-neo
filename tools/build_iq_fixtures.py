@@ -366,15 +366,16 @@ DERIVED_CLIP = [
 # transfer (issue #626), -fa decodes the call at every lead-in from 1.5 to 9.5 s: the hunt's
 # requests land within a 5.33 ms block, so neither edge of that band exists any more.
 #
-# The M17 join lands mid-transmission: its call fixture starts call-start seconds in, an offset
-# that is no whole number of 192-symbol frames, so the receiver lands inside a frame with no
-# preamble ahead of it. It pins that a transmission is joined on its own frames' sync words, a
-# frame apart, after receiver noise that must open nothing.
+# The M17 and NXDN96 joins land mid-transmission: their call fixture starts call-start seconds in,
+# an offset that is no whole number of 192-symbol frames, so the receiver lands inside a frame
+# with no preamble ahead of it. They pin that a transmission is joined on its own frames' sync
+# words, a frame apart, after receiver noise that must open nothing.
 #
 # name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz, call start s
 DERIVED_RETUNE = [
     ("nxdn48_after_retune", "noise_floor", 7.5, 467087500, "nxdn48", 467756250, 0.0),
     ("m17_after_retune", "noise_floor", 0.25, 446006250, "m17", 446012500, 1.5263),
+    ("nxdn96_after_retune", "noise_floor", 0.25, 467087500, "nxdn96", 467756250, 0.5137),
 ]
 RETUNE_MUTE_BYTES = 14848
 RESET_MUTE_BYTES = 2400

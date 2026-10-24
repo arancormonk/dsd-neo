@@ -109,6 +109,8 @@ not a finding that every component is cleared for redistribution.
   - The `m17_after_retune` fixture is the `m17` fixture from 1.5263 s on, preceded by a lead-in cut from the seeded
     `noise_floor` fixture and joined byte for byte by `tools/build_iq_fixtures.py`; its recorded portion carries the
     `m17` fixture's terms.
+  - The `nxdn96_after_retune` fixture is the `nxdn96` fixture from 0.5137 s on, preceded the same way by a lead-in cut
+    from `noise_floor`; its recorded portion carries the `nxdn96` fixture's terms.
   - The `dmr_t3_ras_cc` fixture derives from a DSDPlus raw discriminator capture of a DMR Tier III control
     channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
     for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source

@@ -54,6 +54,9 @@ typedef enum {
  */
 #define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 32
 
+/** @brief Symbols in every NXDN frame: 384 bits, 192 symbols at either rate (NXDN TS 1-A 4.4; 40 ms at 9600 bps). */
+#define DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS  192U
+
 /** @brief Symbols in every M17 frame: a 16-bit sync burst and 368 bits of payload (M17 spec, Frame; 40 ms). */
 #define DSD_FRAME_SYNC_M17_FRAME_SYMBOLS   192U
 

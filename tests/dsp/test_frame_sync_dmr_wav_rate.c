@@ -524,7 +524,9 @@ run_nxdn_two_pass_case(const char* label, const char* pattern, int frame_nxdn48,
 
     g_symbol_index = 0U;
     g_sync_pattern = pattern;
+    const uint32_t first_pass_start = state.symbolcnt;
     int sync = getFrameSync(&opts, &state);
+    const uint32_t first_pass_symbols = state.symbolcnt - first_pass_start;
     int rc = 0;
     if (sync != DSD_SYNC_NONE) {
         DSD_FPRINTF(stderr, "%s first pass returned %d, expected no confirmed sync\n", label, sync);
@@ -537,6 +539,11 @@ run_nxdn_two_pass_case(const char* label, const char* pattern, int frame_nxdn48,
     }
 
     g_symbol_index = 0U;
+    if (frame_nxdn96) {
+        /* NXDN96's second hit counts only a frame after the first: the pass reads as far as the first did, so start it
+           where its sync word lands 192 symbols on. */
+        state.symbolcnt = state.nxdn96_fsw_symbolcnt + DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS - first_pass_symbols;
+    }
     sync = getFrameSync(&opts, &state);
     if (sync != expected_sync) {
         DSD_FPRINTF(stderr, "%s second pass returned %d, expected %d\n", label, sync, expected_sync);

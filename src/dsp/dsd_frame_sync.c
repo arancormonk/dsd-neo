@@ -1999,6 +1999,16 @@ frame_sync_nxdn_sync_type(const char* symbols) {
     return DSD_SYNC_NONE;
 }
 
+/* Whether the NXDN matcher is reading NXDN96 here: the 4800/4 profile, or a symbol capture with NXDN96 alone on. */
+static int
+frame_sync_nxdn96_window(const frame_sync_match_ctx* ctx) {
+    const dsd_opts* opts = ctx->opts;
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        return opts->frame_nxdn96 == 1 && opts->frame_nxdn48 != 1;
+    }
+    return opts->frame_nxdn96 == 1 && ctx->state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+}
+
 static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -2048,7 +2058,22 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     }
 
     state->offset = ctx->synctest_pos;
-    if (state->lastsynctype == synctype) {
+    /* NXDN96's two hits are one frame apart. The word is ten sign-sliced symbols in five variants per polarity, so an
+     * arbitrary window matches about one time in a hundred, and two hits at any distance were what receiver noise
+     * offered: the noise_floor fixture opened 20 NXDN96 frames in 10 s under -fn. An NXDN frame is 384 bits, 192
+     * symbols at 9600 bps (NXDN TS 1-A 4.4: a frame per 40 ms), every one opening with the FSW, so a transmission's
+     * second hit lands exactly a frame after its first -- and so does each next frame's. A hit anywhere else only marks
+     * a new place. NXDN48 on 2400/4 keeps two hits at any distance. */
+    const int nxdn96 = frame_sync_nxdn96_window(ctx);
+    const int frame_after_last =
+        !nxdn96
+        || (state->nxdn96_fsw_seen
+            && (uint32_t)(state->symbolcnt - state->nxdn96_fsw_symbolcnt) == DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS);
+    if (nxdn96) {
+        state->nxdn96_fsw_symbolcnt = state->symbolcnt;
+        state->nxdn96_fsw_seen = 1U;
+    }
+    if (state->lastsynctype == synctype && frame_after_last) {
         frame_sync_note_cc_sync(ctx);
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
         return synctype;

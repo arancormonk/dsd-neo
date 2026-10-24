@@ -15055,6 +15055,10 @@ if(DSD_HAS_RADIO)
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_DEFAULT nxdn96 "" "RAN 00")
+    # NXDN96 landed on mid-frame after a quarter second of receiver noise (DERIVED_RETUNE): the first FSW marks the
+    # place and the one a frame later is taken.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN nxdn96_after_retune -fn "RAN 00")
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN_AUTO nxdn96_after_retune -fa "RAN 00")
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
     # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel
     # (DERIVED_RETUNE in tools/build_iq_fixtures.py). -fi holds the receiver on NXDN48, so whatever
@@ -15898,10 +15902,11 @@ if(DSD_HAS_RADIO)
         "Total audio errors: 0"
         "RAN [0-9]|Src=[0-9]"
     )
-    # Receiver noise opens no M17 frame at all. Its sync words are eight sign-sliced symbols, and M17 used to take any
-    # eight-window alternating run as a preamble: this fixture opened 27 M17 frames under -fz. M17 now joins a
-    # transmission on a preamble that runs DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows or on two sync words one 192-symbol
-    # frame apart.
+    # Receiver noise opens no M17 or NXDN96 frame at all. Their sync words are eight and ten sign-sliced symbols, and
+    # M17 used to take any eight-window alternating run as a preamble and NXDN96 any two hits at any distance: this
+    # fixture opened 27 M17 frames under -fz and 20 NXDN96 frames under -fn. M17 now joins a transmission on a
+    # preamble that runs DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows or on two sync words one 192-symbol frame apart,
+    # and NXDN96's two hits must be a frame apart.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC
         noise_floor
@@ -15910,11 +15915,18 @@ if(DSD_HAS_RADIO)
         "Sync: [+-]M17"
     )
     dsd_neo_add_iq_reject_test(
-        DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_SYNC
+        DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC
+        noise_floor
+        -fn
+        "Total audio errors: 0"
+        "Sync: NXDN96"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC
         noise_floor
         -fa
         "Total audio errors: 0"
-        "Sync: [+-]M17"
+        "Sync: [+-]M17|Sync: NXDN96"
     )
 
     # The M17 encoder's VOX on the dynamic squelch (issue #625): ten seconds of receiver noise

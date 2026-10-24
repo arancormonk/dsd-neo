@@ -703,7 +703,9 @@ Notes
   its preamble -- the receiver tuned or rotated onto it mid-stream -- is opened by its own frames instead: every M17
   frame is 192 symbols, so the first stream, packet or BERT sync word read exactly marks the place, and the same word
   exactly one frame later opens that frame. That costs the frame landed in and the one after it, about 80 ms, and
-  noise never offers it.
+  noise never offers it. NXDN96's ten-symbol frame sync word gets the same rule: its two hits must be exactly one
+  192-symbol frame apart (40 ms at 9600 bps), so receiver noise, which opened about two NXDN96 frames a second, opens
+  none, and a transmission costs its first frame.
 - A transmission the hunt has stepped away from is protected the same way, for as long as it may still be running.
   Both spans above cover one frame, which is no help across a profile change: under Auto the hunt can rotate off
   2400/4 while an NXDN48 call is still on air, and by the time the rotation reaches 4800/4 the NXDN96 and M17

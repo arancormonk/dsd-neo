@@ -1122,6 +1122,10 @@ struct dsd_state {
      * modular difference, so a rollover mid-frame stays exact. */
     uint32_t dpmr_fs2_frame_symbolcnt;
     uint8_t dpmr_fs2_frame_valid;
+    /* Where the last NXDN96 frame sync word sat in dsd_state::symbolcnt, and whether one has been seen: the matcher's
+     * second hit counts only one 192-symbol frame after its first (src/dsp/dsd_frame_sync.c). */
+    uint32_t nxdn96_fsw_symbolcnt;
+    uint8_t nxdn96_fsw_seen;
     /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
      * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
      * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols

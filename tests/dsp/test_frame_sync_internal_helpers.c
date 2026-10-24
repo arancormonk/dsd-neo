@@ -1479,10 +1479,11 @@ test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
 
-    /* Past the frame the matcher is live again, on its own two-hit terms. */
+    /* Past the frame the matcher is live again, on its own two-hit terms: the second hit a frame after the first. */
     state.symbolcnt = 1000 + DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 }
 
@@ -1708,6 +1709,8 @@ test_symbol_replay_requires_explicit_nxdn_variant(void) {
         opts.frame_nxdn96 = 1;
         state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
         assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+        /* NXDN96's second hit is the next frame's, 192 symbols on. */
+        state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
         assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
         assert(dsd_frame_sync_active_nxdn_variant(&opts, &state) == DSD_NXDN_VARIANT_96);
     }
@@ -1905,6 +1908,52 @@ test_m17_joins_on_two_sync_words_one_frame_apart(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
 }
 
+/*
+ * NXDN96's frame sync word is ten symbols in five variants per polarity, sliced on sign, so about one arbitrary window in
+ * a hundred matches, and the matcher's two hits could be any distance apart: receiver noise opened 20 NXDN96 frames in
+ * the noise_floor fixture's 10 s under -fn. An NXDN frame is 384 bits, 192 symbols at 9600 bps (NXDN TS 1-A 4.4: one
+ * frame per 40 ms), and every frame opens with the FSW, so a transmission's second hit is exactly one frame after its
+ * first. The 2400/4 matcher (NXDN48) keeps its two hits at any distance.
+ */
+static void
+test_nxdn96_two_hits_are_one_frame_apart(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 5000;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    /* A second hit that is not a frame later only marks a new place. */
+    state.symbolcnt += 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    /* A transmission's frames follow on. */
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    /* A frame whose FSW was lost: the next one marks, the one after accepts. */
+    state.symbolcnt += 384;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+
+    /* NXDN48 on 2400/4 is unchanged. */
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 5000;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+}
+
 /* Issue #445. The spans above cover a frame; this covers the gap a hunt step opens. A proof of
  * 2400/4 says a transmission is running there, and a step onto 4800/4 offers that same signal,
  * read at twice its rate, to two matchers weak enough to take it. Armed by hand here: what the
@@ -1942,10 +1991,11 @@ test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers(void) {
     assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
 
     /* Once the transmission can no longer be running, the matcher is live again on its own
-     * two-hit terms. */
+     * two-hit terms: the second hit a frame after the first. */
     state.symbolcnt = 1000 + DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* M17: the run latches nothing and the word behind it is refused, so no candidate is left
@@ -2014,6 +2064,7 @@ test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols(void) {
     state.symbolcnt = 1000 + 100;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's second hit is a frame on */
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* A proof read on 4800/4 -- P25p1's, say -- is inert here: what this guard acts on is a
@@ -2030,6 +2081,7 @@ test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols(void) {
     state.symbolcnt = 1000 + 100;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's second hit is a frame on */
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* And it never mutes the protocol whose transmission armed it: on 2400/4 itself, NXDN48
@@ -4100,6 +4152,7 @@ main(void) {
     test_the_p25p1_frame_guard_survives_symbolcnt_rollover();
     test_a_p25p1_frame_suppresses_m17_candidates();
     test_m17_joins_on_two_sync_words_one_frame_apart();
+    test_nxdn96_two_hits_are_one_frame_apart();
     test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers();
     test_the_2400_4_proof_suppression_still_blends_levels();
     test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols();
