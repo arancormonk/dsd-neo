@@ -15812,10 +15812,10 @@ if(DSD_HAS_RADIO)
         -fa
         "SRC: N0CALL"
     )
-    # A transmission joined mid-stream, after a second of receiver noise: the call starts 1.5263 s into the m17
-    # capture, inside a frame, with no preamble ahead (DERIVED_RETUNE in tools/build_iq_fixtures.py). Its stream frames
-    # join it on two sync words one frame apart. The old way in -- an alternating run in the payload and a word within
-    # one error -- missed this landing entirely.
+    # A transmission joined mid-stream, after a quarter second of receiver noise: the call starts 1.5263 s into the
+    # m17 capture, inside a frame, with no preamble ahead (DERIVED_RETUNE in tools/build_iq_fixtures.py). Its stream
+    # frames join it on the same sync word three frames running, and its LICH carries it on from there. The old way in
+    # -- an alternating run in the payload and a word within one error -- missed this landing entirely.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_M17_MID_STREAM_JOIN
         m17_after_retune

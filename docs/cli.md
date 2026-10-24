@@ -702,9 +702,10 @@ Notes
   error opened a few M17 frames a second on an idle channel. A preamble now has to run for 32 windows (a transmission
   sends 192 symbols of it) before the LSF or BERT word behind it opens the transmission. A transmission joined after
   its preamble -- the receiver tuned or rotated onto it mid-stream -- is opened by its own frames instead: every M17
-  frame is 192 symbols, so a stream, packet or BERT sync word read exactly, with the same word exactly one and two
-  frames before it, opens that frame. That costs the frame landed in and the two after it, about 120 ms, and noise
-  almost never offers it. NXDN96's ten-symbol frame sync word gets the same rule: a hit counts with hits one and two
+  frame is 192 symbols, so a stream or BERT sync word read exactly, with the same word exactly one and two frames
+  before it, opens that frame. That costs the frame landed in and the two after it, about 120 ms, and noise almost
+  never offers it. A join opens that one frame: the next continues only on M17's own evidence (the stream's LICH, a
+  BERT PRBS lock). A packet is never joined, since its one CRC covers the LSF it would have missed. NXDN96's ten-symbol frame sync word gets the same rule: a hit counts with hits one and two
   192-symbol frames (40 ms each at 9600 bps) before it, so receiver noise, which opened about two NXDN96 frames a
   second, opens none, and a transmission costs its first two frames. Both rules remember every hit, since a
   transmission's payload matches these short words several times a frame.

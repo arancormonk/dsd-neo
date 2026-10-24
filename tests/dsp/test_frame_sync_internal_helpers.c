@@ -1838,10 +1838,10 @@ m17_join_setup(dsd_opts* opts, dsd_state* state) {
  * M17's way in used to be any alternating run of eight windows followed by a sync word within one error, and receiver
  * noise supplies that a few times a second (the noise_floor fixture opened 27 M17 frames in 10 s under -fz). The same
  * weakness was how a transmission joined mid-stream got in: no preamble, so a run in the payload and a lucky word.
- * Every M17 frame is 192 symbols, a sync burst and 184 symbols of payload (M17 spec, Frame), and stream, packet and BERT
- * frames follow each other back to back, so a transmission in progress offers its frame's sync word every 192 symbols
- * -- something noise does not. The same exact sync word three frames running now joins a transmission, and the
- * preamble, which a transmission sends for 192 symbols, must run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows.
+ * Every M17 frame is 192 symbols, a sync burst and 184 symbols of payload (M17 spec, Frame), and stream and BERT frames
+ * follow each other back to back, so a transmission in progress offers its frame's sync word every 192 symbols --
+ * something noise does not. The same exact sync word three frames running now joins a transmission, for that one frame,
+ * and the preamble, which a transmission sends for 192 symbols, must run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows.
  */
 static int
 m17_word_three_frames(dsd_opts* opts, dsd_state* state, const char* first, const char* second, const char* third) {
@@ -1864,6 +1864,26 @@ test_m17_joins_on_a_sync_word_three_frames_running(void) {
     state.m17_confirm_weak_streak = 1;
     state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
+
+    /* A join opens one frame. A joined frame that proved nothing hands the next none of its permission: the words
+     * behind it are forgotten, and the stream waits for three fresh ones. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_STR) == DSD_SYNC_M17_STR_POS);
+    state.symbolcnt += 192;
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_STR) == DSD_SYNC_M17_STR_POS);
+
+    /* Every exact word is remembered, whichever path takes it: a BERT run that loses its PRBS lock rejoins on the
+     * frames it was read on, the one its preamble opened and the one the lock continued. */
+    m17_join_setup(&opts, &state);
+    feed_m17_alternating_windows(&opts, &state, DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS);
+    state.symbolcnt++;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+    state.m17_bert_locked = 1;
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+    state.m17_bert_locked = 0;
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
 
     /* Two words a frame apart are what dead channels offer by chance, so they are not enough on their own. */
     m17_join_setup(&opts, &state);
@@ -1900,24 +1920,30 @@ test_m17_joins_on_a_sync_word_three_frames_running(void) {
 
     /* Different words a frame apart are not one transmission's frames. */
     m17_join_setup(&opts, &state);
-    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_PKT) == DSD_SYNC_NONE);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_LSF) == DSD_SYNC_NONE);
     m17_join_setup(&opts, &state);
-    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_PKT, M17_STR) == DSD_SYNC_NONE);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_LSF, M17_STR) == DSD_SYNC_NONE);
 
-    /* The LSF word repeats only as an inverted stream (an LSF is sent once), packets join on theirs, and BERT on its
-     * own -- read as an inverted packet when the session's polarity says so. */
+    /* The LSF word repeats only as an inverted stream (an LSF is sent once), and BERT joins on its own word -- or on
+     * the packet word, its inversion, when the session's polarity says the transmission is inverted. */
     m17_join_setup(&opts, &state);
     assert(m17_word_three_frames(&opts, &state, M17_LSF, M17_LSF, M17_LSF) == DSD_SYNC_M17_STR_NEG);
-
-    m17_join_setup(&opts, &state);
-    assert(m17_word_three_frames(&opts, &state, M17_PKT, M17_PKT, M17_PKT) == DSD_SYNC_M17_PKT_POS);
 
     m17_join_setup(&opts, &state);
     assert(m17_word_three_frames(&opts, &state, M17_BRT, M17_BRT, M17_BRT) == DSD_SYNC_M17_BRT_POS);
 
     m17_join_setup(&opts, &state);
     opts.inverted_m17 = 1;
-    assert(m17_word_three_frames(&opts, &state, M17_BRT, M17_BRT, M17_BRT) == DSD_SYNC_M17_PKT_NEG);
+    assert(m17_word_three_frames(&opts, &state, M17_PKT, M17_PKT, M17_PKT) == DSD_SYNC_M17_BRT_NEG);
+
+    /* A packet is never joined: its one CRC covers the LSF and every frame, so a packet joined after its LSF cannot be
+     * read, and the packet word turns up a frame apart in NXDN96 data frames' LICH. Nor is a BERT word under an
+     * inverted session, which is an inverted packet. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_PKT, M17_PKT, M17_PKT) == DSD_SYNC_NONE);
+    m17_join_setup(&opts, &state);
+    opts.inverted_m17 = 1;
+    assert(m17_word_three_frames(&opts, &state, M17_BRT, M17_BRT, M17_BRT) == DSD_SYNC_NONE);
 
     /* A short alternating run -- what noise supplies -- latches nothing, so the word behind it opens nothing. */
     m17_join_setup(&opts, &state);

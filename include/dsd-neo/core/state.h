@@ -52,8 +52,14 @@
 typedef struct {
     uint32_t symbolcnt[DSD_SYNC_HIT_HISTORY_LEN];
     uint8_t kind[DSD_SYNC_HIT_HISTORY_LEN];
-    uint8_t next;
+    uint8_t next; /* the slot the next hit takes */
 } dsd_sync_hit_history;
+
+#ifdef __cplusplus
+static_assert(DSD_SYNC_HIT_HISTORY_LEN <= 255, "dsd_sync_hit_history::next is a uint8_t slot index");
+#else
+_Static_assert(DSD_SYNC_HIT_HISTORY_LEN <= 255, "dsd_sync_hit_history::next is a uint8_t slot index");
+#endif
 
 static inline void
 dsd_sync_hit_history_clear(dsd_sync_hit_history* history) {
@@ -2154,7 +2160,8 @@ struct dsd_state {
     uint8_t m17_pre_candidate_ttl;
     /* M17 joined mid-transmission (src/dsp/dsd_frame_sync.c): the windows that lately held a stream, LSF, packet or BERT
      * sync word exactly, with the word (kind 1-4) and where (dsd_state::symbolcnt). The same word exactly one and two
-     * 192-symbol frames before a window joins the transmission there. */
+     * 192-symbol frames before a window joins the transmission there, for that frame alone: the history is cleared
+     * when a join is taken. */
     dsd_sync_hit_history m17_join_hits;
 
     /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens

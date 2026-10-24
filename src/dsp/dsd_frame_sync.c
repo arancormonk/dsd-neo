@@ -1472,23 +1472,6 @@ frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_s
     return DSD_SYNC_NONE;
 }
 
-/**
- * @brief Join an M17 transmission in progress on the same sync word exactly one and two frames back.
- *
- * Every M17 frame is a 16-bit sync burst and 368 bits of payload, 192 symbols (M17 spec, Frame), and stream, packet
- * and BERT frames follow each other back to back, so a transmission the receiver lands in mid-stream presents its
- * frame's sync word again every 192 symbols. Noise does not: three exact eight-symbol words a frame apart are some
- * twenty-four bits of chance against the single window within one error, behind any alternating run, that used to be
- * the only way in -- receiver noise opened a few M17 frames a second that way, and a transmission joined mid-stream got
- * in only when its payload happened to supply a run. Each window that holds a stream, LSF, packet or BERT word exactly
- * is remembered (dsd_sync_hit_history: the payload matches some word a few times a frame, and none of those may hide
- * the real one); the same word one and two frames earlier makes this window that frame, unless something else already
- * took it.
- *
- * Which frame a word names: the stream word is a stream; the LSF word repeats only as an inverted stream, since a
- * transmission sends one LSF; the packet and BERT words are each other's inversion, so the session's polarity (-xz, or
- * what an earlier frame proved) picks between a packet and a BERT run.
- */
 static int
 frame_sync_hit_history_holds(const dsd_sync_hit_history* history, uint32_t symbolcnt, uint8_t kind) {
     for (int i = 0; i < DSD_SYNC_HIT_HISTORY_LEN; i++) {
@@ -1499,45 +1482,91 @@ frame_sync_hit_history_holds(const dsd_sync_hit_history* history, uint32_t symbo
     return 0;
 }
 
-/* Whether hits of this kind sat exactly one and two frames before this one, then remember this one too.
- *
- * Three frames, not two: with every hit remembered, a hit one frame back is what a random window offers about once in
- * two hundred hits for a ten-symbol word (an eight-symbol M17 word, once in 256), and dead channels supply hits at
- * that rate all day -- LowVHF's dead time opened 115 M17 frames under -fz on two. Two frames back as well puts that
- * near the square, and a transmission pays one frame (40 ms) to join. */
-static int
-frame_sync_note_hit_in_frame_chain(dsd_sync_hit_history* history, uint32_t symbolcnt, uint32_t frame, uint8_t kind) {
-    const int chained = frame_sync_hit_history_holds(history, symbolcnt - frame, kind)
-                        && frame_sync_hit_history_holds(history, symbolcnt - (2U * frame), kind);
+static void
+frame_sync_hit_history_note(dsd_sync_hit_history* history, uint32_t symbolcnt, uint8_t kind) {
     const uint8_t slot = (uint8_t)(history->next % DSD_SYNC_HIT_HISTORY_LEN);
     history->symbolcnt[slot] = symbolcnt;
     history->kind[slot] = kind;
     history->next = (uint8_t)((slot + 1U) % DSD_SYNC_HIT_HISTORY_LEN);
+}
+
+/* Whether hits of this kind sat exactly one and two frames before this one, then remember this one too. */
+static int
+frame_sync_note_hit_in_frame_chain(dsd_sync_hit_history* history, uint32_t symbolcnt, uint32_t frame, uint8_t kind) {
+    const int chained = frame_sync_hit_history_holds(history, symbolcnt - frame, kind)
+                        && frame_sync_hit_history_holds(history, symbolcnt - (2U * frame), kind);
+    frame_sync_hit_history_note(history, symbolcnt, kind);
     return chained;
 }
 
+/* The M17 sync word a window holds exactly (1 stream, 2 LSF, 3 packet, 4 BERT), 0 for none. */
+static uint8_t
+frame_sync_m17_exact_word(int ham_str, int ham_lsf, int ham_pkt, int ham_brt) {
+    return ham_str == 0 ? 1U : (ham_lsf == 0 ? 2U : (ham_pkt == 0 ? 3U : (ham_brt == 0 ? 4U : 0U)));
+}
+
+/**
+ * @brief Join an M17 transmission in progress on the same sync word exactly one and two frames back.
+ *
+ * Every M17 frame is a 16-bit sync burst and 368 bits of payload, 192 symbols (M17 spec, Frame), and stream and BERT
+ * frames follow each other back to back, so a transmission the receiver lands in mid-stream presents its frame's sync
+ * word again every 192 symbols. Noise does not: three exact eight-symbol words a frame apart are some twenty-four bits
+ * of chance against the single window within one error, behind any alternating run, that used to be the only way in --
+ * receiver noise opened a few M17 frames a second that way, and a transmission joined mid-stream got in only when its
+ * payload happened to supply a run. Each window that holds a stream, LSF, packet or BERT word exactly is remembered
+ * (dsd_sync_hit_history: the payload matches some word a few times a frame, and none of those may hide the real one);
+ * the same word one and two frames earlier makes this window that frame, unless something else already took it. Three
+ * frames, not two: with every hit remembered, the same word one frame back is what a random window offers once in 256
+ * hits, and dead channels offer hits at that rate all day -- LowVHF's dead time opened 115 M17 frames under -fz on two
+ * -- while a transmission pays one frame more (40 ms) to join.
+ *
+ * Which frame a word names: the stream word is a stream; the LSF word repeats only as an inverted stream, since a
+ * transmission sends one LSF; the BERT word is BERT, and so is the packet word under an inverted session, since each is
+ * the other's inversion. A packet is never joined: a packet transmission is its LSF and up to 33 packet frames carrying
+ * one packet whose CRC covers them all, so one joined after its LSF can never be read, and the packet word turns up
+ * exactly, 192 symbols apart, in the LICH of NXDN96 data frames.
+ *
+ * A join opens that one frame. The history is cleared when it is taken, so the next frame continues only on M17's own
+ * evidence -- the stream's LICH (frame_sync_m17_chain_has_evidence()) or a BERT PRBS lock -- and a frame without it
+ * waits two frames more for three fresh hits: a transmission the decoder cannot read, or another protocol's frames
+ * that hold an M17 word, cannot extend themselves frame after frame (#399).
+ */
 static int
-frame_sync_try_m17_join(frame_sync_match_ctx* ctx, int sync_type, int ham_str, int ham_lsf, int ham_pkt, int ham_brt,
-                        int is_inverted) {
+frame_sync_try_m17_join(frame_sync_match_ctx* ctx, int sync_type, uint8_t word, int is_inverted) {
     dsd_state* state = ctx->state;
-    const uint8_t word = ham_str == 0 ? 1U : (ham_lsf == 0 ? 2U : (ham_pkt == 0 ? 3U : (ham_brt == 0 ? 4U : 0U)));
     if (word == 0U) {
         return sync_type;
     }
-    const int chained = frame_sync_note_hit_in_frame_chain(&state->m17_join_hits, (uint32_t)state->symbolcnt,
-                                                           DSD_FRAME_SYNC_M17_FRAME_SYMBOLS, word);
-    if (sync_type != DSD_SYNC_NONE || !chained) {
+    const uint32_t now = (uint32_t)state->symbolcnt;
+    const int chained =
+        sync_type == DSD_SYNC_NONE
+        && frame_sync_hit_history_holds(&state->m17_join_hits, now - DSD_FRAME_SYNC_M17_FRAME_SYMBOLS, word)
+        && frame_sync_hit_history_holds(&state->m17_join_hits, now - (2U * DSD_FRAME_SYNC_M17_FRAME_SYMBOLS), word);
+    frame_sync_hit_history_note(&state->m17_join_hits, now, word);
+    if (!chained) {
         return sync_type;
     }
     switch (word) {
-        case 1U: state->m17_polarity = 1U; return frame_sync_accept_m17(ctx, "+M17 STR", DSD_SYNC_M17_STR_POS);
-        case 2U: state->m17_polarity = 2U; return frame_sync_accept_m17(ctx, "-M17 STR", DSD_SYNC_M17_STR_NEG);
+        case 1U:
+            dsd_sync_hit_history_clear(&state->m17_join_hits);
+            state->m17_polarity = 1U;
+            return frame_sync_accept_m17(ctx, "+M17 STR", DSD_SYNC_M17_STR_POS);
+        case 2U:
+            dsd_sync_hit_history_clear(&state->m17_join_hits);
+            state->m17_polarity = 2U;
+            return frame_sync_accept_m17(ctx, "-M17 STR", DSD_SYNC_M17_STR_NEG);
         case 3U:
-            return is_inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
-                               : frame_sync_accept_m17(ctx, "+M17 PKT", DSD_SYNC_M17_PKT_POS);
+            if (!is_inverted) {
+                return sync_type;
+            }
+            dsd_sync_hit_history_clear(&state->m17_join_hits);
+            return frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG);
         default:
-            return is_inverted ? frame_sync_accept_m17(ctx, "-M17 PKT", DSD_SYNC_M17_PKT_NEG)
-                               : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
+            if (is_inverted) {
+                return sync_type;
+            }
+            dsd_sync_hit_history_clear(&state->m17_join_hits);
+            return frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
     }
 }
 
@@ -1594,15 +1623,17 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
+    /* Every exact word is remembered, whichever path takes the window, so a BERT run that loses its PRBS lock, or a
+     * stream after its LSF, has the frames behind it to rejoin on. */
+    const uint8_t word = frame_sync_m17_exact_word(ham_str, ham_lsf, ham_pkt, ham_brt);
     sync_type = frame_sync_try_m17_lsf_or_bert(ctx, ham_lsf, ham_str, ham_brt, ham_pkt, is_inverted);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
+    if (sync_type == DSD_SYNC_NONE) {
+        sync_type = frame_sync_try_m17_stream(ctx, ham_str, ham_lsf, is_inverted);
     }
-    sync_type = frame_sync_try_m17_stream(ctx, ham_str, ham_lsf, is_inverted);
     if (sync_type == DSD_SYNC_NONE) {
         sync_type = frame_sync_try_m17_packet(ctx, ham_pkt, ham_brt, is_inverted);
     }
-    return frame_sync_try_m17_join(ctx, sync_type, ham_str, ham_lsf, ham_pkt, ham_brt, is_inverted);
+    return frame_sync_try_m17_join(ctx, sync_type, word, is_inverted);
 }
 
 static inline void
