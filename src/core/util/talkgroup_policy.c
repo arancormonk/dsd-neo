@@ -2318,6 +2318,9 @@ tg_policy_describe_slot(dsd_tg_policy_context* ctx, int slot, const dsd_tg_polic
     dsd_tg_policy_active_call* c = &ctx->active.calls[slot];
     // A group call and a private call sharing a number are different calls: the new one starts its own dwell.
     if (tg_policy_active_call_matches_route(c, route) && c->private_call == decision->private_call) {
+        // The protocol's follow time is authoritative: a call that left the slot and came back (A, B, A) is followed
+        // anew even when the ledger never saw B.
+        c->start_mono_s = start_mono_s;
         c->priority = decision->priority;
         c->private_call = decision->private_call;
         c->src = route->source_id;

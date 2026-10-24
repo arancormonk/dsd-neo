@@ -194,10 +194,10 @@ int dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
 /**
  * @brief Record the call a protocol is holding, right before it asks dsd_tg_policy_should_preempt().
  *
- * A record that already matches @p route (target, channel, slot) keeps its start and cooldown and takes the fresh
- * priority; a missing or different one is replaced with @p start_mono_s, the time the protocol started following that
- * call, so dwell runs from the call rather than from now. Never stamps a preemption cooldown: describing what is held
- * is not a takeover. Slot -1 describes both slots.
+ * @p start_mono_s is the time the protocol started following that call (a stable stamp, never "now" for a continuing
+ * call), so dwell runs from the call rather than from now. A record that already matches @p route (target, channel,
+ * slot, call class) keeps its cooldown and takes the fresh priority and start; a missing or different one is replaced.
+ * Never stamps a preemption cooldown: describing what is held is not a takeover. Slot -1 describes both slots.
  *
  * @return 0 recorded, 1 invalid arguments or an incomplete route.
  */

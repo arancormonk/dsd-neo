@@ -1105,16 +1105,22 @@ test_followed_call_bookkeeping(void) {
     rc |= expect_true("describe held call", dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0) == 0);
     rc |= expect_true("described call outranked after its dwell",
                       dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 1);
-    rc |= expect_true("describe matching call keeps start",
+    /* The protocol's follow time is authoritative even for a matching record: the call left the slot and came back
+     * (A, B, A) without the ledger seeing B, so its dwell restarts. */
+    rc |= expect_true("describe a call that came back",
                       dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0) == 0);
-    rc |= expect_true("matching describe kept dwell", dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0));
+    rc |= expect_true("its dwell runs from its new follow time",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 0);
+    rc |= expect_true("describe the continuing call",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0) == 0);
+    rc |= expect_true("continuing call keeps its dwell", dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0));
     held_dec.priority = 70;
     rc |= expect_true("describe refreshes priority",
-                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0) == 0);
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0) == 0);
     rc |= expect_true("refreshed priority outranks candidate",
                       dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 0);
     held_dec.priority = 50;
-    (void)dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0);
+    (void)dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0);
 
     /* A private call on the same number is another call: describing it installs its own start. */
     held_dec.private_call = 1;
