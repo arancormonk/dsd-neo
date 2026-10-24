@@ -4974,7 +4974,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     transmission never inherits its identity; any other follow's binds to the first call to begin after the tune, except
     the same call named again while its call is faded but may still be reacquired, `dsd_call_snapshot_may_reacquire()`,
     which keeps its binding) and never outlives it
-    (`nxdn_call_identity_refresh()`, before every read): its call's end, a sync loss included, clears it except on the
+    (`nxdn_call_identity_refresh()`, before every read): one still awaiting its call holds only on the route it was
+    followed to (`nxdn_call_on_followed_route()`), so once that route is abandoned (the engine's hangtime or no-carrier
+    return, a release, a retune elsewhere) it goes, and a call heard there later, without another grant, never takes
+    it; its call's end, a sync loss included, clears it except on the
     followed route within the hangtime (a conversation is held in its gaps); another call clears it, and on the followed
     route one that began within the hangtime of the named call leaves a gap record (unknown, `valid` 0) whose renaming
     as the same call (target and kind, binding that call) keeps `follow_m`. A new call never inherits the identity, its

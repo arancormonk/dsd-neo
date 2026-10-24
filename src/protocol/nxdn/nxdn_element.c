@@ -1560,9 +1560,12 @@ nxdn_call_identity_track(const dsd_opts* opts, dsd_state* state, const dsd_call_
 }
 
 /* Bind the held call to the canonical call it names, and let it go when that call is over. One awaiting its call binds
- * to the first to begin after it was named (a resumed older call is not it). Another call ends it; on the followed
- * route, one that began within the hangtime of the named call leaves a gap (unknown, valid 0) whose renaming as the
- * same call keeps the follow time. A new call never inherits the identity, its priority or its dwell. */
+ * to the first to begin after it was named (a resumed older call is not it), and only on the route it was followed to:
+ * only a follow leaves it awaiting, so once that route is abandoned (the engine's hangtime or no-carrier return, a
+ * release, a retune elsewhere) the call it awaited can never be heard and it goes, before an unrelated call heard later
+ * there could take it. Another call ends it; on the followed route, one that began within the hangtime of the named
+ * call leaves a gap (unknown, valid 0) whose renaming as the same call keeps the follow time. A new call never inherits
+ * the identity, its priority or its dwell. */
 static void
 nxdn_call_identity_refresh(const dsd_opts* opts, dsd_state* state) {
     dsd_nxdn_call_identity* const id = &state->nxdn_call;
@@ -1575,6 +1578,11 @@ nxdn_call_identity_refresh(const dsd_opts* opts, dsd_state* state) {
     const uint64_t current = have ? dsd_call_snapshot_transmission(&call) : 0U;
     const double now_m = dsd_decode_now_mono_s();
     if (id->call_epoch == 0U) {
+        if (!nxdn_call_on_followed_route(opts, state, id)) {
+            DSD_MEMSET(id, 0, sizeof(*id)); // its route was abandoned before its call began
+            (void)dsd_tg_policy_clear_active_call(state, -1);
+            return;
+        }
         if (current <= id->call_floor) {
             return; // still awaiting its call
         }

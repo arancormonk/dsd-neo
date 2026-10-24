@@ -1773,6 +1773,51 @@ nxdn_run_type_d_refollow_during_fade_case(void) {
     return rc;
 }
 
+/* A Type-D busy message is followed, but no call begins there before the engine takes the receiver back to the control
+ * channel (its hangtime return): the held call, still awaiting its call, goes with the route. Back on that repeater
+ * later without another grant (parked there, rigctl on an audio input), an anonymous late-entry call is not the
+ * abandoned grant's: it is of unknown identity, so a p50 preempt on another repeater never takes the receiver from it
+ * as from the p10 grant; it yields only to Hold. */
+static int
+nxdn_run_type_d_abandoned_grant_case(void) {
+    static const char* const name = "type-d-abandoned-grant";
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    g_opts.trunk_hangtime = 2.0f;
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9980.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.call_epoch == 0U, name,
+                      "follow", "the held call awaits its call");
+
+    at_seconds(9984.0); /* the engine's hangtime return: no call began there */
+    g_opts.trunk_is_tuned = 0;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 0;
+
+    at_seconds(9990.0); /* parked on repeater 6 again, no grant */
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = held.expected_freq;
+    voice_live();
+    late_entry_call();
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9990.2);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 0U, name, "anonymous",
+                      "the anonymous call is not the abandoned grant's: no preemption");
+    g_state.tg_hold = 1500U;
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "hold", "it yields to Hold");
+    g_state.tg_hold = 0U;
+    return rc;
+}
+
 static int
 nxdn_run_unnamed_followed_call_fades_case(void) {
     return nxdn_run_unnamed_followed_call_fades_variant(0) | nxdn_run_unnamed_followed_call_fades_variant(1);
@@ -2219,6 +2264,7 @@ main(void) {
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
     rc |= nxdn_run_unnamed_followed_call_fades_case();
+    rc |= nxdn_run_type_d_abandoned_grant_case();
     rc |= nxdn_run_type_d_refollow_during_fade_case();
 #endif
 
