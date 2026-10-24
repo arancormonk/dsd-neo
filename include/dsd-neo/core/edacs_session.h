@@ -21,7 +21,9 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_EDACS_SESSION_H_H
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
 extern "C" {

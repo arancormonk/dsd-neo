@@ -5,11 +5,12 @@
 
 #include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
-#include <stdint.h>
 
 /* The scan row's own -F or --strict-crc, or NULL when the row sets none. */
 static const dsd_scan_option_values*

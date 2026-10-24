@@ -23,8 +23,10 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>

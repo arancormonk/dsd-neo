@@ -30,7 +30,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"

@@ -5,9 +5,11 @@
 
 #include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/dmr_ras_view.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
 void

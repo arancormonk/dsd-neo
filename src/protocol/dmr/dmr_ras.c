@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <stddef.h>
 
 /* Signature bursts that confirm RAS on the carrier. */
 #define DMR_RAS_CONFIRM_SIGNATURES 2U
