@@ -5372,7 +5372,10 @@ Private per-protocol modules worth knowing about:
   `ras_signature` is computed with or without `-F`; `is_ras` (accept, `crc_correct = 1`, `-RAS`,
   `DSD_CRC_RAS_UNVERIFIED`, `DMR_DATA_BLOCK_CRC_RAS`) is a signature under `-F`. A voice LC with R nonzero only gets
   the syndrome check `CheckFullLinkControlCrc()` and is never RS-corrected; R == 0 bursts keep the extractor and
-  ordinary RS paths and pay nothing. Decided limit: the decoder is iterative, correct-or-reject; a RAS burst with
+  ordinary RS paths and pay nothing. The adopted codeword's check decides even when it is not a signature: one that
+  passes is an ordinary checked burst (dispatched, unmarked, may prove TDMA, with or without `-F`), and one whose R is
+  0 is handled as an R == 0 burst (a voice LC goes through ordinary RS(12,9) correction; a failed check is a plain
+  failure, never RAS). Decided limit: the decoder is iterative, correct-or-reject; a RAS burst with
   more than 4 errors, or one of the few-error patterns it carries beyond 4, is a failure. Tests: `DMR_RAS_SIGNATURE`,
   `DMR_DBURST_PROFILE`, `DMR_EVENT_CRC`, `DECODE_IQ_DMR_T3_RAS_CC`.
 - Voice crypto continuity (`dmr_vcrypt.c`, issue #729). Every DMR voice cipher keys a frame by its superframe's IV/MI

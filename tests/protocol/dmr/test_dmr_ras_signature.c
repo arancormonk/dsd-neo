@@ -167,9 +167,10 @@ test_noise_csbk_not_ras(void) {
 }
 
 /* A RAS CSBK: the CRC fails against the standard mask, R = 4. Under -F it is accepted from a clean codeword or one at
-   distance 3 or 4, and the payload dispatched is the codeword's: with bits 29/74/75/90 flipped the ordinary extractor
+   distance 1 to 4, and the payload dispatched is the codeword's: with bits 29/74/75/90 flipped the ordinary extractor
    returns payload bits 18/51/62 wrong (adjacent site 36 for 4) while the codeword is the original at distance 4. At
-   distance 5 it is not accepted, and without -F nothing is. */
+   distance 5 it is not accepted, and without -F nothing is. The scattered errors (one per row and column) are each
+   corrected by their row, so every distance 0..4 lands on the original codeword. */
 static int
 test_ras_csbk_distance_gate(void) {
     static const size_t adversarial[4] = {29, 74, 75, 90};
@@ -178,17 +179,16 @@ test_ras_csbk_distance_gate(void) {
     ras[11] ^= 0x01U;
     int failed = 0;
 
+    static const char* const distance_tags[5] = {"RAS CSBK clean", "RAS CSBK distance 1", "RAS CSBK distance 2",
+                                                 "RAS CSBK distance 3", "RAS CSBK distance 4"};
     for (size_t n = 0; n <= 4; n++) {
-        if (n == 1 || n == 2) {
-            continue;
-        }
         burst_rig rig;
         if (rig_open(&rig, 1) != 0 || rig_send(&rig, ras, k_r_ras, k_scattered, n, 0x03) != 0) {
             return 1;
         }
-        CHECK(n == 0 ? "RAS CSBK clean" : (n == 3 ? "RAS CSBK distance 3" : "RAS CSBK distance 4"), has(&rig, "-RAS"));
-        CHECK("RAS CSBK dispatched", has(&rig, k_csbk_sites));
-        CHECK("RAS CSBK is not a failure", !has(&rig, "(CRC ERR)"));
+        CHECK(distance_tags[n], has(&rig, "-RAS"));
+        CHECK(distance_tags[n], has(&rig, k_csbk_sites));
+        CHECK(distance_tags[n], !has(&rig, "(CRC ERR)"));
         rig_close(&rig);
     }
 
@@ -352,11 +352,71 @@ test_signature_rules(void) {
     return failed;
 }
 
+/* Errors that the ordinary extractor turns into reserved bits read set (R = 4) and a wrong payload octet (bits
+   1/12/102/151), while the codeword decoder returns the original R = 0 codeword at distance 4. The nearest codeword
+   decides, whatever the extractor's reserved bits said:
+   - a non-RAS CSBK whose CRC passes on that codeword is an ordinary checked burst: dispatched without -F, marked
+     neither RAS nor failed, and it proves the carrier two-slot TDMA;
+   - a voice LC header with one RS(12,9) symbol error is an R == 0 burst again, so ordinary RS correction repairs it
+     and the call is published, with or without -F, never as RAS;
+   - a CSBK whose CRC fails on that codeword is a plain failure under -F, not RAS. */
+static int
+test_nearest_codeword_adoption(void) {
+    static const size_t flips[4] = {1, 12, 102, 151};
+    int failed = 0;
+
+    burst_rig rig;
+    if (rig_open(&rig, 0) != 0 || rig_send(&rig, k_csbk, k_r_none, flips, 4U, 0x03) != 0) {
+        return 1;
+    }
+    CHECK("nearest codeword CSBK strict", has(&rig, k_csbk_sites));
+    CHECK("nearest codeword CSBK strict", !has(&rig, "-RAS"));
+    CHECK("nearest codeword CSBK strict", !has(&rig, "(CRC ERR)"));
+    CHECK("nearest codeword CSBK strict", rig.state->tdma_carrier == 1U);
+    rig_close(&rig);
+
+    static const uint8_t lc[9] = {0, 0, 0, 0, 0x07, 0xD2, 0, 0x03, 0xE9};
+    uint8_t word[12];
+    DSD_MEMCPY(word, lc, sizeof lc);
+    dmr_test_encode_rs_12_9(lc, word + 9);
+    for (size_t i = 9; i < 12; ++i) {
+        word[i] ^= 0x96U;
+    }
+    word[4] ^= 0x55U; // one RS symbol error: correctable, so the check fails until corrected
+    for (int relaxed = 0; relaxed <= 1; relaxed++) {
+        const char* tag = relaxed ? "nearest codeword R=0 VLC -F" : "nearest codeword R=0 VLC strict";
+        if (rig_open(&rig, relaxed) != 0 || rig_send(&rig, word, k_r_none, flips, 4U, 0x01) != 0) {
+            return 1;
+        }
+        dsd_call_snapshot call = {0};
+        const int has_call = dsd_call_state_get(rig.state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+        CHECK(tag, has_call);
+        CHECK(tag, call.ota_target_id == 2002U && call.ota_source_id == 1001U);
+        CHECK(tag, call.crc_invalid == 0U);
+        CHECK(tag, !has(&rig, "-RAS"));
+        CHECK(tag, !has(&rig, "(CRC ERR)"));
+        rig_close(&rig);
+    }
+
+    uint8_t broken[12];
+    DSD_MEMCPY(broken, k_csbk, sizeof broken);
+    broken[11] ^= 0x01U;
+    if (rig_open(&rig, 1) != 0 || rig_send(&rig, broken, k_r_none, flips, 4U, 0x03) != 0) {
+        return 1;
+    }
+    CHECK("nearest codeword R=0 failed CSBK -F", !has(&rig, "-RAS"));
+    CHECK("nearest codeword R=0 failed CSBK -F", has(&rig, "(CRC ERR)"));
+    CHECK("nearest codeword R=0 failed CSBK -F", !has(&rig, "Connect Plus Adjacent Sites"));
+    rig_close(&rig);
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
     if (!dmr_test_check_reference_burst()) {
-        return 100;
+        DSD_FPRINTF(stderr, "FAIL: BPTC test encoder does not reproduce the reference burst\n");
+        return 1;
     }
     int failed = 0;
     failed |= test_signature_rules();
@@ -364,6 +424,7 @@ main(void) {
     failed |= test_ras_csbk_distance_gate();
     failed |= test_ras_lc_never_rs_corrected();
     failed |= test_layout_rules();
+    failed |= test_nearest_codeword_adoption();
     if (failed == 0) {
         printf("DMR_RAS_SIGNATURE: OK\n");
     }

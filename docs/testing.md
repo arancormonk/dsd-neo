@@ -68,9 +68,13 @@ FID or MFID, PI with FID 0x10 only) and runs BPTC-encoded bursts with chosen dei
 real burst handler. A clean non-RAS CSBK whose errors the ordinary extractor turns into reserved value 4 with a
 failed CRC (bits 1/12/31/42, whose codeword lies at distance 5, and 1/12/136/162, which decodes to none) is a
 failure under `-F` and not dispatched; the 1/2/16/17 miscorrection likewise. A RAS CSBK is accepted clean and at
-distance 3 and 4, dispatching the codeword's payload where the extractor's is wrong (bits 29/74/75/90), and not at
+distance 1 to 4, dispatching the codeword's payload where the extractor's is wrong (bits 29/74/75/90), and not at
 distance 5 or without `-F`. A RAS voice LC header carrying another LC's RS(12,9) parity, one symbol away, is never
 RS-corrected into that LC: a failure without `-F`, the original LC as RAS under `-F`, and no TDMA proof either way.
+Bits 1/12/102/151 make the extractor read reserved value 4 and a wrong octet while the nearest codeword is the
+original R = 0 one at distance 4: a non-RAS CSBK is then dispatched without `-F`, unmarked, and proves TDMA; a voice
+LC with one RS symbol error goes through ordinary RS correction and publishes its call; a CSBK whose CRC fails is a
+plain failure under `-F`, never RAS.
 The error patterns behave the same on any codeword (both decoders are syndrome decoders of linear codes).
 
 `CORE_EVENTS_STAGED_PAYLOAD` checks that data-notice staging is independent of active-call enrichment.

@@ -323,8 +323,11 @@ Windows console runs:
   MFID. A RAS burst received with more than 4 bit errors, or one of the rare few-error patterns the BPTC
   decoder carries further than 4, is not accepted, as no check can vouch for it; it shows `(CRC ERR)`.
   Without `-F` RAS content is never accepted, and a voice LC header or terminator with its reserved bits
-  set is never RS-corrected, so a RAS LC cannot be "corrected" into a different, valid one. A transmission that also fails a check renders `[CRC ERR]`, which outranks `[RAS]`;
-  both markers stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC
+  set is never RS-corrected, so a RAS LC cannot be "corrected" into a different, valid one. Whatever the
+  reserved bits say, a burst whose reserved bits read set and whose check failed is decoded from the
+  nearest codeword when that lies within 4 bits; if that codeword's own check passes it is an ordinary
+  checked burst, with or without `-F`. A transmission that also fails a check renders `[CRC ERR]`, which
+  outranks `[RAS]`; both markers stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC
   check failed, not that every decoded field is wrong. Absence of either marker is not a universal
   verification guarantee for every protocol. Each `-J` line carries the marker its row had when the
   line was written. A failure that reaches an already committed row through late detail (an alias or
