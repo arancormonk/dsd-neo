@@ -1372,6 +1372,7 @@ static void
 ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
     const int taken = ui_rxid_guard_enter(guard_held);
     dsd_rxid_reset(state);
+    dmr_ras_reset(state);
     dsd_state_note_carrier_change(state);
     ui_rxid_guard_leave(taken);
 }
@@ -6126,10 +6127,11 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             state->nxdn_step = 0;
             state->nxdn_bw = 0;
             /* And what the received identity holds of them: the DMR trunking site, keeping the colour code the reset
-               keeps, and the NXDN location and IDAS site with the RAN. */
+               keeps, the DMR RAS evidence, and the NXDN location and IDAS site with the RAN. */
             {
                 const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
                 dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+                dmr_ras_reset(state);
                 dsd_rxid_forget_system(state, DSD_RXID_FAMILY_NXDN, 1);
                 ui_rxid_guard_leave(taken);
             }

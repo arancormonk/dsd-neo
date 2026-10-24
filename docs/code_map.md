@@ -1648,7 +1648,24 @@ suite runs under this compiler.
   held nothing else), so a call's history row, which takes the record only under the epoch it was heard on, keeps that
   identity and is never mixed with the next one. The DMR vendor (`dsd_rxid_note_dmr_vendor()`, the feature set ID of a
   genuinely checked LC or CSBK) is a part of its own, apart from the trunking brand; the terminal header shows its name
-  (Hytera, Tait, Motorola). A tune the user asked for while trunking, which keeps the decoder's trunking state and so is
+  (Hytera, Tait, Motorola). The DMR RAS part (`DSD_RXID_DMR_RAS`, `dsd_rxid_note_dmr_ras()`) says the carrier uses
+  Motorola RAS: the DMR decoder notes it once two RAS signature bursts on the carrier confirmed it (`dmr_ras.c`, under
+  DMR), and again at every signature after. It is a property of the codewords received, never a decoded field, so the
+  rule above that RAS-accepted content is never noted is unchanged, and noting or dropping it moves no epoch. The
+  evidence is the DMR decoder's (`dsd_state::dmr_ras_signatures`, outside the record), and one reset,
+  `dmr_ras_reset()`, clears it with the part (`dsd_rxid_forget_dmr_ras()`), always where the record may be written:
+  `dsd_engine_carrier_boundary()` beside `dsd_rxid_reset()`; every applied trunk tune, which the record leaves to the
+  engine (`dsd_rxid_apply_trunk_tune()` returns 1 when it applied a drop, `dsd_rxid_request_trunk_tune()` when it
+  applied one at once inside a dispatch): `dsd_engine_rxid_trunk_tune()` on the decoder thread or inside a dispatch,
+  `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan advance
+  and forced release, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's
+  thread; `trunk_scan_switch_to()` and its rollback, which restores the record without the evidence and so drops the
+  part; a colour-code change on the carrier (the BS confidence relock, the MS/direct slot type and embedded colour
+  code, `dmr_ras_note_ms_color_code()`); the DMR reset command; a user move (`ui_user_move_forgets_identity()`); and the
+  guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so the next transmission proves RAS again. A frame
+  of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
+  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the voice-channel tune that calls it can run on the
+  watchdog's thread, and the trunk tune's apply covers that tune. A tune the user asked for while trunking, which keeps the decoder's trunking state and so is
   no carrier boundary, forgets the record too (D4: any user move), after the calls it ended took theirs: a frequency
   entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to CC, and a
   channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks the carrier change for the frame
@@ -1666,7 +1683,8 @@ suite runs under this compiler.
   the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change
   no received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
   Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
-  `ENGINE_PROTOCOL_DISPATCH`, `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's
+  `ENGINE_PROTOCOL_DISPATCH`, `DMR_RAS_DETECT` (the RAS part's evidence and its reset points with those five,
+  `DMR_DATA_SYNC`, `DMR_MS_DATA` and `APP_COMMAND_QUEUE`), `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's
   notes, no-carrier step and reads, race-free under the `tsan-debug` preset, and the decoder thread's grant and frame
   sync release between frames), `DMR_BS_SYNC_TIMES` (a rest channel's retune in one burst, then the reached carrier's
   bursts in the same loop), and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
@@ -2793,6 +2811,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `DSD_APP_CMD_AGGR_SYNC_TOGGLE`; the scan scope's capture and restore copy the pair as it is. The terminal's Relaxed
   CRC row reads the view, and any other frontend control or hint about the policy belongs on it too. Test:
   `APP_CONTROL_CRC_POLICY`.
+  `include/dsd-neo/app_control/dmr_ras_view.h` and `src/app_control/dmr_ras_view.c` are the DMR RAS indicator:
+  `dsd_app_dmr_ras_view()` reports `detected` (a DMR record's `DSD_RXID_DMR_RAS`), the Relaxed CRC policy it reads
+  through `dsd_app_crc_policy_view()`, and `needs_relaxed` (detected while relaxed CRC is not in force);
+  `dsd_app_dmr_ras_label()` is the compact label, `RAS` or `RAS (-F decodes)`. The terminal's DMR BS and MS headers
+  print it after the colour code (`RAS; `, `RAS (-F decodes); `), and the site identity view shows the compact `RAS`
+  token from the record; a frontend's RAS field and its relaxed-CRC hint read this view. Tests:
+  `APP_CONTROL_CRC_POLICY`, `UI_NCURSES_PRINTER_HELPERS`, `APP_CONTROL_SITE_IDENTITY_VIEW`.
   `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into the
   received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
   (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the
@@ -5625,7 +5650,17 @@ Private per-protocol modules worth knowing about:
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
-  validated content (issue #703).
+  validated content (issue #703). A relock onto another colour code resets the RAS evidence (`dmr_ras_reset()`).
+- `src/protocol/dmr/dmr_ras.c` — RAS on the carrier (`<dsd-neo/protocol/dmr/dmr.h>`). The burst handler notes every
+  burst with the RAS signature, with or without `-F`, before it dispatches (`dmr_ras_note_signature()`; a retune its
+  handler makes then resets the carrier left's evidence); a frame read across a carrier boundary or cut by an input
+  interruption counts for nothing. Two signature bursts on the carrier (`dsd_state::dmr_ras_signatures`, saturating)
+  confirm RAS (`dmr_ras_confirmed()`) and note `DSD_RXID_DMR_RAS`; the burst that confirms it prints, while relaxed CRC
+  is off (`dsd_opts_relaxed_crc()`), the console notice `DMR RAS (Restricted Access to System) detected: control and
+  data fail the standard CRC; -F decodes them` once per confirmation. `dmr_ras_reset()` is the one reset; its call
+  points are listed under the received identity record (Core). Tests: `DMR_RAS_DETECT`,
+  `DECODE_IQ_DMR_T3_RAS_CC_DETECT` (no `-F`: the notice, nothing accepted), and `DECODE_IQ_DMR_T3_CC` and
+  `DECODE_IQ_DMR_POLARITY_AUTO`, whose carriers must never print it.
 - `src/protocol/dmr/dmr_enc_class.c` — per-slot privacy-bit hysteresis, and each slot's vendor late-entry mode
   (`dsd_state::dmr_le_vendor[]`, `DMR_LE_VENDOR_*` in `<dsd-neo/protocol/dmr/dmr.h>`, issue #657). A CRC-verified
   Kirisun PI or LC, or a checksum-verified Hytera Enhanced PI or LC, sets the slot's mode for its call; it is cleared

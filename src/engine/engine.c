@@ -2881,8 +2881,10 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
            (dsd_engine_note_input_replaced()), here at the stream's start (issue #703). */
         dsd_trunk_tuning_requests_reset();
     }
-    /* What the carrier left sent is not the next one's identity: the received identity starts over. */
+    /* What the carrier left sent is not the next one's identity: the received identity starts over, and so does the
+       DMR RAS evidence. */
     dsd_rxid_reset(state);
+    dmr_ras_reset(state);
     state->carrier_seq++;
     /* Nor is a frame whose sync the hunt finds next, while what it reads back was buffered on the carrier left. */
     dsd_state_note_carrier_change(state);
@@ -3108,8 +3110,10 @@ dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
         return;
     }
     /* The received identity outlives the gap, as the last one heard, but no longer reads as live; a retune accepted
-       since the last frame drops the access code of the carrier it left. */
+       since the last frame drops the access code of the carrier it left. RAS is proved again by the next carrier, or
+       the next transmission. */
     dsd_rxid_apply_trunk_tune(state);
+    dmr_ras_reset(state);
     dsd_rxid_mark_stale(state);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
@@ -3284,7 +3288,9 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
         dsd_engine_cold_start_tick_locked(opts, state);
     }
     /* A retune these ticks accepted, before the next frame's first read. */
-    dsd_rxid_apply_trunk_tune(state);
+    if (dsd_rxid_apply_trunk_tune(state)) {
+        dmr_ras_reset(state);
+    }
     return frame_dispatchable;
 }
 

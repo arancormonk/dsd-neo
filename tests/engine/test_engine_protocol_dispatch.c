@@ -11,6 +11,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -408,6 +409,42 @@ check_trunk_tune_drop_applied_around_the_frame(void) {
     free(opts);
 }
 
+/* A retune the P25 watchdog made between frames left the DMR carrier: processFrame() applies its drop before the frame
+   and resets the DMR RAS evidence with it (dmr_ras_reset()), so neither a confirmation nor one signature of the carrier
+   left carries over to the carrier reached. With nothing pending the evidence stays. */
+static void
+check_trunk_tune_drop_resets_dmr_ras(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dmr_ras_note_signature(state);
+    dmr_ras_note_signature(state);
+    assert(dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+
+    (void)dsd_rxid_request_trunk_tune(state);
+    assert(dmr_ras_confirmed(state));
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(state->rx_id_trunk_tune_pending == 0U);
+    assert(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+
+    dmr_ras_note_signature(state);
+    (void)dsd_rxid_request_trunk_tune(state);
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    dmr_ras_note_signature(state);
+    assert(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+    free(state);
+    free(opts);
+}
+
 /* A handler that loops over bursts (DMR's burst loop, a Capacity Plus or XPT rest channel's retune in a CACH) follows
    a grant, publishes, and decodes the next burst on the carrier it reached, all within one dispatch. The publication
    after the retune shows no access code of the carrier left, and the next burst's checked code is the reached carrier's
@@ -443,6 +480,7 @@ int
 main(void) {
     check_received_identity_follows_the_protocol();
     check_trunk_tune_drop_applied_around_the_frame();
+    check_trunk_tune_drop_resets_dmr_ras();
     check_trunk_tune_inside_the_frame_keeps_the_next_burst();
     check_public_handler_table();
     check_dispatch_context();

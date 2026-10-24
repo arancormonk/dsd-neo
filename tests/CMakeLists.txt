@@ -1026,6 +1026,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/crc_policy_view.h
   CXX
 )
+# The DMR RAS indicator (detected, relaxed CRC in force).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_ras_view
+  HEADERS_PUBLIC_APP_CONTROL_DMR_RAS_VIEW
+  dsd-neo/app_control/dmr_ras_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_ras_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_DMR_RAS_VIEW_CXX
+  dsd-neo/app_control/dmr_ras_view.h
+  CXX
+)
 # Issue #521: the shared squelch readout.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_squelch_view
@@ -3190,6 +3203,8 @@ if(DSD_ENABLE_TERMINAL_UI)
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -6528,6 +6543,7 @@ add_executable(
     dsd-neo_test_engine_protocol_dispatch
     engine/test_engine_protocol_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/protocol_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
@@ -7052,6 +7068,7 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
@@ -7150,6 +7167,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -10696,6 +10714,8 @@ add_executable(
     dsd-neo_test_dmr_dburst_profile
     protocol/dmr/test_dmr_dburst_profile.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_dburst.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_dmr_dburst_profile
@@ -10712,6 +10732,7 @@ add_executable(
     protocol/dmr/test_dmr_data_sync.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
@@ -10899,6 +10920,23 @@ target_link_libraries(
 )
 add_test(NAME DMR_RAS_SIGNATURE COMMAND dsd-neo_test_dmr_ras_signature)
 
+# RAS on the carrier: two signature bursts confirm it, the received identity shows it, and the console says once that
+# -F decodes it.
+add_executable(
+    dsd-neo_test_dmr_ras_detect
+    protocol/dmr/test_dmr_ras_detect.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_ras_detect
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_ras_detect
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_RAS_DETECT COMMAND dsd-neo_test_dmr_ras_detect)
+
 add_executable(
     dsd-neo_test_dmr_lip_carriers
     protocol/dmr/test_dmr_lip_carriers.c
@@ -10919,6 +10957,7 @@ add_executable(
     protocol/dmr/test_dmr_ms_data.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
 )
 target_include_directories(
@@ -14932,19 +14971,20 @@ if(DSD_HAS_RADIO)
     # The sigidwiki DMR recordings are control channels received at inverted polarity. A BS voice sync is an inverted
     # data sync, so -fs used to read every burst as voice and publish a colour code from noise-made EMBs (issue #729).
     # The decoder now proves the polarity from the bursts and decodes them as what they are, without -xr.
+    # Neither of these carriers uses RAS: their control channels must never read as one (the RAS notice below).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_CC
         dmr_t3_cc
         -fs
         "Color Code=01 \\| CSBK"
-        "\\| VC[1-6]"
+        "\\| VC[1-6]|DMR RAS \\(Restricted Access to System\\) detected"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_POLARITY_AUTO
         dmr_voice
         -fs
         "decoding inverted polarity.*Color Code=01 \\| CSBK"
-        "\\| VC[1-6]"
+        "\\| VC[1-6]|DMR RAS \\(Restricted Access to System\\) detected"
     )
     # CSBK-only RAS TSCC (issue #348): the colour-code gate must lock from
     # C_ALOHA traffic alone (no idle bursts, no voice on this channel) and -F
@@ -14962,6 +15002,15 @@ if(DSD_HAS_RADIO)
         dmr_t3_ras_cc
         "-fs -F"
         "Color Code=00"
+    )
+    # Without -F the same carrier is detected as RAS from its CSBKs' signature (reserved bits set, a clean codeword, the
+    # standard CRC failed), and the console says once that -F decodes it; nothing of its content is accepted.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_T3_RAS_CC_DETECT
+        dmr_t3_ras_cc
+        -fs
+        "DMR RAS \\(Restricted Access to System\\) detected: control and data fail the standard CRC; -F decodes them"
+        "C_ALOHA_SYS_PARMS|-RAS "
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")

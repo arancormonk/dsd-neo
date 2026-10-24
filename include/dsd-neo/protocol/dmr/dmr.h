@@ -92,6 +92,19 @@ void dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[]
                          uint8_t type);
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 void dmr_confidence_reset(dsd_state* state);
+/** A burst with the RAS signature (dmr_ras_signature()), with or without -F, was received on this carrier: the second
+ * confirms RAS on it (dmr_ras_confirmed()) and sets the received identity's DSD_RXID_DMR_RAS. A frame read across a
+ * carrier boundary or cut by an input interruption counts for nothing. Decoder thread, under the P25 SM tick guard. */
+void dmr_ras_note_signature(dsd_state* state);
+/** 1 once two signature bursts confirmed RAS on this carrier. */
+int dmr_ras_confirmed(const dsd_state* state);
+/** The carrier changed (a carrier boundary, an applied trunk tune, a trunk-scan switch or rollback, a colour-code
+ * change, the DMR reset command, the no-carrier step): forget the evidence, the confirmation and DSD_RXID_DMR_RAS.
+ * Decoder thread, where the received identity may be written (under the P25 SM tick guard). */
+void dmr_ras_reset(dsd_state* state);
+/** MS/direct mode's checked colour code @p color_code, before it becomes dsd_state::dmr_color_code: another one than a
+ * decoded one is another system on the carrier, so the RAS evidence is reset. */
+void dmr_ras_note_ms_color_code(dsd_state* state, unsigned int color_code);
 size_t dmr_debug_format_burst(char* out, size_t out_size, const dsd_state* state, uint8_t slot_index,
                               uint8_t burst_type);
 size_t dmr_debug_format_burst_payload(char* out, size_t out_size, const int payload[144], uint8_t slot_index,

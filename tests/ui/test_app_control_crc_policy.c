@@ -14,9 +14,12 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/crc_policy_view.h>
+#include <dsd-neo/app_control/dmr_ras_view.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -377,6 +380,60 @@ test_notice_and_null_arguments(void) {
     return rc;
 }
 
+static int
+expect_ras(const char* when, const dsd_opts* opts, const dsd_state* state, int detected, int needs_relaxed,
+           const char* label) {
+    dsd_app_dmr_ras ras;
+    dsd_app_dmr_ras_view(opts, state, &ras);
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "%s: ras detected", when);
+    int rc = expect_int(what, ras.detected, detected);
+    DSD_SNPRINTF(what, sizeof what, "%s: ras needs relaxed", when);
+    rc |= expect_int(what, ras.needs_relaxed, needs_relaxed);
+    if (strcmp(dsd_app_dmr_ras_label(&ras), label) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: ras label \"%s\", want \"%s\"\n", when, dsd_app_dmr_ras_label(&ras), label);
+        rc = 1;
+    }
+    return rc;
+}
+
+/* The DMR RAS indicator: detected from the received identity's DSD_RXID_DMR_RAS of a DMR record only, labelled "RAS"
+   while relaxed CRC is in force and "RAS (-F decodes)" while it is not, a scan row's own policy included. */
+static int
+test_dmr_ras_view(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    scan_context_init(opts, state);
+    int rc = expect_ras("nothing received", opts, state, 0, 0, "");
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    rc |= expect_ras("a colour code alone", opts, state, 0, 0, "");
+    dsd_rxid_note_dmr_ras(state);
+    rc |= expect_ras("ras, strict CRC", opts, state, 1, 1, "RAS (-F decodes)");
+    dsd_opts_set_relaxed_crc(opts, 1);
+    rc |= expect_ras("ras, relaxed CRC", opts, state, 1, 0, "RAS");
+    const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
+    rc |= enter_dmr_row(opts, state, &row);
+    dsd_rxid_note_dmr_ras(state);
+    rc |= expect_ras("ras, a strict row over -F", opts, state, 1, 1, "RAS (-F decodes)");
+    dsd_scan_mode_leave(opts, state);
+    dsd_rxid_note_dmr_ras(state);
+    rc |= expect_ras("ras, the row left", opts, state, 1, 0, "RAS");
+    dsd_rxid_forget_dmr_ras(state);
+    rc |= expect_ras("ras forgotten", opts, state, 0, 0, "");
+    rc |= expect_ras("NULL state", opts, NULL, 0, 0, "");
+    dsd_app_dmr_ras_view(opts, state, NULL);
+    rc |= expect_int("NULL view label", dsd_app_dmr_ras_label(NULL)[0], '\0');
+    context_free(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -386,6 +443,7 @@ main(void) {
     rc |= test_strict_row_over_relaxed_baseline();
     rc |= test_relaxed_row_over_strict_baseline();
     rc |= test_notice_and_null_arguments();
+    rc |= test_dmr_ras_view();
     if (rc == 0) {
         printf("APP_CONTROL_CRC_POLICY: OK\n");
     }

@@ -570,16 +570,21 @@ dsd_engine_set_decoder_thread(int is_decoder) {
    the carrier left's code. */
 static void
 dsd_engine_rxid_trunk_tune(dsd_state* state) {
+    /* The carrier left's RAS evidence (dmr_ras_reset()) goes wherever the drop is applied: here when it is applied now,
+       and where the decoder thread applies a request that waits. */
     if (!s_decoder_thread) {
-        dsd_rxid_request_trunk_tune(state);
+        if (dsd_rxid_request_trunk_tune(state)) {
+            dmr_ras_reset(state);
+        }
         return;
     }
     const int take_guard = !p25_sm_tick_guard_held_by_caller();
     if (take_guard) {
         p25_sm_tick_guard_enter();
     }
-    dsd_rxid_request_trunk_tune(state);
-    dsd_rxid_apply_trunk_tune(state);
+    (void)dsd_rxid_request_trunk_tune(state);
+    (void)dsd_rxid_apply_trunk_tune(state);
+    dmr_ras_reset(state);
     if (take_guard) {
         p25_sm_tick_guard_leave();
     }

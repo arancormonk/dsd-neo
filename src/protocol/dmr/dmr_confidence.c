@@ -6,6 +6,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
@@ -107,8 +108,10 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
             state->dmr_confidence_candidate_count = 0;
             state->dmr_confidence_mismatch_count = 0;
             // The previous system identity is gone; voice slots must
-            // re-qualify under the new colour code before audio resumes.
+            // re-qualify under the new colour code before audio resumes,
+            // and RAS is the new system's to prove.
             dmr_confidence_clear_voice(state);
+            dmr_ras_reset(state);
             dmr_confidence_note_evidence(state, color_code);
             return DMR_CONFIDENCE_LOCKED;
         }

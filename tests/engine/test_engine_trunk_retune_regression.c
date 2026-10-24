@@ -30,6 +30,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -1922,6 +1923,92 @@ check_rxid_decoder_tunes(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* The DMR RAS evidence is the carrier's: an accepted trunk tune resets it (dmr_ras_reset()) where its drop is applied.
+   The decoder thread's own tunes, a voice channel grant and a control channel return or hunt probe, reset it at once;
+   one the P25 watchdog makes on its thread leaves it for the decoder thread, which resets it when it applies the drop
+   (dsd_rxid_apply_trunk_tune() reports it), and one requested inside a frame dispatch resets it there. A refused tune
+   resets nothing. Each case runs with one signature (which must not confirm with one more after the tune) and with a
+   confirmation (whose part goes). */
+static void
+check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_enable = 1;
+    for (int confirmed = 0; confirmed <= 1; confirmed++) {
+        for (int kind = 0; kind < 6; kind++) {
+            dsd_rxid_reset(state);
+            dmr_ras_reset(state);
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+            dmr_ras_note_signature(state);
+            if (confirmed) {
+                dmr_ras_note_signature(state);
+                assert(dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+            }
+            opts->trunk_is_tuned = 0;
+            g_setfreq_result = true;
+            g_tick_guard_held = 0;
+            state->frame_dispatch_active = 0;
+            switch (kind) {
+                case 0: /* a grant the decoder thread follows */
+                    dsd_engine_set_decoder_thread(1);
+                    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_OK);
+                    break;
+                case 1: /* a control channel hunt probe on the decoder thread */
+                    dsd_engine_set_decoder_thread(1);
+                    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_OK);
+                    break;
+                case 2: /* the watchdog's grant: the decoder thread applies it later */
+                case 3: /* the watchdog's return to the control channel */
+                    dsd_engine_set_decoder_thread(0);
+                    g_tick_guard_held = 1;
+                    if (kind == 2) {
+                        assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                               == DSD_TRUNK_TUNE_RESULT_OK);
+                    } else {
+                        assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U)
+                               == DSD_TRUNK_TUNE_RESULT_OK);
+                    }
+                    assert(state->rx_id_trunk_tune_pending == 1U);
+                    assert(state->dmr_ras_signatures == (confirmed ? 2U : 1U));
+                    if (dsd_rxid_apply_trunk_tune(state)) {
+                        dmr_ras_reset(state);
+                    }
+                    break;
+                case 4: /* a tune a frame's handler makes off the marked decoder thread, inside the dispatch */
+                    dsd_engine_set_decoder_thread(0);
+                    g_tick_guard_held = 1;
+                    state->frame_dispatch_active = 1;
+                    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_OK);
+                    assert(state->rx_id_trunk_tune_pending == 0U);
+                    state->frame_dispatch_active = 0;
+                    break;
+                default: /* a refused tune */
+                    dsd_engine_set_decoder_thread(1);
+                    g_setfreq_result = false;
+                    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_FAILED);
+                    g_setfreq_result = true;
+                    break;
+            }
+            g_tick_guard_held = 0;
+            dsd_engine_set_decoder_thread(0);
+            if (kind == 5) {
+                assert(state->dmr_ras_signatures == (confirmed ? 2U : 1U));
+                assert(((state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U) == (confirmed != 0));
+                continue;
+            }
+            assert(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+            dmr_ras_note_signature(state);
+            assert(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+        }
+    }
+    dsd_rxid_reset(state);
+    dmr_ras_reset(state);
+    opts->trunk_enable = 0;
+    opts->trunk_is_tuned = 0;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2170,6 +2257,7 @@ main(void) {
 
     check_rxid_watchdog_tunes(opts, state);
     check_rxid_decoder_tunes(opts, state);
+    check_rxid_tunes_reset_dmr_ras(opts, state);
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */

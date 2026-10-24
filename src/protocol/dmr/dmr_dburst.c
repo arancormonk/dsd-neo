@@ -72,6 +72,7 @@ typedef struct {
     uint8_t bptc_reserved_bits;
     uint8_t ras_signature; // dmr_ras_signature() holds for the burst, with or without -F
     uint8_t is_ras;        // accepted as RAS: a signature under -F
+    uint8_t ras_announce;  // this signature confirmed RAS on the carrier while relaxed CRC is off
     uint32_t crc_original_validity;
     uint8_t crc_flags; // DSD_CRC_* bits for this burst, set once its CRC and RAS verdicts are final
 
@@ -935,6 +936,29 @@ dmr_dburst_proves_tdma_carrier(const dmr_data_burst_ctx* ctx) {
            && ctx->state->input_interrupted == 0;
 }
 
+/* The carrier's RAS evidence (dmr_ras.c), noted before the burst dispatches: a retune its handler makes resets it with
+   the carrier left. The second signature confirms RAS; without relaxed CRC the operator is told once that -F decodes
+   what this carrier sends. */
+static void
+dmr_dburst_note_ras_signature(dmr_data_burst_ctx* ctx) {
+    if (!ctx->ras_signature) {
+        return;
+    }
+    const int was_confirmed = dmr_ras_confirmed(ctx->state);
+    dmr_ras_note_signature(ctx->state);
+    ctx->ras_announce = (uint8_t)(!was_confirmed && dmr_ras_confirmed(ctx->state) && !dsd_opts_relaxed_crc(ctx->opts));
+}
+
+static void
+dmr_dburst_announce_ras(const dmr_data_burst_ctx* ctx) {
+    if (ctx->ras_announce) {
+        DSD_FPRINTF(stderr,
+                    "\n%s DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; "
+                    "-F decodes them %s",
+                    KYEL, KNRM);
+    }
+}
+
 void
 dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                        const uint8_t* reliab98) {
@@ -962,7 +986,10 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         dmr_dburst_handle_full(&ctx);
     }
 
+    dmr_dburst_note_ras_signature(&ctx);
+
     if (!dmr_dburst_update_dbsn_sequence(&ctx)) {
+        dmr_dburst_announce_ras(&ctx);
         return;
     }
 
@@ -982,4 +1009,5 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     dmr_dburst_dispatch_by_type(&ctx);
     state->event_crc_invalid[ctx.slot] = saved_crc_invalid;
     dmr_dburst_finalize_status(&ctx);
+    dmr_dburst_announce_ras(&ctx);
 }

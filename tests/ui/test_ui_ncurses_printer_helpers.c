@@ -912,6 +912,24 @@ test_dmr_mono_override_terminal_reporting(void) {
     ui_render_audio_decode_section(&opts, &state, 0);
     assert_capture_contains("*Preferred (3)");
 
+    /* The Decoding line names relaxed CRC, the setting in force (crc_policy_view.h), not a protocol: it said "CRC/(RAS)"
+       whenever -F was on. A scan row's own --strict-crc decides while it is on air. */
+    dsd_opts_set_relaxed_crc(&opts, 1);
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("Relaxed CRC ");
+    assert(strstr(g_printw_capture, "CRC/(RAS)") == NULL);
+    const dsd_scan_option_values strict_row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
+    g_scan_row_options = &strict_row;
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert(strstr(g_printw_capture, "Relaxed CRC") == NULL);
+    g_scan_row_options = NULL;
+    dsd_opts_set_relaxed_crc(&opts, 0);
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert(strstr(g_printw_capture, "Relaxed CRC") == NULL);
+
     ncurses_last_synctype = DSD_SYNC_NONE;
 }
 
@@ -4234,6 +4252,41 @@ test_identity_lines_read_the_received_record(void) {
     reset_printw_capture();
     ui_render_p25_dmr_header(opts, state);
     assert_capture_equals("| DMR BS - DCC: 01; ");
+
+    /* RAS on the carrier (dmr_ras_view.h): beside the colour code, with the hint that -F decodes it while relaxed CRC is
+       off; a mobile or direct-mode carrier the same. The longest form adds 18 columns to the colour code's 21. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 0U);
+    dsd_rxid_note_dmr_ras(state);
+    dsd_opts_set_relaxed_crc(opts, 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 00; RAS (-F decodes); ");
+    dsd_opts_set_relaxed_crc(opts, 1);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 00; RAS; ");
+    dsd_rxid_note_dmr_vendor(state, 0x10U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 452000000U);
+    dsd_opts_set_relaxed_crc(opts, 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 00; RAS (-F decodes); Motorola; Freq: 452.000000 MHz");
+    ncurses_last_synctype = DSD_SYNC_DMR_MS_DATA;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR MS - DCC: 00; RAS (-F decodes); ");
+    dsd_opts_set_relaxed_crc(opts, 1);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR MS - DCC: 00; RAS; ");
+    dsd_rxid_forget_dmr_ras(state);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR MS - DCC: 00; ");
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_opts_set_relaxed_crc(opts, 0);
+    opts->aggressive_framesync = 0; /* as calloc left it */
 
     /* EDACS: the site header only once this carrier named a site. */
     dsd_rxid_reset(state);

@@ -1274,6 +1274,10 @@ struct dsd_state {
     uint8_t dmr_confidence_voice_open[2];
     uint8_t dmr_confidence_voice_count[2];
     uint8_t dmr_confidence_mismatch_count;
+    /* RAS signature bursts heard on this carrier (dmr_ras.c), saturating at the two that confirm RAS on it; the
+       confirmation shows through the received identity (DSD_RXID_DMR_RAS). Decoder thread only; dmr_ras_reset() clears
+       it at every carrier change. */
+    uint8_t dmr_ras_signatures;
     /* Decode-clock seconds DMR content last passed the colour-code confidence gate (dmr_confidence.c), 0 never. Written
        only from processFrame() under the P25 SM tick guard and never cleared, not even by a carrier boundary: a startup
        control-channel hunt restarts its window from it (issue #703). */

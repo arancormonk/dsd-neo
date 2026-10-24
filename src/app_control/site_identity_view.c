@@ -91,6 +91,10 @@ site_dmr(dsd_app_site_identity* out, const dsd_received_identity* id) {
     if (has(id, DSD_RXID_DMR_XPT_FREE_LCN)) {
         site_token(out, 1, "Free LCN %u", (unsigned)id->dmr_xpt_free_lcn);
     }
+    /* The carrier uses Restricted Access to System (dmr_ras.c); dmr_ras_view.h says whether relaxed CRC decodes it. */
+    if (has(id, DSD_RXID_DMR_RAS)) {
+        site_token(out, 1, "%s", "RAS");
+    }
     if (has(id, DSD_RXID_DMR_T3_SYSCODE) && !has(id, DSD_RXID_DMR_SITE_TEXT)) {
         site_token(out, 0, "SYS %04X", (unsigned)id->dmr_t3_syscode);
     }

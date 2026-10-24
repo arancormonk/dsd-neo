@@ -340,6 +340,48 @@ test_ms_data_sync_bypasses_confidence_and_cach(void) {
     assert(state.rx_id.valid == 0U);
 }
 
+/* MS/direct mode's slot type colour code is the carrier's: another one than a decoded one is another system sharing the
+   carrier, whose RAS the last system's signature bursts prove nothing about (dmr_ras_reset()). The same code, or the
+   carrier's first, keeps the evidence. */
+static void
+test_ms_colour_change_resets_ras(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    /* The carrier's first code (16, not decoded) and the same code keep a partial and a confirmed RAS. */
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    state.dmr_ms_mode = 1;
+    state.dmr_color_code = 16;
+    dmr_ras_note_signature(&state);
+    dmr_data_sync(&opts, &state);
+    assert(state.dmr_color_code == 5 && state.dmr_ras_signatures == 1U);
+    dmr_ras_note_signature(&state);
+    assert(dmr_ras_confirmed(&state) && (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+    prepare_live_symbols(0, 0);
+    g_live_dibit_index = 0;
+    dmr_data_sync(&opts, &state);
+    assert(dmr_ras_confirmed(&state) && (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+
+    /* Another code drops the confirmation and the part. */
+    g_decoded_color = 6;
+    g_live_dibit_index = 0;
+    dmr_data_sync(&opts, &state);
+    assert(state.dmr_color_code == 6);
+    assert(!dmr_ras_confirmed(&state) && (state.rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+
+    /* One signature, another code, one signature: not confirmed. */
+    dmr_ras_note_signature(&state);
+    g_decoded_color = 7;
+    g_live_dibit_index = 0;
+    dmr_data_sync(&opts, &state);
+    dmr_ras_note_signature(&state);
+    assert(!dmr_ras_confirmed(&state) && (state.rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+}
+
 /* Issue #637: a standalone data burst is judged by its own CACH slot, not by the slot the single-slot decoder proved
    for its voice lane, which is back for the voice that follows; a data burst the single-slot decoder reads with no
    slot evidence (an MS-sourced one) stays Checking rather than being taken for TS1. */
@@ -868,6 +910,7 @@ int
 main(void) {
     test_data_sync_dispatches_burst_and_reliability();
     test_ms_data_sync_bypasses_confidence_and_cach();
+    test_ms_colour_change_resets_ras();
     test_data_burst_receive_slot();
     test_mono_option_keeps_bs_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();

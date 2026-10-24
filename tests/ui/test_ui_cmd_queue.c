@@ -9012,6 +9012,22 @@ test_identity_forgetting_commands_clear_the_record(void) {
     post_empty(DSD_APP_CMD_DMR_RESET);
     rc |= expect_int("dmr reset drained again", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("dmr reset forgets the nxdn location and ran", (int)state.rx_id.valid, 0);
+    /* And the DMR RAS evidence: a confirmation goes with its part (the colour code stays), and one signature before the
+       reset and one after do not confirm. */
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dmr_ras_note_signature(&state);
+    dmr_ras_note_signature(&state);
+    rc |= expect_int("ras confirmed", (int)state.rx_id.valid, DSD_RXID_ACCESS | DSD_RXID_DMR_RAS);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained with ras", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("dmr reset forgets ras", (int)state.rx_id.valid, DSD_RXID_ACCESS);
+    rc |= expect_int("dmr reset forgets the confirmation", dmr_ras_confirmed(&state), 0);
+    dmr_ras_note_signature(&state);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained with one signature", dsd_app_drain_cmds(&opts, &state), 1);
+    dmr_ras_note_signature(&state);
+    rc |= expect_int("one signature on each side of a dmr reset", dmr_ras_confirmed(&state), 0);
     freeState(&state);
 
     init_decode_mode_context(&opts, &state);
@@ -9081,10 +9097,12 @@ test_user_moves_while_trunking_forget_the_record(void) {
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
     seed_p25_record(&state);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
+    state.dmr_ras_signatures = 1U; /* the carrier left's RAS evidence */
     rc |= expect_int("user return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("user return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("a user return-to-CC forgets the record", (int)state.rx_id.valid, 0);
+    rc |= expect_int("a user return-to-CC forgets the RAS evidence", (int)state.dmr_ras_signatures, 0);
     rc |= expect_true("the ended call keeps the system it ended with",
                       state.event_history_s[0].Event_History_Items[1].sys_id2 == 0x348U);
     freeState(&state);

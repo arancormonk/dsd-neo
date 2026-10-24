@@ -323,7 +323,15 @@ Windows console runs:
   MFID. A RAS burst received with more than 4 bit errors, or one of the rare few-error patterns the BPTC
   decoder carries further than 4, is not accepted, as no check can vouch for it; it shows `(CRC ERR)`.
   Without `-F` RAS content is never accepted, and a voice LC header or terminator with its reserved bits
-  set is never RS-corrected, so a RAS LC cannot be "corrected" into a different, valid one. Whatever the
+  set is never RS-corrected, so a RAS LC cannot be "corrected" into a different, valid one. RAS is still
+  detected without `-F`: two bursts with that signature on the same carrier confirm that it uses RAS. The
+  terminal's DMR header then shows `RAS;` after the colour code (`RAS (-F decodes);` while Relaxed CRC is off),
+  the carrier's system identity (the spectrum legend, the Qt/Android site line) shows `RAS`, and while Relaxed CRC
+  is off the console prints once per confirmation
+  `DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; -F decodes them`.
+  The detection belongs to the carrier: a retune (a trunk follow or control channel return included), a trunk-scan
+  target switch, another colour code on the carrier, the DMR reset and the gap between transmissions clear it, and
+  the next carrier proves its own. It notes a property of the bursts, never anything they decode. Whatever the
   reserved bits say, a burst whose reserved bits read set and whose check failed is decoded from the
   nearest codeword when that lies within 4 bits; if that codeword's own check passes it is an ordinary
   checked burst, with or without `-F`. A transmission that also fails a check renders `[CRC ERR]`, which
@@ -1589,7 +1597,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   audio unfiltered.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
 - Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT; a DMR burst is accepted as RAS only
-  from a near-clean codeword with its reserved bits set, see the RAS note under `-J`). No effect on NXDN, which always requires
+  from a near-clean codeword with its reserved bits set, see the RAS note under `-J`, which also covers the RAS
+  indicator shown with or without `-F`). No effect on NXDN, which always requires
   CRC-verified content (see the NXDN note under "Modes & Decoders" above). A P25 Phase 2 MAC_SIGNAL that failed its CRC
   still acts on its grants, payload and voice, but no system broadcast in it is applied: no WACN/SYSID/NAC, control
   channel, site or LRA, channel identifier (IDEN) table or trust, secondary control channel, neighbour, system services,

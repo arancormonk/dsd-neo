@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -6531,6 +6532,77 @@ test_target_switch_forgets_the_received_identity(void) {
         DSD_FPRINTF(stderr, "rx-id: a rolled-back switch did not restore the record: active=%zu valid=%08X\n",
                     dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
         test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The DMR RAS evidence (dmr_ras.c) is the carrier's and no target snapshot keeps it: every target switch resets it
+ * (dmr_ras_reset()), and so does a rollback, which puts back the record the advance started with but not the evidence,
+ * so the part the record held goes too until the carrier proves it again. One signature before the switch or the
+ * rollback and one after never confirm. */
+static int
+test_target_switch_and_rollback_reset_dmr_ras(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,\n"
+                             "b,dmr-trunk,453000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "ras scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    double now = 0.0;
+    for (int confirmed = 0; confirmed <= 1; confirmed++) {
+        for (int rollback = 0; rollback <= 1; rollback++) {
+            dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+            dmr_ras_note_signature(&state);
+            if (confirmed) {
+                dmr_ras_note_signature(&state);
+            }
+            const size_t active = dsd_engine_trunk_scan_active_index(&state);
+            g_counting_tune_to_cc_failures_remaining = rollback ? 2 : 0;
+            now += 5.0; /* past the dwell and any retry cooldown a rolled-back switch left */
+            trunk_scan_test_set_now(now);
+            dsd_engine_trunk_scan_tick(&opts, &state);
+            const int moved = dsd_engine_trunk_scan_active_index(&state) != active;
+            if (moved == rollback || dmr_ras_confirmed(&state) || (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U) {
+                DSD_FPRINTF(stderr, "ras: %s kept the evidence (confirmed=%d moved=%d signatures=%u valid=%08X)\n",
+                            rollback ? "a rollback" : "a switch", confirmed, moved, (unsigned)state.dmr_ras_signatures,
+                            (unsigned)state.rx_id.valid);
+                test_rc = 1;
+            }
+            dmr_ras_note_signature(&state);
+            if (dmr_ras_confirmed(&state)) {
+                DSD_FPRINTF(stderr, "ras: one signature after %s confirmed\n", rollback ? "a rollback" : "a switch");
+                test_rc = 1;
+            }
+            dmr_ras_reset(&state);
+        }
     }
 
     DSD_MEMSET(&hooks, 0, sizeof hooks);
@@ -13895,6 +13967,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_failed_alternate_retune_republishes_restored_target);
     rc |= run_with_default_tune_hook(test_dmr_targets_pass_sps_to_retune_paths);
     rc |= run_with_default_tune_hook(test_target_switch_forgets_the_received_identity);
+    rc |= run_with_default_tune_hook(test_target_switch_and_rollback_reset_dmr_ras);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);

@@ -4524,6 +4524,47 @@ test_received_identity_lifetime(void) {
     return rc;
 }
 
+/* The DMR RAS evidence (dmr_ras.c) lives as long as the carrier: a carrier boundary of every kind and the no-carrier
+   pass's identity step reset it (dmr_ras_reset()), so one signature before either and one after never confirm, and a
+   confirmation goes with its part (the step keeps the record's other values, stale). */
+static int
+test_dmr_ras_carrier_lifetime(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    static const dsd_carrier_boundary_kind kinds[] = {DSD_CARRIER_BOUNDARY_TUNE, DSD_CARRIER_BOUNDARY_SCAN_STEP,
+                                                      DSD_CARRIER_BOUNDARY_SOURCE};
+    for (int point = 0; point < 4; point++) {
+        for (int confirmed = 0; confirmed <= 1; confirmed++) {
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+            dmr_ras_note_signature(state);
+            if (confirmed) {
+                dmr_ras_note_signature(state);
+                rc |= expect_true("ras: confirmed before the reset point",
+                                  dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+            }
+            if (point < 3) {
+                dsd_engine_carrier_boundary(opts, state, kinds[point], 0);
+            } else {
+                noCarrier(opts, state);
+                rc |= expect_true("ras: the no-carrier step keeps the colour code",
+                                  (state->rx_id.valid & DSD_RXID_ACCESS) != 0U);
+            }
+            rc |= expect_true("ras: the reset point drops the evidence",
+                              !dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+            dmr_ras_note_signature(state);
+            rc |= expect_true("ras: one signature after the reset point does not confirm",
+                              !dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+            dmr_ras_reset(state);
+        }
+    }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_carrier_boundary_forgets_the_access_codes(void) {
     dsd_opts* opts = NULL;
@@ -6874,6 +6915,7 @@ main(void) {
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
     rc |= test_received_identity_lifetime();
+    rc |= test_dmr_ras_carrier_lifetime();
     rc |= test_carrier_boundary_restarts_the_evidence();
     rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_receive_boundary_closes_only_rejected_capture();

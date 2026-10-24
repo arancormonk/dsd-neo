@@ -76,6 +76,12 @@ original R = 0 one at distance 4: a non-RAS CSBK is then dispatched without `-F`
 LC with one RS symbol error goes through ordinary RS correction and publishes its call; a CSBK whose CRC fails is a
 plain failure under `-F`, never RAS.
 The error patterns behave the same on any codeword (both decoders are syndrome decoders of linear codes).
+`DMR_RAS_DETECT` sends the same bursts for carrier-level detection: two signatures confirm RAS with or without `-F`
+(the notice once, only without it), bursts that are no signature or of no carrier never count, and the reset and a
+BS colour relock forget the evidence; each other reset point is pinned beside the received identity test of its
+module (see the received identity record in `docs/code_map.md`). `DECODE_IQ_DMR_T3_RAS_CC_DETECT` replays the RAS
+control channel without `-F` and requires the notice and no accepted content; `DECODE_IQ_DMR_T3_CC` and
+`DECODE_IQ_DMR_POLARITY_AUTO` are its controls and must never print it.
 
 `CORE_EVENTS_STAGED_PAYLOAD` checks that data-notice staging is independent of active-call enrichment.
 `CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders retain their state strings while suppressing

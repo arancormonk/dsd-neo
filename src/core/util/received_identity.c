@@ -155,27 +155,27 @@ dsd_rxid_trunk_tune(dsd_state* state) {
     }
 }
 
-void
+int
 dsd_rxid_request_trunk_tune(dsd_state* state) {
     if (state == NULL) {
-        return;
+        return 0;
     }
     state->rx_id_trunk_tune_pending = 1U;
     /* A retune a frame's decoder makes (a grant, a rest channel a CACH names) runs on the decoder thread inside
        processFrame()'s hold on the tick guard, where no watchdog tick runs: the drop is applied at once. A handler
        that goes on to publish, or to decode the bursts the carrier it reached sends, within the same dispatch never
        shows the carrier left's code, and the first code noted after it is the reached carrier's own, not a change. */
-    if (state->frame_dispatch_active) {
-        dsd_rxid_apply_trunk_tune(state);
-    }
+    return state->frame_dispatch_active ? dsd_rxid_apply_trunk_tune(state) : 0;
 }
 
-void
+int
 dsd_rxid_apply_trunk_tune(dsd_state* state) {
-    if (state != NULL && state->rx_id_trunk_tune_pending != 0U) {
-        state->rx_id_trunk_tune_pending = 0U;
-        dsd_rxid_trunk_tune(state);
+    if (state == NULL || state->rx_id_trunk_tune_pending == 0U) {
+        return 0;
     }
+    state->rx_id_trunk_tune_pending = 0U;
+    dsd_rxid_trunk_tune(state);
+    return 1;
 }
 
 /* The P25 parts that belong to the system the record's SYSID names. */
@@ -394,6 +394,21 @@ dsd_rxid_note_dmr_vendor(dsd_state* state, uint8_t mfid) {
     }
     id->dmr_vendor = mfid;
     rxid_set(id, DSD_RXID_DMR_VENDOR);
+}
+
+void
+dsd_rxid_note_dmr_ras(dsd_state* state) {
+    dsd_received_identity* const id = rxid_for(state, DSD_RXID_FAMILY_DMR);
+    if (id != NULL) {
+        rxid_set(id, DSD_RXID_DMR_RAS);
+    }
+}
+
+void
+dsd_rxid_forget_dmr_ras(dsd_state* state) {
+    if (state != NULL) {
+        rxid_drop(&state->rx_id, DSD_RXID_DMR_RAS);
+    }
 }
 
 void

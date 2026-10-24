@@ -13,6 +13,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -654,6 +655,37 @@ test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes(void) {
     assert(state.color_code == 11);
 }
 
+/* The embedded colour code of a direct-mode or mobile carrier is the carrier's: another one than a decoded one is another
+   system on the carrier, so the RAS evidence goes (dmr_ras_reset()); the same code keeps it. load_voice_stream() puts
+   colour code 11 in every embedded signalling field. */
+static void
+test_ms_embedded_colour_change_resets_ras(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    load_voice_stream();
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    g_qr_ok = 1;
+    state.dmr_color_code = 11;
+    dmr_ras_note_signature(&state);
+    dmr_ras_note_signature(&state);
+    assert(dmr_ras_confirmed(&state) && (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+    dmrMS(&opts, &state);
+    assert(state.dmr_color_code == 11);
+    assert(dmr_ras_confirmed(&state) && (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+
+    reset_fixture();
+    load_voice_stream();
+    g_qr_ok = 1;
+    state.dmr_color_code = 3;
+    dmrMS(&opts, &state);
+    assert(state.dmr_color_code == 11);
+    assert(!dmr_ras_confirmed(&state) && (state.rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+}
+
 /* Issue #575: the carrier boundary moved the carrier count (a replay read adopting a recorded retune) while a voice
    superframe was collected. The sixth burst assembles the embedded LC from the four before it, which belong to the
    carrier left whether the boundary came inside the sixth burst's read or in the other slot's burst skipped before it:
@@ -841,6 +873,7 @@ main(void) {
     test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle();
     test_ms_bootstrap_plays_short_on_one_channel();
     test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes();
+    test_ms_embedded_colour_change_resets_ras();
     test_ms_voice_superframe_split_by_a_carrier_boundary_is_dropped();
     test_ms_voice_emb_split_by_a_carrier_boundary_notes_nothing();
     test_ms_bootstrap_split_by_a_carrier_boundary_is_dropped();

@@ -24,6 +24,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -2940,7 +2941,9 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
-            dsd_rxid_apply_trunk_tune(state);
+            if (dsd_rxid_apply_trunk_tune(state)) {
+                dmr_ras_reset(state);
+            }
             coord->rollback_rx_id = state->rx_id;
             coord->forced_visit_release = 0;
         } else {
@@ -2958,8 +2961,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
        is in none of them, and the incoming carrier's pieces would complete it, so it goes. */
     dsd_engine_forget_carrier_decoding(opts, state);
     /* So does the identity it received: the incoming target's carrier names its own. And the dibits the frame sync and
-       the decoders hold buffered from the outgoing carrier head no frame of the incoming one. */
+       the decoders hold buffered from the outgoing carrier head no frame of the incoming one. Nor does the DMR RAS
+       evidence (no target snapshot holds it). */
     dsd_rxid_reset(state);
+    dmr_ras_reset(state);
     dsd_state_note_carrier_change(state);
 
     coord->active = next;
@@ -3028,7 +3033,9 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     double now_m = trunk_scan_now_m();
     dsd_trunk_scan_snapshot* original_snapshot = &coord->scratch_snapshot;
     trunk_scan_save_snapshot(state, original_snapshot);
-    dsd_rxid_apply_trunk_tune(state);
+    if (dsd_rxid_apply_trunk_tune(state)) {
+        dmr_ras_reset(state);
+    }
     coord->rollback_rx_id = state->rx_id;
     size_t original_active = coord->active;
     int save_current = 1;
@@ -3083,6 +3090,9 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_restore_snapshot(state, original_snapshot);
     state->rx_id = coord->rollback_rx_id;
     state->rx_id_trunk_tune_pending = 0U; /* a retune of the switches undone, whose carriers the receiver left */
+    /* The switches reset the RAS evidence, which no snapshot keeps: the restored record shows none until the carrier
+       proves it again. */
+    dmr_ras_reset(state);
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active]);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
     (void)dsd_scan_key_change_commit(state, &rollback);

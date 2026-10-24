@@ -659,6 +659,67 @@ test_invalidation_moves_the_epoch(void) {
     free(state);
 }
 
+/* The DMR RAS part: a property of the carrier's codewords, never a decoded field. Noting or forgetting it moves no epoch
+   (a call's history row keeps its identity) and drops nothing else; it starts a DMR record as any DMR note does, is
+   refused in a frame of no carrier, goes stale with the rest, and goes with the record at a reset or another family's
+   sync. A trunk tune's drop keeps it: the engine resets it through the DMR decoder (dmr_ras_reset()) where it applies
+   the drop, which dsd_rxid_apply_trunk_tune() and dsd_rxid_request_trunk_tune() report. */
+static void
+test_dmr_ras_part(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site_text(state, "TIII Large \xC2\xB7 Net 1 \xC2\xB7 Site 1");
+    const uint32_t epoch = id->epoch;
+    dsd_rxid_note_dmr_ras(state);
+    expect_u("ras parts", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_RAS);
+    expect_u("ras fresh", id->fresh & DSD_RXID_DMR_RAS, DSD_RXID_DMR_RAS);
+    expect_u("ras note keeps the epoch", id->epoch, epoch);
+    dsd_rxid_note_dmr_ras(state);
+    expect_u("ras repeat keeps the epoch", id->epoch, epoch);
+    dsd_rxid_mark_stale(state);
+    expect_u("ras stale", id->fresh, 0U);
+    expect_u("ras stale keeps the value", id->valid & DSD_RXID_DMR_RAS, DSD_RXID_DMR_RAS);
+    dsd_rxid_forget_dmr_ras(state);
+    expect_u("ras forget", id->valid, DSD_RXID_ACCESS | DSD_RXID_DMR_SITE_TEXT);
+    expect_u("ras forget keeps the epoch", id->epoch, epoch);
+
+    /* A trunk tune drops the access code and leaves the part to the engine's RAS reset; the calls report the drop. */
+    dsd_rxid_note_dmr_ras(state);
+    expect_u("apply with nothing pending", (unsigned long)dsd_rxid_apply_trunk_tune(state), 0U);
+    expect_u("request outside a dispatch waits", (unsigned long)dsd_rxid_request_trunk_tune(state), 0U);
+    expect_u("request waits", id->valid & DSD_RXID_ACCESS, DSD_RXID_ACCESS);
+    expect_u("apply reports the drop", (unsigned long)dsd_rxid_apply_trunk_tune(state), 1U);
+    expect_u("tune keeps the ras part", id->valid, DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_RAS);
+    expect_u("apply once", (unsigned long)dsd_rxid_apply_trunk_tune(state), 0U);
+    state->frame_dispatch_active = 1;
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    expect_u("request inside a dispatch applies at once", (unsigned long)dsd_rxid_request_trunk_tune(state), 1U);
+    expect_u("applied at once", id->valid & DSD_RXID_ACCESS, 0U);
+
+    /* A frame read across a carrier boundary notes nothing. */
+    dsd_rxid_forget_dmr_ras(state);
+    state->frame_dispatch_carrier_seq = state->carrier_seq;
+    state->carrier_seq++;
+    dsd_rxid_note_dmr_ras(state);
+    expect_u("ras in a lost frame", id->valid & DSD_RXID_DMR_RAS, 0U);
+    state->frame_dispatch_active = 0;
+
+    /* The record's lifetime: a reset, another family. */
+    dsd_rxid_note_dmr_ras(state);
+    dsd_rxid_reset(state);
+    expect_u("ras reset", id->valid, 0U);
+    dsd_rxid_note_dmr_ras(state);
+    expect_u("ras starts a dmr record", id->family, DSD_RXID_FAMILY_DMR);
+    expect_u("ras alone", id->valid, DSD_RXID_DMR_RAS);
+    dsd_rxid_note_sync(state, DSD_SYNC_P25P1_POS);
+    expect_u("another family drops ras", id->valid, 0U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_forget_dmr_ras(state);
+    expect_u("forget leaves another family alone", id->valid, DSD_RXID_ACCESS);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -675,6 +736,7 @@ main(void) {
     test_dmr_trunking_types_exclusive();
     test_decoder_settings();
     test_invalidation_moves_the_epoch();
+    test_dmr_ras_part();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {

@@ -212,10 +212,31 @@ test_others(void) {
     free(state);
 }
 
+/* RAS on the carrier is a compact token after the site's own, before the full-form details; a record of another family,
+   or one the RAS reset dropped it from, shows none. */
+static void
+test_dmr_ras(void) {
+    dsd_state* state = new_state();
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 0U);
+    dsd_rxid_note_dmr_ras(state);
+    expect_text("ras compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 1, "DMR" DOT "CC 0" DOT "RAS");
+    expect_text("ras full", state, DSD_APP_SITE_IDENTITY_FULL, 0, "CC 0" DOT "RAS");
+    dsd_rxid_note_dmr_site_text(state, "TIII Large \xC2\xB7 Net 1 \xC2\xB7 Site 1");
+    dsd_rxid_note_dmr_brand(state, "Motorola Tier III");
+    expect_text("ras with a site compact", state, DSD_APP_SITE_IDENTITY_COMPACT, 0,
+                "CC 0" DOT "Net 1" DOT "Site 1" DOT "RAS");
+    expect_text("ras with a site full", state, DSD_APP_SITE_IDENTITY_FULL, 0,
+                "CC 0" DOT "TIII Large" DOT "Net 1" DOT "Site 1" DOT "RAS" DOT "Motorola Tier III");
+    dsd_rxid_forget_dmr_ras(state);
+    expect_text("ras forgotten", state, DSD_APP_SITE_IDENTITY_COMPACT, 0, "CC 0" DOT "Net 1" DOT "Site 1");
+    free(state);
+}
+
 int
 main(void) {
     test_dmr();
     test_dmr_site_parts();
+    test_dmr_ras();
     test_p25();
     test_others();
     dsd_app_site_identity_view(NULL, NULL);
