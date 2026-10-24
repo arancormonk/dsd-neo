@@ -4208,6 +4208,8 @@ static const int k_ui_cmd_action_ids[] = {
 
 static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
+    /* Also an action: no payload flips Relaxed CRC, an int32_t sets it (ui_cmd_payload_is_valid()). */
+    DSD_APP_CMD_AGGR_SYNC_TOGGLE,
     DSD_APP_CMD_FORCE_KEY_SET,
     DSD_APP_CMD_GAIN_DELTA,
     DSD_APP_CMD_AGAIN_DELTA,
@@ -4519,7 +4521,7 @@ ui_cmd_payload_is_valid(const struct dsd_app_command* c) {
         return 0;
     }
     if (ui_cmd_is_action_id(c->id)) {
-        return c->n == 0U;
+        return c->n == 0U || (c->id == DSD_APP_CMD_AGGR_SYNC_TOGGLE && ui_cmd_payload_has_min_size(c, sizeof(int32_t)));
     }
     if (ui_cmd_id_in_list(c->id, k_ui_cmd_i32_ids, sizeof k_ui_cmd_i32_ids / sizeof k_ui_cmd_i32_ids[0])) {
         return ui_cmd_payload_has_min_size(c, sizeof(int32_t));
@@ -4676,11 +4678,17 @@ _Static_assert(sizeof(((dsd_state*)0)->ui_msg) >= (size_t)DSD_APP_CRC_POLICY_NOT
 
 /* Relaxed CRC is one setting (dsd_opts_set_relaxed_crc()). The command runs against the configured baseline while a
    scan row is on air (command_updates_scan_mode()); a row's own -F or --strict-crc stays in force over the edit until
-   the row leaves, and the toast says so. */
+   the row leaves, and the toast says so. Without a payload it flips the setting (the terminal key and menu row); an
+   int32_t payload sets it, so a frontend acting on a snapshot one command behind cannot turn it the wrong way. */
 static int
 ui_cmd_handle_aggr_sync_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)c;
-    dsd_opts_set_relaxed_crc(opts, !dsd_opts_relaxed_crc(opts));
+    int on = dsd_opts_relaxed_crc(opts) ? 0 : 1;
+    if (c && c->n >= sizeof(int32_t)) {
+        int32_t value = 0;
+        DSD_MEMCPY(&value, c->data, sizeof value);
+        on = value != 0 ? 1 : 0;
+    }
+    dsd_opts_set_relaxed_crc(opts, on);
     char notice[DSD_APP_CRC_POLICY_NOTICE_SIZE];
     if (dsd_app_crc_policy_edit_notice(opts, state, notice, sizeof notice) == 1) {
         ui_set_toast(state, 3, "%s", notice);

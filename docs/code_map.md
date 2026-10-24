@@ -2856,16 +2856,22 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `--strict-crc`; `dsd_app_crc_policy_edit_notice()` is the toggle's toast under such a row. The pair it reads,
   `aggressive_framesync` and `dmr_crc_relaxed_default`, is set only through `dsd_opts_set_relaxed_crc()` (`core/opts.h`;
   `dsd_opts_relaxed_crc()` reads either field relaxing as on) by `-F`, `--strict-crc`, a row's CRC option and
-  `DSD_APP_CMD_AGGR_SYNC_TOGGLE`; the scan scope's capture and restore copy the pair as it is. The terminal's Relaxed
-  CRC row reads the view, and any other frontend control or hint about the policy belongs on it too. Test:
-  `APP_CONTROL_CRC_POLICY`.
+  `DSD_APP_CMD_AGGR_SYNC_TOGGLE` (no payload flips it, the terminal's key and row; an `int32_t` payload sets it, the
+  Qt/Android switch, so a frontend acting on a snapshot one command behind cannot turn it the wrong way); the scan
+  scope's capture and restore copy the pair as it is. The terminal's Relaxed CRC row reads the view, and so do Qt's
+  `relaxedCrcConfigured`/`relaxedCrcEffective`/`relaxedCrcRowOverride` (Settings → Decoding → Relaxed CRC, an
+  `AppPrefs::relaxedCrc` preference `session_args.cpp` turns into `-F` for every app-started session unless the
+  Extra decoder arguments name `-F` or `--strict-crc`). Tests: `APP_CONTROL_CRC_POLICY`, `UI_QT_SESSION_ARGS`,
+  `UI_QT_QML_CALL_LISTS` (`tst_settings_relaxed_crc.qml`).
   `include/dsd-neo/app_control/dmr_ras_view.h` and `src/app_control/dmr_ras_view.c` are the DMR RAS indicator:
   `dsd_app_dmr_ras_view()` reports `detected` (a DMR record's `DSD_RXID_DMR_RAS`), the Relaxed CRC policy it reads
   through `dsd_app_crc_policy_view()`, and `needs_relaxed` (detected while relaxed CRC is not in force);
   `dsd_app_dmr_ras_label()` is the compact label, `RAS` or `RAS (-F decodes)`. The terminal's DMR BS and MS headers
   print it after the colour code (`RAS; `, `RAS (-F decodes); `), and the site identity view shows the compact `RAS`
-  token from the record; a frontend's RAS field and its relaxed-CRC hint read this view. Tests:
-  `APP_CONTROL_CRC_POLICY`, `UI_NCURSES_PRINTER_HELPERS`, `APP_CONTROL_SITE_IDENTITY_VIEW`.
+  token from the record; a frontend's RAS field and its relaxed-CRC hint read this view (Qt's `dmrRasDetected` and
+  `dmrRasNeedsRelaxed`: the site sheet's **Access RAS** field, its hint and **Turn on Relaxed CRC**). Tests:
+  `APP_CONTROL_CRC_POLICY`, `UI_NCURSES_PRINTER_HELPERS`, `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_QT_METRICS_MODEL`,
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_site.qml`).
   `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into the
   received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
   (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the

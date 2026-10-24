@@ -853,6 +853,7 @@ test_prefs_key_table(void) {
         {"persistTgLockouts", false, "decode/persistTgLockouts"},
         {"hangtimeSec", 5.5, "decode/hangtimeSec"},
         {"autoPpm", true, "decode/autoPpm"},
+        {"relaxedCrc", true, "decode/relaxedCrc"},
         {"extraArgs", QStringLiteral("-x"), "decode/extraArgs"},
         {"gainDb", 41, "tuner/gainDb"},
         {"ppm", 7, "tuner/ppm"},

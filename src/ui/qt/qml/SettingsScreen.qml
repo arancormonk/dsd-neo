@@ -18,6 +18,14 @@ Item {
     readonly property bool liveLockoutPersistence: metrics.persistTgLockouts
     readonly property bool lockoutSessionRunning: decoderHost.sessionState === 2
     readonly property bool lockoutEditable: !lockoutPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
+    // Relaxed CRC: the app preference every session the app starts gets (-F), and
+    // applied live to a running one, whose own snapshot the switch shows until it
+    // confirms, as the lockout row above does.
+    property bool relaxedCrcPending: false
+    property bool requestedRelaxedCrc: false
+    property string relaxedCrcError: ""
+    readonly property bool liveRelaxedCrc: metrics.relaxedCrcConfigured === true
+    readonly property bool relaxedCrcEditable: !relaxedCrcPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
 
     // Issue #574. In AppPrefs::ScreenMode code order, so a choice's index is its
     // code: 0 System default, 1 Always on, 2 Dim between calls, 3 Off between calls.
@@ -49,6 +57,24 @@ Item {
     onLockoutSessionRunningChanged: {
         lockoutPending = false;
         lockoutAckTimer.stop();
+        relaxedCrcPending = false;
+        relaxedCrcAckTimer.stop();
+        relaxedCrcError = "";
+    }
+    onLiveRelaxedCrcChanged: {
+        if (relaxedCrcPending && liveRelaxedCrc === requestedRelaxedCrc) {
+            relaxedCrcPending = false;
+            relaxedCrcAckTimer.stop();
+        }
+    }
+
+    Timer {
+        id: relaxedCrcAckTimer
+        interval: 5000
+        onTriggered: {
+            screen.relaxedCrcPending = false;
+            screen.relaxedCrcError = qsTr("The decoder has not confirmed the change. The switch shows its current setting.");
+        }
     }
 
     Timer {
@@ -78,6 +104,21 @@ Item {
         lockoutPending = lockoutSessionRunning && liveLockoutPersistence !== value;
         if (lockoutPending)
             lockoutAckTimer.restart();
+    }
+
+    function setRelaxedCrc(value) {
+        if (!relaxedCrcEditable)
+            return;
+        relaxedCrcError = "";
+        if (lockoutSessionRunning && !commands.setRelaxedCrc(value)) {
+            relaxedCrcError = qsTr("Could not change the running decoder's setting. Try again.");
+            return;
+        }
+        prefs.relaxedCrc = value;
+        requestedRelaxedCrc = value;
+        relaxedCrcPending = lockoutSessionRunning && liveRelaxedCrc !== value;
+        if (relaxedCrcPending)
+            relaxedCrcAckTimer.restart();
     }
 
     signal openDiagnostics
@@ -423,6 +464,54 @@ Item {
                         onToggled: function (state) {
                             prefs.skipEncrypted = state;
                         }
+                    }
+
+                    ToggleRow {
+                        objectName: "relaxedCrcToggle"
+                        title: qsTr("Relaxed CRC")
+                        subtitle: qsTr("Accepts control and data whose CRC check failed, and marks them. Needed for DMR RAS (Restricted Access to System) systems. Applies now and from the next start; a CRC option in Extra decoder arguments wins.")
+                        checked: screen.lockoutSessionRunning ? screen.liveRelaxedCrc : prefs.relaxedCrc
+                        enabled: screen.relaxedCrcEditable
+                        showDivider: !relaxedCrcNote.visible && !relaxedCrcErrorText.visible
+                        onToggled: function (value) { screen.setRelaxedCrc(value); }
+                    }
+
+                    // A scan row with its own -F or --strict-crc decides for the channel
+                    // on air: the switch edits the default beneath it.
+                    Text {
+                        id: relaxedCrcNote
+                        objectName: "relaxedCrcChannelNote"
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        visible: screen.lockoutSessionRunning && metrics.relaxedCrcRowOverride === true
+                        text: metrics.relaxedCrcEffective === true ? qsTr("This channel: On (scan row)") : qsTr("This channel: Off (scan row)")
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(12)
+                        bottomPadding: relaxedCrcErrorText.visible ? 4 : 12
+                    }
+
+                    Text {
+                        id: relaxedCrcErrorText
+                        objectName: "relaxedCrcError"
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        visible: text.length > 0
+                        text: screen.relaxedCrcError
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(12)
+                        bottomPadding: 12
+                    }
+
+                    Rectangle {
+                        x: Theme.cardPadding
+                        width: parent.width - Theme.cardPadding
+                        height: 1
+                        visible: relaxedCrcNote.visible || relaxedCrcErrorText.visible
+                        color: Theme.divider
                     }
 
                     ToggleRow {

@@ -133,7 +133,7 @@ Item {
 
         function test_selected_decoder_data() {
             return [{tag: "named-preset", flag: "-ft", chip: "P25", settings: {modulation: 1}},
-                {tag: "auto-reapplies", flag: "", chip: "Auto", settings: {decodeFlag: ""}}];
+                {tag: "auto-chip", flag: "", chip: "Auto", settings: {decodeFlag: ""}}];
         }
 
         function test_selected_decoder(data) {

@@ -125,6 +125,8 @@ class CommandBridge : public QObject {
     /** @brief Skip the call currently on @p slot (0 or 1) without editing the talkgroup list. */
     Q_INVOKABLE bool skipSlot(int slot) const;
     Q_INVOKABLE bool setPersistTgLockouts(bool persist) const;
+    /** @brief Set Relaxed CRC (-F) on or off: the configured value, beneath a scan row's own while one is on air. */
+    Q_INVOKABLE bool setRelaxedCrc(bool on) const;
     Q_INVOKABLE bool clearTemporaryTgAvoids(const QString& context) const;
 
     /** @brief Listen to or stop tuning one talkgroup or range; a missing exact id is added. */

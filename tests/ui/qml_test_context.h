@@ -122,7 +122,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool
     start(const QStringList& argv) override {
-        (void)argv;
+        lastArgv = argv;
         if (acceptStart) {
             phase = startRunning ? Running : Starting;
             m_running = true;
@@ -132,6 +132,8 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return acceptStart;
     }
 
+    /* The argv of the last start asked for, accepted or not: what the session-args builder made of the system. */
+    QStringList lastArgv;
     qint64 locationRequested = 0;
     qint64 locationCancelled = 0;
 
@@ -601,6 +603,23 @@ class CommandRecorder : public QObject {
         return m_lockout_accepted;
     }
 
+    /* Relaxed CRC set to a value (DSD_APP_CMD_AGGR_SYNC_TOGGLE with a payload). */
+    Q_INVOKABLE bool
+    setRelaxedCrc(bool on) {
+        m_relaxed_crc_requests.append(on);
+        return m_relaxed_crc_accepted;
+    }
+
+    Q_INVOKABLE void
+    setRelaxedCrcAccepted(bool accepted) {
+        m_relaxed_crc_accepted = accepted;
+    }
+
+    Q_INVOKABLE QVariantList
+    relaxedCrcRequests() const {
+        return m_relaxed_crc_requests;
+    }
+
     Q_INVOKABLE bool
     clearTemporaryTgAvoids(const QString& context) {
         m_avoid_clear_requests.append(context);
@@ -902,6 +921,8 @@ class CommandRecorder : public QObject {
         m_scan_row_edit_calls = 0;
         m_lockout_accepted = true;
         m_lockout_requests.clear();
+        m_relaxed_crc_accepted = true;
+        m_relaxed_crc_requests.clear();
         m_avoid_clear_requests.clear();
         m_scan_hold_calls = 0;
         m_scan_avoid_calls = 0;
@@ -1150,6 +1171,8 @@ class CommandRecorder : public QObject {
     int m_scan_row_edit_calls = 0;
     bool m_lockout_accepted = true;
     QVariantList m_lockout_requests;
+    bool m_relaxed_crc_accepted = true;
+    QVariantList m_relaxed_crc_requests;
     QStringList m_avoid_clear_requests;
     int m_scan_hold_calls = 0;
     int m_scan_avoid_calls = 0;
@@ -1947,6 +1970,12 @@ class Setup : public QObject {
         return text.replace(pattern, QStringLiteral("\"android\""));
     }
 
+    /** The argv the lifecycle host was last asked to start with. */
+    Q_INVOKABLE QStringList
+    lastStartArgs() const {
+        return m_lifecycle_host->lastArgv;
+    }
+
     Q_INVOKABLE void
     setNotificationPermissionNeeded(bool needed) {
         m_lifecycle_host->setNotificationPermissionNeeded(needed);
@@ -2388,6 +2417,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("screenDelayChoices")] = QVariantList({10, 30, 60, 120, 300});
         prefs[QStringLiteral("skipEncrypted")] = false;
         prefs[QStringLiteral("persistTgLockouts")] = true;
+        prefs[QStringLiteral("relaxedCrc")] = false;
         /* The radio defaults the settings screen and the explore setup edit.
          * AppPrefs' own defaults, so a case that reads one sees what a fresh
          * install would. */
@@ -2478,6 +2508,12 @@ class Setup : public QObject {
         metrics[QStringLiteral("carrierIdentityProtocol")] = QString();
         metrics[QStringLiteral("carrierIdentityText")] = QString();
         metrics[QStringLiteral("carrierIdentityLive")] = false;
+        // DMR RAS on the carrier and the Relaxed CRC policy (app_control/dmr_ras_view.h, crc_policy_view.h).
+        metrics[QStringLiteral("dmrRasDetected")] = false;
+        metrics[QStringLiteral("dmrRasNeedsRelaxed")] = false;
+        metrics[QStringLiteral("relaxedCrcConfigured")] = false;
+        metrics[QStringLiteral("relaxedCrcEffective")] = false;
+        metrics[QStringLiteral("relaxedCrcRowOverride")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
         // The decode clock's wall-clock now that recent-call ages read: the fixture's decoder is

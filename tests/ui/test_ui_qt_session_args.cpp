@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QList>
 #include <QMap>
+#include <QSettings>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -26,6 +27,7 @@
 #include <qtenvironmentvariables.h>
 #include <stdio.h>
 #include <utility>
+#include "app_prefs.h"
 #include "decoder_host.h"
 
 #include <dsd-neo/runtime/analog_channel.h>
@@ -84,6 +86,105 @@ test_tg_lockout_preference(void) {
     system["extraArgs"] = "--tg-lockout-session";
     args = session_args_build(system, prefs, &error);
     expect("extra args override default", args.indexOf("--tg-lockout-session") > args.indexOf("--tg-lockout-persist"));
+}
+
+/* Relaxed CRC is an app preference: every session the app starts gets -F (a saved system, an Explore or search map, a
+ * scan list) unless the options the user typed name the CRC policy themselves (-F or --strict-crc, the system's own or
+ * the app-wide Extra options), which win. */
+void
+test_relaxed_crc_preference(void) {
+    auto sys = usb_system();
+    SessionArgPrefs prefs;
+    SessionArgsError error = SessionArgsError::None;
+    auto args = session_args_build(sys, prefs, &error);
+    expect("relaxed CRC is off by default", !prefs.relaxedCrc);
+    expect("off adds no CRC option",
+           error == SessionArgsError::None && !args.contains("-F") && !args.contains("--strict-crc"));
+    prefs.relaxedCrc = true;
+    args = session_args_build(sys, prefs, &error);
+    expect("on adds -F once", error == SessionArgsError::None && args.count("-F") == 1);
+    sys["extraArgs"] = "--strict-crc";
+    args = session_args_build(sys, prefs, &error);
+    expect("a system's --strict-crc wins", args.count("--strict-crc") == 1 && !args.contains("-F"));
+    sys["extraArgs"] = "-t 9 -F";
+    args = session_args_build(sys, prefs, &error);
+    expect("a system's own -F is not doubled", args.count("-F") == 1);
+    sys["extraArgs"] = "";
+    prefs.extraArgs = "--strict-crc";
+    args = session_args_build(sys, prefs, &error);
+    expect("the app-wide --strict-crc wins", args.count("--strict-crc") == 1 && !args.contains("-F"));
+    prefs.extraArgs = "--strict-crc-typo";
+    args = session_args_build(sys, prefs, &error);
+    expect("only the exact option counts", args.count("-F") == 1);
+    prefs.extraArgs.clear();
+
+    /* An Explore session is a map that was never saved; the same builder starts it. */
+    QVariantMap explore;
+    explore["sourceType"] = "rtltcp";
+    explore["host"] = "127.0.0.1";
+    explore["port"] = 1234;
+    explore["freqMhz"] = "851.0125";
+    args = session_args_build(explore, prefs, &error);
+    expect("an explore session gets -F", error == SessionArgsError::None && args.count("-F") == 1);
+
+    /* A scan list: the -F is the configured value its rows' own -F or --strict-crc run over. */
+    QString scanError;
+    args = dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError);
+    expect("a scan list gets -F once", scanError.isEmpty() && args.count("-F") == 1);
+    prefs.extraArgs = "--strict-crc";
+    args = dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError);
+    expect("the app-wide --strict-crc wins on a scan list",
+           scanError.isEmpty() && !args.contains("-F") && args.count("--strict-crc") == 1);
+    prefs.extraArgs.clear();
+    prefs.relaxedCrc = false;
+    args = dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError);
+    expect("off adds nothing to a scan list", scanError.isEmpty() && !args.contains("-F"));
+}
+
+/* The QML-facing builder reads the preference from the live AppPrefs, as a start does. */
+void
+test_relaxed_crc_app_preference(void) {
+    class Host : public dsd_qt::DecoderHost {
+      public:
+        QStringList received;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& args) override {
+            received = args;
+            return true;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    dsd_qt::AppPrefs prefs;
+    expect("the preference is a property", prefs.setProperty("relaxedCrc", true));
+    dsd_qt::SessionArgsBuilder builder(&prefs);
+    auto sys = usb_system();
+    expect("start succeeds", builder.start(sys, &host).value("started").toBool());
+    expect("a started system gets -F", host.received.count("-F") == 1);
+    sys["extraArgs"] = "--strict-crc";
+    expect("start with --strict-crc", builder.start(sys, &host).value("started").toBool());
+    expect("the system's --strict-crc wins at start", !host.received.contains("-F"));
+    {
+        dsd_qt::AppPrefs reopened;
+        expect("the preference survives a restart", reopened.property("relaxedCrc").toBool());
+    }
+    expect("the preference turns off", prefs.setProperty("relaxedCrc", false));
+    sys.remove("extraArgs");
+    expect("start without the preference", builder.start(sys, &host).value("started").toBool());
+    expect("off starts without -F", !host.received.contains("-F"));
 }
 
 void
@@ -893,6 +994,8 @@ main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     QTemporaryDir data;
     qputenv("XDG_DATA_HOME", data.path().toUtf8());
+    /* AppPrefs persists through QSettings: keep it in the scratch directory. */
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, data.path());
     test_retained_key_validation_boundary();
     test_keys();
     test_extra_short_options();
@@ -909,6 +1012,8 @@ main(int argc, char** argv) {
     test_freq_validation();
     test_hangtime();
     test_tg_lockout_preference();
+    test_relaxed_crc_preference();
+    test_relaxed_crc_app_preference();
     test_defaults_and_overrides();
     test_nfm_system();
     test_am_system();

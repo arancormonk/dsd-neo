@@ -39,6 +39,8 @@ struct SessionArgPrefs {
     bool skipEncrypted = true;
     bool persistTgLockouts = true;
     bool autoPpm = false;
+    /* Relaxed CRC: -F for the session, unless the extra options name the CRC policy themselves. */
+    bool relaxedCrc = false;
     double hangtimeSec = 2.0;
     QString extraArgs;
 };

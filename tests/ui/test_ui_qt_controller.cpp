@@ -856,6 +856,14 @@ main(int argc, char** argv) {
     check(bridge.setPersistTgLockouts(false));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(opts.persist_tg_lockouts == 0);
+    // Settings' Relaxed CRC switch sets the value through the queue, as QML calls it: a repeat leaves it as set.
+    for (const bool on : {true, true, false, false}) {
+        bool queued = false;
+        check(QMetaObject::invokeMethod(&bridge, "setRelaxedCrc", Q_RETURN_ARG(bool, queued), Q_ARG(bool, on)));
+        check(queued);
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(dsd_opts_relaxed_crc(&opts) == (on ? 1 : 0));
+    }
     dsd_call_observation call = {};
     call.protocol = DSD_SYNC_P25P1_POS;
     call.slot = 0U;

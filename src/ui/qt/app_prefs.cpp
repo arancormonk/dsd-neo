@@ -45,6 +45,8 @@ enum Key {
     kPersistTgLockouts,
     kHangtimeSec,
     kAutoPpm,
+    // Relaxed CRC (-F) for every session the app starts; a system's own -F or --strict-crc wins.
+    kRelaxedCrc,
     kGainDb,
     kPpm,
     kBandwidthKhz,
@@ -93,6 +95,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"decode/persistTgLockouts", true},
     {"decode/hangtimeSec", true},
     {"decode/autoPpm", true},
+    {"decode/relaxedCrc", true},
     {"tuner/gainDb", true},
     {"tuner/ppm", true},
     {"tuner/bandwidthKhz", true},
@@ -488,6 +491,20 @@ AppPrefs::setAutoPpm(bool on) {
     }
     m_settings.setValue(key_name(kAutoPpm), on);
     Q_EMIT autoPpmChanged();
+}
+
+bool
+AppPrefs::relaxedCrc() const {
+    return m_settings.value(key_name(kRelaxedCrc), false).toBool();
+}
+
+void
+AppPrefs::setRelaxedCrc(bool on) {
+    if (on == relaxedCrc()) {
+        return;
+    }
+    m_settings.setValue(key_name(kRelaxedCrc), on);
+    Q_EMIT relaxedCrcChanged();
 }
 
 int

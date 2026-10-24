@@ -218,6 +218,12 @@ CommandBridge::setPersistTgLockouts(bool persist) const {
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
+CommandBridge::setRelaxedCrc(bool on) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_AGGR_SYNC_TOGGLE, on ? 1 : 0));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
 CommandBridge::clearTemporaryTgAvoids(const QString& context) const {
     bool valid = false;
     const uint64_t value = context.toULongLong(&valid);

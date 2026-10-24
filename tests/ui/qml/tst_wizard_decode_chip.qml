@@ -44,7 +44,7 @@ Item {
         // which is also the composite "-mq -^" label, so short names collide
         // and labels do not.
         readonly property var everyLabel: [
-            "Auto — P25/DMR/YSF", "P25", "P25 Simulcast", "DMR", "NXDN48",
+            "Auto", "P25", "P25 Simulcast", "DMR", "NXDN48",
             "NXDN96", "D-STAR", "YSF", "M17", "TETRA", "NFM — analog FM", "AM",
             "P25 LSM", "DMR Scan", "P25 Scan", "P25 LSM Scan",
             "NXDN48 Scan", "NXDN96 Scan", "EDACS", "EDACS EA"]
@@ -291,7 +291,7 @@ Item {
             findChild(tc.wizard, "wizardSource_tcp").clicked()
             compare(tc.wizard.sourceType, "tcp")
             compare(tc.wizard.decodeFlag, "", "TCP audio kept the AM flag")
-            compare(tc.selectedLabels(), ["Auto — P25/DMR/YSF"])
+            compare(tc.selectedLabels(), ["Auto"])
 
             findChild(tc.wizard, "wizardSource_usb").clicked()
             tc.wizard.pickDecodeFlag("-fM")
@@ -313,6 +313,16 @@ Item {
             compare(tc.selectedLabels(), [])
             verify(tc.chipFor("P25 Simulcast") !== null,
                    "the catalog is untouched by a flag it does not know")
+        }
+
+        // Auto is the whole -fa decoder set, NXDN included: the chip no longer
+        // names three protocols, and its hint says what it covers.
+        function test_13_the_auto_chip_names_what_it_decodes() {
+            tc.wizard.pickDecodeFlag("")
+            compare(tc.selectedLabels(), ["Auto"])
+            compare(tc.chipFor("Auto").text, "Auto")
+            compare(findChild(tc.wizard, "wizardDecodeHint").text,
+                    "Decodes every digital mode except TETRA, NXDN included — good first choice for most systems.")
         }
     }
 }

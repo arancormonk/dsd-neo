@@ -43,7 +43,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_HPF_TOGGLE = 53,
     DSD_APP_CMD_PBF_TOGGLE = 54,
     DSD_APP_CMD_HPF_D_TOGGLE = 55,
-    DSD_APP_CMD_AGGR_SYNC_TOGGLE = 56,
+    DSD_APP_CMD_AGGR_SYNC_TOGGLE = 56, // Relaxed CRC: no payload flips it; int32_t payload sets it (0 off, else on)
     DSD_APP_CMD_CALL_ALERT_TOGGLE = 57,
     DSD_APP_CMD_CALL_ALERT_EVENTS_SET = 58, // payload: uint8_t event mask (0 disables master switch)
 

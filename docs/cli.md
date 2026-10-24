@@ -328,7 +328,8 @@ Windows console runs:
   set is never RS-corrected, so a RAS LC cannot be "corrected" into a different, valid one. RAS is still
   detected without `-F`: two bursts with that signature on the same carrier confirm that it uses RAS. The
   terminal's DMR header then shows `RAS;` after the colour code (`RAS (-F decodes);` while Relaxed CRC is off),
-  the carrier's system identity (the spectrum legend, the Qt/Android site line) shows `RAS`, and while Relaxed CRC
+  the carrier's system identity (the spectrum legend, the Qt/Android site line) shows `RAS`, the Qt/Android site
+  sheet shows **Access RAS** with the same explanation and a **Turn on Relaxed CRC** button, and while Relaxed CRC
   is off the console prints once per confirmation
   `DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; -F decodes them`.
   The detection belongs to the carrier: a retune (a trunk follow or control channel return included), a trunk-scan
@@ -1624,7 +1625,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   still acts on its grants, payload and voice, but no system broadcast in it is applied: no WACN/SYSID/NAC, control
   channel, site or LRA, channel identifier (IDEN) table or trust, secondary control channel, neighbour, system services,
   system time or protection parameters come from it. P25 Phase 1 TSBK and trunking MBT always need their CRCs.
-  Relaxed CRC is one setting: `-F`, `--strict-crc`, the terminal's "Relaxed CRC checks" toggle (`F`) and a scan row's
+  Relaxed CRC is one setting: `-F`, `--strict-crc`, the terminal's "Relaxed CRC checks" toggle (`F`), the Qt/Android
+  Settings → Decoding → **Relaxed CRC** switch (which adds `-F` to every session the app starts) and a scan row's
   own `-F` or `--strict-crc` all turn every one of these gates on or off together, DMR's relaxed control-channel
   heartbeat included. While a scan row sets its own, the row decides until it leaves; the toggle edits the configured
   value beneath it and says so.

@@ -247,6 +247,53 @@ scan_context_init(dsd_opts* opts, dsd_state* state) {
     opts->wav_sample_rate = 48000;
 }
 
+/* The same command with a 0/1 payload sets the value instead of flipping it (the Qt/Android Relaxed CRC switch): a
+   frontend acting on a snapshot that is one command behind cannot turn it the wrong way. */
+static int
+set_relaxed(dsd_opts* opts, dsd_state* state, int32_t on) {
+    int rc = expect_int("queue set", dsd_app_command_set_i32(DSD_APP_CMD_AGGR_SYNC_TOGGLE, on),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("set drained", dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+static int
+test_set_with_payload(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    scan_context_init(opts, state);
+    int rc = set_relaxed(opts, state, 1);
+    rc |= expect_relaxed("set on", opts, state);
+    rc |= set_relaxed(opts, state, 1);
+    rc |= expect_relaxed("set on twice", opts, state);
+    rc |= set_relaxed(opts, state, 0);
+    rc |= expect_strict("set off", opts, state);
+    rc |= set_relaxed(opts, state, 0);
+    rc |= expect_strict("set off twice", opts, state);
+
+    /* Under a --strict-crc row the set edits the configured value, and the toast says the row decides. */
+    const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
+    rc |= enter_dmr_row(opts, state, &row);
+    state->ui_msg[0] = '\0';
+    rc |= set_relaxed(opts, state, 1);
+    rc |= expect_strict("strict row, set on", opts, state);
+    rc |= expect_view("strict row, set on", opts, state, 1, 0, 1);
+    rc |= expect_toast("strict row, set on", state, "Default relaxed CRC -> On; this channel overrides it (Off)");
+    rc |= set_relaxed(opts, state, 1);
+    rc |= expect_view("strict row, set on twice", opts, state, 1, 0, 1);
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_relaxed("strict row left after set on", opts, state);
+    context_free(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A --strict-crc row over a relaxed (-F) baseline: the row decides until it leaves, and the toggle edits the
    baseline under it. */
 static int
@@ -440,6 +487,7 @@ main(void) {
     rc |= test_toggle_from_default();
     rc |= test_toggle_from_cli("-F", 1);
     rc |= test_toggle_from_cli("--strict-crc", 0);
+    rc |= test_set_with_payload();
     rc |= test_strict_row_over_relaxed_baseline();
     rc |= test_relaxed_row_over_strict_baseline();
     rc |= test_notice_and_null_arguments();

@@ -59,6 +59,7 @@ sessionPreferences(const AppPrefs* source) {
         prefs.skipEncrypted = source->skipEncrypted();
         prefs.persistTgLockouts = source->persistTgLockouts();
         prefs.autoPpm = source->autoPpm();
+        prefs.relaxedCrc = source->relaxedCrc();
         prefs.hangtimeSec = source->hangtimeSec();
         prefs.extraArgs = source->extraArgs();
     }

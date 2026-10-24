@@ -27,6 +27,8 @@
 #include <cmath>
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/app_control/crc_policy_view.h>
+#include <dsd-neo/app_control/dmr_ras_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
@@ -160,7 +162,8 @@ MetricsModel::SiteView::operator==(const SiteView& other) const {
                     dmrSiteText, dmrRestLsn, dmrXptFreeLcn, nxdnRan, nxdnLocationCategory, nxdnSysCode, nxdnSiteCode,
                     edacsSiteText, edacsSystem, edacsArea, edacsCcLcn, dmrBrand, dmrT3Syscode, siteAccessCode,
                     tetraSiteMcc, tetraSiteMnc, tetraSiteLa, ccFreqHz, vcFreqHz, siteLine, siteConfirmed,
-                    carrierIdentityTokens, carrierIdentityProtocol, carrierIdentityText, carrierIdentityLive)
+                    carrierIdentityTokens, carrierIdentityProtocol, carrierIdentityText, carrierIdentityLive,
+                    dmrRasDetected, dmrRasNeedsRelaxed)
            == std::tie(other.siteProtocol, other.p25NacValid, other.p25Nac, other.p25WacnValid, other.p25Wacn,
                        other.p25SysIdValid, other.p25SysId, other.p25Rfss, other.p25Site, other.p25LraValid,
                        other.p25Lra, other.p25Phase2ParamsReady, other.p25Phase2Seed, other.p25Phase2SeedSet,
@@ -169,7 +172,8 @@ MetricsModel::SiteView::operator==(const SiteView& other) const {
                        other.edacsSystem, other.edacsArea, other.edacsCcLcn, other.dmrBrand, other.dmrT3Syscode,
                        other.siteAccessCode, other.tetraSiteMcc, other.tetraSiteMnc, other.tetraSiteLa, other.ccFreqHz,
                        other.vcFreqHz, other.siteLine, other.siteConfirmed, other.carrierIdentityTokens,
-                       other.carrierIdentityProtocol, other.carrierIdentityText, other.carrierIdentityLive);
+                       other.carrierIdentityProtocol, other.carrierIdentityText, other.carrierIdentityLive,
+                       other.dmrRasDetected, other.dmrRasNeedsRelaxed);
 }
 
 static bool
@@ -330,6 +334,19 @@ MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) {
     site.carrierIdentityProtocol = site.siteProtocol;
     site.carrierIdentityText = site.siteLine;
     site.carrierIdentityLive = site.siteConfirmed;
+}
+
+/* DMR RAS and the Relaxed CRC policy from the views the terminal reads (dmr_ras_view.h over crc_policy_view.h), so the
+   site sheet's RAS hint and the Settings switch say what the terminal header and menu row say. */
+void
+MetricsModel::fillCrcPolicy(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_dmr_ras ras;
+    dsd_app_dmr_ras_view(opts_snapshot, snapshot, &ras);
+    next.site.dmrRasDetected = ras.detected != 0U;
+    next.site.dmrRasNeedsRelaxed = ras.needs_relaxed != 0U;
+    next.relaxed_crc_configured = ras.crc.configured != 0U;
+    next.relaxed_crc_effective = ras.crc.effective != 0U;
+    next.relaxed_crc_row_override = ras.crc.row_override != 0U;
 }
 
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
@@ -1200,6 +1217,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     fillSlotCalls(next, snapshot, now_m);
     fillQualityView(next, snapshot);
     fillSiteView(next, snapshot);
+    fillCrcPolicy(next, opts_snapshot, snapshot);
 
     fillControlViews(next, opts_snapshot, snapshot, now_m);
 

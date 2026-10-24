@@ -49,6 +49,17 @@ short_option_grouped(const QString& token) {
 }
 
 /**
+ * @brief Whether the extra options the user typed name the CRC policy themselves.
+ *
+ * -F or --strict-crc there wins over the app's Relaxed CRC preference: the app adds no -F of its own beside it.
+ */
+bool
+extra_sets_crc(const QString& tokens) {
+    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    return split.contains(QStringLiteral("-F")) || split.contains(QStringLiteral("--strict-crc"));
+}
+
+/**
  * @brief Effective bias-tee setting from the per-system tri-state.
  *
  * -1 follows the app-wide preference, 0 is explicitly off, 1 explicitly on. An
@@ -215,6 +226,9 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
     args << QStringLiteral("-t") << QString::number(hangtime, 'f', 1);
     const QString extra =
         (system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs).trimmed();
+    if (prefs.relaxedCrc && !extra_sets_crc(extra)) {
+        args << QStringLiteral("-F");
+    }
     if (!extra.isEmpty()) {
         args << extra.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     }
@@ -345,6 +359,10 @@ appendScanOptions(QStringList& args, const QVariantMap& list, const QString& csv
     if (prefs.autoPpm && list.value(QStringLiteral("sourceType")).toString() != QLatin1String("airspy")) {
         args << QStringLiteral("--auto-ppm");
     }
+    /* The configured Relaxed CRC a row's own -F or --strict-crc runs over while it is on air. */
+    if (prefs.relaxedCrc && !extra_sets_crc(prefs.extraArgs)) {
+        args << QStringLiteral("-F");
+    }
     args << prefs.extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
 }
 
@@ -381,6 +399,7 @@ session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, co
     SessionArgPrefs tunerPrefs = prefs;
     tunerPrefs.skipEncrypted = false;
     tunerPrefs.autoPpm = false;
+    tunerPrefs.relaxedCrc = false;
     tunerPrefs.extraArgs.clear();
     QStringList args = session_args_build(tuner, tunerPrefs, &reason);
     if (reason != SessionArgsError::None) {
@@ -785,6 +804,7 @@ SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error
         prefs.skipEncrypted = m_prefs->skipEncrypted();
         prefs.persistTgLockouts = m_prefs->persistTgLockouts();
         prefs.autoPpm = m_prefs->autoPpm();
+        prefs.relaxedCrc = m_prefs->relaxedCrc();
         prefs.hangtimeSec = m_prefs->hangtimeSec();
         prefs.extraArgs = m_prefs->extraArgs();
     }
