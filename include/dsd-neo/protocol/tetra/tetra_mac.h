@@ -86,6 +86,17 @@ tetra_enc_mode_name(uint8_t mode) {
 void tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief tetra_mac_parse_schd() for a block whose encrypted PDUs start at key stream bit @p ks_offset of its slot's key
+ * stream segment: 0 for a full slot (SCH/F) and the first half slot, TETRA_AIR_KSS_SECOND_HALF_BLOCK (216) for the second
+ * half slot (an SCH/HD or STCH in block 2, the block 2 of a synchronisation burst; EN 300 392-7 clause 6.4.2.2, table
+ * 6.4). tetra_mac_parse_schd() is this with 0.
+ */
+void tetra_mac_parse_block(const uint8_t* bits, int nbits, int cc, int ks_offset, dsd_opts* opts, dsd_state* state);
+
+/** Key stream bit the PDUs of a second half slot block start at (EN 300 392-7 table 6.4). */
+#define TETRA_AIR_KSS_SECOND_HALF_BLOCK 216
+
+/**
  * A downlink block of the current timeslot failed its SCH CRC: the MAC drops the partial TM-SDU it was rebuilding on
  * that timeslot's control channel (EN 300 392-2 clause 23.4.3.1.1 ii). Applied only while the TDMA clock places the
  * block; without it the N.203 limit still ends the TM-SDU. Uplink blocks are ignored.

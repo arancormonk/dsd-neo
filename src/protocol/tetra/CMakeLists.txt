@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         tetra.c
         tetra_air.c
+        tetra_air_sig.c
         tetra_bsch.c
         tetra_calls.c
         tetra_confirm.c

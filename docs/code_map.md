@@ -5799,6 +5799,44 @@ a network change drops),
 network, cell and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a cell or network change starts
 over).
 
+#### Air encrypted signalling
+
+`tetra_air_sig.{c,h}` decrypt the air encrypted downlink signalling with a loaded `--tetra-key` (issue #750). EN 300
+392-7 clause 6.7.1.2: everything after the channel allocation flag of a MAC-RESOURCE and of a downlink MAC-END is
+ciphertext, the allocation element and the TM-SDU; a MAC-FRAG's fragment and a MAC-D-BLCK's TM-SDU are too; the MAC
+header and the fill bits stay clear (clause 6.4.0), so `content_end()` on the received bits finds the plaintext's end.
+Each PDU restarts its slot's key stream segment (clause 6.4.2.2, table 6.4): KSS(0) in a full slot and a first half
+slot, KSS(216) in a second half slot (STCH-2, an SB's block 2), which `tetra_nb_signalling()` hands the MAC
+(`tetra_mac_parse_block()`, `mac_block::ks_offset`). The key stream is the voice path's: the slot's initial value from
+the TDMA clock and hyperframe, TB5 of the carrier being received (`tetra_air_sig_slot()`). A fragmented TM-SDU keeps
+its ciphertext pieces (`tetra_mac_fragment::piece`, each with its slot's initial value, carrier and offset) and is
+decrypted piece by piece at its MAC-END, whose piece is the allocation then the last fragment (`fragment_open()`); an
+encrypted first fragment with an allocation, or a piece that cannot be kept, leaves the TM-SDU undecrypted
+(`cipher_lost`).
+
+Basic link signalling carries no check of its plaintext, so a decrypted TM-SDU is acted on only when its own plaintext
+proved itself (`tetra_air_sig_open()`): every candidate (the network's 80-bit key with its named TEA, or each of
+TEA1..TEA3; a TEA1 reduced key of exactly this channel) decrypts it, the digest of each plaintext is kept as evidence
+(`tetra_state_t::air_evidence`: 512 entries, `TETRA_AIR_EVIDENCE_S` = 1 s, at most 16 of one clear header, cleared at
+a carrier boundary and another cell), and an earlier TM-SDU of the same clear header (PDU kind, address type and value,
+label, usage marker, encryption mode, allocation flag), length, carrier, location area and colour code, taken under
+another initial value, that decrypted to the same plaintext under a candidate proves that candidate. Only 48 or more
+encrypted bits count; a wrong key, wrong TEA, or a PDU under a key the user lacks (DCK, MGCK, a second TEA, another key
+version) matches with a chance of about 2^-L + 2^-64 per comparison, at most 64 comparisons a PDU. Nothing reads the
+cell's broadcast security class. A first copy, a TM-SDU sent once or shorter than 48 bits is handled as before
+(`resource_encrypted()`, `deliver_encrypted()`); a proved one is parsed as a clear one (`resource_parse()`,
+`complete_fragment()`), carrying its encryption mode and key to the call records. A proof notes its TEA as the
+network's KSG evidence. A proved PDU's encrypted short identity is decrypted with TA61 under the 80-bit key that proved
+it (`tetra_air_sig_identity()`, `tetra_mac_address::esi_decrypted`; the `-Z` line shows `SSI(n from ESI m)`); a reduced
+key leaves it, so its D-SETUPs name no called party. The cell key epoch (`air_epoch`) moves when a SYSINFO announces
+another SCK-VN or CCK-id (CCK flag set), SCKN or GCK support (on a cell that offers air encryption), when the
+encryption mode's parity settles on the other value (three encrypted headers in a row, `tetra_air_sig_note_parity()`),
+and at another cell; a call's key applies only under the epoch and parity it proved under and while the same key (and
+named TEA) is loaded. No key, ECK, register or key stream bit is printed. Tests: `TETRA_AIR_SIGNALLING` (TETRA_crypto's
+own TB5 and TEA2 key streams, frozen; wrong keys and TEAs; two TEAs under one key; a DCK stand-in; PDU association and
+the second half slot; a fragmented TM-SDU; a reduced key; the key epoch; the repeat rules and a busy carrier),
+`TETRA_CRYPTO` (TA61).
+
 #### Trunking
 
 `src/protocol/tetra/tetra_trunk_sm.c` behind `include/dsd-neo/protocol/tetra/tetra_trunk_sm.h` follows at most one
@@ -5991,7 +6029,13 @@ single "current call".
   label: an encrypted PDU's SSI is an encrypted short identity, clause 4.2.6) when that allocation is ciphertext (EN 300
   392-7 clause 6.5.1), in the MAC-RESOURCE or in the MAC-END of a TM-SDU encrypted from its first fragment, which the
   call's canonical call takes at once (`calls_sync_published()`); end-to-end encryption
-  never overwrites it, and the cell-wide `enc_mode` is for display only.
+  never overwrites it, and the cell-wide `enc_mode` is for display only. An allocation in signalling a loaded key
+  decrypted (Air encrypted signalling below) sets the record's air encryption to the mode it was sent in and its key
+  to the one that proved it (`tetra_call_t::air_key`, `tetra_mac_sdu::enc_mode` / `air_key`, `call_attach()`): one
+  verdict (`call_air_decryptable()`) then says whether the call is decryptable for the follow policy and lockout, its
+  canonical call's crypto class and its speech, which that key and TEA decrypt while it applies
+  (`tetra_air_sig_key_current()`) and nothing decrypts after; a record whose allocation was clear or unread keeps the
+  key of its carrier (`tetra_air_key_usable_on()`), as anonymous speech does.
 - Allocations. The MAC hands the MLE a `tetra_mac_sdu` with the PDU's address and channel allocation. A call PDU in
   the TM-SDU takes the allocation (`call_attach()`); one no call PDU took attaches through the addressed party
   (`tetra_calls_on_allocation()`: the called, calling or transmitting SSI of a record, or the event label assigned to
@@ -6281,6 +6325,9 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session; published only on a trunked carrier (`tetra_pub_network()`) | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
 | KSG evidence (`air_ksg`: per network, the KSG numbers its signalling named) | the session, per network | a complete D-OTAR SCK or GCK Provide, D-LOCATION UPDATE COMMAND or REJECT with cipher control on | a full cache (20 networks) replacing the oldest network no air key is loaded for; never a keyed network's |
 | Tuned frequency (`rx_tuned_hz`), which `tetra_calls_rx_carrier()` reads the carrier being received from without options | the receiver | every burst (`tetra_frame_enter()`) | a carrier boundary |
+| Encrypted signalling evidence (`air_evidence`) | the carrier | encrypted TM-SDUs a key could decrypt | `TETRA_AIR_EVIDENCE_S`, eviction, a carrier boundary, another cell or network |
+| Cell key epoch (`air_epoch`, the SCK-VN / CCK-id, SCKN, GCK support and parity seen) | the cell | SYSINFO, encrypted MAC headers | moves at another key announced or a parity switch; another cell, location area or network |
+| A record's key (`tetra_call_t::air_key`, a key copy) | the call record | an allocation in signalling it decrypted | the record ending, a clear allocation; applies only under its epoch and parity, the key still loaded |
 | Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`, security `sec`/`sec_valid` and `aie_known`/`aie_available`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel and security published only on a trunked carrier | SYSINFO (the security from one with the extended services broadcast, the AIE bit from one with its D-MLE-SYSINFO), addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`), a SYSINFO of another main carrier or location area (`tetra_bsch_sysinfo_cell()`) |
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |

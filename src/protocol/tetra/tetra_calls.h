@@ -75,6 +75,8 @@ typedef struct {
     uint8_t alloc_taken;       /**< a call PDU of the TM-SDU took the allocation, or named a call no record holds */
     uint8_t alloc_taker_valid; /**< @c alloc_taker is the call record the allocation went to */
     uint16_t alloc_taker;      /**< its call identifier */
+    uint8_t enc_mode;       /**< the PDU's encryption mode (TETRA_ENC_MODE_*); decrypted when not 00 and @c air_key */
+    tetra_air_cand air_key; /**< the key that decrypted it (tetra_air_sig.c), when it was ciphertext */
 } tetra_mac_sdu;
 
 /** CMCE PDUs that act on a call (EN 300 392-2 clause 14.7.1). */

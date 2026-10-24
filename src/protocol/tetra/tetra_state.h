@@ -95,6 +95,24 @@ typedef struct {
     uint8_t burst_proven; /* the open (or last) burst decoded a block whose CRC passed */
 } tetra_confirm_t;
 
+/** One way the air interface encryption of downlink signalling may be undone (tetra_air_sig.c): an operator's 80-bit
+ * cipher key (SCK or CCK) of a network with one of TEA1..TEA3, or a TEA1 reduced key of one channel. As a call record's
+ * key (tetra_call_t::air_key) it is the one that proved the record's signalling, with the cell key epoch and the
+ * encryption mode parity it proved under. Holds key material: zeroed with what holds it. */
+typedef struct {
+    uint8_t key[10]; /**< the 80-bit key; a reduced key's register in key[0..3] */
+    uint8_t valid;   /**< holds a candidate */
+    uint8_t kind;    /**< DSD_TETRA_AIR_KEY_* */
+    uint8_t ksg;     /**< KSG number 0..2 (TEA1..TEA3) */
+    uint8_t parity;  /**< the encryption mode's low bit (SCK-VN / CCK-id parity) it proved under */
+    uint8_t cc;      /**< reduced key: its channel's colour code */
+    uint16_t mcc;    /**< its network */
+    uint16_t mnc;
+    uint16_t la;      /**< reduced key: its channel's location area */
+    uint16_t carrier; /**< reduced key: its channel's carrier */
+    uint32_t epoch;   /**< tetra_state_t::air_epoch it proved under */
+} tetra_air_cand;
+
 /** A channel allocation element (EN 300 392-2 table 21.87) as the MAC read it from a clear PDU. */
 typedef struct {
     long freq_hz;       /**< downlink frequency of the carrier, 0 when its band is unknown */
@@ -154,11 +172,12 @@ typedef struct {
     uint8_t phase;                  /**< TETRA_CALL_*; TETRA_CALL_FREE for an unused entry */
     uint8_t flags;                  /**< TETRA_CALL_F_* */
     uint8_t basic_service;          /**< basic service information (table 14.35) as last signalled */
-    uint8_t e2ee;         /**< end-to-end encrypted: the basic service or D-TX GRANTED encryption control says so */
-    uint8_t air_enc;      /**< encryption mode (TETRA_ENC_MODE_*) of the MAC-RESOURCE that allocated its channel */
-    uint8_t priority;     /**< call priority from D-SETUP */
-    uint8_t timeout;      /**< call time-out (table 14.50) */
-    uint8_t usage_marker; /**< downlink traffic usage marker assigned with @c alloc (TETRA_CALL_F_USAGE_MARKER) */
+    uint8_t e2ee;           /**< end-to-end encrypted: the basic service or D-TX GRANTED encryption control says so */
+    uint8_t air_enc;        /**< encryption mode (TETRA_ENC_MODE_*) of the MAC-RESOURCE that allocated its channel */
+    uint8_t priority;       /**< call priority from D-SETUP */
+    uint8_t timeout;        /**< call time-out (table 14.50) */
+    uint8_t usage_marker;   /**< downlink traffic usage marker assigned with @c alloc (TETRA_CALL_F_USAGE_MARKER) */
+    tetra_air_cand air_key; /**< the key whose decrypted signalling gave @c alloc, when it was ciphertext */
 } tetra_call_t;
 
 /* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the
@@ -227,20 +246,39 @@ typedef struct {
 
 /** Address element of a downlink MAC-RESOURCE PDU (EN 300 392-2 table 21.55). */
 typedef struct {
-    uint8_t type;         /* address type, TETRA_MAC_ADDR_* */
-    uint8_t esi;          /* 1 when the SSI part is an encrypted short identity (EN 300 392-7 clause 4.2.6) */
-    uint8_t usage_marker; /* 6 bits, address types SSI + usage marker */
-    uint16_t event_label; /* 10 bits, address types with an event label */
-    uint32_t ssi;         /* SSI, USSI or SMI */
+    uint8_t type;          /* address type, TETRA_MAC_ADDR_* */
+    uint8_t esi;           /* 1 when the SSI part is an encrypted short identity (EN 300 392-7 clause 4.2.6) */
+    uint8_t esi_decrypted; /* the SSI part was decrypted from @c esi_value (TA61) */
+    uint32_t esi_value;    /* with esi_decrypted: the encrypted short identity it was sent as */
+    uint8_t usage_marker;  /* 6 bits, address types SSI + usage marker */
+    uint16_t event_label;  /* 10 bits, address types with an event label */
+    uint32_t ssi;          /* SSI, USSI or SMI */
 } tetra_mac_address;
 
 /* N.202, the largest TM-SDU (EN 300 392-2 annex B.2). */
 #define TETRA_MAC_TM_SDU_MAX_BITS 2632
 
 /** Reconstruction of one fragmented downlink TM-SDU (EN 300 392-2 clause 23.4.3.1.1). */
+/* Ciphertext pieces an encrypted fragmented TM-SDU keeps until its MAC-END: one per fragment, each under the key
+ * stream segment of its own slot (EN 300 392-7 clause 6.4.2.2). The smallest fragment fills what an SCH/HD leaves. */
+#define TETRA_MAC_FRAG_PIECES     32
+
+/** One encrypted piece of a fragmented TM-SDU: @c nbits ciphertext bits at @c start of the fragment buffer, sent in
+ * the slot of initial value @c iv on carrier @c carrier from key stream bit @c offset. */
 typedef struct {
-    uint8_t active;          /* a MAC-RESOURCE with length indication 111111 started a TM-SDU */
-    uint8_t enc_mode;        /* its encryption mode (TETRA_ENC_MODE_*): not 00, every fragment is ciphertext */
+    uint32_t iv;
+    uint16_t start;
+    uint16_t nbits;
+    uint16_t offset;
+    uint16_t carrier;
+} tetra_mac_piece;
+
+typedef struct {
+    uint8_t active;      /* a MAC-RESOURCE with length indication 111111 started a TM-SDU */
+    uint8_t enc_mode;    /* its encryption mode (TETRA_ENC_MODE_*): not 00, every fragment is ciphertext */
+    uint8_t npieces;     /* encrypted: the pieces of bits[] so far */
+    uint8_t cipher_lost; /* encrypted: a piece could not be kept, so the TM-SDU cannot be decrypted */
+    tetra_mac_piece piece[TETRA_MAC_FRAG_PIECES];
     uint8_t idle_half_slots; /* half slots of this timeslot since the last fragment, for the N.203 limit */
     uint32_t slot_start;     /* tdma_slot_start of the last block of this timeslot: the slots the clock counted since */
     int8_t cc;               /* colour code of the block that started the TM-SDU */
@@ -262,6 +300,35 @@ typedef struct {
     uint8_t short_gck_vn;  /* with linked GCK crypto-periods: the 2 low bits of their GCK-VN */
     uint8_t gck_supported; /* GCK supported on this cell */
 } tetra_cell_security;
+
+/* Encrypted TM-SDUs kept as evidence that a key decrypts the signalling (tetra_air_sig.c): enough for the encrypted
+ * PDUs a carrier sends in TETRA_AIR_EVIDENCE_S (four associated PDUs in each of four slots of 17 frames a second, at
+ * most), and at most TETRA_AIR_EVIDENCE_PER_SIG of one clear header. */
+#define TETRA_AIR_EVIDENCE_MAX     512
+#define TETRA_AIR_EVIDENCE_PER_SIG 16
+#define TETRA_AIR_CANDIDATES       4
+
+/** What one encrypted TM-SDU decrypted to under each candidate: its clear header and slot, and a digest of each
+ * candidate's plaintext (tetra_air_sig.c). */
+typedef struct {
+    double at_m;                            /* decode clock when it was taken */
+    uint64_t digest[TETRA_AIR_CANDIDATES];  /* plaintext digest under candidate cand_id[i] */
+    uint32_t cand_id[TETRA_AIR_CANDIDATES]; /* fingerprint of each candidate it was decrypted under */
+    uint32_t iv;                            /* initial value of its (first) slot */
+    uint32_t addr;                          /* SSI, ESI, USSI or SMI as sent */
+    uint16_t length;                        /* encrypted bits */
+    uint16_t carrier;
+    uint16_t la;
+    uint16_t label; /* event label */
+    uint8_t used;
+    uint8_t ncand;
+    uint8_t kind; /* MAC-RESOURCE, rebuilt TM-SDU or MAC-D-BLCK */
+    uint8_t addr_type;
+    uint8_t enc_mode;
+    uint8_t alloc;
+    uint8_t um;
+    uint8_t cc;
+} tetra_air_evidence;
 
 /* Networks whose air interface algorithm evidence is kept: room for every network an air key can be loaded for
  * (DSD_TETRA_AIR_KEY_SLOTS), whose evidence is never evicted, and four more (tetra_air.c). */
@@ -359,6 +426,23 @@ typedef struct tetra_state {
      * live in the key set (dsd_state::tetra_air_keys). */
     tetra_air_ksg_net air_ksg[TETRA_AIR_KSG_NETS];
     uint32_t air_ksg_seq;
+
+    /* Air encrypted signalling (tetra_air_sig.c). air_evidence: the encrypted TM-SDUs of this carrier a repeat may prove
+     * a key with, for TETRA_AIR_EVIDENCE_S. air_epoch moves when the cell's key may have changed: another key version,
+     * SCKN or GCK support announced (EN 300 392-7 clauses 6.3.2.1, 6.5.1, 4.5.8), the encrypted MAC headers' parity
+     * switching (air_parity, settled after a run of them, air_parity_run of air_parity_next), another cell, location
+     * area or network; a call's key proved under an older epoch decrypts nothing. */
+    tetra_air_evidence air_evidence[TETRA_AIR_EVIDENCE_MAX];
+    uint32_t air_epoch;
+    uint16_t air_version; /* the last SCK-VN / CCK-id a SYSINFO announced (air_version_known) */
+    uint8_t air_version_known;
+    uint8_t air_sckn; /* the last SCKN (class 2) and GCK support the extended services broadcast gave */
+    uint8_t air_gck;
+    uint8_t air_sec_known;
+    uint8_t air_parity; /* the parity the cell's encrypted signalling settled on (air_parity_known) */
+    uint8_t air_parity_known;
+    uint8_t air_parity_next;
+    uint8_t air_parity_run;
 
     /* Direct mode (EN 300 396-2, EN 300 396-3), set by tetra_dmo_apply_sync(); all of it is the carrier's, forgotten with
      * it (tetra_dmo_forget_carrier()).

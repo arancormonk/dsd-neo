@@ -22,6 +22,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "tetra_air_sig.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"
@@ -188,6 +189,7 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     tetra_calls_forget_cell(state);
     tetra_voice_reset(state);
     tetra_confirm_forget_followed_call(state);
+    tetra_air_sig_forget_cell(state);
     ts->enc_mode = TETRA_ENC_MODE_NONE;
     ts->frames_resource = 0;
     if (ts->dl_carrier_hz > 0L && state->trunk_cc_freq == ts->dl_carrier_hz) {

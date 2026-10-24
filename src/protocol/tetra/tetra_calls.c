@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tetra_air_sig.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
@@ -448,11 +449,25 @@ air_decryptable(const dsd_state* state, uint8_t air_enc, int carrier) {
     return tetra_enc_mode_encrypted(air_enc) && tetra_air_key_usable_on(state, carrier);
 }
 
+/* Air interface encryption of @p c's speech a key stream here undoes. A call whose allocation came in signalling a key
+ * decrypted takes that key and no other, while it applies (tetra_air_sig_key_current()): the key the signalling proved
+ * is the one of the call's addressed party, and a key change the cell announced since leaves it to the next proof.
+ * Any other call takes the key for its carrier (tetra_air_key_usable_on()). */
+static int
+call_air_decryptable(const dsd_state* state, const tetra_call_t* c) {
+    if (!tetra_enc_mode_encrypted(c->air_enc)) {
+        return 0;
+    }
+    if (c->air_key.valid) {
+        return tetra_air_sig_key_current(state, &c->air_key);
+    }
+    return air_decryptable(state, c->air_enc, call_carrier(state, c));
+}
+
 /* Speech of @p c the listener cannot decrypt: end-to-end encrypted, or air encrypted without a key stream for it. */
 static int
 call_undecryptable(const dsd_state* state, const tetra_call_t* c) {
-    return c->e2ee
-           || (c->air_enc != TETRA_ENC_MODE_NONE && !air_decryptable(state, c->air_enc, call_carrier(state, c)));
+    return c->e2ee || (c->air_enc != TETRA_ENC_MODE_NONE && !call_air_decryptable(state, c));
 }
 
 static uint32_t
@@ -546,6 +561,18 @@ calls_carrying(const dsd_state* state, const tetra_state_t* ts, uint8_t pub, uin
            && DSD_SYNC_IS_TETRA(call.protocol);
 }
 
+/* The crypto class of call record @p c (call_air_decryptable()). */
+static dsd_call_crypto_state
+call_crypto_state(const dsd_state* state, const tetra_call_t* c) {
+    if (c->e2ee) {
+        return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    }
+    if (c->air_enc == TETRA_ENC_MODE_NONE) {
+        return DSD_CALL_CRYPTO_CLEAR;
+    }
+    return call_air_decryptable(state, c) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+}
+
 /* Classify the call canonical slot 0 carries as @p crypto; audio is permitted for clear and decryptable calls. */
 static void
 calls_classify(dsd_state* state, dsd_call_crypto_state crypto) {
@@ -604,8 +631,7 @@ calls_publish_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const te
     o.service_options = c->basic_service;
     o.priority = c->priority;
     o.has_service_metadata = (uint8_t)((c->flags & TETRA_CALL_F_SETUP_SEEN) != 0u);
-    calls_publish(opts, state, ts, &o, crypto_state(state, c->e2ee, c->air_enc, call_carrier(state, c)), TETRA_PUB_CALL,
-                  c->call_id);
+    calls_publish(opts, state, ts, &o, call_crypto_state(state, c), TETRA_PUB_CALL, c->call_id);
 }
 
 /* The followed call, once its tune has settled and while a transmission is not known to have ceased, publishes on
@@ -929,7 +955,7 @@ calls_leave_taken_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, c
  * nothing, and a return in flight that fails comes back without the call too. */
 static void
 call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
-            int may_follow) {
+            int may_follow, const tetra_mac_sdu* sdu) {
     const uint16_t id = c->call_id;
     /* A downlink usage marker is valid on the channel it was assigned with only (EN 300 392-2 clause 23.5.5): an
      * allocation of the downlink ends it, and the PDU's own usage marker assignment, if any, binds it to the new channel
@@ -948,7 +974,14 @@ call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c
     }
     c->alloc = *alloc;
     c->alloc_m = dsd_decode_now_mono_s();
-    c->air_enc = TETRA_ENC_MODE_NONE;
+    /* The assigned channel's encryption follows the PDU that allocated it (EN 300 392-7 clause 6.7.1.3): clear, or
+     * ciphertext that the key now the call's decrypted (tetra_air_sig.h). */
+    c->air_enc = sdu ? (uint8_t)(sdu->enc_mode & 3u) : (uint8_t)TETRA_ENC_MODE_NONE;
+    if (sdu && sdu->air_key.valid && tetra_enc_mode_encrypted(sdu->enc_mode)) {
+        c->air_key = sdu->air_key;
+    } else {
+        DSD_MEMSET(&c->air_key, 0, sizeof c->air_key);
+    }
     const int takes_followed = calls_take_channel(opts, state, ts, c);
     if (may_follow) {
         call_consider(opts, state, ts, c, takes_followed);
@@ -1335,7 +1368,7 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     call_after_pdu(opts, state, ts, c);
     if (alloc) {
         sdu->alloc_taker = c->call_id; /* a D-INFO or D-CALL RESTORE may have renamed it */
-        call_attach(opts, state, ts, c, &sdu->alloc, 1);
+        call_attach(opts, state, ts, c, &sdu->alloc, 1, sdu);
     }
     /* The PDU's U-plane switching applies to the followed call, the one its allocation may just have followed included
      * (a grant on the carrier the receiver is on). */
@@ -1364,7 +1397,7 @@ calls_attach_addressed(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetr
                           (unsigned)sdu->alloc.carrier, (unsigned)sdu->alloc.timeslots);
         return;
     }
-    call_attach(opts, state, ts, c, &sdu->alloc, 0);
+    call_attach(opts, state, ts, c, &sdu->alloc, 0, sdu);
     calls_sync_published(opts, state, ts, c);
 }
 
@@ -1910,7 +1943,7 @@ speech_of_record(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
         }
     } else {
         /* A cipher key loaded, or the network's KSG learnt, since: no PDU of the call says so, its speech does. */
-        calls_reclassify(opts, state, crypto_state(state, c->e2ee, c->air_enc, call_carrier(state, c)));
+        calls_reclassify(opts, state, call_crypto_state(state, c));
     }
     return calls_carrying(state, ts, TETRA_PUB_CALL, c->call_id);
 }

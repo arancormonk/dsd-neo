@@ -44,6 +44,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tetra_air_sig.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"
@@ -310,14 +311,14 @@ tetra_note_proven_cell(dsd_state* state, uint32_t seed) {
    one the burst. */
 static void
 tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* decoded, int len,
-                    const char* kind) {
+                    const char* kind, int ks_offset) {
     if (ctx->direct) {
         (void)tetra_dmo_log_dnb_pdu(decoded, len, kind, opts, state);
         tetra_confirm_note_block(state);
         return;
     }
     tetra_note_proven_cell(state, ctx->seed);
-    tetra_mac_parse_schd(decoded, len, ctx->cc, opts, state);
+    tetra_mac_parse_block(decoded, len, ctx->cc, ks_offset, opts, state);
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (ts && ts->uplink) {
         tetra_confirm_note_uplink_signalling(state);
@@ -335,9 +336,11 @@ tetra_nb_block_failed(dsd_state* state, const tetra_nb_ctx* ctx) {
     }
 }
 
-/* One half-slot block of an NTS2 burst: 1 when it was signalling. */
+/* One half-slot block of an NTS2 burst: 1 when it was signalling. Its encrypted PDUs start at key stream bit
+   @p ks_offset (EN 300 392-7 table 6.4: 0 in the first half slot, 216 in the second). */
 static int
-tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_t* soft, const char* kind) {
+tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_t* soft, const char* kind,
+              int ks_offset) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
         return 0;
@@ -350,7 +353,7 @@ tetra_nb_half(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, uint16_
         return 0;
     }
     ts->decode_ok++;
-    tetra_nb_signalling(opts, state, ctx, decoded, HD_TYPE1, kind);
+    tetra_nb_signalling(opts, state, ctx, decoded, HD_TYPE1, kind, ks_offset);
     return 1;
 }
 
@@ -363,14 +366,15 @@ tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     uint16_t block[NB_BLOCK_BITS];
     if (state->tetra_sync.b1_valid) {
         tetra_expand_block1(state, block);
-        (void)tetra_nb_half(opts, state, ctx, block, "STCH-1");
+        (void)tetra_nb_half(opts, state, ctx, block, "STCH-1", 0);
         if (!tetra_confirm_burst_current(state)) {
             return;
         }
     }
     tetra_expand_dibits(state, b2_dibits, b2_soft, NB_BLOCK_DIBITS, block);
-    if (!tetra_nb_half(opts, state, ctx, block, "STCH-2") && !tetra_tdma_control_frame(tetra_st_peek(state))
-        && !ctx->no_traffic && tetra_decode_tch_half(block, opts, state)) {
+    if (!tetra_nb_half(opts, state, ctx, block, "STCH-2", TETRA_AIR_KSS_SECOND_HALF_BLOCK)
+        && !tetra_tdma_control_frame(tetra_st_peek(state)) && !ctx->no_traffic
+        && tetra_decode_tch_half(block, opts, state)) {
         tetra_confirm_note_block(state);
     }
 }
@@ -405,7 +409,7 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
         /* The clock is stopped (a retune, before the carrier's BSCH): the timeslot it last placed is no guide. */
         TETRA_LOG_PAYLOAD(ts, "[TETRA SCH/F] tn=? CRC OK\n");
     }
-    tetra_nb_signalling(opts, state, ctx, decoded, SCHF_TYPE1, "SCH/F");
+    tetra_nb_signalling(opts, state, ctx, decoded, SCHF_TYPE1, "SCH/F", 0);
 }
 
 /* Both kinds of normal burst, once block 2 is read. NTS1 needs block 1 from the frame sync. A burst the state machine's
@@ -872,7 +876,8 @@ tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const f
     uint16_t block[NB_BLOCK_BITS];
     const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "", 0};
     tetra_expand_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
-    (void)tetra_nb_half(opts, state, &ctx, block, "BNCH");
+    /* Block 2 of the slot: an SCH/HD there takes key stream bits 216.. (EN 300 392-7 table 6.4, BSCH+SCH/HD). */
+    (void)tetra_nb_half(opts, state, &ctx, block, "BNCH", TETRA_AIR_KSS_SECOND_HALF_BLOCK);
 }
 
 /* A synchronisation burst (EN 300 392-2 clause 9.4.4.2.6): the BSCH block before the training sequence, which the frame
@@ -1184,6 +1189,7 @@ tetra_forget_carrier(dsd_state* state) {
     tetra_voice_reset(state);
     tetra_dmo_forget_carrier(state);
     tetra_calls_forget_carrier(state);
+    tetra_air_sig_forget_carrier(state);
     /* The next carrier is trunked until its own DSB says otherwise: the frame sync finds block 1 of its first normal
      * burst behind AACH half 1 on the downlink, as tetra_frame_leave() would have told it (the uplink is its own). */
     state->tetra_sync.block1_follows_training = 0;

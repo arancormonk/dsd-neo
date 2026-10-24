@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "tetra_air_sig.h"
 #include "tetra_calls.h"
 #include "tetra_state.h"
 #include "tetra_voice_gate.h"
@@ -356,8 +357,16 @@ voice_burst(dsd_opts* opts, dsd_state* state, tetra_speech* sp, const uint8_t* f
 static int
 voice_decrypt(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, uint8_t* frame_bits, int nbits,
               int kss) {
-    return !sp->sealed && sp->air_enc != TETRA_ENC_MODE_NONE
-           && tetra_air_decrypt_voice(opts, state, sp->air_enc, frame_bits, nbits, kss);
+    if (sp->sealed || sp->air_enc == TETRA_ENC_MODE_NONE) {
+        return 0;
+    }
+    /* A call whose allocation came in decrypted signalling takes the key that decrypted it, while it applies. */
+    const tetra_call_t* const c = sp->kind == TETRA_SPEECH_CALL ? tetra_calls_peek(state, sp->call_id) : NULL;
+    if (c && c->air_key.valid) {
+        return tetra_enc_mode_encrypted(sp->air_enc)
+               && tetra_air_sig_decrypt_voice(opts, state, &c->air_key, frame_bits, nbits, kss);
+    }
+    return tetra_air_decrypt_voice(opts, state, sp->air_enc, frame_bits, nbits, kss);
 }
 
 void
