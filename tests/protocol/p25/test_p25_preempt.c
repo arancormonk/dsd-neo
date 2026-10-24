@@ -564,6 +564,32 @@ test_tdma_pending_slot_bounded(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A conversation that resumed within its hangtime and then changes talker after a long transmission has not lapsed:
+ * the stop before the resume is not its end, so dwell still runs from the first follow. */
+static int
+test_resumed_conversation_keeps_dwell(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    fresh_site(opts, st);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1500.0);
+    follow(opts, st, 100, CH_HELD);
+    set_clock_s(1501.0);
+    p25_sm_event_t tdu = p25_sm_ev_tdu();
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &tdu);
+    set_clock_s(1501.5);
+    p25_sm_event_t resume = p25_sm_ev_active_call(0, 100, 0, 7100, 1, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &resume);
+    set_clock_s(1505.0);
+    p25_sm_event_t talker = p25_sm_ev_ptt_call(0, 100, 0, 7999, 1, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &talker);
+    rc |= expect_true("resumed: still following the conversation", following(100, FREQ_HELD));
+    rc |= expect_true("resumed: follow time kept", p25_sm_get_ctx()->slots[0].followed_since_m < 1500.5);
+    set_clock_s(1505.1);
+    offer_update(opts, st, 200, CH_PRIO);
+    rc |= expect_true("resumed: dwell from the first follow lets the priority call in", following(200, FREQ_PRIO));
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -587,6 +613,7 @@ main(void) {
     rc |= test_tdma_ended_slot_not_held(&opts, &st);
     rc |= test_tdma_lapsed_slot_restarts_dwell(&opts, &st);
     rc |= test_tdma_pending_slot_bounded(&opts, &st);
+    rc |= test_resumed_conversation_keeps_dwell(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

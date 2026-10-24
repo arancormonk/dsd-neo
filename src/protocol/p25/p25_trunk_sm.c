@@ -1707,8 +1707,10 @@ p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, 
  * followed it for a whole hangtime (@p lapse_s), while a companion slot kept the carrier. */
 static int
 p25_slot_follow_lapsed(const p25_sm_slot_ctx_t* slot_ctx, double lapse_s, double now_m) {
+    // The stop must postdate the slot's latest start: a conversation that resumed within its hangtime has not lapsed
+    // because an older stop is far behind.
     return !slot_ctx->voice_active && slot_ctx->last_stop_m > slot_ctx->followed_since_m
-           && now_m - slot_ctx->last_stop_m >= lapse_s;
+           && slot_ctx->last_stop_m >= slot_ctx->last_start_m && now_m - slot_ctx->last_stop_m >= lapse_s;
 }
 
 /* Stamp when the slot began following this call: a repeat or re-grant of the same call on the same carrier within its
