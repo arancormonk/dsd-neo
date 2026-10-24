@@ -308,6 +308,9 @@ test_dwell_from_follow(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     for (int reassign = 0; reassign < 2; reassign++) {
         fresh_site(opts, st);
+        // The repeat must clear the stale-regrant probe delay (2 s) yet stay inside the conversation's hangtime.
+        opts->trunk_hangtime = 3.0f;
+        p25_sm_init_ctx(p25_sm_get_ctx(), opts, st);
         set_dwell_cooldown_ms("750", "1000");
         (void)seed_row(st, 100, 10, 1);
         set_clock_s(700.0);
@@ -590,6 +593,88 @@ test_resumed_conversation_keeps_dwell(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+static void
+tdma_site(dsd_opts* opts, dsd_state* st) {
+    fresh_site(opts, st);
+    st->p25_iden_tdma[1] = st->p25_iden_fdma[1];
+    st->p25_iden_tdma[1].chan_type = 3;
+    st->p25_chan_tdma_explicit[1] = 2;
+    st->p2_wacn = 0xBEE00;
+    st->p2_sysid = 0x1A2;
+    st->p2_cc = 0x293;
+    st->synctype = DSD_SYNC_P25P2_POS;
+}
+
+/* Phase 2: a slot whose assignment was abandoned (its next talker's group is locked out) follows a later call there
+ * anew, even of the talkgroup it held before. */
+static int
+test_tdma_abandoned_slot_restarts_dwell(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    tdma_site(opts, st);
+    dsd_tg_policy_entry blocked;
+    (void)dsd_tg_policy_make_exact_entry(400, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &blocked);
+    (void)dsd_tg_policy_upsert_exact(st, &blocked, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1600.0);
+    p25_sm_event_t grant0 = p25_sm_ev_group_grant(0x100A, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    p25_sm_event_t grant1 = p25_sm_ev_group_grant(0x100B, 0, 300, 7300, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant1);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    const long held = p25_sm_get_ctx()->vc_freq_hz;
+    set_clock_s(1601.0);
+    p25_sm_event_t locked = p25_sm_ev_ptt_call(0, 400, 0, 7400, 1, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &locked);
+    rc |= expect_true("abandoned: the locked-out talker gave up the slot", !p25_sm_get_ctx()->slots[0].grant_active);
+    set_clock_s(1610.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t regrant0 = p25_sm_ev_group_grant(0x100A, 0, 100, 7101, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &regrant0);
+    rc |= expect_true("abandoned: the call there is followed from now",
+                      p25_sm_get_ctx()->slots[0].followed_since_m > 1609.9);
+    set_clock_s(1610.1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 200, 0x1020);
+    rc |= expect_true("abandoned: its dwell holds off a preemption", p25_sm_get_ctx()->vc_freq_hz == held);
+    return rc;
+}
+
+/* Phase 2: a unit-to-unit update naming the held destination with a new source after the slot's conversation lapsed
+ * is a new call taken as a repeat: it is followed from now. */
+static int
+test_tdma_lapsed_duplicate_restarts_dwell(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    tdma_site(opts, st);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1700.0);
+    p25_sm_event_t grant0 = p25_sm_ev_indiv_grant(0x100A, 0, 5001, 6001, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    p25_sm_event_t grant1 = p25_sm_ev_group_grant(0x100B, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant1);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    const long held = p25_sm_get_ctx()->vc_freq_hz;
+    set_clock_s(1701.0);
+    p25_sm_event_t end0 = p25_sm_ev_end_call_at(0, 0, 6001, 1701.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &end0);
+    set_clock_s(1710.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t update = p25_sm_ev_indiv_grant_update(0x100A, 0, 5001, 6002, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &update);
+    rc |= expect_true("lapsed repeat: the new call is followed from now",
+                      p25_sm_get_ctx()->slots[0].followed_since_m > 1709.9);
+    set_clock_s(1710.1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 200, 0x1020);
+    rc |= expect_true("lapsed repeat: its dwell holds off a preemption", p25_sm_get_ctx()->vc_freq_hz == held);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -614,6 +699,8 @@ main(void) {
     rc |= test_tdma_lapsed_slot_restarts_dwell(&opts, &st);
     rc |= test_tdma_pending_slot_bounded(&opts, &st);
     rc |= test_resumed_conversation_keeps_dwell(&opts, &st);
+    rc |= test_tdma_abandoned_slot_restarts_dwell(&opts, &st);
+    rc |= test_tdma_lapsed_duplicate_restarts_dwell(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

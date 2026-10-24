@@ -1731,6 +1731,16 @@ p25_slot_note_follow(p25_sm_slot_ctx_t* slot_ctx, int target_id, int is_group, l
     slot_ctx->followed_freq_hz = freq;
 }
 
+/* A call accepted on logical slot @p slot after the slot's conversation lapsed is a new conversation: it is followed
+ * from now. */
+static void
+p25_slot_forget_lapsed_follow(p25_sm_ctx_t* ctx, const dsd_state* state, int slot, double now_m) {
+    if (slot >= 0 && slot <= 1
+        && p25_slot_follow_lapsed(&ctx->slots[slot], p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m)) {
+        ctx->slots[slot].followed_since_m = now_m;
+    }
+}
+
 static double
 p25_slot_followed_since(const p25_sm_slot_ctx_t* slot_ctx, double now_m) {
     return slot_ctx->followed_since_m > 0.0 ? slot_ctx->followed_since_m : now_m;
@@ -2494,6 +2504,8 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 
     // The repeat is accepted: the clear-bit release it planned is spent now, before anything re-reads the ledger.
     p25_grant_commit_enc_release(ctx, state, eval_ctx);
+    // An update accepted after the slot's conversation lapsed (a new talker on a held destination) is a new call.
+    p25_slot_forget_lapsed_follow(ctx, state, p25_grant_logical_slot(ctx, route->slot), now_m);
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
     p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call, now_m);
     // A duplicate can still be the update that spent the ledger release, and
@@ -2748,11 +2760,7 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
     if (grant->clear_policy_slot_only) {
         // A slot whose conversation lapsed while the companion kept the carrier starts a new one: read it before the
         // clear wipes the slot's last stop.
-        if (slot >= 0 && slot <= 1
-            && p25_slot_follow_lapsed(&ctx->slots[slot], p25_sm_effective_hangtime(state, ctx->config.hangtime_s),
-                                      grant->now_m)) {
-            ctx->slots[slot].followed_since_m = 0.0;
-        }
+        p25_slot_forget_lapsed_follow(ctx, state, slot, grant->now_m);
         p25_grant_clear_one_slot_state(ctx, slot);
         // Taking the slot over is the cancel the countdown used to be given
         // explicitly -- but only for an assignment the SM has reason to follow.
@@ -4800,6 +4808,8 @@ p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
     p25_ptt_marker_invalidate(ctx, slot);
     ctx->slots[slot].grant_active = 0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
+    // The slot's assignment is abandoned: a later call there, even of the same talkgroup, is followed anew.
+    ctx->slots[slot].followed_since_m = 0.0;
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
 }
 
