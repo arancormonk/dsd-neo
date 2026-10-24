@@ -247,6 +247,7 @@ Item {
                 compare(commands.relaxedCrcRequests(), [true]);
                 compare(prefs.relaxedCrc, true);
                 compare(button.enabled, false); // waits for the session to confirm
+                verify(item("siteCloseButton").activeFocus, "focus moves to Close before the button disables");
                 testContext.setMetric("relaxedCrcConfigured", true);
                 testContext.setMetric("relaxedCrcEffective", true);
                 testContext.setMetric("dmrRasNeedsRelaxed", false);

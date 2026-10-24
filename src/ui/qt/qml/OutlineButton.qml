@@ -30,7 +30,10 @@ Rectangle {
     // default, so a plain button looks and reports as before.
     property bool checkable: false
     property bool checked: false
-    activeFocusOnTab: enabled && inputValid && visible && Navigation.allows(control)
+    // Held while the button has active focus: Qt refuses to drop activeFocusOnTab
+    // from the active focus item (and warns), so a focused button that disables or
+    // hides keeps it until the focus has moved, then the gate applies again.
+    activeFocusOnTab: (enabled && inputValid && visible && Navigation.allows(control)) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.focusable: true

@@ -59,6 +59,10 @@ ModalSheet {
             return;
         }
         prefs.relaxedCrc = true;
+        // The button disables while the session confirms, then goes: a keyboard
+        // user's place moves to Close first.
+        if (relaxedCrcButton.activeFocus)
+            siteCloseButton.forceActiveFocus(Qt.TabFocusReason);
         relaxedCrcPending = !relaxedCrcConfigured;
         if (relaxedCrcPending)
             relaxedCrcAckTimer.restart();
@@ -389,15 +393,21 @@ ModalSheet {
         onClicked: sheet.networkRequested()
     }
     OutlineButton {
+        id: relaxedCrcButton
         objectName: "siteRelaxedCrcButton"
         width: parent.width
         text: qsTr("Turn on Relaxed CRC")
         visible: sheet.offerRelaxedCrc
         enabled: metrics.optionsKnown === true && !sheet.relaxedCrcPending
         onClicked: sheet.turnOnRelaxedCrc()
-        // Confirmed, it goes: keep a keyboard user's place in the sheet.
+        // Disabled or gone by another way (Settings, the terminal, the options
+        // snapshot): keep a keyboard user's place in the sheet.
         onVisibleChanged: {
             if (!visible && activeFocus)
+                siteCloseButton.forceActiveFocus(Qt.TabFocusReason);
+        }
+        onEnabledChanged: {
+            if (!enabled && activeFocus)
                 siteCloseButton.forceActiveFocus(Qt.TabFocusReason);
         }
     }
