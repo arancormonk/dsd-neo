@@ -810,6 +810,46 @@ test_tdma_same_reading_end_lapses(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Phase 2: a priority-100 slot whose grant, voice and end share one clock reading, re-granted within its hangtime while
+ * the companion goes on. Its voice ended the earlier wait, so the re-grant starts a new acquisition window: a
+ * priority-60 preempt talkgroup is refused until that window, not the earlier one, has passed. */
+static int
+test_tdma_same_reading_voice_restarts_wait(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    tdma_site(opts, st);
+    (void)seed_row(st, 300, 100, 0);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(2500.0);
+    p25_sm_event_t grant1 = p25_sm_ev_group_grant(0x100B, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant1);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    set_clock_s(2501.0);
+    p25_sm_event_t grant0 = p25_sm_ev_group_grant(0x100A, 0, 300, 7300, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    p25_sm_event_t end0 = p25_sm_ev_end_call_at(0, 300, 7300, 2501.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &end0);
+    set_clock_s(2502.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    const long held = p25_sm_get_ctx()->vc_freq_hz;
+    rc |= expect_true("same-reading voice: the re-grant starts a new wait",
+                      fabs(p25_sm_get_ctx()->slots[0].acquire_since_m - 2502.0) < 1e-9);
+    set_clock_s(2504.5);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 250, CH_THIRD);
+    rc |= expect_true("same-reading voice: the re-granted slot still holds within its new window",
+                      p25_sm_get_ctx()->vc_freq_hz == held);
+    set_clock_s(2505.5);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 250, CH_THIRD);
+    rc |= expect_true("same-reading voice: past the new window the priority call preempts",
+                      p25_sm_get_ctx()->vc_tg == 250 && p25_sm_get_ctx()->vc_freq_hz != held);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -840,6 +880,7 @@ main(void) {
     rc |= test_tdma_vacated_slot_restarts_dwell(&opts, &st);
     rc |= test_tdma_repeated_voiceless_assignment_bounded(&opts, &st);
     rc |= test_tdma_same_reading_end_lapses(&opts, &st);
+    rc |= test_tdma_same_reading_voice_restarts_wait(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

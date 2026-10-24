@@ -190,6 +190,8 @@ typedef struct {
                              // or assignment form; a new follow, a voice start or stop since it, or a slot cleared
                              // after voice restarts it. Bounds how long a voiceless assignment holds the slot against
                              // preemption.
+    int acquire_ended;       // 1 once a voice start or stop ended the wait acquire_since_m began. A flag, not a time
+                             // comparison: the grant, its voice and its end can share one decode-clock reading.
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
     double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
     int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT

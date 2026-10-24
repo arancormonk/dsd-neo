@@ -1913,11 +1913,11 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     // repeat is replaced through here, and must not renew how long a voiceless assignment holds the slot. A new follow
     // restarts the wait (p25_slot_note_grant()).
     const p25_sm_slot_ctx_t* cleared = &ctx->slots[slot];
-    const int still_awaited = cleared->grant_active && !cleared->voice_active && cleared->acquire_since_m > 0.0
-                              && cleared->last_start_m <= cleared->acquire_since_m
-                              && cleared->last_stop_m <= cleared->acquire_since_m;
+    const int still_awaited =
+        cleared->grant_active && !cleared->voice_active && cleared->acquire_since_m > 0.0 && !cleared->acquire_ended;
     if (!still_awaited) {
         ctx->slots[slot].acquire_since_m = 0.0;
+        ctx->slots[slot].acquire_ended = 0;
     }
     p25_sm_clear_one_slot_activity(ctx, slot);
     ctx->slots[slot].algid = 0;
@@ -2031,11 +2031,12 @@ static void
 p25_slot_note_grant(p25_sm_slot_ctx_t* slot_ctx, double now_m) {
     // A repeat of the grant while its voice is still awaited keeps the wait's start, also across the slot clear an
     // assignment-form repeat goes through; anything that ended that wait (another call followed, a transmission begun
-    // or ended, a clear after voice) starts a new one.
+    // or ended, a clear after voice) starts a new one. The flag, not the stamps, says the wait ended: the grant, its
+    // voice and its end can share one clock reading.
     const double since_m = slot_ctx->acquire_since_m;
-    if (since_m <= 0.0 || slot_ctx->followed_since_m > since_m || slot_ctx->last_start_m > since_m
-        || slot_ctx->last_stop_m > since_m) {
+    if (since_m <= 0.0 || slot_ctx->followed_since_m > since_m || slot_ctx->acquire_ended) {
         slot_ctx->acquire_since_m = now_m;
+        slot_ctx->acquire_ended = 0;
     }
     slot_ctx->last_grant_m = now_m;
     slot_ctx->grant_seq = ++g_p25_grant_seq;
@@ -4322,6 +4323,7 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
     if (new_epoch) {
         ctx->slots[s].last_start_m = now_m;
     }
+    ctx->slots[s].acquire_ended = 1; // the assignment's voice came: a later grant awaits a new transmission
     p25_voice_start_clear_activity_guards(ctx, opts, state, s, why, now_m);
     p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
 
@@ -4633,6 +4635,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
         state->p25_p1_identity_epoch_started = 0;
     }
     ctx->slots[s].last_stop_m = now_m;
+    ctx->slots[s].acquire_ended = 1;
     // This slot followed traffic right up to now: an observation, not a
     // decision about the carrier, and a companion that is still busy keeps the
     // countdown from running on its own. The one assignment that is not
@@ -7504,6 +7507,7 @@ p25_sm_emit_mac_release(dsd_opts* opts, dsd_state* state, int slot, double obser
     ctx->slots[slot].voice_active = 0;
     ctx->slots[slot].last_active_m = 0.0;
     ctx->slots[slot].last_stop_m = ended_m;
+    ctx->slots[slot].acquire_ended = 1;
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
     }
