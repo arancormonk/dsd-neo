@@ -1777,7 +1777,13 @@ static int p25_voice_slot_assignment_pending(const p25_sm_slot_ctx_t* slot_ctx);
 static int
 p25_grant_slot_holds_call(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_slot_ctx_t* slot_ctx,
                           double now_m) {
-    if (p25_voice_slot_epoch_active(slot_ctx) || p25_voice_slot_assignment_pending(slot_ctx)) {
+    if (p25_voice_slot_epoch_active(slot_ctx)) {
+        return 1;
+    }
+    // An assignment awaiting its first voice holds the slot for the acquisition window only: one that never produced
+    // voice (a stale-regrant probe, say) must not shield the companion's call once the window has passed.
+    if (p25_voice_slot_assignment_pending(slot_ctx) && slot_ctx->last_grant_m > 0.0
+        && now_m - slot_ctx->last_grant_m < ctx->config.grant_timeout_s) {
         return 1;
     }
     return slot_ctx->last_stop_m > 0.0 && now_m >= slot_ctx->last_stop_m

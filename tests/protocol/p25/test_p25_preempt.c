@@ -522,6 +522,48 @@ test_tdma_lapsed_slot_restarts_dwell(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Phase 2: an assignment on the ended slot that never produces voice (a source-less update let through as the
+ * stale-regrant guard's probe) holds the slot only for the acquisition window, not while the companion goes on. */
+static int
+test_tdma_pending_slot_bounded(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    fresh_site(opts, st);
+    st->p25_iden_tdma[1] = st->p25_iden_fdma[1];
+    st->p25_iden_tdma[1].chan_type = 3;
+    st->p25_chan_tdma_explicit[1] = 2;
+    st->p2_wacn = 0xBEE00;
+    st->p2_sysid = 0x1A2;
+    st->p2_cc = 0x293;
+    st->synctype = DSD_SYNC_P25P2_POS;
+    (void)seed_row(st, 300, 100, 0);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1400.0);
+    p25_sm_event_t grant0 = p25_sm_ev_group_grant(0x100A, 0, 300, 7300, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    p25_sm_event_t grant1 = p25_sm_ev_group_grant(0x100B, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant1);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    const long held_freq = p25_sm_get_ctx()->vc_freq_hz;
+    set_clock_s(1401.0);
+    p25_sm_event_t end0 = p25_sm_ev_end_call_at(0, 300, 7300, 1401.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &end0);
+    set_clock_s(1403.5);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t probe = p25_sm_ev_group_grant_update(0x100A, 0, 300, 0, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &probe);
+    rc |= expect_true("pending: the update reassigned the ended slot",
+                      p25_sm_get_ctx()->slots[0].grant_active && p25_sm_get_ctx()->slots[0].last_grant_m > 1403.0);
+    set_clock_s(1410.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 250, 0x1020);
+    rc |= expect_true("pending: a voiceless assignment no longer shields the companion's call",
+                      p25_sm_get_ctx()->vc_tg == 250 && p25_sm_get_ctx()->vc_freq_hz != held_freq);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -544,6 +586,7 @@ main(void) {
     rc |= test_skip_kept_alive(&opts, &st);
     rc |= test_tdma_ended_slot_not_held(&opts, &st);
     rc |= test_tdma_lapsed_slot_restarts_dwell(&opts, &st);
+    rc |= test_tdma_pending_slot_bounded(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;
