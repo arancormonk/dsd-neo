@@ -45,9 +45,14 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         spacing: 3
 
+        // Plain text: names and meta lines carry what the air delivered (aliases,
+        // SMS bodies), and Qt's automatic rich-text detection would render a tag
+        // in them as markup instead of the characters received.
         Text {
+            objectName: "callRowName"
             width: parent.width
             text: row.name
+            textFormat: Text.PlainText
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(16)
             font.weight: Font.DemiBold
@@ -56,8 +61,10 @@ Item {
         }
 
         Text {
+            objectName: "callRowMeta"
             width: parent.width
             text: row.metaText
+            textFormat: Text.PlainText
             font.family: Theme.mono
             font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued

@@ -6452,6 +6452,31 @@ Qt Quick frontend (`src/ui/qt`):
   - Rows: a voice row's meta line puts the `accessCode` role right after the ids and `Util.fmtMhz(freqHz)` last, after
     the channel, so the elide takes the frequency first. History notice rows place them the same way around their
     detail; the monitor's notice rows keep their detail (or "data message") first, then the code, then the frequency.
+    The exception is a History row its search found by frequency (next bullet), which leads with it. `CallRow` renders
+    its name and meta line as plain text: aliases and SMS bodies are what the air delivered, and Qt's automatic
+    rich-text detection would draw a tag in them as markup.
+  - History search (`CallHistoryFilterModel`, `frequency_query.{h,cpp}`): the trimmed text matches the name, the
+    talkgroup and unit when above 0 (0 is "none decoded", which no row prints), the source label, a notice's detail,
+    the channel, and the frequency. The frequency is searched only when the text has a decimal point or the MHz unit
+    (`digits "." digits* [MHz]` or `digits MHz`, at most 5 MHz digits and 6 decimals): a bare number stays an ID search,
+    since three- and four-digit talkgroups collide with MHz values. A frequency query finds a row when its digits begin
+    the row's frequency in either spelling the app prints: rounded half up to 10 Hz, or to the Hz (the Site and
+    Network sheets' six decimals). `Util.mhzText` formats the inexact double `hz / 1e6` with `toFixed(5)`, which lands
+    on the floor or the ceiling of the exact value (ceiling only when the sixth digit is 5 or more); the floor is a
+    prefix of the six-decimal spelling and the ceiling is the rounded one, so typing what a row shows always finds it.
+    `UI_QT_FREQUENCY_QUERY` holds that contract against the real `Util.js`. The view reads `frequencyQuery` and
+    `frequencyMatches(hz)`: a row found by its frequency leads its meta line with it (ahead of EMERGENCY, which the badge
+    still shows) and adds it to its accessible name, while a row the same text matched by its channel keeps its order.
+    `filterText` notifies on its own `filterTextChanged`, because the search field mirrors it and a pill change must not
+    write the applied text over pending typing; `filterChanged` still fires for every filter, for the scroll-to-top.
+    "Clear filters" (`HistoryScreen.clearFilters()`) also stops the debounce and empties the field. Limit: at very
+    large text (about 1.6x and up on a 360 px phone with a badge) the meta line, which shares its row with the badge and
+    time, can still elide the leading frequency; the accessible name and the details sheet keep it. Tests:
+    `UI_QT_FREQUENCY_QUERY`, `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`).
+  - Frequencies written to be tuned or saved use `Util.mhzValueText` (to the Hz; a whole 10 Hz keeps `mhzText`'s
+    spelling): the remembered Explore frequency, Save as a system, Spectrum "Go to" and the band buttons. `mhzText`
+    rounds to 10 Hz for reading only. The rtl and rtltcp input specs round the MHz field to the nearest Hz
+    (`input_spec.c`), since a decimal like `128.155625M` multiplies out just under its integer.
     The record every details sheet opens with (monitor, History, Home's recent activity) carries `freqHz`, `accessCode`
     and `accessCodeText`, and the sheet adds the long code text and "Frequency …" after the radio ID, which keeps the
     indexes of the lines before it.

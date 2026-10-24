@@ -1410,6 +1410,17 @@ class CallLogStore : public QAbstractListModel {
         return name;
     }
 
+    /** @brief pushTuned() for an emergency call: the meta line's EMERGENCY and the row's badge. */
+    Q_INVOKABLE QString
+    pushTunedEmergency(qulonglong tg, qulonglong src, const QString& channel, qint64 freqHz) {
+        const QString name = push(QStringLiteral("TODAY"));
+        m_rows[0].emergency = true;
+        tuneNewest(tg, src, channel, freqHz, QString(), QString());
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::EmergencyRole});
+        return name;
+    }
+
     /**
      * @brief The same, as a data/control notice carrying @p detail: notice rows keep their own meta rules.
      * @return The row's name.
