@@ -414,10 +414,13 @@ dmr_dburst_decode_ras_candidate(dmr_data_burst_ctx* ctx) {
         || distance > DSD_BPTC_196x96_UNIQUE_RADIUS) {
         return;
     }
-    DSD_MEMCPY(ctx->bptc_data_bits, bits, sizeof(ctx->bptc_data_bits));
-    DSD_MEMCPY(ctx->r, r, sizeof(ctx->r));
-    ctx->irrecoverable_errors = 0;
-    dmr_dburst_check_bptc_payload(ctx);
+    // At distance 0 the received word is the codeword, so the extractor already gave its payload, R and check.
+    if (distance != 0U) {
+        DSD_MEMCPY(ctx->bptc_data_bits, bits, sizeof(ctx->bptc_data_bits));
+        DSD_MEMCPY(ctx->r, r, sizeof(ctx->r));
+        ctx->irrecoverable_errors = 0;
+        dmr_dburst_check_bptc_payload(ctx);
+    }
     ctx->ras_signature =
         (uint8_t)dmr_ras_signature(ctx->databurst, ctx->state->data_conf_data[ctx->slot], ctx->bptc_data_bytes,
                                    ctx->bptc_reserved_bits, distance, ctx->crc_correct != 0);

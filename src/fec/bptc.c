@@ -255,6 +255,12 @@ BPTC_196x96_Decode_Codeword(const uint8_t* input196, uint8_t* out96, uint8_t* r3
     uint8_t received[13][15];
     uint8_t matrix[13][15];
     bptc_196x96_fill_matrix(input196, received);
+    // A received codeword is its own nearest one: the passes would change nothing.
+    if (bptc_196x96_is_codeword(received)) {
+        bptc_196x96_extract_payload_and_r(received, out96, r3);
+        *distance = 0;
+        return 1;
+    }
     DSD_MEMCPY(matrix, received, sizeof matrix);
     bptc_196x96_full_pass(matrix);
     bptc_196x96_full_pass(matrix);
