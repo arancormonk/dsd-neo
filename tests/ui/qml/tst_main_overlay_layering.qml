@@ -95,6 +95,19 @@ Item {
             testContext.useLifecycleHost(false);
         }
 
+        // Save as a system hands the wizard the frequency to the Hz: the saved
+        // system is tuned from that text on its next start.
+        function test_save_as_system_keeps_the_frequency_to_the_hz() {
+            tc.monitor.openSpectrum()
+            var spectrum = null
+            tryVerify(function () { spectrum = findChild(tc.app, "spectrumScreen"); return spectrum !== null },
+                      5000, "the spectrum screen did not load")
+            spectrum.saveAsSystem(851015625)
+            compare(tc.wizard.freqText, "851.015625")
+            spectrum.saveAsSystem(851012500)
+            compare(tc.wizard.freqText, "851.0125", "a whole 10 Hz keeps the short spelling")
+        }
+
         function test_session_settings_import_returns_to_wizard_then_monitor() {
             testContext.useLifecycleHost(true, false, true);
             testContext.useRadioReferenceModel(fakeImport);
