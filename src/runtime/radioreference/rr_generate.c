@@ -255,7 +255,10 @@ rr_contains_ci(const char* haystack, const char* needle) {
  * off outright and there is no control channel to hunt. Simulcast P25 is -mq
  * alone, not -ft -mq: decode_mode_apply_tdma() rewrites the modulation
  * unconditionally and ignores mod_cli_lock, so the pair only works in that exact
- * order and is not worth the fragility.
+ * order and is not worth the fragility. -mq alone runs the default decoder set,
+ * Auto; under its modulation lock the symbol-rate search only steps between the
+ * profiles with the locked timing (4800/4 and 4800/2 at 48 kHz), so the NXDN48,
+ * dPMR and ProVoice profiles Auto adds are never tried there.
  */
 #define RR_ALT_NEVER        0U /* no alternate form */
 #define RR_ALT_ON_SIMULCAST 1U

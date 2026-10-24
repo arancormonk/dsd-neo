@@ -44,6 +44,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -589,6 +590,47 @@ test_input_warn_db_apply_clamps_to_window(void) {
         DSD_FPRINTF(stderr, "FAIL: input_warn_db above the window not clamped to 0.0 (got %f)\n", opts->input_warn_db);
         rc |= 1;
     }
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/* Auto is the default: a startup config whose [mode] names no decode keeps the initOpts() set, which is Auto, and a
+   session that never named a mode autosaves as decode = "auto". */
+static int
+test_config_without_decode_key_runs_auto(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    int rc = 0;
+
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_int_eq("default session autosaves decode = auto", saved.decode_mode, DSDCFG_MODE_AUTO);
+
+    static const char* ini = "[mode]\n"
+                             "dmr_mono = false\n";
+    char path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_config_file(ini, path, sizeof path) != 0) {
+        free_test_runtime(&runtime);
+        return 1;
+    }
+    dsdneoUserConfig cfg = {0};
+    const int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not load a [mode] config without decode\n");
+        free_test_runtime(&runtime);
+        return 1;
+    }
+    rc |= expect_int_eq("config without decode key loads no preset", cfg.decode_mode, DSDCFG_MODE_UNSET);
+    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    rc |= expect_int_eq("config without decode key runs Auto", dsd_infer_decode_mode_preset_exact(opts),
+                        DSDCFG_MODE_AUTO);
+    rc |= expect_true("config without decode key decodes NXDN", opts->frame_nxdn48 == 1 && opts->frame_nxdn96 == 1);
 
     free_test_runtime(&runtime);
     return rc;
@@ -3635,6 +3677,7 @@ main(void) {
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
     rc |= test_input_warn_db_apply_clamps_to_window();
+    rc |= test_config_without_decode_key_runs_auto();
     rc |= test_startup_rtl_bandwidth_is_an_explicit_request();
     rc |= test_output_config_without_frontend_preserves_active_frontend();
     rc |= test_config_apply_under_row_tone_policy_keeps_the_row();

@@ -167,14 +167,15 @@ dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_inp
 
 static void
 decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
-    /* AUTO means "hunt every digital protocol", and it means that from all three entry points.
-       The config and interactive paths used to skip this block entirely -- a behavior-preserving
-       carve-out from when their preset code was separate -- which left `decode = "auto"` and the
-       wizard's Auto decoding only the dsd_init defaults, no NXDN, dPMR, ProVoice or M17. It also
-       broke the autosave round trip: a -fa session saves as `auto` and came back narrower than it
-       went out. The audio layout and modulation below stay CLI-only, because the config path owns
-       those through [mode] demod and its output keys, and the interactive path through the wizard's
-       own answers. */
+    /* AUTO means "hunt every digital protocol", and it means that from all three entry points. It is
+       also the default: initOpts() starts every session on this decoder set and on the CLI-only
+       modulation and audio layout below, so a session that names no -f runs exactly -fa. The config
+       and interactive paths used to skip this block entirely -- a behavior-preserving carve-out from
+       when their preset code was separate -- which left `decode = "auto"` and the wizard's Auto
+       decoding only the old dsd_init default set, no NXDN, dPMR, ProVoice or M17. It also broke the
+       autosave round trip: a -fa session saves as `auto` and came back narrower than it went out. The
+       audio layout and modulation below stay CLI-only, because the config path owns those through
+       [mode] demod and its output keys, and the interactive path through the wizard's own answers. */
     o->frame_dstar = 1;
     o->frame_x2tdma = 1;
     o->frame_p25p1 = 1;

@@ -2000,6 +2000,15 @@ suite runs under this compiler.
     `Golay24.hpp` through the explicit layout mapping (reversed 23 bits; Golay24's encoding of the reversed data rotated
     left by 11) and `RUNTIME_ANALOG_TONES` pins the published reference words, the golden alias table for all 104 codes
     and the two spellings of every signal.
+  - Auto is the default decoder set: `initOpts()` (`src/core/util/dsd_init.c`) installs exactly what
+    `decode_mode_apply_auto()` sets under the CLI profile (every digital decoder but TETRA, C4FM, the stereo layout),
+    so a session that names no `-f` runs `-fa`, `dsd_infer_decode_mode_preset_exact()` answers AUTO for it, a config
+    without a `decode` key keeps it and autosave writes `decode = "auto"` (`RUNTIME_CLI_PARSE`, `RUNTIME_CONFIG_APPLY`).
+    Entry points that name no `-f` inherit it: `-mq` alone (a RadioReference simulcast P25 row) runs Auto under the
+    QPSK lock, whose timing-matched SPS hunt never reaches the 2400/9600 profiles (`RUNTIME_CLI_PARSE`,
+    `FRAME_SYNC_INTERNAL_HELPERS`); the M17 encoders (`-fZ/-fB/-fP/-fU`) run their own loops, `-fZ` on the fixed WIDE
+    front end (`IO_RTL_DEMOD_CONFIG`); signal search applies Auto itself, and scan rows and trunk-scan targets restore
+    the set they captured.
   - Decode presets (`include/dsd-neo/runtime/decode_mode.h`, `src/runtime/decode_mode.c`): the `-f` selector map is
     a table (`k_cli_presets`), and so are the presets (`k_decode_mode_presets`): `dsd_apply_decode_mode_preset()` looks
     the mode up before it changes anything, so a mode no preset implements (`DSDCFG_MODE_UNSET`, which a config's
@@ -2371,6 +2380,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   the scan baseline
   (`dsd_scan_mode_configured_view()`), so republishing a typed digital row's profile on an analog session queues that
   profile alone and does not switch the front end in the middle of the row.
+  `DSD_APP_CMD_DECODE_MODE_SET` for the mode already in effect changes nothing (`decode_mode_set_early_verdict()`):
+  the lossy `dsd_infer_decode_mode_preset()` reading for a single preset, the exact one for AUTO, so a session already
+  on the whole Auto set (`-fa`, the default) keeps its calls and modulation on a repeat Auto while a narrowed set Auto
+  only labels still widens (`APP_COMMAND_QUEUE`).
   `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`). Before it changes
   anything it asks a running RTL front end whether it takes the analog profile the mode will publish
   (`svc_check_mode_receive_profile()`, `rtl_stream_check_analog_profile()`: kind, range, `DSD_NEO_CHANNEL_LPF` and the

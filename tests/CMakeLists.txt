@@ -15016,6 +15016,9 @@ if(DSD_HAS_RADIO)
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
+    # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_DEFAULT nxdn96 "" "RAN 00")
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
     # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel
     # (DERIVED_RETUNE in tools/build_iq_fixtures.py). -fi holds the receiver on NXDN48, so whatever
@@ -15807,8 +15810,7 @@ if(DSD_HAS_RADIO)
     # and one-parity-bit LICH let noise reach the frame body often enough that the decoder
     # used to synthesize speech from it -- 89 audio errors under -fn and 49 under -fi on
     # this fixture before the confirmation gate (issue #398). A decoder that ignores the
-    # noise reports none, so the error count is the assertion. -fa is deliberately absent:
-    # dPMR still decodes noise there, which is filed separately.
+    # noise reports none, so the error count is the assertion.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_NOISE_FLOOR_NXDN96_REJECT
         noise_floor
@@ -15834,6 +15836,15 @@ if(DSD_HAS_RADIO)
         -fm
         "Total audio errors: 0"
         "Src=[0-9]"
+    )
+    # Every digital decoder at once (Auto, also the default) on the same noise: NXDN and dPMR stay as quiet as they do
+    # under their own presets.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_AUTO_REJECT
+        noise_floor
+        -fa
+        "Total audio errors: 0"
+        "RAN [0-9]|Src=[0-9]"
     )
 
     # The M17 encoder's VOX on the dynamic squelch (issue #625): ten seconds of receiver noise

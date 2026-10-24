@@ -229,17 +229,19 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->serial_fd = -1;
     DSD_SNPRINTF(opts->serial_dev, sizeof opts->serial_dev, "%s", "/dev/ttyUSB0");
     opts->resume = 0;
+    /* Auto is the default: exactly the decoder set decode_mode_apply_auto() (-fa) installs, so a session that names no
+       -f, a config without a decode key and the frontends' Auto choice all decode every digital mode but TETRA. */
     opts->frame_dstar = 1;
     opts->frame_x2tdma = 1;
     opts->frame_p25p1 = 1;
     opts->frame_p25p2 = 1;
-    opts->frame_nxdn48 = 0;
-    opts->frame_nxdn96 = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
     opts->frame_dmr = 1;
-    opts->frame_dpmr = 0;
-    opts->frame_provoice = 0;
+    opts->frame_dpmr = 1;
+    opts->frame_provoice = 1;
     opts->frame_ysf = 1;
-    opts->frame_m17 = 0;
+    opts->frame_m17 = 1;
     opts->mod_c4fm = 1;
     opts->mod_qpsk = 0;
     opts->mod_gfsk = 0;

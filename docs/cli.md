@@ -10,7 +10,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
-- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM`
+- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
@@ -521,7 +521,8 @@ Notes
 
 ## Modes & Decoders (`-f`)
 
-- Auto: `-fa`
+- Auto (the default): `-fa`, or no `-f` at all. Every digital mode but TETRA, NXDN48 and NXDN96 included (see the
+  hunt table below)
 - Passive analog monitor: `-fA` (NFM on a radio input; see [Analog reception](#analog-reception--fa--fm) below)
 - Native AM receiver: `-fM` (I/Q radio inputs only; see [Native AM](#native-am--fm) below)
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
@@ -592,8 +593,8 @@ Notes
 
 Notes
 
-- `-fa` enables the complete digital candidate set and hunts these profiles in order, skipping any profile that has no
-  enabled candidate:
+- Auto (`-fa`, and a session that names no `-f`) enables the complete digital candidate set and hunts these profiles
+  in order, skipping any profile that has no enabled candidate:
 
   | Hunt profile | Symbol rate | Levels | Enabled candidates |
   | --- | ---: | ---: | --- |
@@ -706,6 +707,13 @@ Notes
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
   wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto.
+- Auto is also the default. A session that names no `-f` (as the Qt and Android Auto choice does) starts on the same
+  decoder set, C4FM demodulator and stereo audio layout as `-fa`, a config whose `[mode]` has no `decode` key keeps
+  that set, and such a session autosaves `decode = "auto"`. A modulation flag alone keeps it too: `-mq` (which a
+  RadioReference import of a simulcast P25 site sets) runs Auto on the locked QPSK chain, whose symbol-rate search
+  steps only between profiles of the locked timing (4800/4 and 4800/2 at 48 kHz), never to NXDN48, dPMR or ProVoice.
+  Selecting Auto on a session already running the whole Auto set changes nothing (no call ends, a modulation pick
+  stays); on a narrowed set it widens it back out.
 - EDACS under Auto: Auto enables the EDACS/ProVoice decoder, but EDACS frames are processed only once an EDACS
   addressing mode is selected: `-fh -fa` (or `-fe -fa`), a switch to Auto from an EDACS/ProVoice preset, a config with
   `edacs_ea`, or the EA toggle (terminal menu, `ProVoice EA mode`), whose first press under plain Auto selects
@@ -1883,7 +1891,7 @@ does.
 
 - The search needs a tuner the decoder controls: an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or rigctl. An I/Q
   replay never searches.
-- P25 searches under `-1`, `-2`, `-ft`, the default decoder set and Auto (`-fa`), `-mq` included; DMR under `-fs` and
+- P25 searches under `-1`, `-2`, `-ft` and Auto (`-fa`, or no `-f`), `-mq` included; DMR under `-fs` and
   `-fr`; NXDN under `-fi` and `-fn` (an IDAS or NEXEDGE import). A P25-driven search also finds a DMR or NXDN96
   control channel: the first validated DMR control message, NXDN CAC or confirmed IDAS Type-D SCCH ends the P25 search
   and hands the session to that protocol (an IDAS Type-D site is then never searched, as below).
@@ -1900,7 +1908,7 @@ does.
 - NXDN has no other control-channel hunt, so the same search also runs after an NXDN control channel is lost: once a
   CAC that passed its CRC (only an outbound control channel sends one) has named the control channel, 6 s without
   validated NXDN content starts it, revisiting that control channel between the other rows, and the next such CAC ends
-  it where it is. Under `-fa` this runs once validated NXDN control has named the system. A call's return to the
+  it where it is. Under Auto this runs once validated NXDN control has named the system. A call's return to the
   control channel restarts the window when its tune completes.
 - An IDAS Type-D site has no dedicated control channel: an SCCH whose CRC repeated (a confirmed transmission) ends a
   startup search where it is, and no search runs after that until a RadioReference apply points the session at another
@@ -1921,7 +1929,7 @@ does.
 - DMR searches until a control channel passes its check, not until DMR is merely recognised: a valid DMR message that
   confirms no control channel (a data preamble, a Capacity Plus status naming a rest channel the map lacks, a Tier III
   or Connect Plus traffic channel) leaves the search running, so the receiver moves on once that frequency goes quiet.
-  Under `-fa` the search starts once validated DMR content names DMR. A Hytera XPT site, which has no control
+  Under Auto the search starts once validated DMR content names DMR. A Hytera XPT site, which has no control
   channel, ends it where it is, and its recovery only ever retunes the frequency it parks on.
 - DMR recovery keeps its six-second loss grace and two-second probe windows even while data syncs continue without
   valid control, including after a Capacity Plus rest channel goes inactive. A probe's window starts when its backend

@@ -4928,10 +4928,12 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
  * which is the same reading the control binds to, so the skip and the selection
  * cannot answer differently.
  *
- * AUTO is excluded because there the reading is not an identification: AUTO is that
- * helper's catch-all for any frame set matching no single preset, so a session with
- * one protocol switched off answers AUTO without being it, and "listen for
- * everything" has to stay able to widen such a set back out.
+ * AUTO is read exactly instead (dsd_infer_decode_mode_preset_exact()): AUTO is the
+ * lossy helper's catch-all for any frame set matching no single preset, so a session
+ * with one protocol switched off answers AUTO without being it, and "listen for
+ * everything" has to stay able to widen such a set back out. A session already on
+ * the whole AUTO set (-fa, and the default) is in Auto, and keeps its calls and
+ * modulation like any other.
  *
  * @param c        Command whose payload is already known to be wide enough.
  * @param out_mode Receives the requested mode whenever one could be read.
@@ -4953,7 +4955,9 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
         ui_set_toast(state, 5, "Refused: %s", dsd_decode_mode_needs_iq_text(*out_mode));
         return UI_CMD_APPLY_UNSUPPORTED;
     }
-    if (*out_mode != DSDCFG_MODE_AUTO && dsd_infer_decode_mode_preset(opts) == *out_mode) {
+    const dsdneoUserDecodeMode current =
+        *out_mode == DSDCFG_MODE_AUTO ? dsd_infer_decode_mode_preset_exact(opts) : dsd_infer_decode_mode_preset(opts);
+    if (current == *out_mode) {
         ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(*out_mode));
         return UI_CMD_APPLY_COMPLETED;
     }

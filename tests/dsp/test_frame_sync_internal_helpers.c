@@ -455,6 +455,43 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.rf_mod == 0);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DSTAR_SYNC, 24) == DSD_SYNC_DSTAR_VOICE_POS);
 
+    /* -mq with no -f (a RadioReference simulcast import) runs the default set, Auto. Its NXDN48, dPMR and ProVoice
+     * profiles are timed differently, so the locked QPSK hunt still steps only 4800/4 <-> 4800/2, as under the
+     * pre-Auto default. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dpmr = 1;
+    opts.frame_provoice = 1;
+    opts.frame_ysf = 1;
+    opts.frame_m17 = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    for (int step = 0; step < 4; step++) {
+        const int from = state.sps_hunt_idx;
+        state.sps_hunt_counter =
+            dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        assert(state.sps_hunt_idx
+               == (from == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 ? DSD_FRAME_SYNC_SPS_PROFILE_4800_2
+                                                             : DSD_FRAME_SYNC_SPS_PROFILE_4800_4));
+        assert(state.samplesPerSymbol == 10);
+        assert(state.rf_mod == 1);
+    }
+
     /* At 16 kHz, 4800 and 6000 symbols/s both round to 3 SPS. Generic demodulator
      * locks still rotate gates, but the profile-specific -m2/M selection must not. */
     reset(&opts, &state);

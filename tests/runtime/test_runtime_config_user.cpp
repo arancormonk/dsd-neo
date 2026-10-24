@@ -2710,8 +2710,8 @@ test_snapshot_mode_inference_tdma_and_auto(void) {
 
 /*
  * A -fa session must come back as a -fa session. The decoder set is persisted as `decode =
- * "auto"` and reloading it re-enables every decoder; a session that never chose a mode persists
- * no decode key at all and reloads with the initialization defaults untouched.
+ * "auto"` and reloading it re-enables every decoder; a set no preset reproduces persists no
+ * decode key at all and reloads with the session's own decoder set untouched.
  */
 static int
 test_snapshot_roundtrip_preserves_decoder_set(void) {
@@ -2754,7 +2754,9 @@ test_snapshot_roundtrip_preserves_decoder_set(void) {
         rc |= 1;
     }
 
-    /* The initialization default set persists no decode key, so a reload cannot widen it. */
+    /* A narrowed set no preset reproduces (here the pre-Auto default, without NXDN, dPMR, ProVoice or M17) persists no
+       decode key, so a reload cannot widen it. The default set itself is now Auto and saves as `auto`
+       (RUNTIME_CONFIG_APPLY). */
     reset_opts_and_state(opts, state);
     opts.frame_dstar = 1;
     opts.frame_x2tdma = 1;
@@ -2767,7 +2769,7 @@ test_snapshot_roundtrip_preserves_decoder_set(void) {
         return 1;
     }
     if (strstr(rendered, "decode =") != nullptr) {
-        DSD_FPRINTF(stderr, "default decoder set rendered a decode key:\n%s\n", rendered);
+        DSD_FPRINTF(stderr, "narrowed decoder set rendered a decode key:\n%s\n", rendered);
         return 1;
     }
     if (write_temp_config(rendered, path, sizeof path) != 0) {
@@ -2776,7 +2778,7 @@ test_snapshot_roundtrip_preserves_decoder_set(void) {
     load_rc = dsd_user_config_load(path, &loaded);
     (void)remove(path);
     if (load_rc != 0) {
-        DSD_FPRINTF(stderr, "reloading the default snapshot failed\n");
+        DSD_FPRINTF(stderr, "reloading the narrowed snapshot failed\n");
         return 1;
     }
 
@@ -2790,11 +2792,11 @@ test_snapshot_roundtrip_preserves_decoder_set(void) {
     dsd_apply_user_config_to_opts(&loaded, &opts, &state);
     if (opts.frame_nxdn48 != 0 || opts.frame_nxdn96 != 0 || opts.frame_dpmr != 0 || opts.frame_provoice != 0
         || opts.frame_m17 != 0) {
-        DSD_FPRINTF(stderr, "reloading a default-set config widened the decoder set\n");
+        DSD_FPRINTF(stderr, "reloading a narrowed-set config widened the decoder set\n");
         rc |= 1;
     }
     if (opts.frame_dmr != 1 || opts.frame_p25p1 != 1) {
-        DSD_FPRINTF(stderr, "reloading a default-set config dropped decoders\n");
+        DSD_FPRINTF(stderr, "reloading a narrowed-set config dropped decoders\n");
         rc |= 1;
     }
     return rc;

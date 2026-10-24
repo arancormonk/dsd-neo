@@ -1755,8 +1755,9 @@ expect_m17_encoder_unchanged(void) {
     return rc;
 }
 
-/* The options a -fZ session opens with: initOpts()'s digital frame flags and modulation (src/core/util/dsd_init.c),
-   which -fZ leaves set, and the encoder flag; -fZ clears analog_only and monitor_input_audio. */
+/* The options a -fZ session opens with: initOpts()'s digital frame flags (the Auto set) and modulation
+   (src/core/util/dsd_init.c), which -fZ leaves set, and the encoder flag; -fZ clears analog_only and
+   monitor_input_audio. */
 static void
 make_m17_encoder_opts(dsd_opts* opts) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -1764,8 +1765,13 @@ make_m17_encoder_opts(dsd_opts* opts) {
     opts->frame_x2tdma = 1;
     opts->frame_p25p1 = 1;
     opts->frame_p25p2 = 1;
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
     opts->frame_dmr = 1;
+    opts->frame_dpmr = 1;
+    opts->frame_provoice = 1;
     opts->frame_ysf = 1;
+    opts->frame_m17 = 1;
     opts->mod_c4fm = 1;
     opts->m17encoder = 1;
 }

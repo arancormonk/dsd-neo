@@ -699,7 +699,8 @@ SavedSystemsModel::load() {
         migrated |= stored.contains(QStringLiteral("encKeyType"))
                     && stored.value(QStringLiteral("encKeyType")).typeId() != QMetaType::QString;
         // The P25 Simulcast chip used to carry "-f1 -mq", which pinned Phase 1 only;
-        // -mq alone keeps the engine's default decode set (Phase 1 + Phase 2).
+        // -mq alone keeps the engine's default decode set, Auto, which includes both
+        // Phase 1 and Phase 2.
         if (row.decodeFlag == QLatin1String("-f1 -mq")) {
             row.decodeFlag = QStringLiteral("-mq");
         }

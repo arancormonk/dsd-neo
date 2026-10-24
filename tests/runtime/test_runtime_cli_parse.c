@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -11,6 +12,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -10347,9 +10349,121 @@ test_explicit_source_monitor_survives_mode_selectors(void) {
     return rc;
 }
 
+/* The decoder flags and the parts of the session -fa also sets, as "name=value" pairs, for comparing two sessions. */
+static void
+describe_auto_session(const dsd_opts* opts, const dsd_state* state, char* out, size_t out_size) {
+    DSD_SNPRINTF(out, out_size,
+                 "dstar=%d x2=%d p25p1=%d p25p2=%d nxdn48=%d nxdn96=%d dmr=%d dpmr=%d provoice=%d ysf=%d m17=%d "
+                 "tetra=%d inverted_p2=%d c4fm=%d qpsk=%d gfsk=%d rf_mod=%d dmr_stereo=%d dmr_mono=%d rate=%d "
+                 "channels=%d output=%s",
+                 opts->frame_dstar, opts->frame_x2tdma, opts->frame_p25p1, opts->frame_p25p2, opts->frame_nxdn48,
+                 opts->frame_nxdn96, opts->frame_dmr, opts->frame_dpmr, opts->frame_provoice, opts->frame_ysf,
+                 opts->frame_m17, opts->frame_tetra, opts->inverted_p2, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk,
+                 state->rf_mod, opts->dmr_stereo, opts->dmr_mono, opts->pulse_digi_rate_out,
+                 opts->pulse_digi_out_channels, opts->output_name);
+}
+
+/* Auto is the default: a session that names no -f decodes exactly what -fa does, NXDN included, and the RadioReference
+   simulcast form (-mq, which names no -f) runs that set on the locked QPSK chain. */
+static int
+test_default_decoder_set_is_auto(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_opts* fa = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    dsd_state* fa_state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !fa || !state || !fa_state) {
+        free(opts);
+        free(fa);
+        free(state);
+        free(fa_state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    int rc = 0;
+    char want[512];
+    char got[512];
+
+    initOpts(opts);
+    initState(state);
+    initOpts(fa);
+    initState(fa_state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, fa, fa_state);
+    describe_auto_session(fa, fa_state, want, sizeof want);
+    describe_auto_session(opts, state, got, sizeof got);
+    if (strcmp(want, got) != 0) {
+        DSD_FPRINTF(stderr, "initOpts() is not the -fa session:\n  -fa:      %s\n  initOpts: %s\n", want, got);
+        rc = 1;
+    }
+    if (dsd_infer_decode_mode_preset_exact(opts) != DSDCFG_MODE_AUTO) {
+        DSD_FPRINTF(stderr, "initOpts() decoder set should infer AUTO exactly, got %d\n",
+                    (int)dsd_infer_decode_mode_preset_exact(opts));
+        rc = 1;
+    }
+
+    /* A settings change keeps the received identity of every family the default set decodes. */
+    static const struct {
+        dsd_rxid_family family;
+        uint8_t kind;
+    } families[] = {
+        {DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN},
+        {DSD_RXID_FAMILY_DPMR, DSD_ACCESS_CODE_COLOR_CODE},
+        {DSD_RXID_FAMILY_M17, DSD_ACCESS_CODE_CAN},
+    };
+
+    for (size_t i = 0; i < sizeof families / sizeof families[0]; i++) {
+        dsd_rxid_note_access(state, families[i].family, families[i].kind, 3U);
+        dsd_rxid_note_decoder_settings(opts, state);
+        if (state->rx_id.family != (uint8_t)families[i].family || state->rx_id.valid != DSD_RXID_ACCESS) {
+            DSD_FPRINTF(stderr, "default set dropped the received identity of family %d (valid=0x%X)\n",
+                        (int)families[i].family, (unsigned)state->rx_id.valid);
+            rc = 1;
+        }
+    }
+    dsd_rxid_reset(state);
+
+    char arg0[] = "dsd-neo";
+    char* argv_none[] = {arg0, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int parsed = dsd_parse_args(1, argv_none, opts, state, &argc_effective, &exit_rc);
+    describe_auto_session(opts, state, got, sizeof got);
+    if (parsed != DSD_PARSE_CONTINUE || strcmp(want, got) != 0) {
+        DSD_FPRINTF(stderr, "no -f should run the -fa session (rc=%d):\n  -fa:  %s\n  none: %s\n", parsed, want, got);
+        rc = 1;
+    }
+    close_parse_outputs(opts);
+    freeState(state);
+
+    initOpts(opts);
+    initState(state);
+    char arg_mq[] = "-mq";
+    char arg_caret[] = "-^";
+    char* argv_mq[] = {arg0, arg_mq, arg_caret, NULL};
+    exit_rc = -1;
+    parsed = dsd_parse_args(3, argv_mq, opts, state, &argc_effective, &exit_rc);
+    if (parsed != DSD_PARSE_CONTINUE || dsd_infer_decode_mode_preset_exact(opts) != DSDCFG_MODE_AUTO
+        || opts->mod_cli_lock != 1 || opts->mod_qpsk != 1 || opts->mod_c4fm != 0 || state->rf_mod != 1) {
+        DSD_FPRINTF(stderr,
+                    "-mq -^ should run Auto on the locked QPSK chain: rc=%d mode=%d lock=%d qpsk=%d c4fm=%d "
+                    "rf_mod=%d\n",
+                    parsed, (int)dsd_infer_decode_mode_preset_exact(opts), opts->mod_cli_lock, opts->mod_qpsk,
+                    opts->mod_c4fm, state->rf_mod);
+        rc = 1;
+    }
+    close_parse_outputs(opts);
+    freeState(state);
+    freeState(fa_state);
+    free(opts);
+    free(fa);
+    free(state);
+    free(fa_state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_default_decoder_set_is_auto();
     rc |= test_api_options();
     rc |= test_m17_encoder_digital_output_rates();
     rc |= test_explicit_source_monitor_survives_mode_selectors();

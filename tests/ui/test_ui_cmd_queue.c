@@ -4410,6 +4410,31 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("auto re-enables p25", opts.frame_p25p1, 1);
     rc |= expect_int("auto keeps dmr", opts.frame_dmr, 1);
     rc |= expect_contains("auto names its own row", state.ui_msg, "Auto");
+    freeState(&state);
+
+    /* A session already running exactly the AUTO set (-fa, and the default) is in Auto, so a tap on the lit Auto chip
+     * changes nothing either: no call ends and the operator's QPSK pick and its lock stay. A set Auto only labels
+     * (one decoder switched off) still widens, as above. */
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("-fa session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_counter = 7;
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1503);
+    rc |= expect_int("repeat auto mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AUTO),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat auto mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat auto keeps the operator's modulation", opts.mod_qpsk, 1);
+    rc |= expect_int("repeat auto keeps the modulation lock", opts.mod_cli_lock, 1);
+    rc |= expect_int("repeat auto leaves the hunt dwell alone", state.sps_hunt_counter, 7);
+    rc |= expect_call_phase("repeat auto leaves slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_call_phase("repeat auto leaves slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_contains("repeat auto still names the mode", state.ui_msg, "Auto");
 
     /* Both carry a payload, so the payload-less action API must refuse them. */
     rc |= expect_int("mod set rejects an action submit", dsd_app_command_action(DSD_APP_CMD_MOD_SET),

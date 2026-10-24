@@ -1145,12 +1145,16 @@ test_typed_scan_tune_boundaries(void) {
     rc |= expect_true("typed P25 metadata", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_P25) == 0);
     state->last_cc_sync_time = time(NULL);
     noCarrier(opts, state);
-    rc |= expect_true("typed startup waits for scheduled entry", g_rtl_tune_calls == 0 && !opts->frame_nxdn48);
+    /* The session runs the default set, Auto, which decodes NXDN48 too: the row's mode is committed when the set
+       becomes NXDN48 alone. */
+    rc |= expect_true("typed startup waits for scheduled entry",
+                      g_rtl_tune_calls == 0 && dsd_infer_decode_mode_preset_exact(opts) == DSDCFG_MODE_AUTO);
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
     rc |= expect_true("typed automatic mode and profile commit",
-                      opts->frame_nxdn48 && state->lcn_freq_roll == 1 && g_rtl_symbol_rate_hz == 2400
-                          && g_rtl_symbol_levels == 4 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+                      dsd_infer_decode_mode_preset_exact(opts) == DSDCFG_MODE_NXDN48 && state->lcn_freq_roll == 1
+                          && g_rtl_symbol_rate_hz == 2400 && g_rtl_symbol_levels == 4
+                          && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
     state->lcn_scan_hold = 1;
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);

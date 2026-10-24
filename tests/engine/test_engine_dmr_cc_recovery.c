@@ -1177,6 +1177,10 @@ single_system_cold_start(int ft) {
     dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
     g_opts.trunk_scan_enabled = 0;
     g_opts.trunk_enable = 1;
+    /* -fs (DMR alone) or -ft (P25 + DMR), named explicitly: the default set is Auto, whose NXDN and ProVoice leave a
+       startup hunt to validated content. */
+    g_opts.frame_dstar = g_opts.frame_x2tdma = g_opts.frame_ysf = g_opts.frame_m17 = 0;
+    g_opts.frame_nxdn48 = g_opts.frame_nxdn96 = g_opts.frame_dpmr = g_opts.frame_provoice = 0;
     g_opts.frame_dmr = 1;
     g_opts.frame_p25p1 = g_opts.frame_p25p2 = ft ? 1 : 0;
     g_state.trunk_cc_freq = g_state.p25_cc_freq = 0;
