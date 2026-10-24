@@ -773,6 +773,43 @@ test_tdma_repeated_voiceless_assignment_bounded(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Phase 2: the same lapse when the slot's assignment, its voice and its end share one decode-clock reading. The stop
+ * is still the conversation's end, so the talkgroup re-granted there later is followed anew and its dwell holds. */
+static int
+test_tdma_same_reading_end_lapses(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    tdma_site(opts, st);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1600.0);
+    p25_sm_event_t grant1 = p25_sm_ev_group_grant(0x100B, 0, 300, 7300, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant1);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t grant0 = p25_sm_ev_group_grant(0x100A, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    p25_sm_event_t end0 = p25_sm_ev_end_call_at(0, 100, 7100, 1600.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &end0);
+    rc |= expect_true("same-reading end: the slot was followed and ended at one reading",
+                      fabs(p25_sm_get_ctx()->slots[0].followed_since_m - 1600.0) < 1e-9
+                          && fabs(p25_sm_get_ctx()->slots[0].last_stop_m - 1600.0) < 1e-9);
+    set_clock_s(1610.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t regrant0 = p25_sm_ev_group_grant(0x100A, 0, 100, 7101, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &regrant0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    rc |= expect_true("same-reading end: the new conversation is followed from now",
+                      p25_sm_get_ctx()->slots[0].followed_since_m > 1609.9);
+    const long held = p25_sm_get_ctx()->vc_freq_hz;
+    set_clock_s(1610.1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 200, 0x1020);
+    rc |= expect_true("same-reading end: the new conversation's dwell holds off a preemption",
+                      p25_sm_get_ctx()->vc_freq_hz == held);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -802,6 +839,7 @@ main(void) {
     rc |= test_tdma_lapsed_duplicate_restarts_dwell(&opts, &st);
     rc |= test_tdma_vacated_slot_restarts_dwell(&opts, &st);
     rc |= test_tdma_repeated_voiceless_assignment_bounded(&opts, &st);
+    rc |= test_tdma_same_reading_end_lapses(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

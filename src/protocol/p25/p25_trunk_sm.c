@@ -1703,13 +1703,14 @@ p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, 
     route->requires_tuner_retune = needs_retune;
 }
 
-/* Whether the slot's followed conversation lapsed: its last transmission ended after the follow began and nothing
- * followed it for a whole hangtime (@p lapse_s), while a companion slot kept the carrier. */
+/* Whether the slot's followed conversation lapsed: its last transmission ended no earlier than the follow began and
+ * nothing followed it for a whole hangtime (@p lapse_s), while a companion slot kept the carrier. */
 static int
 p25_slot_follow_lapsed(const p25_sm_slot_ctx_t* slot_ctx, double lapse_s, double now_m) {
     // The stop must postdate the slot's latest start: a conversation that resumed within its hangtime has not lapsed
-    // because an older stop is far behind.
-    return !slot_ctx->voice_active && slot_ctx->last_stop_m > slot_ctx->followed_since_m
+    // because an older stop is far behind. A stop at the follow's own clock reading is an ending too: an assignment,
+    // its voice and its end can share one decode-clock reading.
+    return !slot_ctx->voice_active && slot_ctx->last_stop_m > 0.0 && slot_ctx->last_stop_m >= slot_ctx->followed_since_m
            && slot_ctx->last_stop_m >= slot_ctx->last_start_m && now_m - slot_ctx->last_stop_m >= lapse_s;
 }
 
