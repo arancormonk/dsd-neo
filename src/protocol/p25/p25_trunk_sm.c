@@ -1703,13 +1703,24 @@ p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, 
     route->requires_tuner_retune = needs_retune;
 }
 
-/* Stamp when the slot began following this call: a repeat or re-grant of the same call on the same carrier keeps the
- * stamp, anything else restarts it. Preemption dwell runs from it. */
+/* Whether the slot's followed conversation lapsed: its last transmission ended after the follow began and nothing
+ * followed it for a whole hangtime (@p lapse_s), while a companion slot kept the carrier. */
+static int
+p25_slot_follow_lapsed(const p25_sm_slot_ctx_t* slot_ctx, double lapse_s, double now_m) {
+    return !slot_ctx->voice_active && slot_ctx->last_stop_m > slot_ctx->followed_since_m
+           && now_m - slot_ctx->last_stop_m >= lapse_s;
+}
+
+/* Stamp when the slot began following this call: a repeat or re-grant of the same call on the same carrier within its
+ * conversation keeps the stamp; another call, or the same talkgroup again after the conversation lapsed, restarts it.
+ * Preemption dwell runs from it. */
 static void
-p25_slot_note_follow(p25_sm_slot_ctx_t* slot_ctx, int target_id, int is_group, long freq, double now_m) {
+p25_slot_note_follow(p25_sm_slot_ctx_t* slot_ctx, int target_id, int is_group, long freq, double lapse_s,
+                     double now_m) {
     is_group = is_group ? 1 : 0;
     if (slot_ctx->followed_since_m > 0.0 && slot_ctx->followed_target == target_id
-        && slot_ctx->followed_is_group == is_group && slot_ctx->followed_freq_hz == freq) {
+        && slot_ctx->followed_is_group == is_group && slot_ctx->followed_freq_hz == freq
+        && !p25_slot_follow_lapsed(slot_ctx, lapse_s, now_m)) {
         return;
     }
     slot_ctx->followed_since_m = now_m;
@@ -1988,13 +1999,14 @@ p25_slot_note_grant(p25_sm_slot_ctx_t* slot_ctx, double now_m) {
 }
 
 static void
-p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq, int target_id,
-                             const p25_grant_eval_ctx_t* eval_ctx, int slot, double now_m) {
+p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev, long freq,
+                             int target_id, const p25_grant_eval_ctx_t* eval_ctx, int slot, double now_m) {
     if (!ctx || !ev || slot < 0 || slot > 1) {
         return;
     }
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    p25_slot_note_follow(slot_ctx, target_id, ev->is_group, freq, now_m);
+    p25_slot_note_follow(slot_ctx, target_id, ev->is_group, freq,
+                         p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m);
     slot_ctx->grant_active = 1;
     slot_ctx->freq_hz = freq;
     slot_ctx->channel = ev->channel;
@@ -2170,7 +2182,7 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_data_call = data_call;
     p25_grant_initialize_timing(ctx, state, now_m, reused_carrier, data_call);
     const int logical_slot = p25_grant_logical_slot(ctx, slot);
-    p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, logical_slot, now_m);
+    p25_grant_store_slot_context(ctx, state, ev, freq, target_id, eval_ctx, logical_slot, now_m);
     if (state) {
         if (ctx->vc_is_tdma && logical_slot >= 0 && logical_slot <= 1) {
             state->p25_p2_media_rejected[logical_slot] = 0;
@@ -2726,6 +2738,13 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
                       const p25_grant_eval_ctx_t* eval_ctx) {
     const int slot = grant->logical_slot;
     if (grant->clear_policy_slot_only) {
+        // A slot whose conversation lapsed while the companion kept the carrier starts a new one: read it before the
+        // clear wipes the slot's last stop.
+        if (slot >= 0 && slot <= 1
+            && p25_slot_follow_lapsed(&ctx->slots[slot], p25_sm_effective_hangtime(state, ctx->config.hangtime_s),
+                                      grant->now_m)) {
+            ctx->slots[slot].followed_since_m = 0.0;
+        }
         p25_grant_clear_one_slot_state(ctx, slot);
         // Taking the slot over is the cancel the countdown used to be given
         // explicitly -- but only for an assignment the SM has reason to follow.
@@ -3947,7 +3966,8 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     dsd_tg_policy_call_route route;
     p25_grant_fill_route(&route, call_ev, slot_ctx->freq_hz, ctx->vc_is_tdma ? slot : -1, 0, target_id);
     p25_voice_start_clear_stale_reprobe(slot_ctx, call_ev, target_id);
-    p25_slot_note_follow(slot_ctx, target_id, call_ev->is_group, slot_ctx->freq_hz, now_m);
+    p25_slot_note_follow(slot_ctx, target_id, call_ev->is_group, slot_ctx->freq_hz,
+                         p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m);
     slot_ctx->target_id = target_id;
     slot_ctx->ota_tg = call_ev->is_group ? call_ev->tg : 0;
     slot_ctx->dst = call_ev->is_group ? 0 : call_ev->dst;

@@ -120,6 +120,7 @@ fresh_site(dsd_opts* opts, dsd_state* st) {
     opts->trunk_tune_data_calls = 1;
     opts->trunk_tune_enc_calls = 1;
     opts->p25_lcw_retune = 1;
+    opts->trunk_hangtime = 2.0f;
     st->p25_cc_freq = 851000000;
     st->synctype = DSD_SYNC_P25P1_POS;
     seed_fdma_iden(st);
@@ -479,6 +480,48 @@ test_tdma_ended_slot_not_held(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Phase 2: a slot whose conversation lapsed (ended, then silent for a hangtime while the companion slot kept the
+ * carrier) starts a new conversation when the same talkgroup is assigned again: its dwell restarts. */
+static int
+test_tdma_lapsed_slot_restarts_dwell(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    fresh_site(opts, st);
+    st->p25_iden_tdma[1] = st->p25_iden_fdma[1];
+    st->p25_iden_tdma[1].chan_type = 3;
+    st->p25_chan_tdma_explicit[1] = 2;
+    st->p2_wacn = 0xBEE00;
+    st->p2_sysid = 0x1A2;
+    st->p2_cc = 0x293;
+    st->synctype = DSD_SYNC_P25P2_POS;
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1300.0);
+    p25_sm_event_t grant0 = p25_sm_ev_group_grant(0x100A, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    p25_sm_event_t grant1 = p25_sm_ev_group_grant(0x100B, 0, 300, 7300, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant1);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    set_clock_s(1301.0);
+    p25_sm_event_t end0 = p25_sm_ev_end_call_at(0, 100, 7100, 1301.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &end0);
+    set_clock_s(1309.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t regrant0 = p25_sm_ev_group_grant(0x100A, 0, 100, 7101, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &regrant0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    rc |= expect_true("tdma lapse: the slot's new conversation is followed from now",
+                      p25_sm_get_ctx()->slots[0].followed_since_m > 1308.9);
+    const long held = p25_sm_get_ctx()->vc_freq_hz;
+    set_clock_s(1309.1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 200, 0x1020);
+    rc |= expect_true("tdma lapse: the new conversation's dwell holds off a preemption",
+                      p25_sm_get_ctx()->vc_freq_hz == held);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -500,6 +543,7 @@ main(void) {
     rc |= test_refused_release_keeps_call(&opts, &st);
     rc |= test_skip_kept_alive(&opts, &st);
     rc |= test_tdma_ended_slot_not_held(&opts, &st);
+    rc |= test_tdma_lapsed_slot_restarts_dwell(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;
