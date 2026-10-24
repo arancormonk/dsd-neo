@@ -3229,6 +3229,14 @@ test_p25p1_comparison_ends_cleanly(void) {
     compare_frame(&opts, &state, 46, 134);
     assert(state.p25_p1_mod_probe_active == 1);
 
+    /* An opening frame long enough to fill most of the incumbent's pass (a data PDU) is not a pass that read the carrier
+     * whole: with no frame after it, the pass has measured nothing, and the other chain gets its pass. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 1000);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 1000);
+    assert(state.p25_p1_mod_compare.phase == 2 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 1);
+
     /* The other chain's pass is the decoder's experiment: the dwell gets back what that pass searched, no more. */
     compare_setup(&opts, &state, 0);
     compare_frame(&opts, &state, 0, 134);

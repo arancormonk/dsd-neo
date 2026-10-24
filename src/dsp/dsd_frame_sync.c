@@ -4055,8 +4055,11 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (cmp->phase == 1) {
-        /* So is a pass that ends a frame's length or more after its last validated frame. */
-        if (!cmp->incumbent_missed && (uint32_t)(state->symbolcnt - cmp->last_frame_end) < cmp->last_frame_read) {
+        /* So is a pass that ends a frame's length or more after its last validated frame. A pass whose only frame is
+         * the one that opened the comparison has measured nothing: a long opening frame (a data PDU) can fill most of
+         * it, and the search after it may hold a sync that never validated. */
+        if (cmp->incumbent_frames > 0 && !cmp->incumbent_missed
+            && (uint32_t)(state->symbolcnt - cmp->last_frame_end) < cmp->last_frame_read) {
             frame_sync_p25p1_mod_compare_settle(opts, state, cmp->incumbent_rf_mod);
             return;
         }
