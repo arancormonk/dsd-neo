@@ -971,6 +971,31 @@ nxdn_run_follow_from_control_channel_is_no_takeover_case(void) {
     return rc;
 }
 
+/* A duplicate assignment past the hangtime that names another call on the carrier already tuned is that new call, not
+ * a repeat: it becomes the held call, so preemption compares a candidate against it. */
+static int
+nxdn_run_same_carrier_new_call_case(void) {
+    static const char* const test_case = "type-c-same-carrier-new-call";
+    type_c_fixture();
+    policy_row(1100U, 10, 0);
+    policy_row(1500U, 100, 0);
+    policy_row(1200U, 50, 1);
+    int rc = 0;
+    at_seconds(6000.0);
+    send_assignment(0x04U, 1100U, 16U);
+    at_seconds(6004.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4; /* past the 1 s hangtime */
+    send_assignment(0x05U, 1500U, 16U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1500U, test_case, "new-call",
+                      "the new call on the carrier is the held call");
+    const int tunes = g_tune_count;
+    at_seconds(6005.0);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == tunes, test_case, "outranked", "a candidate below the new call is refused");
+    return rc;
+}
+
 /* The held call is the one heard: a new call on the followed carrier replaces the followed grant's, its follow time
  * starting then, so preemption compares a candidate against it. */
 static int
@@ -1176,6 +1201,7 @@ main(void) {
     rc |= nxdn_run_type_c_preemption_case();
     rc |= nxdn_run_follow_from_control_channel_is_no_takeover_case();
     rc |= nxdn_run_held_call_reconciled_case();
+    rc |= nxdn_run_same_carrier_new_call_case();
     rc |= nxdn_run_vcall_names_followed_route_case();
     rc |= nxdn_run_type_d_takeover_case();
 

@@ -1857,6 +1857,17 @@ typedef enum {
  * hangtime is followed as today; while the call is live (within the hangtime) an outranking preempting candidate
  * takes over (nxdn_preempts()); anything else is refused, and the receiver stays tuned for DISC or the hangtime
  * return to take it back. */
+/* On the carrier already, a repeat of the held call's assignment is that call's. One naming another call there (a new
+ * call after the hangtime) goes through admission, so the held call becomes the new one. */
+static int
+nxdn_assignment_repeats_held_call(const dsd_state* state, const dsd_nxdn_call_identity* cur,
+                                  const struct nxdn_vcall_assgn_info* info, long int freq) {
+    if (state->trunk_vc_freq[0] != freq) {
+        return 0;
+    }
+    return !cur || (cur->target == info->destination_id && cur->private_call == (info->call_type == 4U));
+}
+
 static nxdn_admit
 nxdn_vcall_assgn_admit(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info,
                        const dsd_tg_policy_decision* decision, int policy_allowed, int hold_matches, long int freq,
@@ -1867,11 +1878,11 @@ nxdn_vcall_assgn_admit(const dsd_opts* opts, dsd_state* state, const struct nxdn
     if (opts->trunk_is_tuned == 0) {
         return NXDN_ADMIT_FOLLOW;
     }
-    if (state->trunk_vc_freq[0] == freq) {
-        return NXDN_ADMIT_ON_IT;
-    }
     const long int rx = nxdn_receiver_freq(opts, state);
     const dsd_nxdn_call_identity* const cur = nxdn_current_identity(state, rx);
+    if (nxdn_assignment_repeats_held_call(state, cur, info, freq)) {
+        return NXDN_ADMIT_ON_IT;
+    }
     if (nxdn_hold_takes_over(state, cur, hold_matches)) {
         return NXDN_ADMIT_FOLLOW;
     }

@@ -321,6 +321,10 @@ test_dwell_from_follow(dsd_opts* opts, dsd_state* st) {
         p25_sm_event(p25_sm_get_ctx(), opts, st, &repeat);
         rc |= expect_true(reassign ? "dwell: re-grant keeps the held call" : "dwell: repeat keeps the held call",
                           following(100, FREQ_HELD));
+        if (!reassign) {
+            rc |= expect_true("dwell: the repeat accepted as the stale guard's probe spends it",
+                              p25_sm_get_ctx()->recent_call_ends[0].probe_attempted == 1);
+        }
         set_clock_s(reassign ? 702.1 : 704.2);
         offer_update(opts, st, 200, CH_PRIO);
         rc |= expect_true(reassign ? "dwell: re-grant keeps the first follow time" : "dwell: repeat keeps it",
@@ -418,6 +422,25 @@ test_refused_release_keeps_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A skipped priority talkgroup announced on the voice channel keeps its skip alive: the skip does not expire while
+ * its call is still on the air, so the skipped call never takes the receiver. */
+static int
+test_skip_kept_alive(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    fresh_site(opts, st);
+    set_dwell_cooldown_ms("0", "0");
+    set_clock_s(1100.0);
+    follow(opts, st, 100, CH_HELD);
+    rc |= expect_true("skip: armed", dsd_tg_policy_call_skip_arm(st, 200, 0, 0, 1100.0) == 0);
+    for (int i = 1; i <= 20; i++) {
+        set_clock_s(1100.0 + i);
+        offer_update(opts, st, 200, CH_PRIO);
+    }
+    rc |= expect_true("skip: still active while announced", dsd_tg_policy_call_skip_active(st, 200, 1120.0));
+    rc |= expect_true("skip: skipped call never preempts", following(100, FREQ_HELD));
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -437,6 +460,7 @@ main(void) {
     rc |= test_cooldown_survives_reload(&opts, &st);
     rc |= test_lockout_release_deferred(&opts, &st);
     rc |= test_refused_release_keeps_call(&opts, &st);
+    rc |= test_skip_kept_alive(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

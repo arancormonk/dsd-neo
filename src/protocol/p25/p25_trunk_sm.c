@@ -2729,6 +2729,15 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
                                grant->reused_carrier);
 }
 
+/* A grant allowed through as the stale-regrant guard's one validation probe was accepted (followed, or taken as a
+ * repeat of the call already followed): the probe is spent. A grant refused later keeps it. */
+static void
+p25_grant_spend_stale_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx_t* grant) {
+    if (grant->stale_regrant_probe && grant->logical_slot >= 0 && grant->logical_slot <= 1) {
+        ctx->recent_call_ends[grant->logical_slot].probe_attempted = 1;
+    }
+}
+
 static void
 p25_grant_start_stale_regrant_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx_t* grant) {
     if (!ctx || !grant) {
@@ -2736,10 +2745,7 @@ p25_grant_start_stale_regrant_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx
     }
     ctx->vc_stale_regrant_probe = grant->stale_regrant_probe;
     ctx->vc_stale_regrant_probe_slot = grant->stale_regrant_probe ? grant->logical_slot : -1;
-    // The grant that was allowed through as the guard's one validation probe is accepted: the probe is spent.
-    if (grant->stale_regrant_probe && grant->logical_slot >= 0 && grant->logical_slot <= 1) {
-        ctx->recent_call_ends[grant->logical_slot].probe_attempted = 1;
-    }
+    p25_grant_spend_stale_probe(ctx, grant);
 }
 
 /* The accepted call is what the SM now holds; a re-grant of the call it already followed keeps that call's dwell.
@@ -2786,8 +2792,20 @@ p25_grant_preempt_only_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
         return 0;
     }
     dsd_tg_policy_decision decision;
-    return p25_grant_prospective_decision(ctx, opts, state, ev, &decision) && decision.tune_allowed
-           && decision.preempt_requested;
+    if (!p25_grant_prospective_decision(ctx, opts, state, ev, &decision)) {
+        return 0;
+    }
+    // A skipped call announced here is still on the air: keep its skip alive as the control channel's grants would,
+    // or it expires mid-call and the skipped call takes the receiver.
+    if (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP) {
+        const uint32_t ota_target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
+        const double now_m = dsd_decode_now_mono_s();
+        dsd_tg_policy_call_skip_touch(state, ota_target, now_m);
+        if (decision.target_id != ota_target) {
+            dsd_tg_policy_call_skip_touch(state, decision.target_id, now_m);
+        }
+    }
+    return decision.tune_allowed && decision.preempt_requested;
 }
 
 /* ============================================================================
@@ -2834,6 +2852,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     // still need normal grant handling so the slot context is replaced.
     if (p25_grant_handle_duplicate(ctx, opts, state, ev, &grant.route, &decision, grant.freq, grant.target_id,
                                    &eval_ctx, grant.now_m)) {
+        p25_grant_spend_stale_probe(ctx, &grant);
         return;
     }
 

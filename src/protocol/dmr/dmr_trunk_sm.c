@@ -1751,7 +1751,14 @@ static void
 dmr_sm_move_slot_in_place(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_slot_ctx_t* moved, int new_slot) {
     if (new_slot >= 0 && new_slot != ctx->vc_slot) {
         if (ctx->vc_slot >= 0) {
-            dmr_sm_slot_identity_clear(&ctx->slots[ctx->vc_slot]);
+            // The call's activity moves with it: the vacated slot must not stay live or in hangtime as a phantom held
+            // call of unknown identity.
+            dmr_sm_slot_ctx_t* vacated = &ctx->slots[ctx->vc_slot];
+            ctx->slots[new_slot].voice_active = vacated->voice_active;
+            ctx->slots[new_slot].last_active_m = vacated->last_active_m;
+            vacated->voice_active = 0;
+            vacated->last_active_m = 0.0;
+            dmr_sm_slot_identity_clear(vacated);
         }
         dmr_sm_slot_identity_set(&ctx->slots[new_slot], (dsd_call_kind)moved->kind, moved->target, moved->source,
                                  moved->judged_group, moved->data_call, (dmr_sm_identity_prov_e)moved->prov,
@@ -1760,6 +1767,20 @@ dmr_sm_move_slot_in_place(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_slot
         ctx->vc_slot = new_slot;
         state->dmr_mono_slot = new_slot;
     }
+}
+
+/* The followed call's identity as its slot record now knows it: a checked LC may have named it differently than the
+   grant did, and what a move republishes on the new carrier must be that. */
+static void
+dmr_sm_vc_identity_from_slot(dmr_sm_ctx_t* ctx, const dmr_sm_slot_ctx_t* moved) {
+    ctx->vc_is_group = moved->judged_group ? 1 : 0;
+    if (ctx->vc_is_group) {
+        ctx->vc_tg = (int)moved->target;
+    } else {
+        ctx->vc_dst = (int)moved->target;
+    }
+    ctx->vc_src = (int)moved->source;
+    ctx->vc_data_call = moved->data_call ? 1 : 0;
 }
 
 /* A matched C_MOVE: the followed call goes where the system moved it unless its own classification is now denied
@@ -1783,6 +1804,7 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
     }
     const int new_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : ctx->vc_slot;
     const double now_m = dsd_decode_now_mono_s();
+    dmr_sm_vc_identity_from_slot(ctx, &moved);
     if (resolved == DMR_SM_RESOLVE_SAME_FREQ) {
         dmr_sm_move_slot_in_place(ctx, state, &moved, new_slot);
         sm_log(opts, "move-in-place");

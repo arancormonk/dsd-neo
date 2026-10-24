@@ -310,6 +310,39 @@ test_move_in_place(dsd_opts* opts, dsd_state* state) {
     assert(state->dmrburstR == 16 && state->dmrburstL == 9);
 }
 
+/* A same-carrier move takes the call's activity to its new slot: the vacated slot is no phantom held call, so a
+   priority candidate elsewhere still preempts. */
+static void
+test_move_in_place_vacates(dsd_opts* opts, dsd_state* state) {
+    move_env(opts, state);
+    seed_row(state, 101, "A", 10, 0);
+    seed_row(state, 300, "A", 60, 1);
+    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
+    clock_at(0.5);
+    accepted_voice(opts, state, 0);
+    csbk_grant_or_move(opts, state, 57U, MV_LPCN1, 1, 101, 1234);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->vc_slot == 1 && ctx->slots[0].voice_active == 0 && ctx->slots[0].last_active_m <= 0.0);
+    assert(ctx->slots[1].voice_active == 1);
+    clock_at(1.0);
+    csbk_grant_or_move(opts, state, 49U, MV_LPCN3, 0, 300, 3);
+    assert(state->trunk_vc_freq[0] == MV_F3 && dmr_sm_get_ctx()->vc_tg == 300);
+}
+
+/* A move after a checked LC renamed the followed call republishes the LC's identity on the new carrier, not the
+   grant's. */
+static void
+test_move_carries_lc_identity(dsd_opts* opts, dsd_state* state) {
+    move_env(opts, state);
+    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
+    clock_at(0.5);
+    accepted_voice(opts, state, 0);
+    dmr_sm_note_lc_identity(opts, state, 0, DSD_CALL_KIND_GROUP_VOICE, 202U, 1234U);
+    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 202, 1234);
+    assert(state->trunk_vc_freq[0] == MV_F2);
+    assert(dmr_sm_get_ctx()->vc_tg == 202 && dmr_sm_get_ctx()->slots[0].target == 202U);
+}
+
 /* A matched move is judged with the followed call's own classification: a Hold mismatch or a media-only restriction
    never stops following it, a private call keeps moving with group tuning off, and a lockout since it started does. */
 static void
@@ -355,6 +388,8 @@ test_move_admission(dsd_opts* opts, dsd_state* state) {
     test_move_keeps_follow_time(opts, state);
     test_refused_moves_commit_nothing(opts, state);
     test_move_in_place(opts, state);
+    test_move_in_place_vacates(opts, state);
+    test_move_carries_lc_identity(opts, state);
     test_matched_move_policy(opts, state);
     dsd_decode_clock_use_system();
 }
