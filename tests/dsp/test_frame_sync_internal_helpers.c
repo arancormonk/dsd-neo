@@ -1836,8 +1836,9 @@ m17_join_setup(dsd_opts* opts, dsd_state* state) {
  * weakness was how a transmission joined mid-stream got in: no preamble, so a run in the payload and a lucky word.
  * Every M17 frame is 192 symbols, a sync burst and 184 symbols of payload (M17 spec, Frame), and stream and BERT frames
  * follow each other back to back, so a transmission in progress offers its frame's sync word every 192 symbols --
- * something noise does not. The same exact sync word three frames running now joins a transmission, for that one frame,
- * and the preamble, which a transmission sends for 192 symbols, must run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows.
+ * something noise does not. The same exact sync word three frames running now joins a transmission, for that one
+ * frame, and the preamble, which a transmission sends for 192 symbols, must run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS
+ * windows.
  */
 static int
 m17_word_three_frames(dsd_opts* opts, dsd_state* state, const char* first, const char* second, const char* third) {
@@ -1960,9 +1961,9 @@ test_m17_joins_on_a_sync_word_three_frames_running(void) {
  * NXDN96's frame sync word is ten symbols in five variants per polarity, sliced on sign, so about one arbitrary window in
  * a hundred matches, and the matcher's two hits could be any distance apart: receiver noise opened 20 NXDN96 frames in
  * the noise_floor fixture's 10 s under -fn. An NXDN frame is 384 bits, 192 symbols at 9600 bps (NXDN TS 1-A 4.4: one
- * frame per 40 ms), and every frame opens with the FSW. The receiver rules (TS 1-A 5.3, Table 5.9-3) acquire on two FSWs
- * a frame apart, or one behind the preamble or the RCCH post field, and hold the lock through five missed FSWs. The
- * 2400/4 matcher (NXDN48) keeps its two hits at any distance.
+ * frame per 40 ms), and every frame opens with the FSW. The receiver rules (TS 1-A 5.3, Table 5.9-3) acquire on two
+ * FSWs a frame apart, or one behind the preamble or the RCCH post field, and hold the lock through five missed FSWs.
+ * The 2400/4 matcher (NXDN48) keeps its two hits at any distance.
  */
 static void
 nxdn96_sync_setup(dsd_opts* opts, dsd_state* state) {
@@ -2093,7 +2094,7 @@ read_symbol_stream(dsd_opts* opts, dsd_state* state, const char* symbols, int co
     for (int i = 0; i < count; i++) {
         state->symbolcnt++;
         if (filled == 24) {
-            memmove(window, window + 1, 23);
+            DSD_MEMMOVE(window, window + 1, 23);
             filled = 23;
         }
         window[filled++] = symbols[i];
@@ -3523,8 +3524,8 @@ test_p25p1_comparison_ends_cleanly(void) {
     compare_frame(&opts, &state, 46, 134);
     assert(state.p25_p1_mod_probe_active == 1);
 
-    /* An opening frame long enough to fill most of the incumbent's pass (a data PDU) is not a pass that read the carrier
-     * whole: with no frame after it, the pass has measured nothing, and the other chain gets its pass. */
+    /* An opening frame long enough to fill most of the incumbent's pass (a data PDU) is not a pass that read the
+     * carrier whole: with no frame after it, the pass has measured nothing, and the other chain gets its pass. */
     compare_setup(&opts, &state, 0);
     compare_frame(&opts, &state, 0, 1000);
     compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 1000);
@@ -3594,8 +3595,8 @@ test_p25p1_comparison_ends_cleanly(void) {
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
 
-    /* ... and judges the dwell on the chain it ran on: a C4FM trial pass overtaken on a CQPSK incumbent decoded nothing on
-     * CQPSK, so the learned CQPSK the abort puts back is not withdrawn. */
+    /* ... and judges the dwell on the chain it ran on: a C4FM trial pass overtaken on a CQPSK incumbent decoded nothing
+     * on CQPSK, so the learned CQPSK the abort puts back is not withdrawn. */
     compare_into_trial(&opts, &state, 1);
     compare_frame(&opts, &state, 46, 134);
     assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);

@@ -2185,7 +2185,8 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     }
 
     state->offset = ctx->synctest_pos;
-    /* NXDN48 on 2400/4 keeps two hits at any distance; NXDN96 follows the receiver rules (frame_sync_nxdn96_accepts()). */
+    /* NXDN48 on 2400/4 keeps two hits at any distance; NXDN96 follows the receiver rules
+     * (frame_sync_nxdn96_accepts()). */
     const int accepts =
         frame_sync_nxdn96_window(ctx) ? frame_sync_nxdn96_accepts(ctx, synctype) : state->lastsynctype == synctype;
     if (accepts) {
@@ -2923,8 +2924,8 @@ typedef struct frame_sync_runtime_ctx {
 
 /* Bit errors between the window's last ten symbols, read on four levels, and the NXDN frame sync word of @p synctype's
  * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). With fewer than ten
- * levels to read -- a test window, a symbol capture's sign-only history -- there is nothing to count, and the sign match
- * stands. */
+ * levels to read -- a test window, a symbol capture's sign-only history -- there is nothing to count, and the sign
+ * match stands. */
 static int
 frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype) {
     static const int fsw_levels[10] = {-3, 1, -3, 3, -3, -3, 3, 3, -1, 3};
