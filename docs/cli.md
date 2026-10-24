@@ -546,12 +546,18 @@ Notes
   fails are concealed by the decoder, and a run of them ends the speech until the next good burst.
   With `-T` the decoder follows a call's traffic channel off a TETRA control channel, once a block whose CRC passed
   has been decoded on the carrier it is on, and returns `-t` seconds after the call's speech ends, or 4 seconds after
-  the tune when no speech follows. It follows a call whose D-SETUP named its called party, as the group list, `-I`,
+  the tune when no speech follows while nothing keeps the channel for the call (its usage marker in the channel's
+  ACCESS-ASSIGN PDUs, or a message to one of its parties there, restarts those 4 seconds before the first speech; EN
+  300 392-2 clause 23.5.6.1.2), and leaves once three ACCESS-ASSIGN PDUs say the channel is no longer the call's. It follows a call whose D-SETUP named its called party, as the group list, `-I`,
   priority and preemption rows and the tune controls decide; while it follows one, only that call's timeslots play,
-  once its signalling has been decoded on the traffic carrier (direct mode speech always plays). Without `-T` one
+  under the downlink usage marker its allocation assigned and while it has receive permission there: from its call
+  signalling (the transmission grant), or from three ACCESS-ASSIGN PDUs in a row carrying its usage marker on its
+  traffic channel, until three without it or 18 frames without one (EN 300 392-2 clause 23.8.2.3.2). A call followed
+  onto another carrier plays that way, its traffic slot carrying no signalling of it (direct mode speech always
+  plays). Without `-T` one
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
-  type. Air-encrypted speech decrypts with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of one channel
-  (see Keys & Privacy).
+  type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
+  one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.
 
 Notes
 
@@ -2050,13 +2056,32 @@ Out-of-range decimal keys are rejected without changing the installed key.
   trunking (`-T`), otherwise the carrier whose downlink frequency is exactly the tuned frequency of an RTL-SDR or I/Q
   replay input, on the control channel too (a secondary carrier broadcasts the main carrier's SYSINFO as well). Until
   the carrier number, a SYSINFO's location area and a BSCH's colour code are known, nothing is decrypted.
+  The key decrypts the air encrypted signalling too (EN 300 392-7 clause 6.7.1.2: a MAC-RESOURCE's channel allocation
+  and TM-SDU, MAC-FRAG and MAC-END fragments, MAC-D-BLCK), so call set-up and release, channel allocations, short data
+  and status messages of an encrypted cell are decoded and `-T` follows its calls. Encrypted signalling carries no
+  check of its plaintext, so a wrong key, a wrong TEA or traffic under a key not loaded (a DCK, a group key, another
+  key version) would decrypt to noise: a decrypted message is acted on only once a repeat proved it, a copy with the
+  same header and length sent in another slot, so under another key stream, decrypting to the same plaintext under
+  the same key (the network repeats its allocations, and the D-SETUPs of calls in progress). The first copy is not
+  acted on, so a call is followed a repeat later than on a clear cell; a message sent once or of fewer than 48
+  encrypted bits (most D-TX CEASED and D-RELEASE messages, a single SDS) is never acted on, and a network that never
+  repeats its allocations is not followed. A key that names no TEA is tried with each of TEA1-TEA3, and the one a
+  repeat proves is the network's from then on, for speech too. The addresses of encrypted signalling are encrypted
+  short identities: the key decrypts them with TA61 (clause 4.2.6) once it decrypted the message, which gives the
+  parties only when it is the SCK or CCK the cell uses for identities; a DCK or a group key given as the network key is
+  not supported, and a TEA1 key recovered for one channel only gives wrong identities. The speech of a call decrypted
+  this way runs the key and TEA that proved its signalling, until the cell announces another key (another SCK-VN or
+  CCK-id, SCKN or GCK support in its SYSINFO, or the encryption mode's key version parity changing in its signalling)
+  and a repeat proves the call again.
 - TETRA TEA1 reduced key: `--tetra-key mcc,mnc,<8 hex digits>,la=N,cc=N,carrier=N` loads TEA1's 32-bit key register
   (the reduced ECK) of one channel: TEA1 compresses the ECK into that register before it generates anything, so the
   register alone sets the key stream, and since TB5 made that ECK from the channel's location area (0-16383), colour
   code (0-63) and carrier number (0-4095), it decrypts that channel only. It runs TEA1 whatever the network's
   signalling named, and on its channel it is preferred over the network's 80-bit key. It decrypts the traffic
   encrypted under the cipher key it came from (in a class 2 cell the SCK every terminal uses; in a class 3 cell one
-  CCK or group key, not the DCK of individual traffic) until that key changes. Another reduced key for the same
+  CCK or group key, not the DCK of individual traffic) until that key changes. It decrypts the encrypted signalling of
+  its channel in the same way as an 80-bit key, but holds no 80-bit key for TA61: the addresses stay encrypted short
+  identities, so a D-SETUP names no called party and `-T` does not follow the call. Another reduced key for the same
   channel replaces it; each carrier of a cell needs its own. The Network row of Call Info and of the Qt/Android
   monitor reads `MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654` once the location area and the carrier being
   received are known, every field the key is bound to, and the Security row names the key that applies there

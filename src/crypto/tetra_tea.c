@@ -46,6 +46,11 @@ tetra_tea_keystream(int alg, const uint8_t key[10], uint32_t iv, uint8_t* out, i
     DSD_SECURE_ZERO(key_copy, sizeof(key_copy));
 }
 
+uint32_t
+tetra_tea1_reduce_key(const uint8_t key[10]) {
+    return key ? tetra_tea1_key_register(key) : 0U;
+}
+
 void
 tetra_tea1_keystream_reduced(uint32_t key_register, uint32_t iv, uint8_t* out, int nbytes) {
     if (!out || nbytes <= 0) {

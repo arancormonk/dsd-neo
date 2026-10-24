@@ -41,7 +41,8 @@ typedef struct {
     uint16_t call_id;  /**< CMCE call identifier (14 bits), 0 when the allocation carried none */
 } tetra_sm_grant;
 
-/** Grant timeout: seconds a followed traffic channel is kept without decoded speech after the tune completes. */
+/** Grant timeout: seconds a followed traffic channel is kept without decoded speech after the tune completes, or after
+ * the last maintenance event before the first speech (tetra_sm_note_maintenance()). */
 #define TETRA_SM_GRANT_TIMEOUT_S 4.0
 /** Seconds without decoded speech on the followed timeslots after which the speech counts as ended and the hangtime
  * (opts->trunk_hangtime) starts: longer than the frame 18 gap of a speech timeslot (two frames, 113 ms). */
@@ -108,6 +109,17 @@ void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
  * timeslot's, so it does neither.
  */
 void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
+
+/**
+ * @brief The followed channel is maintained for the followed call (EN 300 392-2 clause 23.5.6.1.2, T.209): an
+ * ACCESS-ASSIGN PDU of a followed timeslot carries the call's traffic usage marker, or a PDU there is addressed to one
+ * of its parties.
+ *
+ * While TUNED and before the call's first speech, the grant timeout runs from the last such event instead of the tune:
+ * a call set up and silent is not left while its channel is kept for it. Speech, and with it the hangtime, is
+ * unaffected.
+ */
+void tetra_sm_note_maintenance(dsd_state* state);
 
 /**
  * @brief Time-driven transitions: settle the tune in flight once the backend answered it (until then nothing else

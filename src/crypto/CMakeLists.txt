@@ -19,6 +19,7 @@ target_sources(
         dmr_mi.c
         md2ii.c
         nxdn_keystream.c
+        tetra_ta61.c
         tetra_tea.c
 )
 

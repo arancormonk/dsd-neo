@@ -87,8 +87,10 @@ sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts
     r.followed = ts->sm.followed;
     r.t_tune_m = ts->sm.t_tune_m;
     r.t_voice_m = ts->sm.t_voice_m;
+    r.t_maint_m = ts->sm.t_maint_m;
     r.confirm_epoch = tetra_confirm_carrier_epoch(state);
     r.followed_proven = (uint8_t)tetra_confirm_followed_call_proven(state);
+    r.followed_rx = (uint8_t)tetra_confirm_followed_rx(state);
     r.followed_retired = ts->sm.followed_retired;
     r.state = ts->sm.state;
     return r;
@@ -109,8 +111,9 @@ sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_r
     ts->sm.followed_retired = r->followed_retired;
     ts->sm.t_tune_m = r->t_tune_m;
     ts->sm.t_voice_m = r->t_voice_m;
+    ts->sm.t_maint_m = r->t_maint_m;
     /* The receiver never left the carrier: what proved the call there still does, unless the carrier was reset. */
-    tetra_confirm_restore_followed_call(state, r->confirm_epoch, r->followed_proven);
+    tetra_confirm_restore_followed_call(state, r->confirm_epoch, r->followed_proven, r->followed_rx);
     sm_set_state(state, ts, (tetra_sm_state_e)r->state, "tune failed; put back");
 }
 
@@ -151,6 +154,7 @@ sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
     ts->sm.followed_retired = 0;
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
+    ts->sm.t_maint_m = 0.0;
     tetra_confirm_forget_followed_call(state);
 }
 
@@ -161,6 +165,7 @@ sm_unfollow(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     DSD_MEMSET(&ts->sm.followed, 0, sizeof ts->sm.followed);
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
+    ts->sm.t_maint_m = 0.0;
     tetra_confirm_forget_followed_call(state);
     tetra_calls_unfollowed(opts, state);
 }
@@ -516,6 +521,15 @@ tetra_sm_note_voice(dsd_state* state, uint8_t tn) {
     ts->sm.t_voice_m = dsd_decode_now_mono_s();
 }
 
+void
+tetra_sm_note_maintenance(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U || ts->sm.t_voice_m > 0.0) {
+        return;
+    }
+    ts->sm.t_maint_m = dsd_decode_now_mono_s();
+}
+
 /* Trunking off while TUNED: the receiver stays on the followed channel (sm_release()), and what it decodes there is
  * decoded as on any carrier with trunking off, not as the followed call's: the machine keeps the channel and its timers
  * but lets go of the call (no call record, as tetra_sm_retire_call() leaves it), so the record ages, its signalling
@@ -557,7 +571,9 @@ sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         }
         return;
     }
-    if (ts->sm.t_tune_m > 0.0 && now_m - ts->sm.t_tune_m >= TETRA_SM_GRANT_TIMEOUT_S) {
+    /* Before the first speech the channel is kept while it is maintained for the call (tetra_sm_note_maintenance()). */
+    const double since_m = ts->sm.t_maint_m > ts->sm.t_tune_m ? ts->sm.t_maint_m : ts->sm.t_tune_m;
+    if (ts->sm.t_tune_m > 0.0 && now_m - since_m >= TETRA_SM_GRANT_TIMEOUT_S) {
         (void)sm_release(opts, state, ts, "grant timeout");
     }
 }
@@ -674,6 +690,7 @@ tetra_sm_retire_call(dsd_state* state, uint16_t call_id) {
     if (ts->sm.pending_request_id != 0U && prev->state == (uint8_t)TETRA_SM_TUNED && prev->followed.call_id == id) {
         prev->followed_retired = 1;
         prev->followed_proven = 0;
+        prev->followed_rx = 0;
     }
 }
 

@@ -3,8 +3,8 @@
  * TETRA TEA wrapper over the pinned TETRA_crypto generators: the EN 300 392-7
  * clause 6.3.2.1 IV packing and the TB5 cipher key derivation the wrapper
  * implements itself, and the keystream entry point's dispatch and argument
- * handling. Keystream and TB5 vectors are the published cases from Midnight
- * Blue's Apache-2.0 tests.
+ * handling, and the TA61 port. Keystream, TB5 and TA61 vectors are the
+ * published cases from Midnight Blue's Apache-2.0 tests.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -129,6 +129,13 @@ test_tea1_reduced(void) {
     tetra_tea1_keystream_reduced(0x67757D92u, 0x01234567u, out, (int)sizeof(out));
     check(memcmp(out, tea1_ks, sizeof(out)) == 0, "TEA1 keyed vector from its reduced key");
 
+    /* The register of a key is the reduced key that gives its key stream. */
+    static const uint8_t zero_key[10] = {0};
+    static const uint8_t keyed[10] = {0xA7, 0x98, 0x39, 0xE4, 0xBA, 0x88, 0xEE, 0x54, 0xA0, 0x29};
+    check(tetra_tea1_reduce_key(zero_key) == 0xC24E273Bu && tetra_tea1_reduce_key(keyed) == 0x67757D92u
+              && tetra_tea1_reduce_key(NULL) == 0u,
+          "TEA1 key registers of the published keys");
+
     /* Register 0 is a key like any other. */
     DSD_MEMSET(untouched, 0x5A, sizeof(untouched));
     DSD_MEMCPY(out, untouched, sizeof(out));
@@ -205,12 +212,43 @@ test_tb5(void) {
     check(memcmp(eck, wide, sizeof(eck)) == 0, "TB5 without a key or an output does nothing");
 }
 
+/* TA61 both ways against TETRA_crypto's own vectors (tests.c) and the example its gen_ta61 tool prints. */
+static void
+test_ta61(void) {
+    static const struct {
+        uint8_t key[10];
+        uint32_t ssi;
+        uint32_t esi;
+    } k_vectors[] = {
+        {{0xc6, 0x2e, 0x22, 0x85, 0x03, 0x40, 0xbc, 0xeb, 0x55, 0x52}, 0x565A72U, 0xC44853U},
+        {{0x77, 0xe7, 0x9f, 0xee, 0x7f, 0xc6, 0x54, 0xdc, 0x65, 0x44}, 0x000000U, 0x019887U},
+        {{0x4e, 0xbb, 0x68, 0x9d, 0x87, 0x4a, 0xd6, 0x41, 0x79, 0x05}, 0x935E49U, 0xEF70E4U},
+        {{0x67, 0xfb, 0x13, 0x4d, 0xd7, 0x9c, 0x7d, 0x77, 0xf5, 0x2a}, 0xB824FFU, 0xE69AD6U},
+        {{0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11}, 100U, 12845063U},
+    };
+
+    for (size_t i = 0; i < sizeof k_vectors / sizeof k_vectors[0]; i++) {
+        uint32_t out = 0;
+        tetra_ta61_encrypt(k_vectors[i].key, k_vectors[i].ssi, &out);
+        check(out == k_vectors[i].esi, "TA61 encrypts the vector's SSI to its ESI");
+        tetra_ta61_decrypt(k_vectors[i].key, k_vectors[i].esi, &out);
+        check(out == k_vectors[i].ssi, "TA61 decrypts the vector's ESI to its SSI");
+    }
+    /* Only the 24 address bits count, and NULL does nothing. */
+    uint32_t out = 0;
+    tetra_ta61_encrypt(k_vectors[4].key, 0xFF000000U | 100U, &out);
+    check(out == 12845063U, "TA61 reads only the 24 address bits");
+    tetra_ta61_encrypt(NULL, 100U, &out);
+    tetra_ta61_decrypt(k_vectors[4].key, 12845063U, NULL);
+}
+
 int
 main(void) {
     test_iv_packing();
     test_keystream();
     test_tea1_reduced();
     test_tb5();
+    test_ta61();
     if (g_fail != 0) {
         DSD_FPRINTF(stderr, "%d TETRA crypto check(s) failed\n", g_fail);
         return 1;

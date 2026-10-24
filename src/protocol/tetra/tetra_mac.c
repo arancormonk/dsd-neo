@@ -7,24 +7,29 @@
  * (124 bits) or SCH/F (268 bits). The block is split into its associated PDUs (clause 23.4.3.3); every PDU is read
  * only up to its own length, its fill bits are removed (clause 23.4.3.2) and its TM-SDU goes to the LLC, or into
  * the fragment context of the block's timeslot (clause 23.4.3.1.1). The LLC passes basic-link TL-SDUs whose FCS
- * checks to the MLE. TM-SDUs with an encryption mode other than 00 are ciphertext (EN 300 392-7 clause 6.7.1.2) and
- * are not parsed. The MAC-RESOURCE header, SYSINFO and ACCESS-DEFINE are read by pure decoders (tetra_mac_pdu.h).
+ * checks to the MLE. TM-SDUs with an encryption mode other than 00 are ciphertext (EN 300 392-7 clause 6.7.1.2): they
+ * are parsed once a loaded key decrypted them and a repeat proved the plaintext (tetra_air_sig.h), and not otherwise.
+ * The MAC-RESOURCE header, SYSINFO and ACCESS-DEFINE are read by pure decoders (tetra_mac_pdu.h).
  */
 
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tetra_air_sig.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"
@@ -48,6 +53,8 @@
 #define LLC_FCS_POLYNOMIAL        0x04C11DB7u
 /* Hex bytes in the -Z dump of a block; SCH/F has 268 bits. */
 #define MAC_RAW_DUMP_BYTES        34
+/* Type-1 bits of a full-slot block (SCH/F), the longest MAC PDU. */
+#define MAC_FULL_SLOT_BITS        268
 
 /* One MAC block being decoded. */
 typedef struct {
@@ -59,6 +66,7 @@ typedef struct {
     int first;                /* the PDU being decoded starts the block */
     int fragment_seen;        /* the block carried a fragment of its timeslot's TM-SDU */
     tetra_mac_fragment* frag; /* fragment context of the block's timeslot */
+    int ks_offset;            /* key stream bit its encrypted PDUs start at (EN 300 392-7 clause 6.4.2.2) */
 } mac_block;
 
 /* 1 for the SSI family (SSI, USSI and their event label or usage marker forms), 2 for the SMI family, 0 for event
@@ -111,16 +119,22 @@ format_address(const tetra_mac_address* addr, char* out, size_t cap) {
     } else if (addr->type == TETRA_MAC_ADDR_USSI) {
         id = "USSI";
     }
+    char party[48];
+    if (addr->esi_decrypted) {
+        DSD_SNPRINTF(party, sizeof party, "SSI(%u from ESI %u)", (unsigned)addr->ssi, (unsigned)addr->esi_value);
+    } else {
+        DSD_SNPRINTF(party, sizeof party, "%s(%u)", id, (unsigned)addr->ssi);
+    }
     switch (addr->type) {
         case TETRA_MAC_ADDR_EVENT_LABEL: DSD_SNPRINTF(out, cap, "EventLabel(%u)", (unsigned)addr->event_label); break;
         case TETRA_MAC_ADDR_SSI_EVENT:
         case TETRA_MAC_ADDR_SMI_EVENT:
-            DSD_SNPRINTF(out, cap, "%s(%u)+EventLabel(%u)", id, (unsigned)addr->ssi, (unsigned)addr->event_label);
+            DSD_SNPRINTF(out, cap, "%s+EventLabel(%u)", party, (unsigned)addr->event_label);
             break;
         case TETRA_MAC_ADDR_SSI_USAGE:
-            DSD_SNPRINTF(out, cap, "%s(%u)+UsageMarker(%u)", id, (unsigned)addr->ssi, (unsigned)addr->usage_marker);
+            DSD_SNPRINTF(out, cap, "%s+UsageMarker(%u)", party, (unsigned)addr->usage_marker);
             break;
-        default: DSD_SNPRINTF(out, cap, "%s(%u)", id, (unsigned)addr->ssi); break;
+        default: DSD_SNPRINTF(out, cap, "%s", party); break;
     }
 }
 
@@ -331,12 +345,19 @@ discard_fragment(tetra_mac_fragment* f) {
     f->active = 0;
     f->enc_mode = TETRA_ENC_MODE_NONE;
     f->idle_half_slots = 0;
+    if (f->nbits > 0u) {
+        DSD_SECURE_ZERO(f->bits, f->nbits);
+    }
     f->nbits = 0;
+    f->npieces = 0;
+    f->cipher_lost = 0;
 }
 
 static int
 fragment_append(tetra_mac_fragment* f, const uint8_t* bits, int nbits) {
-    if (nbits < 0 || nbits > (int)sizeof f->bits - (int)f->nbits) {
+    /* A clear TM-SDU is at most N.202; an encrypted one keeps its MAC-END's allocation too until it is decrypted. */
+    const int cap = f->enc_mode == TETRA_ENC_MODE_NONE ? TETRA_MAC_TM_SDU_MAX_BITS : (int)sizeof f->bits;
+    if (nbits < 0 || nbits > cap - (int)f->nbits) {
         return 0;
     }
     if (nbits > 0) {
@@ -366,6 +387,7 @@ start_fragment(mac_block* b, const tetra_mac_address* addr, uint8_t enc_mode, co
     }
     discard_fragment(f);
     f->active = 1;
+    f->start_m = dsd_decode_now_mono_s();
     f->enc_mode = (uint8_t)(enc_mode & 3u);
     f->cc = (int8_t)b->cc;
     f->addr = *addr;
@@ -393,12 +415,35 @@ fragment_continues(mac_block* b, const char* name) {
     return 1;
 }
 
+/* Keep @p n ciphertext bits of an encrypted TM-SDU being rebuilt as one piece, under the key stream of the block's
+ * slot (EN 300 392-7 clause 6.4.2.2). A piece that cannot be kept (no slot to decrypt it by, too many, another
+ * carrier) leaves the TM-SDU undecryptable. */
 static void
-print_resource(const mac_block* b, const tetra_mac_resource* h, int sdu_bits) {
-    char addr[64];
+fragment_add_cipher(mac_block* b, const uint8_t* ct, int n) {
+    tetra_mac_fragment* const f = b->frag;
+    if (!f->active || f->cipher_lost) {
+        return;
+    }
+    tetra_mac_piece piece;
+    const uint16_t start = f->nbits;
+    if (n < 0 || f->npieces >= TETRA_MAC_FRAG_PIECES || !tetra_air_sig_slot(b->opts, b->state, b->ks_offset, &piece)
+        || (f->npieces > 0u && piece.carrier != f->piece[0].carrier) || !fragment_append(f, ct, n)) {
+        f->cipher_lost = 1;
+        return;
+    }
+    piece.start = start;
+    piece.nbits = (uint16_t)n;
+    f->piece[f->npieces++] = piece;
+}
+
+static void
+print_resource_as(const mac_block* b, const tetra_mac_resource* h, int sdu_bits, const char* decrypted) {
+    char addr[96];
     const char* note = "";
     format_address(&h->addr, addr, sizeof addr);
-    if (h->enc_mode != TETRA_ENC_MODE_NONE && (sdu_bits > 0 || h->alloc_present)) {
+    if (decrypted) {
+        note = decrypted;
+    } else if (h->enc_mode != TETRA_ENC_MODE_NONE && (sdu_bits > 0 || h->alloc_present)) {
         note = h->alloc_present ? "  channel allocation and TM-SDU encrypted; not decoded" : "  encrypted; not decoded";
     } else if (h->length_ind == MAC_LI_FRAGMENT_START) {
         note = "  first fragment";
@@ -406,6 +451,19 @@ print_resource(const mac_block* b, const tetra_mac_resource* h, int sdu_bits) {
     DSD_FPRINTF(stderr, "[TETRA MAC-RESOURCE] CC=%d  enc=%s  rand_acc=%u  len_ind=%u  addr=%s  sdu_bits=%d%s\n", b->cc,
                 tetra_enc_mode_name(h->enc_mode), (unsigned)h->random_access, (unsigned)h->length_ind, addr, sdu_bits,
                 note);
+}
+
+static void
+print_resource(const mac_block* b, const tetra_mac_resource* h, int sdu_bits) {
+    print_resource_as(b, h, sdu_bits, NULL);
+}
+
+/* "  decrypted (TEA2)" for the -Z line of a PDU @p used decrypted. */
+static void
+decrypted_note(const tetra_air_cand* used, char* out, size_t cap) {
+    const char* const tea = tetra_air_ksg_name((int)used->ksg);
+    DSD_SNPRINTF(out, cap, "  decrypted (%s%s)", tea ? tea : "TEA?",
+                 used->kind == DSD_TETRA_AIR_KEY_TEA1_REDUCED ? ", reduced key" : "");
 }
 
 /* PDU length of a MAC-RESOURCE in a block with @p nbits bits left: the indicated length bounded by the block
@@ -493,18 +551,119 @@ deliver_encrypted(const mac_block* b, const tetra_mac_address* addr, uint32_t al
     tetra_calls_on_allocation(b->opts, b->state, &ctx);
 }
 
-/* MAC-RESOURCE whose encryption mode is not 00: everything after the channel allocation flag is ciphertext
- * (EN 300 392-7 clause 6.7.1.2), so neither the allocation nor the TM-SDU is read. A first fragment is delivered at its
- * MAC-END. */
+/* MAC-RESOURCE whose encryption mode is not 00 that no key decrypted: everything after the channel allocation flag is
+ * ciphertext (EN 300 392-7 clause 6.7.1.2), so neither the allocation nor the TM-SDU is read. A first fragment is
+ * delivered at its MAC-END; its ciphertext is kept for a key to decrypt there (tetra_air_sig.h), unless a channel
+ * allocation in it hides where its TM-SDU starts. */
 static void
-resource_encrypted(mac_block* b, const tetra_mac_resource* h, int sdu_bits) {
-    print_resource(b, h, sdu_bits);
+resource_encrypted(mac_block* b, const tetra_mac_resource* h, const uint8_t* bits, int end) {
+    print_resource(b, h, end > h->body ? end - h->body : 0);
     publish_resource_header(b, h);
     if (h->length_ind == MAC_LI_FRAGMENT_START) {
         start_fragment(b, &h->addr, h->enc_mode, NULL, 0);
+        if (h->alloc_present || end < h->body) {
+            b->frag->cipher_lost = 1;
+        } else {
+            fragment_add_cipher(b, bits + h->body, end - h->body);
+        }
     } else {
         deliver_encrypted(b, &h->addr, h->alloc_present);
     }
+}
+
+/* The clear address of an encrypted PDU, as the evidence tells TM-SDUs apart by (tetra_air_sig_header). */
+static tetra_air_sig_header
+cipher_header(const tetra_mac_address* addr, uint8_t kind, uint8_t enc_mode, uint32_t alloc_present) {
+    tetra_air_sig_header sh;
+    DSD_MEMSET(&sh, 0, sizeof sh);
+    sh.addr = addr->ssi;
+    sh.label = addr->event_label;
+    sh.kind = kind;
+    sh.addr_type = addr->type;
+    sh.enc_mode = enc_mode;
+    sh.alloc = (uint8_t)(alloc_present != 0u);
+    sh.um = addr->usage_marker;
+    return sh;
+}
+
+/* An encrypted MAC-RESOURCE carrying a whole TM-SDU, its ciphertext @p bits[h->body .. end): when a key decrypts it and
+ * a repeat proved the plaintext (tetra_air_sig_open()), @p clear gets the PDU with the plaintext in place and @p used
+ * the key. */
+static int
+resource_decrypt(mac_block* b, const uint8_t* bits, const tetra_mac_resource* h, int end, uint8_t* clear,
+                 tetra_air_cand* used) {
+    tetra_mac_piece piece;
+    if (end <= h->body || h->pdu_bits > MAC_FULL_SLOT_BITS
+        || !tetra_air_sig_slot(b->opts, b->state, b->ks_offset, &piece)) {
+        return 0;
+    }
+    piece.start = 0;
+    piece.nbits = (uint16_t)(end - h->body);
+    const tetra_air_sig_header sh = cipher_header(&h->addr, TETRA_AIR_SIG_RESOURCE, h->enc_mode, h->alloc_present);
+    const tetra_air_sig_input in = {bits + h->body, &piece, NULL, NULL, (int)piece.nbits, 1, -1, 0.0};
+    uint8_t pt[MAC_FULL_SLOT_BITS];
+    if (!tetra_air_sig_open(b->state, &sh, &in, pt, used)) {
+        return 0;
+    }
+    DSD_MEMCPY(clear, bits, (size_t)h->pdu_bits);
+    DSD_MEMCPY(clear + h->body, pt, piece.nbits);
+    DSD_SECURE_ZERO(pt, sizeof pt);
+    return 1;
+}
+
+/* A MAC-RESOURCE whose TM-SDU is clear, or decrypted (@p used: the key, @p h->enc_mode the mode it was sent in), in
+ * the @p nbits bits of @p bits. */
+static int
+resource_parse(mac_block* b, const uint8_t* bits, int nbits, tetra_mac_resource* h, const tetra_air_cand* used) {
+    if (h->pdu_bits > nbits || h->body < 0 || h->body > h->pdu_bits) {
+        return 0;
+    }
+    char note[40] = "";
+    if (used) {
+        decrypted_note(used, note, sizeof note);
+        (void)tetra_air_sig_identity(used, &h->addr);
+    }
+    tetra_bit_reader r = tetra_bits_reader(bits, h->pdu_bits, h->body);
+    tetra_mac_sdu ctx = {
+        .addr = h->addr,
+        .has_addr = 1,
+        .has_alloc = h->alloc_present,
+        .enc_mode = h->enc_mode,
+    };
+    if (used) {
+        ctx.air_key = *used;
+    }
+    if (h->alloc_present && !read_allocation(&r, b->ts, &ctx.alloc)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; PDU discarded\n",
+                          b->cc);
+        DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
+        return h->pdu_bits;
+    }
+    const int end = content_end(bits, r.pos, h->pdu_bits, h->fill);
+    if (end < 0) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  fill bits without a final 1 bit; discarded\n", b->cc);
+        DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
+        return h->pdu_bits;
+    }
+    print_resource_as(b, h, end - r.pos, used ? note : NULL);
+    if (h->length_ind == MAC_LI_FRAGMENT_START) {
+        /* A fragmented TM-SDU carries its channel allocation in the MAC-END (clause 23.4.2.1.1). */
+        if (h->alloc_present) {
+            TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA MAC-RESOURCE] CC=%d  allocation in a first fragment ignored\n", b->cc);
+        }
+        publish_resource_header(b, h);
+        start_fragment(b, &h->addr, TETRA_ENC_MODE_NONE, bits + r.pos, end - r.pos);
+        return h->pdu_bits;
+    }
+    if (h->alloc_present) {
+        print_allocation(b, &ctx.alloc);
+    }
+    /* A decrypted allocation is no unread ciphertext: the call it attaches to takes its encryption and key from it
+     * (call_attach()), before anything judges the call by them. */
+    publish_address(b, &h->addr, h->enc_mode, used ? 0u : h->alloc_present);
+    deliver_tm_sdu(b, bits + r.pos, end - r.pos, &ctx);
+    DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
+    return h->pdu_bits;
 }
 
 /* MAC-RESOURCE, clause 21.4.3.1. Returns the PDU length, or 0 when nothing more of the block can be decoded. */
@@ -515,42 +674,22 @@ parse_mac_resource(mac_block* b, const uint8_t* bits, int nbits) {
         return 0;
     }
     b->ts->frames_resource++;
-    tetra_bit_reader r = tetra_bits_reader(bits, h.pdu_bits, h.body);
-    if (h.enc_mode != TETRA_ENC_MODE_NONE) {
-        const int end = content_end(bits, h.body, h.pdu_bits, h.fill);
-        resource_encrypted(b, &h, end > h.body ? end - h.body : 0);
-        return h.pdu_bits;
+    if (h.enc_mode == TETRA_ENC_MODE_NONE) {
+        return resource_parse(b, bits, nbits, &h, NULL);
     }
-    tetra_mac_sdu ctx = {
-        .addr = h.addr,
-        .has_addr = 1,
-        .has_alloc = h.alloc_present,
-    };
-    if (h.alloc_present && !read_allocation(&r, b->ts, &ctx.alloc)) {
-        TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; PDU discarded\n",
-                          b->cc);
-        return h.pdu_bits;
-    }
-    const int end = content_end(bits, r.pos, h.pdu_bits, h.fill);
-    if (end < 0) {
-        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  fill bits without a final 1 bit; discarded\n", b->cc);
-        return h.pdu_bits;
-    }
-    print_resource(b, &h, end - r.pos);
-    if (h.length_ind == MAC_LI_FRAGMENT_START) {
-        /* A fragmented TM-SDU carries its channel allocation in the MAC-END (clause 23.4.2.1.1). */
-        if (h.alloc_present) {
-            TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA MAC-RESOURCE] CC=%d  allocation in a first fragment ignored\n", b->cc);
+    tetra_air_sig_note_parity(b->state, h.enc_mode);
+    const int end = content_end(bits, h.body, h.pdu_bits, h.fill);
+    if (h.length_ind != MAC_LI_FRAGMENT_START && tetra_enc_mode_encrypted(h.enc_mode)) {
+        uint8_t clear[MAC_FULL_SLOT_BITS];
+        tetra_air_cand used;
+        if (resource_decrypt(b, bits, &h, end, clear, &used)) {
+            const int pdu_bits = resource_parse(b, clear, (int)sizeof clear, &h, &used);
+            DSD_SECURE_ZERO(clear, sizeof clear);
+            DSD_SECURE_ZERO(&used, sizeof used);
+            return pdu_bits;
         }
-        publish_resource_header(b, &h);
-        start_fragment(b, &h.addr, TETRA_ENC_MODE_NONE, bits + r.pos, end - r.pos);
-        return h.pdu_bits;
     }
-    if (h.alloc_present) {
-        print_allocation(b, &ctx.alloc);
-    }
-    publish_resource_header(b, &h);
-    deliver_tm_sdu(b, bits + r.pos, end - r.pos, &ctx);
+    resource_encrypted(b, &h, bits, end);
     return h.pdu_bits;
 }
 
@@ -563,10 +702,16 @@ parse_mac_frag(mac_block* b, const uint8_t* bits, int nbits) {
         return 0;
     }
     tetra_mac_fragment* const f = b->frag;
+    const int end = content_end(bits, r.pos, nbits, fill);
     if (f->enc_mode != TETRA_ENC_MODE_NONE) {
+        /* Its TM-SDU fragment is ciphertext under this slot's key stream; the fill bits are clear. */
+        if (end < 0) {
+            f->cipher_lost = 1;
+        } else {
+            fragment_add_cipher(b, bits + r.pos, end - r.pos);
+        }
         return nbits;
     }
-    const int end = content_end(bits, r.pos, nbits, fill);
     if (end < 0 || !fragment_append(f, bits + r.pos, end - r.pos)) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-FRAG] CC=%d  malformed or oversized fragment; TM-SDU dropped\n", b->cc);
         discard_fragment(f);
@@ -577,23 +722,105 @@ parse_mac_frag(mac_block* b, const uint8_t* bits, int nbits) {
 }
 
 /* Deliver the rebuilt TM-SDU of the block's timeslot. Its address is that of the MAC-RESOURCE that started it, and
- * the only allocation that applies is the one in this MAC-END. */
+ * the only allocation that applies is the one in this MAC-END. A TM-SDU sent encrypted (@p enc_mode) was decrypted by
+ * @p used. */
 static void
-complete_fragment(mac_block* b, const tetra_chan_alloc* alloc) {
+complete_fragment(mac_block* b, const tetra_chan_alloc* alloc, uint8_t enc_mode, const tetra_air_cand* used) {
     tetra_mac_fragment* const f = b->frag;
     tetra_mac_sdu ctx = {
         .addr = f->addr,
         .has_addr = 1,
         .has_alloc = alloc != NULL,
+        .enc_mode = enc_mode,
     };
+    if (used) {
+        ctx.air_key = *used;
+    }
     if (alloc) {
         ctx.alloc = *alloc;
         print_allocation(b, alloc);
     }
-    publish_address(b, &f->addr, TETRA_ENC_MODE_NONE, alloc != NULL);
-    TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  TM-SDU of %u bits rebuilt\n", b->cc, (unsigned)f->nbits);
+    publish_address(b, &f->addr, enc_mode, alloc != NULL && !used);
+    if (used) {
+        char note[40] = "";
+        char addr[96];
+        decrypted_note(used, note, sizeof note);
+        format_address(&f->addr, addr, sizeof addr);
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  TM-SDU of %u bits rebuilt  addr=%s%s\n", b->cc,
+                          (unsigned)f->nbits, addr, note);
+    } else {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  TM-SDU of %u bits rebuilt\n", b->cc, (unsigned)f->nbits);
+    }
     deliver_tm_sdu(b, f->bits, f->nbits, &ctx);
+    DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
     discard_fragment(f);
+}
+
+/* The length of the channel allocation element at bit @p at of @p pt (its cell's band and offset from @p ctx, a
+ * tetra_state_t), or -1 when it does not read (tetra_air_sig_input::alloc_bits). */
+static int
+allocation_bits(const uint8_t* pt, int nbits, int at, const void* ctx) {
+    tetra_bit_reader r = tetra_bits_reader(pt, nbits, at);
+    tetra_chan_alloc alloc;
+    return read_allocation(&r, (const tetra_state_t*)ctx, &alloc) ? r.pos - at : -1;
+}
+
+/* An encrypted TM-SDU at its MAC-END, all its pieces kept: when a key decrypts it and a repeat proved the plaintext, it
+ * is delivered like a clear one. The MAC-END's piece decrypts to its channel allocation, if any, then the last
+ * fragment (EN 300 392-7 clause 6.7.1.2). Returns 1 when it was. */
+static int
+fragment_open(mac_block* b, uint32_t alloc_present) {
+    tetra_mac_fragment* const f = b->frag;
+    if (f->cipher_lost || f->npieces < 2u || !tetra_enc_mode_encrypted(f->enc_mode)) {
+        return 0;
+    }
+    const int end_start = f->piece[f->npieces - 1u].start;
+    const tetra_air_sig_header sh = cipher_header(&f->addr, TETRA_AIR_SIG_FRAGMENTED, f->enc_mode, alloc_present);
+    const tetra_air_sig_input in = {f->bits,
+                                    f->piece,
+                                    allocation_bits,
+                                    b->ts,
+                                    f->nbits,
+                                    f->npieces,
+                                    alloc_present != 0u ? end_start : -1,
+                                    dsd_decode_now_mono_s() - f->start_m};
+    uint8_t pt[TETRA_MAC_FRAG_BITS];
+    tetra_air_cand used;
+    if (!tetra_air_sig_open(b->state, &sh, &in, pt, &used)) {
+        return 0;
+    }
+    int total = f->nbits;
+    tetra_chan_alloc alloc = {0};
+    if (alloc_present != 0u) {
+        tetra_bit_reader r = tetra_bits_reader(pt, total, end_start);
+        if (!read_allocation(&r, b->ts, &alloc)) {
+            TETRA_LOG_PAYLOAD(
+                b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; TM-SDU dropped\n", b->cc);
+            DSD_SECURE_ZERO(pt, sizeof pt);
+            DSD_SECURE_ZERO(&used, sizeof used);
+            discard_fragment(f);
+            return 1;
+        }
+        /* What follows the allocation is the last fragment. */
+        for (int i = r.pos; i < total; i++) {
+            pt[end_start + (i - r.pos)] = pt[i];
+        }
+        total -= r.pos - end_start;
+    }
+    if (total > TETRA_MAC_TM_SDU_MAX_BITS) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  rebuilt TM-SDU longer than N.202; dropped\n", b->cc);
+        DSD_SECURE_ZERO(pt, sizeof pt);
+        DSD_SECURE_ZERO(&used, sizeof used);
+        discard_fragment(f);
+        return 1;
+    }
+    DSD_MEMCPY(f->bits, pt, (size_t)total);
+    f->nbits = (uint16_t)total;
+    DSD_SECURE_ZERO(pt, sizeof pt);
+    (void)tetra_air_sig_identity(&used, &f->addr);
+    complete_fragment(b, alloc_present != 0u ? &alloc : NULL, f->enc_mode, &used);
+    DSD_SECURE_ZERO(&used, sizeof used);
+    return 1;
 }
 
 /* The MAC-END after its slot granting and channel allocation flags (table 21.59). */
@@ -601,9 +828,19 @@ static void
 finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint32_t fill, uint32_t alloc_present) {
     tetra_mac_fragment* const f = b->frag;
     if (f->enc_mode != TETRA_ENC_MODE_NONE) {
-        /* The allocation and the last fragment are ciphertext like the rest (EN 300 392-7 clause 6.7.1.2). An
-         * allocation there makes the traffic of the call of the addressed party air encrypted, as it does in an
-         * encrypted MAC-RESOURCE that carries a whole TM-SDU (publish_resource_header()). */
+        /* The allocation and the last fragment are ciphertext like the rest (EN 300 392-7 clause 6.7.1.2), the fill
+         * bits clear. */
+        const int end = content_end(bits, body, pdu_bits, fill);
+        if (end < body) {
+            f->cipher_lost = 1;
+        } else {
+            fragment_add_cipher(b, bits + body, end - body);
+        }
+        if (fragment_open(b, alloc_present)) {
+            return;
+        }
+        /* Undecrypted: an allocation there makes the traffic of the call of the addressed party air encrypted, as
+         * it does in an encrypted MAC-RESOURCE that carries a whole TM-SDU (publish_resource_header()). */
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  encrypted TM-SDU ends\n", b->cc);
         if (alloc_present != 0u) {
             publish_address(b, &f->addr, f->enc_mode, 1);
@@ -626,7 +863,7 @@ finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint3
         discard_fragment(f);
         return;
     }
-    complete_fragment(b, alloc_present != 0u ? &alloc : NULL);
+    complete_fragment(b, alloc_present != 0u ? &alloc : NULL, TETRA_ENC_MODE_NONE, NULL);
 }
 
 /* MAC-END, table 21.59 (pi/4-DQPSK: no immediate napping permission flag, basic slot granting only). Returns the PDU
@@ -836,6 +1073,10 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
         ts->hyperframe = si->hyperframe_or_cck;
         ts->hyperframe_valid = 1;
     }
+    /* The key version and security this SYSINFO announces: another one may mean another key (tetra_air_sig.h). Its
+     * security elements mean something only on a cell that offers air interface encryption (table A.104 note 1). */
+    const int sec_meaningful = si->security_present && (!si->mle_present || ((si->bs_service >> 1) & 1u) != 0u);
+    tetra_air_sig_note_sysinfo(b->state, si->cck_flag, si->hyperframe_or_cck, sec_meaningful ? &si->security : NULL);
     ts->sysinfo_main_carrier = si->main_carrier;
     if (si->security_present) {
         ts->sec = si->security;
@@ -918,6 +1159,23 @@ parse_broadcast(mac_block* b, const uint8_t* bits, int nbits) {
     return 0;
 }
 
+/* An encrypted MAC-D-BLCK's TM-SDU (@p ct, @p n bits), ciphertext from the slot's first key stream bit (EN 300 392-7
+ * clause 6.4.0): when a key decrypts it and a repeat proved the plaintext, @p pt gets it and @p ctx the key. */
+static int
+d_blck_decrypt(mac_block* b, const uint8_t* ct, int n, uint8_t enc_mode, uint8_t* pt, tetra_mac_sdu* ctx) {
+    tetra_air_sig_note_parity(b->state, enc_mode);
+    tetra_mac_piece piece;
+    if (!tetra_enc_mode_encrypted(enc_mode) || n <= 0 || n > MAC_FULL_SLOT_BITS
+        || !tetra_air_sig_slot(b->opts, b->state, b->ks_offset, &piece)) {
+        return 0;
+    }
+    piece.start = 0;
+    piece.nbits = (uint16_t)n;
+    const tetra_air_sig_header sh = cipher_header(&ctx->addr, TETRA_AIR_SIG_D_BLCK, enc_mode, 0u);
+    const tetra_air_sig_input in = {ct, &piece, NULL, NULL, n, 1, -1, 0.0};
+    return tetra_air_sig_open(b->state, &sh, &in, pt, &ctx->air_key);
+}
+
 /* MAC PDU type 11: MAC-U-SIGNAL on STCH (table 21.80), MAC-D-BLCK on a full slot (table 21.61). */
 static int
 parse_supplementary(mac_block* b, const uint8_t* bits, int nbits) {
@@ -940,17 +1198,32 @@ parse_supplementary(mac_block* b, const uint8_t* bits, int nbits) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-D-BLCK] CC=%d  reserved subtype or malformed PDU\n", b->cc);
         return 0;
     }
+    /* MAC-D-BLCK addresses its party by event label alone. */
+    tetra_mac_sdu ctx = {
+        .addr = {.type = TETRA_MAC_ADDR_EVENT_LABEL, .event_label = (uint16_t)event_label},
+        .has_addr = 1,
+        .enc_mode = (uint8_t)enc_mode,
+    };
+    uint8_t pt[MAC_FULL_SLOT_BITS];
+    const int decrypted =
+        enc_mode != TETRA_ENC_MODE_NONE && d_blck_decrypt(b, bits + r.pos, end - r.pos, (uint8_t)enc_mode, pt, &ctx);
+    char note[40] = "";
+    if (decrypted) {
+        decrypted_note(&ctx.air_key, note, sizeof note);
+    } else if (enc_mode != TETRA_ENC_MODE_NONE) {
+        DSD_SNPRINTF(note, sizeof note, "  encrypted; not decoded");
+    }
     DSD_FPRINTF(stderr, "[TETRA MAC-D-BLCK] CC=%d  enc=%s  event_label=%u  sdu_bits=%d%s\n", b->cc,
-                tetra_enc_mode_name((uint8_t)enc_mode), (unsigned)event_label, end - r.pos,
-                enc_mode != TETRA_ENC_MODE_NONE ? "  encrypted; not decoded" : "");
-    if (enc_mode == TETRA_ENC_MODE_NONE && end > r.pos) {
-        /* MAC-D-BLCK addresses its party by event label alone. */
-        tetra_mac_sdu ctx = {
-            .addr = {.type = TETRA_MAC_ADDR_EVENT_LABEL, .event_label = (uint16_t)event_label},
-            .has_addr = 1,
-        };
+                tetra_enc_mode_name((uint8_t)enc_mode), (unsigned)event_label, end - r.pos, note);
+    /* The event label is clear whether or not the TM-SDU can be read (EN 300 392-7 clause 6.7.1.2). */
+    tetra_calls_on_label_pdu(b->opts, b->state, (uint16_t)event_label);
+    if (decrypted) {
+        llc_deliver(b, pt, end - r.pos, &ctx);
+        DSD_SECURE_ZERO(pt, sizeof pt);
+    } else if (enc_mode == TETRA_ENC_MODE_NONE && end > r.pos) {
         llc_deliver(b, bits + r.pos, end - r.pos, &ctx);
     }
+    DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
     /* The implicit length of a pi/4-DQPSK MAC-D-BLCK is the rest of the block (clause 23.4.2.3). */
     return nbits;
 }
@@ -1058,6 +1331,11 @@ tetra_mac_forget_fragments(dsd_state* state) {
 
 void
 tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
+    tetra_mac_parse_block(bits, nbits, cc, 0, opts, state);
+}
+
+void
+tetra_mac_parse_block(const uint8_t* bits, int nbits, int cc, int ks_offset, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !bits || nbits < 2) {
         return;
@@ -1069,7 +1347,7 @@ tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd
         TETRA_LOG_PAYLOAD(ts, "[TETRA MAC] CC=%d  uplink block of %d bits not decoded\n", cc, nbits);
         return;
     }
-    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)]};
+    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)], ks_offset};
     catch_up_fragment(ts, b.frag, cc);
     int off = 0;
     while (nbits - off >= (b.first ? 2 : MAC_NULL_PDU_BITS)) {

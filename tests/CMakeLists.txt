@@ -12119,6 +12119,7 @@ add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 # dropped from the CTest name).
 set(_dsd_tetra_test_sources
     acelp_reference
+    air_signalling
     tetra_aach
     tetra_bits
     air_chain_vector
@@ -12187,6 +12188,9 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(dsd-neo_bench_tetra_viterbi PRIVATE dsd-neo_proto_tetra)
+
+# The air signalling test encrypts its blocks with the TEA, TB5 and TA61 wrappers.
+target_link_libraries(dsd-neo_test_tetra_air_signalling PRIVATE dsd-neo_crypto)
 
 target_compile_definitions(
     dsd-neo_test_tetra_acelp_reference

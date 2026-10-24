@@ -162,7 +162,7 @@ ttb_d_setup(ttb_block* b, uint32_t call_id, uint32_t basic_service) {
     ttb_put(b, 0, 1);             /* hook method selection */
     ttb_put(b, 0, 1);             /* simplex/duplex selection */
     ttb_put(b, basic_service, 8); /* table 14.35 */
-    ttb_put(b, 0, 2);             /* transmission grant */
+    ttb_put(b, 3, 2);             /* transmission grant: granted to another user, as a group D-SETUP sends it */
     ttb_put(b, 0, 1);             /* transmission request permission */
     ttb_put(b, 0, 4);             /* call priority */
     ttb_put(b, 0, 1);             /* O-bit: no optional elements */

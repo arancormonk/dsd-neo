@@ -24,6 +24,9 @@ not a finding that every component is cleared for redistribution.
   generators (`tea1.c`, `tea2.c`, `tea3.c`), downloaded from <https://github.com/MidnightBlueLabs/TETRA_crypto> at the
   immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. Apache-2.0; the license text is installed as
   `share/doc/dsd-neo/licenses/tetra_crypto-LICENSE.txt`. See `docs/dependencies.md` for offline builds and updates.
+  `src/crypto/tetra_ta61.c` is a port of the same revision's TA61 identity encryption and the HURDLE block encryption
+  it runs on (`taa1.c`, `hurdle.c`), rewritten byte by byte for portability; it is under the same Apache-2.0 license
+  as well as GPL-3.0-or-later, and keeps the Midnight Blue notice.
 - **Tiny AES** (`src/crypto/crypt-aes.c`) - Unlicense/public domain; original upstream https://github.com/kokke/tiny-AES-c.
 - **librtlsdr** (`android/third_party/librtlsdr`; osmocom, https://gitea.osmocom.org/sdr/rtl-sdr) - GPL-2.0-or-later;
   license text `android/third_party/librtlsdr/COPYING`. Trimmed v2.0.3 snapshot (library sources only) built into the
