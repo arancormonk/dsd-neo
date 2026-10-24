@@ -15058,8 +15058,8 @@ if(DSD_HAS_RADIO)
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_DEFAULT nxdn96 "" "RAN 00")
-    # NXDN96 landed on mid-frame after a quarter second of receiver noise (DERIVED_RETUNE): the first FSW marks the
-    # place and the one a frame later is taken.
+    # NXDN96 landed on mid-frame after a quarter second of receiver noise (DERIVED_RETUNE): with no preamble ahead, the
+    # first FSW marks the place and the one a frame later acquires (NXDN TS 1-A N1 = 2).
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN nxdn96_after_retune -fn "RAN 00")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN_AUTO nxdn96_after_retune -fa "RAN 00")
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
@@ -15908,8 +15908,9 @@ if(DSD_HAS_RADIO)
     # Receiver noise opens no M17 or NXDN96 frame at all. Their sync words are eight and ten sign-sliced symbols, and
     # M17 used to take any eight-window alternating run as a preamble and NXDN96 any two hits at any distance: this
     # fixture opened 27 M17 frames under -fz and 20 NXDN96 frames under -fn. M17 now joins a transmission on a
-    # preamble that runs DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows or on two sync words one 192-symbol frame apart,
-    # and NXDN96's two hits must be a frame apart.
+    # preamble that runs DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows or on the same sync word three 192-symbol frames
+    # running, and NXDN96 acquires on two four-level FSWs a frame apart or one behind the preamble tail. -Z prints an
+    # NXDN sync whose LICH then fails, which otherwise prints nothing, so those cannot hide here either.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC
         noise_floor
@@ -15920,14 +15921,14 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC
         noise_floor
-        -fn
+        "-fn -Z"
         "Total audio errors: 0"
         "Sync: NXDN96"
     )
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC
         noise_floor
-        -fa
+        "-fa -Z"
         "Total audio errors: 0"
         "Sync: [+-]M17|Sync: NXDN96"
     )

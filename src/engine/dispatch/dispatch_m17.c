@@ -56,6 +56,7 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         state->m17_pre_candidate = 0;
         state->m17_pre_candidate_ttl = 0;
         dsd_sync_hit_history_clear(&state->m17_join_hits);
+        dsd_nxdn96_sync_clear(&state->nxdn96_sync);
         state->m17_bert_locked = 0;
         state->m17_bert_lfsr = 1;
         state->m17_bert_lock_count = 0;

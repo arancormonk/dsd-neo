@@ -3837,18 +3837,26 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   CRC covers the LSF; the packet word sits a frame apart in NXDN96 data frames' LICH). A join opens one frame and
   clears the history, so the next frame continues only on M17's evidence (`frame_sync_m17_chain_has_evidence()`, a
   BERT PRBS lock) or waits for three fresh hits. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
-  (`test_m17_joins_on_a_sync_word_three_frames_running`),
+  (`test_m17_joins_on_a_sync_word_three_frames_running`, `test_an_nxdn96_data_call_stays_nxdn96_under_auto`),
   `DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC`, `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_M17_MID_STREAM_JOIN`
   (`m17_after_retune`: noise, then a stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`.
-- NXDN96 sync acceptance (`frame_sync_try_nxdn()` in `dsd_frame_sync.c`). The frame sync word is ten sign-sliced
-  symbols in five variants per polarity, about one arbitrary window in a hundred, so on the NXDN96 window
-  (`frame_sync_nxdn96_window()`: 4800/4, or a symbol capture with NXDN96 alone on) a hit counts only with hits of its
-  polarity one and two NXDN frames (`DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS`, 192 symbols, 40 ms at 9600 bps) before it.
-  `dsd_state::nxdn96_fsw_hits` (`dsd_sync_hit_history`) keeps every hit, payload matches included, so a transmission's
-  frames follow on and a lost FSW costs the two frames after it. NXDN48 on 2400/4 keeps two hits at any distance.
-  Tests: `FRAME_SYNC_INTERNAL_HELPERS` (`test_nxdn96_hits_chain_three_frames`), `FRAME_SYNC_DMR_WAV_RATE`,
-  `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`, `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`,
-  `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its `_AUTO` twin.
+- NXDN96 sync acceptance (`frame_sync_try_nxdn()`, `frame_sync_nxdn96_accepts()` in `dsd_frame_sync.c`), after the
+  receiver rules of NXDN TS 1-A 5.3 and Table 5.9-3, on the NXDN96 window (`frame_sync_nxdn96_window()`: 4800/4, or a
+  symbol capture with NXDN96 alone on). The sign-sliced FSW match (ten symbols, five variants per polarity) passes
+  about one arbitrary window in a hundred, so acquisition also reads the window's last ten levels as four-level dibits
+  and needs the FSW's 20 bits within two bit errors (`frame_sync_nxdn96_fsw_bit_errors()`, a "clear" hit,
+  `DSD_FRAME_SYNC_NXDN96_CLEAR_HIT`). A clear hit acquires with a clear hit of its polarity one frame
+  (`DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS`, 192) before it, within `DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE` (1) symbol (N1 =
+  N5 = 2), or alone behind the twelve symbols that end the preamble and the RCCH post field (N6 = 1,
+  `NXDN_PREAMBLE_TAIL`). An accepted FSW sets the lock (`dsd_state::nxdn96_sync`, `dsd_nxdn96_sync`), which accepts
+  the FSWs that follow at whole frames from it, the tolerance either way, for up to
+  `DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES` (6) frames: five missed in a row (N7). Every hit is kept (payload matches
+  too). The lock and hits are cleared with the M17 join history, by a frame whose LICH fails (`nxdn_mark_bad_sync()`),
+  on an NXDN trunked tune and at the CAC reset. A LICH failure prints its sync under `-Z`. NXDN48 on 2400/4 keeps two
+  hits at any distance. Tests: `FRAME_SYNC_INTERNAL_HELPERS` (`test_nxdn96_follows_the_receiver_sync_rules`,
+  `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
+  `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
+  `_AUTO` twin, `DECODE_IQ_NXDN96`.
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a
   P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by

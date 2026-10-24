@@ -63,6 +63,10 @@
 /* Part 1-A CAI 4.4.4 (FSW only - Late Entry - Marginal Signal) */
 #define NXDN_FSW                       "3131331131"
 #define INV_NXDN_FSW                   "1313113313"
+/* The 12 symbols that end both the NXDN preamble and the RCCH post field, right before an FSW (NXDN TS 1-A 4.4.3,
+   4.4.5: +3 +3 +3 then -3 +3 -3 +3 +3 -3 -3 -3 +3), sliced on sign. */
+#define NXDN_PREAMBLE_TAIL             "111313113331"
+#define INV_NXDN_PREAMBLE_TAIL         "333131331113"
 /* Part 1-A CAI 4.4.3 Preamble last 9 plus FSW (start of RDCH) */
 #define NXDN_PANDFSW                   "3131133313131331131" /* 19 symbols */
 #define INV_NXDN_PANDFSW               "1313311131313113313" /* 19 symbols */

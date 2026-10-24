@@ -538,16 +538,16 @@ run_nxdn_two_pass_case(const char* label, const char* pattern, int frame_nxdn48,
         rc = 1;
     }
 
-    /* NXDN96's hit counts only with hits one and two frames before it: each pass reads as far as the first did, so
-       start the next where its sync word lands 192 symbols on, and take a third pass before expecting the sync. */
-    const int passes = frame_nxdn96 ? 3 : 2;
+    /* NXDN96's second FSW counts only a frame after the first: the pass reads as far as the first did, so start it
+       where its sync word lands 192 symbols on. */
+    const int passes = 2;
     for (int pass = 2; pass <= passes; pass++) {
         g_symbol_index = 0U;
         if (frame_nxdn96) {
             const uint8_t last_hit =
-                (uint8_t)((state.nxdn96_fsw_hits.next + DSD_SYNC_HIT_HISTORY_LEN - 1U) % DSD_SYNC_HIT_HISTORY_LEN);
+                (uint8_t)((state.nxdn96_sync.hits.next + DSD_SYNC_HIT_HISTORY_LEN - 1U) % DSD_SYNC_HIT_HISTORY_LEN);
             state.symbolcnt =
-                state.nxdn96_fsw_hits.symbolcnt[last_hit] + DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS - first_pass_symbols;
+                state.nxdn96_sync.hits.symbolcnt[last_hit] + DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS - first_pass_symbols;
         }
         sync = getFrameSync(&opts, &state);
         const int want = pass == passes ? expected_sync : DSD_SYNC_NONE;

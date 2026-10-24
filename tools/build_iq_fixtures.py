@@ -369,7 +369,7 @@ DERIVED_CLIP = [
 # The M17 and NXDN96 joins land mid-transmission: their call fixture starts call-start seconds in,
 # an offset that is no whole number of 192-symbol frames, so the receiver lands inside a frame
 # with no preamble ahead of it. They pin that a transmission is joined on its own frames' sync
-# words, a frame apart, after receiver noise that must open nothing.
+# words -- three frames running for M17, two for NXDN96 -- after receiver noise that must open nothing.
 #
 # name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz, call start s
 DERIVED_RETUNE = [

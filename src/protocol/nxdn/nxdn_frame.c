@@ -172,6 +172,9 @@ static const nxdn_lich_profile k_nxdn_lich_profiles[] = {
 static void
 nxdn_mark_bad_sync(dsd_state* state) {
     state->lastsynctype = DSD_SYNC_NONE;
+    /* NXDN96 acquires by its own rule (dsd_nxdn96_sync), which this has to reach as well: the frame its lock and hits
+       accepted did not hold a LICH. */
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
 }
 
 static void
@@ -306,6 +309,17 @@ nxdn_print_normal_sync_banner(const dsd_opts* opts, const dsd_state* state) {
     } else {
         printFrameSync(opts, state, "NXDN96 ", 0, "-");
     }
+}
+
+/* A frame sync accepted on a frame whose LICH failed prints nothing by default, since the banner waits for a LICH. The
+ * payload log (-Z) shows it, so a sync taken on noise is visible even when the LICH turns it away. */
+static void
+nxdn_report_lich_reject(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (opts->payload != 1) {
+        return;
+    }
+    nxdn_print_normal_sync_banner(opts, state);
+    DSD_FPRINTF(stderr, "LICH ERR %02X\n", ctx->lich_full);
 }
 
 static void
@@ -706,13 +720,9 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_collect_lich(opts, state, &ctx);
 
     nxdn_prepare_lich_parity(&ctx);
-    if (!nxdn_validate_lich_parity(state, &ctx)) {
-        goto END;
-    }
-    if (!nxdn_validate_lich_direction(opts, state, &ctx)) {
-        goto END;
-    }
-    if (!nxdn_apply_lich_profile(state, &ctx)) {
+    if (!nxdn_validate_lich_parity(state, &ctx) || !nxdn_validate_lich_direction(opts, state, &ctx)
+        || !nxdn_apply_lich_profile(state, &ctx)) {
+        nxdn_report_lich_reject(opts, state, &ctx);
         goto END;
     }
 

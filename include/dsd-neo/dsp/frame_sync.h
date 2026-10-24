@@ -40,7 +40,7 @@ typedef enum {
  * Twice that leaves room for a noisy junction without leaving a candidate standing long enough
  * for an unrelated window to open a frame on it (issue #399).
  */
-#define DSD_FRAME_SYNC_M17_CANDIDATE_TTL   8
+#define DSD_FRAME_SYNC_M17_CANDIDATE_TTL       8
 
 /**
  * @brief Consecutive matching windows that make an alternating run an M17 preamble candidate.
@@ -52,13 +52,25 @@ typedef enum {
  * landed in after its preamble joins on its sync word three frames running instead
  * (DSD_FRAME_SYNC_M17_FRAME_SYMBOLS).
  */
-#define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 32
+#define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS     32
 
 /** @brief Symbols in every NXDN frame: 384 bits, 192 symbols at either rate (NXDN TS 1-A 4.4; 40 ms at 9600 bps). */
-#define DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS  192U
+#define DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS      192U
+
+/** @brief How far an NXDN96 FSW may sit from a frame's spacing and still count, in symbols (TS 1-A 5.3.1.1.2 allows
+ * ±2 while the timing is held). */
+#define DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE 1U
+
+/** @brief Frames after the last accepted NXDN96 FSW its lock still times the next one by: the receiver loses frame
+ * sync after N7 = 5 FSWs missed in a row (TS 1-A 5.3.2, Table 5.9-3), so the sixth frame's FSW still counts. */
+#define DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES  6U
+
+/** @brief Marks an NXDN96 FSW hit (dsd_nxdn96_sync::hits) whose four-level reading was within the specification's two
+ * bit errors, as acquisition needs it; the plain sync type is a sign-only hit. */
+#define DSD_FRAME_SYNC_NXDN96_CLEAR_HIT        0x80U
 
 /** @brief Symbols in every M17 frame: a 16-bit sync burst and 368 bits of payload (M17 spec, Frame; 40 ms). */
-#define DSD_FRAME_SYNC_M17_FRAME_SYMBOLS   192U
+#define DSD_FRAME_SYNC_M17_FRAME_SYMBOLS       192U
 
 /**
  * @brief Non-zero when a symbol profile's level count admits only GFSK.

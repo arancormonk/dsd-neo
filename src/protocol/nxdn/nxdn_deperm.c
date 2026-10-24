@@ -585,6 +585,8 @@ nxdn_reset_after_cac_fail(dsd_state* state) {
     state->midx = 0;
     dsd_state_invalidate_minmax_sums(state);
     state->symbolcnt = 0;
+    /* What NXDN96 sync remembered was stamped on the count just reset. */
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     state->dibit_buf_p = state->dibit_buf + 200;
     DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * 200);
     state->offset = 0;

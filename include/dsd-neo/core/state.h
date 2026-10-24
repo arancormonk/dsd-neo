@@ -69,6 +69,22 @@ dsd_sync_hit_history_clear(dsd_sync_hit_history* history) {
     history->next = 0U;
 }
 
+/* NXDN96 frame synchronization (src/dsp/dsd_frame_sync.c, NXDN TS 1-A 5.3.1): the frame sync word hits lately seen,
+ * and the last FSW accepted with its polarity, which a locked transmission's next FSWs are timed from. lock_type 0 is
+ * no lock. */
+typedef struct {
+    dsd_sync_hit_history hits;
+    uint32_t lock_symbolcnt;
+    uint8_t lock_type;
+} dsd_nxdn96_sync;
+
+static inline void
+dsd_nxdn96_sync_clear(dsd_nxdn96_sync* sync) {
+    dsd_sync_hit_history_clear(&sync->hits);
+    sync->lock_symbolcnt = 0U;
+    sync->lock_type = 0U;
+}
+
 /* The TETRA burst capture the frame sync hands to the TETRA decoder (dsd_state::tetra_sync). */
 typedef struct {
     /* ─────────────────────────────────────────────────────────────────────────
@@ -1150,10 +1166,10 @@ struct dsd_state {
      * modular difference, so a rollover mid-frame stays exact. */
     uint32_t dpmr_fs2_frame_symbolcnt;
     uint8_t dpmr_fs2_frame_valid;
-    /* Where NXDN96 frame sync words matched lately (dsd_state::symbolcnt) and with which polarity (the sync type): a hit
-     * counts only with hits of the same polarity exactly one and two 192-symbol frames before it
-     * (src/dsp/dsd_frame_sync.c). */
-    dsd_sync_hit_history nxdn96_fsw_hits;
+    /* NXDN96 frame synchronization: the frame sync word hits lately seen (where in dsd_state::symbolcnt, and the
+     * polarity, as the sync type) and the lock a transmission's accepted FSWs keep (src/dsp/dsd_frame_sync.c). Cleared
+     * with the M17 join history, on an NXDN frame that fails its LICH, and on an NXDN trunked tune. */
+    dsd_nxdn96_sync nxdn96_sync;
     /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
      * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
      * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols

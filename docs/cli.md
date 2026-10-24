@@ -144,7 +144,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--frontend terminal` Use the terminal UI (`-N` is the supported short alias)
 - `--frontend native` remains accepted and maps to headless mode. The retired native provider was a non-rendering
   scaffold; this keeps existing invocations working without restoring its provider/threading layer.
-- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated.
+- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated, and an NXDN
+  frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints nothing.
   With `--frontend terminal` / `-N`, redirect stderr to capture them:
   `dsd-neo -Z --frontend terminal 2> console_log.txt`. The terminal frontend suppresses stderr when it is a TTY
   to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.
@@ -705,10 +706,15 @@ Notes
   frame is 192 symbols, so a stream or BERT sync word read exactly, with the same word exactly one and two frames
   before it, opens that frame. That costs the frame landed in and the two after it, about 120 ms, and noise almost
   never offers it. A join opens that one frame: the next continues only on M17's own evidence (the stream's LICH, a
-  BERT PRBS lock). A packet is never joined, since its one CRC covers the LSF it would have missed. NXDN96's ten-symbol frame sync word gets the same rule: a hit counts with hits one and two
-  192-symbol frames (40 ms each at 9600 bps) before it, so receiver noise, which opened about two NXDN96 frames a
-  second, opens none, and a transmission costs its first two frames. Both rules remember every hit, since a
-  transmission's payload matches these short words several times a frame.
+  BERT PRBS lock). A packet is never joined, since its one CRC covers the LSF it would have missed.
+- NXDN96 follows the receiver rules of NXDN TS 1-A (5.3, Table 5.9-3). It acquires on two frame sync words a frame
+  (192 symbols, 40 ms) apart, within a symbol either way, each read on four levels within two bit errors -- the
+  ten-symbol word read on its signs alone matches about one window in a hundred, and receiver noise opened about two
+  NXDN96 frames a second on it. One frame sync word the preamble or the control channel's post field leads into
+  counts alone, so a transmission's first frame is read. A transmission joined mid-call costs its first frame. Once
+  acquired, the frames that follow are timed from the last frame sync word taken, up to five missed in a row, so a
+  lost frame sync word costs that frame alone. Both rules remember every hit, since a transmission's payload matches
+  these short words several times a frame.
 - A transmission the hunt has stepped away from is protected the same way, for as long as it may still be running.
   Both spans above cover one frame, which is no help across a profile change: under Auto the hunt can rotate off
   2400/4 while an NXDN48 call is still on air, and by the time the rotation reaches 4800/4 the NXDN96 and M17

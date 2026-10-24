@@ -1490,15 +1490,6 @@ frame_sync_hit_history_note(dsd_sync_hit_history* history, uint32_t symbolcnt, u
     history->next = (uint8_t)((slot + 1U) % DSD_SYNC_HIT_HISTORY_LEN);
 }
 
-/* Whether hits of this kind sat exactly one and two frames before this one, then remember this one too. */
-static int
-frame_sync_note_hit_in_frame_chain(dsd_sync_hit_history* history, uint32_t symbolcnt, uint32_t frame, uint8_t kind) {
-    const int chained = frame_sync_hit_history_holds(history, symbolcnt - frame, kind)
-                        && frame_sync_hit_history_holds(history, symbolcnt - (2U * frame), kind);
-    frame_sync_hit_history_note(history, symbolcnt, kind);
-    return chained;
-}
-
 /* The M17 sync word a window holds exactly (1 stream, 2 LSF, 3 packet, 4 BERT), 0 for none. */
 static uint8_t
 frame_sync_m17_exact_word(int ham_str, int ham_lsf, int ham_pkt, int ham_brt) {
@@ -2075,6 +2066,76 @@ frame_sync_nxdn96_window(const frame_sync_match_ctx* ctx) {
     return opts->frame_nxdn96 == 1 && ctx->state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
 }
 
+static int frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype);
+
+/* Whether the twelve symbols before the FSW in the window are the tail the preamble and the RCCH post field share. */
+static int
+frame_sync_nxdn_preceded_by_tail(const frame_sync_match_ctx* ctx, int synctype) {
+    if (!frame_sync_match_window_ready(ctx, 24)) {
+        return 0;
+    }
+    const char* tail = synctype == DSD_SYNC_NXDN_POS ? NXDN_PREAMBLE_TAIL : INV_NXDN_PREAMBLE_TAIL;
+    return strncmp(ctx->synctest + 2, tail, 12) == 0;
+}
+
+/* Whether a hit sits one frame (DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS times @p frames) from @p since, within the timing
+ * tolerance. */
+static int
+frame_sync_nxdn96_frames_apart(uint32_t since, uint32_t frames) {
+    const uint32_t at = frames * DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
+    return since + DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE >= at && since <= at + DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE;
+}
+
+/**
+ * @brief Whether an NXDN96 frame sync word hit counts, by the receiver rules of NXDN TS 1-A 5.3.
+ *
+ * The word is ten symbols in five variants per polarity, sliced on sign, so an arbitrary window matches about one time
+ * in a hundred, and two hits at any distance were what receiver noise offered: the noise_floor fixture opened 20 NXDN96
+ * frames in 10 s under -fn. An NXDN frame is 384 bits, 192 symbols at 9600 bps (TS 1-A 4.4: a frame per 40 ms), every
+ * one opening with the FSW, so a transmission's FSWs repeat a frame apart. The receiver rules (5.3.1, 5.3.2, Table
+ * 5.9-3) are what a hit has to meet:
+ *
+ * - acquisition: an FSW of the same polarity one frame before, within the timing tolerance (N1 = N5 = 2);
+ * - an FSW the preamble or the RCCH post field leads into counts alone (N6 = 1), so a transmission's first frame and a
+ *   short transmission are reachable;
+ * - once a hit counts, the lock it sets accepts the FSWs that follow at whole frames from it, the timing tolerance
+ *   either way, for up to N7 = 5 missed in a row.
+ *
+ * Every hit is remembered (dsd_sync_hit_history): before a lock the payload is read too and matches the word several
+ * times a frame, and none of those may hide the FSW a frame back.
+ */
+static int
+frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
+    dsd_nxdn96_sync* sync = &ctx->state->nxdn96_sync;
+    const uint32_t now = (uint32_t)ctx->state->symbolcnt;
+    const uint8_t kind = (uint8_t)synctype;
+    /* What acquisition counts is the FSW the specification detects: its 20 bits within two bit errors (Table 5.9-3).
+     * The window here is sliced on sign, ten bits that one arbitrary window in a hundred matches; read on four levels
+     * the same window matches about one in five thousand. A hit that passes is remembered as such. */
+    const uint8_t clear_kind = (uint8_t)(kind | DSD_FRAME_SYNC_NXDN96_CLEAR_HIT);
+    const int clear = frame_sync_nxdn96_fsw_bit_errors(ctx, synctype) <= 2;
+    int accepts = 0;
+    if (sync->lock_type == kind) {
+        const uint32_t since = now - sync->lock_symbolcnt;
+        for (uint32_t k = 1U; k <= DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES && !accepts; k++) {
+            accepts = frame_sync_nxdn96_frames_apart(since, k);
+        }
+    }
+    for (uint32_t d = 0U; d <= 2U * DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE && clear && !accepts; d++) {
+        const uint32_t back = DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS - DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE + d;
+        accepts = frame_sync_hit_history_holds(&sync->hits, now - back, clear_kind);
+    }
+    if (clear && !accepts) {
+        accepts = frame_sync_nxdn_preceded_by_tail(ctx, synctype);
+    }
+    frame_sync_hit_history_note(&sync->hits, now, clear ? clear_kind : kind);
+    if (accepts) {
+        sync->lock_symbolcnt = now;
+        sync->lock_type = kind;
+    }
+    return accepts;
+}
+
 static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -2124,17 +2185,9 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     }
 
     state->offset = ctx->synctest_pos;
-    /* NXDN96's hits are a frame apart. The word is ten sign-sliced symbols in five variants per polarity, so an
-     * arbitrary window matches about one time in a hundred, and two hits at any distance were what receiver noise
-     * offered: the noise_floor fixture opened 20 NXDN96 frames in 10 s under -fn. An NXDN frame is 384 bits, 192
-     * symbols at 9600 bps (NXDN TS 1-A 4.4: a frame per 40 ms), every one opening with the FSW, so a transmission's
-     * hits repeat exactly a frame apart; a hit counts with hits of its polarity one and two frames before it. Every hit
-     * is remembered (dsd_sync_hit_history): before a lock the payload is read too and matches the word several times a
-     * frame, and none of those may hide the FSW a frame back. NXDN48 on 2400/4 keeps two hits at any distance. */
-    const int accepts = frame_sync_nxdn96_window(ctx)
-                            ? frame_sync_note_hit_in_frame_chain(&state->nxdn96_fsw_hits, (uint32_t)state->symbolcnt,
-                                                                 DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS, (uint8_t)synctype)
-                            : state->lastsynctype == synctype;
+    /* NXDN48 on 2400/4 keeps two hits at any distance; NXDN96 follows the receiver rules (frame_sync_nxdn96_accepts()). */
+    const int accepts =
+        frame_sync_nxdn96_window(ctx) ? frame_sync_nxdn96_accepts(ctx, synctype) : state->lastsynctype == synctype;
     if (accepts) {
         frame_sync_note_cc_sync(ctx);
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
@@ -2867,6 +2920,36 @@ typedef struct frame_sync_runtime_ctx {
     char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
     float lbuf[48];
 } frame_sync_runtime_ctx;
+
+/* Bit errors between the window's last ten symbols, read on four levels, and the NXDN frame sync word of @p synctype's
+ * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). With fewer than ten
+ * levels to read -- a test window, a symbol capture's sign-only history -- there is nothing to count, and the sign match
+ * stands. */
+static int
+frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype) {
+    static const int fsw_levels[10] = {-3, 1, -3, 3, -3, -3, 3, 3, -1, 3};
+    const frame_sync_runtime_ctx* rt = ctx->history;
+    if (!rt || rt->level_count < 10 || rt->t_max < 10 || ctx->lmax - ctx->lmin < 1e-6f) {
+        return 0;
+    }
+    const float center = (ctx->lmax + ctx->lmin) * 0.5f;
+    const float umid = center + (ctx->lmax - center) * DSD_WARM_START_MID_FRACTION;
+    const float lmid = center + (ctx->lmin - center) * DSD_WARM_START_MID_FRACTION;
+    const int sign = synctype == DSD_SYNC_NXDN_POS ? 1 : -1;
+    int errors = 0;
+    for (int i = 0; i < 10; i++) {
+        const int slot = (rt->lidx - 10 + i + 2 * rt->t_max) % rt->t_max;
+        const float x = rt->lbuf[slot];
+        const int got = x >= umid ? 3 : (x >= center ? 1 : (x >= lmid ? -1 : -3));
+        const int want = sign * fsw_levels[i];
+        /* A dibit's first bit is the sign (1 negative), its second the magnitude (1 outer). */
+        const int got_bits = (got < 0 ? 2 : 0) | ((got == 3 || got == -3) ? 1 : 0);
+        const int want_bits = (want < 0 ? 2 : 0) | ((want == 3 || want == -3) ? 1 : 0);
+        const int diff = got_bits ^ want_bits;
+        errors += (diff & 1) + ((diff >> 1) & 1);
+    }
+    return errors;
+}
 
 static void
 frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
