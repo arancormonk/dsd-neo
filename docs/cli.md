@@ -696,6 +696,14 @@ Notes
   a sync the CQPSK chain carried closes the span rather than opening one, for the same reason. The span is re-armed
   by every P25p1 sync, so continuous traffic stays covered, and it lapses within a fifth of a second of P25 going
   quiet. It costs a real NXDN96 or M17 signal nothing, since neither produces P25p1 sync matches.
+- M17's sync words are eight symbols and its preamble an alternating run, and the frame sync reads them on the sign
+  of each symbol alone, so receiver noise used to supply both: an eight-window run followed by a word within one
+  error opened a few M17 frames a second on an idle channel. A preamble now has to run for 32 windows (a transmission
+  sends 192 symbols of it) before the LSF or BERT word behind it opens the transmission. A transmission joined after
+  its preamble -- the receiver tuned or rotated onto it mid-stream -- is opened by its own frames instead: every M17
+  frame is 192 symbols, so the first stream, packet or BERT sync word read exactly marks the place, and the same word
+  exactly one frame later opens that frame. That costs the frame landed in and the one after it, about 80 ms, and
+  noise never offers it.
 - A transmission the hunt has stepped away from is protected the same way, for as long as it may still be running.
   Both spans above cover one frame, which is no help across a profile change: under Auto the hunt can rotate off
   2400/4 while an NXDN48 call is still on air, and by the time the rotation reaches 4800/4 the NXDN96 and M17

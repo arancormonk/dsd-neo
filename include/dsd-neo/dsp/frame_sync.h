@@ -46,12 +46,16 @@ typedef enum {
  * @brief Consecutive matching windows that make an alternating run an M17 preamble candidate.
  *
  * A single 8-symbol window within one error of the marker is not rare enough to act on -- noise
- * produces them, and each one used to open the whole M17 chain. A real preamble is 192 symbols,
- * so it offers some 180 consecutive matches and can spare these eight many times over. Noise still
- * makes such a run a few times a second (see frame_sync_note_m17_pre_candidate()); the frames it
- * opens are refused by their CRCs, and requiring more would lose M17 joined mid-stream.
+ * produces them, and each one used to open the whole M17 chain -- and neither is a run of eight,
+ * which sign-sliced receiver noise produced a few times a second. A real preamble is 192 symbols,
+ * so it offers some 180 consecutive matches and can spare 32 many times over; a transmission
+ * landed in after its preamble joins on two sync words a frame apart instead
+ * (DSD_FRAME_SYNC_M17_FRAME_SYMBOLS).
  */
-#define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 8
+#define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 32
+
+/** @brief Symbols in every M17 frame: a 16-bit sync burst and 368 bits of payload (M17 spec, Frame; 40 ms). */
+#define DSD_FRAME_SYNC_M17_FRAME_SYMBOLS   192U
 
 /**
  * @brief Non-zero when a symbol profile's level count admits only GFSK.

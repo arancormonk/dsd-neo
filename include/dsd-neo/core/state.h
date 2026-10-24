@@ -2126,6 +2126,11 @@ struct dsd_state {
     uint8_t m17_pre_run;
     uint8_t m17_pre_candidate;
     uint8_t m17_pre_candidate_ttl;
+    /* M17 joined mid-transmission (src/dsp/dsd_frame_sync.c): the last window that held a stream, LSF, packet or BERT
+     * sync word exactly, which word (1-4, 0 none), and where (dsd_state::symbolcnt). The same word exactly one 192-symbol
+     * frame later joins the transmission. */
+    uint8_t m17_join_word;
+    uint32_t m17_join_symbolcnt;
 
     /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
      * the sync chain is only an alternating symbol run, so the frame body has to prove itself

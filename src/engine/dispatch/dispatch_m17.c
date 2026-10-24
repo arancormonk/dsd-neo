@@ -55,6 +55,7 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         state->m17_pre_run = 0;
         state->m17_pre_candidate = 0;
         state->m17_pre_candidate_ttl = 0;
+        state->m17_join_word = 0;
         state->m17_bert_locked = 0;
         state->m17_bert_lfsr = 1;
         state->m17_bert_lock_count = 0;

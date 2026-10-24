@@ -15805,6 +15805,22 @@ if(DSD_HAS_RADIO)
         -fa
         "SRC: N0CALL"
     )
+    # A transmission joined mid-stream, after a second of receiver noise: the call starts 1.5263 s into the m17
+    # capture, inside a frame, with no preamble ahead (DERIVED_RETUNE in tools/build_iq_fixtures.py). Its stream frames
+    # join it on two sync words one frame apart. The old way in -- an alternating run in the payload and a word within
+    # one error -- missed this landing entirely.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_MID_STREAM_JOIN
+        m17_after_retune
+        -fz
+        "SRC: N0CALL"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_MID_STREAM_JOIN_AUTO
+        m17_after_retune
+        -fa
+        "SRC: N0CALL"
+    )
 
     # Issue #388: P25 Phase 1 C4FM on its own profile, which is where AUTO starts -- the hunt
     # performs no rotation on this capture and needs none. What it used to fail on is the
@@ -15881,6 +15897,24 @@ if(DSD_HAS_RADIO)
         -fa
         "Total audio errors: 0"
         "RAN [0-9]|Src=[0-9]"
+    )
+    # Receiver noise opens no M17 frame at all. Its sync words are eight sign-sliced symbols, and M17 used to take any
+    # eight-window alternating run as a preamble: this fixture opened 27 M17 frames under -fz. M17 now joins a
+    # transmission on a preamble that runs DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows or on two sync words one 192-symbol
+    # frame apart.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC
+        noise_floor
+        -fz
+        "Total audio errors: 0"
+        "Sync: [+-]M17"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_SYNC
+        noise_floor
+        -fa
+        "Total audio errors: 0"
+        "Sync: [+-]M17"
     )
 
     # The M17 encoder's VOX on the dynamic squelch (issue #625): ten seconds of receiver noise
@@ -16174,10 +16208,14 @@ if(DSD_HAS_RADIO)
         "Group Voice Channel User"
         PLAYBACK_MATCH
     )
+    # Auto's output layout on the P25 call. The call starts about 1.2 s in, after the first 4800/4 dwell (1.125 s) ends,
+    # and the unlocked hunt reaches 4800/4 again only after the 3 s capture. Unlocked -fa used to catch it because
+    # false M17 and NXDN96 frames on the leading noise stretched that dwell; with those gone (the noise_floor reject
+    # cases), the case holds the C4FM chain (-mc), which keeps the hunt on the profiles timed like 4800/4.
     dsd_neo_add_iq_voice_chain_test(
         DECODE_IQ_VOICE_CHAIN_P25P1_AUTO
         p25p1_c4fm_vc
-        -fa
+        "-fa -mc"
         "Group Voice Channel User"
     )
     dsd_neo_add_iq_voice_chain_test(
@@ -16297,11 +16335,12 @@ if(DSD_HAS_RADIO)
         "Group Voice Channel User"
         1
     )
-    # Stereo FDMA at full level in both ears: float output's mixer halved it.
+    # Stereo FDMA at full level in both ears: float output's mixer halved it. -mc for the reason
+    # DECODE_IQ_VOICE_CHAIN_P25P1_AUTO gives: the call starts after the first 4800/4 dwell.
     dsd_neo_add_iq_float_output_test(
         DECODE_IQ_FLOAT_OUTPUT_P25P1_AUTO
         p25p1_c4fm_vc
-        -fa
+        "-fa -mc"
         "Group Voice Channel User"
         2
         BOTH_EARS

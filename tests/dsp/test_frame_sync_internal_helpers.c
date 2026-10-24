@@ -1807,6 +1807,104 @@ test_a_p25p1_frame_suppresses_m17_candidates(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
 }
 
+/* The windows an alternating run of @p windows symbols presents, one per symbol: the marker and its inversion in
+ * turn, as a real preamble reads one symbol over. */
+static void
+feed_m17_alternating_windows(dsd_opts* opts, dsd_state* state, int windows) {
+    for (int i = 0; i < windows; i++) {
+        state->symbolcnt++;
+        (void)dsd_frame_sync_test_try_protocol_matches(opts, state, (i & 1) ? M17_PIV : M17_PRE, 8);
+    }
+}
+
+static void
+m17_join_setup(dsd_opts* opts, dsd_state* state) {
+    reset(opts, state);
+    opts->frame_m17 = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->min = -3.0f;
+    state->max = 3.0f;
+    state->symbolcnt = 7000;
+}
+
+/*
+ * M17's way in used to be any alternating run of eight windows followed by a sync word within one error, and receiver
+ * noise supplies that a few times a second (the noise_floor fixture opened 27 M17 frames in 10 s under -fz). The same
+ * weakness was how a transmission joined mid-stream got in: no preamble, so a run in the payload and a lucky word.
+ * Every M17 frame is 192 symbols, a sync burst and 184 symbols of payload (M17 spec, Frame), and stream, packet and BERT
+ * frames follow each other back to back, so a transmission in progress offers its frame's sync word again exactly 192
+ * symbols later -- something noise does not. Two exact sync words one frame apart now join a transmission, and the
+ * preamble, which a transmission sends for 192 symbols, must run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows.
+ */
+static void
+test_m17_joins_on_two_sync_words_one_frame_apart(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A stream joined mid-transmission: the first word only marks the place, the one a frame later joins. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
+    /* ... and the frames after it chain as ever, once the joined frame proved itself. */
+    state.m17_confirm_weak_streak = 1;
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
+
+    /* Not a frame apart, no join: one symbol either way, or a frame and a half. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 191;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 2;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 96;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+
+    /* Two different words a frame apart are not one transmission's frames. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PKT, 8) == DSD_SYNC_NONE);
+
+    /* The LSF word repeats only as an inverted stream (an LSF is sent once), packets join on theirs, and BERT on its
+     * own -- read as an inverted packet when the session's polarity says so. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_STR_NEG);
+
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PKT, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PKT, 8) == DSD_SYNC_M17_PKT_POS);
+
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+
+    m17_join_setup(&opts, &state);
+    opts.inverted_m17 = 1;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_PKT_NEG);
+
+    /* A short alternating run -- what noise supplies -- latches nothing, so the word behind it opens nothing. */
+    m17_join_setup(&opts, &state);
+    feed_m17_alternating_windows(&opts, &state, 8);
+    assert(state.m17_pre_candidate == 0);
+    state.symbolcnt++;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_NONE);
+
+    /* A preamble that runs as long as the rule asks still opens the LSF behind it. */
+    m17_join_setup(&opts, &state);
+    feed_m17_alternating_windows(&opts, &state, DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS);
+    assert(state.m17_pre_candidate != 0);
+    state.symbolcnt++;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
+}
+
 /* Issue #445. The spans above cover a frame; this covers the gap a hunt step opens. A proof of
  * 2400/4 says a transmission is running there, and a step onto 4800/4 offers that same signal,
  * read at twice its rate, to two matchers weak enough to take it. Armed by hand here: what the
@@ -4001,6 +4099,7 @@ main(void) {
     test_the_p25p1_frame_suppression_is_scoped_to_its_own_profile();
     test_the_p25p1_frame_guard_survives_symbolcnt_rollover();
     test_a_p25p1_frame_suppresses_m17_candidates();
+    test_m17_joins_on_two_sync_words_one_frame_apart();
     test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers();
     test_the_2400_4_proof_suppression_still_blends_levels();
     test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols();

@@ -1228,13 +1228,13 @@ frame_sync_note_m17_pre_candidate(frame_sync_match_ctx* ctx, int ham_pre, int ha
      * rails, so every window across it matches -- at one polarity or the other, since the run
      * reads as its own inversion one symbol over -- and a real transmission has some 180 of
      * them to spare. Noise supplies a single window at this tolerance often enough to matter,
-     * and eight in a row far less often -- but not never: the window is sign-sliced, and at 4800
-     * symbols/s a run long enough to latch turns up in receiver noise a few times a second (the
-     * noise_floor fixture opens 27 M17 frames in 10 s under -fz, none of which passes a CRC). A
-     * longer run would not separate them either: a transmission the hunt joins mid-stream has no
-     * preamble, and its first frame comes from a run its payload supplies (the m17 fixture
-     * decodes nothing once 16 windows are required).
-     * Counting the run is what separates the two without asking any single window to be cleaner
+     * and, the window being sign-sliced, runs of a few windows too: eight in a row turned up a
+     * few times a second at 4800 symbols/s (the noise_floor fixture opened 27 M17 frames in 10 s
+     * under -fz). DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS asks for 32, a sixth of a preamble, which
+     * noise has not supplied once. A transmission the receiver lands in mid-stream has no
+     * preamble left at all; it joins on two sync words a frame apart
+     * (frame_sync_try_m17_join()), not on a run its payload happens to supply. Counting the run
+     * is what separates a preamble from noise without asking any single window to be cleaner
      * than real M17 delivers (#399). */
     if (state->m17_pre_run < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS) {
         state->m17_pre_run++;
@@ -1463,6 +1463,49 @@ frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_s
     return DSD_SYNC_NONE;
 }
 
+/**
+ * @brief Join an M17 transmission in progress on two sync words exactly one frame apart.
+ *
+ * Every M17 frame is a 16-bit sync burst and 368 bits of payload, 192 symbols (M17 spec, Frame), and stream, packet
+ * and BERT frames follow each other back to back, so a transmission the receiver lands in mid-stream presents its
+ * frame's sync word again exactly 192 symbols after the last. Noise does not: two exact eight-symbol words a frame
+ * apart are some sixteen bits of chance against the single window within one error, behind any alternating run, that
+ * used to be the only way in -- receiver noise opened a few M17 frames a second that way, and a transmission joined
+ * mid-stream got in only when its payload happened to supply a run. Each window that holds a stream, LSF, packet or
+ * BERT word exactly is remembered; the same word one frame later is taken as that frame, unless something else already
+ * took the window.
+ *
+ * Which frame a word names: the stream word is a stream; the LSF word repeats only as an inverted stream, since a
+ * transmission sends one LSF; the packet and BERT words are each other's inversion, so the session's polarity (-xz, or
+ * what an earlier frame proved) picks between a packet and a BERT run.
+ */
+static int
+frame_sync_try_m17_join(frame_sync_match_ctx* ctx, int sync_type, int ham_str, int ham_lsf, int ham_pkt, int ham_brt,
+                        int is_inverted) {
+    dsd_state* state = ctx->state;
+    const uint8_t word = ham_str == 0 ? 1U : (ham_lsf == 0 ? 2U : (ham_pkt == 0 ? 3U : (ham_brt == 0 ? 4U : 0U)));
+    if (word == 0U) {
+        return sync_type;
+    }
+    const int joins = sync_type == DSD_SYNC_NONE && state->m17_join_word == word
+                      && (uint32_t)(state->symbolcnt - state->m17_join_symbolcnt) == DSD_FRAME_SYNC_M17_FRAME_SYMBOLS;
+    state->m17_join_word = word;
+    state->m17_join_symbolcnt = state->symbolcnt;
+    if (!joins) {
+        return sync_type;
+    }
+    switch (word) {
+        case 1U: state->m17_polarity = 1U; return frame_sync_accept_m17(ctx, "+M17 STR", DSD_SYNC_M17_STR_POS);
+        case 2U: state->m17_polarity = 2U; return frame_sync_accept_m17(ctx, "-M17 STR", DSD_SYNC_M17_STR_NEG);
+        case 3U:
+            return is_inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
+                               : frame_sync_accept_m17(ctx, "+M17 PKT", DSD_SYNC_M17_PKT_POS);
+        default:
+            return is_inverted ? frame_sync_accept_m17(ctx, "-M17 PKT", DSD_SYNC_M17_PKT_NEG)
+                               : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
+    }
+}
+
 static int
 frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -1521,10 +1564,10 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
         return sync_type;
     }
     sync_type = frame_sync_try_m17_stream(ctx, ham_str, ham_lsf, is_inverted);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
+    if (sync_type == DSD_SYNC_NONE) {
+        sync_type = frame_sync_try_m17_packet(ctx, ham_pkt, ham_brt, is_inverted);
     }
-    return frame_sync_try_m17_packet(ctx, ham_pkt, ham_brt, is_inverted);
+    return frame_sync_try_m17_join(ctx, sync_type, ham_str, ham_lsf, ham_pkt, ham_brt, is_inverted);
 }
 
 static inline void

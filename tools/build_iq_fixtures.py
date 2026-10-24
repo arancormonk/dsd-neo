@@ -366,9 +366,15 @@ DERIVED_CLIP = [
 # transfer (issue #626), -fa decodes the call at every lead-in from 1.5 to 9.5 s: the hunt's
 # requests land within a 5.33 ms block, so neither edge of that band exists any more.
 #
-# name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz
+# The M17 join lands mid-transmission: its call fixture starts call-start seconds in, an offset
+# that is no whole number of 192-symbol frames, so the receiver lands inside a frame with no
+# preamble ahead of it. It pins that a transmission is joined on its own frames' sync words, a
+# frame apart, after receiver noise that must open nothing.
+#
+# name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz, call start s
 DERIVED_RETUNE = [
-    ("nxdn48_after_retune", "noise_floor", 7.5, 467087500, "nxdn48", 467756250),
+    ("nxdn48_after_retune", "noise_floor", 7.5, 467087500, "nxdn48", 467756250, 0.0),
+    ("m17_after_retune", "noise_floor", 0.25, 446006250, "m17", 446012500, 1.5263),
 ]
 RETUNE_MUTE_BYTES = 14848
 RESET_MUTE_BYTES = 2400
@@ -1038,8 +1044,9 @@ def build_retune_fixture(
     call_fixture,
     call_center_hz,
     capture_started_utc=RETUNE_CAPTURE_STARTED_UTC,
+    call_start_s=0.0,
 ):
-    """Write name: the first lead_s seconds of lead_fixture, a scan retune, then all of call_fixture.
+    """Write name: the first lead_s seconds of lead_fixture, a scan retune, then call_fixture from call_start_s on.
 
     The sources are committed fixtures read from src_dir; their bytes are concatenated as they
     are, so nothing is requantized. The sidecar starts on lead_center_hz and the RETUNE/RESET
@@ -1050,6 +1057,10 @@ def build_retune_fixture(
         raise ValueError(f"{name}: would overwrite its own source")
     lead = read_committed_capture(src_dir, lead_fixture)
     call = read_committed_capture(src_dir, call_fixture)
+    call_start_bytes = round(call_start_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+    if call_start_bytes < 0 or call_start_bytes >= len(call):
+        raise ValueError(f"{name}: call start {call_start_s} s is outside {call_fixture}")
+    call = call[call_start_bytes:]
     lead_bytes = round(lead_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
     if lead_bytes <= 0 or lead_bytes > len(lead):
         raise ValueError(f"{name}: a {lead_s} s lead-in needs {lead_bytes} bytes and {lead_fixture} has {len(lead)}")
@@ -1083,9 +1094,17 @@ def build_retune_fixture(
 def build_derived_retune(out_dir):
     """Write the scan-retune fixtures (issue #572) from the committed fixtures in out_dir."""
     total = 0
-    for name, lead_fixture, lead_s, lead_center_hz, call_fixture, call_center_hz in DERIVED_RETUNE:
+    for name, lead_fixture, lead_s, lead_center_hz, call_fixture, call_center_hz, call_start_s in DERIVED_RETUNE:
         written = build_retune_fixture(
-            out_dir, out_dir, name, lead_s, lead_fixture, lead_center_hz, call_fixture, call_center_hz
+            out_dir,
+            out_dir,
+            name,
+            lead_s,
+            lead_fixture,
+            lead_center_hz,
+            call_fixture,
+            call_center_hz,
+            call_start_s=call_start_s,
         )
         total += written
         print(f"{name:28s} retune  {written // 1024:6d} KiB")

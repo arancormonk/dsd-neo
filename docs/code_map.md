@@ -3825,6 +3825,18 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
   choose: a CQPSK vote there (a carrier near 0 Hz) took the front end off the monitor path. Tests:
   `FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`.
+- M17 sync acceptance (`frame_sync_try_m17()` in `dsd_frame_sync.c`). The windows are sign-sliced, so the eight-symbol
+  words and the alternating preamble are cheap for receiver noise to reproduce. A preamble candidate needs
+  `DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS` (32) consecutive windows within one error, then the LSF or BERT word within one
+  error (`frame_sync_try_m17_lsf_or_bert()`); a stream or packet frame after an LSF, and a chain with evidence, are
+  taken as before. A transmission joined after its preamble opens on two exact sync words one frame
+  (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) apart (`frame_sync_try_m17_join()`, `dsd_state::m17_join_word` and
+  `m17_join_symbolcnt`, cleared with the preamble candidate): the stream word is a stream, the LSF word repeated an
+  inverted stream (a transmission sends one LSF), and the packet and BERT words, each the other's inversion, are told
+  apart by the session's polarity. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_m17_joins_on_two_sync_words_one_frame_apart`), `DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC`,
+  `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_SYNC`, `DECODE_IQ_M17_MID_STREAM_JOIN` (`m17_after_retune`: noise, then a
+  stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`.
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a
   P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
