@@ -25,6 +25,7 @@
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,6 +347,35 @@ test_resident(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A resident call on a slot the receive policy does not admit never holds the receiver: with a slot-1-only filter,
+   validated slot-2 traffic on the parked carrier leaves an eligible grant elsewhere free to be followed. */
+static int
+test_resident_receive_admission(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    int rc = expect_true("slot filter parsed",
+                         dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    clock_at(1.0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    dmr_sm_busy_view_t view;
+    rc |= expect_true("an excluded slot's resident call is not held",
+                      dmr_sm_describe_held_calls(sm(), opts, st, dsd_decode_now_mono_s(), &view) == 0);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("an eligible slot-1 grant elsewhere is followed", vc(st) == VC_B && g_tunes == 1);
+
+    /* The admitted slot's resident call still holds it. */
+    init_env(opts, st, 2.0);
+    rc |= expect_true("slot filter parsed",
+                      dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("an admitted slot's resident call is busy", g_tunes == 0 && opts->trunk_is_tuned == 0);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    return rc;
+}
+
 /* 9: Hold takes the receiver from a non-held call, not from a carrier whose companion slot carries the Hold group. */
 static int
 test_hold(dsd_opts* opts, dsd_state* st) {
@@ -589,6 +619,29 @@ submit_move(dsd_opts* opts, dsd_state* st, long freq, uint16_t lpcn, int slot, i
     return dmr_sm_submit_grant(opts, st, &ev);
 }
 
+/* A matched C_MOVE whose tune is deferred changes nothing: a repeat of the followed grant still matches it, so the
+   identity a checked LC gave the slot and its follow time stay. */
+static int
+test_deferred_move_keeps_identity(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 101, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 202, 2);
+    const double follow_m = sm()->slots[0].follow_m;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    int rc = expect_true("a deferred move of the followed call",
+                         submit_move(opts, st, VC_B, LPCN_B, 0, 1, 202, 2) == DMR_SM_GRANT_DEFERRED && vc(st) == VC_A);
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    rc |= expect_true("the deferred move left the grant identity", sm()->vc_tg == 101 && sm()->vc_is_group == 1);
+    clock_at(0.6);
+    tv_grant(opts, st, LPCN_A, 0, 101, 1);
+    rc |= expect_true("a repeat of the followed grant keeps the LC's identity and follow time",
+                      sm()->slots[0].target == 202U && sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC
+                          && fabs(sm()->slots[0].follow_m - follow_m) < 1e-9);
+    return rc;
+}
+
 /* A same-carrier C_MOVE of a call whose identity was already published moves the publication to the new slot: its
    first voice there names the call, and the move keeps the follow time. */
 static int
@@ -719,6 +772,7 @@ main(void) {
     rc |= test_acquisition(opts, st);
     rc |= test_tail(opts, st);
     rc |= test_resident(opts, st);
+    rc |= test_resident_receive_admission(opts, st);
     rc |= test_hold(opts, st);
     rc |= test_both_slots(opts, st);
     rc |= test_deferred_preemption(opts, st);
@@ -730,6 +784,7 @@ main(void) {
     rc |= test_in_place_reassignment(opts, st);
     rc |= test_slot_move_republishes(opts, st);
     rc |= test_move_matches_slot_identity(opts, st);
+    rc |= test_deferred_move_keeps_identity(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

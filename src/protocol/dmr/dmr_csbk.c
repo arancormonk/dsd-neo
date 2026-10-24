@@ -2121,7 +2121,7 @@ dmr_cspdu_cap_plus_3e_follow(dsd_opts* opts, dsd_state* state, const dmr_cap_plu
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
-    dmr_sm_note_status_follow(opts, state, grant_freq);
+    dmr_sm_note_status_follow(opts, state, grant_freq, j & 1);
     dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before, 0);
     const dsd_tg_policy_call_route route = {
         .target_id = ctx->t_tg[j],
@@ -2781,6 +2781,27 @@ dmr_cspdu_xpt_submit(dsd_opts* opts, dsd_state* state, const dmr_xpt_entry* e, i
     (void)dmr_sm_submit_grant(opts, state, &ev);
 }
 
+/* The followed carrier's slots as this status bank names them, before any busy view or ranking reads them (as Capacity
+   Plus reconciles its seeds): a group entry names its slot's call, a private one leaves it of unknown identity, so a
+   group identity the call no longer carries never ranks it against a candidate. Idle and unknown entries change
+   nothing. */
+static void
+dmr_cspdu_xpt_reconcile_followed(const dsd_state* state, const dmr_xpt_entry entries[DMR_XPT_ENTRY_COUNT],
+                                 uint8_t xpt_bank) {
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    for (int j = 0; j < 6; j++) {
+        const int slot_idx = j + xpt_bank;
+        if (slot_idx >= DMR_XPT_ENTRY_COUNT) {
+            continue;
+        }
+        const dmr_xpt_entry* e = &entries[slot_idx];
+        const int group = e->kind == DMR_XPT_KIND_GROUP && e->id8 != 0U;
+        if (group || e->kind == DMR_XPT_KIND_PRIVATE) {
+            dmr_sm_status_slot_reconcile(sm, slot_idx & 1, state->trunk_chan_map[slot_idx + 1], group ? e->id8 : 0U, 1);
+        }
+    }
+}
+
 /* One XPT status bank: as for Capacity Plus (dmr_cspdu_cap_plus_3e_try_tune_grants()), at most one entry is handed to
    the trunk state machine, the best by Hold, priority and channel order among those eligible, and while the receiver
    holds a call only Hold over a non-held call or a preemption is eligible. An unknown private identity never is. */
@@ -2871,6 +2892,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         dsd_rxid_note_dmr_xpt_free_lcn(state, xpt_free);
     }
     dmr_cspdu_xpt_update_cc_from_input(opts, state);
+    dmr_cspdu_xpt_reconcile_followed(state, entries, xpt_bank);
 
     /* Group and private statuses are admitted each by their own decision, so private calls are followed with group
        tuning off; an allow-list or a Hold never wipes the voice-sync stamp (dmr_cspdu_xpt_try_tune()). */

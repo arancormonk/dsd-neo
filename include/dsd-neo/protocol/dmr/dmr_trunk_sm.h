@@ -158,6 +158,10 @@ typedef struct {
     int vc_is_group;
     int vc_identity_published;
     int vc_status_follow; // a Capacity Plus status followed it: its release goes to the latest announced rest channel
+    /* Bit s: the status that followed this carrier selected or seeded slot s. Before the first voice those slots hold
+       the carrier whatever their identity is now (a private LSN, or a seed a later status made unknown, holds it as a
+       call of unknown identity). Cleared with the slots' records (every follow, release and acquisition). */
+    int vc_acquire_slots;
     // DSD_CRC_* bits of the CSBK or MBC that granted this channel (a RAS grant under -F). The grant's identity is
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
     int cc_hunt_index;
@@ -300,8 +304,9 @@ int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
- *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. */
-void dmr_sm_note_status_follow(const dsd_opts* opts, const dsd_state* state, long freq_hz);
+ *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p slot is the
+ *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. */
+void dmr_sm_note_status_follow(const dsd_opts* opts, const dsd_state* state, long freq_hz, int slot);
 
 /* ----------------------------------------------------------------------------
  * Talkgroup priority and preemption
@@ -385,6 +390,15 @@ void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int s
  * call) leaves that slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
  */
 void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, int slot, int lsn, uint32_t tg, int active);
+
+/**
+ * @brief A channel status (Hytera XPT) names the call on @p slot of carrier @p freq_hz: group @p tg, or (@p tg 0,
+ * @p active) a call of no known identity (a private call). On the carrier the machine follows, a slot whose identity a
+ * grant gave (not a checked LC) takes the group, with a new follow time when the call changes, or becomes unknown; on
+ * the followed slot the grant's identity follows it, so it no longer stands for the slot's call either. An idle slot
+ * (neither) changes nothing.
+ */
+void dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, int slot, long freq_hz, uint32_t tg, int active);
 
 /** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
 int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);

@@ -1169,6 +1169,67 @@ nxdn_run_type_d_refollow_keeps_dwell_case(void) {
     return rc;
 }
 
+/* A Type-D private call followed from a busy message, whose late-entry audio opened an anonymous generic voice call:
+ * a repeat of the busy message names that call's target, and the held call keeps the message's private classification
+ * (its G/U bit), never group policy (here a priority-100 group range over the private ID), nor a restarted dwell. */
+static int
+nxdn_run_type_d_private_reconcile_case(void) {
+    static const char* const name = "type-d-private-reconcile";
+    const nxdn_case held = {
+        "type-d", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 1, 6U, 3U, 1400U, 938012500L,
+    };
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    nxdn_setup_fixture(&held);
+    g_state.trunk_chan_map[7] = 938512500L;
+    nxdn_install_hooks();
+    dsd_tg_policy_entry range;
+    if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
+        range.id_end = 1499U;
+        range.is_range = 1U;
+        range.priority = 100;
+        (void)dsd_tg_policy_add_range_entry(&g_state, &range);
+    }
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(8000.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.private_call == 1U, name,
+                      "follow", "private call followed");
+
+    at_seconds(8000.3);
+    voice_live();
+    const dsd_call_observation late_entry = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(&g_state, &late_entry, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+
+    at_seconds(8000.4);
+    voice_live();
+    nxdn_run_case_decode(&held);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.policy_target_id == 1400U, name, "repeat",
+                      "the repeat named the anonymous call");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.private_call == 1U,
+                      name, "repeat", "the held call stays private");
+
+    nxdn_case other = held;
+    other.scch_gu = 0U;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(8001.2);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "preempt",
+                      "a p50 preempt outranks the private call (no group priority, dwell from the follow)");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1244,6 +1305,7 @@ main(void) {
     rc |= nxdn_run_vcall_names_followed_route_case();
     rc |= nxdn_run_type_d_takeover_case();
     rc |= nxdn_run_type_d_refollow_keeps_dwell_case();
+    rc |= nxdn_run_type_d_private_reconcile_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

@@ -907,6 +907,49 @@ test_cap_plus_seed_private_activity(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Cap+ acquisition membership is the status's, not the identities': a selected private LSN (no seed) and a seeded slot a
+   later status leaves unknown each hold the carrier before the first voice as a call of unknown identity, so an
+   outranking preempting group elsewhere does not take the receiver, and Hold does. */
+static int
+test_cap_plus_acquisition_unknown_members(dsd_opts* opts, dsd_state* st) {
+    /* The selected LSN 2 (slot 1) carries a private call; its companion slot carries seeded group 42. */
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 0x1234, "A", 50, 0);
+    seed_policy_row(st, 43, "A", 100, 1);
+    run_cap_plus_private_and_group(opts, st, 2U, 0x1234U, 1U, 42U);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("cap+ follows the private LSN's carrier",
+                         st->trunk_vc_freq[0] == ST_F1 && sm->slots[0].target == 42U
+                             && sm->slots[1].kind == (uint8_t)DSD_CALL_KIND_UNKNOWN);
+    status_clock_at(1.0);
+    status_window_closed(st);
+    run_cap_plus_private_and_group(opts, st, 2U, 0x1234U, 3U, 43U);
+    rc |= expect_true("cap+ a selected private call in acquisition is not preempted", st->trunk_vc_freq[0] == ST_F1);
+    st->tg_hold = 43;
+    run_cap_plus_private_and_group(opts, st, 2U, 0x1234U, 3U, 43U);
+    rc |= expect_true("cap+ a selected private call in acquisition yields to Hold", st->trunk_vc_freq[0] == ST_F3);
+    st->tg_hold = 0;
+    status_env_done(st);
+
+    /* The selected LSN 1 carries group 42; seeded companion LSN 2 (group 77) is later shown carrying a private call. */
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 77, "A", 10, 0);
+    seed_policy_row(st, 43, "A", 100, 1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 77U, 0U, 0U});
+    sm = dmr_sm_get_ctx();
+    rc |= expect_true("cap+ seeds both slots", st->trunk_vc_freq[0] == ST_F1 && sm->slots[1].target == 77U);
+    status_clock_at(1.0);
+    status_window_closed(st);
+    run_cap_plus_private_and_group(opts, st, 2U, 0x1234U, 3U, 43U);
+    rc |= expect_true("cap+ the seeded slot's private call is unknown",
+                      sm->slots[1].kind == (uint8_t)DSD_CALL_KIND_UNKNOWN);
+    rc |= expect_true("cap+ a seeded slot made unknown is not preempted", st->trunk_vc_freq[0] == ST_F1);
+    status_env_done(st);
+    return rc;
+}
+
 /* XPT entry kinds: a private status is an unknown identity, followed only with private tuning on and never admitted or
    ranked by a row; unknown statuses are not followed; a busy carrier yields only to an outranking preempt. */
 static int
@@ -1130,6 +1173,59 @@ test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("xpt resident parking call is busy", g_status_tunes == 0);
     status_env_done(st);
+    return rc;
+}
+
+/* A followed XPT carrier's slots are what the latest status names on them, before the busy view and the ranking read
+   them: after following group 77, a private status on its LSN leaves the call of unknown identity (only Hold takes the
+   receiver from it, not an outranking preempting group ranked against 77's priority), and a group status names the
+   slot's new call, whose dwell starts then. */
+static int
+test_xpt_status_reconciles_followed_slot(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        status_env(opts, st);
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 461250000U;
+        seed_policy_row(st, 77, "A", 10, 0);
+        seed_policy_row(st, 88, "A", 50, 0);
+        seed_policy_row(st, 99, "A", 60, 1);
+        st->trunk_chan_map[1] = 461262500L;
+        st->trunk_chan_map[3] = 461287500L;
+        status_window_closed(st);
+        build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                              (const uint8_t[6]){77U, 0U, 0U, 0U, 0U, 0U});
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+        rc |= expect_true("xpt follows group 77", st->trunk_vc_freq[0] == 461262500L && sm->slots[0].target == 77U);
+        status_clock_at(1.0);
+        accepted_voice_now(opts, st, 0);
+        status_window_closed(st);
+        if (variant == 0) {
+            build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){2U, 0U, 3U, 0U, 0U, 0U},
+                                  (const uint8_t[6]){5U, 0U, 99U, 0U, 0U, 0U});
+            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+            rc |= expect_true("xpt a private status leaves the followed slot unknown",
+                              sm->slots[0].kind == (uint8_t)DSD_CALL_KIND_UNKNOWN && sm->vc_identity_known == 0);
+            rc |= expect_true("xpt an unknown private call is not preempted", st->trunk_vc_freq[0] == 461262500L);
+            st->tg_hold = 99;
+            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+            rc |= expect_true("xpt an unknown private call yields to Hold", st->trunk_vc_freq[0] == 461287500L);
+            st->tg_hold = 0;
+        } else {
+            build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 3U, 0U, 0U, 0U},
+                                  (const uint8_t[6]){88U, 0U, 99U, 0U, 0U, 0U});
+            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+            rc |= expect_true("xpt a group status names the followed slot's new call",
+                              sm->slots[0].target == 88U && sm->vc_tg == 88);
+            /* Ranked above the p50 call, but that call is new on the slot: its dwell has just begun. */
+            rc |= expect_true("xpt a p60 preempt waits for the dwell of the call now on the slot",
+                              st->trunk_vc_freq[0] == 461262500L);
+        }
+        status_env_done(st);
+    }
     return rc;
 }
 
@@ -1901,10 +1997,12 @@ main(void) {
     rc |= test_cap_plus_hold(opts, st);
     rc |= test_cap_plus_seed_identity_reconcile(opts, st);
     rc |= test_cap_plus_seed_private_activity(opts, st);
+    rc |= test_cap_plus_acquisition_unknown_members(opts, st);
     rc |= test_xpt_entry_kinds(opts, st);
     rc |= test_xpt_ranking(opts, st);
     rc |= test_con_plus_policy_before_window(opts, st);
     rc |= test_xpt_busy_carrier(opts, st);
+    rc |= test_xpt_status_reconciles_followed_slot(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

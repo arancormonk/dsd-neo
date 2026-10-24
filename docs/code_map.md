@@ -324,7 +324,7 @@ read that failed is not repeated for `DMR_RX_QUERY_RETRY_S` of real time. Under 
 the parked target's own acquisition on its control channel instead, unless a park the coordinator tracks is still
 pending. Each target's `dmr_sm_ctx_t` also holds its per-slot call identities (talkgroup priority and preemption,
 below), which the switch's acquisition restarts. A Capacity Plus status follow is the machine's call
-(`dmr_sm_note_status_follow()`); a
+(`dmr_sm_note_status_follow()`, with the selected LSN's slot); a
 repeated status naming the followed carrier neither retunes nor moves its deadlines (it only seeds a slot whose group
 changed), a call followed after an operator move ends that move's listening window, and its release goes to the rest
 channel announced last (`dsd_state::dmr_rest_channel`, by a status or a checked voice LC), as the no-carrier return
@@ -4948,7 +4948,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   - `nxdn_call` (`dsd_nxdn_call_identity`): the held call as preemption judges it. The followed grant's identity, then
     reconciled from the canonical call after a verified VCALL publication and after an SCCH identity that belongs to
     the receiver's repeater (`nxdn_call_identity_reconcile()`), so a new call on the followed carrier is what a
-    candidate is compared against. Its `follow_m` moves only when the identity changes (target, kind, or frequency
+    candidate is compared against. Its private/group class is the naming message's own (a VCALL's call type, 4 =
+    private, as admission judges it; a busy message's G/U bit), else the canonical call's group or private kind, else,
+    for a generic voice call (late entry, an INFO2 target message), the held call's when it names that target; a generic
+    voice call is never read as group, and one of no known class leaves the held call unknown (only Hold displaces it).
+    Its `follow_m` moves only when the identity changes (target, kind, or frequency
     when both are known); one heard on another frequency than the receiver's is not known here.
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
@@ -5314,9 +5318,14 @@ Private per-protocol modules worth knowing about:
     without changing the tick (`dmr_sm_tuned_retention()`): live voice on an admitted slot (0.2 s stale) whatever the
     hangtime, the hangtime tail, acquisition before the first voice (the grant timeout; a carrier a channel status
     selected, Cap+ or XPT, keeps `DMR_CAPPLUS_SEED_WINDOW_S`), and a receive check still pending on a carrier no slot of
-    which the policy admits yet (not once its verified code is rejected). ON_CC: calls heard on the carrier the
-    receiver listens on (composite TSCC payload, XPT parking, late entry) whose identity is known there and admitted by
-    the policy; an unknown or blocked resident call never makes it busy. Held slots are described into the policy's
+    which the policy admits yet (not once its verified code is rejected). Before the first voice the held slots are the
+    grant's slot; for a slotless status follow (Cap+), each slot the status selected (`dmr_sm_note_status_follow()`) or
+    seeded (`dmr_sm_capplus_seed_arm()`), tracked apart from identity knowledge (`vc_acquire_slots`), so a private LSN
+    or a seed a later status left unknown is a held call of unknown identity, and each slot named on the carrier.
+    ON_CC: calls heard on the carrier the receiver listens on (composite TSCC payload, XPT parking, late entry) whose
+    identity is known there and admitted by the policy, on a slot the receive policy admits (`dsd_receive_allows()`,
+    as for the receive hold: rejected media never holds the receiver); an unknown, blocked or receive-rejected
+    resident call never makes it busy. Held slots are described into the policy's
     followed-call ledger (`dsd_tg_policy_describe_followed_call()`, start = the slot's follow time) and every other
     ledger slot is cleared; a held carrier whose slots name nothing yet is described by the grant's identity (slot -1).
   - Gate. A candidate on another carrier while held (or while the caller's own legacy window says busy: `caller_busy`)
@@ -5329,7 +5338,11 @@ Private per-protocol modules worth knowing about:
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time) come from the followed grant (a slotless grant's at its first accepted voice), an in-place
     grant, Cap+ seeds and status reconciliation (a seeded LSN the status shows carrying a private or data call keeps the
-    slot's activity with an unknown identity; an idle one changes nothing), and a voice LC only at its checked
+    slot's activity with an unknown identity; an idle one changes nothing), XPT status reconciliation
+    (`dmr_sm_status_slot_reconcile()`, from each site status before its busy view and ranking: on the followed carrier
+    a group entry names its slot's call, a private one leaves it unknown and, on the followed slot, withdraws the grant
+    identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a voice LC
+    only at its checked
     publication (`dmr_sm_note_lc_identity()` from `dmr_flco_publish_voice()`). The follow time moves only when the call
     (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
     in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and
@@ -5345,7 +5358,9 @@ Private per-protocol modules worth knowing about:
     call's), whatever slot it names, is judged with that call's own classification: refused only when tuning is denied
     for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier -> IN_PLACE
     on the new slot, whose first voice publishes the call there again, another carrier -> a new acquisition; both keep
-    the follow time. A move of any other call is an ordinary grant under its group decision and the gate. Its burst
+    the follow time. A deferred or failed move tune changes nothing, the followed grant's identity included (it is
+    rewritten from the slot's record only in place or once the tune is accepted), so a repeat of the original grant
+    still matches it. A move of any other call is an ordinary grant under its group decision and the gate. Its burst
     indicators and companion-row clear apply only once accepted (as before when it is not submitted: trunking off or not
     on a voice channel).
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s

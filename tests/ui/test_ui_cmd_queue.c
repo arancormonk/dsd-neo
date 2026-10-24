@@ -5377,7 +5377,7 @@ test_manual_moves_hand_a_dmr_follow_over(void) {
         state.trunk_lcn_freq[0] = 853000000L;
         dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
         dmr_sm_init_ctx(dmr, &opts, &state);
-        dmr_sm_note_status_follow(&opts, &state, 852000000L);
+        dmr_sm_note_status_follow(&opts, &state, 852000000L, -1);
         opts.trunk_is_tuned = 1;
         reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
         const int cmd = cycle ? DSD_APP_CMD_CHANNEL_CYCLE : DSD_APP_CMD_RETURN_CC;
@@ -5432,7 +5432,7 @@ test_manual_moves_hand_a_dmr_follow_over(void) {
     hooks.dmr_ctx = scan_dmr_ctx;
     dsd_trunk_scan_hooks_set(&hooks);
     dmr_sm_init_ctx(&g_scan_dmr_ctx, &opts, &state);
-    dmr_sm_note_status_follow(&opts, &state, 852000000L);
+    dmr_sm_note_status_follow(&opts, &state, 852000000L, -1);
     opts.trunk_is_tuned = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |=
