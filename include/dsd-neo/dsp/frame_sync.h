@@ -49,7 +49,7 @@ typedef enum {
  * produces them, and each one used to open the whole M17 chain -- and neither is a run of eight,
  * which sign-sliced receiver noise produced a few times a second. A real preamble is 192 symbols,
  * so it offers some 180 consecutive matches and can spare 32 many times over; a transmission
- * landed in after its preamble joins on two sync words a frame apart instead
+ * landed in after its preamble joins on its sync word three frames running instead
  * (DSD_FRAME_SYNC_M17_FRAME_SYMBOLS).
  */
 #define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 32

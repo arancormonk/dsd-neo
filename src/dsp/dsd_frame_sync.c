@@ -1232,7 +1232,7 @@ frame_sync_note_m17_pre_candidate(frame_sync_match_ctx* ctx, int ham_pre, int ha
      * few times a second at 4800 symbols/s (the noise_floor fixture opened 27 M17 frames in 10 s
      * under -fz). DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS asks for 32, a sixth of a preamble, which
      * noise has not supplied once. A transmission the receiver lands in mid-stream has no
-     * preamble left at all; it joins on two sync words a frame apart
+     * preamble left at all; it joins on the same sync word three frames running
      * (frame_sync_try_m17_join()), not on a run its payload happens to supply. Counting the run
      * is what separates a preamble from noise without asking any single window to be cleaner
      * than real M17 delivers (#399). */
@@ -1464,21 +1464,49 @@ frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_s
 }
 
 /**
- * @brief Join an M17 transmission in progress on two sync words exactly one frame apart.
+ * @brief Join an M17 transmission in progress on the same sync word exactly one and two frames back.
  *
  * Every M17 frame is a 16-bit sync burst and 368 bits of payload, 192 symbols (M17 spec, Frame), and stream, packet
  * and BERT frames follow each other back to back, so a transmission the receiver lands in mid-stream presents its
- * frame's sync word again exactly 192 symbols after the last. Noise does not: two exact eight-symbol words a frame
- * apart are some sixteen bits of chance against the single window within one error, behind any alternating run, that
- * used to be the only way in -- receiver noise opened a few M17 frames a second that way, and a transmission joined
- * mid-stream got in only when its payload happened to supply a run. Each window that holds a stream, LSF, packet or
- * BERT word exactly is remembered; the same word one frame later is taken as that frame, unless something else already
- * took the window.
+ * frame's sync word again every 192 symbols. Noise does not: three exact eight-symbol words a frame apart are some
+ * twenty-four bits of chance against the single window within one error, behind any alternating run, that used to be
+ * the only way in -- receiver noise opened a few M17 frames a second that way, and a transmission joined mid-stream got
+ * in only when its payload happened to supply a run. Each window that holds a stream, LSF, packet or BERT word exactly
+ * is remembered (dsd_sync_hit_history: the payload matches some word a few times a frame, and none of those may hide
+ * the real one); the same word one and two frames earlier makes this window that frame, unless something else already
+ * took it.
  *
  * Which frame a word names: the stream word is a stream; the LSF word repeats only as an inverted stream, since a
  * transmission sends one LSF; the packet and BERT words are each other's inversion, so the session's polarity (-xz, or
  * what an earlier frame proved) picks between a packet and a BERT run.
  */
+static int
+frame_sync_hit_history_holds(const dsd_sync_hit_history* history, uint32_t symbolcnt, uint8_t kind) {
+    for (int i = 0; i < DSD_SYNC_HIT_HISTORY_LEN; i++) {
+        if (history->kind[i] == kind && history->symbolcnt[i] == symbolcnt) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Whether hits of this kind sat exactly one and two frames before this one, then remember this one too.
+ *
+ * Three frames, not two: with every hit remembered, a hit one frame back is what a random window offers about once in
+ * two hundred hits for a ten-symbol word (an eight-symbol M17 word, once in 256), and dead channels supply hits at
+ * that rate all day -- LowVHF's dead time opened 115 M17 frames under -fz on two. Two frames back as well puts that
+ * near the square, and a transmission pays one frame (40 ms) to join. */
+static int
+frame_sync_note_hit_in_frame_chain(dsd_sync_hit_history* history, uint32_t symbolcnt, uint32_t frame, uint8_t kind) {
+    const int chained = frame_sync_hit_history_holds(history, symbolcnt - frame, kind)
+                        && frame_sync_hit_history_holds(history, symbolcnt - (2U * frame), kind);
+    const uint8_t slot = (uint8_t)(history->next % DSD_SYNC_HIT_HISTORY_LEN);
+    history->symbolcnt[slot] = symbolcnt;
+    history->kind[slot] = kind;
+    history->next = (uint8_t)((slot + 1U) % DSD_SYNC_HIT_HISTORY_LEN);
+    return chained;
+}
+
 static int
 frame_sync_try_m17_join(frame_sync_match_ctx* ctx, int sync_type, int ham_str, int ham_lsf, int ham_pkt, int ham_brt,
                         int is_inverted) {
@@ -1487,11 +1515,9 @@ frame_sync_try_m17_join(frame_sync_match_ctx* ctx, int sync_type, int ham_str, i
     if (word == 0U) {
         return sync_type;
     }
-    const int joins = sync_type == DSD_SYNC_NONE && state->m17_join_word == word
-                      && (uint32_t)(state->symbolcnt - state->m17_join_symbolcnt) == DSD_FRAME_SYNC_M17_FRAME_SYMBOLS;
-    state->m17_join_word = word;
-    state->m17_join_symbolcnt = state->symbolcnt;
-    if (!joins) {
+    const int chained = frame_sync_note_hit_in_frame_chain(&state->m17_join_hits, (uint32_t)state->symbolcnt,
+                                                           DSD_FRAME_SYNC_M17_FRAME_SYMBOLS, word);
+    if (sync_type != DSD_SYNC_NONE || !chained) {
         return sync_type;
     }
     switch (word) {
@@ -2058,22 +2084,18 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     }
 
     state->offset = ctx->synctest_pos;
-    /* NXDN96's two hits are one frame apart. The word is ten sign-sliced symbols in five variants per polarity, so an
+    /* NXDN96's hits are a frame apart. The word is ten sign-sliced symbols in five variants per polarity, so an
      * arbitrary window matches about one time in a hundred, and two hits at any distance were what receiver noise
      * offered: the noise_floor fixture opened 20 NXDN96 frames in 10 s under -fn. An NXDN frame is 384 bits, 192
      * symbols at 9600 bps (NXDN TS 1-A 4.4: a frame per 40 ms), every one opening with the FSW, so a transmission's
-     * second hit lands exactly a frame after its first -- and so does each next frame's. A hit anywhere else only marks
-     * a new place. NXDN48 on 2400/4 keeps two hits at any distance. */
-    const int nxdn96 = frame_sync_nxdn96_window(ctx);
-    const int frame_after_last =
-        !nxdn96
-        || (state->nxdn96_fsw_seen
-            && (uint32_t)(state->symbolcnt - state->nxdn96_fsw_symbolcnt) == DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS);
-    if (nxdn96) {
-        state->nxdn96_fsw_symbolcnt = state->symbolcnt;
-        state->nxdn96_fsw_seen = 1U;
-    }
-    if (state->lastsynctype == synctype && frame_after_last) {
+     * hits repeat exactly a frame apart; a hit counts with hits of its polarity one and two frames before it. Every hit
+     * is remembered (dsd_sync_hit_history): before a lock the payload is read too and matches the word several times a
+     * frame, and none of those may hide the FSW a frame back. NXDN48 on 2400/4 keeps two hits at any distance. */
+    const int accepts = frame_sync_nxdn96_window(ctx)
+                            ? frame_sync_note_hit_in_frame_chain(&state->nxdn96_fsw_hits, (uint32_t)state->symbolcnt,
+                                                                 DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS, (uint8_t)synctype)
+                            : state->lastsynctype == synctype;
+    if (accepts) {
         frame_sync_note_cc_sync(ctx);
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
         return synctype;

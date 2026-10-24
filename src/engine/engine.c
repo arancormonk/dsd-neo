@@ -2109,7 +2109,7 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     state->m17_pre_run = 0;
     state->m17_pre_candidate = 0;
     state->m17_pre_candidate_ttl = 0;
-    state->m17_join_word = 0;
+    dsd_sync_hit_history_clear(&state->m17_join_hits);
     m17_confirm_reset(state);
     /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
      * cannot span the dead channel that brought us here (issue #421). */

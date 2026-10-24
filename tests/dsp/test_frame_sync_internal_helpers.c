@@ -1479,10 +1479,12 @@ test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
 
-    /* Past the frame the matcher is live again, on its own two-hit terms: the second hit a frame after the first. */
+    /* Past the frame the matcher is live again, on its own terms: hits a frame apart, the third counting. */
     state.symbolcnt = 1000 + DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 }
@@ -1709,7 +1711,9 @@ test_symbol_replay_requires_explicit_nxdn_variant(void) {
         opts.frame_nxdn96 = 1;
         state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
         assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
-        /* NXDN96's second hit is the next frame's, 192 symbols on. */
+        /* NXDN96's hits are a frame, 192 symbols, apart, and the third counts. */
+        state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
         state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
         assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
         assert(dsd_frame_sync_active_nxdn_variant(&opts, &state) == DSD_NXDN_VARIANT_96);
@@ -1835,27 +1839,42 @@ m17_join_setup(dsd_opts* opts, dsd_state* state) {
  * noise supplies that a few times a second (the noise_floor fixture opened 27 M17 frames in 10 s under -fz). The same
  * weakness was how a transmission joined mid-stream got in: no preamble, so a run in the payload and a lucky word.
  * Every M17 frame is 192 symbols, a sync burst and 184 symbols of payload (M17 spec, Frame), and stream, packet and BERT
- * frames follow each other back to back, so a transmission in progress offers its frame's sync word again exactly 192
- * symbols later -- something noise does not. Two exact sync words one frame apart now join a transmission, and the
+ * frames follow each other back to back, so a transmission in progress offers its frame's sync word every 192 symbols
+ * -- something noise does not. The same exact sync word three frames running now joins a transmission, and the
  * preamble, which a transmission sends for 192 symbols, must run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows.
  */
+static int
+m17_word_three_frames(dsd_opts* opts, dsd_state* state, const char* first, const char* second, const char* third) {
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, first, 8) == DSD_SYNC_NONE);
+    state->symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, second, 8) == DSD_SYNC_NONE);
+    state->symbolcnt += 192;
+    return dsd_frame_sync_test_try_protocol_matches(opts, state, third, 8);
+}
+
 static void
-test_m17_joins_on_two_sync_words_one_frame_apart(void) {
+test_m17_joins_on_a_sync_word_three_frames_running(void) {
     static dsd_opts opts;
     static dsd_state state;
 
-    /* A stream joined mid-transmission: the first word only marks the place, the one a frame later joins. */
+    /* A stream joined mid-transmission: the first two words only mark the place, the third joins. */
     m17_join_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
-    state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_STR) == DSD_SYNC_M17_STR_POS);
     /* ... and the frames after it chain as ever, once the joined frame proved itself. */
     state.m17_confirm_weak_streak = 1;
     state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
 
+    /* Two words a frame apart are what dead channels offer by chance, so they are not enough on their own. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+
     /* Not a frame apart, no join: one symbol either way, or a frame and a half. */
     m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
     state.symbolcnt += 191;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
@@ -1864,34 +1883,41 @@ test_m17_joins_on_two_sync_words_one_frame_apart(void) {
     state.symbolcnt += 96;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
 
-    /* Two different words a frame apart are not one transmission's frames. */
+    /* Before a lock every payload window is read too, and a payload matches some sync word a few times a frame. Those
+     * hits are remembered beside the real ones; they must not hide them. */
     m17_join_setup(&opts, &state);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
-    state.symbolcnt += 192;
+    state.symbolcnt += 50;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PKT, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 50;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 92;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 30;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 162;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
+
+    /* Different words a frame apart are not one transmission's frames. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_PKT) == DSD_SYNC_NONE);
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_PKT, M17_STR) == DSD_SYNC_NONE);
 
     /* The LSF word repeats only as an inverted stream (an LSF is sent once), packets join on theirs, and BERT on its
      * own -- read as an inverted packet when the session's polarity says so. */
     m17_join_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_NONE);
-    state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_STR_NEG);
+    assert(m17_word_three_frames(&opts, &state, M17_LSF, M17_LSF, M17_LSF) == DSD_SYNC_M17_STR_NEG);
 
     m17_join_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PKT, 8) == DSD_SYNC_NONE);
-    state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PKT, 8) == DSD_SYNC_M17_PKT_POS);
+    assert(m17_word_three_frames(&opts, &state, M17_PKT, M17_PKT, M17_PKT) == DSD_SYNC_M17_PKT_POS);
 
     m17_join_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_NONE);
-    state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+    assert(m17_word_three_frames(&opts, &state, M17_BRT, M17_BRT, M17_BRT) == DSD_SYNC_M17_BRT_POS);
 
     m17_join_setup(&opts, &state);
     opts.inverted_m17 = 1;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_NONE);
-    state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_PKT_NEG);
+    assert(m17_word_three_frames(&opts, &state, M17_BRT, M17_BRT, M17_BRT) == DSD_SYNC_M17_PKT_NEG);
 
     /* A short alternating run -- what noise supplies -- latches nothing, so the word behind it opens nothing. */
     m17_join_setup(&opts, &state);
@@ -1912,11 +1938,12 @@ test_m17_joins_on_two_sync_words_one_frame_apart(void) {
  * NXDN96's frame sync word is ten symbols in five variants per polarity, sliced on sign, so about one arbitrary window in
  * a hundred matches, and the matcher's two hits could be any distance apart: receiver noise opened 20 NXDN96 frames in
  * the noise_floor fixture's 10 s under -fn. An NXDN frame is 384 bits, 192 symbols at 9600 bps (NXDN TS 1-A 4.4: one
- * frame per 40 ms), and every frame opens with the FSW, so a transmission's second hit is exactly one frame after its
- * first. The 2400/4 matcher (NXDN48) keeps its two hits at any distance.
+ * frame per 40 ms), and every frame opens with the FSW, so a transmission's hits repeat exactly a frame apart. A hit
+ * counts with hits of its polarity one and two frames before it. The 2400/4 matcher (NXDN48) keeps its two hits at any
+ * distance.
  */
 static void
-test_nxdn96_two_hits_are_one_frame_apart(void) {
+test_nxdn96_hits_chain_three_frames(void) {
     static dsd_opts opts;
     static dsd_state state;
 
@@ -1928,16 +1955,32 @@ test_nxdn96_two_hits_are_one_frame_apart(void) {
     state.symbolcnt = 5000;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
-    /* A second hit that is not a frame later only marks a new place. */
+    /* Hits that are not a frame apart only mark places. */
     state.symbolcnt += 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
     /* A transmission's frames follow on. */
     state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
-    /* A frame whose FSW was lost: the next one marks, the one after accepts. */
+    /* Payload hits in between, of either polarity, do not hide the FSW a frame back. */
+    state.symbolcnt += 40;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, INV_NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 60;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 92;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    /* A hit a frame after one of the other polarity is not that frame's FSW. */
+    state.symbolcnt += 40;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, INV_NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    /* A frame whose FSW was lost: the next two mark, the one after accepts. */
     state.symbolcnt += 384;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     state.symbolcnt += 192;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
@@ -1991,10 +2034,12 @@ test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers(void) {
     assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
 
     /* Once the transmission can no longer be running, the matcher is live again on its own
-     * two-hit terms: the second hit a frame after the first. */
+     * terms: hits a frame apart, the third counting. */
     state.symbolcnt = 1000 + DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
@@ -2064,7 +2109,9 @@ test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols(void) {
     state.symbolcnt = 1000 + 100;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
-    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's second hit is a frame on */
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's hits are a frame apart, */
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* and count on the third */
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* A proof read on 4800/4 -- P25p1's, say -- is inert here: what this guard acts on is a
@@ -2081,7 +2128,9 @@ test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols(void) {
     state.symbolcnt = 1000 + 100;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
-    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's second hit is a frame on */
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's hits are a frame apart, */
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* and count on the third */
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* And it never mutes the protocol whose transmission armed it: on 2400/4 itself, NXDN48
@@ -4151,8 +4200,8 @@ main(void) {
     test_the_p25p1_frame_suppression_is_scoped_to_its_own_profile();
     test_the_p25p1_frame_guard_survives_symbolcnt_rollover();
     test_a_p25p1_frame_suppresses_m17_candidates();
-    test_m17_joins_on_two_sync_words_one_frame_apart();
-    test_nxdn96_two_hits_are_one_frame_apart();
+    test_m17_joins_on_a_sync_word_three_frames_running();
+    test_nxdn96_hits_chain_three_frames();
     test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers();
     test_the_2400_4_proof_suppression_still_blends_levels();
     test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols();

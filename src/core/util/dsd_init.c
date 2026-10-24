@@ -1324,7 +1324,7 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->m17_pre_run = 0;
     state->m17_pre_candidate = 0;
     state->m17_pre_candidate_ttl = 0;
-    state->m17_join_word = 0;
+    dsd_sync_hit_history_clear(&state->m17_join_hits);
     state->m17_confirmed = 0;
     state->m17_confirm_weak_streak = 0;
     state->m17_confirm_frame_evidence = 0;

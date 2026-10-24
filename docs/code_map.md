@@ -3829,21 +3829,22 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   words and the alternating preamble are cheap for receiver noise to reproduce. A preamble candidate needs
   `DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS` (32) consecutive windows within one error, then the LSF or BERT word within one
   error (`frame_sync_try_m17_lsf_or_bert()`); a stream or packet frame after an LSF, and a chain with evidence, are
-  taken as before. A transmission joined after its preamble opens on two exact sync words one frame
-  (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) apart (`frame_sync_try_m17_join()`, `dsd_state::m17_join_word` and
-  `m17_join_symbolcnt`, cleared with the preamble candidate): the stream word is a stream, the LSF word repeated an
-  inverted stream (a transmission sends one LSF), and the packet and BERT words, each the other's inversion, are told
-  apart by the session's polarity. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
-  (`test_m17_joins_on_two_sync_words_one_frame_apart`), `DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC`,
+  taken as before. A transmission joined after its preamble opens on the same exact sync word three frames
+  (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) running (`frame_sync_try_m17_join()`, `dsd_state::m17_join_hits`, cleared
+  with the preamble candidate; every hit is kept, since the payload matches some word a few times a frame): the stream
+  word is a stream, the LSF word repeated an inverted stream (a transmission sends one LSF), and the packet and BERT
+  words, each the other's inversion, are told apart by the session's polarity. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_m17_joins_on_a_sync_word_three_frames_running`), `DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_M17_MID_STREAM_JOIN` (`m17_after_retune`: noise, then a
   stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`.
 - NXDN96 sync acceptance (`frame_sync_try_nxdn()` in `dsd_frame_sync.c`). The frame sync word is ten sign-sliced
-  symbols in five variants per polarity, about one arbitrary window in a hundred, so the matcher's two hits must be one
-  NXDN frame (`DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS`, 192 symbols, 40 ms at 9600 bps) apart on the NXDN96 window
-  (`frame_sync_nxdn96_window()`: 4800/4, or a symbol capture with NXDN96 alone on); `dsd_state::nxdn96_fsw_symbolcnt`
-  records every hit, so a transmission's frames follow on and a lost FSW costs the next frame's. NXDN48 on 2400/4
-  keeps two hits at any distance. Tests: `FRAME_SYNC_INTERNAL_HELPERS` (`test_nxdn96_two_hits_are_one_frame_apart`),
-  `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`, `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`,
+  symbols in five variants per polarity, about one arbitrary window in a hundred, so on the NXDN96 window
+  (`frame_sync_nxdn96_window()`: 4800/4, or a symbol capture with NXDN96 alone on) a hit counts only with hits of its
+  polarity one and two NXDN frames (`DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS`, 192 symbols, 40 ms at 9600 bps) before it.
+  `dsd_state::nxdn96_fsw_hits` (`dsd_sync_hit_history`) keeps every hit, payload matches included, so a transmission's
+  frames follow on and a lost FSW costs the two frames after it. NXDN48 on 2400/4 keeps two hits at any distance.
+  Tests: `FRAME_SYNC_INTERNAL_HELPERS` (`test_nxdn96_hits_chain_three_frames`), `FRAME_SYNC_DMR_WAV_RATE`,
+  `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`, `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`,
   `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its `_AUTO` twin.
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a
   P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain

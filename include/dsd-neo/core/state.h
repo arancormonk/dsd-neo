@@ -39,7 +39,29 @@
 /* Buffer size for a human-readable channel label. Sized to hold a trunk-scan
  * target id (dsd_trunk_scan_target.id[64]) unchanged; a channel-map CSV name is
  * truncated to 63 characters plus the terminator. */
-#define DSD_CHANNEL_LABEL_SIZE 64
+#define DSD_CHANNEL_LABEL_SIZE   64
+
+/* Exact sync-word hits a frame sync join rule looks back over (src/dsp/dsd_frame_sync.c). A rule that joins on hits a
+ * frame apart has to remember every hit of the frames it looks back over, not only the latest: before a lock the
+ * matcher reads every window of the payload too, and a real carrier's payload matches a short sign-sliced word several
+ * times per frame (NXDN96 traffic gave about eight). Remembering only the latest hit let each of those overwrite the
+ * frame sync word a frame back, and a transmission joined only when a frame happened to carry none. 64 entries cover
+ * the two frames looked back over at that rate several times over. kind 0 marks an empty slot. */
+#define DSD_SYNC_HIT_HISTORY_LEN 64
+
+typedef struct {
+    uint32_t symbolcnt[DSD_SYNC_HIT_HISTORY_LEN];
+    uint8_t kind[DSD_SYNC_HIT_HISTORY_LEN];
+    uint8_t next;
+} dsd_sync_hit_history;
+
+static inline void
+dsd_sync_hit_history_clear(dsd_sync_hit_history* history) {
+    for (int i = 0; i < DSD_SYNC_HIT_HISTORY_LEN; i++) {
+        history->kind[i] = 0U;
+    }
+    history->next = 0U;
+}
 
 /* The TETRA burst capture the frame sync hands to the TETRA decoder (dsd_state::tetra_sync). */
 typedef struct {
@@ -1122,10 +1144,10 @@ struct dsd_state {
      * modular difference, so a rollover mid-frame stays exact. */
     uint32_t dpmr_fs2_frame_symbolcnt;
     uint8_t dpmr_fs2_frame_valid;
-    /* Where the last NXDN96 frame sync word sat in dsd_state::symbolcnt, and whether one has been seen: the matcher's
-     * second hit counts only one 192-symbol frame after its first (src/dsp/dsd_frame_sync.c). */
-    uint32_t nxdn96_fsw_symbolcnt;
-    uint8_t nxdn96_fsw_seen;
+    /* Where NXDN96 frame sync words matched lately (dsd_state::symbolcnt) and with which polarity (the sync type): a hit
+     * counts only with hits of the same polarity exactly one and two 192-symbol frames before it
+     * (src/dsp/dsd_frame_sync.c). */
+    dsd_sync_hit_history nxdn96_fsw_hits;
     /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
      * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
      * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols
@@ -2130,11 +2152,10 @@ struct dsd_state {
     uint8_t m17_pre_run;
     uint8_t m17_pre_candidate;
     uint8_t m17_pre_candidate_ttl;
-    /* M17 joined mid-transmission (src/dsp/dsd_frame_sync.c): the last window that held a stream, LSF, packet or BERT
-     * sync word exactly, which word (1-4, 0 none), and where (dsd_state::symbolcnt). The same word exactly one 192-symbol
-     * frame later joins the transmission. */
-    uint8_t m17_join_word;
-    uint32_t m17_join_symbolcnt;
+    /* M17 joined mid-transmission (src/dsp/dsd_frame_sync.c): the windows that lately held a stream, LSF, packet or BERT
+     * sync word exactly, with the word (kind 1-4) and where (dsd_state::symbolcnt). The same word exactly one and two
+     * 192-symbol frames before a window joins the transmission there. */
+    dsd_sync_hit_history m17_join_hits;
 
     /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
      * the sync chain is only an alternating symbol run, so the frame body has to prove itself
