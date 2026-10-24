@@ -5368,7 +5368,9 @@ Private per-protocol modules worth knowing about:
     knowledge (`vc_acquire_slots`), so a private LSN or a seed a later status left unknown is a held call of unknown
     identity, and each slot named on the carrier, each only on a slot the receive slot filter admits
     (`dsd_receive_grant_allows()`, the slot alone: a seed on a rejected slot holds nothing, while a slot whose colour
-    code is still being checked is held); once there is voice, each slot the receive policy admits whose voice
+    code is still being checked is held), and an acquisition whose every slot it rejects (a receive edit after the
+    follow rejected the grant's own slot) is not held at all, so the grant's identity never stands for the carrier and
+    an ordinary grant elsewhere is followed; once there is voice, each slot the receive policy admits whose voice
     is live or in its hangtime tail (a slot a receive edit rejected holds nothing, its tail included). ON_CC: calls
     heard on the carrier the receiver listens on (composite TSCC payload, XPT parking, late entry) whose identity is
     known there and admitted by the policy, on a slot the receive policy admits (`dsd_receive_allows()`, as for the

@@ -457,6 +457,41 @@ test_tuned_tail_receive_admission(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Before its first voice a followed grant whose own slot a receive-slot edit stopped admitting holds nothing: its
+   identity no longer stands for the carrier, so an ordinary grant elsewhere is followed. A grant slot merely awaiting
+   its colour-code check (a DCC filter, the carrier's code not verified yet) still holds the carrier. */
+static int
+test_acquisition_receive_admission(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 500, "A", 90, 0);
+    tv_grant(opts, st, LPCN_A, 1, 500, 5);
+    int rc = expect_true("the TS2 grant is followed", vc(st) == VC_A && g_tunes == 1);
+    clock_at(0.5);
+    rc |= expect_true("slot filter parsed",
+                      dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    dmr_sm_busy_view_t view;
+    rc |= expect_true("a rejected grant slot's acquisition is not held",
+                      dmr_sm_describe_held_calls(sm(), opts, st, dsd_decode_now_mono_s(), &view) == 0);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("an ordinary grant elsewhere is followed", vc(st) == VC_B && sm()->vc_tg == 200);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+
+    init_env(opts, st, 2.0);
+    seed_row(st, 500, "A", 90, 0);
+    rc |= expect_true("dcc filter parsed",
+                      dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "7", "", "", NULL, 0) == 0);
+    tv_grant(opts, st, LPCN_A, 1, 500, 5);
+    rc |= expect_true("the TS2 grant is followed under a pending check", vc(st) == VC_A && g_tunes == 1);
+    clock_at(0.5);
+    rc |= expect_true("a grant slot awaiting its colour-code check holds the carrier",
+                      dmr_sm_describe_held_calls(sm(), opts, st, dsd_decode_now_mono_s(), &view) == 1
+                          && view.members == 0x2);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("an ordinary grant elsewhere is busy", vc(st) == VC_A && g_tunes == 1);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    return rc;
+}
+
 /* 9: Hold takes the receiver from a non-held call, not from a carrier whose companion slot carries the Hold group. */
 static int
 test_hold(dsd_opts* opts, dsd_state* st) {
@@ -1005,6 +1040,7 @@ main(void) {
     rc |= test_resident_identity_ends_with_its_call(opts, st);
     rc |= test_resident_receive_admission(opts, st);
     rc |= test_tuned_tail_receive_admission(opts, st);
+    rc |= test_acquisition_receive_admission(opts, st);
     rc |= test_hold(opts, st);
     rc |= test_both_slots(opts, st);
     rc |= test_deferred_preemption(opts, st);

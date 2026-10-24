@@ -1720,24 +1720,29 @@ dmr_sm_describe_identity(const dsd_opts* opts, dsd_state* state, const dmr_sm_sl
     return decision.tg_hold_match;
 }
 
-/* Before any voice, the slots a TUNED carrier's acquisition holds: the grant's slot (a slotless grant: each slot the
+/* Before any voice, the slots a TUNED carrier's acquisition is for: the grant's slot (a slotless grant: each slot the
    following status selected or seeded, known identity or not, and each slot named on the carrier, else none, the
-   grant's identity then standing for the carrier), each only on a slot the receive policy's slot filter admits (a seed
-   on a rejected slot never holds the receiver). The slot alone is judged (dsd_receive_grant_allows()): a slot whose
-   colour code is still being checked is held while the check runs. */
+   grant's identity then standing for the carrier), whatever the receive policy admits. */
 static int
-dmr_sm_acquire_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
-    int acquiring = 0;
+dmr_sm_acquire_slots(const dmr_sm_ctx_t* ctx) {
     if (ctx->vc_slot >= 0 && ctx->vc_slot <= 1) {
-        acquiring = 1 << ctx->vc_slot;
-    } else {
-        acquiring = ctx->vc_acquire_slots & 0x3;
-        for (int s = 0; s < 2; s++) {
-            if (dmr_sm_slot_identity_known(&ctx->slots[s]) && ctx->slots[s].carrier_hz == ctx->vc_freq_hz) {
-                acquiring |= 1 << s;
-            }
+        return 1 << ctx->vc_slot;
+    }
+    int acquiring = ctx->vc_acquire_slots & 0x3;
+    for (int s = 0; s < 2; s++) {
+        if (dmr_sm_slot_identity_known(&ctx->slots[s]) && ctx->slots[s].carrier_hz == ctx->vc_freq_hz) {
+            acquiring |= 1 << s;
         }
     }
+    return acquiring;
+}
+
+/* The acquisition's slots (dmr_sm_acquire_slots()) that hold the carrier: each only on a slot the receive policy's slot
+   filter admits (a seed, or the grant's own slot, on a rejected slot never holds the receiver). The slot alone is
+   judged (dsd_receive_grant_allows()): a slot whose colour code is still being checked is held while the check runs. */
+static int
+dmr_sm_acquire_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
+    const int acquiring = dmr_sm_acquire_slots(ctx);
     int members = 0;
     for (int s = 0; s < 2; s++) {
         if ((acquiring & (1 << s)) && dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
@@ -1745,6 +1750,21 @@ dmr_sm_acquire_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
         }
     }
     return members;
+}
+
+/* Whether a TUNED carrier the retention rule keeps (@p hold) holds no call against other candidates: a hangtime tail no
+   admitted slot is in is only rejected traffic's, and an acquisition whose every slot the slot filter rejects (a
+   receive edit after the follow) is not for anything the receiver may hear, so the grant's identity never stands for
+   it. An acquisition with no slot yet (a slotless grant before its voice) is held by the grant's identity. */
+static int
+dmr_sm_tuned_holds_nothing(const dmr_sm_ctx_t* ctx, dmr_sm_hold_e hold, int members) {
+    if (hold == DMR_SM_HOLD_NONE) {
+        return 1;
+    }
+    if (members != 0) {
+        return 0;
+    }
+    return hold == DMR_SM_HOLD_TAIL || (hold == DMR_SM_HOLD_ACQUIRING && dmr_sm_acquire_slots(ctx) != 0);
 }
 
 /* TUNED: which slots hold a call. Live voice or the slot's own hangtime tail, on a slot the receive policy admits (as for
@@ -1837,8 +1857,7 @@ dmr_sm_describe_held_calls(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
         if (hold != DMR_SM_HOLD_NONE) {
             members = dmr_sm_tuned_members(ctx, opts, state, now_m, hold);
         }
-        // A tail no admitted slot is in is only rejected traffic's: it holds nothing.
-        out->held = hold != DMR_SM_HOLD_NONE && !(hold == DMR_SM_HOLD_TAIL && members == 0);
+        out->held = !dmr_sm_tuned_holds_nothing(ctx, hold, members);
     } else if (ctx->state == DMR_SM_ON_CC) {
         out->carrier_hz = dmr_cc_current_frequency(opts, ctx);
         if (out->carrier_hz > 0) {
