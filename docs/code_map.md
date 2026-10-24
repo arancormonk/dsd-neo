@@ -1661,34 +1661,35 @@ suite runs under this compiler.
   and forced release, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's
   thread; `trunk_scan_switch_to()` and its rollback, which restores the record without the evidence and so drops the
   part; a colour-code change on the carrier (the BS confidence relock, the MS/direct slot type and embedded colour
-  code, `dmr_ras_note_ms_color_code()`); the DMR reset command; a user move (`ui_user_move_forgets_identity()`); and the
+  code, `dmr_ras_note_color_code()`); the DMR reset command; a user move (`ui_user_move_forgets_identity()`); and the
   guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so the next transmission proves RAS again. A frame
   of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
   it again. `dsd_engine_forget_carrier_codes()` does not reset it: the voice-channel tune that calls it can run on the
-  watchdog's thread, and the trunk tune's apply covers that tune. A tune the user asked for while trunking, which keeps the decoder's trunking state and so is
-  no carrier boundary, forgets the record too (D4: any user move), after the calls it ended took theirs: a frequency
-  entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to CC, and a
-  channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks the carrier change for the frame
-  sync). A trunking follow keeps it, a lockout's or skip's return to the control channel included (the decoder leaves
-  the call as at its end); every other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y` step, a
-  trunk-scan target, a signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site forget it
-  in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the
-  colour code the reset keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a decode mode
-  change, once the calls it ended froze their identity and once a switch onto the analog monitor the front end has
-  queued is taken (`ui_commit_mode_identity()`: refused where it lands, the session goes back with its identity), an
-  `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference import's EDACS variant and the
-  EDACS addressing mode toggle (after its calls ended, which keep their site) run `dsd_rxid_note_decoder_settings()`,
-  which drops a record of a protocol the settings no longer decode and an EDACS record read under the other addressing
-  mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as well). The no-carrier pass, a SIM no-carrier,
-  the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change
-  no received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
-  Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
-  `ENGINE_PROTOCOL_DISPATCH`, `DMR_RAS_DETECT` (the RAS part's evidence and its reset points with those five,
-  `DMR_DATA_SYNC`, `DMR_MS_DATA` and `APP_COMMAND_QUEUE`), `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's
-  notes, no-carrier step and reads, race-free under the `tsan-debug` preset, and the decoder thread's grant and frame
-  sync release between frames), `DMR_BS_SYNC_TIMES` (a rest channel's retune in one burst, then the reached carrier's
-  bursts in the same loop), and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
-  conventional carrier of another system).
+  watchdog's thread, and the trunk tune's apply covers that tune. A tune the user asked for while trunking, which keeps
+  the decoder's trunking state and so is no carrier boundary, forgets the record too (D4: any user move), after the
+  calls it ended took theirs: a frequency entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`,
+  accepted only), a Return to CC, and a channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks
+  the carrier change for the frame sync). A trunking follow keeps it, a lockout's or skip's return to the control
+  channel included (the decoder leaves the call as at its end); every other user retune (a frequency entry on another
+  protocol, tap-to-tune, a `-Y` step, a trunk-scan target, a signal-search visit) is a carrier boundary. Commands that
+  forget or reinterpret a site forget it in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops
+  the DMR trunking parts (keeping the colour code the reset keeps) and the NXDN location, IDAS parts and RAN
+  (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and once a switch
+  onto the analog monitor the front end has queued is taken (`ui_commit_mode_identity()`: refused where it lands, the
+  session goes back with its identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a
+  RadioReference import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their
+  site) run `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an
+  EDACS record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as
+  well). The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed,
+  the tuner release and the scan resets change no received identity: the carrier and the reading of its messages stay (a
+  carrier boundary resets the record anyway). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, `DMR_RAS_DETECT` (the RAS part's
+  evidence and its reset points with those five, `DMR_DATA_SYNC`, `DMR_MS_DATA` and `APP_COMMAND_QUEUE`),
+  `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's notes, no-carrier step and
+  reads, race-free under the `tsan-debug` preset, and the decoder thread's grant and frame sync release between frames),
+  `DMR_BS_SYNC_TIMES` (a rest channel's retune in one burst, then the reached carrier's bursts in the same loop), and
+  end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another
+  system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

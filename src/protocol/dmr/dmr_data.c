@@ -282,7 +282,7 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
         }
     } else {
         /* MS mode has no confidence lock: the slot type's checked colour code is the carrier's. */
-        dmr_ras_note_ms_color_code(ctx->state, ctx->state->color_code);
+        dmr_ras_note_color_code(ctx->state, ctx->state->color_code);
         ctx->state->dmr_color_code = ctx->state->color_code;
         dsd_rxid_note_access(ctx->state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE,
                              (uint16_t)ctx->state->color_code);

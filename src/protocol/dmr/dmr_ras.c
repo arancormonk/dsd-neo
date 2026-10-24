@@ -57,7 +57,7 @@ dmr_ras_reset(dsd_state* state) {
 }
 
 void
-dmr_ras_note_ms_color_code(dsd_state* state, unsigned int color_code) {
+dmr_ras_note_color_code(dsd_state* state, unsigned int color_code) {
     /* 16 is "not decoded" (a carrier boundary leaves it): the first code a carrier sends changes nothing. */
     if (state != NULL && state->dmr_color_code <= 15U && state->dmr_color_code != color_code) {
         dmr_ras_reset(state);

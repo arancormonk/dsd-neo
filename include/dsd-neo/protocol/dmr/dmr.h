@@ -102,9 +102,10 @@ int dmr_ras_confirmed(const dsd_state* state);
  * change, the DMR reset command, the no-carrier step): forget the evidence, the confirmation and DSD_RXID_DMR_RAS.
  * Decoder thread, where the received identity may be written (under the P25 SM tick guard). */
 void dmr_ras_reset(dsd_state* state);
-/** MS/direct mode's checked colour code @p color_code, before it becomes dsd_state::dmr_color_code: another one than a
- * decoded one is another system on the carrier, so the RAS evidence is reset. */
-void dmr_ras_note_ms_color_code(dsd_state* state, unsigned int color_code);
+/** A checked colour code @p color_code about to become dsd_state::dmr_color_code (the BS confidence gate's first lock,
+ * MS/direct mode's slot type and embedded code): another one than a decoded one is another system on the carrier, so
+ * the RAS evidence is reset. The carrier's first code (16, not decoded, before it) changes nothing. */
+void dmr_ras_note_color_code(dsd_state* state, unsigned int color_code);
 size_t dmr_debug_format_burst(char* out, size_t out_size, const dsd_state* state, uint8_t slot_index,
                               uint8_t burst_type);
 size_t dmr_debug_format_burst_payload(char* out, size_t out_size, const int payload[144], uint8_t slot_index,

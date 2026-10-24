@@ -1924,11 +1924,12 @@ check_rxid_decoder_tunes(dsd_opts* opts, dsd_state* state) {
 }
 
 /* The DMR RAS evidence is the carrier's: an accepted trunk tune resets it (dmr_ras_reset()) where its drop is applied.
-   The decoder thread's own tunes, a voice channel grant and a control channel return or hunt probe, reset it at once;
-   one the P25 watchdog makes on its thread leaves it for the decoder thread, which resets it when it applies the drop
-   (dsd_rxid_apply_trunk_tune() reports it), and one requested inside a frame dispatch resets it there. A refused tune
-   resets nothing. Each case runs with one signature (which must not confirm with one more after the tune) and with a
-   confirmation (whose part goes). */
+   The decoder thread's own tunes, a voice channel grant and a control channel return or hunt probe, reset it at once,
+   and one requested inside a frame dispatch resets it there. One the P25 watchdog makes on its thread writes nothing
+   of it: the evidence and the part wait, with the drop, for the decoder thread, whose application resets them
+   (ENGINE_PROTOCOL_DISPATCH before a frame, ENGINE_COLD_START_HUNT after the synced frame's ticks, ENGINE_TRUNK_SCAN
+   at an advance). A refused tune resets nothing. Each case runs with one signature (which must not confirm with one
+   more after the tune) and with a confirmation (whose part goes). */
 static void
 check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
     opts->trunk_enable = 1;
@@ -1969,10 +1970,6 @@ check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
                                == DSD_TRUNK_TUNE_RESULT_OK);
                     }
                     assert(state->rx_id_trunk_tune_pending == 1U);
-                    assert(state->dmr_ras_signatures == (confirmed ? 2U : 1U));
-                    if (dsd_rxid_apply_trunk_tune(state)) {
-                        dmr_ras_reset(state);
-                    }
                     break;
                 case 4: /* a tune a frame's handler makes off the marked decoder thread, inside the dispatch */
                     dsd_engine_set_decoder_thread(0);
@@ -1993,7 +1990,8 @@ check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
             }
             g_tick_guard_held = 0;
             dsd_engine_set_decoder_thread(0);
-            if (kind == 5) {
+            if (kind == 2 || kind == 3 || kind == 5) {
+                /* The watchdog's tunes wait for the decoder thread; a refused one changes nothing. */
                 assert(state->dmr_ras_signatures == (confirmed ? 2U : 1U));
                 assert(((state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U) == (confirmed != 0));
                 continue;

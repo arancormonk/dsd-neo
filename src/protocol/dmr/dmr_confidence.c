@@ -128,6 +128,9 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
     if (may_lock && state->dmr_confidence_candidate_count >= DMR_CONFIDENCE_LOCK_OBSERVES) {
         state->dmr_confidence_locked = 1;
         state->dmr_confidence_color_code = (uint8_t)color_code;
+        /* A lock after an acquisition reset on the same carrier onto another colour code than the carrier's is another
+           system, whose RAS is its own to prove; a carrier's first lock (16, not decoded) changes nothing. */
+        dmr_ras_note_color_code(state, color_code);
         state->dmr_color_code = color_code;
         dmr_confidence_note_evidence(state, color_code);
         return DMR_CONFIDENCE_LOCKED;

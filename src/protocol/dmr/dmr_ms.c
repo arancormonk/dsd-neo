@@ -176,7 +176,7 @@ dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], 
     if (QR_16_7_6_decode(emb_pdu)) {
         uint8_t cc = (uint8_t)((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
         power = emb_pdu[4];
-        dmr_ras_note_ms_color_code(state, cc);
+        dmr_ras_note_color_code(state, cc);
         state->dmr_color_code = state->color_code = cc;
         dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, cc);
     }

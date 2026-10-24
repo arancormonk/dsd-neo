@@ -19,6 +19,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +66,8 @@ rig_open(burst_rig* rig, int relaxed) {
     if (rig->opts == NULL || rig->state == NULL) {
         free(rig->opts);
         free(rig->state);
+        rig->opts = NULL;
+        rig->state = NULL;
         return 1;
     }
     dsd_opts_set_relaxed_crc(rig->opts, relaxed);
@@ -162,6 +165,7 @@ test_two_signatures_confirm(void) {
     const uint32_t epoch = rig.state->rx_id.epoch;
 
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("first signature", !dmr_ras_confirmed(rig.state));
@@ -170,6 +174,7 @@ test_two_signatures_confirm(void) {
     CHECK("first signature is not accepted without -F", !strstr(rig.out, k_csbk_sites));
 
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("second signature", dmr_ras_confirmed(rig.state));
@@ -178,9 +183,13 @@ test_two_signatures_confirm(void) {
     CHECK("second signature keeps the colour code", (rig.state->rx_id.valid & DSD_RXID_ACCESS) != 0U);
     CHECK("second signature does not move the epoch", rig.state->rx_id.epoch == epoch);
     CHECK("second signature prints the notice once", count(rig.out, k_notice) == 1U);
+    char exact[192];
+    DSD_SNPRINTF(exact, sizeof exact, "\n%s%s%s", KYEL, k_notice, KNRM);
+    CHECK("the notice is its own line, exactly the text between the colour codes", strstr(rig.out, exact) != NULL);
     CHECK("second signature is not accepted without -F", !strstr(rig.out, k_csbk_sites));
 
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("third signature", has_ras_part(rig.state));
@@ -202,6 +211,7 @@ test_relaxed_confirms_without_notice(void) {
     both[0] = '\0';
     for (int i = 0; i < 2; i++) {
         if (send_ras(&rig) != 0) {
+            rig_close(&rig);
             return 1;
         }
         DSD_SNPRINTF(both + strlen(both), sizeof both - strlen(both), "%s", rig.out);
@@ -241,6 +251,7 @@ test_non_signatures_never_confirm(void) {
                     default: rc = rig_send(&rig, hytera, k_r_ras, NULL, 0U); break;
                 }
                 if (rc != 0) {
+                    rig_close(&rig);
                     return 1;
                 }
                 CHECK(tags[kind], count(rig.out, k_notice) == 0U);
@@ -258,24 +269,31 @@ static int
 test_bursts_of_no_carrier_do_not_count(void) {
     int failed = 0;
     burst_rig rig;
-    if (rig_open(&rig, 0) != 0 || send_ras(&rig) != 0) {
+    if (rig_open(&rig, 0) != 0) {
+        return 1;
+    }
+    if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     rig.state->frame_dispatch_active = 1;
     rig.state->frame_dispatch_carrier_seq = rig.state->carrier_seq;
     rig.state->carrier_seq++;
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("frame read across a boundary", !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
     rig.state->frame_dispatch_active = 0;
     rig.state->input_interrupted = 1;
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("frame cut by an interruption", !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
     rig.state->input_interrupted = 0;
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("the carrier's second signature", dmr_ras_confirmed(rig.state) && has_ras_part(rig.state));
@@ -295,14 +313,17 @@ test_reset_forgets_the_evidence(void) {
     }
     dsd_rxid_note_access(rig.state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     dmr_ras_reset(rig.state);
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("signature, reset, signature", !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("two after the reset", dmr_ras_confirmed(rig.state) && has_ras_part(rig.state));
@@ -313,10 +334,12 @@ test_reset_forgets_the_evidence(void) {
     CHECK("reset keeps the epoch", rig.state->rx_id.epoch == epoch);
     CHECK("reset keeps the colour code", (rig.state->rx_id.valid & DSD_RXID_ACCESS) != 0U);
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("one after the reset", !has_ras_part(rig.state) && count(rig.out, k_notice) == 0U);
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("the next confirmation tells again", has_ras_part(rig.state) && count(rig.out, k_notice) == 1U);
@@ -324,8 +347,19 @@ test_reset_forgets_the_evidence(void) {
     return failed;
 }
 
-/* A base station colour-code relock is another system on the carrier: the evidence of the last one goes, before and
-   after a confirmation. Bursts of the locked colour code keep it. */
+/* Locks the BS confidence gate, from an acquisition reset, onto @p color_code. */
+static void
+lock_colour_code(dsd_state* state, unsigned int color_code) {
+    dmr_confidence_reset(state);
+    for (int i = 0; i < 2; i++) {
+        (void)dmr_confidence_note_data_burst(state, color_code);
+    }
+}
+
+/* A base station colour-code change is another system on the carrier: the evidence of the last one goes, before and
+   after a confirmation, whether the locked gate relocks or an acquisition reset on the same carrier (a burst error,
+   a no-carrier pass that left the identity step) unlocks it and it locks onto another code. The carrier's first lock
+   (colour code 16, not decoded, as a carrier boundary leaves it) and a lock back onto the same code keep it. */
 static int
 test_bs_colour_relock_resets(void) {
     int failed = 0;
@@ -333,16 +367,17 @@ test_bs_colour_relock_resets(void) {
     if (rig_open(&rig, 0) != 0) {
         return 1;
     }
-    dmr_confidence_reset(rig.state);
-    for (int i = 0; i < 2; i++) {
-        (void)dmr_confidence_note_data_burst(rig.state, 1U);
-    }
-    CHECK("locked on colour code 1", rig.state->dmr_confidence_locked == 1U);
+    /* A signature before the carrier's first lock still counts. */
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
+    lock_colour_code(rig.state, 1U);
+    CHECK("locked on colour code 1", rig.state->dmr_confidence_locked == 1U && rig.state->dmr_color_code == 1U);
+    CHECK("the carrier's first lock keeps the evidence", rig.state->dmr_ras_signatures == 1U);
     (void)dmr_confidence_note_data_burst(rig.state, 1U);
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("the locked colour code keeps the evidence", dmr_ras_confirmed(rig.state) && has_ras_part(rig.state));
@@ -353,6 +388,7 @@ test_bs_colour_relock_resets(void) {
     CHECK("relocked on colour code 2", rig.state->dmr_confidence_color_code == 2U);
     CHECK("the relock drops the confirmation", !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     for (int i = 0; i < 4; i++) {
@@ -360,9 +396,37 @@ test_bs_colour_relock_resets(void) {
     }
     CHECK("relocked on colour code 3", rig.state->dmr_confidence_color_code == 3U);
     if (send_ras(&rig) != 0) {
+        rig_close(&rig);
         return 1;
     }
     CHECK("signature, relock, signature", !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
+
+    /* An acquisition reset keeps dmr_color_code: a first lock onto another code is the change (the header would read
+       the new code with the last system's RAS), one onto the same code is the same system. */
+    for (int round = 0; round < 2; round++) {
+        if (send_ras(&rig) != 0) {
+            rig_close(&rig);
+            return 1;
+        }
+        CHECK("confirmed on colour code 3", dmr_ras_confirmed(rig.state) && has_ras_part(rig.state));
+        lock_colour_code(rig.state, 3U);
+        CHECK("a lock back onto colour code 3 keeps the confirmation",
+              dmr_ras_confirmed(rig.state) && has_ras_part(rig.state));
+        lock_colour_code(rig.state, 2U);
+        CHECK("an unlocked gate's lock onto colour code 2", rig.state->dmr_color_code == 2U);
+        CHECK("drops the confirmation", !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
+        if (send_ras(&rig) != 0) {
+            rig_close(&rig);
+            return 1;
+        }
+        lock_colour_code(rig.state, 3U);
+        if (send_ras(&rig) != 0) {
+            rig_close(&rig);
+            return 1;
+        }
+        CHECK("signature, reset and lock onto another code, signature",
+              !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
+    }
     rig_close(&rig);
     return failed;
 }

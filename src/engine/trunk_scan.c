@@ -2941,9 +2941,8 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
-            if (dsd_rxid_apply_trunk_tune(state)) {
-                dmr_ras_reset(state);
-            }
+            /* The release's own return to the control channel; the RAS evidence goes at the switch below either way. */
+            (void)dsd_rxid_apply_trunk_tune(state);
             coord->rollback_rx_id = state->rx_id;
             coord->forced_visit_release = 0;
         } else {

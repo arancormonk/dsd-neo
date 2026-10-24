@@ -6605,6 +6605,26 @@ test_target_switch_and_rollback_reset_dmr_ras(void) {
         }
     }
 
+    /* The last rollback left b cooling down: the next advance finds nothing eligible and stays, but the retune drop the
+       P25 watchdog requested meanwhile is applied there (before the advance keeps the record), and with it the RAS
+       evidence of the carrier that retune left goes. */
+    const size_t stayed = dsd_engine_trunk_scan_active_index(&state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dmr_ras_note_signature(&state);
+    dmr_ras_note_signature(&state);
+    (void)dsd_rxid_request_trunk_tune(&state);
+    now += 0.3;
+    trunk_scan_test_set_now(now);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != stayed || state.rx_id_trunk_tune_pending != 0U
+        || dmr_ras_confirmed(&state) || (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U) {
+        DSD_FPRINTF(stderr,
+                    "ras: an advance with nothing eligible kept the evidence (moved=%d pending=%u valid=%08X)\n",
+                    dsd_engine_trunk_scan_active_index(&state) != stayed, (unsigned)state.rx_id_trunk_tune_pending,
+                    (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);

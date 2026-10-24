@@ -953,8 +953,8 @@ static void
 dmr_dburst_announce_ras(const dmr_data_burst_ctx* ctx) {
     if (ctx->ras_announce) {
         DSD_FPRINTF(stderr,
-                    "\n%s DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; "
-                    "-F decodes them %s",
+                    "\n%sDMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; "
+                    "-F decodes them%s",
                     KYEL, KNRM);
     }
 }

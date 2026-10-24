@@ -16,8 +16,10 @@
  * each later call advances the decode clock.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
@@ -67,6 +69,7 @@ enum scenario {
     SC_CAPPLUS_LIVE_REST,
     SC_DMR_NAMED_UNCONFIRMED,
     SC_CAPPLUS_UNMAPPED_REST,
+    SC_RAS_SYNCED_APPLY,
 };
 
 static enum scenario g_scenario;
@@ -86,6 +89,7 @@ static long g_probe_freqs[8];
 static uint64_t g_probe_times_ms[8];
 static uint64_t g_probe_completed_ms;
 static uint64_t g_last_content_ms;
+static int g_ras_frames; // SC_RAS_SYNCED_APPLY: frames dispatched
 
 static int
 capplus_scenario(void) {
@@ -236,8 +240,43 @@ dmr_preamble(dsd_opts* opts, dsd_state* state) {
 
 /* Frames otherwise decode to nothing: in particular, a repeated raw data sync or a discarded frame does not run a
    DMR voice handler's internal tick. Recovery must still advance once the startup hunt has ended on valid control. */
+/* SC_RAS_SYNCED_APPLY: a trunk tune's drop the P25 watchdog requested while a DMR frame was handled is applied after
+   the synced frame's ticks, which resets the DMR RAS evidence the carrier left (dmr_ras_reset()) before the next frame:
+   neither a confirmation nor one signature carries over. This fake processFrame() applies nothing itself. */
+static void
+ras_synced_apply_frame(dsd_state* state) {
+    g_ras_frames++;
+    switch (g_ras_frames) {
+        case 1:
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+            dmr_ras_note_signature(state);
+            dmr_ras_note_signature(state);
+            expect(dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U, "RAS confirmed");
+            (void)dsd_rxid_request_trunk_tune(state);
+            expect(state->rx_id_trunk_tune_pending == 1U && dmr_ras_confirmed(state), "the watchdog's request waits");
+            break;
+        case 2:
+            expect(state->rx_id_trunk_tune_pending == 0U, "the synced loop applied the drop");
+            expect(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U,
+                   "the synced loop's apply resets a confirmation");
+            dmr_ras_note_signature(state);
+            (void)dsd_rxid_request_trunk_tune(state);
+            break;
+        case 3:
+            dmr_ras_note_signature(state);
+            expect(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U,
+                   "one signature on each side of the synced loop's apply does not confirm");
+            break;
+        default: break;
+    }
+}
+
 void
 processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    if (g_scenario == SC_RAS_SYNCED_APPLY) {
+        ras_synced_apply_frame(state);
+        return;
+    }
     if (g_scenario == SC_NAMED_BETWEEN_FRAMES && g_tunes == 1 && !g_validated_sent && g_now_ms >= 6000U) {
         p25_sm_note_validated_cc(opts, state);
         g_validated_sent = 1;
@@ -333,6 +372,11 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         case SC_SYNCED_LOOP:
             // Unvalidated DMR data syncs that never stop: the outer loop runs only before the first one.
             if (g_now_ms > 7000U) {
+                return finish();
+            }
+            return DSD_SYNC_DMR_BS_DATA_POS;
+        case SC_RAS_SYNCED_APPLY:
+            if (g_ras_frames >= 3) {
                 return finish();
             }
             return DSD_SYNC_DMR_BS_DATA_POS;
@@ -462,6 +506,7 @@ run_scenario(enum scenario sc, int ft) {
     DSD_MEMSET(g_probe_times_ms, 0, sizeof(g_probe_times_ms));
     g_probe_completed_ms = 0U;
     g_last_content_ms = 0U;
+    g_ras_frames = 0;
     dsd_decode_clock_use_test(T0_NS);
     dsd_exitflag_store(0);
     dsd_trunk_tuning_requests_reset();
@@ -563,6 +608,7 @@ run_scenario(enum scenario sc, int ft) {
             expect(g_probe_times_ms[0] > g_last_content_ms + 6000U && g_probe_times_ms[0] <= g_last_content_ms + 6500U,
                    "six seconds after the last validated content, not before");
             break;
+        case SC_RAS_SYNCED_APPLY: expect(g_ras_frames == 3, "three frames dispatched through the synced loop"); break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
             expect(g_tunes == 0 && dmr->cold_start_armed_m <= 0.0 && dmr->cold_start_hunt == 0,
@@ -626,6 +672,7 @@ main(void) {
     run_scenario(SC_CAPPLUS_LIVE_REST, 0);
     run_scenario(SC_DMR_NAMED_UNCONFIRMED, 0);
     run_scenario(SC_CAPPLUS_UNMAPPED_REST, 0);
+    run_scenario(SC_RAS_SYNCED_APPLY, 0);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");
     }
