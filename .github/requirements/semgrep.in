@@ -1,4 +1,11 @@
-semgrep==1.179.0
+semgrep==1.182.1
 # GHSA-84m7-p3x7-pcfv: override Semgrep's vulnerable mcp==1.29.0 pin.
 # Use this file as both the input and --override when compiling the lockfile.
 mcp==1.30.0
+# GHSA-xcq7-p3pf-p88h: override Semgrep's opentelemetry ~=1.37.0 / ~=0.58b0 pins,
+# which hold opentelemetry-api below the fixed 1.45.1. Keep the family in step.
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-instrumentation-requests==0.66b1
+opentelemetry-instrumentation-threading==0.66b1

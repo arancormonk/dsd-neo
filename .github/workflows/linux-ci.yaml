@@ -945,7 +945,7 @@ jobs:
 
       - name: Install Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
-        # The complete lockfile overrides Semgrep's vulnerable MCP pin; see docs/dependencies.md.
+        # The complete lockfile overrides Semgrep's vulnerable MCP and OpenTelemetry pins; see docs/dependencies.md.
         run: |
           python -m pip install --require-hashes --no-deps -r .github/requirements/semgrep.txt
           python - <<'PY'
@@ -953,10 +953,15 @@ jobs:
           import sys
 
           check = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
-          expected = "semgrep 1.179.0 has requirement mcp==1.29.0, but you have mcp 1.30.0."
-          if check.returncode != 1 or check.stdout.strip() != expected or check.stderr:
+          expected = sorted([
+              "semgrep 1.182.1 has requirement mcp==1.29.0, but you have mcp 1.30.0.",
+              "semgrep 1.182.1 has requirement opentelemetry-api~=1.37.0, but you have opentelemetry-api 1.45.1.",
+              "semgrep 1.182.1 has requirement opentelemetry-exporter-otlp-proto-http~=1.37.0, but you have opentelemetry-exporter-otlp-proto-http 1.45.1.",
+              "semgrep 1.182.1 has requirement opentelemetry-sdk~=1.37.0, but you have opentelemetry-sdk 1.45.1.",
+          ])
+          if check.returncode != 1 or sorted(check.stdout.splitlines()) != expected or check.stderr:
               sys.exit(f"Unexpected Semgrep dependency check: {check.stdout}{check.stderr}")
-          print("Semgrep dependencies verified; only the documented MCP override differs.")
+          print("Semgrep dependencies verified; only the documented MCP and OpenTelemetry overrides differ.")
           PY
 
       - name: Run Semgrep
