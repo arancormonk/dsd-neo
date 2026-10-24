@@ -1757,13 +1757,30 @@ p25_grant_candidate_displaces_active(const p25_sm_ctx_t* ctx, const dsd_state* s
  * assigned slot, by its policy target, with the time the SM began following that call. A transmission's end clears
  * its record while hangtime keeps the carrier, and a group list reload may have replaced the records; without this a
  * held conversation could never be outranked, or would restart its dwell. */
+static int p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx);
+static int p25_voice_slot_assignment_pending(const p25_sm_slot_ctx_t* slot_ctx);
+
+/* Whether a TDMA slot still holds its call: live voice, an assignment awaiting its first voice, or the gap after its
+ * transmission within the hangtime. A slot whose call ended longer ago than that keeps its assignment while the
+ * companion slot goes on, but holds nothing a candidate must outrank. */
+static int
+p25_grant_slot_holds_call(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_slot_ctx_t* slot_ctx,
+                          double now_m) {
+    if (p25_voice_slot_epoch_active(slot_ctx) || p25_voice_slot_assignment_pending(slot_ctx)) {
+        return 1;
+    }
+    return slot_ctx->last_stop_m > 0.0 && now_m >= slot_ctx->last_stop_m
+           && (now_m - slot_ctx->last_stop_m) < p25_sm_effective_hangtime(state, ctx->config.hangtime_s);
+}
+
 static void
 p25_grant_describe_held_calls(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
     const int slots = ctx->vc_is_tdma ? 2 : 1;
     for (int s = 0; s < slots; s++) {
         const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
         const int route_slot = ctx->vc_is_tdma ? s : -1;
-        if (!slot_ctx->grant_active || slot_ctx->target_id <= 0 || slot_ctx->freq_hz != ctx->vc_freq_hz) {
+        if (!slot_ctx->grant_active || slot_ctx->target_id <= 0 || slot_ctx->freq_hz != ctx->vc_freq_hz
+            || (ctx->vc_is_tdma && !p25_grant_slot_holds_call(ctx, state, slot_ctx, now_m))) {
             if (ctx->vc_is_tdma) {
                 (void)dsd_tg_policy_clear_active_call(state, s);
             }
