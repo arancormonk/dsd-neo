@@ -193,8 +193,9 @@ void dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state);
  * comparison measures the other chain both name that chain. This puts both back on the chain leading so far -- the
  * incumbent, unless the other chain has read more -- and ends the comparison without a verdict, so the tune that
  * follows lands on it. A Phase 2 grant that has named its slot (dsd_state::p25_p2_active_slot) keeps the CQPSK it set:
- * only the learned modulation goes back. The front end is left to the tune. The engine's tune requests call it before
- * they read the modulation; it does nothing when no comparison runs.
+ * only the learned modulation goes back. The front end is left to the tune. The engine's voice and control-channel tune
+ * requests call it before they read the modulation, and put the comparison back when the tune fails; it does nothing
+ * when no comparison runs.
  */
 void dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state);
 

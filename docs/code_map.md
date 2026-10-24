@@ -3871,13 +3871,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
     a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
     incumbent unless the other chain has read more.
-  - Tunes: every engine tune request (`dsd_engine_trunk_tune_to_freq_request()`,
-    `dsd_engine_trunk_tune_to_cc_request()`, `dsd_engine_return_to_cc_request()`) ends a comparison in flight on the
-    leading chain before it reads the modulation (`dsd_frame_sync_p25p1_mod_compare_end_for_tune()`, `frame_sync_p25p1_compare.c`, which
+  - Tunes: `dsd_engine_trunk_tune_to_freq_request()` and `dsd_engine_trunk_tune_to_cc_request()` (the latter also
+    under `dsd_engine_return_to_cc_request()`, when it retunes) end a comparison in flight on the leading chain before
+    they read the modulation (`dsd_frame_sync_p25p1_mod_compare_end_for_tune()`, `frame_sync_p25p1_compare.c`, which
     the engine tests link), so an FDMA grant, which inherits `rf_mod`, and a control-channel tune, which reads the
     learned modulation, never land on a chain only because its pass was running. A Phase 2 grant has already put
     `rf_mod` on CQPSK and named its slot (`p25_p2_active_slot`), and that modulation stays the tune's; only the learned
-    modulation goes back.
+    modulation goes back. A tune that fails or is deferred puts the comparison back as it was, with the front end's
+    profile captured before the comparison ended, so the decoder and the front end stay on the same chain.
   - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
     gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The

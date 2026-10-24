@@ -965,6 +965,31 @@ test_chain_comparison_in_flight_tunes_on_the_leading_chain(dsd_opts* opts, dsd_s
     assert(state->p25_p1_validated_rf_mod == 0);
     assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_mod_probe_active == 0);
     rtl_stream_clear_pending_retune_profile();
+
+    /* A tune that fails or is deferred moves nothing: the comparison goes on in the pass it was in, on the chain the
+     * front end is re-requested on, rather than ending with the decoder on the leader and the front end on the trial
+     * chain. */
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->p25_p1_mod_compare.phase == 2 && state->p25_p1_mod_probe_active == 1);
+    assert(state->rf_mod == 1 && state->p25_p1_validated_rf_mod == 1);
+    assert(g_rtl_cqpsk_enable == 1);
+    rtl_stream_clear_pending_retune_profile();
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    assert(state->p25_p1_mod_compare.phase == 2 && state->rf_mod == 1 && state->p25_p1_validated_rf_mod == 1);
+    assert(g_rtl_cqpsk_enable == 1);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A return with no control channel to go to retunes nothing, so the comparison goes on too. */
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->p25_p1_mod_compare.phase == 2 && state->rf_mod == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 }
 
 /* Issue #583, one landing-family decision per retune preparation: a DMR control-channel tune outside a scan (no scan

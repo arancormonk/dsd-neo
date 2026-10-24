@@ -842,6 +842,39 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
 #endif
 }
 
+/* A P25p1 chain comparison as a tune found it (dsd_frame_sync_p25p1_mod_compare_end_for_tune() ends it on the leading
+ * chain before the tune reads the modulation). A tune that fails or is deferred moves nothing, so it puts the
+ * comparison back as it was, on the chain its pass was reading, together with the front end's profile. */
+typedef struct {
+    dsd_p25p1_mod_compare compare;
+    int probe_active;
+    int validated_rf_mod;
+    uint32_t validated_symbolcnt;
+    int rf_mod;
+} dsd_engine_p25p1_compare_snapshot;
+
+static void
+dsd_engine_end_p25p1_compare_for_tune(dsd_state* state, dsd_engine_p25p1_compare_snapshot* snapshot) {
+    snapshot->compare = state->p25_p1_mod_compare;
+    snapshot->probe_active = state->p25_p1_mod_probe_active;
+    snapshot->validated_rf_mod = state->p25_p1_validated_rf_mod;
+    snapshot->validated_symbolcnt = state->p25_p1_validated_symbolcnt;
+    snapshot->rf_mod = state->rf_mod;
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
+}
+
+static void
+dsd_engine_restore_p25p1_compare(dsd_state* state, const dsd_engine_p25p1_compare_snapshot* snapshot) {
+    if (snapshot->compare.phase == 0) {
+        return;
+    }
+    state->p25_p1_mod_compare = snapshot->compare;
+    state->p25_p1_mod_probe_active = snapshot->probe_active;
+    state->p25_p1_validated_rf_mod = snapshot->validated_rf_mod;
+    state->p25_p1_validated_symbolcnt = snapshot->validated_symbolcnt;
+    state->rf_mod = snapshot->rf_mod;
+}
+
 static void
 dsd_engine_maybe_reset_p25p2_state(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
     int p25p2_sps = dsd_opts_compute_sps_rate(opts, 6000, dsd_engine_current_demod_rate(opts, state));
@@ -929,7 +962,8 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
     if (!opts || !state) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
+    /* A P25p1 chain comparison in flight is ended by the control-channel tune below, and only if there is one: with
+       no control channel known, or trunking off, nothing is retuned and the comparison goes on. */
     // Audio drain is handled by dsd_engine_trunk_tune_to_cc_request() before the hardware retune.
 
     // Tune back to the control channel when known (best-effort). Prefer the
@@ -971,11 +1005,16 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
 #endif
+    dsd_engine_p25p1_compare_snapshot compare_snapshot;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+#ifdef USE_RADIO
+    /* Captured before the comparison below ends, so a failed tune puts the front end back with the comparison. */
+    dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
+#endif
     /* A P25p1 chain comparison in flight hands the tune the chain leading so far, not the one its pass is trying. */
-    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
+    dsd_engine_end_p25p1_compare_for_tune(state, &compare_snapshot);
 
     /* Trunking (P25): the SM sets state->rf_mod based on the grant (0=C4FM FDMA,
      * 1=QPSK family for TDMA/CQPSK). For mixed P25P1 C4FM CC + P25P2 TDMA voice,
@@ -985,7 +1024,6 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
      *
      * Respect explicit CQPSK forcing via runtime config/env (DSD_NEO_CQPSK). */
 #ifdef USE_RADIO
-    dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
     dsd_engine_prepare_vc_rtl_chain(opts, state, freq, ted_sps);
 #endif
 
@@ -1018,6 +1056,7 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
 #endif
+        dsd_engine_restore_p25p1_compare(state, &compare_snapshot);
         return result;
     }
 
@@ -1059,16 +1098,18 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
 #endif
+    dsd_engine_p25p1_compare_snapshot compare_snapshot;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    /* As a grant's tune: a P25p1 chain comparison in flight hands the control channel the chain leading so far. */
-    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
 #ifndef USE_RADIO
     (void)ted_sps;
 #else
+    /* Captured before the comparison below ends, so a failed tune puts the front end back with the comparison. */
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
 #endif
+    /* As a grant's tune: a P25p1 chain comparison in flight hands the control channel the chain leading so far. */
+    dsd_engine_end_p25p1_compare_for_tune(state, &compare_snapshot);
 
     // NOTE: Costas/TED reset is deferred to the controller thread after the hardware
     // retune completes. See dsd_engine_trunk_tune_to_freq_request for the full rationale.
@@ -1086,6 +1127,7 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
 #endif
+        dsd_engine_restore_p25p1_compare(state, &compare_snapshot);
         return result;
     }
     // Reset modulation auto-detect state for fresh acquisition after a confirmed tune.
