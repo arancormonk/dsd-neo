@@ -321,7 +321,7 @@ typedef struct {
 /** The logical transmission @p call belongs to (dsd_call_snapshot::transmission_epoch, else its own epoch); 0 none. */
 static inline uint64_t
 dsd_call_snapshot_transmission(const dsd_call_snapshot* call) {
-    if (call == NULL) {
+    if (!call) {
         return 0U;
     }
     return call->transmission_epoch != 0U ? call->transmission_epoch : call->epoch;
