@@ -198,10 +198,15 @@ dmr_sm_slot_identities_refresh(dmr_sm_ctx_t* ctx, const dsd_state* state, double
     }
 }
 
-/* Whether canonical call @p call names another call than @p named: another target (for a private call, neither party). A
+/* Whether canonical call @p call names another call than @p named: another class (a group call for a private one, or
+   the reverse: a talkgroup and a unit may share a number), or another target (for a private call, neither party). A
    call that names nothing yet names no other call. */
 static int
 dmr_sm_call_names_other(const dsd_call_snapshot* call, const dmr_sm_slot_ctx_t* named) {
+    if ((call->kind == DSD_CALL_KIND_GROUP_VOICE && named->kind == (uint8_t)DSD_CALL_KIND_PRIVATE_VOICE)
+        || (call->kind == DSD_CALL_KIND_PRIVATE_VOICE && named->kind == (uint8_t)DSD_CALL_KIND_GROUP_VOICE)) {
+        return 1;
+    }
     const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
     return target != 0U && target != named->target && !(!named->judged_group && target == named->source);
 }

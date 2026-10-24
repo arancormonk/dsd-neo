@@ -1818,6 +1818,60 @@ nxdn_run_type_d_abandoned_grant_case(void) {
     return rc;
 }
 
+/* A followed Type-D call a VCALL named (with its source) gets INFO3 source updates naming other talkers, 1700 then 1800:
+ * each opens another canonical epoch of the same target and class (a source change). The held call follows its call
+ * there, its follow time kept and its source left alone, so a p100 preempt on another repeater takes the receiver from
+ * the known p10 destination once the dwell from the follow has run, as without the updates. */
+static int
+nxdn_run_type_d_info3_new_source_keeps_held_call_case(void) {
+    static const char* const name = "type-d-info3-new-source";
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 100, 1);
+    int rc = 0;
+
+    at_seconds(9995.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    at_seconds(9995.2);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    const double follow_m = g_state.nxdn_call.follow_m;
+    const uint32_t source = g_state.nxdn_call.source; /* the VCALL's */
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && g_state.nxdn_call.valid == 1U
+                          && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
+                      name, "named", "the held call is bound to the named call");
+
+    static const uint16_t k_sources[] = {1700U, 1800U};
+    for (size_t i = 0U; i < sizeof(k_sources) / sizeof(k_sources[0]); i++) {
+        const uint64_t before = dsd_call_snapshot_transmission(&call);
+        uint8_t message[32];
+        at_seconds(9995.3 + (0.1 * (double)i));
+        voice_live();
+        build_scch_identity(message, 1U, 0U, k_sources[i]); /* INFO3: another source */
+        NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+        rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                              && call.policy_target_id == 1400U && dsd_call_snapshot_transmission(&call) != before,
+                          name, "info3", "a new source opens another epoch of the same destination");
+        rc |=
+            nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
+                            && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call)
+                            && fabs(g_state.nxdn_call.follow_m - follow_m) < 1e-9 && g_state.nxdn_call.source == source,
+                        name, "info3", "the held call follows its call, follow time kept, source left alone");
+    }
+
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9996.2);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "preempt",
+                      "a p100 preempt takes the known p10 destination after the dwell");
+    return rc;
+}
+
 static int
 nxdn_run_unnamed_followed_call_fades_case(void) {
     return nxdn_run_unnamed_followed_call_fades_variant(0) | nxdn_run_unnamed_followed_call_fades_variant(1);
@@ -2264,6 +2318,7 @@ main(void) {
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
     rc |= nxdn_run_unnamed_followed_call_fades_case();
+    rc |= nxdn_run_type_d_info3_new_source_keeps_held_call_case();
     rc |= nxdn_run_type_d_abandoned_grant_case();
     rc |= nxdn_run_type_d_refollow_during_fade_case();
 #endif

@@ -3584,6 +3584,32 @@ nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     }
 }
 
+/* The live call's transmission (0: none active). */
+static uint64_t
+nxdn_live_call_transmission(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0U;
+    }
+    return dsd_call_snapshot_transmission(&call);
+}
+
+/* An INFO3 source update of the live call (transmission @p before) whose source differs from the call's makes the
+ * canonical layer open another epoch for it (dsd_call_state_observe(): a source change), of the same target and class,
+ * since the enrichment carries both over. It names the same call, so a held call bound to @p before follows it there,
+ * its follow time kept: a source-only update never ends, unknowns or restarts the dwell of a known destination. The
+ * source itself stays out of the held call (INFO3 may misname the talker, nxdn_held_policy_source()). */
+static void
+nxdn_call_identity_follow_source_update(dsd_state* state, uint64_t before) {
+    dsd_nxdn_call_identity* const id = &state->nxdn_call;
+    const uint64_t after = nxdn_live_call_transmission(state);
+    if (!id->valid || id->gap || before == 0U || id->call_epoch != before || after == 0U || after == before) {
+        return;
+    }
+    id->call_epoch = after;
+    id->call_seen_m = dsd_decode_now_mono_s();
+}
+
 static void
 nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_FPRINTF(stderr, "Source Message - ");
@@ -3597,7 +3623,9 @@ nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
         DSD_FPRINTF(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                     info->id);
         if (info->now - state->last_vc_sync_time < 1) {
+            const uint64_t before = nxdn_live_call_transmission(state);
             nxdn_scch_enrich_identity(state, info->id, 0U, DSD_CALL_KIND_UNKNOWN);
+            nxdn_call_identity_follow_source_update(state, before);
         }
     }
 }

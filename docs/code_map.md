@@ -5017,7 +5017,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     until a classified message names it); UNKNOWN never relabels. While voice is live a busy message for OTHER takes the receiver for
     the held talkgroup over a call not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a
     second the message is followed as before. INFO3 names no go-to repeater (`rep1` is a free repeater), so its source
-    enrichment is unchanged and can misname a talker (documented limit); it never changes the target or the policy.
+    enrichment is unchanged and can misname a talker (documented limit); it never changes the target or the policy. A
+    source other than the live call's makes the canonical layer open another epoch of the same target and class, which
+    the held call follows there (`nxdn_call_identity_follow_source_update()`), its follow time kept and its source left
+    alone.
   - Ledger: `nxdn_preempts()` describes the held call (`dsd_tg_policy_describe_followed_call()`, start `follow_m`; a
     Type-D one by its target alone) before `dsd_tg_policy_should_preempt()`, with the candidate's route
     `requires_tuner_retune`; a held call whose identity is not known is never preempted, only displaced by Hold. An
@@ -5422,7 +5425,8 @@ Private per-protocol modules worth knowing about:
   - Call binding. Each record is bound to the canonical call it names (`call_epoch`: that slot's
     `dsd_call_snapshot_transmission()`), so it never outlives it (`dmr_sm_slot_identity_refresh()`, run by the busy
     view, grant submission, the status reconciliations, voice sync, an LC and the tick). An LC binds to the call it was
-    published on; a grant, seed or status to the slot's active call when that names its target or nothing yet (on the
+    published on; a grant, seed or status to the slot's active call when that names its target or nothing yet, and
+    never one of the other class (`dmr_sm_call_names_other()`: a talkgroup and a unit may share a number) (on the
     followed carrier only one begun since the receiver arrived there, `t_carrier_m`: the follow tune, or for a carrier
     adopted in place any call), else to the first call to begin on the slot after it was named; the same call named
     again while its call is faded but may still be reacquired (`dmr_sm_slot_call_may_heal()`:

@@ -709,6 +709,59 @@ test_in_place_reassignment(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* An in-place group grant for TG 300 arrives while the followed slot still carries a private call to unit 300 (a checked
+   LC names it): the private call is not the group's, whatever the number, so the grant's record awaits its own call
+   instead of binding to the private one. Once the private call ends, the group's unnamed voice is that call: it stays
+   known (group 300, p10, its dwell from the grant), so a p100 preempt elsewhere takes the receiver after the dwell. */
+static int
+test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 300, "A", 10, 0);
+    seed_row(st, 999, "A", 100, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    const dsd_call_observation private_call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = 300U,
+        .policy_target_id = 300U,
+        .ota_source_id = 7U,
+    };
+    voice(opts, st, 0);
+    (void)dsd_call_state_observe(st, &private_call, DSD_CALL_BOUNDARY_BEGIN);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 300, 7);
+    dsd_call_snapshot call;
+    const uint64_t private_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+
+    clock_at(0.5);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    int rc = expect_true("the in-place group grant names the slot",
+                         vc(st) == VC_A && sm()->slots[0].target == 300U
+                             && sm()->slots[0].kind == (uint8_t)DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_true("the group grant is not bound to the private call",
+                      private_epoch != 0U && sm()->slots[0].call_epoch != private_epoch);
+
+    clock_at(1.0);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(1.2);
+    const dsd_call_observation unnamed = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(st, &unnamed, DSD_CALL_BOUNDARY_BEGIN);
+    voice(opts, st, 0);
+    rc |= expect_true("the group's unnamed voice is the grant's call, still known",
+                      sm()->slots[0].target == 300U && sm()->slots[0].kind == (uint8_t)DSD_CALL_KIND_GROUP_VOICE
+                          && sm()->vc_identity_known == 1);
+    clock_at(1.5);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 999, 9);
+    rc |= expect_true("a p100 preempt takes the p10 group call after the dwell", vc(st) == VC_B && sm()->vc_tg == 999);
+    return rc;
+}
+
 /* A C_MOVE event, as the CSBK layer submits it. */
 static dmr_sm_grant_result_e
 submit_move(dsd_opts* opts, dsd_state* st, long freq, uint16_t lpcn, int slot, int is_group, uint32_t target,
@@ -1050,6 +1103,7 @@ main(void) {
     rc |= test_release_clears_ledger(opts, st);
     rc |= test_scan_target_contexts(opts, st);
     rc |= test_in_place_reassignment(opts, st);
+    rc |= test_in_place_group_grant_never_binds_private_call(opts, st);
     rc |= test_slot_move_republishes(opts, st);
     rc |= test_move_matches_slot_identity(opts, st);
     rc |= test_deferred_move_keeps_identity(opts, st);
