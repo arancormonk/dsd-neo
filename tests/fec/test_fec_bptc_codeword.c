@@ -270,7 +270,7 @@ test_extract_falls_back_to_nearest_codeword(void) {
                                        "1111000111000010000001010100101011001110011010010";
     static const uint8_t k_voice_csbk_bytes[12] = {0xBE, 0x10, 0xE3, 0x00, 0x00, 0x00,
                                                    0x00, 0x00, 0x00, 0x00, 0xC1, 0xB3};
-    assert(sizeof k_voice_csbk == 197);
+    _Static_assert(sizeof k_voice_csbk == 197, "196 bits and the terminating NUL");
     for (size_t i = 0; i < 196; i++) {
         word[i] = (uint8_t)(k_voice_csbk[i] == '1');
     }

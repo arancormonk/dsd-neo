@@ -119,6 +119,20 @@ rig_send(burst_rig* rig, const uint8_t bytes[12], const uint8_t r[3], const size
     return 0;
 }
 
+/* Opens a rig and sends one burst through it; on failure nothing is left open. */
+static int
+rig_start(burst_rig* rig, int relaxed, const uint8_t bytes[12], const uint8_t r[3], const size_t* flips,
+          size_t flip_count, uint8_t databurst) {
+    if (rig_open(rig, relaxed) != 0) {
+        return 1;
+    }
+    if (rig_send(rig, bytes, r, flips, flip_count, databurst) != 0) {
+        rig_close(rig);
+        return 1;
+    }
+    return 0;
+}
+
 /* Rewrites the 16-bit CRC (bytes 10..11) under @p mask, broken by one bit when @p broken. */
 static void
 set_crc16(uint8_t bytes[12], uint16_t mask, int broken) {
@@ -155,7 +169,7 @@ test_noise_csbk_not_ras(void) {
     int failed = 0;
     for (size_t p = 0; p < 3; p++) {
         burst_rig rig;
-        if (rig_open(&rig, 1) != 0 || rig_send(&rig, k_csbk, k_r_none, patterns[p], 4U, 0x03) != 0) {
+        if (rig_start(&rig, 1, k_csbk, k_r_none, patterns[p], 4U, 0x03) != 0) {
             return 1;
         }
         CHECK(tags[p], !has(&rig, "-RAS"));
@@ -183,7 +197,7 @@ test_ras_csbk_distance_gate(void) {
                                                  "RAS CSBK distance 3", "RAS CSBK distance 4"};
     for (size_t n = 0; n <= 4; n++) {
         burst_rig rig;
-        if (rig_open(&rig, 1) != 0 || rig_send(&rig, ras, k_r_ras, k_scattered, n, 0x03) != 0) {
+        if (rig_start(&rig, 1, ras, k_r_ras, k_scattered, n, 0x03) != 0) {
             return 1;
         }
         CHECK(distance_tags[n], has(&rig, "-RAS"));
@@ -193,14 +207,14 @@ test_ras_csbk_distance_gate(void) {
     }
 
     burst_rig rig;
-    if (rig_open(&rig, 1) != 0 || rig_send(&rig, ras, k_r_ras, adversarial, 4U, 0x03) != 0) {
+    if (rig_start(&rig, 1, ras, k_r_ras, adversarial, 4U, 0x03) != 0) {
         return 1;
     }
     CHECK("RAS CSBK 29/74/75/90", has(&rig, "-RAS"));
     CHECK("RAS CSBK 29/74/75/90 dispatches the codeword payload", has(&rig, k_csbk_sites));
     rig_close(&rig);
 
-    if (rig_open(&rig, 1) != 0 || rig_send(&rig, ras, k_r_ras, k_scattered, 5U, 0x03) != 0) {
+    if (rig_start(&rig, 1, ras, k_r_ras, k_scattered, 5U, 0x03) != 0) {
         return 1;
     }
     CHECK("RAS CSBK distance 5", !has(&rig, "-RAS"));
@@ -208,7 +222,7 @@ test_ras_csbk_distance_gate(void) {
     CHECK("RAS CSBK distance 5 not dispatched", !has(&rig, "Connect Plus Adjacent Sites"));
     rig_close(&rig);
 
-    if (rig_open(&rig, 0) != 0 || rig_send(&rig, ras, k_r_ras, NULL, 0U, 0x03) != 0) {
+    if (rig_start(&rig, 0, ras, k_r_ras, NULL, 0U, 0x03) != 0) {
         return 1;
     }
     CHECK("RAS CSBK strict", !has(&rig, "-RAS"));
@@ -244,7 +258,7 @@ test_ras_lc_never_rs_corrected(void) {
     for (int relaxed = 0; relaxed <= 1; relaxed++) {
         const char* tag = relaxed ? "adversarial VLC -F" : "adversarial VLC strict";
         burst_rig rig;
-        if (rig_open(&rig, relaxed) != 0 || rig_send(&rig, word, k_r_ras, NULL, 0U, 0x01) != 0) {
+        if (rig_start(&rig, relaxed, word, k_r_ras, NULL, 0U, 0x01) != 0) {
             return 1;
         }
         dsd_call_snapshot call = {0};
@@ -297,7 +311,7 @@ test_layout_rules(void) {
             set_crc16(bytes, cases[i].mask, 1);
         }
         burst_rig rig;
-        if (rig_open(&rig, 1) != 0 || rig_send(&rig, bytes, k_r_ras, NULL, 0U, cases[i].databurst) != 0) {
+        if (rig_start(&rig, 1, bytes, k_r_ras, NULL, 0U, cases[i].databurst) != 0) {
             return 1;
         }
         CHECK(cases[i].tag, has(&rig, "-RAS") == (cases[i].ras != 0));
@@ -366,7 +380,7 @@ test_nearest_codeword_adoption(void) {
     int failed = 0;
 
     burst_rig rig;
-    if (rig_open(&rig, 0) != 0 || rig_send(&rig, k_csbk, k_r_none, flips, 4U, 0x03) != 0) {
+    if (rig_start(&rig, 0, k_csbk, k_r_none, flips, 4U, 0x03) != 0) {
         return 1;
     }
     CHECK("nearest codeword CSBK strict", has(&rig, k_csbk_sites));
@@ -385,7 +399,7 @@ test_nearest_codeword_adoption(void) {
     word[4] ^= 0x55U; // one RS symbol error: correctable, so the check fails until corrected
     for (int relaxed = 0; relaxed <= 1; relaxed++) {
         const char* tag = relaxed ? "nearest codeword R=0 VLC -F" : "nearest codeword R=0 VLC strict";
-        if (rig_open(&rig, relaxed) != 0 || rig_send(&rig, word, k_r_none, flips, 4U, 0x01) != 0) {
+        if (rig_start(&rig, relaxed, word, k_r_none, flips, 4U, 0x01) != 0) {
             return 1;
         }
         dsd_call_snapshot call = {0};
@@ -401,7 +415,7 @@ test_nearest_codeword_adoption(void) {
     uint8_t broken[12];
     DSD_MEMCPY(broken, k_csbk, sizeof broken);
     broken[11] ^= 0x01U;
-    if (rig_open(&rig, 1) != 0 || rig_send(&rig, broken, k_r_none, flips, 4U, 0x03) != 0) {
+    if (rig_start(&rig, 1, broken, k_r_none, flips, 4U, 0x03) != 0) {
         return 1;
     }
     CHECK("nearest codeword R=0 failed CSBK -F", !has(&rig, "-RAS"));
