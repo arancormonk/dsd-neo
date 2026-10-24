@@ -205,6 +205,9 @@ Item {
         // DMR RAS (Restricted Access to System): the field and its hint read the app-control RAS view, in the
         // terminal's and the console notice's words with the app's name for -F, and the sheet turns Relaxed CRC on
         // through the same command and preference Settings uses.
+        function rasHelp() {
+            return "Relaxed CRC accepts control and data whose CRC check failed, and marks them. Turned on here, it stays on for later sessions until Settings turns it off.";
+        }
         function rasNeedsRelaxed() {
             return "DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; Relaxed CRC decodes them.";
         }
@@ -236,6 +239,9 @@ Item {
                 var button = item("siteRelaxedCrcButton");
                 verify(button.visible && button.enabled);
                 compare(button.text, "Turn on Relaxed CRC");
+                // What the action changes, beside it: the app-wide setting, in the Settings row's words.
+                verify(item("siteRelaxedCrcHelp").visible);
+                compare(item("siteRelaxedCrcHelp").text, rasHelp());
                 button.forceActiveFocus(Qt.TabFocusReason);
                 button.activate();
                 compare(commands.relaxedCrcRequests(), [true]);
@@ -245,18 +251,42 @@ Item {
                 testContext.setMetric("relaxedCrcEffective", true);
                 testContext.setMetric("dmrRasNeedsRelaxed", false);
                 tryCompare(button, "visible", false);
+                verify(!item("siteRelaxedCrcHelp").visible);
                 verify(item("siteCloseButton").activeFocus, "a keyboard user keeps a place in the sheet");
                 compare(item("siteDmrRasNote").text, "Relaxed CRC is on, so this RAS system's control and data decode.");
                 compare(item("siteDmrRas").text, "RAS");
 
-                // A scan row with its own --strict-crc decides for this channel: the hint says so and offers no switch
-                // that the row would overrule.
+                // Relaxed CRC configured on under a scan row with its own --strict-crc: the row decides for this
+                // channel, the hint says so, and there is nothing left to turn on.
                 testContext.setMetric("relaxedCrcRowOverride", true);
                 testContext.setMetric("relaxedCrcEffective", false);
                 testContext.setMetric("dmrRasNeedsRelaxed", true);
                 tryCompare(item("siteDmrRasNote"), "text", rasNeedsRelaxed()
                     + " This channel sets strict CRC itself; Relaxed CRC applies from the next channel without its own.");
                 verify(!item("siteRelaxedCrcButton").visible);
+                verify(!item("siteRelaxedCrcHelp").visible);
+
+                // Configured off under the same strict row: nothing says the configured value covers the next channel,
+                // and turning it on still matters for the channels after this one.
+                testContext.setMetric("relaxedCrcConfigured", false);
+                tryCompare(item("siteDmrRasNote"), "text", rasNeedsRelaxed());
+                verify(item("siteRelaxedCrcButton").visible && item("siteRelaxedCrcButton").enabled);
+                compare(item("siteRelaxedCrcHelp").text, rasHelp()
+                    + " This channel sets strict CRC itself, so it applies from the next channel.");
+                testContext.resetCommands();
+                item("siteRelaxedCrcButton").activate();
+                compare(commands.relaxedCrcRequests(), [true]);
+                compare(item("siteRelaxedCrcButton").enabled, false);
+                // A request belongs to the sheet it was made in: closed and opened again, the action is live.
+                item("siteSheet").visible = false;
+                item("siteSheet").visible = true;
+                verify(item("siteRelaxedCrcButton").enabled, "closing the sheet drops the pending request");
+                // So does a session change.
+                item("siteRelaxedCrcButton").activate();
+                compare(item("siteRelaxedCrcButton").enabled, false);
+                testContext.setLifecyclePhase(2);
+                verify(item("siteRelaxedCrcButton").enabled, "a session change drops the pending request");
+                testContext.setLifecyclePhase(0);
 
                 // A refused command leaves the preference alone and says so.
                 testContext.setMetric("relaxedCrcRowOverride", false);

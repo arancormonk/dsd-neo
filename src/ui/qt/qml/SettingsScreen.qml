@@ -16,8 +16,11 @@ Item {
     property string lockoutError: ""
     readonly property string versionText: "DSD-neo " + appVersionText.replace(/^v/, "")
     readonly property bool liveLockoutPersistence: metrics.persistTgLockouts
-    readonly property bool lockoutSessionRunning: decoderHost.sessionState === 2
-    readonly property bool lockoutEditable: !lockoutPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
+    // A running session, and whether a live row may be edited now: stopped (the
+    // preference alone) or running with the session's options known.
+    readonly property bool sessionRunning: decoderHost.sessionState === 2
+    readonly property bool liveEditable: decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (sessionRunning && metrics.optionsKnown)
+    readonly property bool lockoutEditable: !lockoutPending && liveEditable
     // Relaxed CRC: the app preference every session the app starts gets (-F), and
     // applied live to a running one, whose own snapshot the switch shows until it
     // confirms, as the lockout row above does.
@@ -25,7 +28,7 @@ Item {
     property bool requestedRelaxedCrc: false
     property string relaxedCrcError: ""
     readonly property bool liveRelaxedCrc: metrics.relaxedCrcConfigured === true
-    readonly property bool relaxedCrcEditable: !relaxedCrcPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
+    readonly property bool relaxedCrcEditable: !relaxedCrcPending && liveEditable
 
     // Issue #574. In AppPrefs::ScreenMode code order, so a choice's index is its
     // code: 0 System default, 1 Always on, 2 Dim between calls, 3 Off between calls.
@@ -54,7 +57,7 @@ Item {
             lockoutAckTimer.stop();
         }
     }
-    onLockoutSessionRunningChanged: {
+    onSessionRunningChanged: {
         lockoutPending = false;
         lockoutAckTimer.stop();
         relaxedCrcPending = false;
@@ -95,13 +98,13 @@ Item {
         if (!lockoutEditable)
             return;
         lockoutError = "";
-        if (lockoutSessionRunning && !commands.setPersistTgLockouts(value)) {
+        if (sessionRunning && !commands.setPersistTgLockouts(value)) {
             lockoutError = qsTr("Could not change the running decoder's setting. Try again.");
             return;
         }
         prefs.persistTgLockouts = value;
         requestedLockoutPersistence = value;
-        lockoutPending = lockoutSessionRunning && liveLockoutPersistence !== value;
+        lockoutPending = sessionRunning && liveLockoutPersistence !== value;
         if (lockoutPending)
             lockoutAckTimer.restart();
     }
@@ -110,13 +113,13 @@ Item {
         if (!relaxedCrcEditable)
             return;
         relaxedCrcError = "";
-        if (lockoutSessionRunning && !commands.setRelaxedCrc(value)) {
+        if (sessionRunning && !commands.setRelaxedCrc(value)) {
             relaxedCrcError = qsTr("Could not change the running decoder's setting. Try again.");
             return;
         }
         prefs.relaxedCrc = value;
         requestedRelaxedCrc = value;
-        relaxedCrcPending = lockoutSessionRunning && liveRelaxedCrc !== value;
+        relaxedCrcPending = sessionRunning && liveRelaxedCrc !== value;
         if (relaxedCrcPending)
             relaxedCrcAckTimer.restart();
     }
@@ -344,7 +347,7 @@ Item {
                         objectName: "persistTgLockoutsToggle"
                         title: qsTr("Save avoided talkgroups")
                         subtitle: qsTr("Applies to Avoid TG immediately, saving it to the talkgroup list. Off keeps avoids until stop or list reload, and the button reads Avoid TG. Skip is unaffected. Talkgroup-list edits still save.")
-                        checked: screen.lockoutSessionRunning ? screen.liveLockoutPersistence : prefs.persistTgLockouts
+                        checked: screen.sessionRunning ? screen.liveLockoutPersistence : prefs.persistTgLockouts
                         enabled: screen.lockoutEditable
                         showDivider: true
                         onToggled: function (value) { screen.setLockoutPersistence(value); }
@@ -365,7 +368,7 @@ Item {
                         objectName: "clearTemporaryTgAvoidsButton"
                         width: parent.width - 2 * Theme.cardPadding
                         x: Theme.cardPadding
-                        visible: screen.lockoutSessionRunning && metrics.temporaryTgAvoidCount + metrics.callSkipCount > 0
+                        visible: screen.sessionRunning && metrics.temporaryTgAvoidCount + metrics.callSkipCount > 0
                         enabled: screen.lockoutEditable
                         text: qsTr("Clear temporary avoids and call skips — current list (%1)").arg(Util.idText(metrics.temporaryTgAvoidCount + metrics.callSkipCount))
                         onClicked: {
@@ -469,8 +472,8 @@ Item {
                     ToggleRow {
                         objectName: "relaxedCrcToggle"
                         title: qsTr("Relaxed CRC")
-                        subtitle: qsTr("Accepts control and data whose CRC check failed, and marks them. Needed for DMR RAS (Restricted Access to System) systems. Applies now and from the next start; a CRC option in Extra decoder arguments wins.")
-                        checked: screen.lockoutSessionRunning ? screen.liveRelaxedCrc : prefs.relaxedCrc
+                        subtitle: qsTr("Applies right away, unlike the rest of this section, and at every start. Accepts control and data whose CRC check failed, and marks them. Needed for DMR RAS (Restricted Access to System) systems. A CRC option in Extra decoder arguments wins.")
+                        checked: screen.sessionRunning ? screen.liveRelaxedCrc : prefs.relaxedCrc
                         enabled: screen.relaxedCrcEditable
                         showDivider: !relaxedCrcNote.visible && !relaxedCrcErrorText.visible
                         onToggled: function (value) { screen.setRelaxedCrc(value); }
@@ -483,7 +486,7 @@ Item {
                         objectName: "relaxedCrcChannelNote"
                         width: parent.width - 2 * Theme.cardPadding
                         x: Theme.cardPadding
-                        visible: screen.lockoutSessionRunning && metrics.relaxedCrcRowOverride === true
+                        visible: screen.sessionRunning && metrics.relaxedCrcRowOverride === true
                         text: metrics.relaxedCrcEffective === true ? qsTr("This channel: On (scan row)") : qsTr("This channel: Off (scan row)")
                         wrapMode: Text.Wrap
                         color: Theme.textSecondary

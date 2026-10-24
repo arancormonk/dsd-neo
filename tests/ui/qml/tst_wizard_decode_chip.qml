@@ -322,7 +322,7 @@ Item {
             compare(tc.selectedLabels(), ["Auto"])
             compare(tc.chipFor("Auto").text, "Auto")
             compare(findChild(tc.wizard, "wizardDecodeHint").text,
-                    "Decodes every digital mode except TETRA, NXDN included — good first choice for most systems.")
+                    "Decodes every digital mode except TETRA (NXDN included) — good first choice for most systems.")
         }
     }
 }

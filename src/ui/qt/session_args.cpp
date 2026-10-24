@@ -793,21 +793,27 @@ SessionArgsBuilder::setSavedSystems(const SavedSystemsModel* systems) {
     m_systems = systems;
 }
 
+SessionArgPrefs
+session_args_prefs(const AppPrefs* prefs) {
+    SessionArgPrefs out;
+    if (prefs != nullptr) {
+        out.gainDb = prefs->gainDb();
+        out.ppm = prefs->ppm();
+        out.bandwidthKhz = prefs->bandwidthKhz();
+        out.biasTee = prefs->biasTee();
+        out.skipEncrypted = prefs->skipEncrypted();
+        out.persistTgLockouts = prefs->persistTgLockouts();
+        out.autoPpm = prefs->autoPpm();
+        out.relaxedCrc = prefs->relaxedCrc();
+        out.hangtimeSec = prefs->hangtimeSec();
+        out.extraArgs = prefs->extraArgs();
+    }
+    return out;
+}
+
 QStringList
 SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error) const {
-    SessionArgPrefs prefs;
-    if (m_prefs != nullptr) {
-        prefs.gainDb = m_prefs->gainDb();
-        prefs.ppm = m_prefs->ppm();
-        prefs.bandwidthKhz = m_prefs->bandwidthKhz();
-        prefs.biasTee = m_prefs->biasTee();
-        prefs.skipEncrypted = m_prefs->skipEncrypted();
-        prefs.persistTgLockouts = m_prefs->persistTgLockouts();
-        prefs.autoPpm = m_prefs->autoPpm();
-        prefs.relaxedCrc = m_prefs->relaxedCrc();
-        prefs.hangtimeSec = m_prefs->hangtimeSec();
-        prefs.extraArgs = m_prefs->extraArgs();
-    }
+    const SessionArgPrefs prefs = session_args_prefs(m_prefs);
     QVariantMap input = system;
     if (m_systems && !input.contains(QStringLiteral("encKeyValue"))) {
         input.insert(QStringLiteral("encKeyValue"),

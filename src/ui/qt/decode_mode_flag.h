@@ -52,8 +52,8 @@ decode_mode_for_flag(const QString& flag) {
             return static_cast<int>(mode);
         }
     }
-    /* An empty flag is the engine's own default, the Auto preset (-fa: every digital mode except TETRA, NXDN
-       included). */
+    /* An empty flag is the engine's own default, the Auto preset (-fa: NXDN and every other digital mode
+       except TETRA). */
     return flag.trimmed().isEmpty() ? static_cast<int>(DSDCFG_MODE_AUTO) : -1;
 }
 

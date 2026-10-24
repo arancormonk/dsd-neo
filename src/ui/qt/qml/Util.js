@@ -15,8 +15,8 @@ function idText(id) {
 }
 
 // Decode chip catalog: label ↔ CLI flags. The empty flag is the engine's own
-// default, the Auto decoder set (-fa: every digital mode except TETRA, NXDN
-// included), so "Auto" passes nothing. Each entry carries the whole flag set
+// default, the Auto decoder set (-fa: NXDN and every other digital mode
+// except TETRA), so "Auto" passes nothing. Each entry carries the whole flag set
 // its system type needs — the user picks what they are listening to, never a
 // demodulator: a simulcast P25 site needs QPSK (`-mq`) or it reads at ~1 dB
 // and never locks, so that travels with the chip rather than surfacing as a
@@ -24,7 +24,7 @@ function idText(id) {
 var DECODE_MODES = [
     {
         label: "Auto", short: "Auto", flag: "",
-        hint: "Decodes every digital mode except TETRA, NXDN included — good first choice for most systems."
+        hint: "Decodes every digital mode except TETRA (NXDN included) — good first choice for most systems."
     },
     {
         // -ft, not -f1: the statewide/county systems this chip is pitched at are

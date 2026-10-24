@@ -45,6 +45,10 @@ struct SessionArgPrefs {
     QString extraArgs;
 };
 
+/** @brief The app-wide defaults @p prefs holds, as a session starts with them; the struct's defaults for nullptr. The
+ *         one mapping a saved system, Explore, search and a scan list share. */
+SessionArgPrefs session_args_prefs(const AppPrefs* prefs);
+
 /** @brief Why session_args_build() refused; None means the argv is usable. */
 /** Shared token gate: refuse key display and grouped short options; retain
  * single short options with attached arguments as defined by the CLI. */

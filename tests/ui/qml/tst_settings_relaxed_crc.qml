@@ -48,7 +48,7 @@ Item {
             var toggle = openScreen();
             verify(toggle !== null, "the Decoding panel has a Relaxed CRC row");
             compare(toggle.title, "Relaxed CRC");
-            compare(toggle.subtitle, "Accepts control and data whose CRC check failed, and marks them. Needed for DMR RAS (Restricted Access to System) systems. Applies now and from the next start; a CRC option in Extra decoder arguments wins.");
+            compare(toggle.subtitle, "Applies right away, unlike the rest of this section, and at every start. Accepts control and data whose CRC check failed, and marks them. Needed for DMR RAS (Restricted Access to System) systems. A CRC option in Extra decoder arguments wins.");
             verify(!note().visible);
         }
 

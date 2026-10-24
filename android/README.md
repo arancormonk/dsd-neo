@@ -1290,7 +1290,7 @@ the row decides for its channel and the switch says so (**This channel: Off (sca
 row)**); the switch edits the value beneath it.
 
 The wizard's **Auto** decode chip is the default: it decodes every digital mode
-except TETRA, NXDN included.
+except TETRA (NXDN included).
 
 To check P25 timing, Extra decoder arguments must include a writable filename,
 for example `--p25-sm-log /data/user/0/io.github.arancormonk.dsdneo/files/p25-sm.log`.

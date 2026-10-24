@@ -23,6 +23,7 @@
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <cmath>
 #include <limits>
 #include <qtenvironmentvariables.h>
 #include <stdio.h>
@@ -139,6 +140,42 @@ test_relaxed_crc_preference(void) {
     prefs.relaxedCrc = false;
     args = dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError);
     expect("off adds nothing to a scan list", scanError.isEmpty() && !args.contains("-F"));
+}
+
+/* One mapping from the live AppPrefs to a session's defaults, which the saved-system builder and the scan-list starter
+ * share. */
+void
+test_prefs_mapping(void) {
+    const SessionArgPrefs defaults;
+    const SessionArgPrefs none = dsd_qt::session_args_prefs(nullptr);
+    expect("no preferences: the defaults", none.gainDb == defaults.gainDb && none.relaxedCrc == defaults.relaxedCrc
+                                               && none.extraArgs == defaults.extraArgs);
+    dsd_qt::AppPrefs prefs;
+    prefs.setGainDb(41);
+    prefs.setPpm(7);
+    prefs.setBandwidthKhz(24);
+    prefs.setBiasTee(true);
+    prefs.setSkipEncrypted(false);
+    prefs.setPersistTgLockouts(false);
+    prefs.setAutoPpm(true);
+    prefs.setRelaxedCrc(true);
+    prefs.setHangtimeSec(3.5);
+    prefs.setExtraArgs(QStringLiteral("-Z"));
+    const SessionArgPrefs mapped = dsd_qt::session_args_prefs(&prefs);
+    expect("every preference maps",
+           mapped.gainDb == 41 && mapped.ppm == 7 && mapped.bandwidthKhz == 24 && mapped.biasTee
+               && !mapped.skipEncrypted && !mapped.persistTgLockouts && mapped.autoPpm && mapped.relaxedCrc
+               && std::fabs(mapped.hangtimeSec - 3.5) < 1e-9 && mapped.extraArgs == QStringLiteral("-Z"));
+    prefs.setGainDb(defaults.gainDb);
+    prefs.setPpm(defaults.ppm);
+    prefs.setBandwidthKhz(defaults.bandwidthKhz);
+    prefs.setBiasTee(defaults.biasTee);
+    prefs.setSkipEncrypted(defaults.skipEncrypted);
+    prefs.setPersistTgLockouts(defaults.persistTgLockouts);
+    prefs.setAutoPpm(defaults.autoPpm);
+    prefs.setRelaxedCrc(defaults.relaxedCrc);
+    prefs.setHangtimeSec(defaults.hangtimeSec);
+    prefs.setExtraArgs(defaults.extraArgs);
 }
 
 /* The QML-facing builder reads the preference from the live AppPrefs, as a start does. */
@@ -1014,6 +1051,7 @@ main(int argc, char** argv) {
     test_tg_lockout_preference();
     test_relaxed_crc_preference();
     test_relaxed_crc_app_preference();
+    test_prefs_mapping();
     test_defaults_and_overrides();
     test_nfm_system();
     test_am_system();

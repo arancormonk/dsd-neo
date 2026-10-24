@@ -23,7 +23,6 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <stdint.h>
 #include <utility>
-#include "app_prefs.h"
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
 #include "json_store.h"
@@ -46,24 +45,6 @@ generatedInputError(const QString& uid, const QStringList& paths) {
         }
     }
     return {};
-}
-
-SessionArgPrefs
-sessionPreferences(const AppPrefs* source) {
-    SessionArgPrefs prefs;
-    if (source) {
-        prefs.gainDb = source->gainDb();
-        prefs.ppm = source->ppm();
-        prefs.bandwidthKhz = source->bandwidthKhz();
-        prefs.biasTee = source->biasTee();
-        prefs.skipEncrypted = source->skipEncrypted();
-        prefs.persistTgLockouts = source->persistTgLockouts();
-        prefs.autoPpm = source->autoPpm();
-        prefs.relaxedCrc = source->relaxedCrc();
-        prefs.hangtimeSec = source->hangtimeSec();
-        prefs.extraArgs = source->extraArgs();
-    }
-    return prefs;
 }
 
 /* One analog target a list scans (issue #526): how the validation names it, its demodulator, and its own width in Hz
@@ -401,7 +382,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
         return fail(generated.error, generated.warnings);
     }
     const QString rateWarning =
-        analogRateWarning(prepared, sessionPreferences(m_prefs), manualAnalogTargets(prepared, m_systems));
+        analogRateWarning(prepared, session_args_prefs(m_prefs), manualAnalogTargets(prepared, m_systems));
     if (!rateWarning.isEmpty()) {
         generated.warnings << rateWarning;
     }
@@ -410,7 +391,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
     if (!inputError.isEmpty()) {
         return fail(inputError, generated.warnings);
     }
-    const auto prefs = sessionPreferences(m_prefs);
+    const auto prefs = session_args_prefs(m_prefs);
     const QString path = json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv"));
     QString error;
     const auto args = session_args_scan_build(prepared, generated.firstFreqMhz, path, prefs, &error);
@@ -472,14 +453,14 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize) const {
     }
     QString error;
     const auto args = session_args_scan_build(prepared, QString::number(first / 1e6, 'f', 6), path,
-                                              sessionPreferences(m_prefs), &error);
+                                              session_args_prefs(m_prefs), &error);
     if (args.isEmpty()) {
         return fail(error);
     }
     return {{"ok", true},
             {"args", materialize ? args : QStringList()},
             {"error", QString()},
-            {"warnings", csvAnalogRateWarnings(prepared, path, sessionPreferences(m_prefs))},
+            {"warnings", csvAnalogRateWarnings(prepared, path, session_args_prefs(m_prefs))},
             {"targetCount", count}};
 }
 } // namespace dsd_qt

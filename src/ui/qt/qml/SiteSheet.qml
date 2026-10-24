@@ -25,6 +25,12 @@ ModalSheet {
     // session's snapshot to confirm it.
     readonly property bool rasShown: metrics.siteProtocol === "DMR" && metrics.dmrRasDetected === true
     readonly property bool relaxedCrcConfigured: metrics.relaxedCrcConfigured === true
+    // Offered while the configured value is off, a scan row's own --strict-crc
+    // on air included: turning it on still covers the channels after this one.
+    readonly property bool offerRelaxedCrc: rasShown && metrics.dmrRasNeedsRelaxed === true && !relaxedCrcConfigured
+    // Configured on, but the scan row on air keeps strict CRC for its channel.
+    readonly property bool rowKeepsStrict: metrics.dmrRasNeedsRelaxed === true && metrics.relaxedCrcRowOverride === true && relaxedCrcConfigured
+    readonly property bool sessionRunning: decoderHost.sessionState === 2
     property bool relaxedCrcPending: false
     property string relaxedCrcError: ""
     onRelaxedCrcConfiguredChanged: {
@@ -34,7 +40,15 @@ ModalSheet {
         }
     }
     onRasShownChanged: relaxedCrcError = ""
-    onVisibleChanged: relaxedCrcError = ""
+    // A request belongs to the session and the sheet it was made in.
+    onVisibleChanged: resetRelaxedCrc()
+    onSessionRunningChanged: resetRelaxedCrc()
+
+    function resetRelaxedCrc() {
+        relaxedCrcPending = false;
+        relaxedCrcAckTimer.stop();
+        relaxedCrcError = "";
+    }
 
     function turnOnRelaxedCrc() {
         if (relaxedCrcPending)
@@ -335,8 +349,21 @@ ModalSheet {
         width: parent.width
         visible: sheet.rasShown
         text: metrics.dmrRasNeedsRelaxed !== true ? qsTr("Relaxed CRC is on, so this RAS system's control and data decode.")
-            : metrics.relaxedCrcRowOverride === true ? qsTr("DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; Relaxed CRC decodes them. This channel sets strict CRC itself; Relaxed CRC applies from the next channel without its own.")
+            : sheet.rowKeepsStrict ? qsTr("DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; Relaxed CRC decodes them. This channel sets strict CRC itself; Relaxed CRC applies from the next channel without its own.")
             : qsTr("DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; Relaxed CRC decodes them.")
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
+    }
+    // What the action changes: the app-wide setting, in the Settings row's words.
+    Text {
+        objectName: "siteRelaxedCrcHelp"
+        width: parent.width
+        visible: sheet.offerRelaxedCrc
+        text: metrics.relaxedCrcRowOverride === true ? qsTr("Relaxed CRC accepts control and data whose CRC check failed, and marks them. Turned on here, it stays on for later sessions until Settings turns it off. This channel sets strict CRC itself, so it applies from the next channel.")
+            : qsTr("Relaxed CRC accepts control and data whose CRC check failed, and marks them. Turned on here, it stays on for later sessions until Settings turns it off.")
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -361,12 +388,11 @@ ModalSheet {
         visible: metrics.siteProtocol === "P25"
         onClicked: sheet.networkRequested()
     }
-    // Not offered while a scan row sets strict CRC itself: the row would overrule it.
     OutlineButton {
         objectName: "siteRelaxedCrcButton"
         width: parent.width
         text: qsTr("Turn on Relaxed CRC")
-        visible: sheet.rasShown && metrics.dmrRasNeedsRelaxed === true && metrics.relaxedCrcRowOverride !== true
+        visible: sheet.offerRelaxedCrc
         enabled: metrics.optionsKnown === true && !sheet.relaxedCrcPending
         onClicked: sheet.turnOnRelaxedCrc()
         // Confirmed, it goes: keep a keyboard user's place in the sheet.
