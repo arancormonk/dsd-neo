@@ -708,7 +708,8 @@ Notes
   frame is 192 symbols, so a stream or BERT sync word read exactly, with the same word exactly one and two frames
   before it, opens that frame. That costs the frame landed in and the two after it, about 120 ms, and noise almost
   never offers it. A join opens that one frame: the next continues only on M17's own evidence (the stream's LICH, a
-  BERT PRBS lock). A packet is never joined, since its one CRC covers the LSF it would have missed.
+  BERT PRBS lock). A packet is never joined: its one CRC covers every packet frame, so a packet joined after its
+  first frame cannot pass it.
 - NXDN96 follows the receiver rules of NXDN TS 1-A (5.3, Table 5.9-3). It acquires on two frame sync words a frame
   (192 symbols, 40 ms) apart, within a symbol either way, each read on four levels within two bit errors -- the
   ten-symbol word read on its signs alone matches about one window in a hundred, and receiver noise opened about two

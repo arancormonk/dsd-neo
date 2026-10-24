@@ -3834,9 +3834,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   with the preamble candidate; every exact word is kept, whichever path took its window, since the payload matches
   some word a few times a frame): the stream word is a stream, the LSF word repeated an inverted stream (a transmission
   sends one LSF), and the BERT word, or the packet word under an inverted session, BERT. A packet is never joined (its
-  CRC covers the LSF; the packet word sits a frame apart in NXDN96 data frames' LICH). A join opens one frame and
-  clears the history, so the next frame continues only on M17's evidence (`frame_sync_m17_chain_has_evidence()`, a
-  BERT PRBS lock) or waits for three fresh hits. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  CRC covers every packet frame; the packet word sits a frame apart in NXDN96 data frames' LICH). A join opens one
+  frame and clears the history, so the next frame continues only on M17's evidence
+  (`frame_sync_m17_chain_has_evidence()`, a BERT PRBS lock) or waits for three fresh hits. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
   (`test_m17_joins_on_a_sync_word_three_frames_running`, `test_an_nxdn96_data_call_stays_nxdn96_under_auto`),
   `DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC`, `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_M17_MID_STREAM_JOIN`
   (`m17_after_retune`: noise, then a stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`.

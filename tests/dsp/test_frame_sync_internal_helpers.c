@@ -1933,7 +1933,7 @@ test_m17_joins_on_a_sync_word_three_frames_running(void) {
     opts.inverted_m17 = 1;
     assert(m17_word_three_frames(&opts, &state, M17_PKT, M17_PKT, M17_PKT) == DSD_SYNC_M17_BRT_NEG);
 
-    /* A packet is never joined: its one CRC covers the LSF and every frame, so a packet joined after its LSF cannot be
+    /* A packet is never joined: its one CRC covers every packet frame, so a packet joined after its first cannot be
      * read, and the packet word turns up a frame apart in NXDN96 data frames' LICH. Nor is a BERT word under an
      * inverted session, which is an inverted packet. */
     m17_join_setup(&opts, &state);
