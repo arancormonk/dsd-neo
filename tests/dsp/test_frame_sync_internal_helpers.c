@@ -3023,6 +3023,128 @@ test_p25p1_auto_hunt_alternates_cqpsk_probe(void) {
     assert(state.p25_p1_mod_probe_active == 1);
 }
 
+/* Start a CQPSK probe on 4800/4 the way an expired dwell does, with @p configure choosing the decoders. */
+static int
+start_cqpsk_probe(dsd_opts* opts, dsd_state* state, void (*configure)(dsd_opts* opts)) {
+    static int fake_rtl_context;
+    reset(opts, state);
+    opts->frame_p25p1 = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    configure(opts);
+    state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->rf_mod = 0;
+    state->p25_p1_validated_rf_mod = -1;
+    state->p25_p1_mod_probe_next_qpsk = 1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(opts, state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state->sps_hunt_counter = dwell;
+    (void)frame_sync_no_sync_sps_hunt(opts, state);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state->rf_mod == 1 && state->p25_p1_mod_probe_active == 1);
+    return dwell;
+}
+
+static void
+configure_p25p1_only(dsd_opts* opts) {
+    (void)opts;
+}
+
+static void
+configure_with_dmr(dsd_opts* opts) {
+    opts->frame_dmr = 1;
+}
+
+static void
+configure_with_nxdn96(dsd_opts* opts) {
+    opts->frame_nxdn96 = 1;
+}
+
+static void
+configure_with_ysf(dsd_opts* opts) {
+    opts->frame_ysf = 1;
+}
+
+static void
+configure_with_m17(dsd_opts* opts) {
+    opts->frame_m17 = 1;
+}
+
+static void
+configure_trunk_scan_target_with_dmr(dsd_opts* opts) {
+    opts->frame_p25p2 = 1;
+    opts->frame_dmr = 1;
+    opts->trunk_scan_enabled = 1;
+    opts->trunk_enable = 1;
+}
+
+/*
+ * The CQPSK trial cannot hear DMR, NXDN96, YSF or M17, and it held the votes off for its whole dwell, so on a session
+ * that decodes those too every other 4800/4 visit was deaf to them: a DMR carrier that arrived in one lost the dwell
+ * and a whole rotation (faDMRNXDNScan, 121 DMR frames). A CQPSK carrier decodes on the chain within a frame, so a
+ * trial that has validated nothing by half its dwell gives the rest of it back to C4FM and the votes.
+ */
+static void
+test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int lastt = 24;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    void (*const with_fsk[])(dsd_opts*) = {configure_with_dmr, configure_with_nxdn96, configure_with_ysf,
+                                           configure_with_m17};
+    for (size_t i = 0; i < sizeof(with_fsk) / sizeof(with_fsk[0]); i++) {
+        const int dwell = start_cqpsk_probe(&opts, &state, with_fsk[i]);
+        state.sps_hunt_counter = dwell / 2 - 1;
+        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+        assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+        reset_fake_profile_capture();
+        state.sps_hunt_counter = dwell / 2;
+        /* A step: the demodulator changed under the caller's sync window. */
+        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+        assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+        assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+        assert(g_profile_cqpsk == 0);
+        /* The rest of the dwell is the profile's: the counter runs on, and the votes are free again. */
+        assert(state.sps_hunt_counter == dwell / 2);
+        if (opts.frame_dmr == 1 || opts.frame_nxdn96 == 1) {
+            dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+            lastt = 24;
+            frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+            assert(state.rf_mod == 2);
+        }
+        /* Handed back once: further calls before the dwell ends change nothing. */
+        const int mod = state.rf_mod;
+        state.sps_hunt_counter = dwell - 1;
+        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+        assert(state.rf_mod == mod);
+    }
+
+    /* P25p1 alone keeps the whole dwell on trial, as before. */
+    int dwell = start_cqpsk_probe(&opts, &state, configure_p25p1_only);
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    /* So does a trunk-scan P25 target's trial, whose schedule fits the CQPSK trial and Phase 2 in one visit. */
+    dwell = start_cqpsk_probe(&opts, &state, configure_trunk_scan_target_with_dmr);
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    /* And a CQPSK dwell that is measuring a chain comparison rather than probing. */
+    dwell = start_cqpsk_probe(&opts, &state, configure_with_dmr);
+    state.p25_p1_mod_compare.phase = 2;
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * A trial the votes can revoke before it decodes anything is not a trial: entering GFSK takes
  * a single vote. While a probe is on trial the modulation heuristics do not get to answer.
@@ -4429,6 +4551,7 @@ main(void) {
     test_trunk_scan_p25_probe_fits_visit();
     test_p25p1_auto_hunt_alternates_cqpsk_probe();
     test_p25p1_probe_survives_its_dwell();
+    test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes();
     test_validated_p25p1_modulation_outranks_the_heuristics();
     test_validated_cqpsk_survives_rotation_but_not_disproof();
     test_p25p1_partial_chain_loses_the_comparison();

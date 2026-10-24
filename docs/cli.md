@@ -654,7 +654,9 @@ Notes
   converges on them.
 - On an RTL input with no modulation lock, P25 Phase 1 on the 4800/4 profile can arrive on either demodulator chain:
   C4FM, or CQPSK for an LSM simulcast system, which the C4FM chain reads only in part. Nothing before a decoded frame
-  can tell them apart, so alternate 4800/4 dwells that expire with nothing decoded try the CQPSK chain. The first frame
+  can tell them apart, so alternate 4800/4 dwells that expire with nothing decoded try the CQPSK chain. That chain
+  cannot read DMR, NXDN96, YSF or M17, so when any of those is enabled a trial that has decoded nothing by half its
+  dwell gives the rest of the dwell back to C4FM and the other modes. The first frame
   whose NID decodes, on either chain, starts one comparison: over the next 1800 symbols (about 0.4 s) the hunt adds up
   what that chain's decoded frames read. A P25p1 carrier sends its frames back to back, so a chain that found every
   frame's sync within a frame of the last one's end is reading all of it and keeps it; one that let a frame go by

@@ -4196,6 +4196,35 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
     frame_sync_p25p1_mod_compare_settle(opts, state, winner);
 }
 
+/**
+ * @brief Give the second half of a CQPSK trial's dwell back to C4FM and the votes.
+ *
+ * The CQPSK chain cannot read DMR, NXDN96, YSF or M17, and the trial keeps the votes off it, so a session that also
+ * decodes those spent every other 4800/4 dwell deaf to them: a DMR carrier arriving in one waited out the dwell and a
+ * whole rotation behind it. The trial is there for a P25p1 signal that cannot argue its way onto CQPSK, and one that
+ * decodes on the chain does so within a frame (a TSDU every ~180 symbols, an LDU every 864), so the second half of a
+ * trial that has validated nothing buys it nothing. From half the dwell on, the demodulator goes back to C4FM with the
+ * votes free, and the profile keeps the rest of its dwell. P25p1 alone keeps the whole trial, and so does a trunk-scan
+ * target's (frame_sync_trunk_scan_p25p1_trial()), whose schedule budgets each demodulator a dwell of its own. A chain
+ * comparison is not a trial: it runs on evidence and ends on its own.
+ *
+ * A step for the caller, like any change of demodulator under its sync window.
+ */
+static int
+frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, int dwell) {
+    if (!state->p25_p1_mod_probe_active || state->rf_mod != 1 || state->p25_p1_mod_compare.phase != 0
+        || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || state->sps_hunt_counter < dwell / 2) {
+        return 0;
+    }
+    if ((opts->frame_dmr != 1 && opts->frame_nxdn96 != 1 && opts->frame_ysf != 1 && opts->frame_m17 != 1)
+        || frame_sync_trunk_scan_p25p1_trial(opts, state)) {
+        return 0;
+    }
+    state->p25_p1_mod_probe_active = 0;
+    frame_sync_p25p1_set_chain(opts, state, 0);
+    return 1;
+}
+
 /* The unlocked hunt's next profile. While a P25-driven control-channel probe is in flight (the startup hunt, or P25
  * recovery) it steps only between the P25 profiles, as a P25-only rotation does: from 4800/4 to 6000/4, where the full
  * Auto rotation would step to 2400/4 and never try Phase 2 within the probe. DMR and NXDN96 control live
@@ -4214,8 +4243,9 @@ frame_sync_sps_hunt_unlocked_next_index(const dsd_opts* opts, const dsd_state* s
 
 int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    if (state->sps_hunt_counter < frame_sync_sps_hunt_dwell_symbols(opts, state)) {
-        return 0;
+    const int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    if (state->sps_hunt_counter < dwell) {
+        return frame_sync_p25p1_cqpsk_trial_half_dwell(opts, state, dwell);
     }
     state->sps_hunt_counter = 0;
     /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. That is

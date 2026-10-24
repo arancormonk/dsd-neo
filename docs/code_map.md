@@ -3860,7 +3860,11 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a
   P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
-  `p25_p1_mod_probe_active`). A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
+  `p25_p1_mod_probe_active`). The CQPSK chain cannot read DMR, NXDN96, YSF or M17, so when any of them is enabled a
+  trial that has validated nothing by half its dwell hands the rest of it back to C4FM with the votes free
+  (`frame_sync_p25p1_cqpsk_trial_half_dwell()`, a step from `frame_sync_no_sync_sps_hunt()`); P25p1 alone and a
+  trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep the whole dwell, and the rotation and dwell
+  lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
   (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore and trunk retunes read). The first
   NID-decoded frame of an acquisition starts one chain comparison (`frame_sync_p25p1_mod_compare_note()`,
   `dsd_state::p25_p1_mod_compare`, run on `getFrameSync()` entry): the symbols that chain's validated frames read over
@@ -3897,7 +3901,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     frames (HDU, LDU1/2, TDU), so the NID stays the one check that covers every DUID.
   Without the comparison, a chain that reads part of an LSM simulcast carrier (C4FM: about half the 769 MHz control
   channel's TSBKs) kept the profile for as long as the carrier stayed up. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
-  (`test_p25p1_partial_chain_loses_the_comparison`, `test_p25p1_comparison_ends_cleanly`),
+  (`test_p25p1_partial_chain_loses_the_comparison`, `test_p25p1_comparison_ends_cleanly`,
+  `test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes`),
   `ENGINE_TRUNK_RETUNE_REGRESSION` (`test_chain_comparison_in_flight_tunes_on_the_leading_chain`), `ENGINE_TRUNK_SCAN`,
   `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO`.
 - Channel LPF (`demod_pipeline.cpp`): digital profiles design from their protected edge, capped at 144 taps with the
