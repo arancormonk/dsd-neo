@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -426,6 +427,212 @@ test_ras_voice_row(void) {
     }
 }
 
+// CRC32 over any packet length (the helper above covers three blocks at most).
+static void
+crc32_long(uint8_t* bytes, size_t count) {
+    assert(count >= 4 && count % 2 == 0);
+    uint8_t* bits = calloc(count * 8U, 1);
+    assert(bits);
+    for (size_t i = 0; i < count * 8U; ++i) {
+        bits[i] = (uint8_t)((bytes[(i / 8U) ^ 1U] >> (7U - i % 8U)) & 1U);
+    }
+    uint32_t crc = ComputeCrc32Bit(bits, (uint32_t)(count * 8U - 32U));
+    free(bits);
+    for (size_t i = 0; i < 4; ++i) {
+        bytes[count - 4 + i] = (uint8_t)(crc >> (24U - i * 8U));
+    }
+}
+
+static const Event_History*
+newest_row(const dsd_state* state, uint8_t slot) {
+    return &state->event_history_s[slot].Event_History_Items[1];
+}
+
+// Issue #746: a SAP 3 (compressed UDP/IPv4) PDU through the real header, assembler and decoders. `user` octets
+// follow the header; `blocks` rate-1/2 blocks carry them, the pad octets the header announces and the CRC32.
+static void
+send_sap3(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks, int payload_ok) {
+    uint8_t pdu[48] = {0};
+    const size_t total = (size_t)blocks * 12U;
+    assert(blocks >= 1 && blocks <= 4 && user_len + 4U <= total);
+    const uint8_t poc = (uint8_t)(total - 4U - user_len);
+    uint8_t hdr[12] = {0x02, 0, 0, 0, 42, 0, 0, 24, (uint8_t)(0x80U | blocks), 0, 0, 0};
+    hdr[0] = (uint8_t)(hdr[0] | ((poc & 0x10U) ? 0x10U : 0U));
+    hdr[1] = (uint8_t)(0x30U | (poc & 0x0FU));
+    DSD_MEMCPY(pdu, user, user_len);
+    crc32(pdu, total);
+    pdu[total - 1U] ^= (uint8_t)(payload_ok ? 0 : 1);
+    header(opts, state, hdr, 1);
+    for (uint8_t b = 0; b < blocks; ++b) {
+        dmr_block_assembler(opts, state, pdu + (size_t)b * 12U, 12, 0x07, 1);
+    }
+}
+
+// The same, RC4-encrypted behind a Motorola encryption P_HEAD (DPF 15, MFID 0x10, ALG 1, ENC 1).
+static void
+send_sap3_rc4(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks,
+              unsigned long long key, uint32_t mi, int ext_ok) {
+    uint8_t pdu[48] = {0};
+    const size_t total = (size_t)blocks * 12U;
+    assert(blocks >= 1 && blocks <= 4 && user_len + 4U <= total);
+    const uint8_t poc = (uint8_t)(total - 4U - user_len);
+    uint8_t hdr[12] = {0x02, (uint8_t)(0x30U | (poc & 0x0FU)), 0, 0, 42, 0, 0,
+                       24,   (uint8_t)(0x80U | (blocks + 1U)), 0, 0, 0};
+    uint8_t ext[12] = {
+        0x3F, 0x10, 0x11, 0x2A, 0, 0, (uint8_t)(mi >> 24), (uint8_t)(mi >> 16), (uint8_t)(mi >> 8), (uint8_t)mi, 0, 0};
+    uint8_t iv[9] = {(uint8_t)(key >> 32), (uint8_t)(key >> 24), (uint8_t)(key >> 16),
+                     (uint8_t)(key >> 8),  (uint8_t)key,         (uint8_t)(mi >> 24),
+                     (uint8_t)(mi >> 16),  (uint8_t)(mi >> 8),   (uint8_t)mi};
+    uint8_t stream[64] = {0};
+    rc4_block_output(256, 9, (int)user_len, iv, stream);
+    for (size_t i = 0; i < user_len; ++i) {
+        pdu[i] = (uint8_t)(user[i] ^ stream[i]);
+    }
+    crc32(pdu, total);
+    header(opts, state, hdr, 1);
+    header(opts, state, ext, ext_ok);
+    for (uint8_t b = 0; b < blocks; ++b) {
+        dmr_block_assembler(opts, state, pdu + (size_t)b * 12U, 12, 0x07, 1);
+    }
+}
+
+static int
+test_sap3_ars_real_path(dsd_opts* opts, dsd_state* state) {
+    // The reporter's vector: SPID/DPID 97, ARS Device Registration Ack, refresh 30 min. Nine octets in
+    // two rate-1/2 blocks leave eleven pad octets, which must not reach the payload decoder.
+    static const uint8_t ack[] = {0x00, 0x00, 0x10, 0x61, 0x61, 0x00, 0x02, 0xBF, 0x01};
+    // Fits one block exactly: an ARS Query on the same indices.
+    static const uint8_t query[] = {0x00, 0x01, 0x10, 0x61, 0x61, 0x00, 0x01, 0x74};
+    int rc = 0;
+    opts->event_out_file[0] = '\0';
+    opts->dmr_crc_relaxed_default = 0;
+
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        state->currentslot = slot;
+        opts->aggressive_framesync = 1;
+        uint64_t before = state->event_history_s[slot].push_seq;
+        send_sap3(opts, state, ack, sizeof ack, 2, 1);
+        expect_event(state, slot, before++, 1, 0, "ARS SRC: 24; DST: 42; ARS Ack: OK; refresh 30 min;");
+        assert(newest_row(state, slot)->category == DSD_EVENT_CATEGORY_CONTROL);
+        send_sap3(opts, state, query, sizeof query, 1, 1);
+        expect_event(state, slot, before++, 1, 0, "ARS Query;");
+
+        // A failed CRC32 is not published in strict mode and is marked when relaxed.
+        send_sap3(opts, state, ack, sizeof ack, 2, 0);
+        expect_event(state, slot, before, 0, 0, "");
+        opts->aggressive_framesync = 0;
+        send_sap3(opts, state, ack, sizeof ack, 2, 0);
+        expect_event(state, slot, before++, 1, DSD_CRC_FAILED, "ARS Ack: OK; refresh 30 min;");
+
+        // RC4 with the key decrypts to the same ARS ack; without it the PDU stays an encrypted notice.
+        opts->aggressive_framesync = 1;
+        // The slot's own RC4/DES key register: slot 2 reads RR, not R.
+        unsigned long long* slot_rc4 = (slot == 0) ? &state->R : &state->RR;
+        *slot_rc4 = 0x0123456789ULL;
+        const unsigned long long rc4_value = *slot_rc4;
+        send_sap3_rc4(opts, state, ack, sizeof ack, 2, rc4_value, 0x11223344U, 1);
+        expect_event(state, slot, before++, 1, 0, "ARS Ack: OK; refresh 30 min;");
+        // An unverified encryption header is a failure: strict mode publishes nothing, relaxed marks it.
+        send_sap3_rc4(opts, state, ack, sizeof ack, 2, rc4_value, 0x11223344U, 0);
+        expect_event(state, slot, before, 0, 0, "");
+        opts->aggressive_framesync = 0;
+        send_sap3_rc4(opts, state, ack, sizeof ack, 2, rc4_value, 0x11223344U, 0);
+        expect_event(state, slot, before++, 1, DSD_CRC_FAILED, "ARS Ack");
+        opts->aggressive_framesync = 1;
+        state->R = 0;
+        state->RR = 0;
+        send_sap3_rc4(opts, state, ack, sizeof ack, 2, rc4_value, 0x11223344U, 1);
+        expect_event(state, slot, before++, 1, 0, "ENC PDU");
+        assert(state->event_crc_invalid[slot] == 0U);
+    }
+    state->currentslot = 0;
+    return rc;
+}
+
+// Compressed LRRP on an extended-header port and on an --lrrp-extra-port port: a clean packet appends one
+// location row, a CRC32-failed one none.
+static int
+test_sap3_lrrp_location_rows(dsd_opts* opts, dsd_state* state) {
+    // POINT_2D response, as DMR_LRRP_EVENT_CRC_GATING sends it over IPv4: lat 11.25, lon 45.
+    static const uint8_t lrrp_doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dmr-sap3-lrrp");
+    if (fd < 0 || dsd_close(fd) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
+    opts->lrrp_file_output = 1;
+    opts->aggressive_framesync = 0;
+    opts->dmr_crc_relaxed_default = 1;
+    opts->lrrp_extra_ports[0] = 6001U;
+    opts->lrrp_extra_port_count = 1;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int port = 0; port < 2 && rc == 0; ++port) {
+        uint8_t user[32] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+        if (port == 1) {
+            user[5] = 0x17;
+            user[6] = 0x71;
+        }
+        DSD_MEMCPY(user + 7, lrrp_doc, sizeof lrrp_doc);
+        for (int corrupt = 0; corrupt <= 1; ++corrupt) {
+            int before = count_location_rows(path);
+            send_sap3(opts, state, user, 7U + sizeof lrrp_doc, 3, !corrupt);
+            int after = count_location_rows(path);
+            int expected = corrupt ? 0 : 1;
+            if (before < 0 || after < 0 || after != before + expected) {
+                DSD_FPRINTF(stderr, "\nSAP 3 LRRP port %d %s -L rows: expected %d new, before=%d after=%d\n", port,
+                            corrupt ? "corrupt" : "clean", expected, before, after);
+                rc = 1;
+                break;
+            }
+        }
+    }
+    assert(state->event_crc_invalid[0] == 0U);
+    opts->lrrp_file_output = 0;
+    opts->lrrp_extra_port_count = 0;
+    opts->lrrp_extra_ports[0] = 0;
+    opts->dmr_crc_relaxed_default = 0;
+    if (remove(path) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
+// A confirmed packet may announce 127 blocks (Blocks to Follow is 7 bits). Every block's CRC9 verdict counts,
+// the 127th included; it used to be written past its row and left out of the packet's verdict.
+static int
+test_confirmed_127_blocks(dsd_opts* opts, dsd_state* state) {
+    enum { kBlocks = 127 };
+
+    uint8_t* payload = calloc((size_t)kBlocks * 10U, 1);
+    assert(payload);
+    payload[0] = 0x11;
+    crc32_long(payload, (size_t)kBlocks * 10U);
+    uint8_t hdr[12] = {0x03, 0x50, 0, 0, 42, 0, 0, 24, (uint8_t)(0x80U | kBlocks), 0, 0, 0};
+    int rc = 0;
+    opts->event_out_file[0] = '\0';
+    opts->dmr_crc_relaxed_default = 0;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        state->currentslot = slot;
+        for (int last_ok = 0; last_ok <= 1; ++last_ok) {
+            opts->aggressive_framesync = 1;
+            uint64_t before = state->event_history_s[slot].push_seq;
+            const uint8_t other_header_verdict = state->data_block_crc_valid[slot ^ 1U][0];
+            header(opts, state, hdr, 1);
+            for (int b = 0; b < kBlocks; ++b) {
+                send_confirmed_block(opts, state, (uint8_t)b, payload + (size_t)b * 10U, b < kBlocks - 1 || last_ok, 0);
+            }
+            assert(state->data_block_crc_valid[slot ^ 1U][0] == other_header_verdict);
+            // Strict mode publishes the packet only when every block's CRC9 passed.
+            expect_event(state, slot, before, last_ok ? 1 : 0, 0, "Unknown PDU");
+        }
+    }
+    state->currentslot = 0;
+    free(payload);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -566,6 +773,9 @@ main(void) {
     test_ras_data_provenance(opts, state);
     test_ras_voice_row();
     int rc = test_mnis_location_file(opts, state);
+    rc |= test_sap3_ars_real_path(opts, state);
+    rc |= test_sap3_lrrp_location_rows(opts, state);
+    rc |= test_confirmed_127_blocks(opts, state);
     dsd_state_ext_free_all(state);
     free(state->event_history_s);
     free(state);

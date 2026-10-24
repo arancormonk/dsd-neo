@@ -56,7 +56,7 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
+decode_cellocator(dsd_opts* opts, dsd_state* state, const uint8_t* input, int len) {
     (void)opts;
     (void)state;
     (void)input;

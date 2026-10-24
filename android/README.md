@@ -1323,6 +1323,13 @@ call was heard on closes the line, so a narrow phone cuts it off first. The deta
 sheet spells both out (**Color code 1**, **Frequency 851.0125 MHz**). A call whose
 code or frequency is not known leaves it out.
 
+History's search finds a call by its talkgroup, unit, name, message text, channel or
+the frequency it was heard on. A frequency needs its decimal point (**851.0125**,
+**851.**) or the unit (**851 MHz**): a bare **851** searches talkgroups and units
+only, so a talkgroup search on an 800 MHz system does not return every call. Type
+as many digits as the row shows, or the six the Site sheet prints. A row the search
+found by its frequency leads its line with that frequency.
+
 Tap a row in History or Monitor's Recent calls to **Hold TG** while listening to
 the same saved system. The held talkgroup follows the decoder's state; release it
 from the details or Monitor. Explore sessions and scans (including scans enabled

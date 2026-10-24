@@ -945,6 +945,22 @@ suite runs under this compiler.
   as `DMR_DATA_BLOCK_CRC_RAS` in `data_block_crc_valid`, and folds them back into bits for the packet
   (`dmr_block_type1_block_crc_flags()`, `dmr_block_type2_crc_flags()` for MBC/UDT). A trunk grant's provenance rides in
   `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope.
+- API note (DMR UDP services, issue #746): the IPv4 (SAP 4, `decode_ip_pdu()`, shared with P25) and compressed
+  UDP/IPv4 (SAP 3, `dmr_udp_comp_pdu()`) paths in `src/protocol/dmr/dmr_pdu.c` decode a datagram through one port
+  dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
+  its service (4005, the radio's fixed ARS port per the MOTOTRBO ARS specification 4.4.2, and the ETSI radio-network
+  defaults 5016/5017; a policy, so an ARS server on an already claimed port still selects that port's decoder).
+  `--lrrp-extra-port` ports are part of it. The compressed path passes the data header's LLIDs as the radios and a
+  NULL IPv4 header (9361/49198 then print the LLIDs), and appends the decoder's slot string to its notice. TS 102 361-3
+  leaves SPID/DPID 95-127 to the manufacturer with a per-radio linkage (table 7.17 note 2), so no index is mapped by
+  default: `dsd_opts::dmr_udp_comp_ports` (`--dmr-udp-comp-port`, `mode.dmr_udp_comp_ports`,
+  `<dsd-neo/core/udp_comp_ports.h>`) supplies a site's linkage, and an unlinked index is decoded only when its payload
+  is exactly one ARS message of that specification's section 3.4 (`dmr_ars_record_is_exact()`; a TMS ack shares the
+  0xBF header octet and differs by length; length-value sizes are octets). The SAP length handed to every SAP decoder
+  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); the decrypt
+  window and the AES-ECB block count are bounded the same way. A standard header resets confirmed mode, the MNIS
+  P_HEAD flag and the assembler's arming, which only DPF 0-3 with blocks to follow and DD/R_HEAD with appended blocks
+  set; `data_block_crc_valid` holds the header plus 127 block verdicts.
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
   means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,
@@ -2548,7 +2564,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   meaning `[mode]`, `[demod]` and both `[analog]` widths, restored over the row-scoped options in force by
   `ui_restore_receive_settings()`, which puts back `[analog]`'s tone policy from among those options as well; and what
   `[mode]` sets outside that snapshot that the decoder reads, `ui_cfg_mode_extras`: `ea_mode` and `esk_mask`, which
-  `edacs_ea`/`edacs_esk` and the EDACS/ProVoice preset set, and the extra LRRP ports; the audio layout a preset carries
+  `edacs_ea`/`edacs_esk` and the EDACS/ProVoice preset set, the extra LRRP ports and the compressed-UDP port map; the
+  audio layout a preset carries
   is the session's anyway), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
   runs after it (the other hot restarts, the output reconfigure, `apply_cfg_receive_family_change()`) sees the receive
   side the session ran, so no analog entry is armed and no profile is published for the refused settings. Under a scan
@@ -6716,6 +6733,31 @@ Qt Quick frontend (`src/ui/qt`):
   - Rows: a voice row's meta line puts the `accessCode` role right after the ids and `Util.fmtMhz(freqHz)` last, after
     the channel, so the elide takes the frequency first. History notice rows place them the same way around their
     detail; the monitor's notice rows keep their detail (or "data message") first, then the code, then the frequency.
+    The exception is a History row its search found by frequency (next bullet), which leads with it. `CallRow` renders
+    its name and meta line as plain text: aliases and SMS bodies are what the air delivered, and Qt's automatic
+    rich-text detection would draw a tag in them as markup.
+  - History search (`CallHistoryFilterModel`, `frequency_query.{h,cpp}`): the trimmed text matches the name, the
+    talkgroup and unit when above 0 (0 is "none decoded", which no row prints), the source label, a notice's detail,
+    the channel, and the frequency. The frequency is searched only when the text has a decimal point or the MHz unit
+    (`digits "." digits* [MHz]` or `digits MHz`, at most 5 MHz digits and 6 decimals): a bare number stays an ID search,
+    since three- and four-digit talkgroups collide with MHz values. A frequency query finds a row when its digits begin
+    the row's frequency in either spelling the app prints: rounded half up to 10 Hz, or to the Hz (the Site and
+    Network sheets' six decimals). `Util.mhzText` formats the inexact double `hz / 1e6` with `toFixed(5)`, which lands
+    on the floor or the ceiling of the exact value (ceiling only when the sixth digit is 5 or more); the floor is a
+    prefix of the six-decimal spelling and the ceiling is the rounded one, so typing what a row shows always finds it.
+    `UI_QT_FREQUENCY_QUERY` holds that contract against the real `Util.js`. The view reads `frequencyQuery` and
+    `frequencyMatches(hz)`: a row found by its frequency leads its meta line with it (ahead of EMERGENCY, which the badge
+    still shows) and adds it to its accessible name, while a row the same text matched by its channel keeps its order.
+    `filterText` notifies on its own `filterTextChanged`, because the search field mirrors it and a pill change must not
+    write the applied text over pending typing; `filterChanged` still fires for every filter, for the scroll-to-top.
+    "Clear filters" (`HistoryScreen.clearFilters()`) also stops the debounce and empties the field. Limit: at very
+    large text (about 1.6x and up on a 360 px phone with a badge) the meta line, which shares its row with the badge and
+    time, can still elide the leading frequency; the accessible name and the details sheet keep it. Tests:
+    `UI_QT_FREQUENCY_QUERY`, `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`).
+  - Frequencies written to be tuned or saved use `Util.mhzValueText` (to the Hz; a whole 10 Hz keeps `mhzText`'s
+    spelling): the remembered Explore frequency, Save as a system, Spectrum "Go to" and the band buttons. `mhzText`
+    rounds to 10 Hz for reading only. The rtl and rtltcp input specs round the MHz field to the nearest Hz
+    (`input_spec.c`), since a decimal like `128.155625M` multiplies out just under its integer.
     The record every details sheet opens with (monitor, History, Home's recent activity) carries `freqHz`, `accessCode`
     and `accessCodeText`, and the sheet adds the long code text and "Frequency …" after the radio ID, which keeps the
     indexes of the lines before it.

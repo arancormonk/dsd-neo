@@ -1522,12 +1522,13 @@ ui_restore_receive_settings(dsd_opts* opts, dsd_state* state, const dsd_scan_set
 
 /* What a config's [mode] sets that the decoder reads and the configured receive settings (dsd_scan_settings) do not
    hold (issue #578): the EDACS variant (edacs_ea and edacs_esk, which its EDACS/ProVoice preset clears) and the extra
-   LRRP ports dmr_lrrp_ports lists. */
+   LRRP ports dmr_lrrp_ports lists and the compressed-UDP port links dmr_udp_comp_ports sets. */
 typedef struct {
     int ea_mode;
     unsigned short esk_mask;
     int lrrp_extra_port_count;
     uint16_t lrrp_extra_ports[DSD_LRRP_EXTRA_PORT_MAX];
+    uint16_t dmr_udp_comp_ports[DSD_UDP_COMP_PORT_MAP_ENTRIES];
 } ui_cfg_mode_extras;
 
 static void
@@ -1536,6 +1537,7 @@ ui_cfg_capture_mode_extras(const dsd_opts* opts, const dsd_state* state, ui_cfg_
     out->esk_mask = state->esk_mask;
     out->lrrp_extra_port_count = opts->lrrp_extra_port_count;
     DSD_MEMCPY(out->lrrp_extra_ports, opts->lrrp_extra_ports, sizeof out->lrrp_extra_ports);
+    DSD_MEMCPY(out->dmr_udp_comp_ports, opts->dmr_udp_comp_ports, sizeof out->dmr_udp_comp_ports);
 }
 
 static void
@@ -1544,6 +1546,7 @@ ui_cfg_restore_mode_extras(dsd_opts* opts, dsd_state* state, const ui_cfg_mode_e
     state->esk_mask = in->esk_mask;
     opts->lrrp_extra_port_count = in->lrrp_extra_port_count;
     DSD_MEMCPY(opts->lrrp_extra_ports, in->lrrp_extra_ports, sizeof opts->lrrp_extra_ports);
+    DSD_MEMCPY(opts->dmr_udp_comp_ports, in->dmr_udp_comp_ports, sizeof opts->dmr_udp_comp_ports);
 }
 
 /* What a config apply that reopens the running input puts back when the reopened stream does not start (issue #578):

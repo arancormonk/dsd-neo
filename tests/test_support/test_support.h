@@ -87,6 +87,9 @@ dsd_test_path_join(char* out, size_t out_sz, const char* dir, const char* leaf) 
     return 0;
 }
 
+/* Where tests put temp files: DSD_NEO_TEST_TMPDIR, then TEMP/TMP on Windows or TMPDIR elsewhere. Without TMPDIR
+ * the POSIX fallback is /tmp, not the working directory: a test run from a checkout that aborts before its cleanup
+ * would leave its files there for the next commit to pick up. Windows always sets TEMP. */
 static inline const char*
 dsd_test_tmpdir(void) {
     const char* v = getenv("DSD_NEO_TEST_TMPDIR");
@@ -103,14 +106,14 @@ dsd_test_tmpdir(void) {
     if (v && v[0] != '\0') {
         return v;
     }
+    return ".";
 #else
     v = getenv("TMPDIR");
     if (v && v[0] != '\0') {
         return v;
     }
+    return "/tmp";
 #endif
-
-    return ".";
 }
 
 static inline int

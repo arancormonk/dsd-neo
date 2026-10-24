@@ -333,6 +333,7 @@ small subset is exposed as config keys for convenience (for example
 | `decode` | ENUM | Decode mode preset | `auto` |
 | `dmr_mono` | BOOL | Enable the single-slot DMR decoder without changing `decode` | `false` |
 | `dmr_lrrp_ports` | STRING | Extra UDP ports decoded as DMR LRRP, comma-separated, at most 8 (same as `--lrrp-extra-port`; a CLI list replaces this one) | (empty) |
+| `dmr_udp_comp_ports` | STRING | UDP ports linked to the manufacturer-specific DMR compressed-UDP port indices 95-127, comma-separated `<index>=<port>` pairs such as `"97=4005,98=4007"`; one port per index, a bad entry is skipped with a warning (same as `--dmr-udp-comp-port`; a CLI list replaces this one) | (empty) |
 | `edacs_ea` | BOOL | Decode EDACS with extended addressing, without changing `decode` | `false` |
 | `edacs_esk` | BOOL | Apply the EDACS ESK `0xA0` scrambling mask, without changing `decode` | `false` |
 | `demod` | ENUM | Demodulator path | `auto` |
@@ -877,7 +878,8 @@ the reason and the mode question is asked again.
   skip the wizard, use config settings.
 - If CLI args are provided: config is loaded first, then CLI overrides it. This holds for
   list-valued keys too: the first `--lrrp-extra-port` empties the `mode.dmr_lrrp_ports` list
-  before adding its own port.
+  before adding its own port, and the first `--dmr-udp-comp-port` empties the
+  `mode.dmr_udp_comp_ports` list before adding its own pair.
 - CLI:
   - `--interactive-setup` forces running the wizard even if a config
     exists; the resulting setup is automatically saved to the current

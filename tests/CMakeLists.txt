@@ -3897,6 +3897,33 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_decryption_profiles
     )
 
+    # The History search read as a frequency: the grammar, the two spellings a
+    # row's frequency is found by, and the contract with the real Util.js, which
+    # is evaluated in a QJSEngine so every frequency the rows print is typed back.
+    add_executable(
+        dsd-neo_test_ui_qt_frequency_query
+        ui/test_ui_qt_frequency_query.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_frequency_query
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_frequency_query
+        PRIVATE Qt6::Core Qt6::Qml
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_frequency_query
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
+    )
+    add_test(
+        NAME UI_QT_FREQUENCY_QUERY
+        COMMAND dsd-neo_test_ui_qt_frequency_query
+    )
+
     # WP-D4 site grouping and saved-row provenance.
     add_executable(
         dsd-neo_test_ui_qt_site_groups
@@ -4014,6 +4041,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
@@ -4420,6 +4448,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
             ui/qml_spectrum_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
@@ -13276,6 +13305,21 @@ target_link_libraries(
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
 
+# Test temp files never default to the working directory.
+add_executable(
+    dsd-neo_test_platform_test_tmpdir
+    platform/test_platform_test_tmpdir.c
+)
+target_include_directories(
+    dsd-neo_test_platform_test_tmpdir
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_test_tmpdir
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_test(NAME PLATFORM_TEST_TMPDIR COMMAND dsd-neo_test_platform_test_tmpdir)
+
 # 64-bit file sizes and offsets on sparse files past 2 GiB and 4 GiB (issue #701).
 add_executable(
     dsd-neo_test_platform_file_large
@@ -17921,6 +17965,12 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pffft_metadata.py
+    )
+    add_test(
+        NAME TOOLS_SARIF_DROP_IGNORED_PATHS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_sarif_drop_ignored_paths.py
     )
     add_test(
         NAME TOOLS_TETRA_CRYPTO_METADATA

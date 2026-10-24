@@ -19,6 +19,7 @@
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -331,34 +332,62 @@ dmr_udp_event_category(uint16_t src_port, uint16_t dst_port) {
 
 enum { DMR_UDP_COMP_PORT_TEXT = 5016U, DMR_UDP_COMP_PORT_LIP = 5017U };
 
-typedef enum {
-    DMR_UDP_COMP_SERVICE_NONE,
-    DMR_UDP_COMP_SERVICE_TEXT,
-    DMR_UDP_COMP_SERVICE_LIP,
-} dmr_udp_comp_service_type;
+// UDP ports whose number is fixed or a default on the radio side, so a datagram sent from one names
+// its service even when its destination is a configurable server port: the radio's ARS port is
+// "always 4005 and is not CPS configurable" (MOTOTRBO ARS specification 4.4.2), and 5016/5017 are
+// the radio-network defaults of TS 102 361-3 tables 7.17/7.18, which the compressed header has
+// always decoded from either endpoint. A policy, not a rule ETSI states for 5016/5017.
+static int
+dmr_udp_src_port_names_service(uint16_t port) {
+    return port == 4005U || port == 5016U || port == 5017U;
+}
 
-static dmr_udp_comp_service_type
-dmr_udp_comp_service(uint16_t src_port, uint16_t dst_port) {
-    // Text takes precedence when either endpoint selects it.
-    if (src_port == DMR_UDP_COMP_PORT_TEXT || dst_port == DMR_UDP_COMP_PORT_TEXT) {
-        return DMR_UDP_COMP_SERVICE_TEXT;
+static int dmr_udp_service_dispatch_port(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
+                                         uint16_t port, uint16_t payload_len, const uint8_t* payload,
+                                         const uint8_t* ip_hdr);
+
+// The radios and ports of one datagram. A port is tried only when `*_known`: the compressed header can
+// leave one unresolved.
+typedef struct {
+    uint32_t src24;
+    uint32_t dst24;
+    uint16_t src_port;
+    uint16_t dst_port;
+    uint8_t src_known;
+    uint8_t dst_known;
+} dmr_udp_endpoints;
+
+// The one port dispatch both the IPv4 (SAP 4) and the compressed UDP/IPv4 (SAP 3) paths use: the
+// destination port when a decoder claims it, else a source port that names its service. Returns 1
+// when a decoder ran; 0 leaves the state untouched.
+static int
+dmr_udp_service_dispatch(dsd_opts* opts, dsd_state* state, uint8_t slot, const dmr_udp_endpoints* ep,
+                         uint16_t payload_len, const uint8_t* payload, const uint8_t* ip_hdr) {
+    if (ep->dst_known
+        && dmr_udp_service_dispatch_port(opts, state, slot, ep->src24, ep->dst24, ep->dst_port, payload_len, payload,
+                                         ip_hdr)) {
+        return 1;
     }
-    if (src_port == DMR_UDP_COMP_PORT_LIP || dst_port == DMR_UDP_COMP_PORT_LIP) {
-        return DMR_UDP_COMP_SERVICE_LIP;
-    }
-    return DMR_UDP_COMP_SERVICE_NONE;
+    return ep->src_known && dmr_udp_src_port_names_service(ep->src_port)
+           && dmr_udp_service_dispatch_port(opts, state, slot, ep->src24, ep->dst24, ep->src_port, payload_len, payload,
+                                            ip_hdr);
 }
 
 // One SPID or DPID: the 7-bit index as sent and the UDP port it stands for. They never share a
 // variable, because a port number read from the extended header is not an index (issue #450).
 typedef struct {
-    uint16_t idx;  // 7-bit index (tables 7.17/7.18); 0 = In Extended Header
-    uint16_t port; // UDP port, meaningful only when known != 0
-    uint8_t known; // idx 1/2 (table default) or idx 0 with the extended header present
+    uint16_t idx;   // 7-bit index (tables 7.17/7.18); 0 = In Extended Header
+    uint16_t port;  // UDP port, meaningful only when known != 0
+    uint8_t known;  // idx 1/2 (table default), idx 0 with the extended header present, or a mapped idx
+    uint8_t mapped; // a manufacturer-specific idx linked to a port by --dmr-udp-comp-port
 } dmr_udp_comp_port;
 
+_Static_assert(sizeof(((dsd_opts*)0)->dmr_udp_comp_ports) / sizeof(((dsd_opts*)0)->dmr_udp_comp_ports[0])
+                   == DSD_UDP_COMP_PORT_MAP_SIZE,
+               "one dmr_udp_comp_ports entry per manufacturer-specific index");
+
 static void
-dmr_udp_comp_port_init(dmr_udp_comp_port* entry, uint16_t idx) {
+dmr_udp_comp_port_init(const dsd_opts* opts, dmr_udp_comp_port* entry, uint16_t idx) {
     DSD_MEMSET(entry, 0, sizeof(*entry));
     entry->idx = idx;
     // Tables 7.17/7.18 note 1: the port numbers are defaults within the radio network.
@@ -368,7 +397,22 @@ dmr_udp_comp_port_init(dmr_udp_comp_port* entry, uint16_t idx) {
     } else if (idx == 2) {
         entry->port = DMR_UDP_COMP_PORT_LIP;
         entry->known = 1;
+    } else {
+        // Note 2 leaves the linkage of 95-127 to each radio's configuration, so only the site can
+        // supply it; nothing on the air names the port.
+        const uint16_t port = dsd_udp_comp_port_lookup(opts->dmr_udp_comp_ports, idx);
+        if (port != 0U) {
+            entry->port = port;
+            entry->known = 1;
+            entry->mapped = 1;
+        }
     }
+}
+
+// A manufacturer-specific index the site has not linked to a port: its payload is the only clue.
+static int
+dmr_udp_comp_port_unresolved_mfr(const dmr_udp_comp_port* entry) {
+    return entry->idx >= DSD_UDP_COMP_PORT_IDX_FIRST && entry->known == 0U;
 }
 
 // Tables 7.20/7.21: a source index of 0 puts the source port in Extended Header 1; a destination
@@ -400,7 +444,9 @@ dmr_udp_comp_resolve_ports(const uint8_t* pdu, uint16_t len, dmr_udp_comp_port* 
 static void
 dmr_udp_comp_port_desc(const dmr_udp_comp_port* entry, char* out, size_t out_size) {
     const char* label = dmr_udp_comp_port_idx_desc(entry->idx);
-    if (entry->known) {
+    if (entry->mapped) {
+        DSD_SNPRINTF(out, out_size, "%s, mapped UDP %u", label, (unsigned)entry->port);
+    } else if (entry->known) {
         DSD_SNPRINTF(out, out_size, "%s, UDP %u", label, (unsigned)entry->port);
     } else if (entry->idx == 0) {
         DSD_SNPRINTF(out, out_size, "%s, truncated", label);
@@ -409,36 +455,36 @@ dmr_udp_comp_port_desc(const dmr_udp_comp_port* entry, char* out, size_t out_siz
     }
 }
 
-static int DSD_ATTR_USED
-dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t src_port, uint16_t dst_port, uint16_t len,
-                            uint16_t ptr, const uint8_t* pdu) {
+// Decodes the payload after the compressed header through the shared UDP port dispatch. Returns 1
+// when a decoder ran (the slot string then holds its summary), 0 when nothing claimed the payload.
+// The radios are the data header's LLIDs, as on every DMR data notice.
+static int
+dmr_udp_comp_decode_payload(dsd_opts* opts, dsd_state* state, uint8_t slot, const dmr_udp_comp_port* src,
+                            const dmr_udp_comp_port* dst, uint16_t len, uint16_t ptr, const uint8_t* pdu,
+                            uint8_t* by_content) {
+    *by_content = 0;
     if (len <= ptr) {
         return 0;
     }
-    len -= ptr;
-    const dmr_udp_comp_service_type service = dmr_udp_comp_service(src_port, dst_port);
-    if (service == DMR_UDP_COMP_SERVICE_TEXT) {
-        utf16_to_text(state, 1, len, pdu + ptr); //assumming text starts right at the ptr value
-        return 0;
+    const uint16_t payload_len = (uint16_t)(len - ptr);
+    const uint8_t* payload = pdu + ptr;
+    const dmr_udp_endpoints ep = {(uint32_t)state->dmr_lrrp_source[slot],
+                                  (uint32_t)state->dmr_lrrp_target[slot],
+                                  src->port,
+                                  dst->port,
+                                  src->known,
+                                  dst->known};
+    if (dmr_udp_service_dispatch(opts, state, slot, &ep, payload_len, payload, NULL)) {
+        return 1;
     }
-    if (service == DMR_UDP_COMP_SERVICE_LIP) {
-        uint8_t bits[127 * 8];
-        uint16_t decode_len = len;
-        if (decode_len > 127U) {
-            decode_len = 127U;
-        }
-        DSD_MEMSET(bits, 0, sizeof(bits));
-        dsd_unpack_bytes_to_bits(pdu + ptr, len, bits, sizeof(bits), decode_len);
-        uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
-        char previous_gps[sizeof(state->dmr_embedded_gps[slot])];
-        DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", state->dmr_embedded_gps[slot]);
-        state->dmr_embedded_gps[slot][0] = '\0';
-        lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, (uint32_t)state->dmr_lrrp_source[slot]);
-        if (state->dmr_embedded_gps[slot][0] != '\0') {
-            return 1;
-        }
-        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s", previous_gps);
-        return 0;
+    // An unlinked manufacturer-specific index leaves the payload as the only evidence of the
+    // service. ARS is taken only when the payload is exactly one message of the ARS specification's
+    // section 3.4; a Motorola TMS acknowledgement starts with the same header octet (0xBF) and is
+    // told apart by its length. Reserved indices (3-94) carry nothing a receiver may interpret.
+    if ((dmr_udp_comp_port_unresolved_mfr(src) || dmr_udp_comp_port_unresolved_mfr(dst))
+        && dmr_ars_record_is_exact(payload, payload_len)) {
+        *by_content = 1;
+        return dmr_udp_service_dispatch_port(opts, state, slot, ep.src24, ep.dst24, 4005U, payload_len, payload, NULL);
     }
     DSD_FPRINTF(stderr, "Unknown Decode Format;");
     return 0;
@@ -479,8 +525,8 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     uint16_t daid = (uint16_t)((DMR_PDU[2] >> 0) & 0xF);
     dmr_udp_comp_port src;
     dmr_udp_comp_port dst;
-    dmr_udp_comp_port_init(&src, (uint16_t)(DMR_PDU[3] & 0x7F));
-    dmr_udp_comp_port_init(&dst, (uint16_t)(DMR_PDU[4] & 0x7F));
+    dmr_udp_comp_port_init(opts, &src, (uint16_t)(DMR_PDU[3] & 0x7F));
+    dmr_udp_comp_port_init(opts, &dst, (uint16_t)(DMR_PDU[4] & 0x7F));
     uint16_t ptr = dmr_udp_comp_resolve_ports(DMR_PDU, len, &src, &dst);
 
     const char* src_idx_desc = dmr_udp_comp_src_idx_desc(said);
@@ -495,25 +541,37 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     DSD_FPRINTF(stderr, "\n Src Port Idx: %d (%s); Dst Port Idx: %d (%s); ", src.idx, src_port_desc, dst.idx,
                 dst_port_desc);
 
-    const uint16_t src_port = src.known ? src.port : 0U;
-    const uint16_t dst_port = dst.known ? dst.port : 0U;
-    const int has_gps = dmr_udp_comp_decode_payload(opts, state, src_port, dst_port, len, ptr, DMR_PDU);
+    // As decode_ip_pdu(): a fix counts only when a decoder produced it from this PDU; otherwise the
+    // slot keeps the position it had.
+    char previous_gps[sizeof(state->dmr_embedded_gps[slot])];
+    DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", state->dmr_embedded_gps[slot]);
+    state->dmr_embedded_gps[slot][0] = '\0';
+    uint8_t by_content = 0;
+    const int decoded = dmr_udp_comp_decode_payload(opts, state, slot, &src, &dst, len, ptr, DMR_PDU, &by_content);
 
-    char comp_string[500];
+    char comp_string[1024];
     DSD_MEMSET(comp_string, 0, sizeof(comp_string));
     DSD_SNPRINTF(comp_string, sizeof(comp_string), "IP ID: %04X; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
                  ipid, opcode, said, src.idx, src_idx_desc, src_port_desc, daid, dst.idx, dst_idx_desc, dst_port_desc);
+    // A decoder writes its summary to the slot string, which the history row then carries after the
+    // header fields, as on the IPv4 and MNIS paths.
+    if (decoded) {
+        dsd_append(comp_string, sizeof(comp_string), state->dmr_lrrp_gps[slot]);
+    }
     // The radios on this PDU are the data header's LLIDs, as for every other DMR data notice;
     // SAID/DAID are 4-bit network indices (tables 7.15/7.16), not radio IDs.
     const dsd_call_observation observation = dsd_call_observation_data(
         state->lastsynctype, slot, (uint64_t)state->dmr_lrrp_source[slot], (uint64_t)state->dmr_lrrp_target[slot]);
-    const dsd_event_category category = dmr_udp_event_category(src_port, dst_port);
-    if (has_gps) {
+    const dsd_event_category category =
+        by_content ? DSD_EVENT_CATEGORY_CONTROL
+                   : dmr_udp_event_category(src.known ? src.port : 0U, dst.known ? dst.port : 0U);
+    if (state->dmr_embedded_gps[slot][0] != '\0') {
         (void)dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category, comp_string,
                                                              state->dmr_embedded_gps[slot]);
-    } else {
-        (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, comp_string);
+        return;
     }
+    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s", previous_gps);
+    (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, comp_string);
 }
 
 static void DSD_ATTR_USED
@@ -736,7 +794,7 @@ decode_ip_pdu_udp_port_is_lrrp(const dsd_opts* opts, uint16_t port) {
 
 static int DSD_ATTR_USED
 decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
-                                      uint16_t port, uint16_t payload_len, uint8_t* payload) {
+                                      uint16_t port, uint16_t payload_len, const uint8_t* payload) {
     switch (port) {
         case 231:
             DSD_FPRINTF(stderr, "Cellocator;");
@@ -748,6 +806,12 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
             return 1;
         case 4001:
             DSD_FPRINTF(stderr, "LRRP;");
+            // dmr_lrrp() reads nothing from under two octets and leaves the slot string alone, which
+            // would hand this notice the previous message's summary.
+            if (payload_len < 2U) {
+                DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                             "LRRP SRC: %u; DST: %u; Truncated;", src24, dst24);
+            }
             // P25 Phase 1 arrives with currentslot == 0, matching the event_crc_invalid[0] scope in p25p1_mdpu.c.
             dmr_lrrp(opts, state, payload_len, src24, dst24, payload, (uint8_t)(state->event_crc_invalid[slot] == 0));
             return 1;
@@ -794,10 +858,12 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
     return 0;
 }
 
+// `ip_hdr` is the IPv4 header on the IPv4 path and NULL on the compressed one, which carries no
+// addresses; the two P25 services that print them name the radios instead.
 static int DSD_ATTR_USED
 decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24,
                                      uint32_t dst24, uint16_t port, uint16_t payload_len, const uint8_t* payload,
-                                     const uint8_t* input) {
+                                     const uint8_t* ip_hdr) {
     switch (port) {
         case 5007: decode_ip_pdu_handle_udp_vtx_tms(opts, state, slot, src24, dst24, payload_len, payload); return 1;
         case 5016:
@@ -820,15 +886,25 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             return 1;
         }
         case 9361:
-            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
-                         "P25 Atlas SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ", input[12], input[13], input[14],
-                         input[15], input[16], input[17], input[18], input[19]);
+            if (ip_hdr == NULL) {
+                DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                             "P25 Atlas SRC: %u; DST: %u; ", src24, dst24);
+            } else {
+                DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                             "P25 Atlas SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ", ip_hdr[12], ip_hdr[13],
+                             ip_hdr[14], ip_hdr[15], ip_hdr[16], ip_hdr[17], ip_hdr[18], ip_hdr[19]);
+            }
             DSD_FPRINTF(stderr, "Atlas Data Registration Server;");
             return 1;
         case 49198:
-            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
-                         "P25 Tier 2 LOCN SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ", input[12], input[13],
-                         input[14], input[15], input[16], input[17], input[18], input[19]);
+            if (ip_hdr == NULL) {
+                DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                             "P25 Tier 2 LOCN SRC: %u; DST: %u; ", src24, dst24);
+            } else {
+                DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                             "P25 Tier 2 LOCN SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ", ip_hdr[12], ip_hdr[13],
+                             ip_hdr[14], ip_hdr[15], ip_hdr[16], ip_hdr[17], ip_hdr[18], ip_hdr[19]);
+            }
             DSD_FPRINTF(stderr, "P25 Tier 2 Location Service;");
             dmr_lrrp(opts, state, payload_len, src24, dst24, payload, (uint8_t)(state->event_crc_invalid[slot] == 0));
             return 1;
@@ -837,23 +913,33 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
     return 0;
 }
 
-static void DSD_ATTR_USED
-decode_ip_pdu_handle_udp_service(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
-                                 uint16_t port, uint16_t payload_len, uint8_t* payload, const uint8_t* input) {
+static int
+dmr_udp_service_dispatch_port(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
+                              uint16_t port, uint16_t payload_len, const uint8_t* payload, const uint8_t* ip_hdr) {
     if (decode_ip_pdu_handle_udp_service_core(opts, state, slot, src24, dst24, port, payload_len, payload)) {
-        return;
+        return 1;
     }
-    if (decode_ip_pdu_handle_udp_service_ext(opts, state, slot, src24, dst24, port, payload_len, payload, input)) {
-        return;
+    if (decode_ip_pdu_handle_udp_service_ext(opts, state, slot, src24, dst24, port, payload_len, payload, ip_hdr)) {
+        return 1;
     }
     if (decode_ip_pdu_udp_port_is_lrrp(opts, port)) {
         // Dispatched as the registered location port, so a mapped port cannot drift away from 4001.
-        (void)decode_ip_pdu_handle_udp_service_core(opts, state, slot, src24, dst24, 4001U, payload_len, payload);
+        return decode_ip_pdu_handle_udp_service_core(opts, state, slot, src24, dst24, 4001U, payload_len, payload);
+    }
+    return 0;
+}
+
+static void DSD_ATTR_USED
+decode_ip_pdu_handle_udp_service(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
+                                 uint16_t src_port, uint16_t dst_port, uint16_t payload_len, const uint8_t* payload,
+                                 const uint8_t* input) {
+    const dmr_udp_endpoints ep = {src24, dst24, src_port, dst_port, 1U, 1U};
+    if (dmr_udp_service_dispatch(opts, state, slot, &ep, payload_len, payload, input)) {
         return;
     }
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
                  "IP SRC: %d.%d.%d.%d:%d; DST: %d.%d.%d.%d:%d; Unknown UDP Port;", input[12], input[13], input[14],
-                 input[15], port, input[16], input[17], input[18], input[19], port);
+                 input[15], src_port, input[16], input[17], input[18], input[19], dst_port);
     DSD_FPRINTF(stderr, "Unknown UDP Port;");
 }
 
@@ -864,6 +950,7 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
         DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Truncated UDP;");
         return;
     }
+    uint16_t src_port = (uint16_t)((input[ip_header_len + 0] << 8) | input[ip_header_len + 1]);
     uint16_t dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
     uint16_t udp_len = (uint16_t)((input[ip_header_len + 4] << 8) | input[ip_header_len + 5]);
     uint16_t udp_chk = (uint16_t)((input[ip_header_len + 6] << 8) | input[ip_header_len + 7]);
@@ -876,9 +963,9 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
         udp_payload_len = max_payload_len;
     }
     uint16_t payload_len = (uint16_t)udp_payload_len;
-    uint8_t* payload = input + udp_payload_off;
+    const uint8_t* payload = input + udp_payload_off;
 
-    decode_ip_pdu_handle_udp_service(opts, state, slot, src24, dst24, dst_port, payload_len, payload, input);
+    decode_ip_pdu_handle_udp_service(opts, state, slot, src24, dst24, src_port, dst_port, payload_len, payload, input);
 }
 
 typedef struct {

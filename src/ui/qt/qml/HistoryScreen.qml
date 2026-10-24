@@ -22,6 +22,17 @@ Item {
     onVisibleChanged: if (!visible) flushPendingSearch()
     onEnabledChanged: if (!enabled) flushPendingSearch()
 
+    // The field's pending text goes too: the filter ignores a search it already
+    // has, so clearing only the model would leave typed text that the debounce
+    // then applies again.
+    function clearFilters() {
+        searchDebounce.stop();
+        search.text = "";
+        historyView.filterText = "";
+        historyView.filterSystem = "";
+        historyView.filterKind = 0;
+    }
+
     // Cycles: 0 everything, 1 clear calls, 2 encrypted calls, 3 messages
     // (SMS, GPS positions, data and control notices).
     readonly property var kindLabels: [qsTr("All activity"), qsTr("Unencrypted calls"), qsTr("Encrypted"), qsTr("Messages")]
@@ -84,7 +95,12 @@ Item {
             }
 
             width: parent.width
-            placeholderText: qsTr("Search talkgroup or unit")
+            label: qsTr("Search talkgroup, unit or frequency")
+            // The rule a bare number cannot meet: 851 is a talkgroup search, so a
+            // frequency is told apart by its decimal point (frequency_query.h).
+            // Helper text rather than a placeholder, which hides on focus and is
+            // not announced.
+            hint: qsTr("Frequencies need a decimal point: 851.0125")
             inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
             // Debounced: every keystroke otherwise re-evaluates the filter over
             // the full log, and on a phone that stutters the keyboard.
@@ -160,6 +176,14 @@ Item {
         }
 
         delegate: CallRow {
+            id: callRow
+
+            // Whether a frequency search found this row by its frequency. Not
+            // every row it lists was: the same text can match a channel name
+            // ("851.0125 backup" heard on 460 MHz). Reading frequencyQuery
+            // re-runs this on each search change.
+            readonly property bool freqMatched: historyView.frequencyQuery && model.freqHz > 0 && historyView.frequencyMatches(model.freqHz)
+
             interactive: true
             width: ListView.view.width
             name: model.name
@@ -179,7 +203,9 @@ Item {
                         parts.push(model.detail);
                     if (model.channel.length > 0 && model.channel !== model.name)
                         parts.push(model.channel);
-                    if (model.freqHz > 0)
+                    if (callRow.freqMatched)
+                        parts.unshift(Util.fmtMhz(model.freqHz));
+                    else if (model.freqHz > 0)
                         parts.push(Util.fmtMhz(model.freqHz));
                     return parts.length > 0 ? parts.join(" · ") : qsTr("data message");
                 }
@@ -210,15 +236,21 @@ Item {
                 if (model.channel.length > 0 && model.channel !== model.name)
                     meta.push(model.channel);
                 // The frequency closes the line: the least of these on a phone,
-                // so it is the first thing the elide takes.
-                if (model.freqHz > 0)
+                // so it is the first thing the elide takes. Except on a row a
+                // frequency search found, which leads with it (ahead of EMERGENCY,
+                // which the row's badge still shows): the elide would otherwise
+                // take the very value the reader searched for.
+                if (callRow.freqMatched)
+                    meta.unshift(Util.fmtMhz(model.freqHz));
+                else if (model.freqHz > 0)
                     meta.push(Util.fmtMhz(model.freqHz));
                 return meta.join(" · ");
             }
             rightText: model.timeText
             enc: model.enc
             emergency: model.emergency
-            accessibleName: model.name + ", " + model.timeText
+            // The frequency is named only when it is why the row is listed.
+            accessibleName: model.name + ", " + model.timeText + (callRow.freqMatched ? ", " + Util.fmtMhz(model.freqHz) : "")
             onActivated: detailSheet.open({
                 name: model.name,
                 when: model.when,
@@ -264,16 +296,15 @@ Item {
     // they are there. It only rights itself when the result is shorter than the
     // viewport, where the Flickable's own bounds drag it back.
     //
-    // The pills are the reason this cannot ride on the pin: they are only usable
-    // while no session is running, which is exactly when no call is landing to
-    // fire it.
+    // The pin cannot carry it: a filter change lands no call, so nothing would
+    // fire the pin, and while no session is running no call lands at all.
     Connections {
         target: historyView
 
         // Deferred for the same reason the pin is: inside the signal the view is
         // still applying the filter's row changes, and a position asserted there
         // does not survive them. Setting several filters at once (the empty
-        // state's Clear filters button sets four) coalesces into one call, and
+        // state's Clear filters button sets three) coalesces into one call, and
         // repositioning an already-topped list is a no-op either way.
         function onFilterChanged() {
             Qt.callLater(logList.positionViewAtBeginning);
@@ -328,15 +359,12 @@ Item {
         }
 
         OutlineButton {
+            objectName: "historyClearFilters"
             anchors.horizontalCenter: parent.horizontalCenter
             visible: parent.filtered
             width: Math.min(parent.width, 220)
             text: qsTr("Clear filters")
-            onClicked: {
-                historyView.filterText = "";
-                historyView.filterSystem = "";
-                historyView.filterKind = 0;
-            }
+            onClicked: screen.clearFilters()
         }
     }
 

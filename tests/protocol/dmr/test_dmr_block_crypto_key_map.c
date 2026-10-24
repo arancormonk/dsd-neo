@@ -50,7 +50,7 @@ test_group_data_target_uses_the_map(void) {
     state.dmr_lrrp_target[0] = 123ULL;
     state.dmr_data_target_is_group[0] = 1U;
 
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("data-mapped-kid", ctx.kid, 0x7B);
     rc |= expect_eq("data-mapped-rkey", (long long)ctx.rkey, 0xBBBBBLL);
     rc |= expect_eq("data-mapped-flag", ctx.mapped, 1);
@@ -72,7 +72,7 @@ test_individual_data_target_ignores_the_map(void) {
     state.dmr_lrrp_target[0] = 123ULL;
     state.dmr_data_target_is_group[0] = 0U;
 
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("data-individual-kid", ctx.kid, 0x03);
     rc |= expect_eq("data-individual-rkey", (long long)ctx.rkey, 0xAAAAALL);
     rc |= expect_eq("data-individual-flag", ctx.mapped, 0);
@@ -94,7 +94,7 @@ test_slot2_fallback_uses_rr(void) {
     state.R = 0x1111ULL;
     state.RR = 0x2222ULL;
 
-    dmr_block_crypto_load_ctx(&state, 1U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 1U, 24U, &ctx);
     rc |= expect_eq("slot2-fallback-rr", (long long)ctx.rkey, 0x2222LL);
     return rc;
 }
@@ -117,7 +117,7 @@ test_wide_signaled_kid_is_not_narrowed(void) {
     state.dmr_lrrp_target[0] = 999ULL; /* unmapped target */
     state.dmr_data_target_is_group[0] = 1U;
 
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("wide-kid-kept", ctx.kid, 0x103);
     rc |= expect_eq("wide-kid-rkey", (long long)ctx.rkey, 0xCCCCCLL);
     rc |= expect_eq("wide-kid-unmapped", ctx.mapped, 0);
@@ -141,7 +141,7 @@ test_wide_signaled_kid_bypasses_the_map(void) {
     state.dmr_lrrp_target[0] = 123ULL; /* a mapped group target */
     state.dmr_data_target_is_group[0] = 1U;
 
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("wide-kid-map-bypassed", ctx.kid, 0x103);
     rc |= expect_eq("wide-kid-map-rkey", (long long)ctx.rkey, 0xCCCCCLL);
     rc |= expect_eq("wide-kid-map-flag", ctx.mapped, 0);
@@ -165,7 +165,7 @@ test_data_alg_need_gates_the_map(void) {
     state.currentslot = 0;
     state.dmr_lrrp_target[0] = 123ULL;
     state.dmr_data_target_is_group[0] = 1U;
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("aes-row-scalar-only-unmapped", ctx.mapped, 0);
     rc |= expect_eq("aes-row-scalar-only-kid", ctx.kid, 0x03);
 
@@ -184,7 +184,7 @@ test_data_alg_need_gates_the_map(void) {
     state.currentslot = 0;
     state.dmr_lrrp_target[0] = 123ULL;
     state.dmr_data_target_is_group[0] = 1U;
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("rc4-row-aes-only-unmapped", ctx.mapped, 0);
     rc |= expect_eq("rc4-row-aes-only-kid", ctx.kid, 0x03);
     rc |= expect_eq("rc4-row-aes-only-rkey", (long long)ctx.rkey, 0xAAAAALL);
@@ -196,12 +196,12 @@ test_data_alg_need_gates_the_map(void) {
     state.currentslot = 0;
     state.dmr_lrrp_target[0] = 123ULL;
     state.dmr_data_target_is_group[0] = 1U;
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("bp-never-mapped", ctx.mapped, 0);
 
     // VTX STD (alg 7) has no decrypt branch at all.
     state.payload_algid = 7;
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("vtx-never-mapped", ctx.mapped, 0);
     return rc;
 }
@@ -238,7 +238,7 @@ test_mapped_aes_row_beats_manual_key(void) {
     state.dmr_lrrp_target[0] = 123ULL;
     state.dmr_data_target_is_group[0] = 1U;
 
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("manual-key-row-mapped", ctx.mapped, 1);
     rc |= expect_eq("manual-key-row-kid", ctx.kid, 0x40);
     // First byte of A1 comes from the row, not from K1.
@@ -263,7 +263,7 @@ test_manual_key_fallback_survives_without_a_row(void) {
     state.dmr_lrrp_target[0] = 999ULL; /* unmapped */
     state.dmr_data_target_is_group[0] = 1U;
 
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("no-row-unmapped", ctx.mapped, 0);
     rc |= expect_eq("no-row-manual-key-used", ctx.aes_key[0], 0xEE);
     return rc;
@@ -287,7 +287,7 @@ test_slot1_fallback_uses_r(void) {
     state.currentslot = 0;
     state.dmr_lrrp_target[0] = 999ULL;
 
-    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    dmr_block_crypto_load_ctx(&state, 0U, 24U, &ctx);
     rc |= expect_eq("slot1-fallback-uses-r", (long long)ctx.rkey, 0x1234LL);
     return rc;
 }

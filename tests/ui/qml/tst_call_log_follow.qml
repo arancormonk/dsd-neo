@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // The history screen's call log has to keep the latest call in view while the
 // reader is parked at the top, and hold their place when they are reading further
@@ -24,6 +25,12 @@ Item {
 
         anchors.fill: parent
         source: uiDir + "/HistoryScreen.qml"
+    }
+
+    TextMetrics {
+        id: frequencyWidth
+
+        text: "851.0125 MHz"
     }
 
     TestCase {
@@ -301,6 +308,144 @@ Item {
             tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === notice },
                       5000, "the notice row is not on top")
             compare(row.metaText, "TG 4001 · SRC 7001 · GPS 40.1 -75.2")
+        }
+
+        // The delegate of the row named @p name, once the view lists it.
+        function rowNamed(name) {
+            var found = null
+            tryVerify(function () {
+                for (var i = 0; i < tc.list.count; ++i) {
+                    var item = tc.list.itemAtIndex(i)
+                    if (item !== null && item.name === name) {
+                        found = item
+                        return true
+                    }
+                }
+                return false
+            }, 5000, "the row " + name + " is not listed")
+            return found
+        }
+
+        function startsWith(text, prefix) {
+            return text.substring(0, prefix.length) === prefix
+        }
+
+        // The field says what it searches, and how a frequency is told from an
+        // ID, in text a screen reader announces with the field.
+        function test_06f_the_search_field_names_the_frequency_rule() {
+            var field = findChild(screenLoader.item, "historySearch")
+            verify(field !== null, "the search field is missing")
+            compare(field.label, "Search talkgroup, unit or frequency")
+            compare(field.hint, "Frequencies need a decimal point: 851.0125")
+            verify(field.input.Accessible.description.indexOf(field.hint) >= 0,
+                   "the rule is not in the accessible description: " + field.input.Accessible.description)
+        }
+
+        // A row a frequency search found leads with that frequency, on voice and
+        // notice rows alike, and names it to a screen reader. A row the same text
+        // found by its channel keeps its order, and clearing the search restores it.
+        function test_06g_a_frequency_search_leads_with_the_frequency() {
+            var voice = callHistory.pushTuned(4001, 7001, "Fire Dispatch", 851012500, "CC 1", "Color code 1")
+            var notice = callHistory.pushTunedNotice(4001, 7001, "GPS 40.1 -75.2", "Fire Dispatch", 851012500,
+                                                     "NAC 293", "Network access code 293")
+            var byText = callHistory.pushTuned(4002, 7002, "851.0125 backup", 460000000, "", "")
+            historyView.filterText = "851.0125"
+            tryCompare(tc.list, "count", 3)
+
+            compare(tc.rowNamed(voice).metaText, "851.0125 MHz · TG 4001 · SRC 7001 · CC 1 · 0:04 · Fire Dispatch")
+            compare(tc.rowNamed(notice).metaText,
+                    "851.0125 MHz · TG 4001 · SRC 7001 · NAC 293 · GPS 40.1 -75.2 · Fire Dispatch")
+            compare(tc.rowNamed(byText).metaText, "TG 4002 · SRC 7002 · 0:04 · 851.0125 backup · 460.0000 MHz")
+            verify(tc.rowNamed(voice).accessibleName.indexOf("851.0125 MHz") >= 0,
+                   "a row found by its frequency does not name it: " + tc.rowNamed(voice).accessibleName)
+            verify(tc.rowNamed(byText).accessibleName.indexOf("MHz") < 0,
+                   "a row found by its channel names its frequency: " + tc.rowNamed(byText).accessibleName)
+
+            historyView.filterText = ""
+            tryCompare(tc.list, "count", 27)
+            compare(tc.rowNamed(voice).metaText, "TG 4001 · SRC 7001 · CC 1 · 0:04 · Fire Dispatch · 851.0125 MHz")
+            verify(tc.rowNamed(voice).accessibleName.indexOf("MHz") < 0, "the frequency stayed in the name")
+        }
+
+        // One row, two frequency searches: found by its frequency under the
+        // first, by its channel under the second, and ordered by which.
+        function test_06h_the_order_follows_why_the_row_is_listed() {
+            var name = callHistory.pushTuned(4003, 7003, "851.9 backup", 851012500, "", "")
+            historyView.filterText = "851."
+            verify(tc.startsWith(tc.rowNamed(name).metaText, "851.0125 MHz · "),
+                   "the frequency the search found does not lead: " + tc.rowNamed(name).metaText)
+            historyView.filterText = "851.9"
+            tryCompare(tc.list, "count", 1)
+            verify(historyView.frequencyQuery)
+            compare(tc.rowNamed(name).metaText, "TG 4003 · SRC 7003 · 0:04 · 851.9 backup · 851.0125 MHz")
+        }
+
+        // On an emergency call the frequency leads ahead of EMERGENCY, which the
+        // badge also shows, and it fits on a phone at the larger text sizes: the
+        // meta line is only as wide as the badge and the time leave it.
+        function test_06i_an_emergency_row_keeps_the_frequency_in_view_data() {
+            return [{tag: "1.0", scale: 1.0}, {tag: "1.3", scale: 1.3}]
+        }
+        function test_06i_an_emergency_row_keeps_the_frequency_in_view(data) {
+            var width = root.width
+            var scale = Ui.Theme.fontScale
+            try {
+                root.width = 360
+                Ui.Theme.fontScale = data.scale
+                var name = callHistory.pushTunedEmergency(4004, 7004, "Fire Dispatch", 851012500)
+                historyView.filterText = "851.0125"
+                var row = tc.rowNamed(name)
+                verify(tc.startsWith(row.metaText, "851.0125 MHz · EMERGENCY · "), row.metaText)
+                waitForRendering(row)
+                var meta = findChild(row, "callRowMeta")
+                verify(meta !== null, "the meta line is missing")
+                frequencyWidth.font = meta.font
+                verify(frequencyWidth.advanceWidth <= meta.width,
+                       "the frequency is elided: " + frequencyWidth.advanceWidth + " > " + meta.width)
+            } finally {
+                Ui.Theme.fontScale = scale
+                root.width = width
+            }
+        }
+
+        // Typing is kept when a pill changes before the debounce applies it: the
+        // field mirrors the search text alone, not every filter.
+        function test_06j_a_pill_change_keeps_the_text_being_typed() {
+            var field = findChild(screenLoader.item, "historySearch")
+            historyView.filterText = "dispatch"
+            compare(field.text, "dispatch")
+            field.input.text = "851.0125"
+            historyView.filterKind = 1
+            compare(field.text, "851.0125", "the pill change wrote the applied text over the typing")
+            tryCompare(historyView, "filterText", "851.0125")
+        }
+
+        // Clear filters clears the typing too, which the debounce would otherwise
+        // apply after the button had cleared the applied search.
+        function test_06k_clear_filters_clears_the_text_being_typed() {
+            var field = findChild(screenLoader.item, "historySearch")
+            historyView.filterKind = 3 // messages: none logged
+            tryCompare(tc.list, "count", 0)
+            field.input.text = "999.0"
+            var clear = findChild(screenLoader.item, "historyClearFilters")
+            verify(clear !== null, "Clear filters is missing")
+            tryVerify(function () { return clear.visible }, 5000, "Clear filters is not offered")
+            clear.clicked()
+            compare(field.text, "")
+            wait(350)
+            compare(historyView.filterText, "", "the debounce applied the cleared typing")
+            compare(historyView.filterKind, 0)
+            compare(tc.list.count, 24)
+        }
+
+        // What the air delivered is shown as received: a tag in an alias or an
+        // SMS body is text, not markup.
+        function test_06l_rows_show_markup_as_text() {
+            var name = callHistory.pushTunedNotice(4005, 7005, "<b>851.0125</b>", "", 460000000, "", "")
+            var row = tc.rowNamed(name)
+            compare(findChild(row, "callRowMeta").textFormat, Text.PlainText)
+            compare(findChild(row, "callRowName").textFormat, Text.PlainText)
+            verify(row.metaText.indexOf("<b>851.0125</b>") >= 0, row.metaText)
         }
 
         function test_07_a_filter_that_hides_nothing_is_still_answered_from_the_top() {

@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -356,6 +357,63 @@ cli_add_lrrp_extra_port(dsd_opts* opts, const char* value, int* seen_on_cli, int
         case DSD_LRRP_PORT_DUPLICATE:
         default: return 1;
     }
+}
+
+_Static_assert(DSD_UDP_COMP_PORT_MAP_ENTRIES == DSD_UDP_COMP_PORT_MAP_SIZE,
+               "dsd_opts::dmr_udp_comp_ports must hold one entry per index 95..127");
+
+/*
+ * Link one manufacturer-specific DMR compressed-UDP port index (95-127) to a UDP port. The option
+ * repeats, one "<index>=<port>" per occurrence. The first occurrence on the command line empties
+ * the map, so a CLI list replaces whatever mode.dmr_udp_comp_ports put there rather than
+ * extending it. Giving an index a second, different port is an error; repeating the same pair is
+ * not. Returns 0 and reports the reason when the value cannot be accepted.
+ */
+static int
+cli_add_dmr_udp_comp_port(dsd_opts* opts, const char* value, int* seen_on_cli, int* out_exit_rc) {
+    /* Check the entry on its own first, so a bad value is reported before the map is touched. */
+    uint16_t entry[DSD_UDP_COMP_PORT_MAP_SIZE];
+    DSD_MEMSET(entry, 0, sizeof entry);
+    switch (dsd_udp_comp_port_map_add_text(entry, value)) {
+        case DSD_UDP_COMP_PORT_ADDED: break;
+        case DSD_UDP_COMP_PORT_BAD_INDEX:
+            LOG_ERROR("Invalid --dmr-udp-comp-port value \"%s\" (index must be %u..%u: 0-2 are ETSI-defined and "
+                      "3-94 reserved)\n",
+                      value, DSD_UDP_COMP_PORT_IDX_FIRST, DSD_UDP_COMP_PORT_IDX_LAST);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return 0;
+        case DSD_UDP_COMP_PORT_BAD_PORT:
+            LOG_ERROR("Invalid --dmr-udp-comp-port value \"%s\" (expected port 1..65535)\n", value);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return 0;
+        case DSD_UDP_COMP_PORT_SAME:
+        case DSD_UDP_COMP_PORT_CONFLICT:
+        case DSD_UDP_COMP_PORT_SYNTAX:
+        default:
+            LOG_ERROR("Invalid --dmr-udp-comp-port value \"%s\" (expected <index>=<port>, e.g. 97=4005)\n", value);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return 0;
+    }
+    unsigned idx = 0U;
+    uint16_t port = 0U;
+    for (unsigned i = 0; i < DSD_UDP_COMP_PORT_MAP_SIZE; i++) {
+        if (entry[i] != 0U) {
+            idx = DSD_UDP_COMP_PORT_IDX_FIRST + i;
+            port = entry[i];
+            break;
+        }
+    }
+    if (seen_on_cli && !*seen_on_cli) {
+        DSD_MEMSET(opts->dmr_udp_comp_ports, 0, sizeof opts->dmr_udp_comp_ports);
+        *seen_on_cli = 1;
+    }
+    if (dsd_udp_comp_port_map_add(opts->dmr_udp_comp_ports, idx, port) == DSD_UDP_COMP_PORT_CONFLICT) {
+        LOG_ERROR("Conflicting --dmr-udp-comp-port value \"%s\" (index %u is already linked to port %u)\n", value, idx,
+                  (unsigned)dsd_udp_comp_port_lookup(opts->dmr_udp_comp_ports, idx));
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    return 1;
 }
 
 static int
@@ -1003,6 +1061,25 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strncmp(argv[i], "--lrrp-extra-port=", 18) == 0) {                                                         \
             if (!cli_add_lrrp_extra_port(opts, argv[i] + 18, &lrrp_extra_ports_cli_seen, out_exit_rc)) {               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-udp-comp-port") == 0) {                                                             \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-udp-comp-port requires an <index>=<port> value\n");                                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            const char* dmr_udp_comp_port_arg = DSD_PARSE_ARGS_NEXT_ARG();                                             \
+            if (!cli_add_dmr_udp_comp_port(opts, dmr_udp_comp_port_arg, &dmr_udp_comp_ports_cli_seen, out_exit_rc)) {  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-udp-comp-port=", 20) == 0) {                                                       \
+            if (!cli_add_dmr_udp_comp_port(opts, argv[i] + 20, &dmr_udp_comp_ports_cli_seen, out_exit_rc)) {           \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
@@ -2490,6 +2567,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* iq_info_cli = NULL;
     int iq_loop_cli = 0;
     int lrrp_extra_ports_cli_seen = 0;
+    int dmr_udp_comp_ports_cli_seen = 0;
     cli_net_args net_cli = {0, 0UL, NULL, NULL, NULL, NULL, NULL};
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;

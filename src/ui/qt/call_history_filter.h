@@ -11,6 +11,12 @@
  * instantiates its own filter, so the history tab's search and pills cannot
  * silently filter the monitor's recent-calls pane — the bug this class exists to
  * prevent. Filter changes re-evaluate with granular row signals, never a reset.
+ *
+ * The search text finds what a row shows: its name, talkgroup, unit and source
+ * label, a notice's payload, the scan channel, and the frequency. A zero talkgroup
+ * or unit is "none decoded" and never printed, so it is never matched either. The
+ * text is trimmed first. It is read as a frequency only when it has a decimal point
+ * or the MHz unit (frequency_query.h); a bare number searches the IDs alone.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_FILTER_H_
@@ -21,15 +27,20 @@
 #include <QString>
 #include <QtGlobal>
 
+#include "frequency_query.h"
+
 namespace dsd_qt {
 
 class CallHistoryFilterModel : public QSortFilterProxyModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
-    Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY filterChanged)
+    // filterText has a notify of its own: the search field mirrors it, and a pill
+    // change must not write the applied text back over what is still being typed.
+    Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY filterTextChanged)
     Q_PROPERTY(QString filterSystem READ filterSystem WRITE setFilterSystem NOTIFY filterChanged)
     Q_PROPERTY(int filterKind READ filterKind WRITE setFilterKind NOTIFY filterChanged)
     Q_PROPERTY(qlonglong historySession READ historySession WRITE setHistorySession NOTIFY filterChanged)
+    Q_PROPERTY(bool frequencyQuery READ frequencyQuery NOTIFY filterChanged)
 
   public:
     explicit CallHistoryFilterModel(QObject* parent = nullptr);
@@ -46,6 +57,21 @@ class CallHistoryFilterModel : public QSortFilterProxyModel {
     }
 
     void setFilterText(const QString& text);
+
+    /** @brief Whether the search text reads as a frequency (frequency_query_parse()). */
+    bool
+    frequencyQuery() const {
+        return m_frequency.valid;
+    }
+
+    /**
+     * @brief Whether the search, read as a frequency, finds a row heard on @p hz.
+     *
+     * For the view's meta line, which leads with the frequency only on the rows the
+     * frequency found; a row the same text found by its channel keeps its order. A
+     * binding that calls this reads frequencyQuery too, so filterChanged re-runs it.
+     */
+    Q_INVOKABLE bool frequencyMatches(qint64 hz) const;
 
     QString
     filterSystem() const {
@@ -79,7 +105,9 @@ class CallHistoryFilterModel : public QSortFilterProxyModel {
 
   Q_SIGNALS:
     void countChanged();
+    /** @brief Any filter changed, the search text included; the view scrolls to the top on it. */
     void filterChanged();
+    void filterTextChanged();
 
   protected:
     bool filterAcceptsRow(int source_row, const QModelIndex& source_parent) const override;
@@ -107,6 +135,8 @@ class CallHistoryFilterModel : public QSortFilterProxyModel {
     }
 
     QString m_filterText;
+    QString m_query; // m_filterText trimmed
+    FrequencyQuery m_frequency;
     QString m_filterSystem;
     int m_filterKind = 0;
     qlonglong m_historySession = 0;

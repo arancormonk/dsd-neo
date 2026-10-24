@@ -47,6 +47,7 @@
 #include <QVariant>
 #include <Qt>
 #include <QtGlobal>
+#include <algorithm>
 #include <atomic>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/crc_provenance.h>
@@ -2193,13 +2194,13 @@ test_save_delay_follows_the_bytes_written(void) {
     model.startSaveForTest();
     settle_save(model);
     const qint64 bytes = stores_bytes();
-    expect("the stores are large", bytes > 48 * 1024);
+    expect("the stores are large", bytes > qint64{48} * 1024);
     expect("a large store waits as long as its bytes take at 16 KiB/s",
-           model.saveDelayMsForTest() > 3000 && model.saveDelayMsForTest() >= bytes * 1000 / (16 * 1024));
+           model.saveDelayMsForTest() > 3000 && model.saveDelayMsForTest() >= bytes * 1000 / (qint64{16} * 1024));
     ring.commit(0, 14900U, 1900U, when + 9000, when + 9004);
     model.refresh(ring.state);
     expect("the next call waits out the longer delay",
-           model.savePendingForTest() && model.saveDelayMsForTest() >= bytes * 1000 / (16 * 1024));
+           model.savePendingForTest() && model.saveDelayMsForTest() >= bytes * 1000 / (qint64{16} * 1024));
 }
 
 std::atomic<int> g_saveNowBuilds{0};
@@ -2292,6 +2293,134 @@ test_leaving_the_screen_saves(void) {
     QCoreApplication::processEvents();
 }
 
+/* The view's rows, by talkgroup, in view order. */
+QList<qulonglong>
+view_tgs(const CallHistoryFilterModel& view) {
+    QList<qulonglong> tgs;
+    for (int i = 0; i < view.rowCount(); i++) {
+        tgs.append(view.data(view.index(i, 0), CallHistoryModel::TgRole).toULongLong());
+    }
+    std::sort(tgs.begin(), tgs.end());
+    return tgs;
+}
+
+/* The search finds a call by the frequency it was heard on, but only when the text says it is a frequency: a decimal
+ * point or the MHz unit. A bare number stays an ID search, so TG 851 on an 800 MHz system does not return every call.
+ * Labels hold none of the probe texts, so each match is the frequency's or an ID's. */
+void
+test_search_by_frequency(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    const time_t when = 1754515000;
+    RingFixture::carrier(ring.commit(0, 21001, 501, when, when + 4, "", "Alpha"), 851012500);
+    RingFixture::carrier(ring.commit(0, 21002, 502, when + 10, when + 14, "", "Bravo"), 852012500);
+    RingFixture::carrier(ring.commit(0, 851, 503, when + 20, when + 24, "", "Charlie"), 460000000);
+    ring.commit(0, 21004, 504, when + 30, when + 34, "", "Delta");
+    model.refresh(ring.state);
+    expect("four calls land", model.count() == 4 && view.count() == 4);
+
+    QSignalSpy textChanged(&view, &CallHistoryFilterModel::filterTextChanged);
+    QSignalSpy anyChanged(&view, &CallHistoryFilterModel::filterChanged);
+    expect("filter spies connect", textChanged.isValid() && anyChanged.isValid());
+    expect("no frequency query before any search", !view.frequencyQuery());
+
+    view.setFilterText(QStringLiteral("851.0125"));
+    expect("a frequency finds the call heard on it", view_tgs(view) == QList<qulonglong>{21001});
+    expect("the text reads as a frequency", view.frequencyQuery());
+    expect("the frequency query is told apart per row",
+           view.frequencyMatches(851012500) && !view.frequencyMatches(852012500) && !view.frequencyMatches(0));
+    expect("a search change notifies the text and the filter", textChanged.count() == 1 && anyChanged.count() == 1);
+
+    view.setFilterText(QStringLiteral("851.0125 MHz"));
+    expect("the unit is accepted", view_tgs(view) == QList<qulonglong>{21001});
+    view.setFilterText(QStringLiteral("851."));
+    expect("whole MHz with the point", view_tgs(view) == QList<qulonglong>{21001});
+    view.setFilterText(QStringLiteral("85"));
+    expect("a bare number is no frequency query", !view.frequencyQuery());
+    view.setFilterText(QStringLiteral("851"));
+    expect("a bare number finds the talkgroup, not the calls on 851 MHz", view_tgs(view) == QList<qulonglong>{851});
+    expect("and is no frequency query", !view.frequencyQuery() && !view.frequencyMatches(851012500));
+
+    textChanged.clear();
+    anyChanged.clear();
+    view.setFilterKind(1);
+    expect("a pill change leaves the search text's notify alone", textChanged.count() == 0 && anyChanged.count() == 1);
+    view.setFilterKind(0);
+    view.setFilterText(QString());
+    expect("an empty search shows everything", view.count() == 4 && !view.frequencyQuery());
+}
+
+/* An ID the row does not print is not searched: a zero talkgroup or unit is "none decoded". The search text is
+ * trimmed, and a blank one filters nothing. */
+void
+test_search_matches_what_the_row_shows(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    const time_t when = 1754516000;
+    ring.commit(0, 0, 0, when, when + 4, "", "", "Echo");
+    ring.commit(0, 4321, 0, when + 10, when + 14, "", "Golf");
+    ring.commit(0, 0, 7654, when + 20, when + 24, "", "", "Hotel");
+    ring.commit(0, 21001, 501, when + 30, when + 34, "", "Alpha");
+    model.refresh(ring.state);
+    expect("the four calls land, the talkgroup-less ones on their channels", model.count() == 4);
+
+    view.setFilterText(QStringLiteral("0"));
+    expect("a zero no row shows matches nothing", view_tgs(view) == QList<qulonglong>{21001});
+
+    view.setFilterText(QStringLiteral("\t21001 \n"));
+    expect("the search is trimmed", view_tgs(view) == QList<qulonglong>{21001});
+    expect("the property keeps the text as typed", view.filterText() == QStringLiteral("\t21001 \n"));
+    view.setFilterText(QStringLiteral(" \t"));
+    expect("a blank search filters nothing", view.count() == 4);
+}
+
+/* The view follows a row whose frequency changes under an active frequency search: learned in place, the row
+ * arrives; replaced by a newer fragment's, it leaves. Both by row signals, never a reset, and a reloaded log is
+ * searched by its stored frequency. */
+void
+test_frequency_search_follows_the_row(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754517000;
+    {
+        CallHistoryModel model;
+        CallHistoryFilterModel view;
+        view.setSourceModel(&model);
+        view.setFilterText(QStringLiteral("851.0125"));
+        Event_History* item = ring.commit(0, 22001, 601, when, when + 6, "", "Alpha");
+        model.refresh(ring.state);
+        expect("the call lands without a frequency, out of the search", model.count() == 1 && view.count() == 0);
+
+        QSignalSpy inserted(&view, &QAbstractItemModel::rowsInserted);
+        QSignalSpy removed(&view, &QAbstractItemModel::rowsRemoved);
+        QSignalSpy reset(&view, &QAbstractItemModel::modelReset);
+        expect("view spies connect", inserted.isValid() && removed.isValid() && reset.isValid());
+        RingFixture::carrier(item, 851012500);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("a frequency learned in place brings the row in",
+               view.count() == 1 && inserted.count() == 1 && reset.count() == 0);
+
+        RingFixture::carrier(ring.commit(0, 22001, 601, when + 8, when + 12, "", "Alpha"), 851037500);
+        model.refresh(ring.state);
+        expect("the newer fragment's frequency is the row's",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::FreqHzRole).toLongLong() == 851037500);
+        expect("and takes the row out of the search", view.count() == 0 && removed.count() == 1 && reset.count() == 0);
+    } // destructor flushes the stores
+    CallHistoryModel restored;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&restored);
+    view.setFilterText(QStringLiteral("851.0375"));
+    expect("a reloaded row is found by its stored frequency", restored.count() == 1 && view.count() == 1);
+}
+
 } // namespace
 
 int
@@ -2363,6 +2492,9 @@ main(int argc, char** argv) {
     test_receive_only_updates_and_label_renames();
     test_unconfirmed_fragment_joins_named_service();
     test_anonymous_rows_on_different_frequencies_stay_separate();
+    test_search_by_frequency();
+    test_search_matches_what_the_row_shows();
+    test_frequency_search_follows_the_row();
     test_stores_serialise_off_the_gui_thread();
     test_save_delay_follows_the_bytes_written();
     test_save_now_writes_at_once();

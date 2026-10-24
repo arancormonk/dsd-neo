@@ -596,6 +596,23 @@ Item {
             compare(testContext.lastManualTuneHz(), 154000000)
         }
 
+        // Go to opens on the tuned frequency to the Hz, so confirming it without
+        // an edit stays where the radio is rather than moving to its 10 Hz
+        // rounding (851015625 Hz read as 851.01563 MHz).
+        function test_14a_go_to_opens_on_the_frequency_to_the_hz() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            try {
+                sheet.open(851015625)
+                compare(findChild(screen, "spectrumGoToField").text, "851.015625")
+                findChild(screen, "spectrumGoToConfirm").clicked()
+                compare(testContext.manualTuneCalls(), 1)
+                compare(testContext.lastManualTuneHz(), 851015625)
+            } finally {
+                sheet.visible = false
+            }
+        }
+
         function shownDiscard(item) {
             if (!item || !item.visible)
                 return null
