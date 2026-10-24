@@ -6,6 +6,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -6500,6 +6501,64 @@ test_f_dpmr_and_m17_presets_match_documented_letters(void) {
     return test_rc;
 }
 
+/*
+ * The session predicates EDACS- and M17-only behaviour keys on, from the CLI as an operator writes it: every
+ * EDACS/ProVoice preset, -fp (which selects no addressing) included, and -fh -fa (Auto keeps the addressing -fh
+ * selected) are EDACS sessions; plain -fa and the default set are not, though -fa enables ProVoice; -fz alone is an
+ * M17-only session, -fa (which enables M17 beside every other decoder) is not.
+ */
+static int
+test_f_session_predicates_follow_the_cli(void) {
+    static const struct {
+        const char* args[3];
+        int edacs;
+        int m17_only;
+    } cases[] = {
+        {{"-fa", NULL, NULL}, 0, 0},  {{"-fh", NULL, NULL}, 1, 0}, {{"-fH", NULL, NULL}, 1, 0},
+        {{"-fe", NULL, NULL}, 1, 0},  {{"-fE", NULL, NULL}, 1, 0}, {{"-fp", NULL, NULL}, 1, 0},
+        {{"-fh", "-fa", NULL}, 1, 0}, {{"-fz", NULL, NULL}, 0, 1}, {{"-fi", NULL, NULL}, 0, 0},
+        {{"-fs", NULL, NULL}, 0, 0},  {{NULL, NULL, NULL}, 0, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char arg0[] = "dsd-neo";
+        char argbuf[2][8] = {{0}};
+        char* argv[4] = {arg0, NULL, NULL, NULL};
+        int argc = 1;
+        for (int a = 0; a < 2 && cases[i].args[a]; a++) {
+            DSD_SNPRINTF(argbuf[a], sizeof argbuf[a], "%s", cases[i].args[a]);
+            argv[argc++] = argbuf[a];
+        }
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+        const char* label = cases[i].args[0] ? cases[i].args[0] : "(no -f)";
+        if (rc != DSD_PARSE_CONTINUE || dsd_edacs_session(opts, state) != cases[i].edacs
+            || dsd_m17_only_session(opts) != cases[i].m17_only) {
+            DSD_FPRINTF(stderr, "%s%s%s: rc=%d edacs session %d (want %d), m17-only %d (want %d), ea_mode %d\n", label,
+                        cases[i].args[1] ? " " : "", cases[i].args[1] ? cases[i].args[1] : "", rc,
+                        dsd_edacs_session(opts, state), cases[i].edacs, dsd_m17_only_session(opts), cases[i].m17_only,
+                        state->ea_mode);
+            test_rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
 static int
 test_f_edacs_presets_match_reference_modes(void) {
     static const struct {
@@ -10452,6 +10511,7 @@ main(void) {
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_dpmr_and_m17_presets_match_documented_letters();
     rc |= test_f_edacs_presets_match_reference_modes();
+    rc |= test_f_session_predicates_follow_the_cli();
     rc |= test_f_manual_selectors_leave_analog_monitor();
     rc |= test_f_am_preset_on_iq_inputs();
     rc |= test_f_am_refused_on_pcm_input();

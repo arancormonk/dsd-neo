@@ -1542,20 +1542,39 @@ suite runs under this compiler.
   it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does `trunk_vc_freq[]` name the carrier being decoded,
   and a call observation whose message carries no frequency may stamp it (P25's target-matched `p25_vc_freq[]` differs;
   see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`.
+- Session predicates (EDACS and M17): a decoder-enabled flag is a capability, not a session, since Auto enables
+  ProVoice and M17 beside every other decoder. `dsd_edacs_session(opts, state)` (`<dsd-neo/core/edacs_session.h>`,
+  header-only so the runtime squelch policy reads it without linking core) is a selected EDACS session:
+  `frame_provoice` and either an EDACS addressing mode selected (`state->ea_mode >= 0`: `-fh/-fH/-fe/-fE`, `-fh -fa`,
+  an EDACS-to-Auto switch, a config's `edacs_ea`, the EA toggle) or ProVoice the one digital decoder (`-fp`, which
+  selects no mode). Plain Auto (`ea_mode == -1`, where EDACS only prints the mode-selection hint) is none. Startup and
+  configuration policy keys on it: the raw analog stream (`openAudioOutput(opts, state)`,
+  `dsd_audio_ensure_digital_output(opts, state)`, `svc_udp_output_config()`, a same-family `[mode]` apply), the UDP
+  analog socket on port + 2 and the `-8` override under `-T` (engine output setup), the EDACS squelch policy
+  (`dsd_squelch_edacs_analog_voice()` and the squelch view, the engine's squelch notices) and the "Pulse Analog Output"
+  line. The EA toggle that makes it true ensures the raw sink then. TG lockout and Skip pass only an EDACS call by
+  (the call's protocol), never a P25, DMR or NXDN one. The capability flag stays on what lets an Auto session select
+  EDACS: the EA/ESK toggles and the EDACS menu rows and toggle lines. `dsd_m17_only_session(opts)` (`opts.h`, over
+  `dsd_opts_digital_decoder_count()`) is `frame_m17` with no other digital decoder (`-fz`): only it retries a refused
+  TCP audio connect (engine setup) or a dropped TCP input (`dsd_symbol.c`) without end. Tests: `RUNTIME_CLI_PARSE`,
+  `CORE_AUDIO_ENSURE_OUTPUT`, `ENGINE_RUN_SETUP`, `APP_COMMAND_QUEUE`, `APP_CONTROL_SQUELCH_VIEW`, `RUNTIME_SQUELCH`,
+  `UI_MENU_SERVICES`, `UI_NCURSES_PRINTER_HELPERS`, `DSP_INPUT_INTERRUPT`.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
-  voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
-  session plays to an unmuted local device and the sink is not open. With UDP output the raw sink is the analog socket
-  on port + 2 (`udp_sockfdA`), opened through the `connect_analog` member of the runtime UDP audio hook table
+  voice stream, plus the raw stream for an EDACS session and `-8`) with the parameters `openAudioOutput()` uses, when
+  the session plays to an unmuted local device and the sink is not open. With UDP output the raw sink is the analog
+  socket on port + 2 (`udp_sockfdA`), opened through the `connect_analog` member of the runtime UDP audio hook table
   (`<dsd-neo/runtime/udp_audio_hooks.h>`, installed by the engine), muted or not: the mute toggle reopens local
   devices only, so a socket skipped while muted would stay closed. `udp_socket_blasterA()` skips an invalid socket.
   A new UDP target (`svc_udp_output_config()`) closes an open analog socket, which still sends to the old host and
-  port, and reopens it for the new target at once, since the `-8` toggle opens no socket; with none open it opens one
-  only when the current mode writes to it. Idempotent, decoder thread only; a failure is logged once and leaves that
-  family silent. `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import (both through
-  `decode_mode_apply_value()`) call them, and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session
-  between the analog and digital families or lands on a digital mode that writes raw audio (ProVoice, `-8`). Tests:
-  `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
+  port, and reopens it for the new target at once; with none open it opens one only when the current mode writes to
+  it. Idempotent, decoder thread only; a failure is logged once and leaves that family silent.
+  `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import (both through `decode_mode_apply_value()`) call them,
+  and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session between the analog and digital families
+  or lands on a digital mode that writes raw audio (an EDACS session, `-8`). Input Monitor turned on
+  (`DSD_APP_CMD_INPUT_MONITOR_TOGGLE`) ensures the analog sink itself and stays off, with a toast, when it cannot
+  open; `dsd_audio_reconfigure_output_for_input_policy()` reopens the raw stream it found open. Tests:
+  `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
 - Runtime input switch (issue #634, `<dsd-neo/core/audio_input_switch.h>`, `src/core/audio/dsd_audio_input_switch.c`):
   `dsd_audio_switch_input()` replaces the running PCM or symbol input with the one a request names (a WAV or headerless
   PCM file, a float symbol stream, a symbol capture, UDP, a connected TCP socket, a Pulse device), on the decoder
@@ -2361,8 +2380,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   command).
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
   analog and digital families, after the same check when the move is onto the analog family (a refusal leaves the
-  whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
-  (or `-8`) also gets the raw sink it writes to, and that an RTL front end is told the digital modes it now configures
+  whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that an EDACS
+  session (`dsd_edacs_session()`, or `-8`) also gets the raw sink it writes to, and that an RTL front end is told the
+  digital modes it now configures
   (`svc_note_digital_decode_modes()`, which `svc_publish_symbol_profile()` also calls). Like `DECODE_MODE_SET` it keeps the session's audio output layout
   (`pulse_digi_out_channels`, `pulse_digi_rate_out`) through any `[mode]`: the output streams were opened with it, so
   a digital sink a family change opens gets it too, and a later preset cannot leave the options on another layout

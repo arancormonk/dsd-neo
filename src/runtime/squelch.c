@@ -6,6 +6,7 @@
 /* The RTL squelch setting's grammar, text and resolution (issue #518 follow-up). */
 
 #include <ctype.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
@@ -371,21 +372,22 @@ dsd_squelch_noise_has_no_fm(const dsd_opts* opts) {
 }
 
 int
-dsd_squelch_edacs_analog_voice(const dsd_opts* opts) {
-    return opts && opts->frame_provoice == 1 && opts->trunk_enable == 1 && !dsd_opts_is_analog_family(opts)
+dsd_squelch_edacs_analog_voice(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_edacs_session(opts, state) && opts->trunk_enable == 1 && !dsd_opts_is_analog_family(opts)
            && !dsd_opts_runs_m17_encoder(opts);
 }
 
 int
-dsd_squelch_channel_digital(const dsd_opts* opts) {
+dsd_squelch_channel_digital(const dsd_opts* opts, const dsd_state* state) {
     return !(dsd_opts_is_analog_family(opts) || dsd_opts_runs_m17_encoder(opts)
-             || dsd_squelch_edacs_analog_voice(opts));
+             || dsd_squelch_edacs_analog_voice(opts, state));
 }
 
 int
-dsd_squelch_dynamic_input_kind(const dsd_opts* opts) {
+dsd_squelch_dynamic_input_kind(const dsd_opts* opts, const dsd_state* state) {
     const int input = dsd_squelch_input_kind(opts);
-    if (input == DSD_SQUELCH_INPUT_AUDIO && (dsd_opts_runs_m17_encoder(opts) || dsd_squelch_edacs_analog_voice(opts))) {
+    if (input == DSD_SQUELCH_INPUT_AUDIO
+        && (dsd_opts_runs_m17_encoder(opts) || dsd_squelch_edacs_analog_voice(opts, state))) {
         return DSD_SQUELCH_INPUT_OTHER;
     }
     return input;

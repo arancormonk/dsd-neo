@@ -48,8 +48,12 @@ void processAudioR(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Open audio input stream based on opts. Returns 0 on success. */
 int openAudioInput(dsd_opts* opts);
-/** @brief Open audio output stream based on opts. Returns 0 on success. */
-int openAudioOutput(dsd_opts* opts);
+/**
+ * @brief Open the local audio output streams the session writes: the digital voice stream unless analog-only, and the
+ * raw/analog stream for the -8 monitor or an EDACS session (dsd_edacs_session(); @p state may be NULL, read as no
+ * EDACS addressing selected). Returns 0 on success.
+ */
+int openAudioOutput(dsd_opts* opts, const dsd_state* state);
 /** @brief Close audio input stream if open. */
 void closeAudioInput(dsd_opts* opts);
 /** @brief Close audio output stream if open. */
@@ -77,12 +81,13 @@ int dsd_audio_ensure_analog_output(dsd_opts* opts);
  * @brief Make sure the digital voice output sink is open (decoder thread only).
  *
  * The digital counterpart of dsd_audio_ensure_analog_output(): opens `audio_out_stream` on a local audio device (UDP
- * output opened its digital socket at session start), plus the raw sink (device stream or UDP analog socket) when
- * ProVoice or the source-audio monitor needs it, exactly as session start would for the current options.
+ * output opened its digital socket at session start), plus the raw sink (device stream or UDP analog socket) when an
+ * EDACS session (dsd_edacs_session()) or the source-audio monitor needs it, exactly as session start would for the
+ * current options and @p state.
  *
  * @return 0 when the sinks are open or not needed, -1 when one could not be opened (or @p opts is NULL).
  */
-int dsd_audio_ensure_digital_output(dsd_opts* opts);
+int dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state);
 
 /** @brief Write synthesized mono voice samples for slot 1. */
 void writeSynthesizedVoice(const dsd_opts* opts, dsd_state* state);

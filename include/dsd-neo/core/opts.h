@@ -510,6 +510,28 @@ dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
            || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1 || opts->frame_tetra == 1;
 }
 
+/** @brief Number of digital frame decoders enabled (the flags dsd_opts_has_digital_decode_mode() reads). */
+static inline int
+dsd_opts_digital_decoder_count(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1) + (opts->frame_p25p2 == 1) + (opts->frame_provoice == 1) + (opts->frame_dmr == 1)
+           + (opts->frame_nxdn48 == 1) + (opts->frame_nxdn96 == 1) + (opts->frame_x2tdma == 1) + (opts->frame_ysf == 1)
+           + (opts->frame_dstar == 1) + (opts->frame_dpmr == 1) + (opts->frame_m17 == 1) + (opts->frame_tetra == 1);
+}
+
+/**
+ * @brief Return 1 for an M17-only session (`-fz`): M17 the one digital decoder enabled.
+ *
+ * Behaviour written for an M17 session (a TCP audio connect or reconnect that retries until its server answers) keys
+ * on this, not on dsd_opts::frame_m17, which Auto also sets beside every other decoder.
+ */
+static inline int
+dsd_m17_only_session(const dsd_opts* opts) {
+    return (opts && opts->frame_m17 == 1 && dsd_opts_digital_decoder_count(opts) == 1) ? 1 : 0;
+}
+
 /**
  * @brief The modulation the `mod_*` flags select: 0 C4FM, 1 QPSK, 2 GFSK.
  *

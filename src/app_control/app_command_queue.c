@@ -24,6 +24,7 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -3883,8 +3884,8 @@ apply_cfg_pulse_in_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUse
 }
 
 static void
-apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_out_dev,
-                                int old_audio_out_type) {
+apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg,
+                                const char* old_audio_out_dev, int old_audio_out_type) {
     if (!cfg->has_output || cfg->output_backend != DSDCFG_OUTPUT_PULSE || old_audio_out_type != 0
         || opts->audio_out_type != 0) {
         return;
@@ -3903,7 +3904,7 @@ apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, con
     } else {
         opts->pa_output_idx[0] = '\0';
     }
-    if (openAudioOutput(opts) != 0) {
+    if (openAudioOutput(opts, state) != 0) {
         LOG_ERROR("Config: failed to open PulseAudio output\n");
     }
 }
@@ -4069,7 +4070,7 @@ apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUse
                           staged);
     apply_cfg_note_reopen(
         opts, state, apply_cfg_pulse_in_hot_restart(opts, state, cfg, in->audio_in_dev, in->audio_in_type), staged);
-    apply_cfg_pulse_out_hot_restart(opts, cfg, old_audio_out_dev, old_audio_out_type);
+    apply_cfg_pulse_out_hot_restart(opts, state, cfg, old_audio_out_dev, old_audio_out_type);
 }
 
 int
@@ -5422,7 +5423,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
         if (opts->analog_only) {
             (void)dsd_audio_ensure_analog_output(opts);
         } else {
-            (void)dsd_audio_ensure_digital_output(opts);
+            (void)dsd_audio_ensure_digital_output(opts, state);
         }
         dsd_symbol_analog_block_reset(state);
     }
@@ -5698,11 +5699,11 @@ decode_mode_stage_preset(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode 
 /* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and a
    digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
 static void
-decode_mode_ensure_output(dsd_opts* opts) {
+decode_mode_ensure_output(dsd_opts* opts, const dsd_state* state) {
     if (opts->analog_only) {
         (void)dsd_audio_ensure_analog_output(opts);
     } else {
-        (void)dsd_audio_ensure_digital_output(opts);
+        (void)dsd_audio_ensure_digital_output(opts, state);
     }
 }
 
@@ -5779,7 +5780,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
 #endif
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
-    decode_mode_ensure_output(opts);
+    decode_mode_ensure_output(opts, state);
     decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
@@ -6180,7 +6181,10 @@ apply_cmd_lockout_resolve_target(const dsd_state* state, const struct dsd_app_co
         DSD_MEMCPY(&slot, c->data, 1U);
     }
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, slot & 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+    /* An EDACS call has no talkgroup lockout to apply (as Skip passes it by); another protocol's call is locked out
+       whatever decoders are enabled beside it. */
+    if (dsd_call_state_get(state, slot & 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || DSD_SYNC_IS_EDACS(call.protocol)) {
         return 0;
     }
     // The over-the-air target, as Skip uses: it is the talkgroup every frontend
@@ -6677,9 +6681,6 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     uint8_t slot = 0U;
     uint32_t target = 0U;
     int upsert_rc = 0;
-    if (opts->frame_provoice == 1) {
-        return 1;
-    }
     if (!apply_cmd_lockout_resolve_target(state, c, &slot, &target)) {
         return 1;
     }
@@ -6714,14 +6715,17 @@ apply_cmd_skip_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     if (c->id != DSD_APP_CMD_SKIP_SLOT) {
         return UI_CMD_APPLY_UNHANDLED;
     }
-    if (!state || opts->frame_provoice == 1) {
+    if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
     uint8_t slot = 0;
     DSD_MEMCPY(&slot, c->data, sizeof slot);
     slot &= 1U;
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+    /* No call, or an EDACS call (EDACS has no call skip), is a no-op; another protocol's call is skipped whatever
+       decoders are enabled beside it, Auto's ProVoice included. */
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || DSD_SYNC_IS_EDACS(call.protocol)) {
         return UI_CMD_APPLY_COMPLETED;
     }
     const uint64_t target = call.ota_target_id ? call.ota_target_id : call.policy_target_id;
@@ -6764,7 +6768,13 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     if (opts->frame_provoice != 1) {
         return;
     }
+    /* The first toggle under plain Auto selects EDACS addressing (-1 -> 0), and with it an EDACS session, whose raw
+       sink (or UDP port + 2) session start did not open. */
+    const int was_edacs_session = dsd_edacs_session(opts, state);
     state->ea_mode = (state->ea_mode == 0) ? 1 : 0;
+    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    }
     state->edacs_site_id = 0;
     state->edacs_lcn_count = 0;
     state->edacs_cc_lcn = 0;
@@ -7638,10 +7648,10 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
  * DSD_APP_CMD_DECODE_MODE_SET does for the same move: the sink the new family writes to, the part-collected analog
  * monitor block of the old family's samples dropped, and on an RTL front end the receive-family switch with symbol
  * timing at the live demod rate (decode_mode_republish()). Without it the front end stays on the old family's
- * demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it
- * had, except that a digital mode writing raw audio (ProVoice, or the -8 source monitor) gets the raw sink a session
- * started in another digital mode never opened, as DECODE_MODE_SET gives it (dsd_audio_ensure_digital_output() is
- * idempotent), and that the digital modes it configures are noted with an RTL front end, as DECODE_MODE_SET notes them
+ * demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it had, except that a digital
+ * mode writing raw audio (an EDACS session, or the -8 source monitor) gets the raw sink a session started in another
+ * digital mode never opened, as DECODE_MODE_SET gives it (dsd_audio_ensure_digital_output() is idempotent), and that
+ * the digital modes it configures are noted with an RTL front end, as DECODE_MODE_SET notes them
  * (svc_note_digital_decode_modes()): after a live switch onto the digital family they pick the FSK channel profile the
  * front end's CQPSK toggle returns to.
  */
@@ -7698,8 +7708,8 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
         return rc;
     }
     if (analog_only == old_analog_only) {
-        if (!analog_only && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            (void)dsd_audio_ensure_digital_output(opts);
+        if (!analog_only && (dsd_edacs_session(opts, state) || opts->monitor_input_audio == 1)) {
+            (void)dsd_audio_ensure_digital_output(opts, state);
         }
         svc_note_digital_decode_modes(opts, state);
         return rc;
@@ -7707,7 +7717,7 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     if (analog_only) {
         (void)dsd_audio_ensure_analog_output(opts);
     } else {
-        (void)dsd_audio_ensure_digital_output(opts);
+        (void)dsd_audio_ensure_digital_output(opts, state);
     }
     dsd_symbol_analog_block_reset(state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {

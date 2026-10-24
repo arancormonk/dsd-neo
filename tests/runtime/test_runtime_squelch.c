@@ -310,24 +310,40 @@ test_paths_off_the_analog_family(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.frame_dmr = 1;
-    assert(dsd_squelch_channel_digital(&opts) && !dsd_squelch_edacs_analog_voice(&opts));
+    assert(dsd_squelch_channel_digital(&opts, &state) && !dsd_squelch_edacs_analog_voice(&opts, &state));
     opts.m17encoder = 1;
-    assert(!dsd_squelch_channel_digital(&opts));
+    assert(!dsd_squelch_channel_digital(&opts, &state));
     opts.m17encoder = 0;
     opts.frame_provoice = 1;
-    assert(dsd_squelch_channel_digital(&opts) && !dsd_squelch_edacs_analog_voice(&opts));
+    assert(dsd_squelch_channel_digital(&opts, &state) && !dsd_squelch_edacs_analog_voice(&opts, &state));
     opts.trunk_enable = 1;
-    assert(!dsd_squelch_channel_digital(&opts) && dsd_squelch_edacs_analog_voice(&opts));
-    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_RADIO);
+    assert(!dsd_squelch_channel_digital(&opts, &state) && dsd_squelch_edacs_analog_voice(&opts, &state));
+    assert(dsd_squelch_dynamic_input_kind(&opts, &state) == DSD_SQUELCH_INPUT_RADIO);
     opts.audio_in_type = AUDIO_IN_UDP;
-    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_OTHER);
+    assert(dsd_squelch_dynamic_input_kind(&opts, &state) == DSD_SQUELCH_INPUT_OTHER);
+    /* Auto trunking with no EDACS addressing selected: ProVoice is one decoder of many, and no EDACS session. With
+       EDACS addressing selected (-fh -fa) it is one; ProVoice alone (-fp) is one without it. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p1 = opts.frame_nxdn48 = opts.frame_m17 = 1;
+    state.ea_mode = -1;
+    assert(dsd_squelch_channel_digital(&opts, &state) && !dsd_squelch_edacs_analog_voice(&opts, &state));
+    assert(!dsd_squelch_edacs_analog_voice(&opts, NULL));
+    state.ea_mode = 0;
+    assert(!dsd_squelch_channel_digital(&opts, &state) && dsd_squelch_edacs_analog_voice(&opts, &state));
+    opts.frame_p25p1 = opts.frame_nxdn48 = opts.frame_m17 = opts.frame_dmr = 0;
+    state.ea_mode = -1;
+    assert(!dsd_squelch_channel_digital(&opts, &state) && dsd_squelch_edacs_analog_voice(&opts, &state));
+    opts.frame_dmr = 1;
+    state.ea_mode = 0;
+    opts.audio_in_type = AUDIO_IN_UDP;
     opts.frame_provoice = 0;
     opts.m17encoder = 1;
-    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_OTHER);
+    assert(dsd_squelch_dynamic_input_kind(&opts, &state) == DSD_SQUELCH_INPUT_OTHER);
     opts.m17encoder = 0;
     opts.analog_only = 1;
-    assert(dsd_squelch_dynamic_input_kind(&opts) == DSD_SQUELCH_INPUT_AUDIO && !dsd_squelch_channel_digital(&opts));
-    assert(dsd_squelch_channel_digital(NULL) && !dsd_squelch_edacs_analog_voice(NULL));
+    assert(dsd_squelch_dynamic_input_kind(&opts, &state) == DSD_SQUELCH_INPUT_AUDIO
+           && !dsd_squelch_channel_digital(&opts, &state));
+    assert(dsd_squelch_channel_digital(NULL, NULL) && !dsd_squelch_edacs_analog_voice(NULL, NULL));
 
     /* The stream's gate runs for a reader of its own: a dynamic setting on a radio input, status active with a plan. */
     opts.audio_in_type = AUDIO_IN_RTL;

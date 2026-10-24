@@ -1495,10 +1495,11 @@ symbol_write_raw_wav_block(const dsd_opts* opts, dsd_state* state, unsigned int 
     }
 }
 
+/* -6 records the input in every mode: NXDN, dPMR and M17 noise is held back downstream by their CRC confirmation
+   gates, not by leaving it out of the recording. */
 static inline void
 symbol_write_unsynced_raw_wav(dsd_opts* opts, dsd_state* state, unsigned int analog_block, int block_hz) {
-    if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0 && opts->frame_dpmr == 0
-        && opts->frame_m17 == 0) {
+    if (opts->wav_out_raw != NULL) {
         symbol_write_raw_wav_block(opts, state, analog_block, block_hz);
         symbol_sync_unsynced_raw_wav(opts->wav_out_raw);
     }
@@ -2420,8 +2421,8 @@ symbol_tcp_close(dsd_opts* opts) {
 }
 
 /* Reconnect the TCP input after its read failed. Returns 1 when it reconnected, 0 when it did not (the read that
-   follows finds no stream), and -1 when it was cancelled (symbol_tcp_reconnect_gave_up()). An M17 session keeps
-   trying until it reconnects or is cancelled. */
+   follows finds no stream), and -1 when it was cancelled (symbol_tcp_reconnect_gave_up()). An M17-only session
+   (dsd_m17_only_session()) keeps trying until it reconnects or is cancelled. */
 static int
 symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn cancelled) {
     for (;;) {
@@ -2466,7 +2467,7 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
         if (cancelled(NULL)) {
             return -1;
         }
-        if (opts->frame_m17 != 1) {
+        if (!dsd_m17_only_session(opts)) {
             return 0;
         }
     }

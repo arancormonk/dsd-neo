@@ -25,6 +25,7 @@
 #include <dsd-neo/core/audio_sink.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
@@ -278,7 +279,7 @@ dsd_audio_output_params_init(const dsd_opts* opts, dsd_audio_params* params) {
     params->bits_per_sample = 16;
 }
 
-/* Raw/analog stream: analog monitor, ProVoice and the -8 source monitor write here. */
+/* Raw/analog stream: analog monitor, an EDACS session and the -8 source monitor write here. */
 static dsd_audio_stream*
 dsd_audio_open_raw_output_stream(const dsd_opts* opts, dsd_audio_params* params) {
     params->sample_rate = dsd_opts_analog_sink_rate_hz(opts);
@@ -294,13 +295,20 @@ dsd_audio_open_digital_output_stream(const dsd_opts* opts, dsd_audio_params* par
     return dsd_audio_open_output(params);
 }
 
-int
-openAudioOutput(dsd_opts* opts) {
+/* Whether the raw/analog stream has a writer: the analog monitor (-8, or the analog family's), or an EDACS session's
+   analog voice. Auto merely enabling ProVoice, with no EDACS addressing selected, writes none. */
+static int
+dsd_audio_raw_writer(const dsd_opts* opts, const dsd_state* state) {
+    return (opts->monitor_input_audio == 1 || dsd_edacs_session(opts, state)) ? 1 : 0;
+}
+
+/* Open the local streams: the raw one when @p raw, the digital one unless analog-only. */
+static int
+dsd_audio_open_output_streams(dsd_opts* opts, int raw) {
     dsd_audio_params params;
     dsd_audio_output_params_init(opts, &params);
 
-    /* Open raw/analog output stream for ProVoice or analog monitor mode */
-    if (opts->frame_provoice == 1 || opts->monitor_input_audio == 1) {
+    if (raw) {
         opts->audio_raw_out = dsd_audio_open_raw_output_stream(opts, &params);
         if (!opts->audio_raw_out) {
             LOG_ERROR("Failed to open raw audio output: %s", dsd_audio_get_error());
@@ -322,6 +330,11 @@ openAudioOutput(dsd_opts* opts) {
     }
     opts->audio_output_async_policy = params.async_output ? 1 : 0;
     return 0;
+}
+
+int
+openAudioOutput(dsd_opts* opts, const dsd_state* state) {
+    return dsd_audio_open_output_streams(opts, dsd_audio_raw_writer(opts, state));
 }
 
 /* A runtime family switch that cannot open its sink leaves that family silent; say so once, not on every switch. */
@@ -363,8 +376,8 @@ dsd_audio_ensure_raw_output(dsd_opts* opts) {
     return 0;
 }
 
-/* With UDP output the analog monitor, ProVoice and the -8 source monitor go to port + 2. Session start opens that
- * socket only when one of them is on at start. */
+/* With UDP output the analog monitor, an EDACS session and the -8 source monitor go to port + 2. Session start opens
+ * that socket only when one of them is on at start. */
 static int
 dsd_audio_ensure_udp_analog_output(dsd_opts* opts) {
     if (opts->udp_sockfdA != DSD_INVALID_SOCKET) {
@@ -423,7 +436,7 @@ dsd_audio_ensure_digital_stream(dsd_opts* opts) {
 }
 
 int
-dsd_audio_ensure_digital_output(dsd_opts* opts) {
+dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state) {
     if (!opts) {
         return -1;
     }
@@ -432,8 +445,8 @@ dsd_audio_ensure_digital_output(dsd_opts* opts) {
     if (dsd_audio_ensure_is_device_output(opts) && dsd_audio_ensure_digital_stream(opts) != 0) {
         rc = -1;
     }
-    /* openAudioOutput() and the UDP setup also open the raw sink for ProVoice and the -8 source monitor. */
-    if ((opts->frame_provoice == 1 || opts->monitor_input_audio == 1) && dsd_audio_ensure_raw_sink(opts) != 0) {
+    /* openAudioOutput() and the UDP setup also open the raw sink for an EDACS session and the -8 source monitor. */
+    if (dsd_audio_raw_writer(opts, state) && dsd_audio_ensure_raw_sink(opts) != 0) {
         rc = -1;
     }
     return rc;
@@ -459,8 +472,11 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
     if (opts->audio_output_async_policy == 0) {
         dsd_drain_audio_output(opts);
     }
+    /* The same streams again under the new policy: the raw one if it was open (an EDACS session's, or the monitor's)
+       or the monitor now writes it. */
+    const int raw = (opts->audio_raw_out != NULL || opts->monitor_input_audio == 1) ? 1 : 0;
     closeAudioOutput(opts);
-    if (openAudioOutput(opts) != 0) {
+    if (dsd_audio_open_output_streams(opts, raw) != 0) {
         LOG_ERROR("Failed to reconfigure audio output for input policy\n");
         return -1;
     }

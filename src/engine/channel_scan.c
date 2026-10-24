@@ -303,7 +303,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     (void)dsd_scan_mode_options(opts, state, channel_scan_row_values(state, scan->row, &values_scratch));
     scan->committed_row = scan->row;
     channel_scan_publish_row(state, scan);
-    dsd_engine_scan_ensure_output(opts);
+    dsd_engine_scan_ensure_output(opts, state);
     dsd_scan_groups_enter(state, profile);
     const int maps_changed = dsd_scan_maps_enter(state, profile);
     const int keys_changed = dsd_scan_key_change_commit(state, &scan->keys);
@@ -536,14 +536,14 @@ channel_scan_analog_squelch_open(const dsd_opts* opts, const dsd_state* state, c
 }
 
 void
-dsd_engine_scan_ensure_output(dsd_opts* opts) {
+dsd_engine_scan_ensure_output(dsd_opts* opts, const dsd_state* state) {
     if (!opts) {
         return;
     }
     if (dsd_opts_is_analog_family(opts)) {
         (void)dsd_audio_ensure_analog_output(opts);
     } else {
-        (void)dsd_audio_ensure_digital_output(opts);
+        (void)dsd_audio_ensure_digital_output(opts, state);
     }
 }
 

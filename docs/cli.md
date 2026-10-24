@@ -229,7 +229,9 @@ Windows console runs:
 
 ## Recording & Files
 
-- `-6 <file>` Save raw audio WAV (48k/mono): the input before the monitor's filters, converted to 48 kHz when it runs
+- `-6 <file>` Save raw audio WAV (48k/mono), in every decode mode, with or without a sync (NXDN, dPMR and M17 noise
+  is held back by those protocols' CRC confirmation, not left out of the recording): the input before the monitor's
+  filters, converted to 48 kHz when it runs
   at another rate (see "The analog outputs" under Inputs). On radio input the analog monitor's audio is saved at the
   level a PCM input at the reference has: a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, peaks at -12 dBFS
   at the default RTL `vol` of 2, whatever `-n` is, so open-squelch FM noise can clip. Audio input, and the FSK
@@ -704,6 +706,15 @@ Notes
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
   wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto.
+- EDACS under Auto: Auto enables the EDACS/ProVoice decoder, but EDACS frames are processed only once an EDACS
+  addressing mode is selected: `-fh -fa` (or `-fe -fa`), a switch to Auto from an EDACS/ProVoice preset, a config with
+  `edacs_ea`, or the EA toggle (terminal menu, `ProVoice EA mode`), whose first press under plain Auto selects
+  standard addressing. Until then the session is no EDACS session: no raw analog stream or UDP analog socket
+  (port + 2) opens for it, `-T` keeps `-8` on, the dynamic squelch treats its channels as digital, and talkgroup
+  lockout and Skip work on P25, DMR and NXDN calls. Once EDACS is selected, Auto behaves as the EDACS/ProVoice preset
+  does for those (the analog sink opens then). ProVoice alone (`-fp`) is an EDACS session without an addressing mode.
+  Only `-fz` (M17 alone) waits for a TCP audio server that refuses or drops the connection; under Auto a refused
+  connect is an error and a dropped one ends the input, as in any other mode.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
@@ -1642,7 +1653,9 @@ together, so the unit skipped is the conversation; a new call that starts within
 is missed; and if the receiver follows another call on a different carrier for longer than 15 s while the skipped
 call continues, the skipped call is followed again when next seen (tap **Skip** again).
 
-P25 private calls, DMR, NXDN and EDACS skips last 15 s from the press in this version; ProVoice has no skip.
+P25 private calls, DMR and NXDN skips last 15 s from the press in this version; an EDACS or ProVoice call has no
+skip (and no quick lockout), while a P25, DMR or NXDN call is skipped or locked out whatever else is enabled (Auto
+enables ProVoice too).
 Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-target revisits like session avoids,
 subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
 list reload/replacement or decoder stop also clears them.

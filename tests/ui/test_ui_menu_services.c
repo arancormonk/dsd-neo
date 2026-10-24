@@ -2064,6 +2064,17 @@ test_udp_output_analog_socket_failure(void) {
     opts.monitor_input_audio = 0;
     rc |= expect_int("digital-only udp output", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
     rc |= expect_int("digital-only udp output opens no analog socket", g_udp_connectA_calls, 0);
+    /* Auto enables ProVoice, but with no EDACS addressing selected it writes no analog audio: no socket. Selecting
+       EDACS (standard addressing, as -fh -fa) makes it an EDACS session, which does. */
+    opts.frame_p25p1 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_provoice = opts.frame_m17 = 1;
+    state.ea_mode = -1;
+    rc |= expect_int("auto udp output", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("auto udp output opens no analog socket", g_udp_connectA_calls, 0);
+    state.ea_mode = 0;
+    rc |= expect_int("edacs udp output", svc_udp_output_config(&opts, &state, "127.0.0.1", 23456), 0);
+    rc |= expect_int("edacs udp output opens the analog socket", g_udp_connectA_calls, 1);
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    opts.frame_p25p1 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_provoice = opts.frame_m17 = 0;
 
     g_udp_connect_result = -1;
     return rc;

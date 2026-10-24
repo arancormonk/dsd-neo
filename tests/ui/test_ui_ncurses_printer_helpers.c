@@ -850,6 +850,49 @@ test_visual_aids_title_names_the_backend(void) {
 }
 #endif
 
+/*
+ * The output lines name the sinks that are open: "Pulse Analog Output" for an EDACS session or the -8 monitor, not for
+ * Auto merely enabling ProVoice with no EDACS addressing selected; "UDP Analog Output" only for an open socket on
+ * port + 2.
+ */
+static void
+test_analog_output_lines_follow_open_sinks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_out_type = 0;
+    opts.pulse_raw_rate_out = 48000;
+    opts.pulse_raw_out_channels = 1;
+    opts.frame_p25p1 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_provoice = opts.frame_m17 = 1;
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    state.ea_mode = -1;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert(strstr(g_printw_capture, "Pulse Analog Output") == NULL);
+    state.ea_mode = 0; /* EDACS addressing selected (-fh -fa) */
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| Pulse Analog Output: 48 kHz; 1 Ch;");
+    state.ea_mode = -1;
+    opts.monitor_input_audio = 1;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| Pulse Analog Output: 48 kHz; 1 Ch;");
+
+    opts.audio_out_type = 8;
+    DSD_SNPRINTF(opts.udp_hostname, sizeof opts.udp_hostname, "%s", "127.0.0.1");
+    opts.udp_portno = 23456;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456;");
+    assert(strstr(g_printw_capture, "UDP Analog Output") == NULL);
+    opts.udp_sockfdA = (dsd_socket_t)42;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| UDP Analog Output: 127.0.0.1:23458;");
+}
+
 static void
 test_input_source_helpers(void) {
     static dsd_opts opts;
@@ -4332,6 +4375,7 @@ main(void) {
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();
+    test_analog_output_lines_follow_open_sinks();
 #ifdef USE_RADIO
     test_visual_aids_title_names_the_backend();
 #endif

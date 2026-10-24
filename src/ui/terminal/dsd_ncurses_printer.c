@@ -33,6 +33,7 @@
 #include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -729,7 +730,7 @@ ui_row_analog_power_field(ui_row* row, const dsd_opts* opts) {
 
 static void
 ui_render_pulse_analog_output(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->audio_out_type == 0 && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
+    if (opts->audio_out_type == 0 && (dsd_edacs_session(opts, state) || opts->monitor_input_audio == 1)) {
         ui_row row;
         ui_io_row_begin(&row);
         ui_row_field(&row, "| Pulse Analog Output: %i kHz; %i Ch;", opts->pulse_raw_rate_out / 1000,

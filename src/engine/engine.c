@@ -12,6 +12,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
@@ -667,7 +668,9 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             LOG_INFO("NOTICE: TCP Connection Success!\n");
             return 0;
         }
-        if (opts->frame_m17 == 1) {
+        /* An M17-only session (-fz) waits for its server; under Auto, as in any other mode, a refused connect is an
+           error. */
+        if (dsd_m17_only_session(opts)) {
             dsd_sleep_ms(1000);
             continue;
         }
@@ -942,7 +945,10 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     }
 
     opts->audio_out_type = 8;
-    if (opts->monitor_input_audio != 1 && opts->frame_provoice != 1) {
+    /* Port + 2 carries the -8 monitor and an EDACS session's analog voice; Auto merely enabling ProVoice writes
+       none. */
+    const int edacs_session = dsd_edacs_session(opts, state);
+    if (opts->monitor_input_audio != 1 && !edacs_session) {
         return 0;
     }
 
@@ -956,7 +962,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
         LOG_INFO("NOTICE: %s:", opts->udp_hostname);
         LOG_INFO("NOTICE: %d \n", opts->udp_portno + 2);
     }
-    if (opts->frame_provoice == 1 && opts->trunk_enable == 1) {
+    if (edacs_session && opts->trunk_enable == 1) {
         opts->monitor_input_audio = 0;
     }
     return 0;
@@ -1004,7 +1010,7 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
         opts->split = 1;
         opts->pulse_digi_rate_out = 8000;
         opts->pulse_digi_out_channels = 1;
-        if (opts->audio_out_type == 0 && openAudioOutput(opts) != 0) {
+        if (opts->audio_out_type == 0 && openAudioOutput(opts, state) != 0) {
             return -1;
         }
         return 0;
@@ -1074,12 +1080,12 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
  * #625); the M17 encoder's VOX says its own once its user data is read (dsd_engine_note_m17_encoder_squelch()).
  */
 static int
-dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
+dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* state) {
     const int mode = opts->rtl_squelch_mode;
     if (!dsd_squelch_mode_is_dynamic(mode)) {
         return 0;
     }
-    if (dsd_squelch_edacs_analog_voice(opts)) {
+    if (dsd_squelch_edacs_analog_voice(opts, state)) {
         if (!dsd_opts_input_is_radio(opts)) {
             LOG_INFO("NOTICE: --squelch %s runs on a radio input only: on this input an EDACS analog call ends on its "
                      "release marker or the fallback watchdog.\n",
@@ -1143,7 +1149,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
-    if (dsd_engine_setup_check_noise_squelch(opts) != 0) {
+    if (dsd_engine_setup_check_noise_squelch(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
@@ -3175,14 +3181,14 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
 #endif
 
 static int
-live_scanner_open_audio_if_needed(dsd_opts* opts) {
+live_scanner_open_audio_if_needed(dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
         if (openAudioInput(opts) != 0) {
             return -1;
         }
     }
     if (opts->audio_out_type == 0) {
-        if (openAudioOutput(opts) != 0) {
+        if (openAudioOutput(opts, state) != 0) {
             return -1;
         }
     }
@@ -3555,7 +3561,7 @@ liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* 
         return -1;
     }
 #endif
-    if (live_scanner_open_audio_if_needed(opts) != 0) {
+    if (live_scanner_open_audio_if_needed(opts, state) != 0) {
         return -1;
     }
     /* The input is open, so the peer of an audio input is the one that demodulates it: ask it for the width the
@@ -3862,8 +3868,8 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
 }
 
 static int
-dsd_engine_run_open_audio_output_if_needed(dsd_opts* opts) {
-    if (opts->audio_out_type == 0 && openAudioOutput(opts) != 0) {
+dsd_engine_run_open_audio_output_if_needed(dsd_opts* opts, const dsd_state* state) {
+    if (opts->audio_out_type == 0 && openAudioOutput(opts, state) != 0) {
         return -1;
     }
     return 0;
@@ -3889,7 +3895,7 @@ dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_l
         return -1;
     }
 #endif
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
@@ -3903,7 +3909,7 @@ dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
                             int* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
@@ -3918,7 +3924,7 @@ dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
                             int* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
@@ -3931,7 +3937,7 @@ static int
 dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
                                    int* lifecycle_started) {
     opts->pulse_digi_rate_out = 8000;
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {

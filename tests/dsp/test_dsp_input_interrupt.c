@@ -375,6 +375,21 @@ test_a_cancelled_reconnect_is_no_lost_input(void) {
     g_pending = 0;
 }
 
+/* Auto enables M17 beside every other digital decoder, but only an M17-only session (-fz) retries a lost TCP server
+   without end: under Auto a failed reconnect ends the input as in any other mode. */
+static void
+test_an_auto_tcp_input_does_not_retry_forever(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_tcp_session(&opts, &state, 1);
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_nxdn96 = 1;
+    opts.frame_dpmr = opts.frame_ysf = opts.frame_dstar = opts.frame_x2tdma = opts.frame_provoice = 1;
+    (void)getSymbol(&opts, &state, 0);
+    assert(g_tcp_connects == 1);
+    assert(exitflag == 0);
+    assert(state.input_fallback_pending == 1);
+}
+
 /* A TCP input whose reconnect fails ends: no socket left behind (DSD_INVALID_SOCKET, so shutdown never closes fd 0),
    and the switch to Pulse handed to the engine. */
 static void
@@ -442,6 +457,7 @@ main(void) {
     test_a_short_gap_never_leaves_the_read();
     test_a_silent_hunt_read_leaves_for_due_trunking_timers();
     test_the_m17_tcp_retry_leaves_for_a_queued_command();
+    test_an_auto_tcp_input_does_not_retry_forever();
     test_a_cancelled_reconnect_is_no_lost_input();
     test_a_lost_tcp_input_is_no_socket();
 #ifdef USE_RADIO

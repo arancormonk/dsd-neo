@@ -48,7 +48,7 @@ dsd_engine_scan_held_width_hz(int kind, int width_hz) {
 /** Open the audio sink the row now on air plays through: the analog monitor's for an analog row, the digital voice
  * output otherwise. A list mixing the families needs whichever the session did not open; each is opened once,
  * idempotently, and a failure is logged once and leaves that row silent. Call after the row's options. */
-void dsd_engine_scan_ensure_output(dsd_opts* opts);
+void dsd_engine_scan_ensure_output(dsd_opts* opts, const dsd_state* state);
 
 /** Warn, as one WARNING line beginning with @p label ("Scan channel 2 (154.430000 MHz)", "Trunk scan target 'fire'"),
  * about an analog (nfm or am, @p am) scan row or target whose squelch -- its own --squelch-db, else the configured one

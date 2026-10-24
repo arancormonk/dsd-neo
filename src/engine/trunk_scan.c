@@ -2981,7 +2981,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     (void)dsd_scan_key_change_commit(state, &key_change);
     dsd_scan_option_values values_scratch;
     (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(rt, &values_scratch));
-    dsd_engine_scan_ensure_output(opts);
+    dsd_engine_scan_ensure_output(opts, state);
     dsd_scan_groups_enter(state, rt->profile);
     (void)dsd_scan_maps_enter(state, rt->profile);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
