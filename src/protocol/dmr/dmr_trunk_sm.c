@@ -1290,17 +1290,28 @@ dmr_sm_capplus_seed_current(const dmr_sm_capplus_seed_t* seed, const dsd_opts* o
     return (opts->rtlsdr_center_freq == seed->receiver_hz) ? 1 : -1;
 }
 
-// The vocoder's identity-less epoch for this transmission: DMR, opened after the status (an older one would be a call
+// The vocoder's identity-less epoch for this transmission: DMR, opened since @p since (an older one would be a call
 // from before the follow tune), and named by nothing yet.
 static int
-dmr_sm_capplus_call_is_unnamed_since(const dsd_call_snapshot* call, double armed_m) {
-    return DSD_SYNC_IS_DMR(call->protocol) && call->started_m >= armed_m && call->ota_target_id == 0U
+dmr_sm_capplus_call_is_unnamed_since(const dsd_call_snapshot* call, double since) {
+    return DSD_SYNC_IS_DMR(call->protocol) && call->started_m >= since && call->ota_target_id == 0U
            && call->policy_target_id == 0U && call->ota_source_id == 0U && call->target_text[0] == '\0'
            && call->source_text[0] == '\0';
 }
 
+/* Since when a call on the seed's carrier can be the one its status names: one opened after the status, but on a
+ * carrier the status follow adopted in place (the receiver was already there: t_carrier_m 0) any call there, as no call
+ * on it is from another carrier. */
+static double
+dmr_sm_capplus_seed_since(const dmr_sm_ctx_t* ctx, const dmr_sm_capplus_seed_t* seed) {
+    const int adopted = ctx->state == DMR_SM_TUNED && ctx->vc_status_follow && ctx->t_carrier_m <= 0.0
+                        && ctx->vc_freq_hz == seed->freq_hz;
+    return adopted ? 0.0 : seed->armed_m;
+}
+
 /* Name the slot's call from the channel status that sent Cap+ here, only while no voice LC has. The vocoder opens an
- * identity-less epoch on the first voice frame; this specializes that epoch and nothing else. It never opens one (a
+ * identity-less epoch on the first voice frame; this specializes that epoch and nothing else (on an adopted carrier,
+ * the identity-less call already on the air, which nothing names yet). It never opens one (a
  * superframe later the slot either carries such an epoch or an LC has named the call), never contradicts an LC, and
  * never reopens an ended call, which the canonical layer may still heal. One use, whatever the outcome: once the slot
  * has a named or a seeded call, the status has said all it can. */
@@ -1326,7 +1337,7 @@ dmr_sm_capplus_seed_apply(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, i
     }
     const dmr_sm_capplus_seed_t used = *seed;
     dmr_sm_capplus_seed_clear(ctx, slot);
-    if (!dmr_sm_capplus_call_is_unnamed_since(&call, used.armed_m)) {
+    if (!dmr_sm_capplus_call_is_unnamed_since(&call, dmr_sm_capplus_seed_since(ctx, &used))) {
         return;
     }
     const dsd_call_observation observation = {

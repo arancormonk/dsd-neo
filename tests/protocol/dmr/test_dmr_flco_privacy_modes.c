@@ -2189,6 +2189,33 @@ test_capacity_plus_status_names_calls_no_lc_named(void) {
     capplus_env_done(&state);
 }
 
+// Parked on the rest channel, an anonymous resident call plays on its TS2 (LSN 2). A status naming that LSN's group is
+// followed in place (the receiver stays on the carrier, so the call goes on): its seed names the call already on the
+// air, which nothing named yet, in its own epoch.
+static void
+test_capacity_plus_status_seed_names_adopted_resident_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+
+    capplus_follow_env(&opts, &state, history);
+    capplus_voice_superframe(&opts, &state, 1U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.ota_target_id == 0U);
+    const uint64_t epoch = call.epoch;
+
+    capplus_clock_advance(CAPPLUS_FRAME_NS);
+    capplus_run_status(&opts, &state, 2, CAPPLUS_TG_SLOT1, 0, 0U);
+    assert(opts.rtlsdr_center_freq == (uint32_t)CAPPLUS_CC_FREQ);
+    assert(dmr_sm_get_ctx()->state == DMR_SM_TUNED && dmr_sm_get_ctx()->vc_freq_hz == CAPPLUS_CC_FREQ);
+    capplus_voice_superframe(&opts, &state, 1U);
+    assert(dsd_call_state_get(&state, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch == epoch);
+    assert(call.ota_target_id == CAPPLUS_TG_SLOT1);
+    capplus_env_done(&state);
+}
+
 // A voice LC's identity always wins: the seed names only a call no LC has.
 static void
 test_capacity_plus_status_seed_yields_to_lc_identity(void) {
@@ -3922,6 +3949,7 @@ main(void) {
     test_capacity_plus_abandon_keeps_the_rest_channel();
     test_capacity_plus_status_names_calls_no_lc_named();
     test_capacity_plus_status_seed_yields_to_lc_identity();
+    test_capacity_plus_status_seed_names_adopted_resident_call();
     test_capacity_plus_status_seed_expires_with_its_carrier();
     test_capacity_plus_status_seed_waits_for_pending_tune();
     test_capacity_plus_status_seed_carries_fragment_provenance();

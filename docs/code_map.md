@@ -5331,7 +5331,9 @@ Private per-protocol modules worth knowing about:
   LC header has usually gone by. When it tunes, `dmr_cspdu_cap_plus_3e_seed_carrier()` hands the SM the group each
   slot of the followed carrier is carrying (`dmr_sm_capplus_seed_arm()`, with the fragments' accumulated CRC flags in
   `cap_plus_csbk_crc_invalid[]`). At voice sync the seed names the slot's call only when that call is the vocoder's
-  identity-less epoch, opened after the status. It never opens, forks or reopens an epoch, so an LC always wins. It
+  identity-less epoch, opened after the status (on a carrier the status follow adopted in place, the receiver already
+  being there, any identity-less call on the air: none is from another carrier, `dmr_sm_capplus_seed_since()`). It
+  never opens, forks or reopens an epoch, so an LC always wins. It
   is used once, and dropped by a terminator on the slot, by a later status showing the LSN idle or on another group,
   by a later tune (the tuning generation, read before the follow tune: the seed belongs to the next completion), by
   a receiver frequency other than the one the follow tune left (an operator retune moves no generation), after
