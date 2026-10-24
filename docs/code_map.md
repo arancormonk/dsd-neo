@@ -2013,7 +2013,11 @@ suite runs under this compiler.
     a table (`k_cli_presets`), and so are the presets (`k_decode_mode_presets`): `dsd_apply_decode_mode_preset()` looks
     the mode up before it changes anything, so a mode no preset implements (`DSDCFG_MODE_UNSET`, which a config's
     `[mode]` without a `decode` key and DECODE_MODE_SET 0 pass) changes nothing, a TETRA session's decoder and state
-    included. A transition that can still be put back stages its preset (`dsd_stage_decode_mode_preset()`: every
+    included. A preset sets its own modulation only when no `-m` lock is in force (`decode_mode_preset_modulation()`;
+    the hand-rolled `-fp/-fh/-fH/-fe/-fE` branches in `args.c` through `cli_preset_modulation()`), so a lock holds on
+    either side of the `-f` selector (`-mq -f1` is `-f1 -mq`; `RUNTIME_CLI_PARSE`,
+    `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_LOCK_FIRST`/`_LAST`); the mid-session path releases the lock first and the
+    config path applies `[mode] demod` after the preset. A transition that can still be put back stages its preset (`dsd_stage_decode_mode_preset()`: every
     setting, `frame_tetra` off for a mode other than TETRA, but the TETRA state extension, `tetra_sync` and `tetra_pub`
     left) and commits once nothing can put it back (`dsd_decode_mode_commit_tetra()`: TETRA is left when the settings
     in force run no TETRA decoder); `dsd_apply_decode_mode_preset()` is both at once. DECODE_MODE_SET commits after a

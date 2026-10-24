@@ -14894,11 +14894,11 @@ if(DSD_HAS_RADIO)
         -f1
         "Group Voice Channel User"
     )
-    # The CQPSK fixtures run the front end's CQPSK chain only with -mq after the preset:
-    # -f1 sets C4FM modulation, and the last of -f1 and -mq wins, so "-f1" alone (as these
-    # cases were first registered) and "-mq -f1" both demodulate them on the FSK
-    # discriminator path (REPLAY STREAM cqpsk_symbols=0). Under "-f1 -mq" each reads
-    # about 9,590 CQPSK symbols and no FSK samples. The clean CC decodes the same either
+    # The CQPSK fixtures run the front end's CQPSK chain only with -mq: -f1 sets C4FM
+    # modulation, so "-f1" alone (as these cases were first registered) demodulates them on
+    # the FSK discriminator path (REPLAY STREAM cqpsk_symbols=0). A -m lock holds on either
+    # side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock until the presets
+    # learned to keep an earlier lock) each read about 9,590 CQPSK symbols and no FSK samples. The clean CC decodes the same either
     # way (18 implicit grants, no irrecoverable header error, against 17 and 1); the voice
     # capture improves to 8 grants, 51 audio errors and 5 header errors (from 7, 84 and
     # 147) and the simulcast one to 18 grants and the site identity 41 times (from 3 and
@@ -14963,6 +14963,26 @@ if(DSD_HAS_RADIO)
         p25p1_cqpsk_cc_simulcast
         "-f1 -mq"
         "Group Voice Channel Grant Update - Implicit"
+    )
+    # A -m lock is the operator naming the demodulator, on either side of the preset. With the
+    # lock written first, -f1 used to put its own C4FM modulation over it and keep the lock, so
+    # "-mq -f1" read this capture on a locked C4FM chain: 12 TSBKs and no site identity, against
+    # 52 and 41 for "-f1 -mq". Both orders now read it on CQPSK.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_LOCK_FIRST
+        p25p1_cqpsk_cc_simulcast
+        "-mq -f1"
+        "WACN: 92065; SYS: 0D5"
+        ""
+        30
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_LOCK_LAST
+        p25p1_cqpsk_cc_simulcast
+        "-f1 -mq"
+        "WACN: 92065; SYS: 0D5"
+        ""
+        30
     )
     # The same simulcast control channel under Auto with no modulation lock. The C4FM chain reads about one TSBK in
     # six of it, enough to win the modulation probe's binary trial, and that chain's own proofs kept the profile for

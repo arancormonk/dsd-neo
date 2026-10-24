@@ -7225,6 +7225,100 @@ test_f_dmr_preset_selects_gfsk(void) {
     return test_rc;
 }
 
+/* What one parse leaves of the decoder set and the modulation, for comparing two option orders. */
+typedef struct {
+    int rc;
+    int frames[11];
+    int mod_cli_lock;
+    int mod_c4fm;
+    int mod_qpsk;
+    int mod_gfsk;
+    int rf_mod;
+} mod_lock_parse;
+
+static mod_lock_parse
+mod_lock_parse_run(const char* first, const char* second) {
+    mod_lock_parse out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.rc = -1;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return out;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[8];
+    char arg2[8];
+    DSD_SNPRINTF(arg1, sizeof arg1, "%s", first);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", second);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    out.rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    const int frames[11] = {opts->frame_dstar,    opts->frame_x2tdma, opts->frame_p25p1, opts->frame_p25p2,
+                            opts->frame_nxdn48,   opts->frame_nxdn96, opts->frame_dmr,   opts->frame_dpmr,
+                            opts->frame_provoice, opts->frame_ysf,    opts->frame_m17};
+    DSD_MEMCPY(out.frames, frames, sizeof out.frames);
+    out.mod_cli_lock = opts->mod_cli_lock;
+    out.mod_c4fm = opts->mod_c4fm;
+    out.mod_qpsk = opts->mod_qpsk;
+    out.mod_gfsk = opts->mod_gfsk;
+    out.rf_mod = state->rf_mod;
+    freeState(state);
+    free(opts);
+    free(state);
+    return out;
+}
+
+/* A modulation lock (-mc, -mq, -mg) is the operator naming the demodulator, and it says "no auto override" whichever
+ * side of the decoder preset it is written on. -fa, -fs and -fd already kept an earlier lock; the other presets
+ * overwrote it with their own modulation and left the lock set, so `-mq -f1` ran a C4FM lock -- the P25 simulcast
+ * fixture read 12 TSBKs instead of the 52 `-f1 -mq` reads. Both orders must give the same decoder and the lock. */
+static int
+test_modulation_lock_holds_in_either_order(void) {
+    static const char* const presets[] = {"-fa", "-fd", "-fx", "-ft", "-f1", "-f2", "-fs", "-fr", "-fi",
+                                          "-fn", "-fy", "-fm", "-fz", "-fp", "-fh", "-fH", "-fe", "-fE"};
+
+    static const struct {
+        const char* flag;
+        int c4fm;
+        int qpsk;
+        int gfsk;
+        int rf_mod;
+    } locks[] = {{"-mc", 1, 0, 0, 0}, {"-mq", 0, 1, 0, 1}, {"-mg", 0, 0, 1, 2}};
+
+    int rc = 0;
+    for (size_t p = 0; p < sizeof presets / sizeof presets[0]; p++) {
+        for (size_t l = 0; l < sizeof locks / sizeof locks[0]; l++) {
+            const mod_lock_parse lock_first = mod_lock_parse_run(locks[l].flag, presets[p]);
+            const mod_lock_parse lock_last = mod_lock_parse_run(presets[p], locks[l].flag);
+            const mod_lock_parse* runs[2] = {&lock_first, &lock_last};
+            for (int r = 0; r < 2; r++) {
+                const mod_lock_parse* run = runs[r];
+                if (run->rc != DSD_PARSE_CONTINUE || run->mod_cli_lock != 1 || run->mod_c4fm != locks[l].c4fm
+                    || run->mod_qpsk != locks[l].qpsk || run->mod_gfsk != locks[l].gfsk
+                    || run->rf_mod != locks[l].rf_mod) {
+                    DSD_FPRINTF(
+                        stderr, "%s %s: rc=%d lock=%d mod c4fm/qpsk/gfsk=%d/%d/%d rf_mod=%d, want the %s lock\n",
+                        r == 0 ? locks[l].flag : presets[p], r == 0 ? presets[p] : locks[l].flag, run->rc,
+                        run->mod_cli_lock, run->mod_c4fm, run->mod_qpsk, run->mod_gfsk, run->rf_mod, locks[l].flag);
+                    rc = 1;
+                }
+            }
+            if (memcmp(lock_first.frames, lock_last.frames, sizeof lock_first.frames) != 0) {
+                DSD_FPRINTF(stderr, "%s %s and %s %s enable different decoders\n", locks[l].flag, presets[p],
+                            presets[p], locks[l].flag);
+                rc = 1;
+            }
+        }
+    }
+    return rc;
+}
+
 static int
 test_mg_before_f_dmr_keeps_gfsk_lock(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -10464,6 +10558,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_default_decoder_set_is_auto();
+    rc |= test_modulation_lock_holds_in_either_order();
     rc |= test_api_options();
     rc |= test_m17_encoder_digital_output_rates();
     rc |= test_explicit_source_monitor_survives_mode_selectors();

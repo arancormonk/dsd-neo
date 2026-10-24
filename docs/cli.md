@@ -1627,6 +1627,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   each slot keeps its own filter state, which starts over at a new call or protocol. `-v 0` plays the demodulator's
   audio unfiltered.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
+  - `-mc`, `-mg` and `-mq` lock the demodulator, and the lock holds on either side of a `-f` preset: `-mq -f1` and
+    `-f1 -mq` both run P25 Phase 1 on the CQPSK chain. A preset sets its own modulation only when no lock is in force.
 - Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT; a DMR burst is accepted as RAS only
   from a near-clean codeword with its reserved bits set, see the RAS note under `-J`, which also covers the RAS
   indicator shown with or without `-F`). No effect on NXDN, which always requires

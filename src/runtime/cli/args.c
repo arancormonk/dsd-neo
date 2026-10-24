@@ -822,6 +822,19 @@ cli_check_am_input(dsd_opts* opts, dsd_state* state, int cli_chose_am, int* out_
     return 0;
 }
 
+/* A hand-rolled preset's own modulation (-fp, -fh, -fH, -fe, -fE), unless a -m lock already names one: the lock holds
+   whichever side of the preset it is written on, as dsd_apply_decode_mode_preset()'s presets keep it. */
+static void
+cli_preset_modulation(dsd_opts* opts, dsd_state* state, int rf_mod) {
+    if (opts->mod_cli_lock) {
+        return;
+    }
+    opts->mod_c4fm = rf_mod == 0;
+    opts->mod_qpsk = rf_mod == 1;
+    opts->mod_gfsk = rf_mod == 2;
+    state->rf_mod = rf_mod;
+}
+
 /* TETRA decodes from an I/Q radio input or a symbol capture only (dsd_decode_mode_runs_on_input_spec()): discriminator
  * audio has lost the phase steps of its pi/4-DQPSK. -fT on a PCM input is an error, as -fM is. [mode] decode = tetra
  * from a loaded config keeps the mode, which has no Analog sibling to fall back to as AM has, and says that nothing will
@@ -3168,10 +3181,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 opts->frame_m17 = 0;                                                                                   \
                 state->samplesPerSymbol = 5;                                                                           \
                 state->symbolCenter = 2;                                                                               \
-                opts->mod_c4fm = 0;                                                                                    \
-                opts->mod_qpsk = 0;                                                                                    \
-                opts->mod_gfsk = 1;                                                                                    \
-                state->rf_mod = 2;                                                                                     \
+                cli_preset_modulation(opts, state, 2);                                                                 \
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
@@ -3216,10 +3226,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 opts->frame_m17 = 0;                                                                                   \
                 state->samplesPerSymbol = 5;                                                                           \
                 state->symbolCenter = 2;                                                                               \
-                opts->mod_c4fm = 0;                                                                                    \
-                opts->mod_qpsk = 0;                                                                                    \
-                opts->mod_gfsk = 1;                                                                                    \
-                state->rf_mod = 2;                                                                                     \
+                cli_preset_modulation(opts, state, 2);                                                                 \
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
@@ -3274,10 +3281,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 opts->frame_m17 = 0;                                                                                   \
                 state->samplesPerSymbol = 5;                                                                           \
                 state->symbolCenter = 2;                                                                               \
-                opts->mod_c4fm = 0;                                                                                    \
-                opts->mod_qpsk = 0;                                                                                    \
-                opts->mod_gfsk = 1;                                                                                    \
-                state->rf_mod = 2;                                                                                     \
+                cli_preset_modulation(opts, state, 2);                                                                 \
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
@@ -3317,10 +3321,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 opts->frame_m17 = 0;                                                                                   \
                 state->samplesPerSymbol = 5;                                                                           \
                 state->symbolCenter = 2;                                                                               \
-                opts->mod_c4fm = 0;                                                                                    \
-                opts->mod_qpsk = 0;                                                                                    \
-                opts->mod_gfsk = 1;                                                                                    \
-                state->rf_mod = 2;                                                                                     \
+                cli_preset_modulation(opts, state, 2);                                                                 \
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
@@ -3350,10 +3351,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 opts->frame_m17 = 0;                                                                                   \
                 state->samplesPerSymbol = 5;                                                                           \
                 state->symbolCenter = 2;                                                                               \
-                opts->mod_c4fm = 0;                                                                                    \
-                opts->mod_qpsk = 0;                                                                                    \
-                opts->mod_gfsk = 1;                                                                                    \
-                state->rf_mod = 2;                                                                                     \
+                cli_preset_modulation(opts, state, 2);                                                                 \
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
