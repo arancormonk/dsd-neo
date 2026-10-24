@@ -947,8 +947,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     opts->audio_out_type = 8;
     /* Port + 2 carries the -8 monitor and an EDACS session's analog voice; Auto merely enabling ProVoice writes
        none. */
-    const int edacs_session = dsd_edacs_session(opts, state);
-    if (opts->monitor_input_audio != 1 && !edacs_session) {
+    if (opts->monitor_input_audio != 1 && !dsd_edacs_session(opts, state)) {
         return 0;
     }
 
@@ -962,9 +961,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
         LOG_INFO("NOTICE: %s:", opts->udp_hostname);
         LOG_INFO("NOTICE: %d \n", opts->udp_portno + 2);
     }
-    if (edacs_session && opts->trunk_enable == 1) {
-        opts->monitor_input_audio = 0;
-    }
+    (void)dsd_edacs_session_trunked_monitor_off(opts, state);
     return 0;
 }
 

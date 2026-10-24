@@ -1552,13 +1552,15 @@ suite runs under this compiler.
   `dsd_audio_ensure_digital_output(opts, state)`, `svc_udp_output_config()`, a same-family `[mode]` apply), the UDP
   analog socket on port + 2 and the `-8` override under `-T` (engine output setup), the EDACS squelch policy
   (`dsd_squelch_edacs_analog_voice()` and the squelch view, the engine's squelch notices) and the "Pulse Analog Output"
-  line. The EA toggle that makes it true ensures the raw sink then. TG lockout and Skip pass only an EDACS call by
-  (the call's protocol), never a P25, DMR or NXDN one. The capability flag stays on what lets an Auto session select
-  EDACS: the EA/ESK toggles and the EDACS menu rows and toggle lines. `dsd_m17_only_session(opts)` (`opts.h`, over
-  `dsd_opts_digital_decoder_count()`) is `frame_m17` with no other digital decoder (`-fz`): only it retries a refused
-  TCP audio connect (engine setup) or a dropped TCP input (`dsd_symbol.c`) without end. Tests: `RUNTIME_CLI_PARSE`,
-  `CORE_AUDIO_ENSURE_OUTPUT`, `ENGINE_RUN_SETUP`, `APP_COMMAND_QUEUE`, `APP_CONTROL_SQUELCH_VIEW`, `RUNTIME_SQUELCH`,
-  `UI_MENU_SERVICES`, `UI_NCURSES_PRINTER_HELPERS`, `DSP_INPUT_INTERRUPT`.
+  line. The `-8` override is one helper, `dsd_edacs_session_trunked_monitor_off()` (trunking on, UDP output, an EDACS
+  session: `-8` off), which engine output setup applies at start and the EA toggle when it makes a running session
+  EDACS; that toggle also ensures the raw sink then. TG lockout and Skip skip only an EDACS call (keyed on the call's
+  protocol, not the session), never a P25, DMR or NXDN one. The capability flag stays on what lets an Auto session
+  select EDACS: the EA/ESK toggles and the EDACS menu rows and toggle lines. `dsd_m17_only_session(opts)` (`opts.h`,
+  over `dsd_opts_digital_decoder_count()`) is `frame_m17` with no other digital decoder (`-fz`): only it retries a
+  refused TCP audio connect (engine setup) or a dropped TCP input (`dsd_symbol.c`) without end. Tests:
+  `RUNTIME_CLI_PARSE`, `CORE_AUDIO_ENSURE_OUTPUT`, `ENGINE_RUN_SETUP`, `APP_COMMAND_QUEUE`, `APP_CONTROL_SQUELCH_VIEW`,
+  `RUNTIME_SQUELCH`, `UI_MENU_SERVICES`, `UI_NCURSES_PRINTER_HELPERS`, `DSP_INPUT_INTERRUPT`.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
   voice stream, plus the raw stream for an EDACS session and `-8`) with the parameters `openAudioOutput()` uses, when
@@ -1573,7 +1575,10 @@ suite runs under this compiler.
   and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session between the analog and digital families
   or lands on a digital mode that writes raw audio (an EDACS session, `-8`). Input Monitor turned on
   (`DSD_APP_CMD_INPUT_MONITOR_TOGGLE`) ensures the analog sink itself and stays off, with a toast, when it cannot
-  open; `dsd_audio_reconfigure_output_for_input_policy()` reopens the raw stream it found open. Tests:
+  open. Which streams open: `openAudioOutput()` and `dsd_audio_ensure_digital_output()` open the raw stream when it
+  has a writer (`dsd_audio_raw_writer()`: `-8` or an EDACS session), while
+  `dsd_audio_reconfigure_output_for_input_policy()`, which closes and reopens for a new async policy, reopens the raw
+  stream when it was open (or `-8` is on), so it keeps an EDACS session's without reading the state. Tests:
   `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
 - Runtime input switch (issue #634, `<dsd-neo/core/audio_input_switch.h>`, `src/core/audio/dsd_audio_input_switch.c`):
   `dsd_audio_switch_input()` replaces the running PCM or symbol input with the one a request names (a WAV or headerless

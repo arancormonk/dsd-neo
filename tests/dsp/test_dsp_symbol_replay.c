@@ -4901,8 +4901,6 @@ test_monitor_converter_starts_over_where_the_stream_breaks(void) {
     g_tone_fs = 48000.0;
 }
 
-/* The -6 raw WAV across the same events: every block is written, and the converter starts over only where input was
-   dropped (a dropped part-collected block) or the stream moved (a retune), never at a reception boundary. */
 /* -6 records the input in every mode (docs/cli.md): a digital session's unsynced blocks reach the raw WAV with NXDN,
    dPMR or M17 enabled too, under Auto (-fa) and NXDN48 alone (-fi) as with P25 alone (-f1). */
 static void
@@ -4949,6 +4947,8 @@ test_raw_wav_records_unsynced_blocks_in_every_mode(void) {
     }
 }
 
+/* The -6 raw WAV across the same events: every block is written, and the converter starts over only where input was
+   dropped (a dropped part-collected block) or the stream moved (a retune), never at a reception boundary. */
 static void
 test_raw_wav_runs_on_across_a_reception_boundary(void) {
     enum { IN_RATE = 44100, BLOCKS = 8 };

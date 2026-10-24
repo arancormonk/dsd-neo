@@ -9,9 +9,9 @@
  *
  * dsd_opts::frame_provoice only says the EDACS/ProVoice decoder is enabled, and Auto enables it beside every other
  * digital decoder. Startup and configuration policy written for an EDACS session (the raw analog sink and the UDP
- * socket on port + 2, the -8 override under trunking, the EDACS squelch policy, the "Pulse Analog Output" line, the
- * TG lockout and skip carve-out with no call) keys on dsd_edacs_session() instead. The EA/ESK toggles and the EDACS
- * menu rows keep the capability flag: they are how an Auto session selects EDACS addressing.
+ * socket on port + 2, the -8 override under trunking, the EDACS squelch policy, the "Pulse Analog Output" line) keys
+ * on dsd_edacs_session() instead. TG lockout and Skip key on the call's own protocol, not on the session. The EA/ESK
+ * toggles and the EDACS menu rows keep the capability flag: they are how an Auto session selects EDACS addressing.
  *
  * Header-only, so runtime code below the core library (the squelch policy) reads it without a link dependency, and
  * <dsd-neo/core/state.h> keeps its forward-declared dsd_opts.
@@ -42,6 +42,23 @@ dsd_edacs_session(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     return ((state && state->ea_mode >= 0) || dsd_opts_digital_decoder_count(opts) == 1) ? 1 : 0;
+}
+
+/**
+ * @brief The -8 override of a trunked EDACS session on UDP output: with trunking on, UDP output (port + 2 carrying the
+ * analog audio) and an EDACS session, turn the -8 source monitor off. Engine output setup applies it at start
+ * (`-fh -T -8 -o udp`), and the EA toggle when it turns a running session into an EDACS one (`-fa -T -8 -o udp`).
+ *
+ * @return 1 when it turned -8 off, else 0.
+ */
+static inline int
+dsd_edacs_session_trunked_monitor_off(dsd_opts* opts, const dsd_state* state) {
+    if (!opts || opts->monitor_input_audio != 1 || opts->audio_out_type != 8 || opts->trunk_enable != 1
+        || !dsd_edacs_session(opts, state)) {
+        return 0;
+    }
+    opts->monitor_input_audio = 0;
+    return 1;
 }
 
 #ifdef __cplusplus

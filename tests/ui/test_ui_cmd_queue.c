@@ -8904,7 +8904,8 @@ note_ensure_output(const dsd_opts* opts, const dsd_state* state, const char* hel
         g_ensure_fake_digital_sink_calls++;
         return;
     }
-    if (opts->audio_out_type != 9) {
+    /* The null output opens nothing, nor does UDP output (a socket through the UDP audio hook, never a host device). */
+    if (opts->audio_out_type != 9 && opts->audio_out_type != 8) {
         g_ensure_off_null_calls++;
         DSD_FPRINTF(stderr, "%s reached with audio_out_type %d; start the case from init_decode_mode_context()\n",
                     helper, opts->audio_out_type);
@@ -8987,6 +8988,36 @@ test_edacs_selection_and_input_monitor_ensure_their_sink(void) {
     rc |= expect_int("second EA toggle selects extended addressing", state.ea_mode, 1);
     rc |= expect_int("an addressing change opens nothing more", g_ensure_analog_calls, 1);
     freeState(&state);
+
+    /* `-fa -T -8 -o udp`: the toggle that makes the session EDACS turns -8 off, as startup does for `-fh -T -8 -o udp`
+       (engine output setup); the same session untrunked, or trunked on another output, keeps it, as startup does. */
+    static const struct {
+        int out_type;
+        int trunk;
+        int monitor_after;
+        const char* tag;
+    } k_monitor_cases[] = {
+        {8, 1, 0, "trunked udp: selecting EDACS turns -8 off"},
+        {8, 0, 1, "untrunked udp: selecting EDACS keeps -8"},
+        {9, 1, 1, "trunked null output: selecting EDACS keeps -8"},
+    };
+
+    for (size_t i = 0; i < sizeof k_monitor_cases / sizeof k_monitor_cases[0]; i++) {
+        init_decode_mode_context(&opts, &state);
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+        opts.audio_out_type = k_monitor_cases[i].out_type;
+        opts.trunk_enable = k_monitor_cases[i].trunk;
+        opts.monitor_input_audio = 1;
+        post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+        rc |= expect_int("monitor case EA toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(k_monitor_cases[i].tag, opts.monitor_input_audio, k_monitor_cases[i].monitor_after);
+        /* Already an EDACS session: a second toggle changes nothing about -8. */
+        opts.monitor_input_audio = 1;
+        post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+        rc |= expect_int("monitor case second EA toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("an addressing change keeps -8", opts.monitor_input_audio, 1);
+        freeState(&state);
+    }
 
     init_decode_mode_context(&opts, &state);
     (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);

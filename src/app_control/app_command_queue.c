@@ -6768,11 +6768,12 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     if (opts->frame_provoice != 1) {
         return;
     }
-    /* The first toggle under plain Auto selects EDACS addressing (-1 -> 0), and with it an EDACS session, whose raw
-       sink (or UDP port + 2) session start did not open. */
+    /* The first toggle under plain Auto selects EDACS addressing (-1 -> 0), and with it an EDACS session: what session
+       start gives one, the trunked UDP -8 override and the raw sink (or UDP port + 2), it gets now. */
     const int was_edacs_session = dsd_edacs_session(opts, state);
     state->ea_mode = (state->ea_mode == 0) ? 1 : 0;
     if (!was_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
         (void)dsd_audio_ensure_analog_output(opts);
     }
     state->edacs_site_id = 0;
