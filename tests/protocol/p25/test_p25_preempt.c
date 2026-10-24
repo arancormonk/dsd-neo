@@ -734,6 +734,39 @@ test_tdma_vacated_slot_restarts_dwell(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Phase 2: a companion-slot assignment for a priority-100 talkgroup whose voice never comes keeps being announced.
+ * Its repeats must not renew the acquisition window: once the window from the first assignment has passed, the slot
+ * holds nothing, and a priority-100 preempt talkgroup elsewhere interrupts the audible priority-10 call. */
+static int
+test_tdma_repeated_voiceless_assignment_bounded(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    tdma_site(opts, st);
+    (void)seed_row(st, 300, 100, 0);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1900.0);
+    p25_sm_event_t low = p25_sm_ev_group_grant(0x100B, 0, 100, 7100, 0x00);
+    p25_sm_event_t live = p25_sm_ev_active(1);
+    p25_sm_event_t high = p25_sm_ev_group_grant_update(0x100A, 0, 300, 0, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &low);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &live);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &high);
+    const long held_freq = p25_sm_get_ctx()->vc_freq_hz;
+    for (int i = 1; i <= 10; i++) {
+        set_clock_s(1900.0 + i);
+        p25_sm_event(p25_sm_get_ctx(), opts, st, &live);
+        p25_sm_event(p25_sm_get_ctx(), opts, st, &high);
+        p25_sm_tick_ctx(p25_sm_get_ctx(), opts, st);
+    }
+    rc |= expect_true("repeated voiceless: the repeats kept the assignment",
+                      p25_sm_get_ctx()->vc_freq_hz == held_freq && p25_sm_get_ctx()->slots[0].grant_active
+                          && !p25_sm_get_ctx()->slots[0].voice_active);
+    set_clock_s(1910.1);
+    offer_update(opts, st, 200, 0x1020);
+    rc |= expect_true("repeated voiceless: repeats do not renew its hold against the priority call",
+                      p25_sm_get_ctx()->vc_tg == 200 && p25_sm_get_ctx()->vc_freq_hz != held_freq);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -762,6 +795,7 @@ main(void) {
     rc |= test_tdma_abandoned_slot_restarts_dwell(&opts, &st);
     rc |= test_tdma_lapsed_duplicate_restarts_dwell(&opts, &st);
     rc |= test_tdma_vacated_slot_restarts_dwell(&opts, &st);
+    rc |= test_tdma_repeated_voiceless_assignment_bounded(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

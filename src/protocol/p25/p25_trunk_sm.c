@@ -1793,9 +1793,13 @@ p25_grant_slot_holds_call(const p25_sm_ctx_t* ctx, const dsd_state* state, const
         return 1;
     }
     // An assignment awaiting its first voice holds the slot for the acquisition window only: one that never produced
-    // voice (a stale-regrant probe, say) must not shield the companion's call once the window has passed.
-    if (p25_voice_slot_assignment_pending(slot_ctx) && slot_ctx->last_grant_m > 0.0
-        && now_m - slot_ctx->last_grant_m < ctx->config.grant_timeout_s) {
+    // voice (a stale-regrant probe, say) must not shield the companion's call once the window has passed. The window
+    // runs from when the wait began, so repeats of a grant whose voice never comes cannot renew it. A data
+    // assignment produces no voice; its repeats are what show it is still live.
+    const double acquire_m =
+        (slot_ctx->data_call || slot_ctx->acquire_since_m <= 0.0) ? slot_ctx->last_grant_m : slot_ctx->acquire_since_m;
+    if (p25_voice_slot_assignment_pending(slot_ctx) && acquire_m > 0.0
+        && now_m - acquire_m < ctx->config.grant_timeout_s) {
         return 1;
     }
     return slot_ctx->last_stop_m > 0.0 && now_m >= slot_ctx->last_stop_m
@@ -1927,6 +1931,7 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     // silently disappears. The two places that really do end that history reset
     // it by name: p25_grant_claim_slots() and p25_sm_clear_followed_history().
     ctx->slots[slot].last_grant_m = 0.0;
+    ctx->slots[slot].acquire_since_m = 0.0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
     ctx->slots[slot].last_end_m = 0.0;
     ctx->slots[slot].last_end_tg = 0;
@@ -2014,6 +2019,13 @@ static uint32_t g_p25_grant_seq;
 
 static void
 p25_slot_note_grant(p25_sm_slot_ctx_t* slot_ctx, double now_m) {
+    // A repeat of the grant while its voice is still awaited keeps the wait's start; anything that ended that wait
+    // (the slot cleared, another call followed, a transmission begun or ended) starts a new one.
+    const double since_m = slot_ctx->acquire_since_m;
+    if (since_m <= 0.0 || slot_ctx->last_grant_m <= 0.0 || slot_ctx->followed_since_m > since_m
+        || slot_ctx->last_start_m > since_m || slot_ctx->last_stop_m > since_m) {
+        slot_ctx->acquire_since_m = now_m;
+    }
     slot_ctx->last_grant_m = now_m;
     slot_ctx->grant_seq = ++g_p25_grant_seq;
 }
