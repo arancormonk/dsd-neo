@@ -4964,7 +4964,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     followed call its follow time or binding, even for the same target on the same channel. It is bound to the
     canonical call it names (`call_epoch`: that call's `dsd_call_snapshot_transmission()`; a VCALL's or SCCH's identity
     binds to the call on the air, and so does a follow's that found the announced call in place
-    (`nxdn_on_air_call_is()`: its target, and its kind when it has one; a follow that left the carrier ended the call
+    (`nxdn_on_air_call_is()`: its target, or none yet, as a late-entry call before its VCALL, never another target a
+    message named; and its kind when it has one; a follow that left the carrier ended the call
     there, so an active one is on the followed carrier), whose release then ends the held call, so the next
     transmission never inherits its identity; any other follow's binds to the first call to begin after the tune) and
     never outlives it
@@ -5017,7 +5018,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     opens an epoch of its own that the held call binds to, never continuing the displaced call under its identity and
     policy, and no sync loss reacquires the displaced call there; a follow on the same carrier (the in-place repeat of
     the held call, or a resident call's announcement) leaves the call on the air alone, and the held call binds to it
-    when it is the announced call. DISC's return and a Type-D termination (repeater 31) tune clear
+    when it is the announced call or one nothing has named yet. DISC's return and a Type-D termination (repeater 31) tune clear
     the route, the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25
     SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX` (also built on the real canonical call state as
     `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),

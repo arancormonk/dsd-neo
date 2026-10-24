@@ -1823,13 +1823,14 @@ nxdn_end_left_call(dsd_opts* opts, dsd_state* state) {
 }
 
 /* Whether the call on the air (slot 0's canonical call, active) is the one an announcement names: an NXDN call of
- * @p target whose kind, when it has one, is the announcement's (a generic voice call, late entry, is of either class). */
+ * @p target, or one nothing has named yet (no target: late entry before its VCALL), whose kind, when it has one, is the
+ * announcement's (a generic voice call is of either class). A call another message named is not it. */
 static int
 nxdn_on_air_call_is(const dsd_state* state, uint32_t target, int private_call, int data_call) {
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof(call));
     if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_NXDN(call.protocol) || call.policy_target_id != target) {
+        || !DSD_SYNC_IS_NXDN(call.protocol) || (call.policy_target_id != 0U && call.policy_target_id != target)) {
         return 0;
     }
     switch (call.kind) {
@@ -1846,7 +1847,7 @@ nxdn_on_air_call_is(const dsd_state* state, uint32_t target, int private_call, i
  * so a repeat of its announcement never restarts the dwell. Only that still-held call keeps its record: any other
  * follow discards the previous one (the engine's hangtime return leaves it behind, bound to a call that is over), so
  * the followed call never inherits its follow time or binding. The held call binds to the call on the air when that is
- * the announced one (nxdn_on_air_call_is()): a follow that left the carrier ended the call there
+ * the announced one or one no message has named yet (nxdn_on_air_call_is()): a follow that left the carrier ended the call there
  * (nxdn_end_left_call()), so a call still active is on the followed carrier, and the follow found it in place; its
  * release then ends the held call, and the next transmission never inherits its identity. Else it awaits the first
  * call to begin after the follow. */

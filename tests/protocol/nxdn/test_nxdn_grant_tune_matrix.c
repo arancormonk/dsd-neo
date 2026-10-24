@@ -1558,19 +1558,31 @@ nxdn_run_lapsed_call_same_carrier_duplicate_case(void) {
     return rc;
 }
 
-/* The receiver sits on a carrier (no grant tune) decoding a call a VCALL named, and follows an announcement of that
- * very call there (@p variant 0: a Type-D busy message past the voice window; 1: a Type-C assignment while untuned).
- * The follow is in place, so the held call binds to the call on the air instead of awaiting a later one: the call's
- * TX_REL ends it, and the next, anonymous transmission past the hangtime inherits neither its identity nor its
- * priority, so an outranking preempting call on another channel never takes the receiver from it. */
+/* What is on the air when the in-place follow of talkgroup 1400 arrives. */
+typedef enum {
+    NXDN_ON_AIR_NAMED = 0, /* a call a VCALL named 1400 */
+    NXDN_ON_AIR_ANONYMOUS, /* a late-entry call nothing has named yet */
+    NXDN_ON_AIR_OTHER,     /* a call a VCALL named another talkgroup, 1600 */
+} nxdn_on_air_kind;
+
+/* The receiver sits on a carrier (no grant tune) decoding a call (@p on_air), and follows an announcement of talkgroup
+ * 1400 there (@p type_c 0: a Type-D busy message past the voice window; 1: a Type-C assignment while untuned). The
+ * follow is in place, so the held call binds to the call on the air when that is the announced call or one no message
+ * has named, instead of awaiting a later one: the call's TX_REL ends it, and the next, anonymous transmission (past the
+ * hangtime, or within it when @p within) inherits neither its identity nor its priority, so an outranking preempting
+ * call on another channel never takes the receiver from it. A call on the air another message named is not the
+ * announced one: the held call awaits the next call. */
 static int
-nxdn_run_in_place_follow_binds_call_variant(int variant) {
-    const char* const name = variant == 0 ? "type-d-in-place-follow-binds-call" : "type-c-in-place-follow-binds-call";
+nxdn_run_in_place_follow_binds_call_variant(int type_c, nxdn_on_air_kind on_air, int within) {
+    static const char* const on_air_names[] = {"named", "anonymous", "other"};
+    char name[96];
+    DSD_SNPRINTF(name, sizeof name, "%s-in-place-follow-%s-%s", type_c ? "type-c" : "type-d", on_air_names[on_air],
+                 within ? "within-hangtime" : "past-hangtime");
     const nxdn_case type_d = type_d_fixture(0U, 1400U);
-    if (variant != 0) {
+    if (type_c) {
         type_c_fixture();
     }
-    const long here = variant == 0 ? type_d.expected_freq : type_c_freq(16U);
+    const long here = type_c ? type_c_freq(16U) : type_d.expected_freq;
     g_opts.trunk_hangtime = 2.0f;
     g_opts.use_rigctl = 1;
     g_opts.audio_in_type = AUDIO_IN_PULSE;
@@ -1581,23 +1593,33 @@ nxdn_run_in_place_follow_binds_call_variant(int variant) {
 
     at_seconds(9800.0);
     voice_live();
-    send_vcall(2200U, 1400U);
+    if (on_air == NXDN_ON_AIR_ANONYMOUS) {
+        late_entry_call();
+    } else {
+        send_vcall(2200U, on_air == NXDN_ON_AIR_OTHER ? 1600U : 1400U);
+    }
     dsd_call_snapshot call;
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE, name,
-                      "named", "the named call is on the air");
+                      "on-air", "a call is on the air");
     const uint64_t a_epoch = call.epoch;
 
     at_seconds(9801.5);
     g_state.last_vc_sync_time = dsd_decode_time() - 2; /* past the 1 s voice window */
-    if (variant == 0) {
-        nxdn_run_case_decode(&type_d);
-    } else {
+    if (type_c) {
         send_assignment(0x04U, 1400U, 16U);
+    } else {
+        nxdn_run_case_decode(&type_d);
     }
     rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == here, name, "follow", "followed in place");
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
                           && call.epoch == a_epoch,
                       name, "follow", "the call on the air stays");
+    if (on_air == NXDN_ON_AIR_OTHER) {
+        rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
+                              && g_state.nxdn_call.call_epoch == 0U && g_state.nxdn_call.call_floor == a_epoch,
+                          name, "follow", "a call another message named is not bound: the held call awaits the next");
+        return rc;
+    }
     rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
                           && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
                       name, "follow", "the held call is bound to the call on the air");
@@ -1609,27 +1631,38 @@ nxdn_run_in_place_follow_binds_call_variant(int variant) {
                           && fabs(g_state.nxdn_call.call_seen_m - call.ended_m) < 1e-6,
                       name, "release", "the release ends the held call's own call");
 
-    at_seconds(9805.0); /* past the 2 s hangtime */
+    at_seconds(within ? 9803.0 : 9805.0); /* within or past the 2 s hangtime */
     voice_live();
     late_entry_call();
-    at_seconds(9805.2);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.epoch != a_epoch,
+                      name, "next", "the next transmission is a call of its own");
+    at_seconds(within ? 9803.2 : 9805.2);
     voice_live();
-    if (variant == 0) {
+    if (type_c) {
+        send_assignment(0x05U, 1500U, 17U);
+    } else {
         nxdn_case other = type_d;
         other.scch_rep1 = 7U;
         other.scch_id = 1500U;
         nxdn_run_case_decode(&other);
-    } else {
-        send_assignment(0x05U, 1500U, 17U);
     }
-    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 0U, name, "anonymous",
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 0U, name, "next",
                       "the next anonymous call is not preempted as the released one");
     return rc;
 }
 
 static int
 nxdn_run_in_place_follow_binds_call_case(void) {
-    return nxdn_run_in_place_follow_binds_call_variant(0) | nxdn_run_in_place_follow_binds_call_variant(1);
+    int rc = 0;
+    for (int type_c = 0; type_c < 2; type_c++) {
+        for (int within = 0; within < 2; within++) {
+            rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_NAMED, within);
+            rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_ANONYMOUS, within);
+        }
+        rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_OTHER, 0);
+    }
+    return rc;
 }
 #endif
 
