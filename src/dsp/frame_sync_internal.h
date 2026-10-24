@@ -24,7 +24,7 @@ int frame_sync_trunk_scan_p25p1_trial(const dsd_opts* opts, const dsd_state* sta
 
 /** The unlocked SPS hunt's next profile from @p current while a P25-driven control-channel probe is in flight
  * (dsd_frame_sync_hook_p25_probe_in_flight()): only the P25 profiles the options enable, 4800/4 -> 6000/4 -> 4800/4,
- * the sequence a P25-only rotation runs, so a probe reaches a Phase 2 control channel within its dwell. From any other
+ * the sequence a P25-only rotation runs, so a probe steps from 4800/4 to 6000/4 as there. From any other
  * profile it returns to the first of them. -1 when the options enable neither P25 phase: the ordinary rotation runs. */
 int frame_sync_sps_hunt_p25_probe_next_index(const dsd_opts* opts, int current);
 

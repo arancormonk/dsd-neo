@@ -2070,6 +2070,19 @@ test_p25_probe_chain_from_validated_evidence(dsd_opts* opts, dsd_state* state) {
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 854000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
 
+    // TETRA's sync is decided before the P25 presumption: no frame set runs TETRA beside P25 (the TETRA preset turns P25
+    // off, every other selector turns TETRA off), and a TETRA sync can only come from the TETRA decoder, so this order
+    // costs a P25 session nothing and keeps TETRA's pi/4-DQPSK chain whatever the frame flags say.
+    auto_probe_session(opts, state);
+    opts->frame_tetra = 1;
+    state->synctype = DSD_SYNC_TETRA_SB_POS;
+    state->lastsynctype = DSD_SYNC_TETRA_NDB_NEG;
+    state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 380012500, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    assert(state->sps_hunt_counter == 17);
+
 #ifdef USE_RADIO
     // On an RTL front end the startup probe queues the P25 C4FM chain at 4800 sym/s, not the GFSK one.
     auto_probe_session(opts, state);

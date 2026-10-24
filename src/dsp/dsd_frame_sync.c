@@ -3764,8 +3764,8 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
 }
 
 /* The unlocked hunt's next profile. While a P25-driven control-channel probe is in flight (the startup hunt, or P25
- * recovery) it steps only between the P25 profiles, as a P25-only rotation does: under Auto the full rotation would
- * spend the probe's dwell on 2400/4 and never reach a Phase 2 control channel on 6000/4. DMR and NXDN96 control live
+ * recovery) it steps only between the P25 profiles, as a P25-only rotation does: from 4800/4 to 6000/4, where the full
+ * Auto rotation would step to 2400/4 and never try Phase 2 within the probe. DMR and NXDN96 control live
  * on 4800/4 and are found all the same. The engine answers once per step; the full rotation resumes when the hunt
  * ends. */
 static int

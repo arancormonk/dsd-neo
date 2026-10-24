@@ -556,7 +556,7 @@ step_auto_hunt_from(dsd_opts* opts, dsd_state* state, int from) {
 
 /*
  * Auto under trunking: while a P25-driven startup or recovery probe is in flight, the hunt steps only between the P25
- * profiles (4800/4 -> 6000/4), the sequence the old default set ran, so a probe reaches a Phase 2 control channel
+ * profiles (4800/4 -> 6000/4), the sequence a P25-only rotation runs, so a probe tries a Phase 2 control channel
  * within its dwell; with no probe the full Auto rotation runs (4800/4 -> 2400/4 -> ...). The engine answers the query
  * once per step; with nothing installed there is no probe.
  */
@@ -579,8 +579,8 @@ test_sps_hunt_p25_probe_rotation(void) {
     dsd_frame_sync_hooks_set(NULL); // nothing installed: no probe, the full rotation
     assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
 
-    // The 4800/4 dwell of a trunked P25 session ends inside a hunt probe's two seconds, so the probe's one step can
-    // reach Phase 2.
+    // The 4800/4 dwell of a trunked P25 session ends inside a hunt probe's two seconds, so the probe makes its one
+    // step, to 6000/4, before it ends.
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS < 2 * 4800);

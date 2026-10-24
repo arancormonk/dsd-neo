@@ -55,11 +55,11 @@ int dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_sta
  * for a queued command (issue #703). 0 when nothing is installed. Call on the decoder thread outside the SM guard. */
 int dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state);
 
-/** Whether a P25-driven control-channel probe is in flight: the P25 state machine hunts (the startup hunt, or recovery
- * under a P25 owner) and no other protocol owns the control channel. While one is, the frame-sync SPS hunt steps only
- * between the P25 profiles (4800/4 -> 6000/4), so a probe reaches a Phase 2 control channel within its dwell under
- * Auto as it does under a P25-only rotation. 0 when nothing is installed. The hunt asks once per step, on the decoder
- * thread outside the SM guard. */
+/** Whether a P25-driven control-channel probe is in flight: trunking on, the P25 state machine hunting (the startup
+ * hunt, or recovery under a P25 owner) and no other protocol owning the control channel. While one is, the frame-sync
+ * SPS hunt steps only between the P25 profiles (4800/4 -> 6000/4), the sequence a P25-only rotation runs. 0 when
+ * nothing is installed. The hunt asks once per step, on the decoder thread, holding the P25 SM tick guard or not: the
+ * engine's answer reads the machine under the guard, taking it when the caller does not hold it. */
 int dsd_frame_sync_hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state);
 
 /** Install a copy of @p hooks; NULL clears every slot. */

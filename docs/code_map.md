@@ -2182,7 +2182,7 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 Recovery ownership lives beside these hooks. `dsd_trunk_p25_recovery_allowed()` / `dsd_trunk_dmr_recovery_allowed()`
 admit a validated owner (`dsd_state::trunk_recovery_protocol`), or, with none yet, a frame set that decodes only that
 protocol's trunk. `dsd_trunk_p25_cold_start_presumed()` names the protocol that runs the startup control-channel hunt
-of a session no protocol has proven yet: P25 for every frame set with P25 (`-ft`, the old default set, Auto `-fa`,
+of a session no protocol has proven yet: P25 for every frame set with P25 (`-ft`, Auto `-fa`,
 `-1`, `-2`) except a selected EDACS session (`dsd_edacs_session()`: `-fh -fa`, an EDACS-to-Auto switch), whose
 control names no owner the hunt could stop on; it grants no recovery ownership (issue #703,
 `RUNTIME_TRUNK_SCAN_HOOKS`). It also keeps a frequency entry an operator move during that hunt
@@ -4886,8 +4886,9 @@ control within the CC grace walks its channel map with the ordinary hunts.
   P25 or unknown owner) the frame-sync SPS hunt steps only between 4800/4 and 6000/4
   (`dsd_frame_sync_hook_p25_probe_in_flight()`, installed in `frame_sync_hooks_install.c` and asked once per step
   under the tick guard, the last answer standing while the watchdog holds it;
-  `frame_sync_sps_hunt_p25_probe_next_index()`), the sequence a P25-only rotation runs, so a probe reaches a Phase 2
-  control channel under Auto; the full rotation resumes when the hunt ends. DMR and NXDN96 control live on 4800/4;
+  `frame_sync_sps_hunt_p25_probe_next_index()`), the sequence a P25-only rotation runs: from 4800/4 it steps to 6000/4,
+  never to 2400/4 or 9600/2. The trunked 4800/4 dwell (1.875 s) ends just inside the 2 s probe, so 6000/4 gets the
+  probe's last ~125 ms, as under a P25-only set. The full rotation resumes when the hunt ends. DMR and NXDN96 control live on 4800/4;
   NXDN48 control (2400/4) is not found by a P25-driven probe (a decided limit: a dead-start NXDN48 system names
   `-fi`). With no other eligible row, DMR probes the row
   it last probed again when that tune never completed (a failed or expired probe: only a success retires the failure

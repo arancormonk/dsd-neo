@@ -106,31 +106,38 @@ engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
     return due;
 }
 
+/* The probe answer engine_p25_probe_in_flight() last read, which stands while the watchdog holds the tick guard.
+   Decoder thread only; every run starts it over (dsd_engine_frame_sync_hooks_install()). */
+static int s_p25_probe_last_answer = 0;
+
 /* A P25-driven control-channel probe in flight (the startup hunt, or recovery under a P25 owner; no other protocol
    owns the control channel), for the frame-sync SPS hunt's rotation. The hunt asks once per step on the decoder
-   thread; the owner and the machine are read under the tick guard, and while the watchdog holds it the last answer
-   stands. */
+   thread, holding the tick guard or not; the owner and the machine are read under the guard, and while the watchdog
+   holds it the last answer stands. Without trunking no probe runs: the startup hunt parks on its next tick and the
+   watchdog ticks only an admitted recovery, so a machine still in HUNTING is no probe, and a conventional session
+   never takes the guard here. */
 static int
 engine_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
-    static int last_answer = 0; // decoder thread only
-    if (!opts || !state) {
+    if (!opts || !state || opts->trunk_enable != 1) {
+        s_p25_probe_last_answer = 0;
         return 0;
     }
     const int held = p25_sm_tick_guard_held_by_caller();
     if (!held && !p25_sm_tick_guard_try_enter()) {
-        return last_answer;
+        return s_p25_probe_last_answer;
     }
-    last_answer = (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN
-                   || state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25)
-                  && p25_sm_hunt_probe_in_flight(p25_sm_get_ctx());
+    s_p25_probe_last_answer = (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN
+                               || state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25)
+                              && p25_sm_hunt_probe_in_flight(p25_sm_get_ctx());
     if (!held) {
         p25_sm_tick_guard_leave();
     }
-    return last_answer;
+    return s_p25_probe_last_answer;
 }
 
 void
 dsd_engine_frame_sync_hooks_install(void) {
+    s_p25_probe_last_answer = 0; // a previous run's probe is not this run's
     dsd_frame_sync_hooks hooks = {0};
     hooks.receive_policy_boundary = dsd_engine_receive_policy_boundary;
     hooks.analog_call_block = dsd_engine_analog_call_block;

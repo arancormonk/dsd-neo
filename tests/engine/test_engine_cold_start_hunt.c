@@ -30,6 +30,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
@@ -81,6 +83,7 @@ enum scenario {
     SC_AUTO_TYPE_D,
     SC_AUTO_NXDN_TRAFFIC,
     SC_EDACS_SESSION,
+    SC_PROBE_HOOK_RESTART,
 };
 
 static enum scenario g_scenario;
@@ -104,6 +107,39 @@ static int g_ras_frames; // SC_RAS_SYNCED_APPLY: frames dispatched
 static int g_ft;         // the run's frame set (run_scenario())
 static int g_p25_armed_seen;
 static int g_probe_in_flight_seen; // the frame-sync hunt heard a P25 probe in flight
+static atomic_int g_guard_held;    // guard_holder() holds the P25 SM tick guard
+static atomic_int g_guard_release; // guard_holder() may let it go
+
+/* The watchdog's part: hold the P25 SM tick guard until released. */
+static DSD_THREAD_RETURN_TYPE
+guard_holder(void* arg) {
+    (void)arg;
+    p25_sm_tick_guard_enter();
+    atomic_store(&g_guard_held, 1);
+    while (!atomic_load(&g_guard_release)) {
+        dsd_thread_yield();
+    }
+    p25_sm_tick_guard_leave();
+    DSD_THREAD_RETURN;
+}
+
+/* The frame-sync probe query while another thread holds the tick guard, as a watchdog tick does; -1 if no thread. */
+static int
+probe_answer_with_guard_busy(const dsd_opts* opts, const dsd_state* state) {
+    atomic_store(&g_guard_held, 0);
+    atomic_store(&g_guard_release, 0);
+    dsd_thread_t holder;
+    if (dsd_thread_create(&holder, guard_holder, NULL) != 0) {
+        return -1;
+    }
+    while (!atomic_load(&g_guard_held)) {
+        dsd_thread_yield();
+    }
+    const int answer = dsd_frame_sync_hook_p25_probe_in_flight(opts, state);
+    atomic_store(&g_guard_release, 1);
+    dsd_thread_join(holder);
+    return answer;
+}
 
 static int
 capplus_scenario(void) {
@@ -500,6 +536,11 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return finish();
             }
             return DSD_SYNC_NXDN_POS;
+        case SC_PROBE_HOOK_RESTART:
+            // The previous run's last answer was a probe; this run's hooks start it over, so a query the watchdog's
+            // guard leaves to that answer finds none.
+            expect(probe_answer_with_guard_busy(opts, state) == 0, "a new run forgets the last run's probe answer");
+            return finish();
         case SC_EDACS_SESSION:
             if (g_ft == 5 && g_now_ms == 3000U) {
                 // The EDACS session switched to Auto mid-session: the EDACS addressing it selected stays.
@@ -719,6 +760,7 @@ run_scenario(enum scenario sc, int ft) {
                    "validated NXDN traffic holds the P25 startup window, which runs out from its last frame");
             expect(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN, "NXDN traffic names no owner");
             break;
+        case SC_PROBE_HOOK_RESTART: break;
         case SC_EDACS_SESSION:
             expect(dsd_edacs_session(opts, state), "a selected EDACS session");
             expect(g_tunes == 0 && g_p25_armed_seen == 0, "a selected EDACS session never starts the P25 startup hunt");
@@ -761,6 +803,50 @@ test_source_change_resets_requests(void) {
     free(opts);
 }
 
+/* The engine's frame-sync probe query, installed by the last run: a P25-driven probe is a hunting machine under a P25
+   or unknown owner with trunking on; while the watchdog holds the guard the last answer stands; without trunking a
+   machine left hunting is no probe, and the query takes no guard. Leaves the last answer at "probe". */
+static void
+test_probe_hook_answers(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        g_failures++;
+        return;
+    }
+    g_scenario = SC_PROBE_HOOK_RESTART;
+    initOpts(opts);
+    initState(state);
+    opts->trunk_enable = 1;
+    p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+    p25_sm_init_ctx(p25, opts, state);
+    expect(!dsd_frame_sync_hook_p25_probe_in_flight(opts, state), "an idle machine probes nothing");
+    p25->state = P25_SM_HUNTING; // a lost P25 control channel, or the startup hunt between probes
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25;
+    expect(dsd_frame_sync_hook_p25_probe_in_flight(opts, state), "recovery under a P25 owner probes");
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+    expect(dsd_frame_sync_hook_p25_probe_in_flight(opts, state), "so does the startup hunt");
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    expect(!dsd_frame_sync_hook_p25_probe_in_flight(opts, state), "another owner's session has no P25 probe");
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25;
+    expect(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 1 && probe_answer_with_guard_busy(opts, state) == 1,
+           "while the watchdog holds the guard the last answer stands");
+    opts->trunk_enable = 0; // trunking turned off: nothing ticks the machine it leaves in HUNTING
+    expect(!dsd_frame_sync_hook_p25_probe_in_flight(opts, state), "without trunking no probe runs");
+    opts->trunk_enable = 1;
+    expect(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 1, "the last answer is a probe");
+    opts->trunk_enable = 0;
+    expect(probe_answer_with_guard_busy(opts, state) == 0, "a session without trunking does not ask the machine");
+    opts->trunk_enable = 1;
+    expect(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 1, "the last answer is a probe again");
+    p25_sm_init_ctx(p25, NULL, NULL);
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_source_change_resets_requests();
@@ -790,6 +876,8 @@ main(void) {
     run_scenario(SC_AUTO_NXDN_TRAFFIC, 4);
     run_scenario(SC_EDACS_SESSION, 5);
     run_scenario(SC_EDACS_SESSION, 6);
+    test_probe_hook_answers();
+    run_scenario(SC_PROBE_HOOK_RESTART, 1);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");
     }

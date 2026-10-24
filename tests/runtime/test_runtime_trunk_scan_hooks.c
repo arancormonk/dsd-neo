@@ -93,7 +93,7 @@ test_recovery_ownership(void) {
 }
 
 /* Before any protocol proves itself, P25 hunts the startup control channel of every frame set that decodes P25: -ft, the
-   old default set, a P25-only one and Auto (-fa), which adds NXDN and ProVoice. A selected EDACS session (-fh -fa, an
+   same with D-STAR, X2-TDMA and YSF, a P25-only one and Auto (-fa), which adds NXDN and ProVoice. A selected EDACS session (-fh -fa, an
    EDACS-to-Auto switch) does not: EDACS control names no owner, so a P25 window would hunt away from a valid EDACS
    control channel. Recovery ownership itself does not change (issue #703). */
 static void
@@ -107,7 +107,7 @@ test_presumptive_startup_owner(void) {
     assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
     assert(!dsd_trunk_p25_recovery_allowed(&opts, &state)); // ownership is unchanged
     assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
-    opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1; // the default frame set (-mq imports)
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1; // with D-STAR, X2-TDMA and YSF
     assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
     opts.frame_nxdn48 = 1;
     assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));

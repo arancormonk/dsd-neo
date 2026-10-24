@@ -91,11 +91,12 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
  * which runs pi/4-DQPSK at 18000 sym/s. TETRA is decided by its sync before the modulation is
  * looked at: its rf_mod is the QPSK family's, which on its own would read as P25 CQPSK.
  *
- * A session P25 drives -- recovery under a validated P25 owner, or the startup hunt of a set that
- * presumes P25 (dsd_trunk_p25_cold_start_presumed()) -- is P25 from that evidence, never from sync
- * history or modulation: under Auto a dead frequency yields noise NXDN syncs, and the frame-sync
- * hunt forces the GFSK rf_mod on its 2400/4 and 9600/2 dwells, either of which would send a probe
- * to the wrong chain. Other sessions (a DMR or NXDN owner, EDACS) keep the sync rule below.
+ * Past TETRA, a session P25 drives -- recovery under a validated P25 owner, or the startup hunt of
+ * a set that presumes P25 (dsd_trunk_p25_cold_start_presumed()) -- is P25 from that evidence, never
+ * from sync history or modulation: under Auto a dead frequency yields noise NXDN syncs, and the
+ * frame-sync hunt forces the GFSK rf_mod on its 2400/4 and 9600/2 dwells, either of which would
+ * send a probe to the wrong chain. Other sessions (a DMR or NXDN owner, EDACS) keep the sync rule
+ * below. A TETRA sync only arises with the TETRA decoder on, which no frame set runs beside P25.
  */
 static int
 dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
@@ -108,11 +109,11 @@ dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_engine_trunk_scan_target_count(state) > 0) {
         return 0;
     }
-    if (dsd_trunk_p25_recovery_allowed(opts, state) || dsd_trunk_p25_cold_start_presumed(opts, state)) {
-        return 1;
-    }
     if (DSD_SYNC_IS_TETRA(state->synctype) || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
         return 0;
+    }
+    if (dsd_trunk_p25_recovery_allowed(opts, state) || dsd_trunk_p25_cold_start_presumed(opts, state)) {
+        return 1;
     }
     if (state->rf_mod == 2) {
         return 0;

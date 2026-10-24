@@ -1888,9 +1888,10 @@ does.
   control channel: the first validated DMR control message, NXDN CAC or confirmed IDAS Type-D SCCH ends the P25 search
   and hands the session to that protocol (an IDAS Type-D site is then never searched, as below).
 - Each P25 probe starts on the P25 chain (4800 symbols/s), whatever noise synced or the symbol-rate search tried before
-  it. While a probe listens, the symbol-rate search steps only between P25's 4800 and 6000 symbols/s profiles, so a
-  probe reaches a Phase 2 control channel within its two seconds under Auto as under a P25-only set; the full Auto
-  rotation resumes once the search ends.
+  it. While a probe listens, the symbol-rate search steps only between P25's 4800 and 6000 symbols/s profiles: from
+  4800 it steps to 6000 as a P25-only set does, not to an NXDN48 or ProVoice rate. That step comes late in the
+  two-second probe, so a Phase 2 control channel the session has not learned gets little time at 6000 symbols/s, as
+  under a P25-only set. The full Auto rotation resumes once the search ends.
 - Under Auto a P25-driven search does not find an NXDN48 control channel (2400 symbols/s): start a dead NXDN48 system
   with `-fi`, which a RadioReference import sets. Once NXDN48 control has decoded, NXDN recovery owns the session.
 - An EDACS session never runs the P25 search: EDACS control names no system the search could stop on, so it would leave
