@@ -1008,6 +1008,71 @@ test_move_to_carrier_binds_moved_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* The CRC provenance of slot @p slot's active call (0xFF: none active), and its target in @p target. */
+static uint8_t
+slot_call_crc(const dsd_state* st, uint8_t slot, uint32_t* target) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(st, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0xFFU;
+    }
+    *target = (uint32_t)call.policy_target_id;
+    return call.crc_invalid;
+}
+
+/* A verified C_MOVE republishes the followed call's identity as its record holds it, source included, so it carries the
+   provenance of what named that identity with the move's own: a RAS-accepted grant (-F) moved to another carrier, or a
+   verified grant whose RAS-accepted voice LC named the source, moved to the other slot in place, publishes as
+   RAS-unverified, never verified. A verified grant (and LC) moved either way publishes as verified. */
+static int
+test_move_carries_record_provenance(dsd_opts* opts, dsd_state* st) {
+    static const struct {
+        const char* label;
+        uint8_t grant_crc;
+        uint8_t lc_crc;
+        int use_lc;
+        int to_carrier; // 1: a move to VC_B, slot 0; 0: in place, to slot 1
+        uint8_t want;
+    } k_cases[] = {
+        {"RAS grant moved to another carrier", DSD_CRC_RAS_UNVERIFIED, 0U, 0, 1, DSD_CRC_RAS_UNVERIFIED},
+        {"RAS grant moved in place", DSD_CRC_RAS_UNVERIFIED, 0U, 0, 0, DSD_CRC_RAS_UNVERIFIED},
+        {"RAS LC source moved in place", 0U, DSD_CRC_RAS_UNVERIFIED, 1, 0, DSD_CRC_RAS_UNVERIFIED},
+        {"RAS LC source moved to another carrier", 0U, DSD_CRC_RAS_UNVERIFIED, 1, 1, DSD_CRC_RAS_UNVERIFIED},
+        {"verified grant moved to another carrier", 0U, 0U, 0, 1, 0U},
+        {"verified grant and LC moved in place", 0U, 0U, 1, 0, 0U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        init_env(opts, st, 2.0);
+        st->currentslot = 0;
+        st->event_crc_invalid[0] = k_cases[i].grant_crc;
+        tv_grant(opts, st, LPCN_A, 0, 100, 1);
+        st->event_crc_invalid[0] = 0U;
+        clock_at(0.3);
+        voice(opts, st, 0);
+        if (k_cases[i].use_lc) {
+            st->event_crc_invalid[0] = k_cases[i].lc_crc;
+            dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 77);
+            st->event_crc_invalid[0] = 0U;
+        }
+        clock_at(0.4);
+        const int new_slot = k_cases[i].to_carrier ? 0 : 1;
+        const dmr_sm_grant_result_e result =
+            submit_move(opts, st, k_cases[i].to_carrier ? VC_B : VC_A, k_cases[i].to_carrier ? LPCN_B : LPCN_A,
+                        new_slot, 1, 100, k_cases[i].use_lc ? 77 : 1);
+        rc |= expect_true(k_cases[i].label,
+                          result == (k_cases[i].to_carrier ? DMR_SM_GRANT_FOLLOWED : DMR_SM_GRANT_IN_PLACE)
+                              && sm()->vc_crc_flags == k_cases[i].want
+                              && sm()->slots[new_slot].crc_flags == k_cases[i].want);
+        clock_at(0.5);
+        voice(opts, st, new_slot);
+        uint32_t target = 0U;
+        const uint8_t crc = slot_call_crc(st, (uint8_t)new_slot, &target);
+        rc |= expect_true(k_cases[i].label, target == 100U && crc == k_cases[i].want);
+    }
+    return rc;
+}
+
 /* A Tier III grant for the carrier the receiver already listens on (the composite control channel's own payload) while
    resident calls play on it is adopted in place: the receiver does not leave the carrier, so neither its granted call
    nor the companion call ends, and both keep their identities, bindings and follow times. A preempting call is then
@@ -1153,6 +1218,7 @@ main(void) {
     rc |= test_deferred_move_keeps_identity(opts, st);
     rc |= test_move_republishes_renamed_call(opts, st);
     rc |= test_move_to_carrier_binds_moved_call(opts, st);
+    rc |= test_move_carries_record_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

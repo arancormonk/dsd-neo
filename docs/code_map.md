@@ -5413,9 +5413,11 @@ Private per-protocol modules worth knowing about:
     the call the slot names, or of the grant followed there, keeps record and follow time. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
-    carrier, follow time) come from the followed grant (a slotless grant's at its first accepted voice), an in-place
-    grant, Cap+ seeds and status reconciliation (a seeded LSN the status shows carrying a private or data call keeps the
-    slot's activity with an unknown identity, and a slot with no identity takes that unknown record on the followed
+    carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
+    status's every fragment, a seed's, the LC's scope) come from the followed grant (a slotless grant's at its first
+    accepted voice), an in-place grant, Cap+ seeds and status reconciliation (a seeded LSN the status shows carrying a
+    private or data call keeps the slot's activity with an unknown identity, and a slot with no identity takes that
+    unknown record on the followed
     carrier, so a later group status names it; an idle one changes nothing), XPT status reconciliation
     (`dmr_sm_status_slot_reconcile()`, from each site status before its busy view and ranking: on the followed carrier
     a group entry names its slot's call (on the followed slot the grant identity too, with the status's own CRC
@@ -5468,9 +5470,11 @@ Private per-protocol modules worth knowing about:
     acquisition that ends the calls of the carrier left (as every follow does) before naming the moved call, so its
     first voice there publishes it in an epoch of its own, which the moved identity binds to (it never waits behind
     the old carrier's epoch to bind the next, anonymous call); both keep the follow time. Both republish the moved
-    call's identity as the followed slot's record names it, which makes the grant's identity known again even when the
-    end of the call it first named had withdrawn it (a checked LC then named the moved call). A deferred or failed move
-    tune changes nothing, the followed grant's identity included (it is rewritten from the slot's record only in place
+    call's identity as the followed slot's record names it (with the record's `crc_flags` OR'ed with the move burst's:
+    the move confirms the target, not a source a RAS-accepted grant or LC under `-F` named), which makes the grant's
+    identity known again even when the end of the call it first named had withdrawn it (a checked LC then named the
+    moved call). A deferred or failed move tune changes nothing, the followed grant's identity included (it is rewritten
+    from the slot's record only in place
     or once the tune is accepted), so a repeat of the original grant still matches it. A move of any other call is an
     ordinary grant under its group decision and the gate. Its burst indicators and companion-row clear apply only once
     accepted (as before when it is not submitted: trunking off or not on a voice channel).

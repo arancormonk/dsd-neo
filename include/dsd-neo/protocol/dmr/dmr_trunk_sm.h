@@ -114,6 +114,9 @@ typedef struct {
     uint8_t prov;         // dmr_sm_identity_prov_e
     uint8_t judged_group; // judged by group policy (a Tier III data grant followed as a group is)
     uint8_t data_call;
+    /* DSD_CRC_* bits of what named the identity (a RAS-accepted grant, status or LC under -F, a Cap+ status's every
+       fragment, or a move's burst with the identity it moved): what a C_MOVE republishes carries them. */
+    uint8_t crc_flags;
     int channel;     // LPCN, or the Capacity Plus LSN, the call was announced on
     long carrier_hz; // the carrier the identity belongs to
     double follow_m; // decode clock
@@ -410,11 +413,11 @@ void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int s
  * @brief A Capacity Plus status names group @p tg on @p lsn: a status-followed slot whose identity a seed gave on that
  * LSN, whose named call is over (an LC's included: its authority ends with its call), or that has no identity at all
  * (one that expired with its call while the companion slot kept the carrier), takes the group, with a new follow time
- * unless it is the same call. An @p active LSN with no group (@p tg 0: a private or data call) leaves that
+ * unless it is the same call, and the status's CRC provenance (@p crc_flags, DSD_CRC_*: every fragment's). An @p active LSN with no group (@p tg 0: a private or data call) leaves that
  * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
  */
 void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int lsn, uint32_t tg,
-                                      int active);
+                                      int active, uint8_t crc_flags);
 
 /**
  * @brief A channel status (Hytera XPT) names the call on @p slot of carrier @p freq_hz: group @p tg, or (@p tg 0,

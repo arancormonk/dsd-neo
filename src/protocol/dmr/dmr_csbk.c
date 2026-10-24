@@ -2097,7 +2097,8 @@ dmr_cspdu_cap_plus_3e_reconcile_seeds(const dsd_state* state, const dmr_cap_plus
             /* A private or data call on the LSN is a call of unknown identity, not an idle LSN. */
             const int group = ctx->ch[lsn - 1] == 1;
             dmr_sm_status_identity_reconcile(sm, state, slot, lsn, group ? ctx->group_tg[lsn - 1] : 0U,
-                                             group || ctx->pch[lsn - 1] == 1);
+                                             group || ctx->pch[lsn - 1] == 1,
+                                             state->cap_plus_csbk_crc_invalid[ctx->ts]);
         }
     }
 }
