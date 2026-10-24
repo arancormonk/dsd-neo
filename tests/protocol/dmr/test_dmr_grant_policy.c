@@ -1320,6 +1320,102 @@ test_xpt_status_in_place_keeps_lc_identity(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* An anonymous voice call (no LC yet) on slot 0 of the receiver's carrier, as the vocoder opens one: identity-less
+   voice reacquires a call a sync loss ended within the reacquire gap, else begins a call of its own. */
+static uint64_t
+anonymous_voice_on_slot0(dsd_opts* opts, dsd_state* st) {
+    const dsd_call_observation voice = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(st, &voice, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(st, 0U, 1, 0.0);
+    accepted_voice_now(opts, st, 0);
+    dsd_call_snapshot call;
+    return dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+               ? dsd_call_snapshot_transmission(&call)
+               : 0U;
+}
+
+/* A status (XPT site status, @p capplus 0; Cap+ channel status, 1) names group 77 on the followed slot before any
+   checked LC, and its voice binds the slot's record to that call. A sync loss ends the call, and a status naming 77
+   again arrives before the call is reacquired: the record keeps its binding to the faded call, which the reacquired
+   voice heals (same transmission). Once that call ends and the hangtime runs out, the next anonymous call there inherits
+   neither 77's identity nor its priority: a p60 preempt on another carrier never takes the receiver from it. */
+static int
+test_status_repeat_during_fade_keeps_binding(dsd_opts* opts, dsd_state* st, int capplus) {
+    const char* const label = capplus ? "cap+" : "xpt";
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    char what[128];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    seed_policy_row(st, 77, "A", 10, 0);
+    seed_policy_row(st, 99, "A", 60, 1);
+    const long followed = capplus ? ST_F1 : 461262500L;
+    const long other = capplus ? ST_F3 : 461287500L;
+    if (!capplus) {
+        st->trunk_chan_map[1] = followed;
+        st->trunk_chan_map[3] = other;
+    }
+    status_window_closed(st);
+    if (capplus) {
+        run_cap_plus_groups(opts, st, (const uint8_t[4]){77U, 0U, 0U, 0U});
+    } else {
+        build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                              (const uint8_t[6]){77U, 0U, 0U, 0U, 0U, 0U});
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    }
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    DSD_SNPRINTF(what, sizeof what, "%s follows group 77", label);
+    int rc = expect_true(what, st->trunk_vc_freq[0] == followed && sm->slots[0].target == 77U);
+
+    status_clock_at(0.3);
+    const uint64_t first = anonymous_voice_on_slot0(opts, st);
+    DSD_SNPRINTF(what, sizeof what, "%s the voice binds the record", label);
+    rc |= expect_true(what, first != 0U && sm->slots[0].call_epoch == first);
+
+    status_clock_at(1.0);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
+    status_clock_at(1.2);
+    status_window_closed(st);
+    if (capplus) {
+        run_cap_plus_groups(opts, st, (const uint8_t[4]){77U, 0U, 0U, 0U});
+    } else {
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    }
+    DSD_SNPRINTF(what, sizeof what, "%s a status repeat during the fade keeps the binding", label);
+    rc |= expect_true(what, sm->slots[0].target == 77U && sm->slots[0].call_epoch == first);
+
+    status_clock_at(1.4);
+    const uint64_t healed = anonymous_voice_on_slot0(opts, st);
+    DSD_SNPRINTF(what, sizeof what, "%s the reacquired call is the faded transmission, still bound", label);
+    rc |= expect_true(what, healed == first && sm->slots[0].call_epoch == first);
+
+    status_clock_at(2.0);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    status_clock_at(4.5); /* past the 2 s hangtime */
+    const uint64_t next = anonymous_voice_on_slot0(opts, st);
+    DSD_SNPRINTF(what, sizeof what, "%s the next transmission is a call of its own", label);
+    rc |= expect_true(what, next != 0U && next != first);
+
+    status_clock_at(4.6);
+    status_window_closed(st);
+    if (capplus) {
+        run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 99U, 0U});
+    } else {
+        build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                              (const uint8_t[6]){0U, 0U, 99U, 0U, 0U, 0U});
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    }
+    DSD_SNPRINTF(what, sizeof what, "%s the next anonymous call is not preempted as the faded one", label);
+    rc |= expect_true(what, st->trunk_vc_freq[0] == followed && sm->slots[0].target != 77U);
+    status_env_done(st);
+    return rc;
+}
+
 /* Parked on an XPT carrier while an admitted resident call plays: inside the status's voice window a status naming that
    same carrier is not followed (no retune, no block reset, the live slot's activity kept). */
 static int
@@ -2391,6 +2487,8 @@ main(void) {
     rc |= test_xpt_busy_carrier(opts, st);
     rc |= test_xpt_status_reconciles_followed_slot(opts, st);
     rc |= test_xpt_status_in_place_keeps_lc_identity(opts, st);
+    rc |= test_status_repeat_during_fade_keeps_binding(opts, st, 0);
+    rc |= test_status_repeat_during_fade_keeps_binding(opts, st, 1);
     rc |= test_xpt_resident_same_carrier_in_voice_window(opts, st);
     rc |= test_con_plus_takeover_ends_displaced_calls(opts, st);
     rc |= test_cap_plus_takeover_ends_displaced_calls(opts, st);

@@ -234,9 +234,24 @@ dmr_sm_slot_call_for(const dmr_sm_ctx_t* ctx, const dsd_state* state, int s, con
     return dsd_call_snapshot_transmission(&call);
 }
 
+/* Whether the slot's call @p epoch (a transmission) ended recoverably and may still be reacquired (a sync loss within
+   the reacquire gap): the call the canonical layer heals keeps that transmission, so a record bound to it stays bound
+   rather than awaiting a later call, which the healed call could never be. */
+static int
+dmr_sm_slot_call_may_heal(const dsd_state* state, int s, uint64_t epoch, double now_m) {
+    dsd_call_snapshot call;
+    if (!state || epoch == 0U || dsd_call_state_get(state, (uint8_t)s, &call) <= 0) {
+        return 0;
+    }
+    return call.phase != DSD_CALL_PHASE_ACTIVE && dsd_call_snapshot_transmission(&call) == epoch
+           && dsd_call_state_end_reason_is_recoverable(call.end_reason) && call.ended_m > 0.0 && now_m >= call.ended_m
+           && (now_m - call.ended_m) <= DSD_CALL_REACQUIRE_GAP_S;
+}
+
 /* Name the call on slot @p s (@p named, from dmr_sm_slot_identity_set()) and bind it to its canonical call. The same
    call named again (policy class, target and carrier; a gap record only for the very call that followed it) keeps its
-   follow time and binding, so dwell runs from the conversation's first follow; another call starts at its own. */
+   follow time and binding, so dwell runs from the conversation's first follow; another call starts at its own. Named
+   again while its call is faded but may still heal (dmr_sm_slot_call_may_heal()), it keeps that binding. */
 static void
 dmr_sm_slot_name(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, const dmr_sm_slot_ctx_t* named, int force,
                  double now_m) {
@@ -255,6 +270,10 @@ dmr_sm_slot_name(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, const dmr_sm_
     if (bound != 0U) {
         rec->call_epoch = bound;
         rec->call_seen_m = now_m;
+    } else if (same && !prev.gap && dmr_sm_slot_call_may_heal(state, s, prev.call_epoch, now_m)) {
+        rec->call_epoch = prev.call_epoch; // its faded call, which a reacquisition continues
+        rec->call_floor = prev.call_floor;
+        rec->call_seen_m = prev.call_seen_m;
     } else {
         // Awaiting its call: the same call announced again before its voice keeps waiting for the call it awaited.
         rec->call_floor = (same && !prev.gap && prev.call_epoch == 0U) ? prev.call_floor : floor;

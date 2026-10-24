@@ -5416,7 +5416,10 @@ Private per-protocol modules worth knowing about:
     view, grant submission, the status reconciliations, voice sync, an LC and the tick). An LC binds to the call it was
     published on; a grant, seed or status to the slot's active call when that names its target or nothing yet (on the
     followed carrier only one begun since the receiver arrived there, `t_carrier_m`: the follow tune, or for a carrier
-    adopted in place any call), else to the first call to begin on the slot after it was named. The call's end leaves
+    adopted in place any call), else to the first call to begin on the slot after it was named; the same call named
+    again while its call is faded but may still be reacquired (a recoverable end within the reacquire gap,
+    `dmr_sm_slot_call_may_heal()`) keeps that binding, so the reacquired call, which keeps its transmission, stays the
+    record's and the next call never inherits it. The call's end leaves
     the record only on the followed carrier within the hangtime (a conversation is held in its gaps); a resident call's
     identity ends with it. Another call on the slot clears the record, and on the followed carrier one that began
     within the hangtime of the named call leaves a gap record (unknown) whose renaming as the same call (target, class,
