@@ -28,6 +28,12 @@ int frame_sync_trunk_scan_p25p1_trial(const dsd_opts* opts, const dsd_state* sta
  * profile it returns to the first of them. -1 when the options enable neither P25 phase: the ordinary rotation runs. */
 int frame_sync_sps_hunt_p25_probe_next_index(const dsd_opts* opts, int current);
 
+/** Run the P25p1 chain comparison (dsd_p25p1_mod_compare) on what the last frame validated: start one on an
+ * acquisition's first NID-decoded frame on 4800/4, add up what validated frames read in each chain's pass, try the
+ * other chain only when the incumbent let a frame go by unread, and keep the chain that read more.
+ * getFrameSync() calls it on entry, before the hunt re-anchors dsd_state::sps_hunt_symbolcnt_mark. */
+void frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state);
+
 /* How long a P25p1 frame that decoded its NID keeps the modulation heuristics off the
  * demodulator that carried it, in symbols at 4800 sym/s (two seconds). Long enough to span the
  * gaps between frames on a control channel, short enough that a modulation which has gone

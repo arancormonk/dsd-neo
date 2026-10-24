@@ -4428,6 +4428,65 @@ test_nxdn_trunk_target_holds_while_tuned(void) {
     return rc;
 }
 
+/* The P25p1 chain comparison's verdict is learned modulation, so it travels with each target's snapshot like
+ * p25_p1_validated_rf_mod; a comparison in flight belongs to the target being left. */
+static int
+test_p25p1_mod_verdict_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "p25 verdict scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    state.p25_p1_validated_rf_mod = 1;
+    state.p25_p1_mod_compare.verdict_valid = 1;
+    state.p25_p1_mod_compare.verdict_rf_mod = 1;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_p1_mod_compare.verdict_valid != 0
+        || state.p25_p1_validated_rf_mod != -1) {
+        DSD_FPRINTF(stderr, "fresh p25 target took the first target's chain verdict valid=%d learned=%d\n",
+                    state.p25_p1_mod_compare.verdict_valid, state.p25_p1_validated_rf_mod);
+        test_rc = 1;
+    }
+
+    /* The second target is mid-comparison when the scan leaves it. */
+    state.p25_p1_mod_compare.phase = 2;
+    state.p25_p1_mod_probe_active = 1;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_p1_mod_compare.verdict_valid != 1
+        || state.p25_p1_mod_compare.verdict_rf_mod != 1 || state.p25_p1_validated_rf_mod != 1
+        || state.p25_p1_mod_compare.phase != 0 || state.p25_p1_mod_probe_active != 0) {
+        DSD_FPRINTF(stderr, "restored p25 target lost its chain verdict valid=%d mod=%d phase=%d trial=%d\n",
+                    state.p25_p1_mod_compare.verdict_valid, state.p25_p1_mod_compare.verdict_rf_mod,
+                    state.p25_p1_mod_compare.phase, state.p25_p1_mod_probe_active);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_nxdn_state_isolated_per_target(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -13950,6 +14009,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_nxdn_state_survives_failed_switch_rollback);
+    rc |= run_with_default_tune_hook(test_p25p1_mod_verdict_isolated_per_target);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_diag_isolated_per_target);
     rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
     rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);

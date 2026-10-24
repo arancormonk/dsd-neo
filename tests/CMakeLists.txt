@@ -14964,6 +14964,19 @@ if(DSD_HAS_RADIO)
         "-f1 -mq"
         "Group Voice Channel Grant Update - Implicit"
     )
+    # The same simulcast control channel under Auto with no modulation lock. The C4FM chain reads about one TSBK in
+    # six of it, enough to win the modulation probe's binary trial, and that chain's own proofs kept the profile for
+    # the rest of the run: 9 P25p1 syncs, 4 grant updates and no site identity, against 52, 18 and 41 on the CQPSK
+    # chain. The first validated frame now compares the two chains on validated frames for one search pass each and
+    # keeps CQPSK for the rest of the 2 s: 25 syncs, 7 grant updates, the site identity 9 times.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO
+        p25p1_cqpsk_cc_simulcast
+        -fa
+        "WACN: 92065; SYS: 0D5"
+        ""
+        6
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
     # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).
     dsd_neo_add_iq_decode_test(

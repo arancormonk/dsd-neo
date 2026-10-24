@@ -3821,6 +3821,23 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
   choose: a CQPSK vote there (a carrier near 0 Hz) took the front end off the monitor path. Tests:
   `FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`.
+- P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a
+  P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
+  (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
+  `p25_p1_mod_probe_active`). A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
+  (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore and trunk retunes read). The first
+  NID-decoded frame of an acquisition starts one chain comparison (`frame_sync_p25p1_mod_compare_note()`,
+  `dsd_state::p25_p1_mod_compare`, run on `getFrameSync()` entry): the symbols that chain's validated frames read over
+  one search pass (`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`) are added up. P25p1 frames come back to back, so a search
+  after a validated frame at least as long as that frame, before the next one or the pass's end, is a frame read by
+  nobody (a one-block TSDU reads 134 of its 180-symbol slot, and the search to the next is 46); a pass without one
+  keeps the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that read
+  strictly more keeps the profile and becomes the learned modulation, with a verdict that stops a frame on that chain
+  opening another comparison (dropped with the learned modulation, kept per trunk-scan target).
+  A carrier boundary (`carrier_seq`), profile change, lock or trunked voice tune ends a comparison without a verdict.
+  Without it, a chain that reads part of an LSM simulcast carrier (C4FM: about half the 769 MHz control channel's
+  TSBKs) kept the profile for as long as the carrier stayed up. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_p25p1_partial_chain_loses_the_comparison`), `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO`.
 - Channel LPF (`demod_pipeline.cpp`): digital profiles design from their protected edge, capped at 144 taps with the
   63-tap fallback. The analog family (`demod_state::analog_family`, not the WIDE profile, which is also the digital
   fallback and the M17 encoder's) designs from `channel_lpf_width_hz` instead: cutoff width/2 + 600 Hz, the fixed

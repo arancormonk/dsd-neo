@@ -306,6 +306,28 @@ typedef struct {
     char text_message[2000];
 } Event_History_Staged;
 
+/* The one comparison of the two P25p1 demodulator chains an acquisition gets (frame sync's
+ * frame_sync_p25p1_mod_compare_note()). The first NID-decoded P25p1 frame on the 4800/4 profile measures
+ * what validated frames read on the chain that carried it over one search pass; a chain that let a frame go
+ * by unread in it gets the other chain measured for as long, and the one that read more keeps the profile.
+ * Zero is "no comparison, no verdict". */
+typedef struct {
+    int phase;                /* 0 none, 1 measuring the incumbent chain, 2 measuring the other chain */
+    int incumbent_rf_mod;     /* the chain the first frame came on: 0 C4FM, 1 CQPSK */
+    uint32_t incumbent_read;  /* symbols validated frames read in the incumbent's pass */
+    int incumbent_missed;     /* a search after one of those frames as long as the frame */
+    uint32_t last_frame_end;  /* dsd_state::symbolcnt the incumbent's last validated frame ended at */
+    uint32_t last_frame_read; /* symbols that frame read */
+    uint32_t trial_read;      /* symbols validated frames read in the other chain's pass */
+    uint32_t window_start;    /* dsd_state::symbolcnt the current window opened at */
+    uint32_t seen_symbolcnt;  /* the dsd_state::p25_p1_validated_symbolcnt last read */
+    uint32_t carrier_seq;     /* dsd_state::carrier_seq the comparison started on */
+    /* What a finished comparison chose, kept with the learned modulation it set: a frame on that chain starts no
+     * new comparison. Dropped wherever p25_p1_validated_rf_mod is forgotten. */
+    int verdict_valid;
+    int verdict_rf_mod;
+} dsd_p25p1_mod_compare;
+
 typedef struct Event_History_I {
     Event_History Event_History_Items[DSD_EVENT_HISTORY_LEN];
     uint64_t revision;
@@ -1083,6 +1105,9 @@ struct dsd_state {
      * anything -- entering GFSK needs a single vote, which is a few dozen symbols. */
     int p25_p1_mod_probe_next_qpsk;
     int p25_p1_mod_probe_active;
+    /* The chain comparison the first validated P25p1 frame of an acquisition starts (see
+     * dsd_p25p1_mod_compare). While it runs, p25_p1_mod_probe_active keeps the votes off both windows. */
+    dsd_p25p1_mod_compare p25_p1_mod_compare;
     /* Where the last accepted dPMR FS2 sync sat in dsd_state::symbolcnt, and whether one has
      * been seen at all. dPMR and NXDN48 are the two candidates on the 2400/4 profile, and their
      * matchers are not comparable: FS2 is one exact 12-symbol pattern, while the NXDN matcher
@@ -1644,7 +1669,8 @@ struct dsd_state {
      * System knowledge like p25_cc_is_tdma rather than acquisition state, so
      * dsd_frame_sync_reset_mod_state(), retunes and no-carrier resets leave it alone; only
      * initState(), the trunk-scan per-target snapshot and a CQPSK dwell that decodes nothing
-     * reset it. Freshness is measured in symbols because the hold it feeds only applies on the
+     * reset it. Besides a decoded NID, the end of a chain comparison (p25_p1_mod_compare) sets it
+     * to the chain that validated more. Freshness is measured in symbols because the hold it feeds only applies on the
      * fixed-rate 4800/4-level profile. Ignored whenever opts->mod_cli_lock is set. */
     int p25_p1_validated_rf_mod;
     uint32_t p25_p1_validated_symbolcnt;

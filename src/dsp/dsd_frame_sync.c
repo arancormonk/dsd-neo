@@ -483,8 +483,14 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->profile_proof_valid = 0;
     state->profile_proof_symbolcnt = 0;
     state->profile_proof_idx = 0;
+    /* A comparison in flight belongs to the acquisition this ends; its verdict goes with the learned modulation. */
+    if (state->p25_p1_mod_compare.phase != 0) {
+        state->p25_p1_mod_compare.phase = 0;
+        state->p25_p1_mod_probe_active = 0;
+    }
     if (forget_p25_modulation) {
         state->p25_p1_validated_rf_mod = -1;
+        state->p25_p1_mod_compare.verdict_valid = 0;
     }
     state->symbol_history_count = 0;
     state->symbol_history_head = 0;
@@ -3717,7 +3723,9 @@ dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state) {
  * nothing productive decoded, which is exactly where the hunt was going to leave this profile
  * anyway: a control channel that is decoding never gets here, because its handlers keep the
  * dwell counter spent. Whichever chain then starts decoding P25p1 frames keeps the profile,
- * because frame_sync_hold_validated_p25p1_modulation() stops the votes from arguing with it.
+ * because frame_sync_hold_validated_p25p1_modulation() stops the votes from arguing with it --
+ * after one comparison with the other chain (frame_sync_p25p1_mod_compare_note()), because a
+ * chain that decodes part of an LSM signal decodes too.
  */
 static void
 frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int preserve_modulation,
@@ -3735,6 +3743,7 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
     if (expired_dwell_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && expired_dwell_rf_mod == 1
         && state->p25_p1_validated_rf_mod == 1) {
         state->p25_p1_validated_rf_mod = -1;
+        state->p25_p1_mod_compare.verdict_valid = 0;
     }
     if (state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
         return;
@@ -3763,6 +3772,156 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
 #endif
 }
 
+/* Put the 4800/4 profile on one P25p1 chain, as the probe above does. */
+static void
+frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
+    state->rf_mod = chain;
+    if (chain == 1) {
+        qpsk_dwell_arm();
+    } else {
+        qpsk_dwell_disarm();
+    }
+#ifdef USE_RADIO
+    rtl_maybe_apply_active_demod_profile(opts, state);
+#else
+    UNUSED(opts);
+#endif
+}
+
+/* Where a comparison may run at all: the places the probe can switch the chain (an unlocked RTL session with P25p1 on,
+ * on the 4800/4 profile), and not on a trunked voice channel, whose profile the grant chose. */
+static int
+frame_sync_p25p1_mod_compare_allowed(const dsd_opts* opts, const dsd_state* state) {
+    return !opts->mod_cli_lock && opts->frame_p25p1 == 1 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx
+           && state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+           && !(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1);
+}
+
+static void
+frame_sync_p25p1_mod_compare_end(dsd_state* state) {
+    state->p25_p1_mod_compare.phase = 0;
+    state->p25_p1_mod_probe_active = 0;
+}
+
+/* Settle the comparison on @p winner: the chain the profile keeps, and the learned modulation. */
+static void
+frame_sync_p25p1_mod_compare_settle(const dsd_opts* opts, dsd_state* state, int winner) {
+    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    if (state->rf_mod != winner) {
+        frame_sync_p25p1_set_chain(opts, state, winner);
+    }
+    /* The verdict is what the signal is, as a decoded NID is: the learned modulation the hold, the hunt's restore and
+     * the trunk retunes read. Stamped now, so a CQPSK winner is held from here. */
+    state->p25_p1_validated_rf_mod = winner;
+    state->p25_p1_validated_symbolcnt = state->symbolcnt;
+    cmp->verdict_valid = 1;
+    cmp->verdict_rf_mod = winner;
+    frame_sync_p25p1_mod_compare_end(state);
+}
+
+/**
+ * @brief Compare the two P25p1 chains once per acquisition, on validated frames.
+ *
+ * The probe above settles the chain by trying one and keeping it if it decodes, which assumes a wrong chain decodes
+ * nothing. On an LSM simulcast carrier both decode, at different rates -- C4FM read about half the 769 MHz control
+ * channel's TSBKs the CQPSK chain reads, and a sixth of the simulcast fixture's -- and whichever the alternation
+ * offered first kept the profile for as long as the carrier stayed up, because its own proofs keep the dwell from
+ * ever expiring into another probe.
+ *
+ * So the first NID-decoded frame on 4800/4 opens a comparison, measured in what matters: the symbols validated P25p1
+ * frames read (a frame whose NID decoded, which dispatch stamps in p25_p1_validated_symbolcnt; its size is what its
+ * handler consumed). Its chain gets one search pass of symbols from that frame's sync. A P25p1 carrier sends its
+ * frames back to back -- a control channel a TSDU per slot, a call LDU after LDU -- so a chain reading all of it
+ * finds each frame's sync within a frame of the last one's end: a one-block TSDU reads 134 symbols of its 180-symbol
+ * slot and the search to the next is 46. A search after a validated frame at least as long as that frame, before the
+ * next one or the pass's end, means a frame went by unread. A pass with no such gap keeps its chain with no trial, so a carrier one chain reads
+ * whole pays nothing; a pass with one gives the other chain a pass of its own, and that chain takes the profile only
+ * by reading strictly more, since the incumbent was measured settled and the other chain's pass includes its
+ * settling. The probe's trial flag keeps the votes off both passes.
+ *
+ * The winner becomes the learned modulation, and a frame on the chain a comparison chose opens no other, so a control
+ * channel the session returns to is not compared again until that knowledge is withdrawn (the probe's CQPSK disproof,
+ * an acquisition reset that forgets it). A carrier boundary, a profile change, a lock or a trunked tune ends a
+ * comparison without a verdict. Runs on getFrameSync() entry, before the hunt's own accounting re-anchors the
+ * consumption mark: nothing per symbol.
+ */
+void
+frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    const int validated_now = state->p25_p1_validated_symbolcnt != cmp->seen_symbolcnt;
+    cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
+    if (cmp->phase == 0 && !validated_now) {
+        return;
+    }
+    /* What the last frame's handler read, measured as frame_sync_sps_hunt_note_handler_consumption() measures it. */
+    uint32_t consumed = state->symbolcnt - state->sps_hunt_symbolcnt_mark;
+    if (consumed > (uint32_t)INT_MAX) {
+        consumed = 0;
+    }
+    const uint32_t window = (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+
+    if (cmp->phase == 0) {
+        if (!frame_sync_p25p1_mod_compare_allowed(opts, state) || (state->rf_mod != 0 && state->rf_mod != 1)
+            || state->p25_p1_validated_rf_mod != state->rf_mod
+            || (cmp->verdict_valid && cmp->verdict_rf_mod == state->rf_mod)) {
+            return;
+        }
+        cmp->phase = 1;
+        cmp->incumbent_rf_mod = state->rf_mod;
+        cmp->incumbent_read = consumed;
+        cmp->incumbent_missed = 0;
+        cmp->last_frame_end = state->symbolcnt;
+        cmp->last_frame_read = consumed;
+        cmp->trial_read = 0;
+        cmp->window_start = state->symbolcnt - consumed;
+        cmp->carrier_seq = state->carrier_seq;
+        cmp->verdict_valid = 0;
+        state->p25_p1_mod_probe_active = 1;
+        return;
+    }
+
+    if (!frame_sync_p25p1_mod_compare_allowed(opts, state) || state->carrier_seq != cmp->carrier_seq) {
+        frame_sync_p25p1_mod_compare_end(state);
+        return;
+    }
+    const int window_chain = cmp->phase == 1 ? cmp->incumbent_rf_mod : !cmp->incumbent_rf_mod;
+    if (validated_now && state->p25_p1_validated_rf_mod == window_chain) {
+        if (cmp->phase == 1) {
+            const uint32_t search = (state->symbolcnt - consumed) - cmp->last_frame_end;
+            if (search <= (uint32_t)INT_MAX && search >= cmp->last_frame_read) {
+                cmp->incumbent_missed = 1;
+            }
+            cmp->last_frame_end = state->symbolcnt;
+            cmp->last_frame_read = consumed;
+            cmp->incumbent_read += consumed;
+        } else {
+            cmp->trial_read += consumed;
+        }
+    }
+    if ((uint32_t)(state->symbolcnt - cmp->window_start) < window) {
+        return;
+    }
+    if (cmp->phase == 1) {
+        /* So is a pass that ends a frame's length or more after its last validated frame. */
+        if (!cmp->incumbent_missed && (uint32_t)(state->symbolcnt - cmp->last_frame_end) < cmp->last_frame_read) {
+            frame_sync_p25p1_mod_compare_settle(opts, state, cmp->incumbent_rf_mod);
+            return;
+        }
+        cmp->phase = 2;
+        cmp->trial_read = 0;
+        cmp->window_start = state->symbolcnt;
+        frame_sync_p25p1_set_chain(opts, state, !cmp->incumbent_rf_mod);
+        return;
+    }
+    frame_sync_p25p1_mod_compare_settle(
+        opts, state, cmp->trial_read > cmp->incumbent_read ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod);
+    /* The search the other chain's pass spent was the decoder's own experiment, not the profile failing. */
+    dsd_frame_sync_sps_hunt_restart_dwell(state);
+}
+
 /* The unlocked hunt's next profile. While a P25-driven control-channel probe is in flight (the startup hunt, or P25
  * recovery) it steps only between the P25 profiles, as a P25-only rotation does: from 4800/4 to 6000/4, where the full
  * Auto rotation would step to 2400/4 and never try Phase 2 within the probe. DMR and NXDN96 control live
@@ -3786,10 +3945,12 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     }
     state->sps_hunt_counter = 0;
     /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. That is
-     * true whether or not the profile then rotates, and this is the only place the flag is
-     * cleared, so it must be cleared before the hold below returns -- a probe left active
-     * across a grant would pin rf_mod against the modulation votes for the whole call. */
+     * true whether or not the profile then rotates, and this is the one place a probe's flag is
+     * cleared (a chain comparison clears its own when it ends), so it must be cleared before the
+     * hold below returns -- a probe left active across a grant would pin rf_mod against the
+     * modulation votes for the whole call. A comparison the expiry overtook ends with it. */
     state->p25_p1_mod_probe_active = 0;
+    state->p25_p1_mod_compare.phase = 0;
 
     /* The hunt does not get to second-guess a channel the engine chose. On a trunked voice
      * channel the profile came from the grant that tuned it, so rotating it is wrong however
@@ -3989,6 +4150,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_decode_now_mono_s();
     frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
     frame_sync_apply_cli_mod_lock(opts, state);
+    frame_sync_p25p1_mod_compare_note(opts, state);
     frame_sync_sps_hunt_note_handler_consumption(state);
     frame_sync_ensure_enabled_sps_profile(opts, state);
 

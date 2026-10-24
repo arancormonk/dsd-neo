@@ -651,6 +651,15 @@ Notes
   Giving the channel up is still hangtime's decision, unchanged: when the call ends the tuner returns to the control
   channel and the hunt resumes there. Control channels are not held this way, so Auto still searches and still
   converges on them.
+- On an RTL input with no modulation lock, P25 Phase 1 on the 4800/4 profile can arrive on either demodulator chain:
+  C4FM, or CQPSK for an LSM simulcast system, which the C4FM chain reads only in part. Nothing before a decoded frame
+  can tell them apart, so alternate 4800/4 dwells that expire with nothing decoded try the CQPSK chain. The first frame
+  whose NID decodes, on either chain, starts one comparison: over the next 1800 symbols (about 0.4 s) the hunt adds up
+  what that chain's decoded frames read. A P25p1 carrier sends its frames back to back, so a chain that found every
+  frame's sync within a frame of the last one's end is reading all of it and keeps it; one that let a frame go by
+  gives the other chain 1800 symbols of its own, and the chain that read more keeps the profile and is remembered, so returning to that carrier after a voice grant starts on it without comparing again.
+  Without this, a C4FM chain reading about half of a simulcast control channel's TSBKs held it for as long as the
+  channel stayed up. `-mq`, `-mc` and the other modulation locks skip all of it.
 - D-STAR voice and ProVoice prove a transmission rather than a frame, because neither has a per-frame check worth the
   name. A D-STAR superframe spends 1992 symbols and a ProVoice frame 736, and the vocoder error counts both leave
   behind are soft corrections rather than a verdict. So a CRC-16/X.25 -- the D-STAR RF header, or the header

@@ -1051,13 +1051,14 @@ init_state_p25_patch_defaults(dsd_state* state) {
 
 /* What a decoded P25p1 NID has taught this session, and nothing else has any way to know:
  * which demodulator carried the frame (#423), and that the symbol profile under it is
- * carrying P25p1 at all (#400). Both start out untaught. */
+ * carrying P25p1 at all (#400). Both start out untaught, with no chain comparison run. */
 static void
 init_state_p25p1_nid_learning(dsd_state* state) {
     state->p25_p1_validated_rf_mod = -1;
     state->p25_p1_validated_symbolcnt = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
+    DSD_MEMSET(&state->p25_p1_mod_compare, 0, sizeof(state->p25_p1_mod_compare));
 }
 
 /* Trunk-scan publication for the frontends. Reset here so a re-initialised state

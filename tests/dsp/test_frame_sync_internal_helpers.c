@@ -2806,6 +2806,190 @@ test_validated_cqpsk_survives_rotation_but_not_disproof(void) {
     }
 }
 
+/* A P25p1 frame whose NID decoded on the chain the demodulator is on: getFrameSync() searched @p search symbols and
+ * returned on its sync, the handler read @p read, and getFrameSync() is entered again. */
+static void
+compare_frame(dsd_opts* opts, dsd_state* state, uint32_t search, uint32_t read) {
+    state->symbolcnt += search;
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    state->symbolcnt += read;
+    state->p25_p1_validated_rf_mod = state->rf_mod;
+    state->p25_p1_validated_symbolcnt = state->symbolcnt;
+    frame_sync_p25p1_mod_compare_note(opts, state);
+}
+
+/* A no-sync return after @p symbols of search, and the entry after it. */
+static void
+compare_idle(dsd_opts* opts, dsd_state* state, uint32_t symbols) {
+    state->symbolcnt += symbols;
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    frame_sync_p25p1_mod_compare_note(opts, state);
+}
+
+static void
+compare_setup(dsd_opts* opts, dsd_state* state, int incumbent_rf_mod) {
+    static int fake_rtl_context;
+    reset(opts, state);
+    opts->frame_p25p1 = 1;
+    opts->frame_p25p2 = 1;
+    opts->frame_dmr = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->rf_mod = incumbent_rf_mod;
+    state->p25_p1_validated_rf_mod = -1;
+    state->symbolcnt = 50000U;
+    reset_fake_profile_capture();
+}
+
+/* One search pass of a control channel's one-block TSDUs on the current chain, from the first frame's sync: every
+ * slot (134 symbols read, 46 searched) when @p every is 1, one slot in @p every otherwise. */
+static void
+compare_pass(dsd_opts* opts, dsd_state* state, int every) {
+    const uint32_t slot = 180U;
+    uint32_t used = 0;
+    int frames = 0;
+    while (used + slot * (uint32_t)every <= (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+        const uint32_t search = frames == 0 ? 0U : slot * (uint32_t)every - 134U;
+        compare_frame(opts, state, search, 134U);
+        used += search + 134U;
+        frames++;
+    }
+    compare_idle(opts, state, (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - used);
+}
+
+/*
+ * A chain that decodes part of an LSM simulcast control channel decodes, so the binary trial took it and its own
+ * proofs kept it for as long as the channel stayed up: the 769 MHz capture's control channel spent 164 s on C4FM at
+ * half the TSBKs the CQPSK chain reads. The first validated frame of an acquisition now measures what that chain's
+ * validated frames read over a search pass; one that let a frame go by unread in it has the other chain measured,
+ * and the chain that read more keeps the profile.
+ */
+static void
+test_p25p1_partial_chain_loses_the_comparison(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    /* C4FM reads one TSBK in three; its first opens the comparison and the votes are kept off the chain. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    assert(state.p25_p1_mod_probe_active == 1);
+    assert(state.rf_mod == 0);
+    for (int i = 0; i < 2; i++) {
+        compare_frame(&opts, &state, 3 * 180 - 134, 134);
+        assert(state.rf_mod == 0);
+    }
+    /* Its pass let frames go by unread: the pass ends on the other chain. */
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 134 - 2 * 3 * 180);
+    assert(state.rf_mod == 1);
+    assert(g_profile_cqpsk == 1 && g_profile_rate == 4800);
+    assert(state.p25_p1_mod_probe_active == 1);
+    /* CQPSK reads every TSBK: it wins, keeps the profile and becomes the learned modulation. */
+    state.sps_hunt_counter = 1500;
+    compare_pass(&opts, &state, 1);
+    assert(state.rf_mod == 1);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+    assert(state.sps_hunt_counter == 0);
+    /* One comparison per acquisition: the chain it chose opens no other. */
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 0);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1);
+
+    /* A chain that reads the carrier back to back is never tried against: CQPSK first and whole stays, untouched. */
+    compare_setup(&opts, &state, 1);
+    compare_pass(&opts, &state, 1);
+    assert(state.rf_mod == 1);
+    assert(g_profile_set_calls == 0);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+
+    /* The other way round: CQPSK came first reading one TSBK in three, C4FM reads them all. */
+    compare_setup(&opts, &state, 1);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0);
+    assert(g_profile_cqpsk == 0);
+    compare_pass(&opts, &state, 1);
+    assert(state.rf_mod == 0);
+    assert(state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_probe_active == 0);
+
+    /* One TSBK missed in a pass the chain otherwise reads whole is a frame gone by: the other chain is measured. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    for (int i = 0; i < 4; i++) {
+        compare_frame(&opts, &state, 46, 134);
+    }
+    compare_frame(&opts, &state, 46 + 180, 134);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 6 * 134 - 5 * 46 - 180);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    /* A call's LDUs follow each other with almost no search: no trial. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 864);
+    compare_frame(&opts, &state, 2, 864);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 2 * 864 - 2);
+    assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_validated_rf_mod == 0);
+
+    /* A tie keeps the incumbent, put back on its chain. */
+    compare_setup(&opts, &state, 0);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0 && g_profile_cqpsk == 0);
+    assert(state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_probe_active == 0);
+    /* ... and the verdict holds against the next frame on it. */
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 0 && state.rf_mod == 0);
+
+    /* A carrier boundary ends a comparison without a verdict; the next acquisition compares afresh. */
+    compare_setup(&opts, &state, 0);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1);
+    state.carrier_seq++;
+    compare_idle(&opts, &state, 100);
+    assert(state.p25_p1_mod_probe_active == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 1);
+
+    /* Nothing is compared under a modulation lock, off the RTL front end, on a trunked voice channel, or on a profile
+     * P25p1 does not own. */
+    compare_setup(&opts, &state, 1);
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 0);
+
+    compare_setup(&opts, &state, 0);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+
+    compare_setup(&opts, &state, 0);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+
+    compare_setup(&opts, &state, 1);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * Issue #423: a P25p1 sync cannot claim CQPSK -- the sync word is identical on both
  * modulations -- but while the chain is already on it must re-assert the front-end profile the
@@ -3697,6 +3881,7 @@ main(void) {
     test_p25p1_probe_survives_its_dwell();
     test_validated_p25p1_modulation_outranks_the_heuristics();
     test_validated_cqpsk_survives_rotation_but_not_disproof();
+    test_p25p1_partial_chain_loses_the_comparison();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();
     test_decode_mode_profiles_agree_with_the_sps_hunt_table();

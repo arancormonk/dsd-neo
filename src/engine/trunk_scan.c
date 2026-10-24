@@ -145,6 +145,8 @@ typedef struct {
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
     int p25_p1_validated_rf_mod;
+    int p25_p1_mod_verdict_valid;
+    int p25_p1_mod_verdict_rf_mod;
     int p25_sm_mode;
     int nac;
     int samplesPerSymbol;
@@ -1660,6 +1662,8 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
     snapshot->p25_p1_validated_rf_mod = state->p25_p1_validated_rf_mod;
+    snapshot->p25_p1_mod_verdict_valid = state->p25_p1_mod_compare.verdict_valid;
+    snapshot->p25_p1_mod_verdict_rf_mod = state->p25_p1_mod_compare.verdict_rf_mod;
     snapshot->p25_sm_mode = state->p25_sm_mode;
     snapshot->nac = state->nac;
     snapshot->samplesPerSymbol = state->samplesPerSymbol;
@@ -1699,6 +1703,13 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     state->p25_p1_validated_rf_mod = snapshot->p25_p1_validated_rf_mod;
+    /* The chain comparison's verdict is learned modulation too; a comparison in flight was the target left's. */
+    state->p25_p1_mod_compare.verdict_valid = snapshot->p25_p1_mod_verdict_valid;
+    state->p25_p1_mod_compare.verdict_rf_mod = snapshot->p25_p1_mod_verdict_rf_mod;
+    if (state->p25_p1_mod_compare.phase != 0) {
+        state->p25_p1_mod_compare.phase = 0;
+        state->p25_p1_mod_probe_active = 0;
+    }
     state->p25_sm_mode = snapshot->p25_sm_mode;
     state->nac = snapshot->nac;
     state->samplesPerSymbol = snapshot->samplesPerSymbol;
