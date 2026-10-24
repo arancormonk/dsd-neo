@@ -1226,8 +1226,13 @@ frame_sync_note_m17_pre_candidate(frame_sync_match_ctx* ctx, int ham_pre, int ha
      * rails, so every window across it matches -- at one polarity or the other, since the run
      * reads as its own inversion one symbol over -- and a real transmission has some 180 of
      * them to spare. Noise supplies a single window at this tolerance often enough to matter,
-     * and supplies eight in a row essentially never. Counting the run is what separates the two
-     * without asking any single window to be cleaner than real M17 delivers (#399). */
+     * and eight in a row far less often -- but not never: the window is sign-sliced, and at 4800
+     * symbols/s a run long enough to latch turns up in receiver noise a few times a second (the
+     * noise_floor fixture opens 27 M17 frames in 10 s under -fz, none of which passes a CRC). A longer run would not separate them either: a
+     * transmission the hunt joins mid-stream has no preamble, and its first frame comes from a
+     * run its payload supplies (the m17 fixture decodes nothing once 16 windows are required).
+     * Counting the run is what separates the two without asking any single window to be cleaner
+     * than real M17 delivers (#399). */
     if (state->m17_pre_run < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS) {
         state->m17_pre_run++;
     }

@@ -47,7 +47,9 @@ typedef enum {
  *
  * A single 8-symbol window within one error of the marker is not rare enough to act on -- noise
  * produces them, and each one used to open the whole M17 chain. A real preamble is 192 symbols,
- * so it offers some 180 consecutive matches and can spare these eight many times over.
+ * so it offers some 180 consecutive matches and can spare these eight many times over. Noise still
+ * makes such a run a few times a second (see frame_sync_note_m17_pre_candidate()); the frames it
+ * opens are refused by their CRCs, and requiring more would lose M17 joined mid-stream.
  */
 #define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 8
 
