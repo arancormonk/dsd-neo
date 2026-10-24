@@ -42,6 +42,8 @@ void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Me
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
                                   size_t ElementsContentBits);
+// Defined here for the real-call-state build and by tests/test_support/call_state_stubs.c for the stubbed one.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 unsigned int dsd_call_state_stub_event_sync_count(uint8_t slot);
 
 typedef enum {
@@ -234,6 +236,7 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 unsigned int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_call_state_stub_event_sync_count(uint8_t slot) {
     return slot < DSD_CALL_STATE_SLOT_COUNT ? g_event_sync_counts[slot] : 0U;
 }

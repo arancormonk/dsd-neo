@@ -1456,8 +1456,8 @@ test_cap_plus_status_names_expired_slot(dsd_opts* opts, dsd_state* st) {
     accepted_voice_now(opts, st, 1);
     status_clock_at(1.0);
     (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
-    for (double t = 1.0; t < 3.55; t += 0.5) {
-        status_clock_at(t);
+    for (int step = 0; step < 6; step++) {
+        status_clock_at(1.0 + 0.5 * step);
         accepted_voice_now(opts, st, 1); // the companion keeps the carrier busy
     }
     status_clock_at(3.6);
