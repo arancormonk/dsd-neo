@@ -67,12 +67,14 @@ tetra_slot_bit(uint8_t tn) {
  * the MAC attaches one no call PDU took by the address alone (tetra_calls_on_allocation()).
  */
 typedef struct {
-    tetra_mac_address addr; /**< the address of the MAC-RESOURCE (or of the one that started a fragmented TM-SDU) */
-    tetra_chan_alloc alloc; /**< valid when @c has_alloc and not @c alloc_unread */
-    uint8_t has_addr;       /**< @c addr is the PDU's: a MAC-D-BLCK carries only an event label */
-    uint8_t has_alloc;      /**< the PDU carried a channel allocation */
-    uint8_t alloc_unread;   /**< ...which is ciphertext (EN 300 392-7 clause 6.7.1.2): its channel is not known */
-    uint8_t alloc_taken;    /**< a call PDU of the TM-SDU took the allocation, or named a call no record holds */
+    tetra_mac_address addr;    /**< the address of the MAC-RESOURCE (or of the one that started a fragmented TM-SDU) */
+    tetra_chan_alloc alloc;    /**< valid when @c has_alloc and not @c alloc_unread */
+    uint8_t has_addr;          /**< @c addr is the PDU's: a MAC-D-BLCK carries only an event label */
+    uint8_t has_alloc;         /**< the PDU carried a channel allocation */
+    uint8_t alloc_unread;      /**< ...which is ciphertext (EN 300 392-7 clause 6.7.1.2): its channel is not known */
+    uint8_t alloc_taken;       /**< a call PDU of the TM-SDU took the allocation, or named a call no record holds */
+    uint8_t alloc_taker_valid; /**< @c alloc_taker is the call record the allocation went to */
+    uint16_t alloc_taker;      /**< its call identifier */
 } tetra_mac_sdu;
 
 /** CMCE PDUs that act on a call (EN 300 392-2 clause 14.7.1). */
@@ -102,6 +104,7 @@ enum {
     TETRA_CALL_HAS_GRANT = 1u << 5,       /* grant: the transmission grant (table 14.80) */
     TETRA_CALL_HAS_ENCRYPTION = 1u << 6,  /* encryption: the encryption control of D-TX GRANTED or D-TX INTERRUPT */
     TETRA_CALL_HAS_CALLING_EXT = 1u << 7, /* calling_ext: the extension of a calling party of type 2 (table 14.43) */
+    TETRA_CALL_HAS_CONTINUE = 1u << 8,    /* continue_value: the continue element of D-TX CONTINUE (table 14.17) */
 };
 
 /** One decoded CMCE call PDU, as the call records need it. */
@@ -111,13 +114,14 @@ typedef struct {
     uint32_t talker_ssi;
     uint16_t call_id;
     uint16_t new_call_id;
-    uint8_t kind;          /**< tetra_call_event_kind */
-    uint8_t has;           /**< TETRA_CALL_HAS_* */
-    uint8_t basic_service; /**< table 14.35 */
-    uint8_t priority;      /**< D-SETUP call priority */
-    uint8_t timeout;       /**< table 14.50 */
-    uint8_t grant;         /**< table 14.80: 0 granted, 1 not granted, 2 queued, 3 granted to another user */
-    uint8_t encryption;    /**< encryption control: 1 end-to-end encrypted */
+    uint16_t has;           /**< TETRA_CALL_HAS_* */
+    uint8_t kind;           /**< tetra_call_event_kind */
+    uint8_t basic_service;  /**< table 14.35 */
+    uint8_t priority;       /**< D-SETUP call priority */
+    uint8_t timeout;        /**< table 14.50 */
+    uint8_t grant;          /**< table 14.80: 0 granted, 1 not granted, 2 queued, 3 granted to another user */
+    uint8_t encryption;     /**< encryption control: 1 end-to-end encrypted */
+    uint8_t continue_value; /**< D-TX CONTINUE: 1 continue */
 } tetra_call_event;
 
 /**
@@ -190,6 +194,23 @@ uint32_t tetra_calls_target(const tetra_call_t* c);
 
 /** @brief The record of the call the trunking state machine follows, or NULL when it follows none. */
 const tetra_call_t* tetra_calls_followed(const dsd_state* state);
+
+/**
+ * @brief The ACCESS-ASSIGN PDU of the downlink normal burst being decoded (@p read 0 when its AACH could not be read),
+ * before its blocks are decoded.
+ *
+ * Only a followed timeslot of the followed carrier, placed by the TDMA clock, counts. The call's downlink traffic usage
+ * marker there (its record's, assigned with the allocation it holds, EN 300 392-2 clause 23.5.5) maintains the channel
+ * (clause 23.5.6.1.2, tetra_sm_note_maintenance()) and gives the call receive permission once N.213 PDUs in successive
+ * slots of the channel carry it in frames 1 to 17 (clause 23.8.2.3.2), which also proves the call on the carrier; N.212
+ * PDUs without it or T.212 without one take the permission back. N.208 PDUs saying the channel is no longer the call's
+ * (clause 23.5.6.1.1) end the follow as a "go to the MCCH" allocation would.
+ */
+void tetra_calls_on_aach(dsd_opts* opts, dsd_state* state, int read, uint16_t pdu);
+
+/** 1 when the followed call holds receive permission on its channel with a downlink usage marker valid there: what its
+ * traffic needs once its record holds an allocation (tetra_voice_gate.c). */
+int tetra_calls_followed_rx(const dsd_state* state);
 
 /**
  * @brief The receiver reached the followed channel (tetra_trunk_sm.c): when the followed call is the canonical call,

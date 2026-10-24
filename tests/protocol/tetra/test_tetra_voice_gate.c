@@ -77,6 +77,9 @@ group_call(fixture* f, uint16_t call_id, uint32_t gssi, long freq_hz, uint8_t ti
     c->alloc.timeslots = timeslots;
     c->alloc.up_down = 3;
     c->alloc_m = dsd_decode_now_mono_s();
+    /* Its allocation came with the downlink traffic usage marker of the channel (EN 300 392-2 clause 23.5.5). */
+    c->usage_marker = 21u;
+    c->flags = (uint8_t)(c->flags | TETRA_CALL_F_USAGE_MARKER);
 }
 
 /* The followed grant and the record of the call it came from, both on @p timeslots, as a grant is made from the
@@ -129,9 +132,19 @@ test_trunked_gate(void) {
     follow(&f, 9, 0x08);
     expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: nothing before signalling proved the call here");
     tetra_confirm_note_followed_call(f.state);
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: nor before the call has receive permission");
+    tetra_confirm_set_followed_rx(f.state, 1);
     expect(tetra_voice_gate(f.opts, f.state, &sp) && sp.followed && sp.kind == TETRA_SPEECH_CALL && sp.call_id == 9
                && sp.target == 0x123456u && sp.tn == 1,
            "trunked: the proven followed call is heard, judged by its GSSI");
+    tetra_call_t* const marked = tetra_calls_find(f.state, 9);
+    marked->flags = (uint8_t)(marked->flags & ~TETRA_CALL_F_USAGE_MARKER);
+    expect(!tetra_voice_gate(f.opts, f.state, &sp),
+           "trunked: no traffic of a call whose allocation came without a usage marker (clause 23.8.2.3.2)");
+    marked->flags = (uint8_t)(marked->flags | TETRA_CALL_F_USAGE_MARKER);
+    marked->alloc.up_down = 2;
+    expect(!tetra_voice_gate(f.opts, f.state, &sp), "trunked: nor of one whose allocation assigns the uplink only");
+    marked->alloc.up_down = 3;
     ts->sm.pending_request_id = 7;
     expect(!tetra_voice_gate(f.opts, f.state, &sp) && sp.kind == 0 && sp.target == 0u,
            "trunked: nothing while a retune is in flight, and nothing is described");

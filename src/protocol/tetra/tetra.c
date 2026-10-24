@@ -399,7 +399,12 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     }
     ts->decode_ok++;
     tetra_nb_subtype(state, ctx, "SCH/F");
-    TETRA_LOG_PAYLOAD(ts, "[TETRA SCH/F] tn=%u CRC OK\n", (unsigned)ts->tn);
+    if (ts->tdma_valid) {
+        TETRA_LOG_PAYLOAD(ts, "[TETRA SCH/F] tn=%u CRC OK\n", (unsigned)ts->tn);
+    } else {
+        /* The clock is stopped (a retune, before the carrier's BSCH): the timeslot it last placed is no guide. */
+        TETRA_LOG_PAYLOAD(ts, "[TETRA SCH/F] tn=? CRC OK\n");
+    }
     tetra_nb_signalling(opts, state, ctx, decoded, SCHF_TYPE1, "SCH/F");
 }
 
@@ -646,6 +651,9 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     TETRA_LOG_PAYLOAD(ts, " [TETRA NDB  NTS%d  pol=%d rot=%d  AACH %s]", state->tetra_sync.nts2 ? 2 : 1,
                       (int)state->tetra_sync.polarity, (int)(state->tetra_sync.phase_rot & 3), aach_text);
 
+    /* The followed channel's ACCESS-ASSIGN PDU, before the blocks: it may give the followed call's traffic in this very
+     * burst receive permission, or take it back. */
+    tetra_calls_on_aach(opts, state, aach_read, aach);
     tetra_nb_decode(opts, state, &ctx, b2_dibits, b2_soft);
     tetra_block1_consumed(state);
     tetra_burst_done(opts, state);

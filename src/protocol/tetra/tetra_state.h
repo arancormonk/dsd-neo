@@ -40,8 +40,10 @@ typedef struct {
     tetra_sm_grant followed;
     double t_tune_m;
     double t_voice_m;
+    double t_maint_m;
     uint32_t confirm_epoch;
     uint8_t followed_proven;
+    uint8_t followed_rx;
     uint8_t followed_retired;
     uint8_t state;
 } tetra_sm_rollback;
@@ -52,6 +54,7 @@ typedef struct {
     tetra_sm_grant followed;        /* the call followed while TUNED */
     double t_tune_m;  /* the followed tune completed, or the grant was taken on the same carrier; 0 in flight */
     double t_voice_m; /* last speech on a followed timeslot since then; 0 for none */
+    double t_maint_m; /* last channel maintenance event before the first speech (tetra_sm_note_maintenance()); 0 none */
     uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
     uint8_t state;               /* tetra_sm_state_e */
     uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel */
@@ -75,9 +78,21 @@ typedef struct {
                                    included */
     uint32_t carrier_epoch;     /* counts the resets: evidence read at one epoch belongs to no other carrier */
     uint8_t followed_call;      /* CRC-passed signalling of the followed call was decoded on this carrier */
-    uint8_t burst_open;         /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
-    uint8_t burst_stale;        /* the carrier was reset while the burst was open: its blocks are the last carrier's */
-    uint8_t burst_proven;       /* the open (or last) burst decoded a block whose CRC passed */
+    /* Receive permission for the followed call's traffic on this carrier (EN 300 392-2 clause 23.8.2.3.2), and the
+     * ACCESS-ASSIGN PDUs of its channel that grant and withdraw it (tetra_calls_on_aach()). Forgotten with
+     * followed_call. */
+    uint8_t rx_perm;     /* the followed call's traffic may be processed */
+    uint8_t rx_run;      /* N.213: AACHs with the call's downlink usage marker in successive slots */
+    uint8_t rx_adverse;  /* N.212: AACHs received since the last such one without it */
+    uint8_t rx_chan_bad; /* N.208: successive AACHs saying the channel is no longer the call's */
+    uint8_t rx_run_tn;   /* timeslot and frame of the last AACH rx_run counted */
+    uint8_t rx_run_fn;
+    uint8_t rx_qual_valid; /* rx_qual_start holds the last qualifying AACH or CC authorisation (T.212) */
+    uint32_t rx_run_start; /* tdma_slot_start of the last AACH rx_run counted */
+    uint32_t rx_qual_start;
+    uint8_t burst_open;   /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
+    uint8_t burst_stale;  /* the carrier was reset while the burst was open: its blocks are the last carrier's */
+    uint8_t burst_proven; /* the open (or last) burst decoded a block whose CRC passed */
 } tetra_confirm_t;
 
 /** A channel allocation element (EN 300 392-2 table 21.87) as the MAC read it from a clear PDU. */
@@ -105,7 +120,8 @@ enum {
 enum {
     TETRA_CALL_F_SETUP_SEEN = 1u << 0,   /* a D-SETUP named the called party and the basic service */
     TETRA_CALL_F_EVENT_LABEL = 1u << 1,  /* event_label is assigned to a party of the call */
-    TETRA_CALL_F_USAGE_MARKER = 1u << 2, /* usage_marker is assigned to the call */
+    TETRA_CALL_F_USAGE_MARKER = 1u << 2, /* usage_marker is the downlink traffic usage marker of the call's allocation
+                                            (EN 300 392-2 clause 23.5.5) */
 };
 
 /* The MAC channel an event label is valid on (EN 300 392-2 clause 23.4.1.2.3, tetra_calls.c): an allocated channel,
@@ -142,7 +158,7 @@ typedef struct {
     uint8_t air_enc;      /**< encryption mode (TETRA_ENC_MODE_*) of the MAC-RESOURCE that allocated its channel */
     uint8_t priority;     /**< call priority from D-SETUP */
     uint8_t timeout;      /**< call time-out (table 14.50) */
-    uint8_t usage_marker; /**< usage marker assigned to the call (TETRA_CALL_F_USAGE_MARKER) */
+    uint8_t usage_marker; /**< downlink traffic usage marker assigned with @c alloc (TETRA_CALL_F_USAGE_MARKER) */
 } tetra_call_t;
 
 /* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the

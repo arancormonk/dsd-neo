@@ -78,12 +78,20 @@ void tetra_confirm_forget_followed_call(dsd_state* state);
 /** 1 when CRC-passed signalling of the followed call was decoded on this carrier since it became the followed call. */
 int tetra_confirm_followed_call_proven(const dsd_state* state);
 
+/** The followed call's receive permission on this carrier (EN 300 392-2 clause 23.8.2.3.2): granted (@p on) by a CC
+ * authorisation or the N.213 method, withdrawn by a CC withdrawal, N.212, T.212 or the channel lost. Like the proof, a
+ * note during a burst the carrier was reset in counts for no carrier. */
+void tetra_confirm_set_followed_rx(dsd_state* state, int on);
+
+/** 1 while the followed call holds receive permission on this carrier. */
+int tetra_confirm_followed_rx(const dsd_state* state);
+
 /** Which carrier the evidence is about: a count tetra_confirm_reset() advances. */
 uint32_t tetra_confirm_carrier_epoch(const dsd_state* state);
 
-/** A tune that failed puts the followed call back: its proof @p proven, read at @p epoch, returns with it unless the
- * carrier was reset since, which dropped the proof with the carrier. */
-void tetra_confirm_restore_followed_call(dsd_state* state, uint32_t epoch, int proven);
+/** A tune that failed puts the followed call back: its proof @p proven and receive permission @p rx_perm, read at
+ * @p epoch, return with it unless the carrier was reset since, which dropped both with the carrier. */
+void tetra_confirm_restore_followed_call(dsd_state* state, uint32_t epoch, int proven, int rx_perm);
 
 #ifdef __cplusplus
 }

@@ -83,6 +83,12 @@ voice_followed(const dsd_state* state, const tetra_state_t* ts, tetra_speech* sp
     if (c && !voice_record_on(c, &g, sp->tn)) {
         return 0;
     }
+    /* A call with a traffic channel plays only under that channel's downlink usage marker and receive permission
+     * (EN 300 392-2 clause 23.8.2.3.2): no traffic without the marker, and none once the channel's ACCESS-ASSIGN PDUs
+     * or the call's signalling took the permission back. */
+    if (c && c->alloc.timeslots != 0u && !tetra_calls_followed_rx(state)) {
+        return 0;
+    }
     sp->followed = 1;
     voice_of_call(ts, c, sp);
     return 1;
