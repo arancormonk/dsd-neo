@@ -675,6 +675,46 @@ test_tdma_lapsed_duplicate_restarts_dwell(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Phase 2: a call that moved to the other slot left its old slot's follow history behind; when its talkgroup is later
+ * assigned to that slot again, after its conversation ended, it is followed anew. */
+static int
+test_tdma_vacated_slot_restarts_dwell(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    tdma_site(opts, st);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(1800.0);
+    p25_sm_event_t a_ts1 = p25_sm_ev_group_grant(0x100A, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &a_ts1);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    set_clock_s(1801.0);
+    p25_sm_event_t a_ts2 = p25_sm_ev_group_grant(0x100B, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &a_ts2);
+    rc |= expect_true("vacated: the call moved to TS2",
+                      !p25_sm_get_ctx()->slots[0].grant_active && p25_sm_get_ctx()->slots[1].grant_active);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    set_clock_s(1802.0);
+    p25_sm_event_t end1 = p25_sm_ev_end_call_at(1, 100, 7100, 1802.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &end1);
+    set_clock_s(1803.0);
+    p25_sm_event_t b_ts2 = p25_sm_ev_group_grant(0x100B, 0, 300, 7300, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &b_ts2);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    const long held = p25_sm_get_ctx()->vc_freq_hz;
+    set_clock_s(1810.0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t a_again = p25_sm_ev_group_grant(0x100A, 0, 100, 7101, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &a_again);
+    rc |= expect_true("vacated: the talkgroup back on its old slot is followed from now",
+                      p25_sm_get_ctx()->slots[0].followed_since_m > 1809.9);
+    set_clock_s(1810.1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 200, 0x1020);
+    rc |= expect_true("vacated: its dwell holds off a preemption", p25_sm_get_ctx()->vc_freq_hz == held);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -701,6 +741,7 @@ main(void) {
     rc |= test_resumed_conversation_keeps_dwell(&opts, &st);
     rc |= test_tdma_abandoned_slot_restarts_dwell(&opts, &st);
     rc |= test_tdma_lapsed_duplicate_restarts_dwell(&opts, &st);
+    rc |= test_tdma_vacated_slot_restarts_dwell(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

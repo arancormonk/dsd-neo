@@ -1997,6 +1997,8 @@ p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
         }
         p25_call_end_slot(opts, state, s, dsd_decode_now_mono_s());
         p25_grant_clear_one_slot_state(ctx, s);
+        // The call left this slot: a later call here, even of the same talkgroup, is followed anew.
+        ctx->slots[s].followed_since_m = 0.0;
         p25_grant_clear_policy_slot(state, s);
         if (state) {
             state->p25_p2_audio_allowed[s] = 0;
