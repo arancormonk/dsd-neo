@@ -112,7 +112,7 @@ Rectangle {
     }
 
     TapHandler {
-        enabled: control.enabled && Navigation.allows(control)
+        enabled: Navigation.allows(control) && control.enabled
         onTapped: input.forceActiveFocus()
     }
 }

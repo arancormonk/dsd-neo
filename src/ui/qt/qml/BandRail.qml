@@ -226,7 +226,7 @@ Item {
     }
 
     DragHandler {
-        enabled: rail.enabled && Navigation.allows(rail)
+        enabled: Navigation.allows(rail) && rail.enabled
         target: null
         xAxis.enabled: true
         yAxis.enabled: false
