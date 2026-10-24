@@ -785,6 +785,98 @@ test_move_matches_slot_identity(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A call on @p slot as the canonical layer opens it: a voice LC naming group @p tg (0: anonymous late-entry voice). */
+static void
+canonical_call_begins(dsd_state* st, int slot, uint32_t tg, uint32_t src) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = (uint8_t)slot,
+        .kind = tg != 0U ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_VOICE,
+        .ota_target_id = tg,
+        .policy_target_id = tg,
+        .ota_source_id = src,
+    };
+    (void)dsd_call_state_observe(st, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+/* Whether @p slot's canonical call is ACTIVE naming group @p tg, and the slot's record is bound to it. */
+static int
+slot_publishes_bound(const dsd_state* st, int slot, uint32_t tg) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(st, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_target_id == tg && sm()->slots[slot].target == tg
+           && sm()->slots[slot].call_epoch == dsd_call_snapshot_transmission(&call);
+}
+
+/* The followed grant named call A; a checked LC then named another call, B, on the followed slot (A's end withdrew the
+   grant's identity there). A matched move of B republishes B where it went: its first voice on the new carrier, or on
+   the new slot of the same carrier, names B. */
+static int
+test_move_republishes_renamed_call(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int in_place = 0; in_place < 2; in_place++) {
+        init_env(opts, st, 2.0);
+        tv_grant(opts, st, LPCN_A, 0, 100, 1);
+        clock_at(0.3);
+        voice(opts, st, 0);
+        clock_at(0.5);
+        canonical_call_begins(st, 0, 200, 2);
+        dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200, 2);
+        rc |= expect_true("B's LC names the followed slot, the grant's identity withdrawn",
+                          sm()->slots[0].target == 200U && sm()->vc_identity_known == 0);
+        clock_at(0.6);
+        const int new_slot = in_place ? 1 : 0;
+        const dmr_sm_grant_result_e moved = in_place ? submit_move(opts, st, VC_A, LPCN_A, 1, 1, 200, 2)
+                                                     : submit_move(opts, st, VC_B, LPCN_B, 0, 1, 200, 2);
+        rc |=
+            expect_true("the move of B is followed", moved == (in_place ? DMR_SM_GRANT_IN_PLACE : DMR_SM_GRANT_FOLLOWED)
+                                                         && sm()->vc_tg == 200 && sm()->vc_identity_known == 1);
+        clock_at(0.7);
+        voice(opts, st, new_slot);
+        rc |= expect_true(in_place ? "B's first voice on its new slot publishes B"
+                                   : "B's first voice on the new carrier publishes B",
+                          slot_publishes_bound(st, new_slot, 200U));
+    }
+    return rc;
+}
+
+/* A matched move to another carrier ends the moved call's epoch on the carrier left (as any follow does), so its first
+   voice on the new carrier publishes it in an epoch of its own and the moved identity binds to that call. When the
+   moved call ends, the next, anonymous call on the slot is unknown (a gap record): it yields only to Hold, never to a
+   preempting call that merely outranks the moved call. */
+static int
+test_move_to_carrier_binds_moved_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 300, "A", 60, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    int rc = expect_true("the followed call is published", slot_publishes_bound(st, 0, 100U));
+    const uint64_t left_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? call.epoch : 0U;
+    clock_at(0.4);
+    rc |= expect_true("the move to another carrier is followed",
+                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 1) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B);
+    rc |= expect_true("the moved call's epoch on the carrier left ended",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.epoch == left_epoch
+                          && call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    rc |= expect_true("the moved call is published in an epoch of its own, which its identity binds to",
+                      slot_publishes_bound(st, 0, 100U) && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.epoch != left_epoch);
+    clock_at(1.0);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(1.2);
+    canonical_call_begins(st, 0, 0U, 0U);
+    voice(opts, st, 0);
+    clock_at(1.3);
+    tv_grant(opts, st, LPCN_C, 0, 300, 3);
+    rc |= expect_true("the anonymous call after the moved one yields only to Hold", vc(st) == VC_B && g_tunes == 2);
+    return rc;
+}
+
 /* Slot identities live in the machine's context, which trunk scan keeps per target: each target's context holds its own,
    and the acquisition a target switch starts (dmr_sm_begin_cc_acquisition()) or an abandoned carrier clears them. */
 static dmr_sm_ctx_t g_scan_ctx[2];
@@ -873,6 +965,8 @@ main(void) {
     rc |= test_slot_move_republishes(opts, st);
     rc |= test_move_matches_slot_identity(opts, st);
     rc |= test_deferred_move_keeps_identity(opts, st);
+    rc |= test_move_republishes_renamed_call(opts, st);
+    rc |= test_move_to_carrier_binds_moved_call(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

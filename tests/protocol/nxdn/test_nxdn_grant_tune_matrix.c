@@ -1255,6 +1255,150 @@ late_entry_call(void) {
     (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
 }
 
+/* Voice decoded on the receiver's channel, as the vocoder marks it (mark_vocoder_call_media()): it continues the active
+ * canonical call, and opens an anonymous one only when none is active. */
+static void
+vocoder_media(void) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        late_entry_call();
+        return;
+    }
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+}
+
+/* What a takeover did to the displaced call A (epoch @p a_epoch, target @p a_target): it ended there, explicitly and
+ * synchronized (@p syncs_before: slot 0's event syncs before the takeover), so the preempting call's voice on the new
+ * carrier opens an epoch of its own, which the held call binds to, instead of continuing A under A's identity. */
+static int
+expect_left_call_ended(const char* name, uint64_t a_epoch, uint32_t a_target, unsigned int syncs_before) {
+    dsd_call_snapshot call;
+    int rc = 0;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.epoch == a_epoch
+                          && call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT,
+                      name, "left", "the displaced call ended explicitly at the carrier boundary");
+    rc |= nxdn_expect(dsd_call_state_stub_event_sync_count(0U) == syncs_before + 1U, name, "left",
+                      "the displaced call's end was synchronized");
+    vocoder_media();
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.epoch != a_epoch && call.ota_target_id != a_target,
+                      name, "new-carrier", "voice on the new carrier opened its own call, not the displaced one");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.call_floor == a_epoch
+                          && g_state.nxdn_call.call_epoch == 0U,
+                      name, "new-carrier", "the held call awaits the first call after the displaced one");
+    return rc;
+}
+
+/* A Type-C preemption leaves the carrier: the displaced call ends there, so the preempting call's voice (before its
+ * VCALL) never continues it, and the held call binds to the preempting call's own epoch. */
+static int
+nxdn_run_type_c_takeover_ends_left_call_case(void) {
+    static const char* const name = "type-c-takeover-ends-left-call";
+    type_c_fixture();
+    policy_row(1100U, 10, 0);
+    policy_row(1200U, 60, 1);
+    int rc = 0;
+    at_seconds(9500.0);
+    send_assignment(0x04U, 1100U, 16U);
+    at_seconds(9500.2);
+    voice_live();
+    send_vcall(2100U, 1100U);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.ota_target_id == 1100U,
+                      name, "held", "the followed call is on the air");
+    const uint64_t a_epoch = call.epoch;
+    const unsigned int syncs = dsd_call_state_stub_event_sync_count(0U);
+    at_seconds(9500.9);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "preempt", "preempted");
+    rc |= expect_left_call_ended(name, a_epoch, 1100U, syncs);
+    at_seconds(9501.0);
+    voice_live();
+    send_vcall(2200U, 1200U);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && g_state.nxdn_call.target == 1200U
+                          && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
+                      name, "vcall", "the held call is bound to the preempting call");
+    return rc;
+}
+
+/* A Type-D busy message repeated for the call the receiver still holds is an in-place repeat: the call on the air
+ * keeps its epoch. A preemption to another repeater leaves the carrier: the displaced call ends there. */
+static int
+nxdn_run_type_d_takeover_ends_left_call_case(void) {
+    static const char* const name = "type-d-takeover-ends-left-call";
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 60, 1);
+    int rc = 0;
+    at_seconds(9600.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    at_seconds(9600.2);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE, name, "held",
+                      "the followed call is on the air");
+    const uint64_t a_epoch = call.epoch;
+    const unsigned int syncs = dsd_call_state_stub_event_sync_count(0U);
+
+    at_seconds(9602.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 2; /* past the 1 s voice window */
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_tune_count == 2 && dsd_call_state_get(&g_state, 0U, &call) == 1
+                          && call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == a_epoch
+                          && dsd_call_state_stub_event_sync_count(0U) == syncs,
+                      name, "repeat", "an in-place repeat keeps the call on the air");
+
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9602.1);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 3 && g_last_tune_freq == 938512500L, name, "preempt", "preempted");
+    rc |= expect_left_call_ended(name, a_epoch, 1400U, syncs);
+    return rc;
+}
+
+/* The engine's hangtime return ended the followed call and untuned the receiver, leaving the held call's record behind.
+ * Following the same talkgroup on the same channel again is a new follow: its dwell runs from now, never from the
+ * follow of the call that ended, so a preempting call heard right after it is refused. */
+static int
+nxdn_run_refollow_after_hangtime_return_case(void) {
+    static const char* const name = "type-c-refollow-after-hangtime-return";
+    type_c_fixture();
+    policy_row(1100U, 10, 0);
+    policy_row(1200U, 60, 1);
+    int rc = 0;
+    at_seconds(9700.0);
+    send_assignment(0x04U, 1100U, 16U);
+    at_seconds(9700.2);
+    voice_live();
+    send_vcall(2100U, 1100U);
+    at_seconds(9705.0); /* the engine's hangtime return */
+    (void)dsd_call_state_end_ex(&g_state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
+    g_opts.trunk_is_tuned = 0;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 0;
+    at_seconds(9710.0);
+    send_assignment(0x04U, 1100U, 16U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(16U), name, "follow", "followed again");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.follow_m > 9709.0, name, "follow",
+                      "the follow time is the new follow's");
+    at_seconds(9710.1);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2, name, "dwell", "a preempting call waits for the new follow's dwell");
+    at_seconds(9710.8);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 3 && g_last_tune_freq == type_c_freq(17U), name, "preempt",
+                      "taken once the new follow was held for the dwell");
+    return rc;
+}
+
 /* A resident Type-D call heard without a grant tune (the receiver parked on its repeater) ends with its DISC: the next,
  * anonymous call there is not the ended one, so it yields only to Hold, never to a preempting call that merely
  * outranks the ended call. */
@@ -1578,6 +1722,9 @@ main(void) {
     rc |= nxdn_run_type_d_followed_new_call_case();
     rc |= nxdn_run_type_d_held_no_source_fallback_case();
     rc |= nxdn_run_type_d_private_after_group_case();
+    rc |= nxdn_run_type_c_takeover_ends_left_call_case();
+    rc |= nxdn_run_type_d_takeover_ends_left_call_case();
+    rc |= nxdn_run_refollow_after_hangtime_return_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

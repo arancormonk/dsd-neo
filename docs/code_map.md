@@ -4958,7 +4958,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     for a generic voice call (late entry, an INFO2 target message), the held call's when it names that target; a generic
     voice call is never read as group, and one of no known class leaves the held call unknown (only Hold displaces it).
     Its `follow_m` moves only when the identity changes (target, kind, or frequency
-    when both are known); one heard on another frequency than the receiver's is not known here. It is bound to the
+    when both are known); one heard on another frequency than the receiver's is not known here. A follow replaces the
+    previous record outright unless it re-follows the call the receiver still holds (`NXDN_FOLLOW_HELD`, a Type-D busy
+    message repeated past the voice window): a record the engine's hangtime return left behind never lends the
+    followed call its follow time or binding, even for the same target on the same channel. It is bound to the
     canonical call it names (`call_epoch`: that call's `dsd_call_snapshot_transmission()`; a follow's identity binds to
     the first call to begin after the tune, a VCALL's or SCCH's to the call on the air) and never outlives it
     (`nxdn_call_identity_refresh()`, before every read): its call's end, a sync loss included, clears it except on the
@@ -4997,7 +5000,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     ledger, so a call left there (the engine's hangtime return) does not read as a takeover; a preemption commits its
     cooldown (`dsd_tg_policy_commit_preemption()`); a Type-D busy message repeated past the voice window for the call
     the receiver still holds (`nxdn_follow_holds_call()`, read before the tune) describes it from its retained
-    `follow_m`, so the repeat never restarts the dwell. DISC's return and a Type-D termination (repeater 31) tune clear
+    `follow_m`, so the repeat never restarts the dwell. An accepted Type-C or Type-D follow that leaves the carrier the
+    receiver was on (`nxdn_tune_leaves_carrier()`, the receiver's frequency read before the tune; unknown counts as
+    leaving) ends slot 0's canonical call (EXPLICIT, synchronized, `nxdn_end_left_call()`, as DMR's
+    `dmr_sm_end_left_calls()`) before the follow is noted, so the followed call's voice, before its VCALL names it,
+    opens an epoch of its own that the held call binds to, never continuing the displaced call under its identity and
+    policy, and no sync loss reacquires the displaced call there; a follow on the same carrier (the in-place repeat of
+    the held call) leaves the call on the air alone. DISC's return and a Type-D termination (repeater 31) tune clear
     the route, the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25
     SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX`, `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
@@ -5379,10 +5388,10 @@ Private per-protocol modules worth knowing about:
     identity then stands for nothing (no fallback, no publication). A new call never inherits an identity, and LC
     precedence over seeds, grants and statuses holds only while the LC's call lasts (a Cap+ status may name a gap
     record's LSN).
-  - Leaving a carrier. An accepted follow to another carrier (a grant, Hold or preemption takeover, Connect Plus, XPT,
-    or a Cap+ status follow, `dmr_sm_note_status_follow()`) ends every slot's canonical call (EXPLICIT, synchronized,
-    `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
-    beside the followed one.
+  - Leaving a carrier. An accepted follow to another carrier (a grant, Hold or preemption takeover, a matched C_MOVE,
+    Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`) ends every slot's canonical call
+    (EXPLICIT, synchronized, `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced
+    call never stays active beside the followed one.
   - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
     commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
     takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger
@@ -5395,11 +5404,15 @@ Private per-protocol modules worth knowing about:
     for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier -> IN_PLACE
     on the new slot: the call's canonical epoch on the vacated slot ends (EXPLICIT, synchronized) and its first voice on
     the new slot publishes it there again, so one call never shows ACTIVE on both slots; another carrier -> a new
-    acquisition; both keep the follow time. A deferred or failed move tune changes nothing, the followed grant's
-    identity included (it is rewritten from the slot's record only in place or once the tune is accepted), so a repeat
-    of the original grant still matches it. A move of any other call is an ordinary grant under its group decision and
-    the gate. Its burst indicators and companion-row clear apply only once accepted (as before when it is not submitted:
-    trunking off or not on a voice channel).
+    acquisition that ends the calls of the carrier left (as every follow does) before naming the moved call, so its
+    first voice there publishes it in an epoch of its own, which the moved identity binds to (it never waits behind
+    the old carrier's epoch to bind the next, anonymous call); both keep the follow time. Both republish the moved
+    call's identity as the followed slot's record names it, which makes the grant's identity known again even when the
+    end of the call it first named had withdrawn it (a checked LC then named the moved call). A deferred or failed move
+    tune changes nothing, the followed grant's identity included (it is rewritten from the slot's record only in place
+    or once the tune is accepted), so a repeat of the original grant still matches it. A move of any other call is an
+    ordinary grant under its group decision and the gate. Its burst indicators and companion-row clear apply only once
+    accepted (as before when it is not submitted: trunking off or not on a voice channel).
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order

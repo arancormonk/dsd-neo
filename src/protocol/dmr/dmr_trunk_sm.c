@@ -2027,9 +2027,12 @@ dmr_sm_move_slot_in_place(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, c
 }
 
 /* The followed call's identity as its slot record now knows it: a checked LC may have named it differently than the
-   grant did, and what a move republishes on the new carrier must be that. */
+   grant did, and what a move republishes on the new slot or carrier must be that. @p moved is a known identity
+   (dmr_sm_followed_identity()), so the grant's identity names a call again even when the end of the call it first
+   named had withdrawn it (dmr_sm_drop_grant_identity()), and the move's first voice publishes it. */
 static void
 dmr_sm_vc_identity_from_slot(dmr_sm_ctx_t* ctx, const dmr_sm_slot_ctx_t* moved) {
+    ctx->vc_identity_known = 1;
     ctx->vc_is_group = moved->judged_group ? 1 : 0;
     if (ctx->vc_is_group) {
         ctx->vc_tg = (int)moved->target;
@@ -2073,6 +2076,10 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
         sm_log(opts, "move-tune-deferred");
         return DMR_SM_GRANT_DEFERRED; // nothing changed: a repeat of the followed grant still names its call
     }
+    /* The carrier left behind keeps no active call, as for any follow (dmr_sm_follow_grant()): the moved call's epoch
+       there ends, and its first voice on the new carrier publishes it again in an epoch of its own, which the moved
+       identity binds to (one awaiting a call after the ended epoch), as a same-carrier move does on its new slot. */
+    dmr_sm_end_left_calls(opts, state);
     dmr_sm_vc_identity_from_slot(ctx, &moved);
     ctx->vc_freq_hz = freq;
     ctx->vc_lpcn = ev->lpcn;

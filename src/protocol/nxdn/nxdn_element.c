@@ -1800,14 +1800,38 @@ nxdn_follow_holds_call(const dsd_opts* opts, dsd_state* state, uint32_t target, 
            && id->private_call == (private_call ? 1U : 0U) && (id->rx_freq_hz <= 0 || id->rx_freq_hz == freq);
 }
 
+/* The receiver is about to tune to @p freq: whether that leaves the carrier it is on (or one it cannot name), read
+ * before the tune. */
+static int
+nxdn_tune_leaves_carrier(const dsd_opts* opts, dsd_state* state, long int freq) {
+    const long int rx = nxdn_receiver_freq(opts, state);
+    return rx <= 0 || rx != freq;
+}
+
+/* An accepted tune left the carrier the canonical call was heard on (a call a takeover displaced, or one left from an
+ * earlier follow): that call is over (EXPLICIT, synchronized, as DMR's dmr_sm_end_left_calls()), so voice heard on the
+ * new carrier opens the followed call's own epoch instead of continuing it under its identity and policy, and a sync
+ * loss there can never reacquire it. */
+static void
+nxdn_end_left_call(dsd_opts* opts, dsd_state* state) {
+    if (dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
 /* The receiver went to @p freq for @p target: the route and the held call are the followed one's, and the talkgroup
  * policy's preemption ledger holds it. A new call replaces whatever the ledger held, so nothing left there reads as a
  * takeover; a preemption commits its cooldown; the call the receiver still held is described from its follow time,
- * so a repeat of its announcement never restarts the dwell. */
+ * so a repeat of its announcement never restarts the dwell. Only that still-held call keeps its record: any other
+ * follow discards the previous one (the engine's hangtime return leaves it behind, bound to a call that is over), so
+ * the followed call never inherits its follow time or binding. */
 static void
 nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call, uint16_t chan,
                  long int freq, uint8_t repeater, const dsd_tg_policy_decision* decision, nxdn_follow_how how) {
     const double now_m = dsd_decode_now_mono_s();
+    if (how != NXDN_FOLLOW_HELD) {
+        DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
+    }
     state->nxdn_follow.freq_hz = freq;
     state->nxdn_follow.chan = chan;
     state->nxdn_follow.repeater = repeater;
@@ -2108,8 +2132,12 @@ nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_
     const nxdn_admit admit =
         nxdn_vcall_assgn_admit(opts, state, info, &policy_decision, policy_allowed, hold_matches, freq, now);
     if (admit == NXDN_ADMIT_FOLLOW || admit == NXDN_ADMIT_PREEMPT) {
+        const int leaves = nxdn_tune_leaves_carrier(opts, state, freq);
         if (!nxdn_vcall_assgn_setup_tuned_call(opts, state, freq)) {
             return;
+        }
+        if (leaves) {
+            nxdn_end_left_call(opts, state);
         }
         nxdn_vcall_assgn_load_scrambler_key(opts, state, info);
         const uint16_t chan = (state->nxdn_rcn == 1) ? info->ofn : (uint16_t)(info->channel & 0x3FFU);
@@ -3295,6 +3323,26 @@ nxdn_scch_busy_tuned(dsd_state* state, const struct nxdn_scch_info* info, long i
     }
 }
 
+/* Tune to the admitted busy message's go-to repeater at @p freq (@p preempted: a preemption). A message repeated past
+ * the voice window for the call the receiver still holds follows that same call in place; a follow to another carrier
+ * ends the call left there (nxdn_end_left_call()). */
+static void
+nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info, long int freq,
+                      const dsd_tg_policy_decision* decision, int preempted) {
+    const int is_private_call = (info->gu == 1U) ? 1 : 0;
+    const int held = nxdn_follow_holds_call(opts, state, info->id, is_private_call, freq);
+    const int leaves = info->rep1 != 31U && nxdn_tune_leaves_carrier(opts, state, freq);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        return;
+    }
+    if (leaves) {
+        nxdn_end_left_call(opts, state);
+    }
+    const nxdn_follow_how how = preempted ? NXDN_FOLLOW_PREEMPT : (held ? NXDN_FOLLOW_HELD : NXDN_FOLLOW_NEW);
+    nxdn_scch_busy_tuned(state, info, freq, is_private_call, decision, how);
+}
+
 /* A busy repeater message names a call on go-to repeater rep1 (31: the call there ended, back to the control channel).
  * With no voice on the receiver's repeater for a second it is followed as before. While voice is live there, only a
  * call on another repeater (nxdn_idas_assoc()) may take the receiver: one of the held talkgroup over a call that is not
@@ -3324,14 +3372,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         admitted = nxdn_scch_live_takeover(opts, state, info, freq, &policy_decision, &preempted);
     }
     if (admitted) {
-        // A message repeated past the voice window for the call the receiver still holds follows that same call.
-        const int held = nxdn_follow_holds_call(opts, state, info->id, is_private_call, freq);
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
-        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-            return;
-        }
-        const nxdn_follow_how how = preempted ? NXDN_FOLLOW_PREEMPT : (held ? NXDN_FOLLOW_HELD : NXDN_FOLLOW_NEW);
-        nxdn_scch_busy_tuned(state, info, freq, is_private_call, &policy_decision, how);
+        nxdn_scch_follow_busy(opts, state, info, freq, &policy_decision, preempted);
     } else if (opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->id, 0, &policy_decision);
     }
