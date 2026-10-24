@@ -246,6 +246,15 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     return 1;
 }
 
+/* This stub never reacquires an ended epoch (every begin after an end opens a transmission of its own), so it answers
+   as its own observe behaves: nothing may be reacquired. */
+int
+dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
+    (void)call;
+    (void)now_m;
+    return 0;
+}
+
 int
 dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
     return dsd_call_state_end_ex(state, slot, observed_m, DSD_CALL_END_EXPLICIT);

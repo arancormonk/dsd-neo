@@ -234,18 +234,17 @@ dmr_sm_slot_call_for(const dmr_sm_ctx_t* ctx, const dsd_state* state, int s, con
     return dsd_call_snapshot_transmission(&call);
 }
 
-/* Whether the slot's call @p epoch (a transmission) ended recoverably and may still be reacquired (a sync loss within
-   the reacquire gap): the call the canonical layer heals keeps that transmission, so a record bound to it stays bound
-   rather than awaiting a later call, which the healed call could never be. */
+/* Whether the slot's call @p epoch (a transmission) ended but may still be reacquired at @p now_m, by the canonical
+   layer's own rule and its end reason's own window (dsd_call_snapshot_may_reacquire()): the call a heal reopens keeps
+   that transmission, so a record bound to it stays bound rather than awaiting a later call, which the healed call could
+   never be. */
 static int
 dmr_sm_slot_call_may_heal(const dsd_state* state, int s, uint64_t epoch, double now_m) {
     dsd_call_snapshot call;
     if (!state || epoch == 0U || dsd_call_state_get(state, (uint8_t)s, &call) <= 0) {
         return 0;
     }
-    return call.phase != DSD_CALL_PHASE_ACTIVE && dsd_call_snapshot_transmission(&call) == epoch
-           && dsd_call_state_end_reason_is_recoverable(call.end_reason) && call.ended_m > 0.0 && now_m >= call.ended_m
-           && (now_m - call.ended_m) <= DSD_CALL_REACQUIRE_GAP_S;
+    return dsd_call_snapshot_transmission(&call) == epoch && dsd_call_snapshot_may_reacquire(&call, now_m);
 }
 
 /* Name the call on slot @p s (@p named, from dmr_sm_slot_identity_set()) and bind it to its canonical call. The same

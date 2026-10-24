@@ -449,6 +449,31 @@ dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason) {
                                                                      : DSD_CALL_REACQUIRE_GAP_S;
 }
 
+// Whether the ended epoch may still be reacquired, whatever reopens it: a recoverable end of a call that names a
+// call, within its reason's heal window. call_state_reacquires_ended_epoch() adds what the reopening observation
+// must satisfy.
+int
+dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
+    if (call == NULL || call->phase != DSD_CALL_PHASE_ENDED
+        || !dsd_call_state_end_reason_is_recoverable(call->end_reason)) {
+        return 0;
+    }
+    // The ending epoch must name a call. Without this an identity-less provisional epoch -- the
+    // shape mark_vocoder_call_media() opens before any header decodes -- matches everything, and
+    // the next unrelated call on the slot would be folded into its row.
+    if (!dsd_call_state_snapshot_has_identity(call)) {
+        return 0;
+    }
+    // The heal window after an unverified terminator is much tighter than the sync-loss window:
+    // the mis-typed voice burst it exists for is followed by the transmission's next voice frame
+    // within a burst or two, while a real end followed by a fast re-key whose headers fail to
+    // decode can put a new transmission's first identity-less media mark on the slot well inside
+    // the sync-loss window -- and folding that in would hand the new call the terminated call's
+    // identity and crypto.
+    const double gap = dsd_call_state_end_reason_reacquire_gap_s(call->end_reason);
+    return call->ended_m > 0.0 && now_m >= call->ended_m && (now_m - call->ended_m) <= gap;
+}
+
 // True when this observation reopens an epoch that a recoverable end closed moments ago while
 // describing the same call -- one transmission the decoder lost and regained, not two
 // transmissions. The boundary token is deliberately not consulted: the paths that reopen
@@ -458,7 +483,7 @@ dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason) {
 static int
 call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
                                   double now_m) {
-    if (current->phase != DSD_CALL_PHASE_ENDED || !dsd_call_state_end_reason_is_recoverable(current->end_reason)) {
+    if (!dsd_call_snapshot_may_reacquire(current, now_m)) {
         return 0;
     }
     // An unverified terminator was positive -- if fallible -- evidence the transmission ended,
@@ -473,23 +498,7 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
         && call_state_observation_has_identity(observation)) {
         return 0;
     }
-    // The ending epoch must name a call. Without this an identity-less provisional epoch -- the
-    // shape mark_vocoder_call_media() opens before any header decodes -- matches everything, and
-    // the next unrelated call on the slot would be folded into its row.
-    if (!dsd_call_state_snapshot_has_identity(current)) {
-        return 0;
-    }
-    if (call_state_observation_changes_identity(current, observation)) {
-        return 0;
-    }
-    // The heal window after an unverified terminator is much tighter than the sync-loss window:
-    // the mis-typed voice burst it exists for is followed by the transmission's next voice frame
-    // within a burst or two, while a real end followed by a fast re-key whose headers fail to
-    // decode can put a new transmission's first identity-less media mark on the slot well inside
-    // the sync-loss window -- and folding that in would hand the new call the terminated call's
-    // identity and crypto.
-    const double gap = dsd_call_state_end_reason_reacquire_gap_s(current->end_reason);
-    return current->ended_m > 0.0 && now_m >= current->ended_m && (now_m - current->ended_m) <= gap;
+    return !call_state_observation_changes_identity(current, observation);
 }
 
 // Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and

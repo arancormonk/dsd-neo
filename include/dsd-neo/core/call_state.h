@@ -519,6 +519,16 @@ int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
 
 /**
+ * True while the ended epoch @p call may still be reacquired at @p now_m (decode clock): it ended for a recoverable
+ * reason, names a call, and its reason's own heal window (DSD_CALL_REACQUIRE_GAP_S after a sync loss,
+ * DSD_CALL_TERMINATOR_HEAL_GAP_S after an unverified terminator) has not run out. The same rule dsd_call_state_observe()
+ * applies before it heals a transmission, short of what the reopening observation itself must satisfy (an unverified
+ * terminator's heal takes only identity-less voice, and no reopen may name another call): a binding to the
+ * transmission (dsd_call_snapshot_transmission()) that holds while this is true holds for the call a heal reopens.
+ */
+int dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m);
+
+/**
  * Called after dsd_call_state_observe() heals a recoverably-ended epoch, with the ending
  * snapshot the reopened epoch was seeded from. The canonical layer stays protocol-neutral:
  * a protocol whose end path tears down live decoder state it would need back on a heal (the

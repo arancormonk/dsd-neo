@@ -871,7 +871,11 @@ suite runs under this compiler.
   its own epoch, or for an epoch that reacquired a recoverably-ended one (`call_state_seed_reacquired_snapshot()`),
   that epoch's. `dsd_call_snapshot_transmission()` reads it (falling back to `epoch`). State bound to one call keys on
   it, so a fade the canonical layer healed keeps the binding and a new transmission never inherits it: the DMR trunk
-  machine's slot identities and NXDN's held call (`dsd_state::nxdn_call`) below.
+  machine's slot identities and NXDN's held call (`dsd_state::nxdn_call`) below. `dsd_call_snapshot_may_reacquire()`
+  says whether an ended epoch may still be healed (a recoverable end of a call that names one, within its reason's own
+  window: `DSD_CALL_REACQUIRE_GAP_S` after a sync loss, `DSD_CALL_TERMINATOR_HEAL_GAP_S` after an unverified
+  terminator), the rule the store's own reacquisition applies short of what the reopening observation must satisfy; a
+  binding renamed meanwhile keeps its transmission only while it says yes.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`
@@ -4967,8 +4971,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     (`nxdn_on_air_call_is()`: its target, or none yet, as a late-entry call before its VCALL, never another target a
     message named; and its kind when it has one; a follow that left the carrier ended the call
     there, so an active one is on the followed carrier), whose release then ends the held call, so the next
-    transmission never inherits its identity; any other follow's binds to the first call to begin after the tune) and
-    never outlives it
+    transmission never inherits its identity; any other follow's binds to the first call to begin after the tune, except
+    the same call named again while its call is faded but may still be reacquired, `dsd_call_snapshot_may_reacquire()`,
+    which keeps its binding) and never outlives it
     (`nxdn_call_identity_refresh()`, before every read): its call's end, a sync loss included, clears it except on the
     followed route within the hangtime (a conversation is held in its gaps); another call clears it, and on the followed
     route one that began within the hangtime of the named call leaves a gap record (unknown, `valid` 0) whose renaming
@@ -5417,8 +5422,8 @@ Private per-protocol modules worth knowing about:
     published on; a grant, seed or status to the slot's active call when that names its target or nothing yet (on the
     followed carrier only one begun since the receiver arrived there, `t_carrier_m`: the follow tune, or for a carrier
     adopted in place any call), else to the first call to begin on the slot after it was named; the same call named
-    again while its call is faded but may still be reacquired (a recoverable end within the reacquire gap,
-    `dmr_sm_slot_call_may_heal()`) keeps that binding, so the reacquired call, which keeps its transmission, stays the
+    again while its call is faded but may still be reacquired (`dmr_sm_slot_call_may_heal()`:
+    `dsd_call_snapshot_may_reacquire()`, its end reason's own window) keeps that binding, so the reacquired call, which keeps its transmission, stays the
     record's and the next call never inherits it. The call's end leaves
     the record only on the followed carrier within the hangtime (a conversation is held in its gaps); a resident call's
     identity ends with it. Another call on the slot clears the record, and on the followed carrier one that began

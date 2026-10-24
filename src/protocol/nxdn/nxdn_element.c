@@ -1613,8 +1613,10 @@ nxdn_call_identity_is_same(const dsd_nxdn_call_identity* id, uint32_t target, ui
 
 /* Bind the held call a naming names to the canonical call: the call on the air when @p on_air (a verified VCALL or SCCH
  * identity of the canonical call); else the first call to begin from now, unless it is the same call named again
- * (@p same) still awaiting its call or still on the air, which keeps its binding. Returns the call on the air it binds
- * to (0: none); @p floor is the epoch after which its call is to begin, UINT64_MAX when it keeps its binding. */
+ * (@p same) still awaiting its call, still on the air, or faded but still reacquirable (dsd_call_snapshot_may_reacquire():
+ * the call a heal reopens keeps its transmission, so it could never pass a floor set now), which keeps its binding.
+ * Returns the call on the air it binds to (0: none); @p floor is the epoch after which its call is to begin, UINT64_MAX
+ * when it keeps its binding. */
 static uint64_t
 nxdn_call_identity_bound_call(const dsd_state* state, const dsd_nxdn_call_identity* id, uint32_t target,
                               uint8_t is_private, long int rx_freq_hz, int on_air, int* same, uint64_t* floor) {
@@ -1625,7 +1627,9 @@ nxdn_call_identity_bound_call(const dsd_state* state, const dsd_nxdn_call_identi
     const int active = have && call.phase == DSD_CALL_PHASE_ACTIVE;
     const uint64_t bound = (on_air && active) ? current : 0U;
     *same = nxdn_call_identity_is_same(id, target, is_private, rx_freq_hz, bound);
-    const int keeps = *same && !id->gap && (id->call_epoch == 0U || (active && current == id->call_epoch));
+    const int bound_here = have && id->call_epoch != 0U && current == id->call_epoch
+                           && (active || dsd_call_snapshot_may_reacquire(&call, dsd_decode_now_mono_s()));
+    const int keeps = *same && !id->gap && (id->call_epoch == 0U || bound_here);
     *floor = keeps ? UINT64_MAX : call.epoch;
     return bound;
 }

@@ -1714,6 +1714,65 @@ nxdn_run_unnamed_followed_call_fades_variant(int within) {
     return rc;
 }
 
+/* A followed Type-D call a VCALL named fades by a sync loss, and its busy message, repeated past the voice window while
+ * the fade may still be reacquired, re-follows the held repeater: the held call keeps its binding to the faded call,
+ * which the reacquired voice continues (the same transmission). Once that call is released and the hangtime runs out,
+ * the next anonymous call inherits neither 1400's identity, its priority nor its dwell: a p50 preempt on another
+ * repeater never takes the receiver from it. */
+static int
+nxdn_run_type_d_refollow_during_fade_case(void) {
+    static const char* const name = "type-d-refollow-during-fade";
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    g_opts.trunk_hangtime = 2.0f;
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9960.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    at_seconds(9960.2);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
+                      name, "named", "the held call is bound to the named call");
+    const uint64_t first = dsd_call_snapshot_transmission(&call);
+
+    at_seconds(9961.5);
+    (void)dsd_call_state_end_ex(&g_state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS); /* no-carrier pass */
+    nxdn_held_call_note_call_end(&g_state);
+    at_seconds(9961.8);
+    g_state.last_vc_sync_time = dsd_decode_time() - 2; /* past the 1 s voice window */
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_tune_count == 2 && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.call_epoch == first, name,
+                      "refollow", "the repeat during the fade keeps the binding to the faded call");
+
+    at_seconds(9961.9);
+    voice_live();
+    vocoder_media();
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && dsd_call_snapshot_transmission(&call) == first && g_state.nxdn_call.call_epoch == first,
+                      name, "reacquired", "the reacquired call is the faded transmission, still bound");
+
+    at_seconds(9962.5);
+    voice_live();
+    send_tx_release(2200U, 1400U);
+    at_seconds(9965.0); /* past the 2 s hangtime */
+    voice_live();
+    late_entry_call();
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9965.1);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_state.nxdn_call.valid == 0U, name, "next",
+                      "the next anonymous call is not preempted as the faded one");
+    return rc;
+}
+
 static int
 nxdn_run_unnamed_followed_call_fades_case(void) {
     return nxdn_run_unnamed_followed_call_fades_variant(0) | nxdn_run_unnamed_followed_call_fades_variant(1);
@@ -2160,6 +2219,7 @@ main(void) {
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
     rc |= nxdn_run_unnamed_followed_call_fades_case();
+    rc |= nxdn_run_type_d_refollow_during_fade_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

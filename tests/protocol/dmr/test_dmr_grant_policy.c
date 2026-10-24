@@ -1416,6 +1416,53 @@ test_status_repeat_during_fade_keeps_binding(dsd_opts* opts, dsd_state* st, int 
     return rc;
 }
 
+/* As the fade case, but the status-named call ends by an unverified terminator, whose heal window (0.25 s) is shorter
+   than a sync loss's: a status naming 77 again 0.3 s later finds a call that can no longer be reacquired, so the record
+   awaits the next call instead of keeping a binding no heal will use. Voice 0.4 s after the end is that next call, which
+   the status named: 77, its dwell kept from the follow, so an eligible p60 preempt on another carrier takes it. */
+static int
+test_xpt_status_after_unverified_terminator_awaits_next(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    seed_policy_row(st, 77, "A", 10, 0);
+    seed_policy_row(st, 99, "A", 60, 1);
+    st->trunk_chan_map[1] = 461262500L;
+    st->trunk_chan_map[3] = 461287500L;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){77U, 0U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("xpt follows group 77", st->trunk_vc_freq[0] == 461262500L && sm->slots[0].target == 77U);
+    status_clock_at(0.3);
+    const uint64_t first = anonymous_voice_on_slot0(opts, st);
+    rc |= expect_true("xpt the voice binds the record", first != 0U && sm->slots[0].call_epoch == first);
+
+    status_clock_at(1.0);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    status_clock_at(1.3);
+    status_window_closed(st);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt a status past the terminator's heal window awaits the next call",
+                      sm->slots[0].target == 77U && sm->slots[0].call_epoch == 0U);
+
+    status_clock_at(1.4);
+    const uint64_t next = anonymous_voice_on_slot0(opts, st);
+    rc |= expect_true("xpt voice after the heal window is a call of its own, the status-named one",
+                      next != 0U && next != first && sm->slots[0].target == 77U && sm->slots[0].call_epoch == next);
+    status_clock_at(1.5);
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 99U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("xpt an eligible p60 preempt takes the p10 call", st->trunk_vc_freq[0] == 461287500L);
+    status_env_done(st);
+    return rc;
+}
+
 /* Parked on an XPT carrier while an admitted resident call plays: inside the status's voice window a status naming that
    same carrier is not followed (no retune, no block reset, the live slot's activity kept). */
 static int
@@ -2489,6 +2536,7 @@ main(void) {
     rc |= test_xpt_status_in_place_keeps_lc_identity(opts, st);
     rc |= test_status_repeat_during_fade_keeps_binding(opts, st, 0);
     rc |= test_status_repeat_during_fade_keeps_binding(opts, st, 1);
+    rc |= test_xpt_status_after_unverified_terminator_awaits_next(opts, st);
     rc |= test_xpt_resident_same_carrier_in_voice_window(opts, st);
     rc |= test_con_plus_takeover_ends_displaced_calls(opts, st);
     rc |= test_cap_plus_takeover_ends_displaced_calls(opts, st);
