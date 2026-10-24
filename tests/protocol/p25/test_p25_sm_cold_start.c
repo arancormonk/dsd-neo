@@ -529,10 +529,20 @@ test_operator_moves(void) {
     assert(g_tunes == 1);
 }
 
+/* Auto (-fa) presumes P25 for the startup hunt as -ft does; a selected EDACS session (-fh -fa), whose control names
+   no owner, and a session without a channel map never hunt. */
 static void
-test_fa_and_no_map_never_hunt(void) {
+test_edacs_session_and_no_map_never_hunt(void) {
     setup_ft();
-    g_o->frame_nxdn48 = 1; // -fa: nobody presumes the trunk
+    g_o->frame_nxdn48 = g_o->frame_nxdn96 = g_o->frame_provoice = 1; // -fa
+    g_s->ea_mode = -1;                                               // selects no EDACS addressing
+    for (uint64_t ms = 0; ms <= 20000; ms += 1000) {
+        startup_tick(ms);
+    }
+    assert(g_tunes >= 1 && g_last_sps > 0); // a P25 probe
+    setup_ft();
+    g_o->frame_nxdn48 = g_o->frame_nxdn96 = g_o->frame_provoice = 1;
+    g_s->ea_mode = 0; // -fh -fa
     for (uint64_t ms = 0; ms <= 20000; ms += 1000) {
         startup_tick(ms);
     }
@@ -605,7 +615,7 @@ main(void) {
     test_settle_waits_for_a_tune_in_flight();
     test_stop_after_two_failures();
     test_operator_moves();
-    test_fa_and_no_map_never_hunt();
+    test_edacs_session_and_no_map_never_hunt();
     test_external_acquisition_ends_cold_start();
     test_note_validated_cc_helper();
 

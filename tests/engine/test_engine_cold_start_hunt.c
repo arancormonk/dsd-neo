@@ -11,12 +11,18 @@
  * pending backend tunes, and reacquisition on a new rest channel. Validated DMR content that names DMR without
  * confirming a control channel there (a data preamble, a CAP+ status naming an unmapped rest) never stops the hunt.
  *
+ * Auto (-fa) presumes P25 for the startup hunt too: noise NXDN syncs and the GFSK chain the frame-sync hunt forces do
+ * not stop it, the frame-sync hunt hears a P25 probe in flight (and rotates between the P25 profiles only then),
+ * validated NXDN traffic holds its window, NXDN control (a CAC, a confirmed Type-D SCCH) names NXDN and ends it, and a
+ * selected EDACS session (-fh -fa, an EDACS-to-Auto switch) never starts it.
+ *
  * getFrameSync() and processFrame() are fakes. The first fake sync, after the engine set its input up, turns rigctl on
  * (a peer no request reaches: the trunk tuning and rigctl query hooks are replaced) and loads a three-row channel map;
  * each later call advances the decode clock.
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
@@ -30,6 +36,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -70,6 +77,10 @@ enum scenario {
     SC_DMR_NAMED_UNCONFIRMED,
     SC_CAPPLUS_UNMAPPED_REST,
     SC_RAS_SYNCED_APPLY,
+    SC_AUTO_NOISE_PROBE,
+    SC_AUTO_TYPE_D,
+    SC_AUTO_NXDN_TRAFFIC,
+    SC_EDACS_SESSION,
 };
 
 static enum scenario g_scenario;
@@ -90,6 +101,9 @@ static uint64_t g_probe_times_ms[8];
 static uint64_t g_probe_completed_ms;
 static uint64_t g_last_content_ms;
 static int g_ras_frames; // SC_RAS_SYNCED_APPLY: frames dispatched
+static int g_ft;         // the run's frame set (run_scenario())
+static int g_p25_armed_seen;
+static int g_probe_in_flight_seen; // the frame-sync hunt heard a P25 probe in flight
 
 static int
 capplus_scenario(void) {
@@ -281,6 +295,16 @@ processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
         p25_sm_note_validated_cc(opts, state);
         g_validated_sent = 1;
     }
+    if (g_scenario == SC_AUTO_TYPE_D && g_tunes == 1 && !g_validated_sent && g_now_ms >= g_probe_times_ms[0] + 500U) {
+        state->nxdn_confirm_scch_streak = 2; // the SCCH's own run of short CRCs confirmed it
+        nxdn_cc_hunt_note_type_d(opts, state);
+        g_validated_sent = 1;
+    }
+    // Validated NXDN traffic on the start frequency (a conventional call): a frame's own CRCs confirmed it.
+    if (g_scenario == SC_AUTO_NXDN_TRAFFIC && g_now_ms <= 4000U) {
+        state->nxdn_confirm_lock_m = dsd_decode_now_mono_s();
+        g_last_content_ms = g_now_ms;
+    }
     if ((g_scenario == SC_NXDN_LOST_CC || g_scenario == SC_NXDN_CALL_RETURN) && g_now_ms <= 2000U) {
         nxdn_cc_hunt_note_control(opts, state);
         g_validated_sent = 1;
@@ -437,10 +461,56 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
             return DSD_SYNC_NXDN_POS;
         case SC_NXDN_LOST_CC:
             // -fa: CACs name NXDN for two seconds, then only syncs that never validate.
+            if (g_now_ms == 3000U || g_now_ms == 9500U) {
+                expect(!dsd_frame_sync_hook_p25_probe_in_flight(opts, state),
+                       "an NXDN owner's hunt is no P25 probe: the full rotation runs");
+            }
             if (g_now_ms > 11000U) {
                 return finish();
             }
             return DSD_SYNC_NXDN_POS;
+        case SC_AUTO_NOISE_PROBE:
+            // Auto on a dead frequency: noise passes NXDN's frame sync, and the frame-sync hunt forced the GFSK chain
+            // on a 2400/4 or 9600/2 dwell.
+            state->rf_mod = 2;
+            if (g_now_ms == 2000U) {
+                expect(dsd_frame_sync_hook_decoder_ticks_due(opts, state),
+                       "Auto's armed startup window is a decoder timer");
+                expect(!dsd_frame_sync_hook_p25_probe_in_flight(opts, state), "no probe while the window runs");
+            }
+            if (g_tunes >= 1 && g_now_ms == g_probe_times_ms[0] + 500U) {
+                g_probe_in_flight_seen = dsd_frame_sync_hook_p25_probe_in_flight(opts, state);
+            }
+            if (g_now_ms > 9000U) {
+                return finish();
+            }
+            return DSD_SYNC_NXDN_POS;
+        case SC_AUTO_TYPE_D:
+            if (g_validated_sent && g_now_ms == 20000U) {
+                expect(!dsd_frame_sync_hook_p25_probe_in_flight(opts, state), "no P25 probe after a Type-D site");
+                expect(!dsd_frame_sync_hook_decoder_ticks_due(opts, state) && !nxdn_cc_hunt_due(opts, state),
+                       "nor any hunt due");
+            }
+            if (g_now_ms > 30000U) {
+                return finish();
+            }
+            return DSD_SYNC_NXDN_POS;
+        case SC_AUTO_NXDN_TRAFFIC:
+            if (g_now_ms > 11000U) {
+                return finish();
+            }
+            return DSD_SYNC_NXDN_POS;
+        case SC_EDACS_SESSION:
+            if (g_ft == 5 && g_now_ms == 3000U) {
+                // The EDACS session switched to Auto mid-session: the EDACS addressing it selected stays.
+                dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, opts, state);
+                expect(opts->frame_p25p1 == 1 && opts->frame_nxdn96 == 1, "the switch enables Auto's decoders");
+            }
+            g_p25_armed_seen |= p25_sm_cold_start_active(p25_sm_get_ctx());
+            if (g_now_ms > 12000U) {
+                return finish();
+            }
+            return DSD_SYNC_NONE;
         case SC_NXDN_CALL_RETURN:
             // -fi: CACs for two seconds, a followed call, its return at 3 s, then syncs that never validate.
             if (g_now_ms == 2250U) {
@@ -480,7 +550,8 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 
-/* Frame sets: 0 -fs, 1 -ft, 2 -fi, 3 -fa. */
+/* Frame sets: 0 -fs, 1 -ft, 2 -fi, 3 the -fa decoders by hand, 4 Auto (the -fa preset), 5 EDACS/ProVoice (switched to
+   Auto at 3 s), 6 -fh -fa. */
 static int
 run_scenario(enum scenario sc, int ft) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -507,6 +578,9 @@ run_scenario(enum scenario sc, int ft) {
     g_probe_completed_ms = 0U;
     g_last_content_ms = 0U;
     g_ras_frames = 0;
+    g_ft = ft;
+    g_p25_armed_seen = 0;
+    g_probe_in_flight_seen = 0;
     dsd_decode_clock_use_test(T0_NS);
     dsd_exitflag_store(0);
     dsd_trunk_tuning_requests_reset();
@@ -523,6 +597,16 @@ run_scenario(enum scenario sc, int ft) {
     opts->frame_p25p1 = opts->frame_p25p2 = (ft == 1 || ft == 3) ? 1 : 0;
     opts->frame_nxdn48 = (ft == 2 || ft == 3) ? 1 : 0;
     opts->frame_nxdn96 = opts->frame_provoice = ft == 3 ? 1 : 0;
+    if (ft == 4 || ft == 6) {
+        expect(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0, "-fa");
+    }
+    if (ft == 5) {
+        expect(dsd_apply_decode_mode_preset(DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0,
+               "EDACS/ProVoice");
+    }
+    if (ft == 6) {
+        state->ea_mode = 0; // -fh before -fa: EDACS standard addressing
+    }
 
     const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     expect(rc == 0, "the engine run ends cleanly");
@@ -611,8 +695,33 @@ run_scenario(enum scenario sc, int ft) {
         case SC_RAS_SYNCED_APPLY: expect(g_ras_frames == 3, "three frames dispatched through the synced loop"); break;
         case SC_MODE_CHANGE_DMR:
             expect(g_dmr_armed_seen == 1, "DMR armed its startup window between frames");
-            expect(g_tunes == 0 && dmr->cold_start_armed_m <= 0.0 && dmr->cold_start_hunt == 0,
+            expect(dmr->cold_start_armed_m <= 0.0 && dmr->cold_start_hunt == 0,
                    "a mode change releases DMR's startup window while frames keep syncing");
+            // Auto presumes P25 instead: its window opens at the switch, so the first probe is P25's, after it.
+            expect(g_tunes >= 1 && g_probe_times_ms[0] > 8000U && p25->cold_start_hunt == 1,
+                   "the switch to -fa hands the startup hunt to P25, a full window after the switch");
+            break;
+        case SC_AUTO_NOISE_PROBE:
+            expect(g_tunes >= 1 && g_first_tune == ROW0_HZ && g_probe_times_ms[0] > 5000U,
+                   "noise NXDN syncs and the hunt's GFSK do not stop Auto's P25 startup hunt");
+            expect(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN, "nor name an owner");
+            expect(g_probe_in_flight_seen == 1, "the frame-sync hunt hears the P25 probe in flight");
+            break;
+        case SC_AUTO_TYPE_D:
+            expect(g_validated_sent && state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_NXDN,
+                   "a confirmed Type-D SCCH names NXDN");
+            expect(p25->cold_start_hunt == 0 && !p25_sm_cold_start_active(p25), "and ends the P25 startup hunt");
+            expect(g_tunes == 1, "nothing hunts away from the Type-D site afterwards");
+            break;
+        case SC_AUTO_NXDN_TRAFFIC:
+            expect(g_tunes >= 1 && g_probe_times_ms[0] > g_last_content_ms + 5000U
+                       && g_probe_times_ms[0] <= g_last_content_ms + 5500U,
+                   "validated NXDN traffic holds the P25 startup window, which runs out from its last frame");
+            expect(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN, "NXDN traffic names no owner");
+            break;
+        case SC_EDACS_SESSION:
+            expect(dsd_edacs_session(opts, state), "a selected EDACS session");
+            expect(g_tunes == 0 && g_p25_armed_seen == 0, "a selected EDACS session never starts the P25 startup hunt");
             break;
     }
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
@@ -673,6 +782,14 @@ main(void) {
     run_scenario(SC_DMR_NAMED_UNCONFIRMED, 0);
     run_scenario(SC_CAPPLUS_UNMAPPED_REST, 0);
     run_scenario(SC_RAS_SYNCED_APPLY, 0);
+    run_scenario(SC_OUTER_LOOP, 4);
+    run_scenario(SC_NAMED_BETWEEN_FRAMES, 4);
+    run_scenario(SC_AUTO_NOISE_PROBE, 4);
+    run_scenario(SC_NXDN_LOST_CC, 4);
+    run_scenario(SC_AUTO_TYPE_D, 4);
+    run_scenario(SC_AUTO_NXDN_TRAFFIC, 4);
+    run_scenario(SC_EDACS_SESSION, 5);
+    run_scenario(SC_EDACS_SESSION, 6);
     if (g_failures == 0) {
         printf("engine cold start hunt: OK\n");
     }

@@ -36,6 +36,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -2007,6 +2008,89 @@ check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* An Auto (-fa) trunked session on rigctl that no protocol has proven yet: P25 presumes the control channel. */
+static void
+auto_probe_session(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = opts->frame_nxdn48 = opts->frame_nxdn96 = 1;
+    opts->frame_dpmr = opts->frame_provoice = opts->frame_dstar = opts->frame_x2tdma = opts->frame_ysf = 1;
+    opts->frame_m17 = 1;
+    state->ea_mode = -1;
+    state->p25_cc_is_tdma = 2; // no P25 control channel seen
+    state->p25_p2_active_slot = -1;
+    // Before the probe: noise NXDN syncs, and the frame-sync hunt on 2400/4 forced the GFSK chain.
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->rf_mod = 2;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->sps_hunt_counter = 17;
+    g_setfreq_result = true;
+}
+
+/*
+ * The P25-driven startup and recovery probes choose the P25 chain from what proves the session P25 -- a P25 owner, or
+ * the startup presumption of a set that decodes P25 -- never from raw sync history or a GFSK modulation the frame-sync
+ * hunt forced: under Auto a dead frequency yields noise NXDN syncs, and the hunt forces rf_mod 2 on 2400/4 and 9600/2.
+ */
+static void
+test_p25_probe_chain_from_validated_evidence(dsd_opts* opts, dsd_state* state) {
+    auto_probe_session(opts, state);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4); // the startup probe lands on the P25 rate
+    assert(state->sps_hunt_counter == 0);
+
+    // Recovery under a validated P25 owner: raw DMR sync and the hunt's GFSK do not decide either.
+    auto_probe_session(opts, state);
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+    state->p25_cc_is_tdma = 1; // a Phase 2 control channel
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 452000000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state->sps_hunt_counter == 0);
+
+    // Another validated owner keeps its own chain: NXDN control named it.
+    auto_probe_session(opts, state);
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 17);
+
+    // A selected EDACS session (-fh -fa) presumes nothing: its own GFSK chain stays.
+    auto_probe_session(opts, state);
+    state->ea_mode = 0;
+    state->synctype = state->lastsynctype = DSD_SYNC_EDACS_POS;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 854000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+
+#ifdef USE_RADIO
+    // On an RTL front end the startup probe queues the P25 C4FM chain at 4800 sym/s, not the GFSK one.
+    auto_probe_session(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->use_rigctl = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 2400;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 455000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+#endif
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2036,6 +2120,7 @@ main(void) {
 #ifdef USE_RADIO
     test_rigctl_on_rtl_input_follows_the_frequency_only();
 #endif
+    test_p25_probe_chain_from_validated_evidence(opts, state);
 
     /* DMR trunking active via protocol-agnostic flag only. */
     opts->trunk_enable = 1;

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/dmr_key_map.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -60,7 +61,8 @@ dsd_trunk_p25_cold_start_presumed(const dsd_opts* opts, const dsd_state* state) 
     if (state->trunk_recovery_protocol != DSD_TRUNK_RECOVERY_UNKNOWN || (!opts->frame_p25p1 && !opts->frame_p25p2)) {
         return 0;
     }
-    return !opts->frame_nxdn48 && !opts->frame_nxdn96 && !opts->frame_provoice;
+    /* EDACS control names no owner: a P25 window would hunt away from a valid EDACS control channel. */
+    return !dsd_edacs_session(opts, state);
 }
 
 int

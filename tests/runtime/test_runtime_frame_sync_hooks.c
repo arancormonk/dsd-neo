@@ -84,6 +84,12 @@ hook_scan_visit_should_yield(const dsd_opts* opts, dsd_state* state) {
     return g_yield_requested;
 }
 
+static int
+hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
+    record_args(opts, state);
+    return g_yield_requested;
+}
+
 static void
 test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hooks_set(NULL);
@@ -97,6 +103,7 @@ test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hook_no_carrier(opts, state);
 
     assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 0);
+    assert(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 0); // no engine: no probe
     assert(g_try_tick_calls == 0);
     assert(g_release_calls == 0);
     assert(g_vc_sync_calls == 0);
@@ -117,6 +124,7 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
         .eot_cc = hook_eot,
         .no_carrier = hook_no_carrier,
         .scan_visit_should_yield = hook_scan_visit_should_yield,
+        .p25_probe_in_flight = hook_p25_probe_in_flight,
     };
     dsd_frame_sync_hooks_set(&hooks);
     reset_counters();
@@ -126,6 +134,11 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
     assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 1);
     assert(g_last_opts == opts);
     assert(g_last_state == state);
+    reset_counters();
+    assert(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 1);
+    assert(g_last_opts == opts && g_last_state == state);
+    g_yield_requested = 0;
+    assert(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 0);
 
     dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     assert(g_try_tick_calls == 1);

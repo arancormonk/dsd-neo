@@ -35,6 +35,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/trunk_scan_hooks.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
 #include "scan_analog_internal.h"
 
@@ -89,9 +90,15 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
  * hunt profile -- is wrong for those protocols, which run GFSK at their own rates, and for TETRA,
  * which runs pi/4-DQPSK at 18000 sym/s. TETRA is decided by its sync before the modulation is
  * looked at: its rf_mod is the QPSK family's, which on its own would read as P25 CQPSK.
+ *
+ * A session P25 drives -- recovery under a validated P25 owner, or the startup hunt of a set that
+ * presumes P25 (dsd_trunk_p25_cold_start_presumed()) -- is P25 from that evidence, never from sync
+ * history or modulation: under Auto a dead frequency yields noise NXDN syncs, and the frame-sync
+ * hunt forces the GFSK rf_mod on its 2400/4 and 9600/2 dwells, either of which would send a probe
+ * to the wrong chain. Other sessions (a DMR or NXDN owner, EDACS) keep the sync rule below.
  */
 static int
-dsd_engine_cc_is_p25(const dsd_state* state) {
+dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_engine_trunk_scan_active_is_p25_class(state)) {
         return 1;
     }
@@ -100,6 +107,9 @@ dsd_engine_cc_is_p25(const dsd_state* state) {
     // DSD_SYNC_P25P1_POS is 0.
     if (dsd_engine_trunk_scan_target_count(state) > 0) {
         return 0;
+    }
+    if (dsd_trunk_p25_recovery_allowed(opts, state) || dsd_trunk_p25_cold_start_presumed(opts, state)) {
+        return 1;
     }
     if (DSD_SYNC_IS_TETRA(state->synctype) || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
         return 0;
@@ -121,7 +131,7 @@ dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, i
         || (opts->trunk_enable != 1 && !dsd_engine_trunk_scan_active_is_p25_class(state))) {
         return 0;
     }
-    return dsd_engine_cc_is_p25(state);
+    return dsd_engine_cc_is_p25(opts, state);
 }
 
 /**
@@ -150,7 +160,7 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     // this function cannot express at all. The nxdn48-conventional and nxdn48-trunk scan targets
     // rely on that skip: the coordinator seeds their 2400 sym/s timing, and the front end gets the matching
     // 6.25 kHz chain from dsd_engine_gfsk_cc_symbol_rate().
-    if (!opts || !state || state->p25_cc_freq == 0 || !dsd_engine_cc_is_p25(state)) {
+    if (!opts || !state || state->p25_cc_freq == 0 || !dsd_engine_cc_is_p25(opts, state)) {
         return;
     }
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;

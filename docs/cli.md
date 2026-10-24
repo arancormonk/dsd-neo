@@ -1883,9 +1883,19 @@ does.
 
 - The search needs a tuner the decoder controls: an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or rigctl. An I/Q
   replay never searches.
-- P25 searches under `-1`, `-2`, `-ft` and the default decoder set (`-mq` included); DMR under `-fs` and `-fr`; NXDN
-  under `-fi` and `-fn` (an IDAS or NEXEDGE import). A P25-driven search also finds a DMR control channel: the first
-  validated DMR control message hands the session to DMR. `-fa` does not search at startup.
+- P25 searches under `-1`, `-2`, `-ft`, the default decoder set and Auto (`-fa`), `-mq` included; DMR under `-fs` and
+  `-fr`; NXDN under `-fi` and `-fn` (an IDAS or NEXEDGE import). A P25-driven search also finds a DMR or NXDN96
+  control channel: the first validated DMR control message, NXDN CAC or confirmed IDAS Type-D SCCH ends the P25 search
+  and hands the session to that protocol (an IDAS Type-D site is then never searched, as below).
+- Each P25 probe starts on the P25 chain (4800 symbols/s), whatever noise synced or the symbol-rate search tried before
+  it. While a probe listens, the symbol-rate search steps only between P25's 4800 and 6000 symbols/s profiles, so a
+  probe reaches a Phase 2 control channel within its two seconds under Auto as under a P25-only set; the full Auto
+  rotation resumes once the search ends.
+- Under Auto a P25-driven search does not find an NXDN48 control channel (2400 symbols/s): start a dead NXDN48 system
+  with `-fi`, which a RadioReference import sets. Once NXDN48 control has decoded, NXDN recovery owns the session.
+- An EDACS session never runs the P25 search: EDACS control names no system the search could stop on, so it would leave
+  a working EDACS control channel. That covers `-fh -fa` (or `-fe -fa`) and a switch to Auto from an EDACS/ProVoice
+  preset, which keep the EDACS addressing selected.
 - NXDN has no other control-channel hunt, so the same search also runs after an NXDN control channel is lost: once a
   CAC that passed its CRC (only an outbound control channel sends one) has named the control channel, 6 s without
   validated NXDN content starts it, revisiting that control channel between the other rows, and the next such CAC ends
@@ -1898,9 +1908,10 @@ does.
 - A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites: each row gets
   about two seconds, too short for the automatic modulation search to reach CQPSK on a control channel the session has
   not decoded yet.
-- DMR content that passed the colour-code check (a call on a Hytera XPT repeater, say) restarts the window, so the
-  search never leaves it mid-call; for NXDN, a frame whose own CRCs confirmed the transmission (a call on a traffic
-  channel) does. Sync alone, which noise can produce, never holds the search.
+- DMR content that passed the colour-code check (a call on a Hytera XPT repeater, say) restarts the P25 and DMR
+  windows, and an NXDN frame whose own CRCs confirmed the transmission (a call on a traffic channel) restarts the P25
+  and NXDN windows, so a search never leaves a frequency mid-call. Neither names the system. Sync alone, which noise can
+  produce, never holds the search.
 - A frequency entry, **Next channel** (`L`), a radio configuration change, a RadioReference apply or an input switch
   restarts the window on the new frequency.
 - Nothing is shown or used as the control channel until a searched frequency passes the CRC check, and the saved

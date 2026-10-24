@@ -84,6 +84,11 @@ dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* sta
 }
 
 int
+dsd_frame_sync_hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
+    return g_frame_sync_hooks.p25_probe_in_flight ? g_frame_sync_hooks.p25_probe_in_flight(opts, state) : 0;
+}
+
+int
 dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_state* state) {
     return g_frame_sync_hooks.signal_search_should_yield ? g_frame_sync_hooks.signal_search_should_yield(opts, state)
                                                          : 0;

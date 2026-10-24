@@ -92,9 +92,10 @@ test_recovery_ownership(void) {
     assert(!dsd_trunk_dmr_recovery_allowed(&opts, NULL));
 }
 
-/* Before any protocol proves itself, P25 hunts the startup control channel of a P25+DMR frame set (-ft, the default
-   set) and of a P25-only one; a set with NXDN or ProVoice (-fa) has nobody to hunt it. Recovery ownership itself does
-   not change (issue #703). */
+/* Before any protocol proves itself, P25 hunts the startup control channel of every frame set that decodes P25: -ft, the
+   old default set, a P25-only one and Auto (-fa), which adds NXDN and ProVoice. A selected EDACS session (-fh -fa, an
+   EDACS-to-Auto switch) does not: EDACS control names no owner, so a P25 window would hunt away from a valid EDACS
+   control channel. Recovery ownership itself does not change (issue #703). */
 static void
 test_presumptive_startup_owner(void) {
     static dsd_opts opts;
@@ -109,18 +110,33 @@ test_presumptive_startup_owner(void) {
     opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1; // the default frame set (-mq imports)
     assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
     opts.frame_nxdn48 = 1;
-    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
     opts.frame_nxdn48 = 0;
     opts.frame_nxdn96 = 1;
+    assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_nxdn48 = opts.frame_provoice = opts.frame_dpmr = opts.frame_m17 = 1; // -fa adds NXDN and ProVoice
+    state.ea_mode = -1;                                                             // plain Auto selects no EDACS
+    assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state)); // ownership is unchanged
+    assert(!dsd_trunk_nxdn_recovery_allowed(&opts, &state));
+    state.ea_mode = 0; // -fh -fa, an EDACS-to-Auto switch: a selected EDACS session
     assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
-    opts.frame_nxdn96 = 0;
-    opts.frame_provoice = 1; // -fa adds NXDN and ProVoice
-    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    state.ea_mode = -1;
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_dpmr = opts.frame_m17 = 0;
     opts.frame_provoice = 0;
     opts.frame_p25p1 = opts.frame_p25p2 = 0; // -fs: DMR hunts its own startup
     assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
     assert(dsd_trunk_dmr_recovery_allowed(&opts, &state));
     opts.frame_dmr = opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 0;
+    opts.frame_nxdn48 = opts.frame_nxdn96 = 1; // -fi -fn: no P25 to hunt with
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    opts.frame_nxdn48 = opts.frame_nxdn96 = 0;
+    opts.frame_provoice = 1; // -fp: ProVoice alone, an EDACS session without P25
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    state.ea_mode = 0; // -fh
+    assert(!dsd_trunk_p25_cold_start_presumed(&opts, &state));
+    state.ea_mode = -1;
+    opts.frame_provoice = 0;
     opts.frame_p25p1 = 1; // -1
     assert(dsd_trunk_p25_cold_start_presumed(&opts, &state));
     opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = 1;

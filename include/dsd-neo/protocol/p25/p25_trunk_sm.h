@@ -395,10 +395,10 @@ void p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state);
  *
  * Arms the startup window while the machine is IDLE in an eligible session (dsd_state_trunk_cold_start_eligible())
  * whose startup P25 hunts (recovery admitted, or dsd_trunk_p25_cold_start_presumed()); once the window, measured
- * from the later of its opening and the last validated DMR content (dsd_state::dmr_confidence_lock_m), exceeds the
- * CC grace it starts the ordinary map hunt, and while that hunt runs it ticks the machine and ends or parks it (spec
- * of #703: ends in place once validated control names an owner, parks only once the tuning layer is settled). The
- * caller holds the P25 SM tick guard; the watchdog never calls this.
+ * from the later of its opening and the last validated DMR or NXDN content (dsd_state::dmr_confidence_lock_m,
+ * dsd_state::nxdn_confirm_lock_m), exceeds the CC grace it starts the ordinary map hunt, and while that hunt runs it
+ * ticks the machine and ends or parks it (spec of #703: ends in place once validated control names an owner, parks
+ * only once the tuning layer is settled). The caller holds the P25 SM tick guard; the watchdog never calls this.
  *
  * @param ctx State machine context.
  * @param opts Decoder options.
@@ -420,6 +420,11 @@ void p25_sm_cold_start_note_retune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
 
 /** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
 int p25_sm_cold_start_active(const p25_sm_ctx_t* ctx);
+
+/** @brief Return 1 while the machine hunts a control channel: HUNTING between probes, or ON_CC on a hunt probe whose
+ *  control has not decoded yet. The startup hunt and recovery both probe this way. Read under the P25 SM tick guard
+ *  (or on the thread that ticks the machine). */
+int p25_sm_hunt_probe_in_flight(const p25_sm_ctx_t* ctx);
 
 /** @brief Return 1 while the decoder's startup tick has work: the window armed or a hunt running, or an IDLE machine
  *  whose window the next tick arms (issue #703). Decoder thread, under the P25 SM tick guard. */

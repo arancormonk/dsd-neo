@@ -2147,6 +2147,8 @@ depending directly on protocol headers. The runtime provides a small hook table 
 `include/dsd-neo/runtime/frame_sync_hooks.h`; the engine installs the concrete implementations at startup in
 `src/engine/frame_sync_hooks_install.c`. `decoder_ticks_due` tells a silent-input wait that decoder-thread trunking
 timers are due (issue #703); the engine's answer reads the state machines under the P25 SM tick guard.
+`p25_probe_in_flight` tells the SPS hunt that a P25-driven control-channel probe is in flight, so it steps only between
+the P25 profiles (see the startup control-channel hunt below); with nothing installed there is no probe.
 
 ### Trunk Scan Hooks (Protocol/App-Control → Runtime ← Engine)
 
@@ -2180,8 +2182,14 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 Recovery ownership lives beside these hooks. `dsd_trunk_p25_recovery_allowed()` / `dsd_trunk_dmr_recovery_allowed()`
 admit a validated owner (`dsd_state::trunk_recovery_protocol`), or, with none yet, a frame set that decodes only that
 protocol's trunk. `dsd_trunk_p25_cold_start_presumed()` names the protocol that runs the startup control-channel hunt
-of a session no protocol has proven yet: P25 for a frame set with P25 and without NXDN48, NXDN96 and ProVoice (`-ft`,
-the default set, `-1`, `-2`); it grants no recovery ownership (issue #703, `RUNTIME_TRUNK_SCAN_HOOKS`).
+of a session no protocol has proven yet: P25 for every frame set with P25 (`-ft`, the old default set, Auto `-fa`,
+`-1`, `-2`) except a selected EDACS session (`dsd_edacs_session()`: `-fh -fa`, an EDACS-to-Auto switch), whose
+control names no owner the hunt could stop on; it grants no recovery ownership (issue #703,
+`RUNTIME_TRUNK_SCAN_HOOKS`). It also keeps a frequency entry an operator move during that hunt
+(`manual_frequency_selects_p25_cc()`), keeps the decoder ticks due (`engine_decoder_ticks_due()`), and with
+`dsd_trunk_p25_recovery_allowed()` decides the P25 chain of a control-channel tune in `src/engine/trunk_tuning.c`
+(`dsd_engine_cc_is_p25()`): a session P25 drives is P25 from that evidence, not from raw sync history or a GFSK
+`rf_mod` the frame-sync hunt forced.
 `dsd_trunk_nxdn_recovery_allowed()` admits the NXDN control-channel hunt: trunking on outside `-Y` and trunk scan,
 NXDN48 or NXDN96 decoded (whatever the owner, so a mode change away from NXDN stops it), and an NXDN owner
 (`DSD_TRUNK_RECOVERY_NXDN`, named by a CRC-good CAC or a confirmed Type-D SCCH) or, with none yet, a frame set without
@@ -4866,15 +4874,27 @@ control within the CC grace walks its channel map with the ordinary hunts.
   and a silent UDP input's wait gives way while a machine is due to arm (a session that became eligible after its
   pass's tick, or whose tick found the guard busy). Arming never happens in `p25_sm_tick_ctx()`.
 - Window: armed in `IDLE` (a machine that leaves `IDLE` other than for its startup hunt drops it), it runs from the
-  later of its opening and `dsd_state::dmr_confidence_lock_m` (validated DMR content; raw sync never holds it); the
-  hunt starts when it exceeds the CC grace (P25 `--p25-cc-grace`, DMR 6 s).
+  later of its opening and `dsd_state::dmr_confidence_lock_m` (validated DMR content), and for P25 also
+  `dsd_state::nxdn_confirm_lock_m` (an NXDN frame whose own CRCs confirmed it, so Auto never leaves NXDN traffic); raw
+  sync never holds it, and neither names an owner. The hunt starts when it exceeds the CC grace (P25
+  `--p25-cc-grace`, DMR 6 s).
 - Hunt: `try_next_cc()` (P25) or `dmr_cc_hunt()` (DMR) unchanged, 2 s probes included (too short for the SPS and
   modulation hunt to reach a CQPSK trial: a simulcast system needs `-mq`, as a RadioReference import writes); a P25
-  startup probe restores `trunk_cc_freq` after each probe tune, as DMR probes do, and records `cold_start_probe_hz`. With no other eligible row, DMR probes the row
+  startup probe restores `trunk_cc_freq` after each probe tune, as DMR probes do, and records `cold_start_probe_hz`.
+  A P25 probe tune takes the P25 chain from the session (`dsd_engine_cc_is_p25()`, above), and while a P25-driven
+  probe is in flight (`p25_sm_hunt_probe_in_flight()`: `HUNTING`, or `ON_CC` on a hunt probe not yet decoded, under a
+  P25 or unknown owner) the frame-sync SPS hunt steps only between 4800/4 and 6000/4
+  (`dsd_frame_sync_hook_p25_probe_in_flight()`, installed in `frame_sync_hooks_install.c` and asked once per step
+  under the tick guard, the last answer standing while the watchdog holds it;
+  `frame_sync_sps_hunt_p25_probe_next_index()`), the sequence a P25-only rotation runs, so a probe reaches a Phase 2
+  control channel under Auto; the full rotation resumes when the hunt ends. DMR and NXDN96 control live on 4800/4;
+  NXDN48 control (2400/4) is not found by a P25-driven probe (a decided limit: a dead-start NXDN48 system names
+  `-fi`). With no other eligible row, DMR probes the row
   it last probed again when that tune never completed (a failed or expired probe: only a success retires the failure
   that gates every frame), and listens on one the radio is on (`dmr_cc_next_mapped_candidate()`).
-- Ending: validated control naming another protocol's owner, or a Hytera XPT site identifying itself, ends the hunt
-  in place (the owner's ordinary recovery follows; a grant either machine followed meanwhile stands, and only the
+- Ending: validated control naming another protocol's owner (DMR control, an NXDN CAC through
+  `nxdn_cc_hunt_note_control()`, a confirmed Type-D SCCH through `nxdn_cc_hunt_note_type_d()`, after which nothing
+  hunts), or a Hytera XPT site identifying itself, ends the hunt in place (the owner's ordinary recovery follows; a grant either machine followed meanwhile stands, and only the
   startup bookkeeping ends). DMR content that names DMR without confirming a control channel (a data preamble, a
   Capacity Plus status naming a rest LSN the map lacks, a traffic channel) does not end DMR's hunt, which revisits
   only a confirmed anchor, never the alias such content staged (`dmr_cspdu_init_cc_anchor()`); a call followed
@@ -4885,8 +4905,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   waited for, and only a failure is replaced, by a settle tune to the frequency the decoder's tuner options name,
   tracked like a probe (DMR's through `cc_tune_request_id`, so its 5 s deadline fails one the backend never answers, as
   it fails a probe). A settle tune carries no symbol profile (`ted_sps` 0): it keeps the receive profile in force, which
-  a mode change may have chosen. The hunt never disowns or completes a request. Before an owner is proven, `-ft`'s
-  frequency entry stays an operator move even after a raw P25 sync: `manual_frequency_selects_p25_cc()` does not route
+  a mode change may have chosen. The hunt never disowns or completes a request. Before an owner is proven, the
+  frequency entry of a set that presumes P25 (`-ft`, Auto) stays an operator move even after a raw P25 sync: `manual_frequency_selects_p25_cc()` does not route
   it to `p25_sm_select_control_channel()`, whose acquisition no admitted recovery would time out and whose control
   channel nothing has validated. Under `-1`/`-2`, whose P25 recovery is admitted, the entry stays the P25 manual
   control-channel selection: it supersedes the startup hunt, and the ordinary recovery hunts the map if it is dead.
@@ -4897,7 +4917,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   acquisition. Ending a hunt in place on a P25 owner does the same if the probe's tune was still
   unresolved there.
 - Tests: `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`, `P25_SM_COLD_START`, `P25_MBT_DECODE`,
-  `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`.
+  `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`,
+  `ENGINE_TRUNK_RETUNE_REGRESSION`, `RUNTIME_FRAME_SYNC_HOOKS`, `FRAME_SYNC_POLICY`, `FRAME_SYNC_INTERNAL_HELPERS`.
 - NXDN (`src/protocol/nxdn/nxdn_cc_hunt.c`, `<dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>`, context in state-ext slot 28
   `DSD_STATE_EXT_PROTO_NXDN_CC_HUNT`): NXDN has no trunk state machine and no other control-channel hunt, so this one
   runs at session start and after a control channel is lost. Eligibility is

@@ -5559,13 +5559,17 @@ p25_sm_cold_start_may_run(const dsd_opts* opts, const dsd_state* state) {
            && (dsd_trunk_p25_recovery_allowed(opts, state) || dsd_trunk_p25_cold_start_presumed(opts, state));
 }
 
-/* The window runs from the later of its opening and the last DMR content that passed its colour-code gate: validated
-   traffic means the frequency is not dead, even when it carries no control channel (a Hytera XPT call). */
+/* The window runs from the later of its opening and the last DMR content that passed its colour-code gate or NXDN frame
+   whose own CRCs confirmed its transmission: validated traffic means the frequency is not dead, even when it carries no
+   control channel (a Hytera XPT call, a conventional NXDN call under Auto). Neither names an owner. */
 static int
 p25_sm_cold_start_window_expired(const p25_sm_ctx_t* ctx, const dsd_state* state, double now_m) {
     double start_m = ctx->t_cold_start_armed_m;
     if (state->dmr_confidence_lock_m > start_m) {
         start_m = state->dmr_confidence_lock_m;
+    }
+    if (state->nxdn_confirm_lock_m > start_m) {
+        start_m = state->nxdn_confirm_lock_m;
     }
     return (now_m - start_m) > ctx->config.cc_grace_s;
 }
@@ -5810,6 +5814,16 @@ p25_sm_cold_start_note_retune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
 int
 p25_sm_cold_start_active(const p25_sm_ctx_t* ctx) {
     return ctx && (ctx->cold_start_hunt || ctx->t_cold_start_armed_m > 0.0);
+}
+
+int
+p25_sm_hunt_probe_in_flight(const p25_sm_ctx_t* ctx) {
+    if (!ctx || !ctx->initialized) {
+        return 0;
+    }
+    return ctx->state == P25_SM_HUNTING
+           || (ctx->state == P25_SM_ON_CC && ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE
+               && ctx->cc_sync_pending);
 }
 
 int

@@ -1287,7 +1287,8 @@ struct dsd_state {
        from it: a voice sync alone, which a rejected burst can carry, never holds the call. */
     double dmr_confidence_voice_m[2];
     /* Decode-clock seconds an NXDN frame's own CRCs last confirmed its transmission (nxdn_confirm_end_frame()), 0
-       never. Decoder thread only, never cleared: the NXDN control-channel hunt restarts its window from it. */
+       never. Decoder thread only, never cleared: the NXDN control-channel hunt and the P25 startup hunt restart their
+       windows from it. */
     double nxdn_confirm_lock_m;
     unsigned int PI;
     unsigned int PI_ok;

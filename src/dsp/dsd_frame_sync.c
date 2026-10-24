@@ -3763,6 +3763,22 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
 #endif
 }
 
+/* The unlocked hunt's next profile. While a P25-driven control-channel probe is in flight (the startup hunt, or P25
+ * recovery) it steps only between the P25 profiles, as a P25-only rotation does: under Auto the full rotation would
+ * spend the probe's dwell on 2400/4 and never reach a Phase 2 control channel on 6000/4. DMR and NXDN96 control live
+ * on 4800/4 and are found all the same. The engine answers once per step; the full rotation resumes when the hunt
+ * ends. */
+static int
+frame_sync_sps_hunt_unlocked_next_index(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_frame_sync_hook_p25_probe_in_flight(opts, state)) {
+        const int p25_idx = frame_sync_sps_hunt_p25_probe_next_index(opts, state->sps_hunt_idx);
+        if (p25_idx >= 0) {
+            return p25_idx;
+        }
+    }
+    return frame_sync_sps_hunt_next_index(opts, state);
+}
+
 int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     if (state->sps_hunt_counter < frame_sync_sps_hunt_dwell_symbols(opts, state)) {
@@ -3805,7 +3821,7 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     int next_idx = pin_selected_p25_profile
                        ? state->sps_hunt_idx
                        : (preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
-                                              : frame_sync_sps_hunt_next_index(opts, state));
+                                              : frame_sync_sps_hunt_unlocked_next_index(opts, state));
     const int previous_idx = state->sps_hunt_idx;
     const int previous_mod = state->rf_mod;
     if (frame_sync_trunk_scan_p25p1_trial(opts, state) && previous_mod != 1) {

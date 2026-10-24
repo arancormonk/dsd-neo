@@ -1856,9 +1856,9 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_enable != 1 || (opts->frame_p25p1 != 1 && opts->frame_p25p2 != 1)) {
         return 0;
     }
-    /* Before any protocol is proven, -ft's startup control-channel hunt owns the receiver and no P25 recovery would
-       time a selected control channel out: the entry is an operator move, which restarts the hunt's window on the new
-       frequency without declaring it the control channel (issue #703). */
+    /* Before any protocol is proven, the P25 startup control-channel hunt of -ft or Auto owns the receiver and no P25
+       recovery would time a selected control channel out: the entry is an operator move, which restarts the hunt's
+       window on the new frequency without declaring it the control channel (issue #703). */
     if (!dsd_trunk_p25_recovery_allowed(opts, state) && dsd_trunk_p25_cold_start_presumed(opts, state)
         && dsd_state_trunk_cold_start_eligible(opts, state)) {
         return 0;

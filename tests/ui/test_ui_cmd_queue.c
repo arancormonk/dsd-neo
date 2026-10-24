@@ -2060,6 +2060,25 @@ test_operator_retune_rearms_cold_start(void) {
     rc |= expect_int("the entry after a raw P25 sync marks the hunt to park", sm->cold_start_park_pending, 1);
     rc |= expect_true("and restarts its window", sm->t_cold_start_armed_m >= before);
     rc |= expect_true("and declares no control channel", state.p25_cc_freq != 853000000L);
+
+    // Auto (-fa) presumes P25 for the startup hunt as -ft does: the entry is an operator move there too.
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_provoice = opts.frame_dpmr = opts.frame_m17 = 1;
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1;
+    state.ea_mode = -1;
+    sm->cold_start_park_pending = 0;
+    sm->t_cold_start_armed_m = 1.0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    before = dsd_decode_now_mono_s();
+    rc |= expect_int("Auto entry queued", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 854000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("Auto entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the Auto entry selects no control channel", g_cc_tune_calls, 0);
+    rc |= expect_int("the Auto entry tuned the radio", g_io_control_tune_calls, 1);
+    rc |= expect_int("the Auto entry marks the P25 startup hunt to park", sm->cold_start_park_pending, 1);
+    rc |= expect_true("and restarts its window", sm->t_cold_start_armed_m >= before);
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_provoice = opts.frame_dpmr = opts.frame_m17 = 0;
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 0;
     state.lastsynctype = DSD_SYNC_NONE;
 
     sm->cold_start_park_pending = 0;

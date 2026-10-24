@@ -534,6 +534,86 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.symbolCenter == 8);
 }
 
+static int g_p25_probe_in_flight;
+static int g_p25_probe_queries;
+
+static int
+fake_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_p25_probe_queries++;
+    return g_p25_probe_in_flight;
+}
+
+/* One expired dwell of the unlocked hunt, starting from @p from. */
+static int
+step_auto_hunt_from(dsd_opts* opts, dsd_state* state, int from) {
+    state->sps_hunt_idx = from;
+    state->sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(opts, state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(opts, state);
+    return state->sps_hunt_idx;
+}
+
+/*
+ * Auto under trunking: while a P25-driven startup or recovery probe is in flight, the hunt steps only between the P25
+ * profiles (4800/4 -> 6000/4), the sequence the old default set ran, so a probe reaches a Phase 2 control channel
+ * within its dwell; with no probe the full Auto rotation runs (4800/4 -> 2400/4 -> ...). The engine answers the query
+ * once per step; with nothing installed there is no probe.
+ */
+static void
+test_sps_hunt_p25_probe_rotation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.trunk_enable = 1;
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_nxdn96 = 1; // -fa
+    opts.frame_dpmr = opts.frame_provoice = opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1;
+    opts.frame_m17 = 1;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+
+    dsd_frame_sync_hooks_set(NULL); // nothing installed: no probe, the full rotation
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+
+    // The 4800/4 dwell of a trunked P25 session ends inside a hunt probe's two seconds, so the probe's one step can
+    // reach Phase 2.
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS < 2 * 4800);
+
+    g_p25_probe_queries = 0;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.p25_probe_in_flight = fake_p25_probe_in_flight});
+    g_p25_probe_in_flight = 1;
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(g_p25_probe_queries == 1); // one query per step
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    // A profile the full rotation left the probe on (a GFSK one included) steps back to the P25 rate.
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_9600_2) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_2400_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    // Without the dwell spent nothing steps, and nothing is asked.
+    g_p25_probe_queries = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 0;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(g_p25_probe_queries == 0);
+
+    // The probe ended (an owner named, or the hunt parked): the full Auto rotation resumes.
+    g_p25_probe_in_flight = 0;
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+
+    // A Phase 1 only set stays on 4800/4 while a probe is in flight.
+    g_p25_probe_in_flight = 1;
+    opts.frame_p25p2 = opts.frame_x2tdma = 0;
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    opts.frame_p25p2 = opts.frame_x2tdma = 1;
+    dsd_frame_sync_hooks_set(NULL);
+}
+
 /*
  * The hunt's dwell is a symbol budget that survives sync returns (issue #388). A sync that
  * raises carrier but yields no frame used to stop the hunt outright: it blocked the step and
@@ -3541,6 +3621,7 @@ main(void) {
     test_sps_hunt_withheld_verdict_refunds_only_its_own_cycle();
     test_sps_hunt_restart_dwell_resets_the_whole_budget();
     test_sps_hunt_holds_the_profile_on_a_tuned_voice_channel();
+    test_sps_hunt_p25_probe_rotation();
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();

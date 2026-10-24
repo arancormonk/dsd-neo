@@ -106,6 +106,29 @@ engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
     return due;
 }
 
+/* A P25-driven control-channel probe in flight (the startup hunt, or recovery under a P25 owner; no other protocol
+   owns the control channel), for the frame-sync SPS hunt's rotation. The hunt asks once per step on the decoder
+   thread; the owner and the machine are read under the tick guard, and while the watchdog holds it the last answer
+   stands. */
+static int
+engine_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
+    static int last_answer = 0; // decoder thread only
+    if (!opts || !state) {
+        return 0;
+    }
+    const int held = p25_sm_tick_guard_held_by_caller();
+    if (!held && !p25_sm_tick_guard_try_enter()) {
+        return last_answer;
+    }
+    last_answer = (state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_UNKNOWN
+                   || state->trunk_recovery_protocol == (int)DSD_TRUNK_RECOVERY_P25)
+                  && p25_sm_hunt_probe_in_flight(p25_sm_get_ctx());
+    if (!held) {
+        p25_sm_tick_guard_leave();
+    }
+    return last_answer;
+}
+
 void
 dsd_engine_frame_sync_hooks_install(void) {
     dsd_frame_sync_hooks hooks = {0};
@@ -113,6 +136,7 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.analog_call_block = dsd_engine_analog_call_block;
     hooks.p25_sm_try_tick = p25_sm_try_tick;
     hooks.decoder_ticks_due = engine_decoder_ticks_due;
+    hooks.p25_probe_in_flight = engine_p25_probe_in_flight;
     hooks.p25_sm_release = p25_sm_release_from_frame_sync;
     hooks.p25_sm_vc_sync = p25_sm_vc_sync_from_frame_sync;
     hooks.p25_sm_vc_no_sync = p25_sm_vc_no_sync_from_frame_sync;
