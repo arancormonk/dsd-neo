@@ -877,6 +877,58 @@ test_move_to_carrier_binds_moved_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A Tier III grant for the carrier the receiver already listens on (the composite control channel's own payload) while
+   resident calls play on it is adopted in place: the receiver does not leave the carrier, so neither its granted call
+   nor the companion call ends, and both keep their identities, bindings and follow times. A preempting call is then
+   judged against the dwell from when the calls were first named, and taking it (another carrier) ends both calls. */
+static int
+test_composite_grant_adopts_resident_calls(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[0x0020U] = CC_HZ;
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 500, "A", 20, 0);
+    seed_row(st, 300, "A", 60, 1);
+    clock_at(1.0);
+    canonical_call_begins(st, 1, 100U, 1U);
+    canonical_call_begins(st, 0, 500U, 5U);
+    voice(opts, st, 1);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 500, 5);
+    dsd_call_snapshot call;
+    const uint64_t epoch1 = dsd_call_state_get(st, 1U, &call) > 0 ? call.epoch : 0U;
+    const uint64_t epoch0 = dsd_call_state_get(st, 0U, &call) > 0 ? call.epoch : 0U;
+    const double follow1 = sm()->slots[1].follow_m;
+    const double follow0 = sm()->slots[0].follow_m;
+    clock_at(1.5);
+    voice(opts, st, 1);
+    voice(opts, st, 0);
+    tv_grant(opts, st, 0x0020U, 1, 100, 1); // the grant of the call playing on TS2 of this carrier
+    int rc = expect_true("the composite carrier's grant is followed in place",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_freq_hz == CC_HZ && sm()->vc_slot == 1);
+    rc |=
+        expect_true("the granted call goes on as the same call",
+                    slot_publishes_bound(st, 1, 100U) && dsd_call_state_get(st, 1U, &call) > 0 && call.epoch == epoch1);
+    rc |=
+        expect_true("the companion call goes on as the same call",
+                    slot_publishes_bound(st, 0, 500U) && dsd_call_state_get(st, 0U, &call) > 0 && call.epoch == epoch0);
+    rc |= expect_true("both calls keep their LC identities and follow times",
+                      sm()->slots[1].prov == (uint8_t)DMR_SM_ID_LC && sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC
+                          && fabs(sm()->slots[1].follow_m - follow1) < 1e-9
+                          && fabs(sm()->slots[0].follow_m - follow0) < 1e-9);
+    clock_at(1.8);
+    voice(opts, st, 1);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    rc |= expect_true("a p60 preempt past the calls' dwell (from their first naming) is followed",
+                      vc(st) == VC_B && sm()->vc_tg == 300);
+    rc |= expect_true("leaving the carrier ends both calls",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.epoch == epoch1
+                          && call.phase == DSD_CALL_PHASE_ENDED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.epoch == epoch0 && call.phase == DSD_CALL_PHASE_ENDED);
+    return rc;
+}
+
 /* Slot identities live in the machine's context, which trunk scan keeps per target: each target's context holds its own,
    and the acquisition a target switch starts (dmr_sm_begin_cc_acquisition()) or an abandoned carrier clears them. */
 static dmr_sm_ctx_t g_scan_ctx[2];
@@ -967,6 +1019,7 @@ main(void) {
     rc |= test_deferred_move_keeps_identity(opts, st);
     rc |= test_move_republishes_renamed_call(opts, st);
     rc |= test_move_to_carrier_binds_moved_call(opts, st);
+    rc |= test_composite_grant_adopts_resident_calls(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

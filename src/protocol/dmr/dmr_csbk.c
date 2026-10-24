@@ -2061,6 +2061,21 @@ dmr_cspdu_cap_plus_3e_seed_carrier(const dsd_opts* opts, const dsd_state* state,
     }
 }
 
+/* The LSN of @p slot of the carrier the machine follows: each Cap+ frequency carries two LSNs, LSN n on slot (n - 1) & 1,
+   so the channel map names it whatever the slot's identity is now (one that expired with its call keeps none). Else
+   the LSN the slot's record was named on. 0: none. */
+static int
+dmr_cspdu_cap_plus_slot_lsn(const dsd_state* state, const dmr_sm_ctx_t* sm, int slot) {
+    if (sm->state == DMR_SM_TUNED && sm->vc_freq_hz > 0) {
+        for (int j = slot; j < 16; j += 2) {
+            if (state->trunk_chan_map[j + 1] == sm->vc_freq_hz) {
+                return j + 1;
+            }
+        }
+    }
+    return sm->slots[slot].channel;
+}
+
 // A later status that shows a seeded LSN idle or carrying another call means the call the seed named is gone.
 static void
 dmr_cspdu_cap_plus_3e_reconcile_seeds(const dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
@@ -2074,9 +2089,10 @@ dmr_cspdu_cap_plus_3e_reconcile_seeds(const dsd_state* state, const dmr_cap_plus
         dmr_sm_capplus_seed_reconcile(sm, slot, lsn, tg);
     }
     /* The followed slots' identities a seed gave (not a checked LC naming the call still on the slot) take the group the
-       status now names on their LSN, so a preemption candidate is compared with the call actually on the slot. */
+       status now names on their LSN, so a preemption candidate is compared with the call actually on the slot; a slot
+       whose identity expired with its call takes the group the status names for its next one. */
     for (int slot = 0; slot < 2; slot++) {
-        const int lsn = sm->slots[slot].channel;
+        const int lsn = dmr_cspdu_cap_plus_slot_lsn(state, sm, slot);
         if (lsn >= 1 && lsn <= 16) {
             /* A private or data call on the LSN is a call of unknown identity, not an idle LSN. */
             const int group = ctx->ch[lsn - 1] == 1;
@@ -2117,11 +2133,12 @@ dmr_cspdu_cap_plus_3e_follow(dsd_opts* opts, dsd_state* state, const dmr_cap_plu
     }
     const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
     const uint64_t generation_before = dsd_trunk_tuning_generation();
+    const long receiver_before = dmr_sm_receiver_frequency(opts); // whether the follow leaves the carrier it is on
     dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
-    dmr_sm_note_status_follow(opts, state, grant_freq, j & 1);
+    dmr_sm_note_status_follow(opts, state, grant_freq, j & 1, receiver_before);
     dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before, 0);
     const dsd_tg_policy_call_route route = {
         .target_id = ctx->t_tg[j],

@@ -1396,6 +1396,98 @@ test_cap_plus_lc_identity_ends_with_its_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Parked on a Capacity Plus carrier (the rest channel) where an admitted resident call plays, a status naming that same
+   carrier outside the voice window is followed in place: the receiver does not leave the carrier, so the resident
+   call goes on as the same call (its canonical epoch active, its checked LC's identity and follow time kept). */
+static int
+test_cap_plus_in_place_follow_keeps_resident_call(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = (uint32_t)ST_F1;
+    st->trunk_cc_freq = ST_F1;
+    dmr_sm_init(opts, st);
+    seed_policy_row(st, 77, "A", 10, 0);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    status_clock_at(1.0);
+    seed_voice_call(st, 1U, DSD_CALL_KIND_GROUP_VOICE, 77U, 7U);
+    accepted_voice_now(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 77U, 7U);
+    dsd_call_snapshot call;
+    const uint64_t epoch = dsd_call_state_get(st, 1U, &call) > 0 ? call.epoch : 0U;
+    const double follow_m = sm->slots[1].follow_m;
+    int rc = expect_true("cap+ the resident call is named on the parked carrier",
+                         sm->state == DMR_SM_ON_CC && sm->slots[1].prov == (uint8_t)DMR_SM_ID_LC && epoch != 0U);
+    status_clock_at(1.5);
+    accepted_voice_now(opts, st, 1);
+    status_window_closed(st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 77U, 0U, 0U});
+    rc |= expect_true("cap+ the parked carrier's call is followed in place",
+                      sm->state == DMR_SM_TUNED && sm->vc_freq_hz == ST_F1 && g_status_tunes == 1);
+    rc |= expect_true("cap+ the resident call goes on as the same call", dsd_call_state_get(st, 1U, &call) > 0
+                                                                             && call.epoch == epoch
+                                                                             && call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_true("cap+ the resident call keeps its LC identity and follow time",
+                      sm->slots[1].target == 77U && sm->slots[1].prov == (uint8_t)DMR_SM_ID_LC
+                          && fabs(sm->slots[1].follow_m - follow_m) < 1e-9);
+    status_env_done(st);
+    return rc;
+}
+
+/* Capacity Plus: slot 0's call ends and its identity expires past the hangtime while the companion slot keeps the
+   carrier busy. A new call on slot 0 is unknown until a status names its LSN: inside the status's voice window (no
+   in-place reseed) a status naming a group there names it afresh (the LSN comes from the carrier, not the expired
+   identity), so a priority-100 preempting group named by the repeated statuses takes the receiver once that call was
+   held for the dwell. */
+static int
+test_cap_plus_status_names_expired_slot(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 50, "A", 10, 0);
+    seed_policy_row(st, 77, "A", 10, 0);
+    seed_policy_row(st, 43, "A", 100, 1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 77U, 0U, 0U});
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("cap+ both slots seeded",
+                         st->trunk_vc_freq[0] == ST_F1 && sm->slots[0].target == 42U && sm->slots[1].target == 77U);
+    status_clock_at(0.5);
+    seed_voice_call(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 42U, 7U);
+    seed_voice_call(st, 1U, DSD_CALL_KIND_GROUP_VOICE, 77U, 8U);
+    accepted_voice_now(opts, st, 0);
+    accepted_voice_now(opts, st, 1);
+    status_clock_at(1.0);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    for (double t = 1.0; t < 3.55; t += 0.5) {
+        status_clock_at(t);
+        accepted_voice_now(opts, st, 1); // the companion keeps the carrier busy
+    }
+    status_clock_at(3.6);
+    const dsd_call_observation anonymous = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(st, &anonymous, DSD_CALL_BOUNDARY_BEGIN);
+    accepted_voice_now(opts, st, 0);
+    accepted_voice_now(opts, st, 1);
+    rc |= expect_true("cap+ the expired slot's new call is unknown",
+                      sm->slots[0].prov == (uint8_t)DMR_SM_ID_NONE && sm->state == DMR_SM_TUNED);
+    st->last_vc_sync_time = dsd_decode_time(); // live voice: the status's voice window is open (no in-place reseed)
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){50U, 77U, 43U, 0U});
+    rc |= expect_true("cap+ a status names the expired slot's new call",
+                      sm->slots[0].target == 50U && sm->slots[0].prov == (uint8_t)DMR_SM_ID_SEED
+                          && sm->slots[0].channel == 1);
+    rc |= expect_true("cap+ the preempting group waits for the named call's dwell", st->trunk_vc_freq[0] == ST_F1);
+    status_clock_at(4.5);
+    accepted_voice_now(opts, st, 0);
+    accepted_voice_now(opts, st, 1);
+    st->last_vc_sync_time = dsd_decode_time(); // live voice: the status's voice window is open (no in-place reseed)
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){50U, 77U, 43U, 0U});
+    rc |=
+        expect_true("cap+ a repeated status's p100 preempting group takes the receiver", st->trunk_vc_freq[0] == ST_F3);
+    status_env_done(st);
+    return rc;
+}
+
 /* XPT submits the LSN its ranking judged: parked where a resident private call to 42 (channel 0) plays, the outranking
    group 42 on LSN 3 (slot 0 of another carrier) is the same route the ranking found eligible, so the machine's own
    preemption check never mistakes it for the held private call and refuses it. */
@@ -2216,6 +2308,8 @@ main(void) {
     rc |= test_cap_plus_takeover_ends_displaced_calls(opts, st);
     rc |= test_cap_plus_lc_identity_ends_with_its_call(opts, st);
     rc |= test_xpt_submit_channel_is_the_ranked_lsn(opts, st);
+    rc |= test_cap_plus_in_place_follow_keeps_resident_call(opts, st);
+    rc |= test_cap_plus_status_names_expired_slot(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

@@ -1716,12 +1716,15 @@ nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_pri
 }
 
 /* A call on the receiver's channel ended (a release, DISC, or a Type-D termination). A held call the receiver followed
- * there stands until its route is released (nxdn_follow_release()); one known only from the call heard there (a
+ * there stands until its route is released (nxdn_follow_release()), its binding updated from the ended call now
+ * (nxdn_call_identity_refresh(): the moment the transmission ended), so a reply within the hangtime of the release is
+ * the conversation's gap, however long ago the identity was last read; one known only from the call heard there (a
  * resident call, no grant tune) ended with it, so the next call there is unknown until a message names it and yields
  * only to Hold. */
 static void
 nxdn_call_identity_end(const dsd_opts* opts, dsd_state* state) {
     if (nxdn_follow_valid(opts, state)) {
+        nxdn_call_identity_refresh(opts, state);
         return;
     }
     DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));

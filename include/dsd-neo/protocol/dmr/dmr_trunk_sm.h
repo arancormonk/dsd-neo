@@ -179,7 +179,10 @@ typedef struct {
     uint8_t vc_crc_flags;
 
     // Timing (monotonic only)
-    double t_tune_m;                       // Time of last VC tune
+    double t_tune_m; // Time of last VC tune
+    /* When the receiver arrived on the followed carrier: the follow tune that left another carrier, 0 when the follow
+       adopted the carrier the receiver was already on (every call heard there is that carrier's). */
+    double t_carrier_m;
     double receive_check_started_m;        // Bounded acquisition while receive admission is pending/rejected
     dsd_receive_carriers receive_carriers; // Colour code last verified on each voice channel
     long receive_check_freq_hz;            // The voice channel that window belongs to (a new one starts its own)
@@ -311,14 +314,20 @@ void dmr_sm_note_receiver_unknown(dmr_sm_ctx_t* ctx);
  *  while nothing attributes the receiver frequency, at most once per tuning generation for rigctl. */
 int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
 
+/** @brief Where the receiver is now as the machine knows it: the carrier it follows, else the one it listens on (as
+ *  dmr_sm_receiver_on() reads it); 0 when nothing names it. Read before a follow's tune, it says whether the follow
+ *  leaves that carrier. */
+long dmr_sm_receiver_frequency(const dsd_opts* opts);
+
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
- *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant; the calls of the
- *  carrier left behind end (EXPLICIT) there. @p slot is the selected LSN's slot (-1: none): it holds the carrier during
- *  acquisition, whatever its identity. */
-void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot);
+ *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is
+ *  where the receiver was before the tune (dmr_sm_receiver_frequency(); 0 unknown): a follow that leaves that carrier
+ *  ends its calls (EXPLICIT) there, one that stays on it keeps the calls on the air and their identities. @p slot is the
+ *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. */
+void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz);
 
 /* ----------------------------------------------------------------------------
  * Talkgroup priority and preemption
@@ -399,8 +408,9 @@ void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int s
 
 /**
  * @brief A Capacity Plus status names group @p tg on @p lsn: a status-followed slot whose identity a seed gave on that
- * LSN, or whose named call is over (an LC's included: its authority ends with its call), takes the group, with a new
- * follow time unless it is the same call. An @p active LSN with no group (@p tg 0: a private or data call) leaves that
+ * LSN, whose named call is over (an LC's included: its authority ends with its call), or that has no identity at all
+ * (one that expired with its call while the companion slot kept the carrier), takes the group, with a new follow time
+ * unless it is the same call. An @p active LSN with no group (@p tg 0: a private or data call) leaves that
  * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
  */
 void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int lsn, uint32_t tg,

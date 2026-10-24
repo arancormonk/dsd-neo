@@ -12019,6 +12019,28 @@ add_test(
     COMMAND dsd-neo_test_nxdn_grant_tune_matrix
 )
 
+# The same matrix on the real canonical call state (its own end and start times), plus the cases that need them
+add_executable(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    protocol/nxdn/test_nxdn_grant_tune_matrix.c
+)
+target_compile_definitions(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    PRIVATE NXDN_MATRIX_REAL_CALL_STATE=1
+)
+target_include_directories(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    PRIVATE dsd-neo_proto_nxdn
+)
+add_test(
+    NAME NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE
+    COMMAND dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+)
+
 add_executable(
     dsd-neo_test_edacs_bch
     protocol/edacs/test_edacs_bch.c

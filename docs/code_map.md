@@ -4968,11 +4968,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     followed route within the hangtime (a conversation is held in its gaps); another call clears it, and on the followed
     route one that began within the hangtime of the named call leaves a gap record (unknown, `valid` 0) whose renaming
     as the same call (target and kind, binding that call) keeps `follow_m`. A new call never inherits the identity, its
-    priority or its dwell. A held call known only from the call heard there (no valid route: a resident call, no grant
-    tune) ends with that call: a release, DISC or Type-D termination clears it (`nxdn_call_identity_end()`), as its
-    canonical end does, so the next call there is unknown until a message names it. A Type-D held call (`type_d`:
-    followed from a busy message, named by an SCCH, or by a VCALL on an RTCH2 or the followed Type-D route) is judged as
-    Type-D admission judges it, with no source fallback.
+    priority or its dwell. A release or Type-D termination on the followed route updates the binding from the ended
+    call at once (`nxdn_call_identity_end()` refreshes it: the call's own end time), so a reply's gap is measured from
+    the release, however long ago the identity was last read. A held call known only from the call heard there (no
+    valid route: a resident call, no grant tune) ends with that call: a release, DISC or Type-D termination clears it
+    (`nxdn_call_identity_end()`), as its canonical end does, so the next call there is unknown until a message names
+    it. A Type-D held call (`type_d`: followed from a busy message, named by an SCCH, or by a VCALL on an RTCH2 or the
+    followed Type-D route) is judged as Type-D admission judges it, with no source fallback.
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
     hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per
@@ -5008,7 +5010,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     policy, and no sync loss reacquires the displaced call there; a follow on the same carrier (the in-place repeat of
     the held call) leaves the call on the air alone. DISC's return and a Type-D termination (repeater 31) tune clear
     the route, the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25
-    SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX`, `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`.
+    SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX` (also built on the real canonical call state as
+    `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),
+    `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
   received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
   scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
@@ -5333,7 +5337,10 @@ Private per-protocol modules worth knowing about:
   inferred from bank one's, not published. The seed also names the slot's identity record (`dmr_sm_slot_ctx_t`,
   provenance SEED, below) unless a checked LC already named the call there; a later status naming another group on
   the slot's LSN replaces a seed's identity (`dmr_sm_status_identity_reconcile()`), never an LC's, and an idle LSN
-  leaves it. Tests: `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+  leaves it. The slot's LSN is the followed carrier's (LSN n is slot (n - 1) & 1 of the channel-map frequency,
+  `dmr_cspdu_cap_plus_slot_lsn()`), not the record's, so a slot whose identity expired with its call while the
+  companion kept the carrier busy (no record left) takes the group a status names for its next call. Tests:
+  `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
   group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
@@ -5380,18 +5387,25 @@ Private per-protocol modules worth knowing about:
     `dsd_call_snapshot_transmission()`), so it never outlives it (`dmr_sm_slot_identity_refresh()`, run by the busy
     view, grant submission, the status reconciliations, voice sync, an LC and the tick). An LC binds to the call it was
     published on; a grant, seed or status to the slot's active call when that names its target or nothing yet (on the
-    followed carrier only one begun since the follow tune), else to the first call to begin on the slot after it was
-    named. The call's end leaves the record only on the followed carrier within the hangtime (a conversation is held in
-    its gaps); a resident call's identity ends with it. Another call on the slot clears the record, and on the followed
-    carrier one that began within the hangtime of the named call leaves a gap record (unknown) whose renaming as the
-    same call (target, class, carrier, binding that call) keeps the follow time; on the followed slot the grant's
-    identity then stands for nothing (no fallback, no publication). A new call never inherits an identity, and LC
-    precedence over seeds, grants and statuses holds only while the LC's call lasts (a Cap+ status may name a gap
-    record's LSN).
-  - Leaving a carrier. An accepted follow to another carrier (a grant, Hold or preemption takeover, a matched C_MOVE,
-    Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`) ends every slot's canonical call
-    (EXPLICIT, synchronized, `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced
-    call never stays active beside the followed one.
+    followed carrier only one begun since the receiver arrived there, `t_carrier_m`: the follow tune, or for a carrier
+    adopted in place any call), else to the first call to begin on the slot after it was named. The call's end leaves
+    the record only on the followed carrier within the hangtime (a conversation is held in its gaps); a resident call's
+    identity ends with it. Another call on the slot clears the record, and on the followed carrier one that began
+    within the hangtime of the named call leaves a gap record (unknown) whose renaming as the same call (target, class,
+    carrier, binding that call) keeps the follow time; on the followed slot the grant's identity then stands for
+    nothing (no fallback, no publication). A new call never inherits an identity, and LC precedence over seeds, grants
+    and statuses holds only while the LC's call lasts (a Cap+ status may name a gap record's LSN, or a slot whose
+    identity expired).
+  - Leaving a carrier. An accepted follow that leaves the carrier the receiver was on (a grant, Hold or preemption
+    takeover, a matched C_MOVE, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
+    receiver's frequency read before the tune, `dmr_sm_receiver_frequency()`: the followed carrier, else the one it
+    listens on; unknown counts as leaving) ends every slot's canonical call (EXPLICIT, synchronized,
+    `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
+    beside the followed one. A follow of the carrier the receiver is already on (a grant for the composite control
+    channel's own payload, a Cap+ status naming the rest channel it parks on, an XPT entry where it parks) adopts it in
+    place: no call there ends, the slots keep that carrier's records (identity, binding, follow time) and voice timers,
+    the grant names its slot only when the slot's record does not already name its call, its identity is not
+    published into a call on the air that already names one, and no block state is reset.
   - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
     commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
     takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger

@@ -24,6 +24,7 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -215,6 +216,27 @@ aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output,
     (void)key_size;
     (void)nblocks;
 }
+
+#ifdef NXDN_MATRIX_REAL_CALL_STATE
+/* The real call state (src/core/util/call_state.c) stands in for test_support/call_state_stubs.c, whose event-sync
+ * counter the cases read: counted here instead. */
+static unsigned int g_event_sync_counts[DSD_CALL_STATE_SLOT_COUNT];
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    if (slot < DSD_CALL_STATE_SLOT_COUNT) {
+        g_event_sync_counts[slot]++;
+    }
+}
+
+unsigned int
+dsd_call_state_stub_event_sync_count(uint8_t slot) {
+    return slot < DSD_CALL_STATE_SLOT_COUNT ? g_event_sync_counts[slot] : 0U;
+}
+#endif
 
 long int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -1399,6 +1421,62 @@ nxdn_run_refollow_after_hangtime_return_case(void) {
     return rc;
 }
 
+#ifdef NXDN_MATRIX_REAL_CALL_STATE
+/* A checked transmission release (TX_REL) of the followed call. */
+static void
+send_tx_release(uint16_t source, uint16_t target) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x08U);
+    write_bits_u32(bits, 16U, 1U, 3U);
+    write_bits_u32(bits, 24U, source, 16U);
+    write_bits_u32(bits, 40U, target, 16U);
+    NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
+/* The followed call's transmission ends with TX_REL long after its identity was last read, and the reply follows within
+ * the hangtime of the release: the reply is the conversation's gap, measured from the release (the ended call's own
+ * end), not from the last read. Its VCALL names the same call, which keeps its follow time, so a preempting call right
+ * after the reply is judged against the dwell from the first follow. Needs the real call state: the release's end time
+ * is the call state's own stamp. */
+static int
+nxdn_run_release_reply_keeps_dwell_case(void) {
+    static const char* const name = "type-c-release-reply-keeps-dwell";
+    type_c_fixture();
+    g_opts.trunk_hangtime = 2.0f;
+    policy_row(1100U, 10, 0);
+    policy_row(1200U, 100, 1);
+    int rc = 0;
+    at_seconds(1000.0);
+    send_assignment(0x04U, 1100U, 16U);
+    at_seconds(1000.2);
+    voice_live();
+    send_vcall(2100U, 1100U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1100U, name, "held",
+                      "the followed call is held");
+    at_seconds(1004.0);
+    voice_live();
+    send_tx_release(2100U, 1100U);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED, name,
+                      "release", "the transmission ended");
+    rc |= nxdn_expect(fabs(g_state.nxdn_call.call_seen_m - call.ended_m) < 1e-6, name, "release",
+                      "the held call is bound to the ended transmission's end");
+    at_seconds(1004.2);
+    voice_live();
+    send_vcall(2200U, 1100U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1100U
+                          && g_state.nxdn_call.follow_m < 1001.0,
+                      name, "reply", "the reply within the hangtime keeps the conversation's follow time");
+    at_seconds(1004.3);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "preempt",
+                      "a priority-100 preempting call is taken (dwell from the first follow)");
+    return rc;
+}
+#endif
+
 /* A resident Type-D call heard without a grant tune (the receiver parked on its repeater) ends with its DISC: the next,
  * anonymous call there is not the ended one, so it yields only to Hold, never to a preempting call that merely
  * outranks the ended call. */
@@ -1516,9 +1594,9 @@ nxdn_run_type_d_followed_new_call_case(void) {
                       "the faded call is held within the hangtime: an outranking preempt takes it");
 
     other = followed_call_faded(9500.0);
-    at_seconds(9500.95);
+    at_seconds(9501.5); /* past the canonical layer's reacquire gap (a resumed transmission is the faded call's) */
     late_entry_call();
-    at_seconds(9501.0);
+    at_seconds(9501.6);
     nxdn_run_case_decode(&other);
     rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 0U, name, "anonymous",
                       "a new anonymous call on the route is not the held one");
@@ -1725,11 +1803,18 @@ main(void) {
     rc |= nxdn_run_type_c_takeover_ends_left_call_case();
     rc |= nxdn_run_type_d_takeover_ends_left_call_case();
     rc |= nxdn_run_refollow_after_hangtime_return_case();
+#ifdef NXDN_MATRIX_REAL_CALL_STATE
+    rc |= nxdn_run_release_reply_keeps_dwell_case();
+#endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
     if (rc == 0) {
+#ifdef NXDN_MATRIX_REAL_CALL_STATE
+        printf("NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE: OK\n");
+#else
         printf("NXDN_GRANT_TUNE_MATRIX: OK\n");
+#endif
     }
     dsd_state_ext_free_all(&g_state);
     return rc;
