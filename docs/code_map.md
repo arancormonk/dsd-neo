@@ -5488,8 +5488,9 @@ Private per-protocol modules worth knowing about:
   `0x44` with `-j` off, Motorola LCGRGU) reach it with `p25_sm_event_t.preempt_only`. `handle_grant` drops such an
   event unless the SM is tuned, the frequency differs, and the read-only prospective decision
   (`p25_grant_prospective_decision()`, also behind `p25_sm_grant_candidate_rank()`) is a tunable preempt talkgroup, so
-  ordinary announcements never touch SM timers. Calls announced together are ranked (audible before probe, admitted,
-  hold, priority, listed order) and the first carrier change ends the update. Before `should_preempt` the SM
+  ordinary announcements never touch SM timers. Calls announced together, on Phase 2 and in LC `0x42`, are ranked
+  (audible before probe as `p25_sm_grant_is_silent_probe()` classifies them, admitted, hold, priority, listed order)
+  and the first carrier change ends the update. Before `should_preempt` the SM
   describes every assigned slot with `followed_since_m` (kept across repeats and re-grants of the same call; reset by
   `p25_sm_clear_followed_history()`). Duplicates, voice starts and accepted grants describe; only a preemption
   commits a cooldown, after the candidate is tuned. A preemption whose CC return fails or defers restores the

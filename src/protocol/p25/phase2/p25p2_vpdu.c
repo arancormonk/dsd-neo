@@ -918,19 +918,6 @@ typedef struct {
 } p25p2_vpdu_candidate_policy;
 
 static int
-p25p2_vpdu_candidate_is_silent_probe(const dsd_opts* opts, const dsd_state* state,
-                                     const p25p2_vpdu_group_candidate* candidate) {
-    if (!opts || !candidate || opts->trunk_tune_enc_calls != 0
-        || (candidate->svc_bits >= 0 && (candidate->svc_bits & 0x10) != 0)) {
-        return 0;
-    }
-    if (p25_patch_tg_key_is_clear(state, candidate->group) || p25_patch_sg_key_is_clear(state, candidate->group)) {
-        return 0;
-    }
-    return candidate->svc_bits < 0 || (candidate->svc_bits & 0x40) != 0;
-}
-
-static int
 p25p2_vpdu_try_group_candidate(dsd_opts* opts, dsd_state* state, const p25p2_vpdu_group_candidate* candidate,
                                const p25p2_vpdu_candidate_policy* policy) {
     int tuned = 0;
@@ -997,7 +984,7 @@ p25p2_vpdu_try_group_candidates(dsd_opts* opts, dsd_state* state, const p25p2_vp
         if (!p25_sm_grant_candidate_rank(opts, state, &ev, &ranks[j])) {
             DSD_MEMSET(&ranks[j], 0, sizeof(ranks[j]));
         }
-        probes[j] = p25p2_vpdu_candidate_is_silent_probe(opts, state, &candidates[j]);
+        probes[j] = p25_sm_grant_is_silent_probe(opts, state, candidates[j].group, candidates[j].svc_bits);
         order[j] = j;
     }
     for (int i = 1; i < count; i++) {

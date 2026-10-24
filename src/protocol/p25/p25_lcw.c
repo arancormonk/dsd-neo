@@ -261,11 +261,15 @@ p25_lcw_trunk_cc_ready_for_grant(p25_lcw_ctx* ctx) {
 /* Calls an FDMA voice channel announces in progress elsewhere (0x42, 0x44 without -j, Motorola LCGRGU). They reach
  * the trunking SM only as preemption candidates (p25_sm_event_t.preempt_only): a talkgroup whose policy asks to
  * preempt may take the receiver from a lower-priority call, and every other announcement leaves the SM untouched.
- * Several are offered held talkgroup first, then highest priority, and the first to take the receiver ends the
- * offer. */
-/* Whether candidate @p b goes before @p a: admitted first, then the held talkgroup, then the higher priority. */
+ * Several are offered audible before silent probe (as on Phase 2), then held talkgroup first, then highest priority,
+ * and the first to take the receiver ends the offer. */
+/* Whether candidate @p b goes before @p a: audible before silent probe, admitted first, then the held talkgroup, then
+ * the higher priority. */
 static int
-p25_lcw_outranks(const p25_sm_grant_rank_t* b, const p25_sm_grant_rank_t* a) {
+p25_lcw_outranks(const p25_sm_grant_rank_t* b, int b_probe, const p25_sm_grant_rank_t* a, int a_probe) {
+    if (b_probe != a_probe) {
+        return b_probe < a_probe;
+    }
     if (b->tune_allowed != a->tune_allowed) {
         return b->tune_allowed > a->tune_allowed;
     }
@@ -280,6 +284,7 @@ p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint1
                          int count) {
     p25_sm_event_t events[2];
     p25_sm_grant_rank_t ranks[2];
+    int probes[2];
     int order[2];
     int n = 0;
     if (!p25_lcw_trunk_cc_ready_for_grant(ctx) || ctx->opts->trunk_tune_group_calls != 1) {
@@ -294,10 +299,11 @@ p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint1
         if (!p25_sm_grant_candidate_rank(ctx->opts, ctx->state, &events[n], &ranks[n])) {
             DSD_MEMSET(&ranks[n], 0, sizeof(ranks[n]));
         }
+        probes[n] = p25_sm_grant_is_silent_probe(ctx->opts, ctx->state, groups[i], svcs[i]);
         order[n] = n;
         n++;
     }
-    if (n == 2 && p25_lcw_outranks(&ranks[1], &ranks[0])) {
+    if (n == 2 && p25_lcw_outranks(&ranks[1], probes[1], &ranks[0], probes[0])) {
         order[0] = 1;
         order[1] = 0;
     }

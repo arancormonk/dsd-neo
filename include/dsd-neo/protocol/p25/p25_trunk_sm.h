@@ -900,6 +900,22 @@ typedef struct {
 int p25_sm_grant_candidate_rank(const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                                 p25_sm_grant_rank_t* out);
 
+/**
+ * @brief Whether an announced group call would be tuned only as a silent probe under encrypted-call lockout.
+ *
+ * With encrypted calls not tuned (trunk_tune_enc_calls == 0), a call whose service options say encrypted, or that
+ * carries none, is admissible only as a probe that may turn out encrypted and silent -- unless its talkgroup belongs
+ * to a patch with a clear key. Decoders rank audible calls before probes when several are announced together, so a
+ * probe cannot take the receiver from a clear call listed beside it.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state (patch keys).
+ * @param tg Announced talkgroup.
+ * @param svc_bits Its service options, or P25_SM_SVC_UNKNOWN when absent.
+ * @return 1 for a silent probe, 0 otherwise.
+ */
+int p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, int tg, int svc_bits);
+
 /* ============================================================================
  * Helper: SACCH slot mapping
  * ============================================================================ */

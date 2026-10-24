@@ -279,6 +279,25 @@ test_phase1_link_control(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* 0x42 carries no service options, so with encrypted calls not tuned each pair is a silent probe unless a clear patch
+ * key says otherwise. As on Phase 2 the audible call goes first: a probe for the priority-100 talkgroup listed first
+ * must not take the receiver from the clear priority-60 patch listed beside it. */
+static int
+test_phase1_link_control_probe_order(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    fresh_site(opts, st);
+    opts->trunk_tune_enc_calls = 0;
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(450.0);
+    p25_patch_update(st, 250, /*is_patch*/ 1, /*active*/ 1);
+    p25_patch_set_kas(st, 250, /*key*/ 0, /*alg*/ 0x80, /*ssn*/ 1);
+    follow(opts, st, 100, CH_HELD);
+    set_clock_s(452.0);
+    lcw_group_update_pair(opts, st, CH_PRIO, 200, CH_THIRD, 250);
+    rc |= expect_true("p1 0x42: clear patch ranked before the priority probe", following(250, 851162500L));
+    return rc;
+}
+
 /* The gap between transmissions: the transmission's end cleared its record, but the conversation still holds the
  * carrier and is outranked only by a strictly higher priority. */
 static int
@@ -729,6 +748,7 @@ main(void) {
     rc |= test_phase2_update_preempts(&opts, &st);
     rc |= test_phase2_ranking(&opts, &st);
     rc |= test_phase1_link_control(&opts, &st);
+    rc |= test_phase1_link_control_probe_order(&opts, &st);
     rc |= test_hangtime(&opts, &st);
     rc |= test_dwell_from_follow(&opts, &st);
     rc |= test_cooldown_survives_reload(&opts, &st);

@@ -2965,6 +2965,17 @@ p25_sm_grant_candidate_rank(const dsd_opts* opts, dsd_state* state, const p25_sm
     return 1;
 }
 
+int
+p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, int tg, int svc_bits) {
+    if (!opts || opts->trunk_tune_enc_calls != 0 || (svc_bits >= 0 && (svc_bits & 0x10) != 0)) {
+        return 0;
+    }
+    if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
+        return 0;
+    }
+    return svc_bits < 0 || (svc_bits & 0x40) != 0;
+}
+
 void
 p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     if (!opts || !state || opts->trunk_enable != 1) {
