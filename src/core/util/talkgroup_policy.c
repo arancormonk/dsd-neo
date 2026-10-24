@@ -2316,7 +2316,8 @@ static void
 tg_policy_describe_slot(dsd_tg_policy_context* ctx, int slot, const dsd_tg_policy_call_route* route,
                         const dsd_tg_policy_decision* decision, double start_mono_s, double now_mono_s) {
     dsd_tg_policy_active_call* c = &ctx->active.calls[slot];
-    if (tg_policy_active_call_matches_route(c, route)) {
+    // A group call and a private call sharing a number are different calls: the new one starts its own dwell.
+    if (tg_policy_active_call_matches_route(c, route) && c->private_call == decision->private_call) {
         c->priority = decision->priority;
         c->private_call = decision->private_call;
         c->src = route->source_id;

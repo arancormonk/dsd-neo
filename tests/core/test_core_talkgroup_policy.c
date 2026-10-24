@@ -1116,6 +1116,14 @@ test_followed_call_bookkeeping(void) {
     held_dec.priority = 50;
     (void)dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0);
 
+    /* A private call on the same number is another call: describing it installs its own start. */
+    held_dec.private_call = 1;
+    rc |= expect_true("describe private call on the group's number",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.95, 5.0) == 0);
+    rc |= expect_true("class change restarts the dwell",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 0);
+    held_dec.private_call = 0;
+
     /* Noting into an empty ledger stamps nothing either: there was no call to take over. */
     rc |= expect_true("clear ledger", dsd_tg_policy_clear_active_call(st, -1) == 0);
     rc |= expect_true("note into empty ledger", dsd_tg_policy_note_active_call(st, &held, &held_dec, 10.0) == 0);
