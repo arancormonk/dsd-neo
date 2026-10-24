@@ -1935,6 +1935,56 @@ nxdn_run_type_d_abandoned_grant_fade_case(void) {
     return rc;
 }
 
+/* A Type-C assignment of call type @p call_type (1 group, 4 private) for @p target on @p channel. */
+static void
+send_assignment_type(uint8_t message_type, uint8_t call_type, uint16_t target, uint16_t channel) {
+    const nxdn_case c = {"", NXDN_MATRIX_TYPE_C, message_type, call_type, 2100U, target, channel, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t message[128];
+    build_vcall_assgn(message, &c);
+    NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message);
+}
+
+/* A Type-C private call to unit 1401 (priority 0) is held; within its hangtime, after the dwell, a duplicate
+ * assignment on the same channel names group 1401, which a priority-100 preempting range covers. The same number in
+ * the other class is another call: it preempts the private call in place and becomes the held call, so a priority-50
+ * announcement later (past the takeover's cooldown) never takes the receiver from the priority-100 group. */
+static int
+nxdn_run_type_c_group_preempts_same_number_private_case(void) {
+    static const char* const name = "type-c-group-preempts-same-number-private";
+    type_c_fixture();
+    g_opts.trunk_hangtime = 2.0f;
+    dsd_tg_policy_entry range;
+    if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
+        range.id_end = 1499U;
+        range.is_range = 1U;
+        range.priority = 100;
+        range.preempt = 1U;
+        (void)dsd_tg_policy_add_range_entry(&g_state, &range);
+    }
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9000.0);
+    send_assignment_type(0x04U, 4U, 1401U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1401U
+                          && g_state.nxdn_call.private_call == 1U,
+                      name, "private", "the private call to 1401 is held");
+
+    at_seconds(9001.0);
+    voice_live(); /* within its hangtime */
+    send_assignment_type(0x05U, 1U, 1401U, 16U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1401U
+                          && g_state.nxdn_call.private_call == 0U,
+                      name, "group", "the p100 group of the same number preempts the p0 private call in place");
+
+    at_seconds(9002.5); /* past the takeover's cooldown */
+    voice_live();
+    send_assignment_type(0x05U, 1U, 1500U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_state.nxdn_call.target == 1401U, name, "p50",
+                      "a p50 announcement never takes the receiver from the p100 group");
+    return rc;
+}
+
 static int
 nxdn_run_unnamed_followed_call_fades_case(void) {
     return nxdn_run_unnamed_followed_call_fades_variant(0) | nxdn_run_unnamed_followed_call_fades_variant(1);
@@ -2381,6 +2431,7 @@ main(void) {
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
     rc |= nxdn_run_unnamed_followed_call_fades_case();
+    rc |= nxdn_run_type_c_group_preempts_same_number_private_case();
     rc |= nxdn_run_type_d_info3_new_source_keeps_held_call_case();
     rc |= nxdn_run_type_d_abandoned_grant_case();
     rc |= nxdn_run_type_d_abandoned_grant_fade_case();

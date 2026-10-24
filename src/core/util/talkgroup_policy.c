@@ -2119,18 +2119,22 @@ tg_policy_route_is_complete(const dsd_tg_policy_call_route* route) {
     return 1;
 }
 
+/* Whether active call @p c is the candidate's own call (@p route on @p slot, of class @p private_call): its target,
+   channel and slot, and its group or private class, as tg_policy_describe_slot() keeps a record only for the same
+   class. A talkgroup and a unit may share a number, so a candidate of the other class is another call. */
 static int
 tg_policy_active_call_matches_route_slot(const dsd_tg_policy_active_call* c, const dsd_tg_policy_call_route* route,
-                                         int slot) {
+                                         int slot, int private_call) {
     if (!c || !route) {
         return 0;
     }
-    return c->valid && c->tg == route->target_id && c->channel == route->channel && c->slot == slot;
+    return c->valid && c->tg == route->target_id && c->channel == route->channel && c->slot == slot
+           && (c->private_call != 0) == (private_call != 0);
 }
 
 static int
 tg_policy_collect_displaced_all_slots(const dsd_tg_policy_context* ctx, const dsd_tg_policy_call_route* route,
-                                      int slot_match, int displaced[2], int* displaced_count) {
+                                      int slot_match, int private_call, int displaced[2], int* displaced_count) {
     if (!ctx || !route || !displaced || !displaced_count) {
         return -1;
     }
@@ -2139,7 +2143,7 @@ tg_policy_collect_displaced_all_slots(const dsd_tg_policy_context* ctx, const ds
         if (!c->valid) {
             continue;
         }
-        if (tg_policy_active_call_matches_route_slot(c, route, slot_match)) {
+        if (tg_policy_active_call_matches_route_slot(c, route, slot_match, private_call)) {
             return 1;
         }
         displaced[(*displaced_count)++] = i;
@@ -2149,7 +2153,7 @@ tg_policy_collect_displaced_all_slots(const dsd_tg_policy_context* ctx, const ds
 
 static int
 tg_policy_collect_displaced_slots(const dsd_tg_policy_context* ctx, const dsd_tg_policy_call_route* route,
-                                  int displaced[2], int* displaced_count) {
+                                  int private_call, int displaced[2], int* displaced_count) {
     const dsd_tg_policy_active_call* c = NULL;
 
     if (!ctx || !route || !displaced || !displaced_count) {
@@ -2158,17 +2162,17 @@ tg_policy_collect_displaced_slots(const dsd_tg_policy_context* ctx, const dsd_tg
     *displaced_count = 0;
 
     if (route->slot == -1) {
-        return tg_policy_collect_displaced_all_slots(ctx, route, -1, displaced, displaced_count);
+        return tg_policy_collect_displaced_all_slots(ctx, route, -1, private_call, displaced, displaced_count);
     }
     if (route->requires_tuner_retune) {
-        return tg_policy_collect_displaced_all_slots(ctx, route, route->slot, displaced, displaced_count);
+        return tg_policy_collect_displaced_all_slots(ctx, route, route->slot, private_call, displaced, displaced_count);
     }
 
     c = &ctx->active.calls[route->slot];
     if (!c->valid) {
         return 0;
     }
-    if (tg_policy_active_call_matches_route_slot(c, route, route->slot)) {
+    if (tg_policy_active_call_matches_route_slot(c, route, route->slot, private_call)) {
         return 1;
     }
     displaced[(*displaced_count)++] = route->slot;
@@ -2222,7 +2226,8 @@ dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
         return 0;
     }
 
-    collect_result = tg_policy_collect_displaced_slots(ctx, candidate_route, displaced, &displaced_count);
+    collect_result =
+        tg_policy_collect_displaced_slots(ctx, candidate_route, candidate->private_call, displaced, &displaced_count);
     if (collect_result != 0) {
         return 0;
     }

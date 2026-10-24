@@ -1187,7 +1187,10 @@ suite runs under this compiler.
 - Invariant (preemption bookkeeping, `dsd_tg_policy_should_preempt()`): the active-call records are what a protocol
   describes, not a history. Right before asking, a protocol calls `dsd_tg_policy_describe_followed_call()` for each
   call it holds, with the time it began following that call (dwell runs from it; a matching record keeps its start and
-  cooldown; nothing is stamped). An accepted takeover commits its cooldown with `dsd_tg_policy_commit_preemption()`
+  cooldown; nothing is stamped). A candidate is the held call itself, and never preempts it, only when it matches a
+  record's target, channel, slot and group or private class (`tg_policy_active_call_matches_route_slot()`, as a
+  describe matches): a talkgroup and a unit may share a number, so a candidate of the other class is another call that
+  displaces the record by priority. An accepted takeover commits its cooldown with `dsd_tg_policy_commit_preemption()`
   after the preempting call is acquired, because the release cleared the displaced records. `note_active_call()`
   stamps a cooldown only when it replaces a valid, different record. A list reload or clear carries the records and
   the last cooldown into the new context; `install` (a scan target transition) restarts them.

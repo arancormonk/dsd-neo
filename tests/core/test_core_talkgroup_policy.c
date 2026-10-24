@@ -731,6 +731,51 @@ test_live_active_priority(void) {
     return rc;
 }
 
+/* The held call a candidate on the same target, channel and slot is is the same call only in the same class: a
+   talkgroup and a unit may share a number, so a group candidate named like a held private call is another call, which
+   displaces it by priority once the dwell has run; a candidate of the held call's own class is that call, never a
+   preemption of it. Each way round, on a single slot and across a retune. */
+static int
+test_preemption_same_call_by_class(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    for (int held_private = 0; held_private < 2; held_private++) {
+        for (int slot = -1; slot <= 0; slot++) {
+            rc |= expect_true("clear before class case", dsd_tg_policy_clear_active_call(st, -1) == 0);
+            dsd_tg_policy_call_route held;
+            dsd_tg_policy_decision held_dec;
+            init_route(&held, 1401, 7, 936012500L, 16, slot, 0);
+            init_decision(&held_dec, 1401, 7, 0, 0, 1);
+            held_dec.private_call = held_private;
+            rc |= expect_true("note held call", dsd_tg_policy_note_active_call(st, &held, &held_dec, 0.0) == 0);
+
+            dsd_tg_policy_call_route cand;
+            dsd_tg_policy_decision cand_dec;
+            init_route(&cand, 1401, 7, 936012500L, 16, slot, slot == -1 ? 1 : 0);
+            init_decision(&cand_dec, 1401, 7, 100, 1, 1);
+            cand_dec.private_call = !held_private;
+            rc |= expect_true("same number, other class: another call that displaces the held one",
+                              dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 2.0) == 1);
+            cand_dec.private_call = held_private;
+            rc |= expect_true("same number, same class: the held call itself, never a preemption",
+                              dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 2.0) == 0);
+        }
+    }
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
 static int
 test_preemption_helpers(void) {
     int rc = 0;
@@ -2034,6 +2079,7 @@ main(void) {
     rc |= test_evaluator_behaviors();
     rc |= test_group_file_append_helper();
     rc |= test_preemption_helpers();
+    rc |= test_preemption_same_call_by_class();
     rc |= test_live_active_priority();
     rc |= test_reload_group_file();
     rc |= test_followed_call_bookkeeping();
