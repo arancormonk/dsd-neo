@@ -17,7 +17,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 /* Define -------------------------------------------------------------------*/
 
@@ -195,9 +194,16 @@ static bool
 bptc_196x96_is_codeword(uint8_t matrix[13][15]) {
     uint8_t line[15];
     for (uint32_t i = 0; i < 13; i++) {
-        DSD_MEMCPY(line, matrix[i], sizeof line);
-        if (Hamming_15_11_decode(line, NULL, 1) == false || memcmp(line, matrix[i], sizeof line) != 0) {
+        for (uint32_t j = 0; j < 15; j++) {
+            line[j] = matrix[i][j];
+        }
+        if (Hamming_15_11_decode(line, NULL, 1) == false) {
             return false;
+        }
+        for (uint32_t j = 0; j < 15; j++) {
+            if (line[j] != matrix[i][j]) {
+                return false;
+            }
         }
     }
     uint8_t col[13];
