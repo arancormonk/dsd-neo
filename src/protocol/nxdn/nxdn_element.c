@@ -2067,19 +2067,20 @@ typedef enum {
 } nxdn_admit;
 
 /* Off a voice channel an allowed assignment is followed. On one, an assignment for the channel the receiver is on is
- * that call's; one of the held talkgroup takes over a call that is not of it; a duplicate heard past the call's
- * hangtime is followed as today; while the call is live (within the hangtime) an outranking preempting candidate
- * takes over (nxdn_preempts()); anything else is refused, and the receiver stays tuned for DISC or the hangtime
- * return to take it back. */
-/* On the carrier already, a repeat of the held call's assignment is that call's. One naming another call there (a new
- * call after the hangtime) goes through admission, so the held call becomes the new one. */
+ * that call's when it repeats the held call's (nxdn_assignment_repeats_held_call()); one of the held talkgroup takes
+ * over a call that is not of it; a duplicate heard past the call's hangtime is followed as today; while the call is
+ * live (within the hangtime) an outranking preempting candidate takes over (nxdn_preempts()); anything else is
+ * refused, and the receiver stays tuned for DISC or the hangtime return to take it back. */
+/* On the carrier already, a repeat of the held call's assignment is that call's. One naming another call there, or
+ * one heard when no held call is known there (its call ended past the hangtime), goes through admission: Hold or a new
+ * call after the hangtime is followed in place and becomes the held call, its key loaded. */
 static int
 nxdn_assignment_repeats_held_call(const dsd_state* state, const dsd_nxdn_call_identity* cur,
                                   const struct nxdn_vcall_assgn_info* info, long int freq) {
-    if (state->trunk_vc_freq[0] != freq) {
+    if (!cur || state->trunk_vc_freq[0] != freq) {
         return 0;
     }
-    return !cur || (cur->target == info->destination_id && cur->private_call == (info->call_type == 4U));
+    return cur->target == info->destination_id && cur->private_call == (info->call_type == 4U);
 }
 
 static nxdn_admit

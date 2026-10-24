@@ -1187,12 +1187,12 @@ dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int 
     }
     if (tg == 0U) {
         /* A call the status names by no group (a private or data call): its identity is unknown. The record stays a
-           seed's for this LSN, so a later group status names the slot again; the slot's activity is untouched. */
-        const long carrier_hz = rec->carrier_hz;
+           seed's for this LSN on the followed carrier (one that had no identity takes it), so a later group status
+           names the slot again; the slot's activity is untouched. */
         dmr_sm_slot_identity_clear(rec);
         rec->prov = (uint8_t)DMR_SM_ID_SEED;
         rec->channel = lsn;
-        rec->carrier_hz = carrier_hz;
+        rec->carrier_hz = ctx->vc_freq_hz;
         return;
     }
     dmr_sm_slot_ctx_t named;

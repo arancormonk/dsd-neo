@@ -1488,6 +1488,49 @@ test_cap_plus_status_names_expired_slot(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Capacity Plus: the followed carrier's slot 1 (LSN 2) carries a private call, which no seed names: its record, unknown,
+   is the followed carrier's, so once a later status names a group on its LSN (voice keeping the window open) the slot
+   takes that group and a priority-100 preempting group elsewhere is judged against it and takes the receiver after the
+   dwell. */
+static int
+test_cap_plus_status_names_anonymous_private_slot(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 50, "A", 10, 0);
+    seed_policy_row(st, 0x1234, "A", 50, 0);
+    seed_policy_row(st, 43, "A", 100, 1);
+    run_cap_plus_private_and_group(opts, st, 2U, 0x1234U, 1U, 42U);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("cap+ follows the private LSN's carrier, slot 1 unnamed",
+                         st->trunk_vc_freq[0] == ST_F1 && sm->slots[1].prov == (uint8_t)DMR_SM_ID_NONE);
+    status_clock_at(0.5);
+    accepted_voice_now(opts, st, 0);
+    accepted_voice_now(opts, st, 1);
+    st->last_vc_sync_time = dsd_decode_time(); // live voice: the status's voice window is open (no in-place reseed)
+    run_cap_plus_private_and_group(opts, st, 2U, 0x1234U, 1U, 42U);
+    rc |=
+        expect_true("cap+ the private slot's record is the followed carrier's",
+                    sm->slots[1].kind == (uint8_t)DSD_CALL_KIND_UNKNOWN && sm->slots[1].prov == (uint8_t)DMR_SM_ID_SEED
+                        && sm->slots[1].channel == 2 && sm->slots[1].carrier_hz == ST_F1);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    accepted_voice_now(opts, st, 1);
+    st->last_vc_sync_time = dsd_decode_time();
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 50U, 0U, 0U});
+    rc |= expect_true("cap+ a group status names the anonymous slot",
+                      sm->slots[1].target == 50U && sm->slots[1].kind == (uint8_t)DSD_CALL_KIND_GROUP_VOICE
+                          && sm->slots[1].channel == 2);
+    status_clock_at(2.0);
+    accepted_voice_now(opts, st, 0);
+    accepted_voice_now(opts, st, 1);
+    st->last_vc_sync_time = dsd_decode_time();
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 50U, 43U, 0U});
+    rc |= expect_true("cap+ a p100 preempting group takes the receiver from the named slot",
+                      st->trunk_vc_freq[0] == ST_F3);
+    status_env_done(st);
+    return rc;
+}
+
 /* XPT submits the LSN its ranking judged: parked where a resident private call to 42 (channel 0) plays, the outranking
    group 42 on LSN 3 (slot 0 of another carrier) is the same route the ranking found eligible, so the machine's own
    preemption check never mistakes it for the held private call and refuses it. */
@@ -2310,6 +2353,7 @@ main(void) {
     rc |= test_xpt_submit_channel_is_the_ranked_lsn(opts, st);
     rc |= test_cap_plus_in_place_follow_keeps_resident_call(opts, st);
     rc |= test_cap_plus_status_names_expired_slot(opts, st);
+    rc |= test_cap_plus_status_names_anonymous_private_slot(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

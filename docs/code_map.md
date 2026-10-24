@@ -4985,8 +4985,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     assignment's call-type gates (one heard off a voice channel still is not followed), and never untunes the receiver:
     one past the call's hangtime is converted and marked `dup_after_hangtime`, and a refused one leaves
     `trunk_is_tuned` set for DISC or the hangtime return (and the voice channel is never anchored as the control
-    channel). Order: policy, control-channel or frequency refusal; untuned: follow; the channel the receiver is on:
-    nothing to do; the held talkgroup over a held call that is not of it (unknown included): follow; a duplicate past
+    channel). Order: policy, control-channel or frequency refusal; untuned: follow; on the channel the receiver is on,
+    a repeat of the held call known there (its target and class): nothing to do (with none known, as after its call
+    lapsed past the hangtime, the assignment goes on through admission and a follow in place makes it the held call,
+    its key loaded); the held talkgroup over a held call that is not of it (unknown included): follow; a duplicate past
     the hangtime: follow; within the hangtime, an outranking preempting candidate (`nxdn_preempts()`): follow; else
     refuse.
   - Type-D association (`nxdn_idas_assoc()`): a busy repeater message's or INFO2 target message's go-to repeater is
@@ -5378,7 +5380,8 @@ Private per-protocol modules worth knowing about:
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time) come from the followed grant (a slotless grant's at its first accepted voice), an in-place
     grant, Cap+ seeds and status reconciliation (a seeded LSN the status shows carrying a private or data call keeps the
-    slot's activity with an unknown identity; an idle one changes nothing), XPT status reconciliation
+    slot's activity with an unknown identity, and a slot with no identity takes that unknown record on the followed
+    carrier, so a later group status names it; an idle one changes nothing), XPT status reconciliation
     (`dmr_sm_status_slot_reconcile()`, from each site status before its busy view and ranking: on the followed carrier
     a group entry names its slot's call, a private one leaves it unknown and, on the followed slot, withdraws the grant
     identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a voice LC
