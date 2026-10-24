@@ -1703,15 +1703,25 @@ p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, 
     route->requires_tuner_retune = needs_retune;
 }
 
+/* Whether a voice assignment on the slot is still awaiting the voice its wait (acquire_since_m) began for: no voice
+ * start or stop has ended that wait. */
+static int
+p25_slot_awaiting_voice(const p25_sm_slot_ctx_t* slot_ctx) {
+    return slot_ctx->grant_active && !slot_ctx->data_call && !slot_ctx->voice_active && slot_ctx->acquire_since_m > 0.0
+           && !slot_ctx->acquire_ended;
+}
+
 /* Whether the slot's followed conversation lapsed: its last transmission ended no earlier than the follow began and
  * nothing followed it for a whole hangtime (@p lapse_s), while a companion slot kept the carrier. */
 static int
 p25_slot_follow_lapsed(const p25_sm_slot_ctx_t* slot_ctx, double lapse_s, double now_m) {
     // The stop must postdate the slot's latest start: a conversation that resumed within its hangtime has not lapsed
     // because an older stop is far behind. A stop at the follow's own clock reading is an ending too: an assignment,
-    // its voice and its end can share one decode-clock reading.
-    return !slot_ctx->voice_active && slot_ctx->last_stop_m > 0.0 && slot_ctx->last_stop_m >= slot_ctx->followed_since_m
-           && slot_ctx->last_stop_m >= slot_ctx->last_start_m && now_m - slot_ctx->last_stop_m >= lapse_s;
+    // its voice and its end can share one decode-clock reading. A grant accepted within the hangtime whose voice is
+    // still awaited continues the conversation: its repeats past the hangtime are no new call.
+    return !slot_ctx->voice_active && !p25_slot_awaiting_voice(slot_ctx) && slot_ctx->last_stop_m > 0.0
+           && slot_ctx->last_stop_m >= slot_ctx->followed_since_m && slot_ctx->last_stop_m >= slot_ctx->last_start_m
+           && now_m - slot_ctx->last_stop_m >= lapse_s;
 }
 
 /* Stamp when the slot began following this call: a repeat or re-grant of the same call on the same carrier within its
@@ -1793,14 +1803,17 @@ p25_grant_slot_holds_call(const p25_sm_ctx_t* ctx, const dsd_state* state, const
     if (p25_voice_slot_epoch_active(slot_ctx)) {
         return 1;
     }
-    // An assignment awaiting its first voice holds the slot for the acquisition window only: one that never produced
-    // voice (a stale-regrant probe, say) must not shield the companion's call once the window has passed. The window
-    // runs from when the wait began, so repeats of a grant whose voice never comes cannot renew it. A data
-    // assignment produces no voice; its repeats are what show it is still live.
-    const double acquire_m =
-        (slot_ctx->data_call || slot_ctx->acquire_since_m <= 0.0) ? slot_ctx->last_grant_m : slot_ctx->acquire_since_m;
-    if (p25_voice_slot_assignment_pending(slot_ctx) && acquire_m > 0.0
-        && now_m - acquire_m < ctx->config.grant_timeout_s) {
+    // An assignment awaiting its voice holds the slot for the acquisition window only: one that never produced voice
+    // (a stale-regrant probe, say) must not shield the companion's call once the window has passed. The window runs
+    // from when the wait began, so repeats of a grant whose voice never comes cannot renew it; the wait's own state,
+    // not the order of clock readings, says it is outstanding. A data assignment produces no voice; its repeats are
+    // what show it is still live.
+    if (slot_ctx->data_call) {
+        if (p25_voice_slot_assignment_pending(slot_ctx) && slot_ctx->last_grant_m > 0.0
+            && now_m - slot_ctx->last_grant_m < ctx->config.grant_timeout_s) {
+            return 1;
+        }
+    } else if (p25_slot_awaiting_voice(slot_ctx) && now_m - slot_ctx->acquire_since_m < ctx->config.grant_timeout_s) {
         return 1;
     }
     return slot_ctx->last_stop_m > 0.0 && now_m >= slot_ctx->last_stop_m

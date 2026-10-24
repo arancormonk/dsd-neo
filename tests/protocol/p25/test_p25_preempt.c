@@ -850,6 +850,78 @@ test_tdma_same_reading_voice_restarts_wait(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Phase 2: the priority-100 slot 0 ends; an update for it within the hangtime awaits its next transmission while the
+ * priority-10 companion talks on. Shared setup of the two cases below; @p update_m is when that update comes. */
+static long
+tdma_end_then_update(dsd_opts* opts, dsd_state* st, double t0, double update_m) {
+    tdma_site(opts, st);
+    (void)seed_row(st, 300, 100, 0);
+    set_dwell_cooldown_ms("750", "1000");
+    set_clock_s(t0);
+    p25_sm_event_t grant1 = p25_sm_ev_group_grant(0x100B, 0, 100, 7100, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant1);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t grant0 = p25_sm_ev_group_grant(0x100A, 0, 300, 7300, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &grant0);
+    p25_sm_event_t voice0 = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice0);
+    set_clock_s(t0 + 0.1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t end0 = p25_sm_ev_end_call_at(0, 300, 7300, t0 + 0.1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &end0);
+    set_clock_s(update_m);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t update0 = p25_sm_ev_group_grant_update(0x100A, 0, 300, 7301, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &update0);
+    return p25_sm_get_ctx()->vc_freq_hz;
+}
+
+/* The update's repeat after the hangtime is the same awaited transmission, not a lapsed conversation followed anew:
+ * the wait keeps running from the update, and once it is over the priority-60 preempt talkgroup takes the carrier. */
+static int
+test_tdma_awaited_update_repeat_keeps_wait(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    const long held = tdma_end_then_update(opts, st, 3000.0, 3000.2);
+    const double follow_m = p25_sm_get_ctx()->slots[0].followed_since_m;
+    set_clock_s(3002.2);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    p25_sm_event_t update0 = p25_sm_ev_group_grant_update(0x100A, 0, 300, 7301, 0x00);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &update0);
+    rc |= expect_true("awaited repeat: the follow and the wait keep their start",
+                      fabs(p25_sm_get_ctx()->slots[0].followed_since_m - follow_m) < 1e-9
+                          && fabs(p25_sm_get_ctx()->slots[0].acquire_since_m - 3000.2) < 1e-9);
+    set_clock_s(3003.3);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 250, CH_THIRD);
+    rc |= expect_true("awaited repeat: past the wait the priority call preempts",
+                      p25_sm_get_ctx()->vc_tg == 250 && p25_sm_get_ctx()->vc_freq_hz != held);
+    return rc;
+}
+
+/* An update accepted at the END's own clock reading starts a wait the slot holds for its whole window, past the
+ * hangtime: the priority-60 preempt talkgroup is refused until the window is over. */
+static int
+test_tdma_update_at_end_reading_holds(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    const long held = tdma_end_then_update(opts, st, 3100.0, 3100.1);
+    rc |= expect_true("update at the end's reading: a new wait",
+                      fabs(p25_sm_get_ctx()->slots[0].acquire_since_m - 3100.1) < 1e-9);
+    p25_sm_event_t voice1 = p25_sm_ev_active(1);
+    set_clock_s(3102.6);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 250, CH_THIRD);
+    rc |= expect_true("update at the end's reading: the awaited slot holds past the hangtime",
+                      p25_sm_get_ctx()->vc_freq_hz == held);
+    set_clock_s(3103.2);
+    p25_sm_event(p25_sm_get_ctx(), opts, st, &voice1);
+    offer_update(opts, st, 250, CH_THIRD);
+    rc |= expect_true("update at the end's reading: past the window the priority call preempts",
+                      p25_sm_get_ctx()->vc_tg == 250 && p25_sm_get_ctx()->vc_freq_hz != held);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -881,6 +953,8 @@ main(void) {
     rc |= test_tdma_repeated_voiceless_assignment_bounded(&opts, &st);
     rc |= test_tdma_same_reading_end_lapses(&opts, &st);
     rc |= test_tdma_same_reading_voice_restarts_wait(&opts, &st);
+    rc |= test_tdma_awaited_update_repeat_keeps_wait(&opts, &st);
+    rc |= test_tdma_update_at_end_reading_holds(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

@@ -5504,14 +5504,16 @@ Private per-protocol modules worth knowing about:
   (audible before probe as `p25_sm_grant_is_silent_probe()` classifies them, admitted, hold, priority, listed order)
   and the first carrier change ends the update. Before `should_preempt` the SM
   describes every assigned slot with `followed_since_m` (kept across repeats and re-grants of the same call; reset by
-  `p25_sm_clear_followed_history()`). A TDMA slot counts as held while its voice is live, within the hangtime after
-  it, or while its voice is awaited for at most the grant timeout from `acquire_since_m` (when the wait began; repeats
-  of the grant, as updates or as assignments replaced through a slot clear, do not renew it, data assignments
-  excepted). Duplicates, voice starts and accepted grants describe;
-  only a preemption commits a cooldown, after the candidate is tuned. A preemption whose CC return fails or defers restores the
-  force-release latch and keeps the held call. A clear-bit encryption-lockout release
-  (`p25_grant_commit_enc_release()`) and the stale-regrant guard's probe are spent only on acceptance. Tests:
-  `P25_PREEMPT`, `P25_GRANT_POLICY`, `P25_P2_VPDU_GRANTS`.
+  `p25_sm_clear_followed_history()`; restarted when a TDMA slot's conversation lapsed, its last stop a whole hangtime
+  old with no voice awaited since). A TDMA slot counts as held while its voice is live, within the hangtime after it,
+  or while its voice is awaited (`p25_slot_awaiting_voice()`) for at most the grant timeout from `acquire_since_m`.
+  The wait starts at the first grant after a new follow or a voice start or stop (`acquire_ended`, a flag because a
+  grant, its voice and its end can share one clock reading); repeats of the grant, as updates or as assignments
+  replaced through a slot clear, do not renew it. A data assignment counts from its last grant instead. Duplicates,
+  voice starts and accepted grants describe; only a preemption commits a cooldown, after the candidate is tuned. A
+  preemption whose CC return fails or defers restores the force-release latch and keeps the held call. A clear-bit
+  encryption-lockout release (`p25_grant_commit_enc_release()`) and the stale-regrant guard's probe are spent only on
+  acceptance. Tests: `P25_PREEMPT`, `P25_GRANT_POLICY`, `P25_P2_VPDU_GRANTS`.
 - P25 followed-call identity across a fade (`p25_trunk_sm.c`, `p25_voice_canonical_lacks_identity()`). The engine's
   no-carrier pass ends the canonical calls as a sync loss and resets the P25 crypto without telling the P25 SM, which
   keeps following the assignment. Past the reacquire window a Phase 1 call comes back through the clear ESS with the
