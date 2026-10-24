@@ -4975,8 +4975,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     the same call named again while its call is faded but may still be reacquired, `dsd_call_snapshot_may_reacquire()`,
     which keeps its binding) and never outlives it
     (`nxdn_call_identity_refresh()`, before every read): one still awaiting its call holds only on the route it was
-    followed to (`nxdn_call_on_followed_route()`), so once that route is abandoned (the engine's hangtime or no-carrier
-    return, a release, a retune elsewhere) it goes, and a call heard there later, without another grant, never takes
+    followed to (`nxdn_held_call_on_followed_route()`), so once that route is abandoned (the engine's hangtime or
+    no-carrier return, a release, a retune elsewhere) it goes, and a call heard there later, without another grant, never takes
     it; its call's end, a sync loss included, clears it except on the
     followed route within the hangtime (a conversation is held in its gaps); another call clears it, and on the followed
     route one that began within the hangtime of the named call leaves a gap record (unknown, `valid` 0) whose renaming
@@ -4985,8 +4985,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     call at once (`nxdn_call_identity_end()` refreshes it: the call's own end time), and so does a sync loss, which no
     NXDN message reports: the engine's no-carrier pass calls `nxdn_held_call_note_call_end()` (`nxdn_held_call.c`,
     which only stamps the bound call's end and writes no ledger; a held call still awaiting its call, a follow whose
-    voice no message named, binds there to the ended call when that is the first to begin after it was named, so the
-    next transmission never takes it) right after it ends the calls. A reply's gap is so
+    voice no message named, binds there to the ended call when that is the first to begin after it was named and only
+    while its followed route holds, `nxdn_held_call_on_followed_route()`, so the next transmission never takes it and a
+    follow abandoned before its call began never names a call heard there later) right after it ends the calls. A reply's gap is so
     measured from the end, however long ago the identity was last read. A held call known only from the call heard there (no
     valid route: a resident call, no grant tune) ends with that call: a release, DISC or Type-D termination clears it
     (`nxdn_call_identity_end()`), as its canonical end does, so the next call there is unknown until a message names

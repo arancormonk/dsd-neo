@@ -2590,7 +2590,7 @@ no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state, int retune
     }
     /* NXDN keeps its held call through the followed route's gaps from the bound call's end: tell it the end now, before
        a call within the hangtime replaces the ended one (a sync loss sends no TX_REL). */
-    nxdn_held_call_note_call_end(state);
+    nxdn_held_call_note_call_end(opts, state);
 }
 
 /* Relabel the active call on @p slot under the receive policy now in force. Returns 1 when that policy rejects it. */

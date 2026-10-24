@@ -1499,7 +1499,7 @@ nxdn_run_sync_loss_reply_keeps_dwell_case(void) {
     at_seconds(1104.0);
     voice_live();
     (void)dsd_call_state_end_ex(&g_state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS); /* the engine's no-carrier pass */
-    nxdn_held_call_note_call_end(&g_state);
+    nxdn_held_call_note_call_end(&g_opts, &g_state);
     dsd_call_snapshot call;
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED
                           && fabs(g_state.nxdn_call.call_seen_m - call.ended_m) < 1e-6,
@@ -1694,7 +1694,7 @@ nxdn_run_unnamed_followed_call_fades_variant(int within) {
     at_seconds(9900.9);
     voice_live();
     (void)dsd_call_state_end_ex(&g_state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS); /* no-carrier pass */
-    nxdn_held_call_note_call_end(&g_state);
+    nxdn_held_call_note_call_end(&g_opts, &g_state);
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED
                           && g_state.nxdn_call.call_epoch == first
                           && fabs(g_state.nxdn_call.call_seen_m - call.ended_m) < 1e-6,
@@ -1742,7 +1742,7 @@ nxdn_run_type_d_refollow_during_fade_case(void) {
 
     at_seconds(9961.5);
     (void)dsd_call_state_end_ex(&g_state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS); /* no-carrier pass */
-    nxdn_held_call_note_call_end(&g_state);
+    nxdn_held_call_note_call_end(&g_opts, &g_state);
     at_seconds(9961.8);
     g_state.last_vc_sync_time = dsd_decode_time() - 2; /* past the 1 s voice window */
     nxdn_run_case_decode(&held);
@@ -1869,6 +1869,69 @@ nxdn_run_type_d_info3_new_source_keeps_held_call_case(void) {
     nxdn_run_case_decode(&other);
     rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "preempt",
                       "a p100 preempt takes the known p10 destination after the dwell");
+    return rc;
+}
+
+/* A Type-D busy message is followed, but no call begins there before the engine's hangtime return abandons the route.
+ * Parked on that repeater later without a grant, the receiver hears an unrelated call no message names but an INFO3
+ * source update. It fades (the engine's no-carrier pass reports the end) and is reacquired: the abandoned grant's
+ * awaiting identity binds to none of it, so the call stays of unknown identity and a p50 preempt on another repeater
+ * never takes the receiver from it as from the p10 grant. */
+static int
+nxdn_run_type_d_abandoned_grant_fade_case(void) {
+    static const char* const name = "type-d-abandoned-grant-fade";
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    g_opts.trunk_hangtime = 2.0f;
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9970.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.call_epoch == 0U, name,
+                      "follow", "the held call awaits its call");
+    at_seconds(9974.0); /* the engine's hangtime return: no call began there */
+    g_opts.trunk_is_tuned = 0;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 0;
+
+    at_seconds(9980.0); /* parked on repeater 6 again, no grant */
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = held.expected_freq;
+    voice_live();
+    late_entry_call();
+    uint8_t message[32];
+    at_seconds(9980.1);
+    voice_live();
+    build_scch_identity(message, 1U, 0U, 1700U); /* INFO3: a source, no target */
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 0U && call.ota_source_id == 1700U,
+                      name, "unrelated", "an unrelated call with only a source");
+    const uint64_t unrelated = dsd_call_snapshot_transmission(&call);
+
+    at_seconds(9980.5);
+    (void)dsd_call_state_end_ex(&g_state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS); /* no-carrier pass */
+    nxdn_held_call_note_call_end(&g_opts, &g_state);
+    rc |= nxdn_expect(g_state.nxdn_call.call_epoch != unrelated, name, "fade",
+                      "the abandoned grant's identity is not bound to the unrelated call");
+    at_seconds(9980.7);
+    voice_live();
+    vocoder_media();
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && dsd_call_snapshot_transmission(&call) == unrelated,
+                      name, "reacquired", "the unrelated call is reacquired");
+
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9980.8);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 0U, name, "preempt",
+                      "the unrelated call of unknown identity is not preempted as the abandoned grant");
     return rc;
 }
 
@@ -2320,6 +2383,7 @@ main(void) {
     rc |= nxdn_run_unnamed_followed_call_fades_case();
     rc |= nxdn_run_type_d_info3_new_source_keeps_held_call_case();
     rc |= nxdn_run_type_d_abandoned_grant_case();
+    rc |= nxdn_run_type_d_abandoned_grant_fade_case();
     rc |= nxdn_run_type_d_refollow_during_fade_case();
 #endif
 

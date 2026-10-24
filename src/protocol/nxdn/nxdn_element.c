@@ -1531,12 +1531,6 @@ nxdn_idas_assoc(const dsd_opts* opts, dsd_state* state, uint8_t rep) {
     return rx == rep_freq ? NXDN_IDAS_MATCH : NXDN_IDAS_OTHER;
 }
 
-/* Whether the held call was followed on the route the receiver still holds: its gaps are the conversation's. */
-static int
-nxdn_call_on_followed_route(const dsd_opts* opts, const dsd_state* state, const dsd_nxdn_call_identity* id) {
-    return nxdn_follow_valid(opts, state) && (id->rx_freq_hz <= 0 || id->rx_freq_hz == state->nxdn_follow.freq_hz);
-}
-
 /* The bound call @p call is the held call's: it holds while active, and once ended only on the followed route within
  * the hangtime (a conversation is held in its gaps); a resident call's identity ends with it. */
 static void
@@ -1552,7 +1546,7 @@ nxdn_call_identity_track(const dsd_opts* opts, dsd_state* state, const dsd_call_
     if (call->ended_m > 0.0) {
         id->call_seen_m = call->ended_m;
     }
-    if (nxdn_call_on_followed_route(opts, state, id) && (now_m - id->call_seen_m) < (double)opts->trunk_hangtime) {
+    if (nxdn_held_call_on_followed_route(opts, state) && (now_m - id->call_seen_m) < (double)opts->trunk_hangtime) {
         return;
     }
     DSD_MEMSET(id, 0, sizeof(*id));
@@ -1578,7 +1572,7 @@ nxdn_call_identity_refresh(const dsd_opts* opts, dsd_state* state) {
     const uint64_t current = have ? dsd_call_snapshot_transmission(&call) : 0U;
     const double now_m = dsd_decode_now_mono_s();
     if (id->call_epoch == 0U) {
-        if (!nxdn_call_on_followed_route(opts, state, id)) {
+        if (!nxdn_held_call_on_followed_route(opts, state)) {
             DSD_MEMSET(id, 0, sizeof(*id)); // its route was abandoned before its call began
             (void)dsd_tg_policy_clear_active_call(state, -1);
             return;
@@ -1593,7 +1587,7 @@ nxdn_call_identity_refresh(const dsd_opts* opts, dsd_state* state) {
         nxdn_call_identity_track(opts, state, &call, now_m);
         return;
     }
-    if (!id->gap && current != 0U && nxdn_call_on_followed_route(opts, state, id)
+    if (!id->gap && current != 0U && nxdn_held_call_on_followed_route(opts, state)
         && (call.started_m - id->call_seen_m) < (double)opts->trunk_hangtime) {
         id->valid = 0U;
         id->gap = 1U;

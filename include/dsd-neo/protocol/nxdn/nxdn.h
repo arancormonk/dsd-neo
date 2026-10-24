@@ -55,13 +55,23 @@ typedef enum {
 } nxdn_frame_channel;
 
 /**
+ * @brief Whether the held call (dsd_state::nxdn_call) is on the route NXDN followed (dsd_state::nxdn_follow) and the
+ * receiver is still tuned there: trunking on and a voice channel tuned (dsd_opts_trunk_vc_followed()) at the route's
+ * frequency, and the held call heard there or at no known frequency. An engine-level release (the hangtime return, a
+ * trunk scan or operator move) leaves the receiver elsewhere without a word to NXDN, and this turns false.
+ */
+int nxdn_held_call_on_followed_route(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Slot 0's canonical call was just ended outside NXDN's own message handling (the engine's no-carrier pass: a
  * sync loss, with no TX_REL heard): a held call bound to that call (dsd_state::nxdn_call) takes its end time now, as a
  * release does, so a call that begins within the hangtime of the end is measured from the end, not from when the
- * identity was last read. Changes nothing else and writes no talkgroup policy ledger (no tick guard needed): whether
- * the held call outlives the end is decided by its next read.
+ * identity was last read. One still awaiting its call binds to the ended call when that is the first to begin after it
+ * was named, and only while its followed route holds (nxdn_held_call_on_followed_route()): a follow abandoned before
+ * its call began never names a call heard there later. Changes nothing else and writes no talkgroup policy ledger (no
+ * tick guard needed): whether the held call outlives the end is decided by its next read.
  */
-void nxdn_held_call_note_call_end(dsd_state* state);
+void nxdn_held_call_note_call_end(const dsd_opts* opts, dsd_state* state);
 
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
