@@ -4974,7 +4974,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     identity is not known is never preempted, only displaced by Hold. An accepted tune notes the followed call
     (`nxdn_note_follow()`): a follow that was no preemption first clears the ledger, so a call left there (the engine's
     hangtime return) does not read as a takeover; a preemption commits its cooldown
-    (`dsd_tg_policy_commit_preemption()`). DISC's return and a Type-D termination (repeater 31) tune clear the route,
+    (`dsd_tg_policy_commit_preemption()`); a Type-D busy message repeated past the voice window for the call the
+    receiver still holds (`nxdn_follow_holds_call()`, read before the tune) describes it from its retained `follow_m`,
+    so the repeat never restarts the dwell. DISC's return and a Type-D termination (repeater 31) tune clear the route,
     the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25 SM tick
     guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX`, `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
@@ -5317,29 +5319,35 @@ Private per-protocol modules worth knowing about:
     the policy; an unknown or blocked resident call never makes it busy. Held slots are described into the policy's
     followed-call ledger (`dsd_tg_policy_describe_followed_call()`, start = the slot's follow time) and every other
     ledger slot is cleared; a held carrier whose slots name nothing yet is described by the grant's identity (slot -1).
-  - Gate. A candidate on another carrier while held (or while the caller's own legacy window says busy:
-    `caller_busy`) is followed only by Hold over a non-held call (`tg_hold_match` and no held slot on the Hold group)
-    or by preemption (`dmr_sm_may_displace()`: a decision the caller evaluated for a known identity, no held call of
-    unknown identity, and `dsd_tg_policy_should_preempt()` over every held slot); otherwise `grant-busy`. A candidate
-    on the held carrier is followed as before.
+  - Gate. A candidate on another carrier while held (or while the caller's own legacy window says busy: `caller_busy`)
+    is followed only by Hold over a non-held call (`tg_hold_match` and no held slot on the Hold group) or by preemption
+    (`dmr_sm_may_displace()`: a decision the caller evaluated for a known identity, no held call of unknown identity,
+    and `dsd_tg_policy_should_preempt()` over every held slot); otherwise `grant-busy`. A candidate on the held carrier
+    is followed as before (IN_PLACE), and names its slot's call (`dmr_sm_grant_reconcile_in_place()`): another call
+    there takes the slot's record with its follow time now (on the followed slot, the grant identity too); a repeat of
+    the call the slot names, or of the grant followed there, keeps record and follow time.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
-    carrier, follow time) come from the followed grant (a slotless grant's at its first accepted voice), Cap+ seeds
-    and status reconciliation, and a voice LC only at its checked publication (`dmr_sm_note_lc_identity()` from
-    `dmr_flco_publish_voice()`). The follow time moves only when the call (policy class, target, carrier) changes, so a
-    candidate's dwell runs from the conversation's first follow. They live in each trunk-scan target's `dmr_sm_ctx_t`
-    and are dropped by a release, an abandoned carrier, an operator move and the acquisition a target switch starts.
+    carrier, follow time) come from the followed grant (a slotless grant's at its first accepted voice), an in-place
+    grant, Cap+ seeds and status reconciliation (a seeded LSN the status shows carrying a private or data call keeps the
+    slot's activity with an unknown identity; an idle one changes nothing), and a voice LC only at its checked
+    publication (`dmr_sm_note_lc_identity()` from `dmr_flco_publish_voice()`). The follow time moves only when the call
+    (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
+    in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and
+    the acquisition a target switch starts.
   - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
     commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
     takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger
     (`dmr_sm_clear_released_carrier()`). Writers run under the P25 SM tick guard (frame dispatch, the DMR tick, the
     carrier boundary, the trunk-scan switch); an operator move from a command takes it unless held
     (`dmr_sm_note_operator_move()` in `app_command_queue.c`).
-  - C_MOVE. A move of the followed call (its talkgroup, either party of its private call, or the followed slot's
-    identity), whatever slot it names, is judged with that call's own classification: refused only when tuning is
-    denied for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier ->
-    IN_PLACE on the new slot, another carrier -> a new acquisition keeping the follow time. A move of any other call is
-    an ordinary grant under its group decision and the gate. Its burst indicators and companion-row clear apply only
-    once accepted (as before when it is not submitted: trunking off or not on a voice channel).
+  - C_MOVE. A move of the followed call (its talkgroup or either party of its private call, as the followed slot's
+    identity names it; the grant's only while that slot names none, so a talkgroup a checked LC renamed is another
+    call's), whatever slot it names, is judged with that call's own classification: refused only when tuning is denied
+    for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier -> IN_PLACE
+    on the new slot, whose first voice publishes the call there again, another carrier -> a new acquisition; both keep
+    the follow time. A move of any other call is an ordinary grant under its group decision and the gate. Its burst
+    indicators and companion-row clear apply only once accepted (as before when it is not submitted: trunking off or not
+    on a voice channel).
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order

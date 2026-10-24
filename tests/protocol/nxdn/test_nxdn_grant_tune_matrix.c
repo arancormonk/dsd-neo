@@ -1130,6 +1130,45 @@ nxdn_run_type_d_takeover_case(void) {
     return rc;
 }
 
+/* A Type-D busy message repeated past the voice window for the call the receiver still holds re-follows that call: its
+ * dwell keeps running from the first follow, so an outranking preempting call is taken once voice resumes. */
+static int
+nxdn_run_type_d_refollow_keeps_dwell_case(void) {
+    static const char* const name = "type-d-refollow-keeps-dwell";
+    const nxdn_case held = {
+        "type-d", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 1400U, 938012500L,
+    };
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    nxdn_setup_fixture(&held);
+    g_state.trunk_chan_map[7] = 938512500L;
+    nxdn_install_hooks();
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 100, 1);
+    int rc = 0;
+
+    at_seconds(7000.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_follow.repeater == 6U, name, "follow", "first call followed");
+
+    at_seconds(7002.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 2; /* past the 1 s voice window */
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_state.nxdn_follow.repeater == 6U && g_state.nxdn_call.target == 1400U, name, "refollow",
+                      "the held call re-followed");
+
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(7002.1);
+    voice_live();
+    const int tunes = g_tune_count;
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == tunes + 1 && g_last_tune_freq == 938512500L && g_state.nxdn_follow.repeater == 7U,
+                      name, "preempt", "dwell runs from the first follow, not the repeat");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1204,6 +1243,7 @@ main(void) {
     rc |= nxdn_run_same_carrier_new_call_case();
     rc |= nxdn_run_vcall_names_followed_route_case();
     rc |= nxdn_run_type_d_takeover_case();
+    rc |= nxdn_run_type_d_refollow_keeps_dwell_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

@@ -1618,12 +1618,29 @@ nxdn_preempts(const dsd_opts* opts, dsd_state* state, const dsd_nxdn_call_identi
     return dsd_tg_policy_should_preempt(opts, state, candidate, decision, now_m);
 }
 
+/* How a follow took the receiver: a new call, a preemption, or the call it still holds there followed again. */
+typedef enum {
+    NXDN_FOLLOW_NEW = 0,
+    NXDN_FOLLOW_PREEMPT,
+    NXDN_FOLLOW_HELD,
+} nxdn_follow_how;
+
+/* Whether the receiver still holds the call @p target names on @p freq, read before the tune: its route holds there and
+ * the held call is that one (nxdn_call_identity_set()'s same call). */
+static int
+nxdn_follow_holds_call(const dsd_opts* opts, const dsd_state* state, uint32_t target, int private_call, long int freq) {
+    const dsd_nxdn_call_identity* const id = &state->nxdn_call;
+    return nxdn_follow_valid(opts, state) && state->nxdn_follow.freq_hz == freq && id->valid && id->target == target
+           && id->private_call == (private_call ? 1U : 0U) && (id->rx_freq_hz <= 0 || id->rx_freq_hz == freq);
+}
+
 /* The receiver went to @p freq for @p target: the route and the held call are the followed one's, and the talkgroup
- * policy's preemption ledger holds it. A follow that was no preemption replaces whatever the ledger held, so nothing
- * left there reads as a takeover; a preemption commits its cooldown. */
+ * policy's preemption ledger holds it. A new call replaces whatever the ledger held, so nothing left there reads as a
+ * takeover; a preemption commits its cooldown; the call the receiver still held is described from its follow time,
+ * so a repeat of its announcement never restarts the dwell. */
 static void
 nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call, uint16_t chan,
-                 long int freq, uint8_t repeater, const dsd_tg_policy_decision* decision, int preempted) {
+                 long int freq, uint8_t repeater, const dsd_tg_policy_decision* decision, nxdn_follow_how how) {
     const double now_m = dsd_decode_now_mono_s();
     state->nxdn_follow.freq_hz = freq;
     state->nxdn_follow.chan = chan;
@@ -1636,11 +1653,15 @@ nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private
     route.freq_hz = freq;
     route.channel = chan;
     route.slot = -1;
-    if (!preempted) {
+    if (how == NXDN_FOLLOW_HELD) {
+        (void)dsd_tg_policy_describe_followed_call(state, &route, decision, state->nxdn_call.follow_m, now_m);
+        return;
+    }
+    if (how == NXDN_FOLLOW_NEW) {
         (void)dsd_tg_policy_clear_active_call(state, -1);
     }
     (void)dsd_tg_policy_note_active_call(state, &route, decision, now_m);
-    if (preempted) {
+    if (how == NXDN_FOLLOW_PREEMPT) {
         (void)dsd_tg_policy_commit_preemption(state, now_m);
     }
 }
@@ -1927,7 +1948,7 @@ nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_
         nxdn_vcall_assgn_load_scrambler_key(opts, state, info);
         const uint16_t chan = (state->nxdn_rcn == 1) ? info->ofn : (uint16_t)(info->channel & 0x3FFU);
         nxdn_note_follow(state, info->destination_id, info->source_unit_id, is_private_call, data_call, chan, freq, 0U,
-                         &policy_decision, admit == NXDN_ADMIT_PREEMPT);
+                         &policy_decision, admit == NXDN_ADMIT_PREEMPT ? NXDN_FOLLOW_PREEMPT : NXDN_FOLLOW_NEW);
     } else if (admit == NXDN_ADMIT_REFUSE && opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->destination_id, info->source_unit_id, &policy_decision);
     }
@@ -3091,7 +3112,7 @@ nxdn_scch_live_takeover(const dsd_opts* opts, dsd_state* state, const struct nxd
  * call's key, and take the route (or, for repeater 31, release it on the return to the control channel). */
 static void
 nxdn_scch_busy_tuned(dsd_state* state, const struct nxdn_scch_info* info, long int freq, int is_private_call,
-                     const dsd_tg_policy_decision* decision, int preempted) {
+                     const dsd_tg_policy_decision* decision, nxdn_follow_how how) {
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->lastsynctype = DSD_SYNC_NONE;
@@ -3102,7 +3123,7 @@ nxdn_scch_busy_tuned(dsd_state* state, const struct nxdn_scch_info* info, long i
     if (info->rep1 == 31U) {
         nxdn_follow_release(state); // the termination's return to the control channel
     } else {
-        nxdn_note_follow(state, info->id, 0U, is_private_call, 0, info->rep1, freq, info->rep1, decision, preempted);
+        nxdn_note_follow(state, info->id, 0U, is_private_call, 0, info->rep1, freq, info->rep1, decision, how);
     }
 }
 
@@ -3135,11 +3156,14 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         admitted = nxdn_scch_live_takeover(opts, state, info, freq, &policy_decision, &preempted);
     }
     if (admitted) {
+        // A message repeated past the voice window for the call the receiver still holds follows that same call.
+        const int held = nxdn_follow_holds_call(opts, state, info->id, is_private_call, freq);
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             return;
         }
-        nxdn_scch_busy_tuned(state, info, freq, is_private_call, &policy_decision, preempted);
+        const nxdn_follow_how how = preempted ? NXDN_FOLLOW_PREEMPT : (held ? NXDN_FOLLOW_HELD : NXDN_FOLLOW_NEW);
+        nxdn_scch_busy_tuned(state, info, freq, is_private_call, &policy_decision, how);
     } else if (opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->id, 0, &policy_decision);
     }

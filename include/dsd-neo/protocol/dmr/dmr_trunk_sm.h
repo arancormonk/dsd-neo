@@ -356,9 +356,10 @@ dmr_sm_displace_e dmr_sm_may_displace(const dmr_sm_busy_view_t* view, const dsd_
  * @brief Submit a grant (or a C_MOVE, or a status selection) to the machine.
  *
  * A candidate on another carrier while the receiver is held (or @ref dmr_sm_event_t::caller_busy) is followed only by
- * Hold over a non-held call or by preemption; a decision-less event never is. A C_MOVE of the followed call is matched
- * independently of its destination slot and refused only when its retained classification is denied tuning for a
- * reason other than a Hold mismatch.
+ * Hold over a non-held call or by preemption; a decision-less event never is. One on the carrier already followed
+ * (IN_PLACE) names the call of its slot. A C_MOVE of the followed call (as the followed slot's identity names it) is
+ * matched independently of its destination slot and refused only when its retained classification is denied tuning
+ * for a reason other than a Hold mismatch.
  */
 dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
 
@@ -380,9 +381,10 @@ void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int s
 
 /**
  * @brief A Capacity Plus status names group @p tg on @p lsn: a status-followed slot whose identity a seed (not an LC)
- * gave on that LSN takes the group, with a new follow time. A zero @p tg (an idle LSN) changes nothing.
+ * gave on that LSN takes the group, with a new follow time. An @p active LSN with no group (@p tg 0: a private or data
+ * call) leaves that slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
  */
-void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, int slot, int lsn, uint32_t tg);
+void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, int slot, int lsn, uint32_t tg, int active);
 
 /** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
 int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);

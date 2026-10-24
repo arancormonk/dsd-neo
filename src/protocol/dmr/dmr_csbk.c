@@ -2061,7 +2061,7 @@ dmr_cspdu_cap_plus_3e_seed_carrier(const dsd_opts* opts, const dsd_state* state,
     }
 }
 
-// A later status that shows a seeded LSN idle or carrying another group means the call the seed named is gone.
+// A later status that shows a seeded LSN idle or carrying another call means the call the seed named is gone.
 static void
 dmr_cspdu_cap_plus_3e_reconcile_seeds(const dmr_cap_plus_3e_ctx* ctx) {
     dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
@@ -2078,7 +2078,10 @@ dmr_cspdu_cap_plus_3e_reconcile_seeds(const dmr_cap_plus_3e_ctx* ctx) {
     for (int slot = 0; slot < 2; slot++) {
         const int lsn = sm->slots[slot].channel;
         if (lsn >= 1 && lsn <= 16) {
-            dmr_sm_status_identity_reconcile(sm, slot, lsn, (ctx->ch[lsn - 1] == 1) ? ctx->group_tg[lsn - 1] : 0U);
+            /* A private or data call on the LSN is a call of unknown identity, not an idle LSN. */
+            const int group = ctx->ch[lsn - 1] == 1;
+            dmr_sm_status_identity_reconcile(sm, slot, lsn, group ? ctx->group_tg[lsn - 1] : 0U,
+                                             group || ctx->pch[lsn - 1] == 1);
         }
     }
 }

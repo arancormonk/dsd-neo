@@ -859,6 +859,54 @@ test_cap_plus_seed_identity_reconcile(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A single-block Cap+ channel status with a private call on LSN @p private_lsn (bank one) and group @p tg on LSN
+   @p group_lsn. */
+static void
+run_cap_plus_private_and_group(dsd_opts* opts, dsd_state* state, uint8_t private_lsn, uint16_t private_target,
+                               uint8_t group_lsn, uint8_t tg) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 0x3EU;
+    bytes[1] = 0x10U;
+    write_bits_u32(bits, 16U, 3U, 2U);
+    write_bits_u32(bits, 19U, 1U, 5U); // rest LSN 1
+    bits[24U + (group_lsn - 1U)] = 1U;
+    write_bits_u32(bits, 32U, tg, 8U);
+    // Bank two's bitmap (40..47) stays empty; then the private bank's flag, bitmap and one 16-bit ID.
+    write_bits_u32(bits, 48U, 0x80U >> ((private_lsn - 1U) & 7U), 8U);
+    bits[56U + (private_lsn - 1U)] = 1U;
+    write_bits_u32(bits, 64U, private_target, 16U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+}
+
+/* A seeded group slot that a later status shows carrying a private call holds a call of unknown identity: it keeps
+   its activity, and only Hold takes the receiver from it, not an outranking preempting group. */
+static int
+test_cap_plus_seed_private_activity(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 43, "A", 100, 1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 0U, 0U, 0U});
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("cap+ seeded group slot", st->trunk_vc_freq[0] == ST_F1 && sm->slots[0].target == 42U);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0); // voice without an LC
+    status_window_closed(st);
+    status_clock_at(1.9);
+    run_cap_plus_private_and_group(opts, st, 1U, 0x1234U, 3U, 43U);
+    rc |= expect_true("cap+ a private call on the seeded slot is an unknown identity",
+                      sm->slots[0].kind == (uint8_t)DSD_CALL_KIND_UNKNOWN && sm->slots[0].last_active_m > 0.0);
+    rc |= expect_true("cap+ an unknown private call is not preempted", st->trunk_vc_freq[0] == ST_F1);
+    st->tg_hold = 43;
+    run_cap_plus_private_and_group(opts, st, 1U, 0x1234U, 3U, 43U);
+    rc |= expect_true("cap+ an unknown private call yields to Hold", st->trunk_vc_freq[0] == ST_F3);
+    st->tg_hold = 0;
+    status_env_done(st);
+    return rc;
+}
+
 /* XPT entry kinds: a private status is an unknown identity, followed only with private tuning on and never admitted or
    ranked by a row; unknown statuses are not followed; a busy carrier yields only to an outranking preempt. */
 static int
@@ -1852,6 +1900,7 @@ main(void) {
     rc |= test_cap_plus_seed_only_carrier(opts, st);
     rc |= test_cap_plus_hold(opts, st);
     rc |= test_cap_plus_seed_identity_reconcile(opts, st);
+    rc |= test_cap_plus_seed_private_activity(opts, st);
     rc |= test_xpt_entry_kinds(opts, st);
     rc |= test_xpt_ranking(opts, st);
     rc |= test_con_plus_policy_before_window(opts, st);

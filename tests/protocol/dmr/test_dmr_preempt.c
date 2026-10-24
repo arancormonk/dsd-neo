@@ -520,6 +520,132 @@ test_release_clears_ledger(dsd_opts* opts, dsd_state* st) {
                        dsd_tg_policy_should_preempt(opts, st, &candidate, &d, dsd_decode_now_mono_s()) == 0);
 }
 
+/* A grant assigning another call to the followed slot of the carrier already tuned (IN_PLACE) names that slot's call
+   anew, its follow time now; a repeat of that call keeps the follow time. */
+static int
+test_in_place_reassignment(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 100, 0);
+    seed_row(st, 10, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_A, 0, 10, 2);
+    int rc = expect_true("in-place reassignment names the slot's new call",
+                         vc(st) == VC_A && g_tunes == 1 && sm()->slots[0].target == 10U);
+    clock_at(1.5);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 50, 3);
+    rc |= expect_true("the reassigned call's dwell runs from its assignment", vc(st) == VC_A);
+    clock_at(1.6);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_A, 0, 10, 2); // a repeat of the call now on the slot
+    rc |= expect_true("a repeat keeps the slot's call", sm()->slots[0].target == 10U);
+    clock_at(1.8);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 50, 3);
+    rc |= expect_true("a p50 preempt outranks the p10 reassignment (a repeat kept its follow time)",
+                      vc(st) == VC_B && sm()->vc_tg == 50);
+
+    /* A repeat of the grant the machine followed is no reassignment, though a checked LC named the call otherwise. */
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 101, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 202, 2);
+    clock_at(0.6);
+    tv_grant(opts, st, LPCN_A, 0, 101, 1);
+    rc |= expect_true("a repeat of the followed grant keeps the LC's identity",
+                      sm()->slots[0].target == 202U && sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC);
+    return rc;
+}
+
+/* A C_MOVE event, as the CSBK layer submits it. */
+static dmr_sm_grant_result_e
+submit_move(dsd_opts* opts, dsd_state* st, long freq, uint16_t lpcn, int slot, int is_group, uint32_t target,
+            uint32_t src) {
+    dmr_sm_event_t ev;
+    DSD_MEMSET(&ev, 0, sizeof(ev));
+    ev.type = DMR_SM_EV_GRANT;
+    ev.slot = slot;
+    ev.freq_hz = freq;
+    ev.lpcn = lpcn;
+    ev.tg = is_group ? (int)target : 0;
+    ev.dst = is_group ? 0 : (int)target;
+    ev.src = (int)src;
+    ev.is_group = is_group;
+    ev.kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
+    ev.identity_known = 1;
+    ev.origin = DMR_SM_ORIGIN_MOVE;
+    ev.policy_valid = 1;
+    if (is_group) {
+        (void)dsd_tg_policy_evaluate_group_call(opts, st, target, src, 0, 0, &ev.policy);
+    } else {
+        (void)dsd_tg_policy_evaluate_private_call(opts, st, src, target, 0, 0, &ev.policy);
+    }
+    return dmr_sm_submit_grant(opts, st, &ev);
+}
+
+/* A same-carrier C_MOVE of a call whose identity was already published moves the publication to the new slot: its
+   first voice there names the call, and the move keeps the follow time. */
+static int
+test_slot_move_republishes(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 300, "A", 60, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 7);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    int rc = expect_true("the grant's identity is published on its slot",
+                         dsd_call_state_get(st, 0U, &call) > 0 && call.ota_target_id == 100U);
+    clock_at(0.4);
+    rc |= expect_true("same-carrier move is in place",
+                      submit_move(opts, st, VC_A, LPCN_A, 1, 1, 100, 7) == DMR_SM_GRANT_IN_PLACE && sm()->vc_slot == 1);
+    clock_at(0.5);
+    voice(opts, st, 1);
+    rc |= expect_true("the moved call's identity is published on its new slot",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.ota_target_id == 100U
+                          && call.phase == DSD_CALL_PHASE_ACTIVE);
+    clock_at(0.8);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    rc |= expect_true("the move kept the follow time", vc(st) == VC_B);
+    return rc;
+}
+
+/* A C_MOVE is the followed call's only when it names the call the followed slot carries (either party of a private
+   call): a checked LC that renamed the call makes the original grant's talkgroup another call. */
+static int
+test_move_matches_slot_identity(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 101, "A", 10, 0);
+    seed_row(st, 202, "A", 10, 0);
+    tv_grant(opts, st, LPCN_A, 0, 101, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 202, 2);
+    int rc = expect_true("a move of the grant's renamed talkgroup is another call's (busy)",
+                         submit_move(opts, st, VC_B, LPCN_B, 0, 1, 101, 1) == DMR_SM_GRANT_BUSY && vc(st) == VC_A);
+    rc |= expect_true("the followed slot keeps its call", sm()->slots[0].target == 202U);
+    rc |= expect_true("a move of the call the slot carries is followed",
+                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 202, 2) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B
+                          && sm()->slots[0].target == 202U);
+
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 101, 1);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 7001, 7002);
+    rc |= expect_true("a move naming the private call's source is the followed call's",
+                      submit_move(opts, st, VC_B, LPCN_B, 0, 0, 7002, 7001) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B
+                          && sm()->slots[0].target == 7001U);
+    return rc;
+}
+
 /* Slot identities live in the machine's context, which trunk scan keeps per target: each target's context holds its own,
    and the acquisition a target switch starts (dmr_sm_begin_cc_acquisition()) or an abandoned carrier clears them. */
 static dmr_sm_ctx_t g_scan_ctx[2];
@@ -601,6 +727,9 @@ main(void) {
     rc |= test_follow_stamps_no_false_cooldown(opts, st);
     rc |= test_release_clears_ledger(opts, st);
     rc |= test_scan_target_contexts(opts, st);
+    rc |= test_in_place_reassignment(opts, st);
+    rc |= test_slot_move_republishes(opts, st);
+    rc |= test_move_matches_slot_identity(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
