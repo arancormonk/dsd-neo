@@ -186,9 +186,10 @@ typedef struct {
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
     uint32_t grant_seq;      // SM-wide sequence number of the last_grant_m stamp. Orders a grant against an
                              // IDLE observed at the same clock reading, which time alone cannot (issue #747).
-    double acquire_since_m;  // Start of the wait for this assignment's voice. Repeats of the grant keep it; a new
-                             // follow, a voice start or stop since it, or a cleared slot restarts it. Bounds how long
-                             // a voiceless assignment holds the slot against preemption.
+    double acquire_since_m;  // Start of the wait for this assignment's voice. Repeats of the grant keep it, in update
+                             // or assignment form; a new follow, a voice start or stop since it, or a slot cleared
+                             // after voice restarts it. Bounds how long a voiceless assignment holds the slot against
+                             // preemption.
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
     double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
     int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT

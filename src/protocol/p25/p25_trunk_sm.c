@@ -1908,6 +1908,16 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     if (!ctx || slot < 0 || slot > 1) {
         return;
     }
+    // An assignment still awaiting its first voice keeps the start of that wait through a clear: an assignment-form
+    // repeat is replaced through here, and must not renew how long a voiceless assignment holds the slot. A new follow
+    // restarts the wait (p25_slot_note_grant()).
+    const p25_sm_slot_ctx_t* cleared = &ctx->slots[slot];
+    const int still_awaited = cleared->grant_active && !cleared->voice_active && cleared->acquire_since_m > 0.0
+                              && cleared->last_start_m <= cleared->acquire_since_m
+                              && cleared->last_stop_m <= cleared->acquire_since_m;
+    if (!still_awaited) {
+        ctx->slots[slot].acquire_since_m = 0.0;
+    }
     p25_sm_clear_one_slot_activity(ctx, slot);
     ctx->slots[slot].algid = 0;
     ctx->slots[slot].keyid = 0;
@@ -1931,7 +1941,6 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     // silently disappears. The two places that really do end that history reset
     // it by name: p25_grant_claim_slots() and p25_sm_clear_followed_history().
     ctx->slots[slot].last_grant_m = 0.0;
-    ctx->slots[slot].acquire_since_m = 0.0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
     ctx->slots[slot].last_end_m = 0.0;
     ctx->slots[slot].last_end_tg = 0;
@@ -2019,11 +2028,12 @@ static uint32_t g_p25_grant_seq;
 
 static void
 p25_slot_note_grant(p25_sm_slot_ctx_t* slot_ctx, double now_m) {
-    // A repeat of the grant while its voice is still awaited keeps the wait's start; anything that ended that wait
-    // (the slot cleared, another call followed, a transmission begun or ended) starts a new one.
+    // A repeat of the grant while its voice is still awaited keeps the wait's start, also across the slot clear an
+    // assignment-form repeat goes through; anything that ended that wait (another call followed, a transmission begun
+    // or ended, a clear after voice) starts a new one.
     const double since_m = slot_ctx->acquire_since_m;
-    if (since_m <= 0.0 || slot_ctx->last_grant_m <= 0.0 || slot_ctx->followed_since_m > since_m
-        || slot_ctx->last_start_m > since_m || slot_ctx->last_stop_m > since_m) {
+    if (since_m <= 0.0 || slot_ctx->followed_since_m > since_m || slot_ctx->last_start_m > since_m
+        || slot_ctx->last_stop_m > since_m) {
         slot_ctx->acquire_since_m = now_m;
     }
     slot_ctx->last_grant_m = now_m;

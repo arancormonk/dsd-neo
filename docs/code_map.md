@@ -5499,7 +5499,8 @@ Private per-protocol modules worth knowing about:
   describes every assigned slot with `followed_since_m` (kept across repeats and re-grants of the same call; reset by
   `p25_sm_clear_followed_history()`). A TDMA slot counts as held while its voice is live, within the hangtime after
   it, or while its voice is awaited for at most the grant timeout from `acquire_since_m` (when the wait began; repeats
-  of the grant do not renew it, data assignments excepted). Duplicates, voice starts and accepted grants describe;
+  of the grant, as updates or as assignments replaced through a slot clear, do not renew it, data assignments
+  excepted). Duplicates, voice starts and accepted grants describe;
   only a preemption commits a cooldown, after the candidate is tuned. A preemption whose CC return fails or defers restores the
   force-release latch and keeps the held call. A clear-bit encryption-lockout release
   (`p25_grant_commit_enc_release()`) and the stale-regrant guard's probe are spent only on acceptance. Tests:
