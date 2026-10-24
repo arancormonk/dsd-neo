@@ -573,6 +573,7 @@ nxdn_decode_facch2_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_c
 }
 
 static void
+// cppcheck-suppress constParameterCallback -- one step of the nxdn_channel_step table, which shares one signature.
 nxdn_decode_sacch2_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->sacch2) {
         nxdn_deperm_sacch2_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab);
