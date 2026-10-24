@@ -178,6 +178,9 @@ tetra_confirm_set_followed_rx(dsd_state* state, int on) {
         return;
     }
     const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts) {
+        return;
+    }
     c->rx_perm = 1;
     c->rx_adverse = 0;
     /* T.212 runs from the authorisation; without the TDMA clock it runs from the next qualifying AACH. */

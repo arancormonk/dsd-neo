@@ -175,10 +175,21 @@ in_slot(session* s, uint8_t tn, uint8_t fn) {
     in_slot_of(s, tn, fn, 7);
 }
 
+/* The session's TETRA state; every session has one once it has decoded a slot. */
+static const tetra_state_t*
+session_ts(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts) {
+        DSD_FPRINTF(stderr, "no TETRA state\n");
+        abort();
+    }
+    return ts;
+}
+
 /* Key stream bits @p offset.. of the slot under @p key (TB5 for the cell, TEA @p ksg) into @p ks. */
 static void
 slot_keystream(const session* s, const uint8_t* key, int ksg, uint16_t carrier, uint8_t* ks, int nbytes) {
-    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    const tetra_state_t* const ts = session_ts(s->state);
     uint8_t eck[10];
     tetra_tea_derive_eck(carrier, NET_LA, NET_CC, key, eck);
     tetra_tea_keystream(ksg, eck, tetra_tea_build_iv(ts->tn, ts->fn, ts->mn, NET_HN, 0), ks, nbytes);
@@ -485,7 +496,7 @@ test_reduced_key_keeps_identities_encrypted(void) {
     k->key[3] = 0xCD;
     for (uint8_t fn = 3; fn <= 4; fn++) {
         in_slot(&s, 1, fn);
-        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const tetra_state_t* const ts = session_ts(s.state);
         uint8_t ks[54];
         tetra_tea1_keystream_reduced(reg, tetra_tea_build_iv(ts->tn, ts->fn, ts->mn, NET_HN, 0), ks, (int)sizeof ks);
         ttb_block b;
@@ -674,7 +685,7 @@ test_reduced_key_off_its_channel(void) {
     k->key[0] = 0x12;
     for (uint8_t fn = 3; fn <= 4; fn++) {
         in_slot(&s, 1, fn);
-        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const tetra_state_t* const ts = session_ts(s.state);
         uint8_t ks[54];
         tetra_tea1_keystream_reduced(0x12000000u, tetra_tea_build_iv(ts->tn, ts->fn, ts->mn, NET_HN, 0), ks,
                                      (int)sizeof ks);
