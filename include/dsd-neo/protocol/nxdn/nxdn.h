@@ -54,6 +54,15 @@ typedef enum {
     NXDN_FRAME_CHANNEL_TYPE_D = 3,  /**< A Type-D (IDAS) traffic channel (RTCH2). */
 } nxdn_frame_channel;
 
+/**
+ * @brief Slot 0's canonical call was just ended outside NXDN's own message handling (the engine's no-carrier pass: a
+ * sync loss, with no TX_REL heard): a held call bound to that call (dsd_state::nxdn_call) takes its end time now, as a
+ * release does, so a call that begins within the hangtime of the end is measured from the end, not from when the
+ * identity was last read. Changes nothing else and writes no talkgroup policy ledger (no tick guard needed): whether
+ * the held call outlives the end is decided by its next read.
+ */
+void nxdn_held_call_note_call_end(dsd_state* state);
+
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
 uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);

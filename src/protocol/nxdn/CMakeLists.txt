@@ -15,6 +15,7 @@ target_sources(
         nxdn_element.c
         nxdn_enc_class.c
         nxdn_frame.c
+        nxdn_held_call.c
         nxdn_lfsr.c
         nxdn_trunk_diag.c
         nxdn_voice.c

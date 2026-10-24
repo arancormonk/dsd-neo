@@ -22,6 +22,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
@@ -1475,6 +1476,44 @@ nxdn_run_release_reply_keeps_dwell_case(void) {
                       "a priority-100 preempting call is taken (dwell from the first follow)");
     return rc;
 }
+
+/* As the release case, but the followed call's transmission ends by a sync loss (no TX_REL), as the engine's no-carrier
+ * pass ends it and tells NXDN (nxdn_held_call_note_call_end()): the reply, past the reacquire gap (a new transmission)
+ * and within the hangtime of the end, is the conversation's gap measured from the end, not from the last read. */
+static int
+nxdn_run_sync_loss_reply_keeps_dwell_case(void) {
+    static const char* const name = "type-c-sync-loss-reply-keeps-dwell";
+    type_c_fixture();
+    g_opts.trunk_hangtime = 2.0f;
+    policy_row(1100U, 10, 0);
+    policy_row(1200U, 100, 1);
+    int rc = 0;
+    at_seconds(1100.0);
+    send_assignment(0x04U, 1100U, 16U);
+    at_seconds(1100.2);
+    voice_live();
+    send_vcall(2100U, 1100U);
+    at_seconds(1104.0);
+    voice_live();
+    (void)dsd_call_state_end_ex(&g_state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS); /* the engine's no-carrier pass */
+    nxdn_held_call_note_call_end(&g_state);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED
+                          && fabs(g_state.nxdn_call.call_seen_m - call.ended_m) < 1e-6,
+                      name, "sync-loss", "the held call is bound to the faded transmission's end");
+    at_seconds(1104.6);
+    voice_live();
+    send_vcall(2200U, 1100U);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.follow_m < 1101.0,
+                      name, "reply", "the reply within the hangtime keeps the conversation's follow time");
+    at_seconds(1104.7);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "preempt",
+                      "a priority-100 preempting call is taken (dwell from the first follow)");
+    return rc;
+}
 #endif
 
 /* A resident Type-D call heard without a grant tune (the receiver parked on its repeater) ends with its DISC: the next,
@@ -1805,6 +1844,7 @@ main(void) {
     rc |= nxdn_run_refollow_after_hangtime_return_case();
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
     rc |= nxdn_run_release_reply_keeps_dwell_case();
+    rc |= nxdn_run_sync_loss_reply_keeps_dwell_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

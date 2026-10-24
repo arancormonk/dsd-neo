@@ -4969,8 +4969,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     route one that began within the hangtime of the named call leaves a gap record (unknown, `valid` 0) whose renaming
     as the same call (target and kind, binding that call) keeps `follow_m`. A new call never inherits the identity, its
     priority or its dwell. A release or Type-D termination on the followed route updates the binding from the ended
-    call at once (`nxdn_call_identity_end()` refreshes it: the call's own end time), so a reply's gap is measured from
-    the release, however long ago the identity was last read. A held call known only from the call heard there (no
+    call at once (`nxdn_call_identity_end()` refreshes it: the call's own end time), and so does a sync loss, which no
+    NXDN message reports: the engine's no-carrier pass calls `nxdn_held_call_note_call_end()` (`nxdn_held_call.c`,
+    which only stamps the bound call's end and writes no ledger) right after it ends the calls. A reply's gap is so
+    measured from the end, however long ago the identity was last read. A held call known only from the call heard there (no
     valid route: a resident call, no grant tune) ends with that call: a release, DISC or Type-D termination clears it
     (`nxdn_call_identity_end()`), as its canonical end does, so the next call there is unknown until a message names
     it. A Type-D held call (`type_d`: followed from a busy message, named by an SCCH, or by a VCALL on an RTCH2 or the
@@ -5012,7 +5014,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     the route, the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25
     SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX` (also built on the real canonical call state as
     `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),
-    `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`.
+    `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`, `ENGINE_NO_CARRIER_RESET`.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
   received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
   scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
