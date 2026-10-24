@@ -12,6 +12,8 @@ Item {
         when: windowShown
 
         function init() {
+            // A follow call queued as the monitor closed used to run in its torn-down context.
+            failOnWarning(/FollowLatest\.qml|evaluate a function in an invalid context/)
             testContext.useLifecycleHost(true, true)
             testContext.setDelayedStop(false)
             while (savedSystems.count)

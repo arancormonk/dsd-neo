@@ -8109,6 +8109,13 @@ Preserve each file's existing QML formatting and use focused manual edits. Do no
 run whole-file `qmlformat` during a functional change; no automatic QML formatting
 settings are prescribed. MonitorScreen's existing expanded style is retained.
 Text sizes use `Theme.fontSize(pixels)`, with the platform scale bounded to 1–1.6.
+A binding that mixes an item's own state (`visible`, `enabled`) with `Navigation.allows()` reads the gate first
+(`Accessible.ignored: !navigationAllowed || !visible`): the gate's walk up the parents can settle an ancestor's pending
+`parent:` binding (MonitorScreen's tier groups), and state read before it would change under the running binding, a
+binding loop. A size bound to a `Text` reads its `height`, not `implicitHeight`, whose getter lays out pending text and
+changes itself under the binding reading it. Deferred work in a component that can be torn down with a call in flight
+runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
+tests pin these with `failOnWarning`.
 
 #### Qt scan-list start path
 
