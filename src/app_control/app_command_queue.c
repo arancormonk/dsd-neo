@@ -5755,6 +5755,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     const int was_analog = opts->analog_only != 0;
     const int was_analog_family = dsd_opts_is_analog_family(opts);
     const int was_kind = opts->analog_demod;
+    const int was_edacs_session = dsd_edacs_session(opts, state);
     /* Asked before anything changes: a front end that would refuse the analog receive profile the new mode publishes
        leaves the session in its mode, instead of an analog decoder on a front end running something else. */
     if (decode_mode_check_receive_profile(opts, state, mode) != 0) {
@@ -5803,6 +5804,10 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     ui_commit_mode_change(opts, state);
     if (put_back) {
         return UI_CMD_APPLY_FAILED;
+    }
+    /* A switch that makes the session an EDACS one gets the -8 override startup gives one (as the EA toggle does). */
+    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
     }
     /* Under a scan's scope too: the carrier proves again, under the mode now in force, that it is two-slot TDMA. */
     state->tdma_carrier = 0U;
@@ -7797,6 +7802,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
     const dsdneoUserDecodeMode old_decode_mode = dsd_infer_decode_mode_preset_exact(opts);
+    const int old_edacs_session = dsd_edacs_session(opts, state);
 
     DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
     DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
@@ -7848,6 +7854,11 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     }
     /* A [mode], or an EDACS addressing mode the config set with or without one. */
     ui_commit_mode_identity(opts, state);
+    /* A config that leaves the session an EDACS one it was not (edacs_ea, an EDACS/ProVoice [mode]) gets the -8
+       override startup gives one, as the EA toggle does; read after any rollback above put the receive side back. */
+    if (!old_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
+    }
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);
     if (radio_rc != 0) {

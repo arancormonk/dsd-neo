@@ -1553,8 +1553,9 @@ suite runs under this compiler.
   analog socket on port + 2 and the `-8` override under `-T` (engine output setup), the EDACS squelch policy
   (`dsd_squelch_edacs_analog_voice()` and the squelch view, the engine's squelch notices) and the "Pulse Analog Output"
   line. The `-8` override is one helper, `dsd_edacs_session_trunked_monitor_off()` (trunking on, UDP output, an EDACS
-  session: `-8` off), which engine output setup applies at start and the EA toggle when it makes a running session
-  EDACS; that toggle also ensures the raw sink then. TG lockout and Skip skip only an EDACS call (keyed on the call's
+  session: `-8` off), which engine output setup applies at start and the EA toggle, `DSD_APP_CMD_DECODE_MODE_SET`
+  (`decode_mode_apply_value()`) and `DSD_APP_CMD_CONFIG_APPLY` apply when they make a running session EDACS (false to
+  true); the toggle also ensures the raw sink then. TG lockout and Skip skip only an EDACS call (keyed on the call's
   protocol, not the session), never a P25, DMR or NXDN one. The capability flag stays on what lets an Auto session
   select EDACS: the EA/ESK toggles and the EDACS menu rows and toggle lines. `dsd_m17_only_session(opts)` (`opts.h`,
   over `dsd_opts_digital_decoder_count()`) is `frame_m17` with no other digital decoder (`-fz`): only it retries a

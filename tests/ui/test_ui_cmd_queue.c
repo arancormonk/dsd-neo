@@ -9032,6 +9032,75 @@ test_edacs_selection_and_input_monitor_ensure_their_sink(void) {
     return rc;
 }
 
+/* A trunked UDP session (`-T -8 -o udp`) under plain Auto, or under DMR, with -8 on: no EDACS session yet. */
+static void
+init_trunked_udp_monitor_session(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, int trunk) {
+    init_decode_mode_context(opts, state);
+    (void)dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    state->ea_mode = -1;
+    opts->audio_out_type = 8;
+    opts->trunk_enable = trunk;
+    opts->monitor_input_audio = 1;
+}
+
+/*
+ * The other two ways a running session becomes an EDACS one apply the trunked UDP -8 override startup applies (`-fh -T
+ * -8 -o udp`), as the EA toggle does: a decode-mode switch to EDACS/ProVoice, and a config apply that selects EDACS
+ * addressing (Auto with edacs_ea). Untrunked, or already an EDACS session, -8 stays.
+ */
+static int
+test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    static const dsdneoUserDecodeMode k_from[] = {DSDCFG_MODE_AUTO, DSDCFG_MODE_DMR};
+    for (size_t i = 0; i < sizeof k_from / sizeof k_from[0]; i++) {
+        for (int trunk = 0; trunk <= 1; trunk++) {
+            init_trunked_udp_monitor_session(&opts, &state, k_from[i], trunk);
+            rc |= expect_int("edacs mode queued",
+                             dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_EDACS_PV),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int("edacs mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int("edacs mode is an EDACS session", dsd_edacs_session(&opts, &state), 1);
+            rc |= expect_int(trunk ? "trunked switch to EDACS turns -8 off" : "untrunked switch to EDACS keeps -8",
+                             opts.monitor_input_audio, trunk ? 0 : 1);
+            /* Already EDACS: switching to Auto keeps the addressing and the session, and -8 turned back on stays. */
+            opts.monitor_input_audio = 1;
+            rc |= expect_int("edacs to auto queued",
+                             dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AUTO),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int("edacs to auto drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int("an EDACS session staying one keeps -8", opts.monitor_input_audio, 1);
+            freeState(&state);
+        }
+    }
+
+    for (int trunk = 0; trunk <= 1; trunk++) {
+        init_trunked_udp_monitor_session(&opts, &state, DSDCFG_MODE_AUTO, trunk);
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_mode = 1;
+        cfg.decode_mode = DSDCFG_MODE_AUTO;
+        cfg.has_edacs_variant = 1;
+        cfg.edacs_ea = 1;
+        rc |= expect_int("config edacs_ea queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config edacs_ea drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config edacs_ea is an EDACS session", dsd_edacs_session(&opts, &state), 1);
+        rc |= expect_int(trunk ? "trunked config edacs_ea turns -8 off" : "untrunked config edacs_ea keeps -8",
+                         opts.monitor_input_audio, trunk ? 0 : 1);
+        /* The same config again: already an EDACS session, -8 turned back on stays. */
+        opts.monitor_input_audio = 1;
+        rc |= expect_int("config edacs_ea again queued",
+                         dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config edacs_ea again drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config on an EDACS session keeps -8", opts.monitor_input_audio, 1);
+        freeState(&state);
+    }
+    return rc;
+}
+
 typedef struct {
     int files;
     int named;
@@ -19695,6 +19764,7 @@ main(void) {
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= test_decode_mode_set_ensures_family_sink();
     rc |= test_edacs_selection_and_input_monitor_ensure_their_sink();
+    rc |= test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off();
     rc |= test_decode_mode_set_closes_nfm_recording_named();
     rc |= test_provoice_toggle_closes_nfm_recording_named();
     rc |= test_identity_forgetting_commands_clear_the_record();

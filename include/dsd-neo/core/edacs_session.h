@@ -47,7 +47,8 @@ dsd_edacs_session(const dsd_opts* opts, const dsd_state* state) {
 /**
  * @brief The -8 override of a trunked EDACS session on UDP output: with trunking on, UDP output (port + 2 carrying the
  * analog audio) and an EDACS session, turn the -8 source monitor off. Engine output setup applies it at start
- * (`-fh -T -8 -o udp`), and the EA toggle when it turns a running session into an EDACS one (`-fa -T -8 -o udp`).
+ * (`-fh -T -8 -o udp`); the EA toggle, a decode-mode switch and a config apply when they turn a running session into an
+ * EDACS one (`-fa -T -8 -o udp`, then the toggle, a switch to EDACS/ProVoice, or a config with edacs_ea).
  *
  * @return 1 when it turned -8 off, else 0.
  */
