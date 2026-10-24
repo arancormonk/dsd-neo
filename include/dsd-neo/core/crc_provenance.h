@@ -34,9 +34,9 @@ enum {
     /** A CRC or checksum the protocol defines failed. Rendered `[CRC ERR]`, with warning severity. */
     DSD_CRC_FAILED = 0x01U,
     /**
-     * The standard CRC could not be verified because DMR's Motorola RAS heuristic accepted the burst under `-F`. RAS
-     * systems alter the check on purpose, so this is not evidence of corruption, but nothing vouches for the content
-     * either. Rendered `[RAS]`, with the row's ordinary severity.
+     * The standard CRC could not be verified because `-F` accepted the DMR burst as Motorola RAS. RAS systems alter
+     * the check on purpose, so this is not evidence of corruption, but nothing vouches for the content either.
+     * Rendered `[RAS]`, with the row's ordinary severity.
      */
     DSD_CRC_RAS_UNVERIFIED = 0x02U,
 };

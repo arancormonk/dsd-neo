@@ -55,12 +55,23 @@ reserved bits (a data header, UDT, a DPF 15 chain, confirmed rate-1/2 blocks, an
 continuation both go through the real burst handler, so its channel-learning notice carries the MBC's
 provenance, and a voice LC header) and pin the exact provenance bits: `[RAS]` at ordinary severity for RAS
 alone, `[CRC ERR]` once any check fails, and no RAS at all under the separate relaxed-CRC configuration,
-which never runs the heuristic. Its unchanged MNIS LRRP vector comes from
+which never accepts RAS. Its unchanged MNIS LRRP vector comes from
 [DSD-FME issue 283](https://github.com/lwvmobile/dsd-fme/issues/283).
 The 46 received octets end in CRC `0FE81D14`; the two extra zero octets in that issue's dump are buffer
 fill. The former CRC span computes `FF38D9C7`, while the corrected span matches the transmitted value.
 A one-bit payload mutation must not publish in strict mode. With `-F` and `-L`, the clean captured MNIS
 packet must append exactly one location row, while the CRC32-failed packet must append none.
+
+`DMR_RAS_SIGNATURE` pins the RAS signature (`dmr_ras_signature()`) per burst layout (eligible types, any nonzero
+reserved value, the distance gate of 4, a failed standard check, the Hytera 0x68 exclusion only where byte 1 is a
+FID or MFID, PI with FID 0x10 only) and runs BPTC-encoded bursts with chosen deinterleaved bit errors through the
+real burst handler. A clean non-RAS CSBK whose errors the ordinary extractor turns into reserved value 4 with a
+failed CRC (bits 1/12/31/42, whose codeword lies at distance 5, and 1/12/136/162, which decodes to none) is a
+failure under `-F` and not dispatched; the 1/2/16/17 miscorrection likewise. A RAS CSBK is accepted clean and at
+distance 3 and 4, dispatching the codeword's payload where the extractor's is wrong (bits 29/74/75/90), and not at
+distance 5 or without `-F`. A RAS voice LC header carrying another LC's RS(12,9) parity, one symbol away, is never
+RS-corrected into that LC: a failure without `-F`, the original LC as RAS under `-F`, and no TDMA proof either way.
+The error patterns behave the same on any codeword (both decoders are syndrome decoders of linear codes).
 
 `CORE_EVENTS_STAGED_PAYLOAD` checks that data-notice staging is independent of active-call enrichment.
 `CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders retain their state strings while suppressing

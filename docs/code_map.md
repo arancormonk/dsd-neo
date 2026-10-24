@@ -933,7 +933,7 @@ suite runs under this compiler.
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:
   `DSD_CRC_FAILED` (1, a check failed; the value P25 and DMR scopes have always ORed in) and `DSD_CRC_RAS_UNVERIFIED`
-  (2, DMR content only the Motorola RAS heuristic accepted under `-F`). The bits accumulate per transmission and are
+  (2, DMR content `-F` accepted only as a RAS signature, `dmr_ras_signature()`). The bits accumulate per transmission and are
   never cleared by another writer. Every gate tests `!= 0` (not verified: `-L` rows, strict publication), so RAS stays
   out of location files; only renderers tell the bits apart, through `dsd_crc_marker()` (`[CRC ERR] ` outranks
   `[RAS] `) and `dsd_crc_is_failed()` (the only bit that raises severity to WARNING). `watchdog_event_mark_crc()` swaps
@@ -5357,6 +5357,22 @@ Key public headers (selection):
 
 Private per-protocol modules worth knowing about:
 
+- RAS burst signature (`dmr_dburst.c`, `dmr_ras_signature()` in `src/protocol/dmr/dmr_crc_provenance.h`). Motorola
+  RAS computes a burst's CRC (RS(12,9) parity for a voice LC) over the payload and a secret, and sets the BPTC
+  reserved bits R(2..0), which ETSI fixes at zero. A BPTC burst whose extractor R is nonzero and whose standard
+  check failed is a candidate: only then does the handler run `BPTC_196x96_Decode_Codeword()`, and when that reaches a
+  codeword within `DMR_RAS_MAX_DISTANCE` (4, the guaranteed radius of the minimum-distance-9 product code, so the
+  unique nearest codeword) the codeword's payload, R and check replace the extractor's and are what is dispatched.
+  The signature is that codeword's R nonzero and check failed, on an eligible type (PI with FID 0x10 only, voice LC
+  header and terminator, CSBK, MBC header, data header, confirmed rate-1/2 block, USBD; never the MBC continuation,
+  rate 3/4, rate 1 or idle) and not Hytera (byte 1 0x68 where it is a FID or MFID: CSBK, MBC header, voice LC
+  header and terminator, proprietary DPF 15 data header; never USBD or an ordinary data header). The context's
+  `ras_signature` is computed with or without `-F`; `is_ras` (accept, `crc_correct = 1`, `-RAS`,
+  `DSD_CRC_RAS_UNVERIFIED`, `DMR_DATA_BLOCK_CRC_RAS`) is a signature under `-F`. A voice LC with R nonzero only gets
+  the syndrome check `CheckFullLinkControlCrc()` and is never RS-corrected; R == 0 bursts keep the extractor and
+  ordinary RS paths and pay nothing. Decided limit: the decoder is iterative, correct-or-reject; a RAS burst with
+  more than 4 errors, or one of the few-error patterns it carries beyond 4, is a failure. Tests: `DMR_RAS_SIGNATURE`,
+  `DMR_DBURST_PROFILE`, `DMR_EVENT_CRC`, `DECODE_IQ_DMR_T3_RAS_CC`.
 - Voice crypto continuity (`dmr_vcrypt.c`, issue #729). Every DMR voice cipher keys a frame by its superframe's IV/MI
   and its position 0..17. Per slot, `dmr_vc_ref_*` holds the symbol-clock position of the voice sync of the superframe
   whose IV is current: a checked PI header or voice-header Hytera LC makes it FIRST (the next voice sync within four

@@ -70,7 +70,8 @@ typedef struct {
 
     uint8_t r[3];
     uint8_t bptc_reserved_bits;
-    uint8_t is_ras;
+    uint8_t ras_signature; // dmr_ras_signature() holds for the burst, with or without -F
+    uint8_t is_ras;        // accepted as RAS: a signature under -F
     uint32_t crc_original_validity;
     uint8_t crc_flags; // DSD_CRC_* bits for this burst, set once its CRC and RAS verdicts are final
 
@@ -289,6 +290,15 @@ dmr_dburst_bptc_crc_confirmed_1_2_rate(dmr_data_burst_ctx* ctx) {
 
 static void
 dmr_dburst_handle_bptc_crc(dmr_data_burst_ctx* ctx) {
+    if (ctx->is_lc && ctx->bptc_reserved_bits != 0) {
+        // Reserved bits set: possibly a RAS LC, whose private parity ordinary RS correction would "correct" into a
+        // different, valid LC. Check the syndrome only and never correct.
+        ctx->crc_correct = CheckFullLinkControlCrc(ctx->bptc_data_bytes, ctx->crcmask);
+        ctx->crc_computed = (((uint32_t)ctx->bptc_data_bytes[9] << 16) | ((uint32_t)ctx->bptc_data_bytes[10] << 8)
+                             | (uint32_t)ctx->bptc_data_bytes[11])
+                            ^ ctx->crcmask;
+        return;
+    }
     if (ctx->is_lc) {
         ctx->crc_correct = ComputeAndCorrectFullLinkControlCrc(ctx->bptc_data_bytes, &ctx->crc_computed, ctx->crcmask);
         return;
@@ -331,15 +341,11 @@ dmr_dburst_copy_bptc_outputs(dmr_data_burst_ctx* ctx) {
     }
 }
 
+/* Reads R, the payload octets and the CRC field from bptc_data_bits / r and runs the burst's standard check. */
 static void
-dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
+dmr_dburst_check_bptc_payload(dmr_data_burst_ctx* ctx) {
     uint32_t i;
 
-    ctx->crc_computed = 0;
-    ctx->irrecoverable_errors = 0;
-
-    BPTCDeInterleaveDMRData(ctx->info, ctx->bptc_deinterleaved);
-    ctx->irrecoverable_errors = BPTC_196x96_Extract_Data(ctx->bptc_deinterleaved, ctx->bptc_data_bits, ctx->r);
     ctx->bptc_reserved_bits = (ctx->r[0] & 0x01) | ((ctx->r[1] << 1) & 0x02) | ((ctx->r[2] << 2) & 0x04);
 
     dmr_dburst_unpack_bptc_bytes(ctx);
@@ -351,17 +357,92 @@ dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
     ctx->crc_extracted ^= ctx->crcmask;
 
     dmr_dburst_handle_bptc_crc(ctx);
+}
+
+static int
+dmr_ras_eligible_type(uint8_t databurst, uint8_t confirmed_data) {
+    switch (databurst) {
+        case 0x00:
+        case 0x01:
+        case 0x02:
+        case 0x03:
+        case 0x04:
+        case 0x06:
+        case 0x0B: return 1;
+        case 0x07: return confirmed_data == 1;
+        default: return 0;
+    }
+}
+
+int
+dmr_ras_signature(uint8_t databurst, uint8_t confirmed_data, const uint8_t* payload_bytes, uint8_t r_bits,
+                  uint32_t distance, int standard_check_ok) {
+    if (payload_bytes == NULL || !dmr_ras_eligible_type(databurst, confirmed_data) || r_bits == 0
+        || distance > DMR_RAS_MAX_DISTANCE || standard_check_ok) {
+        return 0;
+    }
+
+    // Byte 1 is a FID/MFID only in some layouts; 0x68 there is Hytera, whose checks fail for its own reasons.
+    const uint8_t fid = payload_bytes[1];
+    switch (databurst) {
+        // PI: dmr_pi() reads the MFID from octet 1; only Motorola's (0x10) PI is RAS.
+        case 0x00: return fid == 0x10;
+        // Voice LC header and terminator: the FID is LC bits 8..15 (dmr_flco.c); CSBK and MBC header: cs_pdu[1]
+        // (dmr_cspdu()).
+        case 0x01:
+        case 0x02:
+        case 0x03:
+        case 0x04: return fid != 0x68;
+        // Data header: the DPF is bits 4..7 and, in a proprietary (DPF 15) header only, the MFID bits 8..15
+        // (dmr_dheader_parse_fields()); elsewhere byte 1 is SAP and pad-octet count.
+        case 0x06: return !((payload_bytes[0] & 0x0F) == 0x0F && fid == 0x68);
+        // USBD and confirmed blocks carry payload in byte 1.
+        default: return 1;
+    }
+}
+
+/* A RAS candidate (reserved bits set, standard check failed): decode the burst to a full codeword. Within
+   DMR_RAS_MAX_DISTANCE that codeword is the unique nearest one, so its payload, R and check replace the extractor's
+   best effort and its signature is recorded; further away, or none, the burst stays as extracted. */
+static void
+dmr_dburst_decode_ras_candidate(dmr_data_burst_ctx* ctx) {
+    uint8_t bits[96];
+    uint8_t r[3];
+    uint32_t distance = 0;
+    if (BPTC_196x96_Decode_Codeword(ctx->bptc_deinterleaved, bits, r, &distance) == 0
+        || distance > DMR_RAS_MAX_DISTANCE) {
+        return;
+    }
+    DSD_MEMCPY(ctx->bptc_data_bits, bits, sizeof(ctx->bptc_data_bits));
+    DSD_MEMCPY(ctx->r, r, sizeof(ctx->r));
+    ctx->irrecoverable_errors = 0;
+    dmr_dburst_check_bptc_payload(ctx);
+    ctx->ras_signature =
+        (uint8_t)dmr_ras_signature(ctx->databurst, ctx->state->data_conf_data[ctx->slot], ctx->bptc_data_bytes,
+                                   ctx->bptc_reserved_bits, distance, ctx->crc_correct != 0);
+}
+
+static void
+dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
+    ctx->crc_computed = 0;
+    ctx->irrecoverable_errors = 0;
+
+    BPTCDeInterleaveDMRData(ctx->info, ctx->bptc_deinterleaved);
+    ctx->irrecoverable_errors = BPTC_196x96_Extract_Data(ctx->bptc_deinterleaved, ctx->bptc_data_bits, ctx->r);
+    dmr_dburst_check_bptc_payload(ctx);
+
+    // Only bursts with R != 0 whose check failed pay for the full decode; every other burst keeps the extractor's.
+    if (ctx->bptc_reserved_bits != 0 && ctx->crc_correct == 0
+        && dmr_ras_eligible_type(ctx->databurst, ctx->state->data_conf_data[ctx->slot])) {
+        dmr_dburst_decode_ras_candidate(ctx);
+    }
     ctx->crc_original_validity = ctx->crc_correct;
 
-    if (ctx->opts->aggressive_framesync == 0 && ctx->crc_correct == 0 && ctx->irrecoverable_errors == 0
-        && ctx->bptc_reserved_bits == 4) {
+    if (ctx->ras_signature && ctx->opts->aggressive_framesync == 0) {
         ctx->is_ras = 1;
     }
-    if (ctx->bptc_data_bytes[1] == 0x68) {
-        ctx->is_ras = 0;
-    }
     if (ctx->is_ras == 1) {
-        // Retain the standard CRC verdict separately from the RAS acceptance heuristic.
+        // Retain the standard CRC verdict separately from the RAS acceptance.
         ctx->crc_correct = 1;
         if (ctx->databurst == 0x07 && ctx->state->data_conf_data[ctx->slot] == 1) {
             // The CRC9 verdict stays "not verified" for the location gates, but the event marker reads it as RAS.
@@ -769,7 +850,7 @@ dmr_dburst_dispatch_by_type(dmr_data_burst_ctx* ctx) {
             break;
         case 0x04:
             ctx->state->data_block_counter[ctx->slot] = 0;
-            // Arm only a checked header or the existing relaxed RAS heuristic. The raw CRC
+            // Arm only a checked header or a RAS acceptance under -F. The raw CRC
             // remains in data_block_crc_valid; acceptance is not an integrity verdict.
             ctx->state->data_header_valid[ctx->slot] =
                 (uint8_t)(ctx->crc_correct != 0 && ctx->irrecoverable_errors == 0);

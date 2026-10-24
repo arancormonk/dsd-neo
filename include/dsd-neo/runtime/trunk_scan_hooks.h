@@ -122,8 +122,8 @@ void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
  * matching conventional type. Only call these with identity that has already
  * cleared the protocol's FEC/CRC gate, and pass the corroborated encryption
  * classification rather than a single frame's raw cipher field. One deliberate
- * exception: under -F a DMR voice LC accepted by the RAS heuristic counts as
- * checked, because RAS systems never let the standard CRC verify and -F opts
+ * exception: under -F a DMR voice LC accepted as RAS counts as checked,
+ * because RAS systems never let the standard CRC verify and -F opts
  * into that acceptance; without it a scanned RAS repeater would never hold.
  * That exception is the scan hold's alone: a signal search hears the protocol's
  * confirmation from every report, but takes its target and source only while

@@ -44,6 +44,8 @@ static int g_reset_blocks_calls;
 static uint32_t g_bptc_extract_errors;
 static uint8_t g_bptc_reserved[3];
 static uint8_t g_bptc_bits[96];
+static int g_bptc_codeword_status;
+static uint32_t g_bptc_codeword_distance;
 static int g_r34_soft_status;
 static int g_r34_hard_status;
 static int g_r34_list_status;
@@ -76,6 +78,8 @@ reset_handler_counters(void) {
     g_bptc_extract_errors = 0;
     DSD_MEMSET(g_bptc_reserved, 0, sizeof(g_bptc_reserved));
     DSD_MEMSET(g_bptc_bits, 0, sizeof(g_bptc_bits));
+    g_bptc_codeword_status = 1;
+    g_bptc_codeword_distance = 0;
     g_r34_soft_status = 0;
     g_r34_hard_status = 0;
     g_r34_list_status = -1;
@@ -121,6 +125,15 @@ ComputeAndCorrectFullLinkControlCrc(uint8_t* bytes, uint32_t* computed, uint32_t
     return 1;
 }
 
+/* The syndrome-only check a voice LC with its reserved bits set gets: the stub parity never checks. */
+uint32_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+CheckFullLinkControlCrc(const uint8_t* bytes, uint32_t mask) {
+    (void)bytes;
+    (void)mask;
+    return 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 BPTCDeInterleaveDMRData(const uint8_t* input, uint8_t* output) {
@@ -141,6 +154,26 @@ BPTC_196x96_Extract_Data(uint8_t input[196], uint8_t output[96], uint8_t reserve
         DSD_MEMCPY(reserved, g_bptc_reserved, 3U);
     }
     return g_bptc_extract_errors;
+}
+
+/* The codeword decoder reports the extractor's payload and R as a valid codeword at the configured distance. */
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+BPTC_196x96_Decode_Codeword(const uint8_t* input, uint8_t* out96, uint8_t* r3, uint32_t* distance) {
+    (void)input;
+    if (out96 == NULL || r3 == NULL || distance == NULL) {
+        return 0;
+    }
+    if (g_bptc_codeword_status == 0) {
+        DSD_MEMSET(out96, 0, 96U);
+        DSD_MEMSET(r3, 0, 3U);
+        *distance = 0;
+        return 0;
+    }
+    DSD_MEMCPY(out96, g_bptc_bits, 96U);
+    DSD_MEMCPY(r3, g_bptc_reserved, 3U);
+    *distance = g_bptc_codeword_distance;
+    return 1;
 }
 
 uint32_t
@@ -554,6 +587,9 @@ test_handler_additional_dispatch_paths(void) {
     return rc;
 }
 
+static int capture_handler_stderr(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst, char* out,
+                                  size_t out_size);
+
 static int
 test_bptc_ras_and_usbd_services(void) {
     int rc = 0;
@@ -586,12 +622,49 @@ test_bptc_ras_and_usbd_services(void) {
     dmr_data_burst_handler(&opts, &state, info, 0x04U, NULL);
     rc |= expect_u8("failed-mbc-header-provenance", state.data_header_crc_invalid[1], DSD_CRC_FAILED);
 
+    // Byte 1 is the MFID only in a proprietary (DPF 15) header: Hytera's 0x68 there is not RAS.
     prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
     g_bptc_reserved[2] = 1U;
+    write_byte_bits(g_bptc_bits, 0U, 0x0FU);
     write_byte_bits(g_bptc_bits, 8U, 0x68U);
     dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("ras-disabled-by-proprietary-header-call", (uint8_t)g_dheader_calls, 1U);
     rc |= expect_u8("ras-disabled-crc-stays-failed", g_dheader_last_crc_flags, DSD_CRC_FAILED);
+
+    // In an ordinary header byte 1 is SAP and pad-octet count, not a FID: 0x68 there stays RAS.
+    prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
+    g_bptc_reserved[2] = 1U;
+    write_byte_bits(g_bptc_bits, 8U, 0x68U);
+    dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
+    rc |= expect_u8("ras-ordinary-header-byte1-0x68-call", (uint8_t)g_dheader_calls, 1U);
+    rc |= expect_u8("ras-ordinary-header-byte1-0x68-classified-ras", g_dheader_last_crc_flags, DSD_CRC_RAS_UNVERIFIED);
+
+    // A USBD carries payload in byte 1: 0x68 there stays RAS, and the relaxed path hands it to LIP.
+    prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
+    g_bptc_reserved[2] = 1U;
+    write_byte_bits(g_bptc_bits, 8U, 0x68U);
+    {
+        char out[4096];
+        if (capture_handler_stderr(&opts, &state, info, 0x0BU, out, sizeof(out)) != 0) {
+            DSD_FPRINTF(stderr, "USBD RAS capture failed\n");
+            return 1;
+        }
+        rc |= expect_true("ras-usbd-byte1-0x68-marked-ras", strstr(out, "-RAS") != NULL);
+        rc |= expect_u8("ras-usbd-byte1-0x68-lip", (uint8_t)g_lip_calls, 1U);
+    }
+
+    // A RAS burst is accepted only from a codeword within distance 4; one the decoder reaches further away, or none, is
+    // a failure.
+    prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
+    g_bptc_reserved[2] = 1U;
+    g_bptc_codeword_distance = 5U;
+    dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
+    rc |= expect_u8("ras-distance-5-crc-fails", g_dheader_last_crc_flags, DSD_CRC_FAILED);
+    prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
+    g_bptc_reserved[2] = 1U;
+    g_bptc_codeword_status = 0;
+    dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
+    rc |= expect_u8("ras-no-codeword-crc-fails", g_dheader_last_crc_flags, DSD_CRC_FAILED);
 
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
     write_byte_bits(g_bptc_bits, 0U, 0x90U);

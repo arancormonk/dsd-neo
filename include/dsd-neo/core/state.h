@@ -1396,8 +1396,8 @@ struct dsd_state {
     uint8_t cap_plus_block_num[2];             //received block number storage -- per timeslot
     uint8_t cap_plus_csbk_crc_invalid[2];      //DSD_CRC_* flags of every fragment in cap_plus_csbk_bits, by slot
     // Per-block CRC verdict on confirmed data: 1 good, 0 failed, DMR_DATA_BLOCK_CRC_RAS (2) a confirmed block whose
-    // CRC9 failed but the RAS heuristic accepted under -F. Block 0 is the header and only ever holds 0 or 1; blocks
-    // 1..127 follow it (Blocks to Follow is 7 bits, TS 102 361-1 table 9.34).
+    // CRC9 failed but which -F accepted as RAS. Block 0 is the header and only ever holds 0 or 1; blocks 1..127
+    // follow it (Blocks to Follow is 7 bits, TS 102 361-1 table 9.34).
     uint8_t data_block_crc_valid[2][128];
     // Confirmed data sequence tracking (DBSN expected per slot)
     uint8_t data_dbsn_expected[2];

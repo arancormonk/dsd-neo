@@ -309,11 +309,21 @@ Windows console runs:
   carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
   as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT, USBD and
   encrypted-PDU notices. DMR's separate relaxed-CRC configuration follows the same marking policy.
-  DMR content that only the Motorola RAS heuristic accepted under `-F` (the burst line shows `-RAS`)
-  carries `[RAS]` instead: RAS systems alter the standard CRC on purpose, so it could not be verified,
-  but nothing is known to have failed, and the row keeps its ordinary severity and colour. This covers
-  voice calls (including a call reached through a RAS-accepted grant), data headers, confirmed blocks,
-  MBC/UDT and USBD. A transmission that also fails a check renders `[CRC ERR]`, which outranks `[RAS]`;
+  DMR content that `-F` accepted only as Motorola RAS (Restricted Access to System; the burst line shows
+  `-RAS`) carries `[RAS]` instead: RAS systems alter the standard CRC on purpose, so it could not be
+  verified, but nothing is known to have failed, and the row keeps its ordinary severity and colour. This
+  covers voice calls (including a call reached through a RAS-accepted grant), data headers, confirmed
+  blocks, MBC/UDT and USBD. A burst counts as RAS only when its BPTC block decodes to a valid codeword
+  within 4 bit errors of what was received, the codeword's reserved bits are set (RAS systems in the field
+  send the value 4; any nonzero value counts), and the codeword's standard check fails: the CRC, or the
+  RS(12,9) parity of a voice LC header or terminator. The payload decoded is that codeword's. Eligible
+  bursts are the CSBK, MBC header, data header, voice LC header and terminator, USBD, confirmed rate-1/2
+  data block, and the PI header with Motorola's FID 0x10 only; byte 1 0x68 (Hytera) excludes a CSBK, MBC
+  header, voice LC header or terminator and a proprietary (DPF 15) data header, where byte 1 is a FID or
+  MFID. A RAS burst received with more than 4 bit errors, or one of the rare few-error patterns the BPTC
+  decoder carries further than 4, is not accepted, as no check can vouch for it; it shows `(CRC ERR)`.
+  Without `-F` RAS content is never accepted, and a voice LC header or terminator with its reserved bits
+  set is never RS-corrected, so a RAS LC cannot be "corrected" into a different, valid one. A transmission that also fails a check renders `[CRC ERR]`, which outranks `[RAS]`;
   both markers stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC
   check failed, not that every decoded field is wrong. Absence of either marker is not a universal
   verification guarantee for every protocol. Each `-J` line carries the marker its row had when the
@@ -364,8 +374,8 @@ does.
   PDUs (LRRP, LOCN, LIP, UDT NMEA), DMR voice-LC embedded GPS, and P25 Phase 1 data PDUs reaching
   the IP/UDP LRRP ports; P25 Harris/APX voice-LC GPS and NXDN are unchanged. Under `-F`, CRC-failed
   data still decodes on screen and reaches history / the `-J` log marked `[CRC ERR]`, with LRRP
-  position tokens shown as suppressed (`CRC ERR`) and no location row appended. Bursts accepted by the
-  RAS heuristic under `-F` are also excluded because their CRC could not be verified; the burst line
+  position tokens shown as suppressed (`CRC ERR`) and no location row appended. Bursts accepted as
+  RAS under `-F` are also excluded because their CRC could not be verified; the burst line
   shows `-RAS`, history marks them `[RAS]`, and a withheld LRRP position reads `suppressed (RAS)`. An
   embedded GPS row names the source of the call it rode on, so under `-F` a checked position can carry
   the source ID of a RAS-accepted voice header.
@@ -1575,7 +1585,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   each slot keeps its own filter state, which starts over at a new call or protocol. `-v 0` plays the demodulator's
   audio unfiltered.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
-- Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
+- Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT; a DMR burst is accepted as RAS only
+  from a near-clean codeword with its reserved bits set, see the RAS note under `-J`). No effect on NXDN, which always requires
   CRC-verified content (see the NXDN note under "Modes & Decoders" above). A P25 Phase 2 MAC_SIGNAL that failed its CRC
   still acts on its grants, payload and voice, but no system broadcast in it is applied: no WACN/SYSID/NAC, control
   channel, site or LRA, channel identifier (IDEN) table or trust, secondary control channel, neighbour, system services,

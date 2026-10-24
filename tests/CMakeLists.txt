@@ -10850,6 +10850,22 @@ target_link_libraries(
 add_test(NAME DMR_LC_RS_VERDICT COMMAND dsd-neo_test_dmr_lc_rs_verdict)
 
 add_executable(
+    dsd-neo_test_dmr_ras_signature
+    protocol/dmr/test_dmr_ras_signature.c
+    test_support/dmr_bptc_test_encoder.c
+    test_support/dmr_rs_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_ras_signature
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_ras_signature
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_RAS_SIGNATURE COMMAND dsd-neo_test_dmr_ras_signature)
+
+add_executable(
     dsd-neo_test_dmr_lip_carriers
     protocol/dmr/test_dmr_lip_carriers.c
     test_support/dmr_bptc_test_encoder.c

@@ -1274,8 +1274,8 @@ dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
     (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, enc_str);
 }
 
-// DSD_CRC_* bits for the confirmed blocks' CRC9 verdicts: a failed or missing block is a failure, a block the RAS
-// heuristic accepted is RAS. An unconfirmed packet has no per-block check.
+// DSD_CRC_* bits for the confirmed blocks' CRC9 verdicts: a failed or missing block is a failure, a block accepted as
+// RAS is RAS. An unconfirmed packet has no per-block check.
 static uint8_t DSD_ATTR_USED
 dmr_block_type1_block_crc_flags(const dsd_state* state, uint8_t slot) {
     if (!state->data_conf_data[slot]) {
