@@ -2462,8 +2462,7 @@ cli_finish_force_options(dsd_opts* opts, dsd_state* state, unsigned int choices,
         state->M = 0;
     }
     if (strict_crc) {
-        opts->aggressive_framesync = 1;
-        opts->dmr_crc_relaxed_default = 0;
+        dsd_opts_set_relaxed_crc(opts, 0);
     }
     int conflict = choices == 3U || long_conflict;
     if (have_long) {
@@ -2901,8 +2900,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             LOG_INFO("NOTICE: Per-call WAV directory set to: %s\n", opts->wav_out_dir);                                \
             break;                                                                                                     \
         case 'F':                                                                                                      \
-            opts->aggressive_framesync = 0;                                                                            \
-            opts->dmr_crc_relaxed_default = 1;                                                                         \
+            dsd_opts_set_relaxed_crc(opts, 1);                                                                         \
             LOG_INFO("NOTICE: %s", KYEL);                                                                              \
             LOG_INFO("NOTICE: Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");                                 \
             LOG_INFO("NOTICE: Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");                                               \

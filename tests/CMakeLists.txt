@@ -1013,6 +1013,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_timing_view.h
   CXX
 )
+# The shared Relaxed CRC policy (configured, in force, row override).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_crc_policy_view
+  HEADERS_PUBLIC_APP_CONTROL_CRC_POLICY_VIEW
+  dsd-neo/app_control/crc_policy_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_crc_policy_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_CRC_POLICY_VIEW_CXX
+  dsd-neo/app_control/crc_policy_view.h
+  CXX
+)
 # Issue #521: the shared squelch readout.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_squelch_view
@@ -2591,6 +2604,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -2627,6 +2641,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -7779,6 +7794,25 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
+
+# Relaxed CRC is one setting across -F, --strict-crc, the menu toggle and scan rows, and the app-control view of its
+# configured and effective values.
+add_executable(
+    dsd-neo_test_app_control_crc_policy
+    ui/test_app_control_crc_policy.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_crc_policy
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_crc_policy
+    PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME APP_CONTROL_CRC_POLICY
+    COMMAND dsd-neo_test_app_control_crc_policy
+)
 
 set(_DSD_BOOTSTRAP_FIXTURE_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/runtime_bootstrap_fixtures"

@@ -6056,7 +6056,7 @@ test_scoped_row_option_commands(void) {
     rc |= expect_int("configured force updated", configured.force_key, 1);
     rc |= expect_int("configured mute updated", configured.dmr_mute_encL, 0);
     rc |= expect_int("configured CRC updated", configured.aggressive_framesync, 0);
-    rc |= expect_int("configured CSBK CRC default preserved", configured.dmr_crc_relaxed_default, 0);
+    rc |= expect_int("configured DMR CRC default follows", configured.dmr_crc_relaxed_default, 1);
     rc |= expect_int("configured data updated", configured.trunk_tune_data_calls, 1);
     rc |= expect_int("configured encrypted updated", configured.trunk_tune_enc_calls, 0);
     rc |= expect_int("queue data default again", post_empty(DSD_APP_CMD_TRUNK_DATA_TOGGLE),
@@ -6148,12 +6148,15 @@ test_scoped_direct_key_mutes(void) {
             dsd_scan_mode_leave(opts, state);
         }
     }
+    /* Relaxed CRC is one setting: the toggle moves the DMR CRC default with aggressive_framesync. */
     for (int relaxed = 0; relaxed < 2; relaxed++) {
-        opts->dmr_crc_relaxed_default = (uint8_t)relaxed;
+        dsd_opts_set_relaxed_crc(opts, relaxed);
         for (int toggle = 0; toggle < 2; toggle++) {
             post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
             (void)dsd_app_drain_cmds(opts, state);
-            rc |= expect_int("menu CRC toggle preserves CSBK policy", opts->dmr_crc_relaxed_default, relaxed);
+            const int want = (toggle == 0) ? !relaxed : relaxed;
+            rc |= expect_int("menu CRC toggle moves the DMR CRC default", opts->dmr_crc_relaxed_default, want);
+            rc |= expect_int("menu CRC toggle moves aggressive_framesync", opts->aggressive_framesync, !want);
         }
     }
     freeState(state);

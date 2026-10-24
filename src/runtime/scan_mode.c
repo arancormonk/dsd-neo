@@ -701,8 +701,7 @@ scan_option_apply_force(dsd_opts* opts, dsd_state* state, const dsd_scan_option_
 static void
 scan_option_apply_crc(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
     (void)state;
-    opts->aggressive_framesync = (short)values->strict_crc;
-    opts->dmr_crc_relaxed_default = (uint8_t)!values->strict_crc;
+    dsd_opts_set_relaxed_crc(opts, !values->strict_crc);
 }
 
 static void

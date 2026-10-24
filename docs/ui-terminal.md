@@ -722,7 +722,7 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `i` | Toggle inversion |
 | `m` | Cycle modulation optimization mode |
 | `M` | Toggle and retain the P25 Phase 2 C4FM/QPSK modulation selection |
-| `F` | Toggle aggressive sync/CRC relax helpers |
+| `F` | Toggle Relaxed CRC checks (the same setting as `-F` / `--strict-crc`) |
 | `D` | DMR reset (useful when a system goes off the rails) |
 | `A` | Toggle ProVoice ESK mask (ProVoice modes) |
 | `S` | Toggle ProVoice standard/EA mode (ProVoice modes) |
@@ -1052,7 +1052,8 @@ keyring slots print separately when they differ). “Loaded” does not claim su
 redacted unless `--show-keys` is enabled. Explicit forcing (BP, RC4 or TYT) replaces these lines with its own status.
 
 Force, CRC, mute and voice-gate controls edit the configured baseline while a scan row constrains their effective
-values; menu labels show that baseline. These edits are policy, not acquisition: they apply at once without ending
-the current call or re-hunting sync. Group-file imports also update the baseline, with the parked row's group policy
-restored afterward. Scalar key entry retains its existing temporary behavior. See the CSV documentation for the
-`options` column and per-row explicit-off switches.
+values; menu labels show that baseline, and a CRC toggle under a row's own `-F` or `--strict-crc` says the row
+overrides it (`Default relaxed CRC -> On; this channel overrides it (Off)`). These edits are policy, not acquisition:
+they apply at once without ending the current call or re-hunting sync. Group-file imports also update the baseline,
+with the parked row's group policy restored afterward. Scalar key entry retains its existing temporary behavior. See
+the CSV documentation for the `options` column and per-row explicit-off switches.

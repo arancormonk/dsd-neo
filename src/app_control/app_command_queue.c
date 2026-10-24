@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
@@ -4668,11 +4669,20 @@ ui_cmd_handle_hpf_d_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return 1;
 }
 
+_Static_assert(sizeof(((dsd_state*)0)->ui_msg) >= (size_t)DSD_APP_CRC_POLICY_NOTICE_SIZE,
+               "the relaxed CRC notice lands in dsd_state::ui_msg whole");
+
+/* Relaxed CRC is one setting (dsd_opts_set_relaxed_crc()). The command runs against the configured baseline while a
+   scan row is on air (command_updates_scan_mode()); a row's own -F or --strict-crc stays in force over the edit until
+   the row leaves, and the toast says so. */
 static int
 ui_cmd_handle_aggr_sync_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     (void)c;
-    opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1;
+    dsd_opts_set_relaxed_crc(opts, !dsd_opts_relaxed_crc(opts));
+    char notice[DSD_APP_CRC_POLICY_NOTICE_SIZE];
+    if (dsd_app_crc_policy_edit_notice(opts, state, notice, sizeof notice) == 1) {
+        ui_set_toast(state, 3, "%s", notice);
+    }
     return 1;
 }
 

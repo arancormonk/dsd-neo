@@ -1594,6 +1594,10 @@ setting, shown apart from what is received, and it is off by default: then the o
   still acts on its grants, payload and voice, but no system broadcast in it is applied: no WACN/SYSID/NAC, control
   channel, site or LRA, channel identifier (IDEN) table or trust, secondary control channel, neighbour, system services,
   system time or protection parameters come from it. P25 Phase 1 TSBK and trunking MBT always need their CRCs.
+  Relaxed CRC is one setting: `-F`, `--strict-crc`, the terminal's "Relaxed CRC checks" toggle (`F`) and a scan row's
+  own `-F` or `--strict-crc` all turn every one of these gates on or off together, DMR's relaxed control-channel
+  heartbeat included. While a scan row sets its own, the row decides until it leaves; the toggle edits the configured
+  value beneath it and says so.
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
   raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as

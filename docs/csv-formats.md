@@ -502,8 +502,9 @@ remain with that row's policy; unconfigured rows use the global policy. Global g
 setting changes from the frontend (forcing, CRC policy, mutes, voice gate) update the saved baseline beneath
 the active row. Changes to inherited settings take effect immediately; explicit row overrides continue to
 apply, and temporary suspension preserves active-call priority bookkeeping. Direct-key menu commands keep editing the live keys while their unmute decision updates the saved
-defaults; an explicit row mute still takes precedence. The existing Relaxed CRC checks menu toggle changes
-frame CRC checks only; it preserves the separately configured DMR CSBK CRC default. Leaving or replacing the
+defaults; an explicit row mute still takes precedence. The Relaxed CRC checks menu toggle is the same one
+setting as `-F`/`--strict-crc` (every relaxed CRC gate, DMR's included); under a row's own `-F` or
+`--strict-crc` it edits the baseline and its notice says the row overrides it. Leaving or replacing the
 scan restores that baseline. Frontend configuration saves preserve configured defaults, not temporary row
 overrides.
 

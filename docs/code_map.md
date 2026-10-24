@@ -2784,6 +2784,15 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   target's own `rtl_gain` while it overrides it, the terminal's `Gain... [20] (target: 10)` and Tuner autogain rows,
   the edit toasts, and Qt's `configuredTunerGainDb`/`tunerGainRowOverride` (a `target` badge and `default X` on the
   radio panel). Test: `APP_CONTROL_RTL_GAIN_VIEW`.
+  `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
+  one setting: `dsd_app_crc_policy_view()` gives the configured value (the scope's configured baseline while a scan
+  scope is live, else `dsd_opts`), the value in force, and `row_override` when the row on air carries its own `-F` or
+  `--strict-crc`; `dsd_app_crc_policy_edit_notice()` is the toggle's toast under such a row. The pair it reads,
+  `aggressive_framesync` and `dmr_crc_relaxed_default`, is set only through `dsd_opts_set_relaxed_crc()` (`core/opts.h`;
+  `dsd_opts_relaxed_crc()` reads either field relaxing as on) by `-F`, `--strict-crc`, a row's CRC option and
+  `DSD_APP_CMD_AGGR_SYNC_TOGGLE`; the scan scope's capture and restore copy the pair as it is. The terminal's Relaxed
+  CRC row reads the view, and any other frontend control or hint about the policy belongs on it too. Test:
+  `APP_CONTROL_CRC_POLICY`.
   `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into the
   received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
   (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the
