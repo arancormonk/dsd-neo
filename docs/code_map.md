@@ -4679,6 +4679,11 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   `tetra_tea1_keystream_reduced()` runs TEA1 from its 32-bit key register (the reduced ECK) instead of an ECK: the
   register TEA1 compresses the ECK into before it generates anything, which belongs to the one channel TB5 made that ECK
   for. It is the only file that includes the upstream headers.
+- `tetra_ta61.c` (declared in `<dsd-neo/crypto/tetra_tea.h>`) is TA61, the encrypted short identity of EN 300 392-7
+  clause 4.2.6 (`tetra_ta61_encrypt()` / `_decrypt()`: a 24-bit SSI and its ESI under an 80-bit SCK or CCK), with the
+  HURDLE block encryption it runs on, ported from the pinned TETRA_crypto `taa1.c` / `hurdle.c` (Apache-2.0, see
+  THIRD_PARTY.md) byte by byte: upstream reads words through byte pointers and picks a bit order by host byte order, so
+  it is not compiled. `TETRA_CRYPTO` pins both directions to upstream's vectors.
 - `backup_seal.c` / `<dsd-neo/crypto/backup_seal.h>` seal and open passphrase-protected backups (scrypt + AES-256-GCM,
   issue #580). The 64-byte header is the GCM AAD. Seal and open both accept only log2(N) 14..17, r 8 and p 1..4, so an
   untrusted file cannot demand more scrypt memory than that. `dsd_backup_open()` wipes its output on any failure:

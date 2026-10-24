@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* Air-interface TEA1/2/3. The keystream generators are the pinned TETRA_crypto
- * sources compiled into DSD-neo; the frame-number packing is implemented here.
- * This wrapper does not unwrap OTAR keys. */
+/* Air-interface TEA1/2/3 and the TA61 identity encryption. The keystream
+ * generators are the pinned TETRA_crypto sources compiled into DSD-neo; the
+ * frame-number packing and TA61 (ported from the same sources) are implemented
+ * here. This wrapper does not unwrap OTAR keys. */
 #ifndef DSD_NEO_CRYPTO_TETRA_TEA_H
 #define DSD_NEO_CRYPTO_TETRA_TEA_H
 
@@ -24,5 +25,11 @@ uint32_t tetra_tea_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uin
  * number cn (12 bits), the location area la (14 bits) and the colour code cc (6 bits) of the carrier being received.
  * Writes the 10-byte ECK to eck; the caller wipes it after use. NULL pointers do nothing. */
 void tetra_tea_derive_eck(uint16_t cn, uint16_t la, uint8_t cc, const uint8_t* ck, uint8_t* eck);
+
+/* TA61 (EN 300 392-7 clause 4.2.6): the encrypted short identity (ESI) of a 24-bit SSI under the 80-bit cipher key
+ * key (the SCK in a class 2 cell, the CCK in a class 3 one), and its inverse. Only the low 24 bits of the input are
+ * read. NULL pointers do nothing. */
+void tetra_ta61_encrypt(const uint8_t key[10], uint32_t ssi, uint32_t* esi);
+void tetra_ta61_decrypt(const uint8_t key[10], uint32_t esi, uint32_t* ssi);
 
 #endif /* DSD_NEO_CRYPTO_TETRA_TEA_H */
