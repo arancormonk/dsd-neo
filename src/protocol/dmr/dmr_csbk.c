@@ -2056,14 +2056,14 @@ dmr_cspdu_cap_plus_3e_seed_carrier(const dsd_opts* opts, const dsd_state* state,
                 break;
             }
         }
-        dmr_sm_capplus_seed_arm(sm, slot, tg, lsn, freq, opts->rtlsdr_center_freq,
+        dmr_sm_capplus_seed_arm(sm, state, slot, tg, lsn, freq, opts->rtlsdr_center_freq,
                                 state->cap_plus_csbk_crc_invalid[ctx->ts], generation_before);
     }
 }
 
 // A later status that shows a seeded LSN idle or carrying another call means the call the seed named is gone.
 static void
-dmr_cspdu_cap_plus_3e_reconcile_seeds(const dmr_cap_plus_3e_ctx* ctx) {
+dmr_cspdu_cap_plus_3e_reconcile_seeds(const dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
     dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
     for (int slot = 0; slot < 2; slot++) {
         const int lsn = sm->capplus_seed[slot].lsn;
@@ -2073,14 +2073,14 @@ dmr_cspdu_cap_plus_3e_reconcile_seeds(const dmr_cap_plus_3e_ctx* ctx) {
         const uint32_t tg = (ctx->ch[lsn - 1] == 1) ? ctx->group_tg[lsn - 1] : 0U;
         dmr_sm_capplus_seed_reconcile(sm, slot, lsn, tg);
     }
-    /* The followed slots' identities a seed gave (not a checked LC) take the group the status now names on their LSN,
-       so a preemption candidate is compared with the call actually on the slot. */
+    /* The followed slots' identities a seed gave (not a checked LC naming the call still on the slot) take the group the
+       status now names on their LSN, so a preemption candidate is compared with the call actually on the slot. */
     for (int slot = 0; slot < 2; slot++) {
         const int lsn = sm->slots[slot].channel;
         if (lsn >= 1 && lsn <= 16) {
             /* A private or data call on the LSN is a call of unknown identity, not an idle LSN. */
             const int group = ctx->ch[lsn - 1] == 1;
-            dmr_sm_status_identity_reconcile(sm, slot, lsn, group ? ctx->group_tg[lsn - 1] : 0U,
+            dmr_sm_status_identity_reconcile(sm, state, slot, lsn, group ? ctx->group_tg[lsn - 1] : 0U,
                                              group || ctx->pch[lsn - 1] == 1);
         }
     }
@@ -2305,7 +2305,7 @@ dmr_cspdu_cap_plus_handle_3e(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     int pd_b2 = dmr_cspdu_cap_plus_3e_parse_private_bank_one(state, &ctx);
     dmr_cspdu_cap_plus_3e_parse_private_bank_two(state, &ctx, pd_b2);
     dmr_cspdu_cap_plus_3e_render_activity(opts, state, &ctx);
-    dmr_cspdu_cap_plus_3e_reconcile_seeds(&ctx);
+    dmr_cspdu_cap_plus_3e_reconcile_seeds(state, &ctx);
 
     dmr_cspdu_cap_plus_3e_set_branding(state);
     DSD_FPRINTF(stderr, "%s", KNRM);
@@ -2759,18 +2759,20 @@ dmr_cspdu_xpt_entry_freq(const dsd_opts* opts, const dsd_state* state, const dmr
     return freq;
 }
 
-/* Hand the bank's chosen entry @p e (LSN @p best) to the trunk state machine as a status grant. */
+/* Hand the bank's chosen entry @p e (LSN @p best) to the trunk state machine as a status grant. Its channel is the LSN,
+   as the ranking described the candidate: the machine's own preemption check must judge the same route. */
 static void
 dmr_cspdu_xpt_submit(dsd_opts* opts, dsd_state* state, const dmr_xpt_entry* e, int best,
                      const dsd_tg_policy_decision* decision, int caller_busy) {
     const long freq = state->trunk_chan_map[best + 1];
+    const int lsn = best + 1;
     dmr_sm_event_t ev;
     if (e->kind == DMR_XPT_KIND_GROUP) {
-        DSD_FPRINTF(stderr, "\n LSN/TG to tune to: %d - %d", best + 1, e->id8);
-        ev = dmr_sm_ev_group_grant(freq, 0, e->id8, 0);
+        DSD_FPRINTF(stderr, "\n LSN/TG to tune to: %d - %d", lsn, e->id8);
+        ev = dmr_sm_ev_group_grant(freq, lsn, e->id8, 0);
     } else {
-        DSD_FPRINTF(stderr, "\n LSN to tune to: %d - private call", best + 1);
-        ev = dmr_sm_ev_indiv_grant(freq, 0, 0, 0);
+        DSD_FPRINTF(stderr, "\n LSN to tune to: %d - private call", lsn);
+        ev = dmr_sm_ev_indiv_grant(freq, lsn, 0, 0);
         ev.identity_known = 0; // the 8-bit value is no radio ID: the voice LC names the call
     }
     ev.slot = best & 1;
@@ -2797,7 +2799,8 @@ dmr_cspdu_xpt_reconcile_followed(const dsd_state* state, const dmr_xpt_entry ent
         const dmr_xpt_entry* e = &entries[slot_idx];
         const int group = e->kind == DMR_XPT_KIND_GROUP && e->id8 != 0U;
         if (group || e->kind == DMR_XPT_KIND_PRIVATE) {
-            dmr_sm_status_slot_reconcile(sm, slot_idx & 1, state->trunk_chan_map[slot_idx + 1], group ? e->id8 : 0U, 1);
+            dmr_sm_status_slot_reconcile(sm, state, slot_idx & 1, state->trunk_chan_map[slot_idx + 1],
+                                         group ? e->id8 : 0U, 1);
         }
     }
 }

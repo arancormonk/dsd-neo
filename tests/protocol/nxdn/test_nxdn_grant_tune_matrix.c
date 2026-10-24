@@ -1297,6 +1297,94 @@ nxdn_run_type_d_resident_disc_case(void) {
     return rc;
 }
 
+/* A resident Type-D call that ends by sync loss (noCarrier() ends its canonical epoch, no DISC) ends the held call too:
+ * the next, anonymous late-entry call on that repeater inherits neither its identity, its priority nor its dwell, so it
+ * yields only to Hold, never to a preempting call that merely outranks the ended one. */
+static int
+nxdn_run_type_d_resident_sync_loss_case(void) {
+    static const char* const name = "type-d-resident-sync-loss";
+    const nxdn_case base = type_d_fixture(0U, 1400U);
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = base.expected_freq; /* the receiver sits on repeater 6 */
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9300.0);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U, name, "resident",
+                      "the resident call is the held call");
+    at_seconds(9301.0);
+    (void)dsd_call_state_end_ex(&g_state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+
+    at_seconds(9302.0);
+    voice_live();
+    late_entry_call();
+    nxdn_case other = base;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9302.5);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 0 && g_state.nxdn_call.valid == 0U, name, "anonymous",
+                      "an anonymous call after the sync loss is not preempted as the ended one");
+    g_state.tg_hold = 1500U;
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == 938512500L, name, "hold", "it yields to Hold");
+    g_state.tg_hold = 0U;
+    return rc;
+}
+
+/* Follow group 1400 on repeater 6 at @p t0, name it by a VCALL, and lose its sync 0.9 s later. */
+static nxdn_case
+followed_call_faded(double t0) {
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 50, 1);
+    at_seconds(t0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    at_seconds(t0 + 0.2);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    at_seconds(t0 + 0.9);
+    voice_live();
+    (void)dsd_call_state_end_ex(&g_state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    return other;
+}
+
+/* On the followed route a held call is held through its gaps: its call's sync-loss end keeps the identity within the
+ * hangtime (an outranking preempting call takes the receiver from it), but a new anonymous call there is not the held
+ * one: it yields only to Hold. */
+static int
+nxdn_run_type_d_followed_new_call_case(void) {
+    static const char* const name = "type-d-followed-new-call";
+    nxdn_case other = followed_call_faded(9400.0);
+    int rc = nxdn_expect(g_tune_count == 1 && g_state.nxdn_follow.repeater == 6U, name, "follow", "call followed");
+    at_seconds(9401.0);
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "gap",
+                      "the faded call is held within the hangtime: an outranking preempt takes it");
+
+    other = followed_call_faded(9500.0);
+    at_seconds(9500.95);
+    late_entry_call();
+    at_seconds(9501.0);
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 0U, name, "anonymous",
+                      "a new anonymous call on the route is not the held one");
+    g_state.tg_hold = 1500U;
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "hold", "it yields to Hold");
+    g_state.tg_hold = 0U;
+    return rc;
+}
+
 /* A Type-D held call is described as Type-D admission judges it, with no source fallback: an INFO3 source whose own
  * row ranks high never lends that priority to the held, unlisted group, so a preempting call at the source's priority
  * takes the receiver. */
@@ -1486,6 +1574,8 @@ main(void) {
     rc |= nxdn_run_type_d_refollow_keeps_dwell_case();
     rc |= nxdn_run_type_d_private_reconcile_case();
     rc |= nxdn_run_type_d_resident_disc_case();
+    rc |= nxdn_run_type_d_resident_sync_loss_case();
+    rc |= nxdn_run_type_d_followed_new_call_case();
     rc |= nxdn_run_type_d_held_no_source_fallback_case();
     rc |= nxdn_run_type_d_private_after_group_case();
 

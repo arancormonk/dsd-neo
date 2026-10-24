@@ -517,6 +517,17 @@ typedef struct {
     uint8_t private_call;
     uint8_t data_call;
     uint8_t type_d; /**< a Type-D (IDAS) call: judged as Type-D admission judges it, with no source fallback */
+    /**
+     * The canonical call the identity names (dsd_call_snapshot_transmission() of slot 0's call), so it never outlives
+     * that call: another call, or its end (on the followed route, past the hangtime), leaves the held call unknown.
+     * 0 while it awaits its call: the first one to begin after call_floor, the canonical epoch when it was named.
+     */
+    uint64_t call_epoch;
+    uint64_t call_floor;
+    double call_seen_m; /**< decode clock: when the named call was last seen active, or when it ended */
+    /** The named call is over and another (call_epoch) began on the followed route within the hangtime: valid is 0 (an
+     * unknown held call) and the rest stays only so that naming that call as the same one keeps follow_m. */
+    uint8_t gap;
 } dsd_nxdn_call_identity;
 
 typedef struct p25_bandplan_row {

@@ -523,6 +523,8 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->priority = previous->priority;
     snapshot->media_started_m = previous->media_started_m;
     snapshot->media_updated_m = previous->media_updated_m;
+    // The reopened epoch continues the ending one's transmission, so state bound to that call stays bound to it.
+    snapshot->transmission_epoch = dsd_call_snapshot_transmission(previous);
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
     // re-earns audio from the next crypto update exactly as it does today, and started_m stays
     // the reopen instant so per-segment durations remain the segment's own. The media clocks do
@@ -635,6 +637,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[slot] = call_state_next_nonzero(ext->epoch_sequence[slot]);
         snapshot->epoch = ext->epoch_sequence[slot];
+        snapshot->transmission_epoch = snapshot->epoch;
         snapshot->slot = slot;
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
@@ -1397,6 +1400,7 @@ dsd_call_state_test_set_epoch(dsd_state* state, uint8_t slot, uint64_t epoch) {
     }
     dsd_call_state_ext_lock(ext);
     ext->calls.slots[slot].epoch = epoch;
+    ext->calls.slots[slot].transmission_epoch = epoch;
     ext->epoch_sequence[slot] = epoch;
     dsd_call_state_ext_unlock(ext);
     return 1;

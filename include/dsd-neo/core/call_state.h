@@ -230,6 +230,13 @@ typedef struct {
 typedef struct {
     uint64_t revision;
     uint64_t epoch;
+    /**
+     * The epoch that opened this logical transmission: this epoch's own, or, for an epoch that reacquired a
+     * recoverably-ended one, that epoch's transmission_epoch. State bound to a call (a trunking identity) keys on it
+     * (dsd_call_snapshot_transmission()), so a fade the canonical layer healed keeps the binding and a new transmission
+     * never inherits it.
+     */
+    uint64_t transmission_epoch;
     uint64_t ota_target_id;
     uint64_t policy_target_id;
     uint64_t ota_source_id;
@@ -310,6 +317,15 @@ typedef struct {
     char source_label[DSD_CALL_IDENTITY_TEXT_SIZE];
     uint64_t source_label_id;
 } dsd_call_snapshot;
+
+/** The logical transmission @p call belongs to (dsd_call_snapshot::transmission_epoch, else its own epoch); 0 none. */
+static inline uint64_t
+dsd_call_snapshot_transmission(const dsd_call_snapshot* call) {
+    if (call == NULL) {
+        return 0U;
+    }
+    return call->transmission_epoch != 0U ? call->transmission_epoch : call->epoch;
+}
 
 typedef struct {
     uint64_t revision;

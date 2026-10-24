@@ -1306,6 +1306,136 @@ test_xpt_resident_same_carrier_in_voice_window(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A Connect Plus preemption to another carrier ends the displaced calls of the carrier left behind (EXPLICIT): TG100
+   on slot 0 of the old carrier never stays active beside TG300 on slot 1 of the new one. */
+static int
+test_con_plus_takeover_ends_displaced_calls(dsd_opts* opts, dsd_state* st) {
+    con_plus_env(opts, st);
+    seed_policy_row(st, 100, "A", 10, 0);
+    seed_policy_row(st, 300, "A", 60, 1);
+    con_plus_voice(opts, st, 1, 100, 5, 0, 2);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0); // publishes TG100 on slot 0
+    int rc =
+        expect_true("con+ TG100 is active on slot 0", active_call_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 100U, 1U));
+    st->last_vc_sync_time = dsd_decode_time();
+    con_plus_voice(opts, st, 3, 300, 6, 1, 2);
+    rc |= expect_true("con+ TG300 preempts onto slot 1 of another carrier", st->trunk_vc_freq[0] == CP_FB);
+    dsd_call_snapshot call;
+    rc |= expect_true("con+ the displaced TG100 call ended EXPLICIT",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED
+                          && call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    status_clock_at(1.2);
+    accepted_voice_now(opts, st, 1);
+    rc |= expect_true("con+ only TG300 is active",
+                      active_call_matches(st, 1U, DSD_CALL_KIND_GROUP_VOICE, 300U, 3U) && no_active_call(st, 0U));
+    status_env_done(st);
+    return rc;
+}
+
+/* A Capacity Plus status preemption ends the displaced call of the carrier left behind, as a grant's does. */
+static int
+test_cap_plus_takeover_ends_displaced_calls(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 43, "A", 60, 1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 0U, 0U, 0U});
+    status_clock_at(1.0);
+    seed_voice_call(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 42U, 7U);
+    accepted_voice_now(opts, st, 0);
+    status_window_closed(st);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 43U, 0U});
+    int rc = expect_true("cap+ p60 preempts the p10 call", st->trunk_vc_freq[0] == ST_F3);
+    rc |= expect_true("cap+ the displaced call is not active on the carrier left", no_active_call(st, 0U));
+    status_env_done(st);
+    return rc;
+}
+
+/* Capacity Plus: a checked LC's identity is its call's. After that call's checked terminator, anonymous voice of a new
+   (private) call on the same LSN is not the LC's group: the slot is of unknown identity, the private status may say so
+   (the LC no longer outranks it), and a priority-100 preempting group never preempts it as the ended p10 group. Until
+   the new call, the ended call's identity holds through its hangtime. */
+static int
+test_cap_plus_lc_identity_ends_with_its_call(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 43, "A", 100, 1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 0U, 0U, 0U});
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    status_clock_at(0.5);
+    seed_voice_call(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 42U, 7U);
+    accepted_voice_now(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 42U, 7U);
+    status_clock_at(0.9);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    status_clock_at(1.0);
+    status_window_closed(st);
+    dmr_sm_busy_view_t view;
+    (void)dmr_sm_describe_held_calls(sm, opts, st, dsd_decode_now_mono_s(), &view);
+    int rc = expect_true("cap+ the ended call's LC identity holds through its hangtime",
+                         view.held && !view.unknown_identity && sm->slots[0].target == 42U
+                             && sm->slots[0].prov == (uint8_t)DMR_SM_ID_LC);
+    status_clock_at(1.2);
+    const dsd_call_observation anonymous = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(st, &anonymous, DSD_CALL_BOUNDARY_BEGIN);
+    accepted_voice_now(opts, st, 0);
+    status_window_closed(st);
+    run_cap_plus_private_and_group(opts, st, 1U, 0x1234U, 3U, 43U);
+    rc |= expect_true("cap+ the new call is of unknown identity", sm->slots[0].kind == (uint8_t)DSD_CALL_KIND_UNKNOWN);
+    rc |= expect_true("cap+ a p100 preempt does not take the new call as the ended p10 group",
+                      st->trunk_vc_freq[0] == ST_F1);
+    st->tg_hold = 43;
+    run_cap_plus_private_and_group(opts, st, 1U, 0x1234U, 3U, 43U);
+    rc |= expect_true("cap+ the new call yields to Hold", st->trunk_vc_freq[0] == ST_F3);
+    st->tg_hold = 0;
+    status_env_done(st);
+    return rc;
+}
+
+/* XPT submits the LSN its ranking judged: parked where a resident private call to 42 (channel 0) plays, the outranking
+   group 42 on LSN 3 (slot 0 of another carrier) is the same route the ranking found eligible, so the machine's own
+   preemption check never mistakes it for the held private call and refuses it. */
+static int
+test_xpt_submit_channel_is_the_ranked_lsn(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    st->trunk_cc_freq = 461250000L;
+    dmr_sm_init(opts, st);
+    st->trunk_chan_map[3] = 461287500L;
+    /* A group range ranks group 42 p60; the private call to 42 matches no exact row (p0). */
+    dsd_tg_policy_entry range;
+    if (dsd_tg_policy_make_exact_entry(40U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) != 0) {
+        abort();
+    }
+    range.id_end = 49U;
+    range.is_range = 1U;
+    range.priority = 60;
+    range.preempt = 1U;
+    if (dsd_tg_policy_add_range_entry(st, &range) != 0) {
+        abort();
+    }
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 42U, 7U);
+    status_clock_at(2.0);
+    accepted_voice_now(opts, st, 0);
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 42U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    int rc = expect_true("xpt the ranked p60 group 42 preempts the resident private call 42",
+                         st->trunk_vc_freq[0] == 461287500L && dmr_sm_get_ctx()->vc_lpcn == 3);
+    status_env_done(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2082,6 +2212,10 @@ main(void) {
     rc |= test_xpt_status_reconciles_followed_slot(opts, st);
     rc |= test_xpt_status_in_place_keeps_lc_identity(opts, st);
     rc |= test_xpt_resident_same_carrier_in_voice_window(opts, st);
+    rc |= test_con_plus_takeover_ends_displaced_calls(opts, st);
+    rc |= test_cap_plus_takeover_ends_displaced_calls(opts, st);
+    rc |= test_cap_plus_lc_identity_ends_with_its_call(opts, st);
+    rc |= test_xpt_submit_channel_is_the_ranked_lsn(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

@@ -275,16 +275,21 @@ test_reacquire_runs_on_the_decode_clock(void) {
     // Both stamps from the fallback: 0.25 s after the fade is inside the 0.5 s window.
     dsd_call_observation call = group_call(0U, 500U, 600U, 0.0);
     assert(dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    const uint64_t first_epoch = snapshot.epoch;
+    assert(snapshot.transmission_epoch == first_epoch && dsd_call_snapshot_transmission(&snapshot) == first_epoch);
     decode_clock_at_ms(1000U);
     assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
     decode_clock_at_ms(1250U);
     dsd_call_observation reentry = identityless_voice(0U);
     assert(dsd_call_state_observe(state, &reentry, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE);
     assert(snapshot.ota_target_id == 500U);
     assert(snapshot.ota_source_id == 600U);
+    // The reopened epoch is a new one, yet the same transmission: state bound to the call stays bound to it.
+    assert(snapshot.epoch != first_epoch && dsd_call_snapshot_transmission(&snapshot) == first_epoch);
 
     // One decode second after the fade is outside it, however little real time passed.
     decode_clock_at_ms(10000U);
@@ -295,6 +300,8 @@ test_reacquire_runs_on_the_decode_clock(void) {
     assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE);
     assert(snapshot.ota_target_id == 0U);
     assert(snapshot.ota_source_id == 0U);
+    // A new transmission is its own.
+    assert(dsd_call_snapshot_transmission(&snapshot) == snapshot.epoch && snapshot.epoch != first_epoch);
 
     // An end its caller stamps from the decode clock, and a re-entry the fallback stamps.
     assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT) == 1);

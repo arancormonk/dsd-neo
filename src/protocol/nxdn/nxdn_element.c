@@ -1531,20 +1531,133 @@ nxdn_idas_assoc(const dsd_opts* opts, dsd_state* state, uint8_t rep) {
     return rx == rep_freq ? NXDN_IDAS_MATCH : NXDN_IDAS_OTHER;
 }
 
-/* Take @p target as the held call's identity, a Type-D call when @p type_d. Its follow time moves only when the
- * identity changes: another target or kind, or another frequency when both are known. */
+/* Whether the held call was followed on the route the receiver still holds: its gaps are the conversation's. */
+static int
+nxdn_call_on_followed_route(const dsd_opts* opts, const dsd_state* state, const dsd_nxdn_call_identity* id) {
+    return nxdn_follow_valid(opts, state) && (id->rx_freq_hz <= 0 || id->rx_freq_hz == state->nxdn_follow.freq_hz);
+}
+
+/* The bound call @p call is the held call's: it holds while active, and once ended only on the followed route within
+ * the hangtime (a conversation is held in its gaps); a resident call's identity ends with it. */
+static void
+nxdn_call_identity_track(const dsd_opts* opts, dsd_state* state, const dsd_call_snapshot* call, double now_m) {
+    dsd_nxdn_call_identity* const id = &state->nxdn_call;
+    if (id->gap) {
+        return;
+    }
+    if (call->phase == DSD_CALL_PHASE_ACTIVE) {
+        id->call_seen_m = now_m;
+        return;
+    }
+    if (call->ended_m > 0.0) {
+        id->call_seen_m = call->ended_m;
+    }
+    if (nxdn_call_on_followed_route(opts, state, id) && (now_m - id->call_seen_m) < (double)opts->trunk_hangtime) {
+        return;
+    }
+    DSD_MEMSET(id, 0, sizeof(*id));
+    (void)dsd_tg_policy_clear_active_call(state, -1);
+}
+
+/* Bind the held call to the canonical call it names, and let it go when that call is over. One awaiting its call binds
+ * to the first to begin after it was named (a resumed older call is not it). Another call ends it; on the followed
+ * route, one that began within the hangtime of the named call leaves a gap (unknown, valid 0) whose renaming as the
+ * same call keeps the follow time. A new call never inherits the identity, its priority or its dwell. */
+static void
+nxdn_call_identity_refresh(const dsd_opts* opts, dsd_state* state) {
+    dsd_nxdn_call_identity* const id = &state->nxdn_call;
+    if (!id->valid && !id->gap) {
+        return;
+    }
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    const int have = dsd_call_state_get(state, 0U, &call) > 0;
+    const uint64_t current = have ? dsd_call_snapshot_transmission(&call) : 0U;
+    const double now_m = dsd_decode_now_mono_s();
+    if (id->call_epoch == 0U) {
+        if (current <= id->call_floor) {
+            return; // still awaiting its call
+        }
+        id->call_epoch = current;
+        id->call_seen_m = now_m;
+    }
+    if (current != 0U && current == id->call_epoch) {
+        nxdn_call_identity_track(opts, state, &call, now_m);
+        return;
+    }
+    if (!id->gap && current != 0U && nxdn_call_on_followed_route(opts, state, id)
+        && (call.started_m - id->call_seen_m) < (double)opts->trunk_hangtime) {
+        id->valid = 0U;
+        id->gap = 1U;
+        id->call_epoch = current;
+        return;
+    }
+    DSD_MEMSET(id, 0, sizeof(*id));
+    (void)dsd_tg_policy_clear_active_call(state, -1);
+}
+
+/* Whether naming @p target (@p is_private, heard on @p rx_freq_hz) names the held call again: its target, kind and
+ * frequency (when both are known); a gap record only for the call that followed the named one (@p bound, the call on
+ * the air the naming binds to). */
+static int
+nxdn_call_identity_is_same(const dsd_nxdn_call_identity* id, uint32_t target, uint8_t is_private, long int rx_freq_hz,
+                           uint64_t bound) {
+    if (!(id->valid || id->gap) || id->target != target || id->private_call != is_private) {
+        return 0;
+    }
+    if (id->rx_freq_hz > 0 && rx_freq_hz > 0 && id->rx_freq_hz != rx_freq_hz) {
+        return 0;
+    }
+    return !id->gap || (bound != 0U && bound == id->call_epoch);
+}
+
+/* Bind the held call a naming names to the canonical call: the call on the air when @p on_air (a verified VCALL or SCCH
+ * identity of the canonical call); else the first call to begin from now, unless it is the same call named again
+ * (@p same) still awaiting its call or still on the air, which keeps its binding. Returns the call on the air it binds
+ * to (0: none); @p floor is the epoch after which its call is to begin, UINT64_MAX when it keeps its binding. */
+static uint64_t
+nxdn_call_identity_bound_call(const dsd_state* state, const dsd_nxdn_call_identity* id, uint32_t target,
+                              uint8_t is_private, long int rx_freq_hz, int on_air, int* same, uint64_t* floor) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    const int have = dsd_call_state_get(state, 0U, &call) > 0;
+    const uint64_t current = have ? dsd_call_snapshot_transmission(&call) : 0U;
+    const int active = have && call.phase == DSD_CALL_PHASE_ACTIVE;
+    const uint64_t bound = (on_air && active) ? current : 0U;
+    *same = nxdn_call_identity_is_same(id, target, is_private, rx_freq_hz, bound);
+    const int keeps = *same && !id->gap && (id->call_epoch == 0U || (active && current == id->call_epoch));
+    *floor = keeps ? UINT64_MAX : call.epoch;
+    return bound;
+}
+
+/* Take @p target as the held call's identity, a Type-D call when @p type_d, naming the call on the air (@p on_air) or
+ * the call a follow is to find (nxdn_call_identity_bound_call()). Its follow time moves only when the identity changes:
+ * another target or kind, or another frequency when both are known; a gap record keeps it only for the very call that
+ * followed the named one. */
 static void
 nxdn_call_identity_set(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call, int type_d,
-                       long int rx_freq_hz, double now_m) {
+                       long int rx_freq_hz, double now_m, int on_air) {
     dsd_nxdn_call_identity* const id = &state->nxdn_call;
     const uint8_t is_private = private_call ? 1U : 0U;
-    const int same = id->valid && id->target == target && id->private_call == is_private
-                     && (id->rx_freq_hz <= 0 || rx_freq_hz <= 0 || id->rx_freq_hz == rx_freq_hz);
+    int same = 0;
+    uint64_t floor = 0U;
+    const uint64_t bound =
+        nxdn_call_identity_bound_call(state, id, target, is_private, rx_freq_hz, on_air, &same, &floor);
     if (!same) {
         id->follow_m = now_m;
         id->source = 0U;
         id->rx_freq_hz = 0;
     }
+    if (bound != 0U) {
+        id->call_epoch = bound;
+        id->call_floor = 0U;
+        id->call_seen_m = now_m;
+    } else if (floor != UINT64_MAX) {
+        id->call_epoch = 0U; // awaiting its call: the first one to begin after the current epoch
+        id->call_floor = floor;
+        id->call_seen_m = 0.0;
+    }
+    id->gap = 0U;
     id->valid = 1U;
     id->target = target;
     id->private_call = is_private;
@@ -1573,8 +1686,10 @@ nxdn_reconcile_private(const dsd_state* state, const dsd_call_snapshot* call, in
     if (call->kind == DSD_CALL_KIND_GROUP_VOICE) {
         return 0;
     }
+    /* A gap record (the held call's next call on the followed route) lends its class only to a call naming its target:
+       that is the same conversation named again. */
     const dsd_nxdn_call_identity* const id = &state->nxdn_call;
-    return (id->valid && id->target == call->policy_target_id) ? (int)id->private_call : -1;
+    return ((id->valid || id->gap) && id->target == call->policy_target_id) ? (int)id->private_call : -1;
 }
 
 /* The held call is what the canonical call shows once a verified VCALL or an SCCH identity of the receiver's repeater
@@ -1585,6 +1700,7 @@ nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_pri
     if (opts->trunk_enable != 1) {
         return;
     }
+    nxdn_call_identity_refresh(opts, state);
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
         || !DSD_SYNC_IS_NXDN(call.protocol) || call.policy_target_id == 0U) {
@@ -1596,7 +1712,7 @@ nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_pri
         return;
     }
     nxdn_call_identity_set(state, call.policy_target_id, call.ota_source_id, private_call, 0, type_d,
-                           nxdn_receiver_freq(opts, state), dsd_decode_now_mono_s());
+                           nxdn_receiver_freq(opts, state), dsd_decode_now_mono_s(), 1);
 }
 
 /* A call on the receiver's channel ended (a release, DISC, or a Type-D termination). A held call the receiver followed
@@ -1621,9 +1737,10 @@ nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* The held call when its identity is known here: one heard or followed on another frequency than the receiver's is
- * not. */
+ * not, nor one whose call is over (nxdn_call_identity_refresh()). */
 static const dsd_nxdn_call_identity*
-nxdn_current_identity(const dsd_state* state, long int rx) {
+nxdn_current_identity(const dsd_opts* opts, dsd_state* state, long int rx) {
+    nxdn_call_identity_refresh(opts, state);
     const dsd_nxdn_call_identity* const id = &state->nxdn_call;
     if (!id->valid || (id->rx_freq_hz > 0 && rx > 0 && id->rx_freq_hz != rx)) {
         return NULL;
@@ -1676,7 +1793,8 @@ typedef enum {
 /* Whether the receiver still holds the call @p target names on @p freq, read before the tune: its route holds there and
  * the held call is that one (nxdn_call_identity_set()'s same call). */
 static int
-nxdn_follow_holds_call(const dsd_opts* opts, const dsd_state* state, uint32_t target, int private_call, long int freq) {
+nxdn_follow_holds_call(const dsd_opts* opts, dsd_state* state, uint32_t target, int private_call, long int freq) {
+    nxdn_call_identity_refresh(opts, state);
     const dsd_nxdn_call_identity* const id = &state->nxdn_call;
     return nxdn_follow_valid(opts, state) && state->nxdn_follow.freq_hz == freq && id->valid && id->target == target
            && id->private_call == (private_call ? 1U : 0U) && (id->rx_freq_hz <= 0 || id->rx_freq_hz == freq);
@@ -1693,7 +1811,7 @@ nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private
     state->nxdn_follow.freq_hz = freq;
     state->nxdn_follow.chan = chan;
     state->nxdn_follow.repeater = repeater;
-    nxdn_call_identity_set(state, target, source, private_call, data_call, repeater != 0U, freq, now_m);
+    nxdn_call_identity_set(state, target, source, private_call, data_call, repeater != 0U, freq, now_m, 0);
     dsd_tg_policy_call_route route;
     DSD_MEMSET(&route, 0, sizeof route);
     route.target_id = target;
@@ -1948,7 +2066,7 @@ nxdn_vcall_assgn_admit(const dsd_opts* opts, dsd_state* state, const struct nxdn
         return NXDN_ADMIT_FOLLOW;
     }
     const long int rx = nxdn_receiver_freq(opts, state);
-    const dsd_nxdn_call_identity* const cur = nxdn_current_identity(state, rx);
+    const dsd_nxdn_call_identity* const cur = nxdn_current_identity(opts, state, rx);
     if (nxdn_assignment_repeats_held_call(state, cur, info, freq)) {
         return NXDN_ADMIT_ON_IT;
     }
@@ -3138,7 +3256,7 @@ nxdn_scch_live_takeover(const dsd_opts* opts, dsd_state* state, const struct nxd
                         const dsd_tg_policy_decision* decision, int* preempted) {
     if (info->rep1 != 31U && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_OTHER) {
         const long int rx = nxdn_receiver_freq(opts, state);
-        const dsd_nxdn_call_identity* const cur = nxdn_current_identity(state, rx);
+        const dsd_nxdn_call_identity* const cur = nxdn_current_identity(opts, state, rx);
         const int hold_matches = (state->tg_hold != 0U && state->tg_hold == info->id) ? 1 : 0;
         dsd_tg_policy_call_route candidate;
         DSD_MEMSET(&candidate, 0, sizeof candidate);

@@ -117,6 +117,17 @@ typedef struct {
     int channel;     // LPCN, or the Capacity Plus LSN, the call was announced on
     long carrier_hz; // the carrier the identity belongs to
     double follow_m; // decode clock
+
+    /* The canonical call the identity names (dsd_call_snapshot_transmission() of the slot's call), so it never outlives
+       that call: another call on the slot, or its end (on the followed carrier, past the hangtime), leaves the slot
+       unknown. 0 while the identity awaits its call: the first one to begin on the slot after call_floor, the slot's
+       epoch when it was named. */
+    uint64_t call_epoch;
+    uint64_t call_floor;
+    double call_seen_m; // decode clock: when the named call was last seen active, or when it ended
+    /* The named call is over and another (call_epoch) began on the followed carrier within the hangtime: the record
+       names no call (unknown) and stays only so that naming that call as the same one keeps follow_m. */
+    uint8_t gap;
 } dmr_sm_slot_ctx_t;
 
 /* How long a Capacity Plus channel-status seed waits for the voice it names (decode clock). Matches the status's own
@@ -304,9 +315,10 @@ int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
- *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p slot is the
- *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. */
-void dmr_sm_note_status_follow(const dsd_opts* opts, const dsd_state* state, long freq_hz, int slot);
+ *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant; the calls of the
+ *  carrier left behind end (EXPLICIT) there. @p slot is the selected LSN's slot (-1: none): it holds the carrier during
+ *  acquisition, whatever its identity. */
+void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot);
 
 /* ----------------------------------------------------------------------------
  * Talkgroup priority and preemption
@@ -377,7 +389,8 @@ void dmr_sm_policy_note_follow(dsd_state* state, const dsd_tg_policy_call_route*
                                const dsd_tg_policy_decision* decision, int preempted, double now_m);
 
 /**
- * @brief A voice LC that passed its check named the call on @p slot: the slot's identity, with LC provenance.
+ * @brief A voice LC that passed its check named the call on @p slot: the slot's identity, with LC provenance, bound to
+ * the canonical call the LC was just published on (it ends with that call).
  *
  * Recorded for the carrier the machine follows (TUNED) or listens on (ON_CC). A same-call LC keeps the follow time.
  */
@@ -385,20 +398,23 @@ void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int s
                              uint32_t target, uint32_t source);
 
 /**
- * @brief A Capacity Plus status names group @p tg on @p lsn: a status-followed slot whose identity a seed (not an LC)
- * gave on that LSN takes the group, with a new follow time. An @p active LSN with no group (@p tg 0: a private or data
- * call) leaves that slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
+ * @brief A Capacity Plus status names group @p tg on @p lsn: a status-followed slot whose identity a seed gave on that
+ * LSN, or whose named call is over (an LC's included: its authority ends with its call), takes the group, with a new
+ * follow time unless it is the same call. An @p active LSN with no group (@p tg 0: a private or data call) leaves that
+ * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
  */
-void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, int slot, int lsn, uint32_t tg, int active);
+void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int lsn, uint32_t tg,
+                                      int active);
 
 /**
  * @brief A channel status (Hytera XPT) names the call on @p slot of carrier @p freq_hz: group @p tg, or (@p tg 0,
  * @p active) a call of no known identity (a private call). On the carrier the machine follows, a slot whose identity a
- * grant gave (not a checked LC) takes the group, with a new follow time when the call changes, or becomes unknown; on
- * the followed slot the grant's identity follows it, so it no longer stands for the slot's call either. An idle slot
- * (neither) changes nothing.
+ * grant gave (not a checked LC naming the call still there) takes the group, with a new follow time when the call
+ * changes, or becomes unknown; on the followed slot the grant's identity follows it, so it no longer stands for the
+ * slot's call either. An idle slot (neither) changes nothing.
  */
-void dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, int slot, long freq_hz, uint32_t tg, int active);
+void dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, long freq_hz, uint32_t tg,
+                                  int active);
 
 /** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
 int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);
@@ -414,8 +430,8 @@ int dmr_sm_cold_start_due(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const d
  * the receiver frequency the tune left in opts->rtlsdr_center_freq. @p tg 0 clears the slot. The seed only ever names
  * a call whose voice LCs have not: see dmr_sm_emit_voice_sync().
  */
-void dmr_sm_capplus_seed_arm(dmr_sm_ctx_t* ctx, int slot, uint32_t tg, int lsn, long freq_hz, uint32_t receiver_hz,
-                             uint8_t crc_flags, uint64_t generation_before_tune);
+void dmr_sm_capplus_seed_arm(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, uint32_t tg, int lsn, long freq_hz,
+                             uint32_t receiver_hz, uint8_t crc_flags, uint64_t generation_before_tune);
 
 /** @brief Forget the Capacity Plus channel-status seed of @p slot (-1: both). */
 void dmr_sm_capplus_seed_clear(dmr_sm_ctx_t* ctx, int slot);

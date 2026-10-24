@@ -91,8 +91,10 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     if (begins_epoch) {
         DSD_MEMSET(call, 0, sizeof(*call));
         call->epoch = ++g_stub_epoch;
+        call->transmission_epoch = call->epoch;
         call->phase = DSD_CALL_PHASE_ACTIVE;
         call->slot = observation->slot;
+        call->started_m = observation->observed_m;
     }
     call->protocol = observation->protocol;
     call->kind = observation->kind;

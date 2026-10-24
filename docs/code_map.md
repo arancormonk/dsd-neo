@@ -867,6 +867,11 @@ suite runs under this compiler.
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
   sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
+- API note (transmission): `dsd_call_snapshot::transmission_epoch` names the logical transmission an epoch belongs to:
+  its own epoch, or for an epoch that reacquired a recoverably-ended one (`call_state_seed_reacquired_snapshot()`),
+  that epoch's. `dsd_call_snapshot_transmission()` reads it (falling back to `epoch`). State bound to one call keys on
+  it, so a fade the canonical layer healed keeps the binding and a new transmission never inherits it: the DMR trunk
+  machine's slot identities and NXDN's held call (`dsd_state::nxdn_call`) below.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`
@@ -4953,11 +4958,18 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     for a generic voice call (late entry, an INFO2 target message), the held call's when it names that target; a generic
     voice call is never read as group, and one of no known class leaves the held call unknown (only Hold displaces it).
     Its `follow_m` moves only when the identity changes (target, kind, or frequency
-    when both are known); one heard on another frequency than the receiver's is not known here. A held call known only
-    from the call heard there (no valid route: a resident call, no grant tune) ends with that call: a release, DISC or
-    Type-D termination clears it (`nxdn_call_identity_end()`), so the next call there is unknown until a message names
-    it. A Type-D held call (`type_d`: followed from a busy message, named by an SCCH, or by a VCALL on an RTCH2 or the
-    followed Type-D route) is judged as Type-D admission judges it, with no source fallback.
+    when both are known); one heard on another frequency than the receiver's is not known here. It is bound to the
+    canonical call it names (`call_epoch`: that call's `dsd_call_snapshot_transmission()`; a follow's identity binds to
+    the first call to begin after the tune, a VCALL's or SCCH's to the call on the air) and never outlives it
+    (`nxdn_call_identity_refresh()`, before every read): its call's end, a sync loss included, clears it except on the
+    followed route within the hangtime (a conversation is held in its gaps); another call clears it, and on the followed
+    route one that began within the hangtime of the named call leaves a gap record (unknown, `valid` 0) whose renaming
+    as the same call (target and kind, binding that call) keeps `follow_m`. A new call never inherits the identity, its
+    priority or its dwell. A held call known only from the call heard there (no valid route: a resident call, no grant
+    tune) ends with that call: a release, DISC or Type-D termination clears it (`nxdn_call_identity_end()`), as its
+    canonical end does, so the next call there is unknown until a message names it. A Type-D held call (`type_d`:
+    followed from a busy message, named by an SCCH, or by a VCALL on an RTCH2 or the followed Type-D route) is judged as
+    Type-D admission judges it, with no source fallback.
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
     hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per
@@ -5355,6 +5367,22 @@ Private per-protocol modules worth knowing about:
     (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
     in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and
     the acquisition a target switch starts.
+  - Call binding. Each record is bound to the canonical call it names (`call_epoch`: that slot's
+    `dsd_call_snapshot_transmission()`), so it never outlives it (`dmr_sm_slot_identity_refresh()`, run by the busy
+    view, grant submission, the status reconciliations, voice sync, an LC and the tick). An LC binds to the call it was
+    published on; a grant, seed or status to the slot's active call when that names its target or nothing yet (on the
+    followed carrier only one begun since the follow tune), else to the first call to begin on the slot after it was
+    named. The call's end leaves the record only on the followed carrier within the hangtime (a conversation is held in
+    its gaps); a resident call's identity ends with it. Another call on the slot clears the record, and on the followed
+    carrier one that began within the hangtime of the named call leaves a gap record (unknown) whose renaming as the
+    same call (target, class, carrier, binding that call) keeps the follow time; on the followed slot the grant's
+    identity then stands for nothing (no fallback, no publication). A new call never inherits an identity, and LC
+    precedence over seeds, grants and statuses holds only while the LC's call lasts (a Cap+ status may name a gap
+    record's LSN).
+  - Leaving a carrier. An accepted follow to another carrier (a grant, Hold or preemption takeover, Connect Plus, XPT,
+    or a Cap+ status follow, `dmr_sm_note_status_follow()`) ends every slot's canonical call (EXPLICIT, synchronized,
+    `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
+    beside the followed one.
   - Ledger. A follow clears the ledger and notes the followed call (`dmr_sm_policy_note_follow()`); a preemption
     commits its cooldown (`dsd_tg_policy_commit_preemption()`) once the new carrier's tune was accepted, a Hold
     takeover commits none, and a deferred or failed tune changes nothing; every release clears the ledger
@@ -5377,10 +5405,11 @@ Private per-protocol modules worth knowing about:
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order
     decides (with no priorities, channel order as before). Inside the voice window an entry on the carrier the receiver
     holds or is parked on is not submitted (Cap+ follows it only outside the window, when nothing else is eligible), so
-    a resident call is never retuned, block-reset or cleared from the control channel. XPT entries keep their status kind: 3 (group, 8-bit ID) is a
-    group candidate; 2 (private, the value a hash or placeholder) only with private tuning on, as an unknown identity
-    whose decision is built without any endpoint lookup (allow-list, Hold and private-off block it; priority 0, no
-    preemption) and published by the voice LC only; 1 and 0 are not followed; private needs no group tuning.
+    a resident call is never retuned, block-reset or cleared from the control channel. An XPT entry is submitted with
+    its LSN as the grant's channel, the route its ranking judged. XPT entries keep their status kind: 3 (group, 8-bit
+    ID) is a group candidate; 2 (private, the value a hash or placeholder) only with private tuning on, as an unknown
+    identity whose decision is built without any endpoint lookup (allow-list, Hold and private-off block it; priority 0,
+    no preemption) and published by the voice LC only; 1 and 0 are not followed; private needs no group tuning.
   - Connect Plus evaluates policy before its 2/4 s window: an ordinary grant inside it is refused as before, a Hold or
     preempt grant goes to the gate with the window as `caller_busy`, and `is_con_plus` is set only once taken.
   - Decided limits: a candidate preempts only on a repeat after the dwell of every held slot and outside the cooldown;

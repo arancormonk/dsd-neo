@@ -347,6 +347,45 @@ test_resident(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A call heard on the control channel's carrier (composite TSCC plus payload) holds the receiver only while it lasts:
+   once a verified terminator ended it, a new call there that no LC names (here past the old call's hangtime) is not
+   the ended one, so it never makes the receiver busy, and a grant elsewhere is followed. */
+static int
+test_resident_identity_ends_with_its_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    clock_at(1.0);
+    const dsd_call_observation named = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 1U,
+    };
+    (void)dsd_call_state_observe(st, &named, DSD_CALL_BOUNDARY_BEGIN);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    dmr_sm_busy_view_t view;
+    int rc = expect_true("the resident call holds the receiver",
+                         dmr_sm_describe_held_calls(sm(), opts, st, dsd_decode_now_mono_s(), &view) == 1);
+    clock_at(1.5);
+    (void)dsd_call_state_end_ex(st, 1U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(3.5);
+    const dsd_call_observation anonymous = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(st, &anonymous, DSD_CALL_BOUNDARY_BEGIN);
+    voice(opts, st, 1);
+    rc |= expect_true("a new call no LC names is not the ended resident call",
+                      dmr_sm_describe_held_calls(sm(), opts, st, dsd_decode_now_mono_s(), &view) == 0
+                          && sm()->slots[1].prov == (uint8_t)DMR_SM_ID_NONE);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("a grant elsewhere is followed", vc(st) == VC_B && g_tunes == 1);
+    return rc;
+}
+
 /* A resident call on a slot the receive policy does not admit never holds the receiver: with a slot-1-only filter,
    validated slot-2 traffic on the parked carrier leaves an eligible grant elsewhere free to be followed. */
 static int
@@ -819,6 +858,7 @@ main(void) {
     rc |= test_acquisition(opts, st);
     rc |= test_tail(opts, st);
     rc |= test_resident(opts, st);
+    rc |= test_resident_identity_ends_with_its_call(opts, st);
     rc |= test_resident_receive_admission(opts, st);
     rc |= test_tuned_tail_receive_admission(opts, st);
     rc |= test_hold(opts, st);
