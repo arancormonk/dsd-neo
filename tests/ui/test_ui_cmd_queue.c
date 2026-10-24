@@ -13318,9 +13318,10 @@ test_config_reopen_with_no_stream_reports_the_failed_start(void) {
 
 /*
  * Issue #578: a config rollback puts back everything the config's [mode], [demod] and [analog] set that the decoder
- * reads, not only the settings a scan row snapshots. An EDACS-EA session with ESK, two extra LRRP ports and no tone
- * filter loads a config for standard EDACS, other LRRP ports and a tone filter, whose rtl_tcp host does not start: the
- * session keeps its EDACS variant, its LRRP ports and its tone policy with the input that ran.
+ * reads, not only the settings a scan row snapshots. An EDACS-EA session with ESK, two extra LRRP ports, one
+ * compressed-UDP port link and no tone filter loads a config for standard EDACS, other LRRP ports, another port link
+ * and a tone filter, whose rtl_tcp host does not start: the session keeps its EDACS variant, its LRRP ports, its port
+ * links and its tone policy with the input that ran.
  */
 static int
 test_config_rollback_restores_mode_owned_settings(void) {
@@ -13337,6 +13338,7 @@ test_config_rollback_restores_mode_owned_settings(void) {
     opts.lrrp_extra_ports[0] = 4001;
     opts.lrrp_extra_ports[1] = 4002;
     opts.lrrp_extra_port_count = 2;
+    opts.dmr_udp_comp_ports[97 - 95] = 4005;
     opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
     DSD_MEMSET(&opts.analog_tone_set, 0, sizeof opts.analog_tone_set);
     opts.audio_in_type = AUDIO_IN_RTL;
@@ -13362,6 +13364,7 @@ test_config_rollback_restores_mode_owned_settings(void) {
     cfg.edacs_ea = 0;
     cfg.edacs_esk = 0;
     DSD_SNPRINTF(cfg.dmr_lrrp_ports, sizeof cfg.dmr_lrrp_ports, "%s", "4005");
+    DSD_SNPRINTF(cfg.dmr_udp_comp_ports, sizeof cfg.dmr_udp_comp_ports, "%s", "98=4007");
     cfg.has_analog = 1;
     cfg.analog_tone_filter = DSD_TONE_FILTER_ALLOW;
     rc |= expect_int("mode-owned: tone list", dsd_tone_set_parse("100.0", &cfg.analog_tone_set, NULL, 0), 0);
@@ -13375,6 +13378,8 @@ test_config_rollback_restores_mode_owned_settings(void) {
     rc |= expect_int(
         "mode-owned rollback: LRRP ports kept",
         opts.lrrp_extra_port_count == 2 && opts.lrrp_extra_ports[0] == 4001 && opts.lrrp_extra_ports[1] == 4002, 1);
+    rc |= expect_int("mode-owned rollback: compressed-UDP port links kept",
+                     opts.dmr_udp_comp_ports[97 - 95] == 4005 && opts.dmr_udp_comp_ports[98 - 95] == 0, 1);
     rc |=
         expect_int("mode-owned rollback: tone filter kept off",
                    opts.analog_tone_filter == DSD_TONE_FILTER_OFF && dsd_tone_set_count(&opts.analog_tone_set) == 0, 1);
@@ -13384,6 +13389,7 @@ test_config_rollback_restores_mode_owned_settings(void) {
     reset_config_rtl_wrap();
     opts.rtltcp_enabled = 0;
     opts.lrrp_extra_port_count = 0;
+    DSD_MEMSET(opts.dmr_udp_comp_ports, 0, sizeof opts.dmr_udp_comp_ports);
     state.ea_mode = 0;
     state.esk_mask = 0;
     state.rtl_ctx = NULL;

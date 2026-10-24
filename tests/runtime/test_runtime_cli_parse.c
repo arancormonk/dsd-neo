@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -4977,6 +4978,181 @@ test_lrrp_extra_port_cli_replaces_config_list(void) {
 static int
 test_lrrp_extra_port_missing_value_returns_error(void) {
     return test_missing_required_long_option_value_returns_error("--lrrp-extra-port");
+}
+
+/* Run dsd_parse_args() over argv on fresh opts whose compressed-UDP port map starts as @p preset (NULL: empty),
+   standing in for what mode.dmr_udp_comp_ports applied before the CLI runs. */
+static int
+run_dmr_udp_comp_port_args(int argc, char** argv, const uint16_t* preset, uint16_t* map_out, int* exit_rc_out) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        *exit_rc_out = -2;
+        return -2;
+    }
+    initOpts(opts);
+    initState(state);
+    if (preset) {
+        DSD_MEMCPY(opts->dmr_udp_comp_ports, preset, sizeof opts->dmr_udp_comp_ports);
+    }
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+    DSD_MEMCPY(map_out, opts->dmr_udp_comp_ports, sizeof opts->dmr_udp_comp_ports);
+    *exit_rc_out = exit_rc;
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/* Nonzero when @p map links exactly the @p count index/port pairs in @p idx/@p port and nothing else. */
+static int
+dmr_udp_comp_map_is(const uint16_t* map, const unsigned* idx, const uint16_t* port, int count) {
+    uint16_t want[DSD_UDP_COMP_PORT_MAP_ENTRIES];
+    DSD_MEMSET(want, 0, sizeof want);
+    for (int i = 0; i < count; i++) {
+        want[idx[i] - DSD_UDP_COMP_PORT_IDX_FIRST] = port[i];
+    }
+    return memcmp(want, map, sizeof want) == 0;
+}
+
+static int
+test_dmr_udp_comp_port_long_option_parse(void) {
+    // Both spellings are accepted, the option repeats, and repeating the same pair is not an error.
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-udp-comp-port";
+    char arg2[] = "97=4005";
+    char arg3[] = "--dmr-udp-comp-port=98=4007";
+    char arg4[] = "--dmr-udp-comp-port";
+    char arg5[] = "97=4005";
+    char arg6[] = "--dmr-udp-comp-port=127=65535";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, NULL};
+    uint16_t map[DSD_UDP_COMP_PORT_MAP_ENTRIES] = {0};
+    int exit_rc = 0;
+    int rc = run_dmr_udp_comp_port_args(7, argv, NULL, map, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "dmr-udp-comp-port: expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc,
+                    exit_rc);
+        test_rc = 1;
+    }
+    static const unsigned idx[] = {97U, 98U, 127U};
+    static const uint16_t port[] = {4005U, 4007U, 65535U};
+    if (!dmr_udp_comp_map_is(map, idx, port, 3)) {
+        DSD_FPRINTF(stderr, "dmr-udp-comp-port: expected 97=4005,98=4007,127=65535, got 97=%u 98=%u 127=%u\n",
+                    (unsigned)dsd_udp_comp_port_lookup(map, 97U), (unsigned)dsd_udp_comp_port_lookup(map, 98U),
+                    (unsigned)dsd_udp_comp_port_lookup(map, 127U));
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
+static int
+test_dmr_udp_comp_port_rejects_invalid_values(void) {
+    // Malformed entries, ETSI-defined (0-2) and reserved (3-94) indices, indices past 127 and ports outside
+    // 1..65535 are all errors that leave the map empty.
+    static const char* const bad_values[] = {
+        "",         "97",        "=4005",     "97=",           "abc=4005",
+        "97=abc",   "97=4005=1", "+97=4005",  "97=+4005",      "97=-1",
+        "-97=4005", "0x61=4005", "97=0x0FA5", "97 4005",       "0=4005",
+        "2=4005",   "3=4005",    "94=4005",   "128=4005",      "200=4005",
+        "97=0",     "97=65536",  "97=70000",  "99999999999=1", "97=99999999999",
+    };
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof(bad_values) / sizeof(bad_values[0]); i++) {
+        char arg0[] = "dsd-neo";
+        char arg1[64];
+        DSD_SNPRINTF(arg1, sizeof arg1, "--dmr-udp-comp-port=%s", bad_values[i]);
+        char* argv[] = {arg0, arg1, NULL};
+        uint16_t map[DSD_UDP_COMP_PORT_MAP_ENTRIES] = {0};
+        int exit_rc = -1;
+        int rc = run_dmr_udp_comp_port_args(2, argv, NULL, map, &exit_rc);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+            DSD_FPRINTF(stderr, "expected %s to be rejected, got rc=%d exit_rc=%d\n", arg1, rc, exit_rc);
+            test_rc = 1;
+        }
+        if (!dmr_udp_comp_map_is(map, NULL, NULL, 0)) {
+            DSD_FPRINTF(stderr, "expected %s to leave the compressed-UDP port map empty\n", arg1);
+            test_rc = 1;
+        }
+    }
+    return test_rc;
+}
+
+static int
+test_dmr_udp_comp_port_rejects_conflicting_port(void) {
+    // A second, different port for an index already linked is an error; the first link stays.
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-udp-comp-port=97=4005";
+    char arg2[] = "--dmr-udp-comp-port";
+    char arg3[] = "97=4007";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+    uint16_t map[DSD_UDP_COMP_PORT_MAP_ENTRIES] = {0};
+    int exit_rc = -1;
+    int rc = run_dmr_udp_comp_port_args(4, argv, NULL, map, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected 97=4005 then 97=4007 to be rejected, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    static const unsigned idx[] = {97U};
+    static const uint16_t port[] = {4005U};
+    if (!dmr_udp_comp_map_is(map, idx, port, 1)) {
+        DSD_FPRINTF(stderr, "expected the conflict to keep 97=4005, got 97=%u\n",
+                    (unsigned)dsd_udp_comp_port_lookup(map, 97U));
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
+static int
+test_dmr_udp_comp_port_cli_replaces_config_map(void) {
+    // mode.dmr_udp_comp_ports is applied before the CLI runs; the CLI map must replace it, not extend it, so an
+    // index the config linked to another port is no conflict and an index only the config linked is dropped.
+    uint16_t preset[DSD_UDP_COMP_PORT_MAP_ENTRIES];
+    DSD_MEMSET(preset, 0, sizeof preset);
+    preset[95U - DSD_UDP_COMP_PORT_IDX_FIRST] = 4001U;
+    preset[97U - DSD_UDP_COMP_PORT_IDX_FIRST] = 4007U;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-udp-comp-port";
+    char arg2[] = "97=4005";
+    char arg3[] = "--dmr-udp-comp-port=100=5016";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+    uint16_t map[DSD_UDP_COMP_PORT_MAP_ENTRIES] = {0};
+    int exit_rc = -1;
+    int rc = run_dmr_udp_comp_port_args(4, argv, preset, map, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    }
+    static const unsigned idx[] = {97U, 100U};
+    static const uint16_t port[] = {4005U, 5016U};
+    if (!dmr_udp_comp_map_is(map, idx, port, 2)) {
+        DSD_FPRINTF(stderr, "expected CLI map 97=4005,100=5016 to replace the config map, got 95=%u 97=%u 100=%u\n",
+                    (unsigned)dsd_udp_comp_port_lookup(map, 95U), (unsigned)dsd_udp_comp_port_lookup(map, 97U),
+                    (unsigned)dsd_udp_comp_port_lookup(map, 100U));
+        test_rc = 1;
+    }
+
+    // Without the option the config map stays as it was.
+    char* argv_none[] = {arg0, NULL};
+    rc = run_dmr_udp_comp_port_args(1, argv_none, preset, map, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || memcmp(map, preset, sizeof preset) != 0) {
+        DSD_FPRINTF(stderr, "expected no --dmr-udp-comp-port to keep the config map (rc=%d)\n", rc);
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
+static int
+test_dmr_udp_comp_port_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--dmr-udp-comp-port");
 }
 
 /* The control API options: parse argv into fresh opts and report what landed there. */
@@ -10253,6 +10429,11 @@ main(void) {
     rc |= test_lrrp_extra_port_rejects_ninth_port();
     rc |= test_lrrp_extra_port_missing_value_returns_error();
     rc |= test_lrrp_extra_port_cli_replaces_config_list();
+    rc |= test_dmr_udp_comp_port_long_option_parse();
+    rc |= test_dmr_udp_comp_port_rejects_invalid_values();
+    rc |= test_dmr_udp_comp_port_rejects_conflicting_port();
+    rc |= test_dmr_udp_comp_port_cli_replaces_config_map();
+    rc |= test_dmr_udp_comp_port_missing_value_returns_error();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
     rc |= test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key();
     rc |= test_dmr_csi_ee72_long_option_parse();

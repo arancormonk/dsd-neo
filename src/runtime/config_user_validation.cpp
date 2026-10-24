@@ -12,6 +12,7 @@
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -451,6 +452,26 @@ validate_composed_lrrp_ports(const dsdneoUserConfig* cfg, const char* section, c
     }
 }
 
+/* Same as the LRRP port list: the apply step's parser decides, and a bad entry is a warning. */
+static void
+validate_composed_udp_comp_ports(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                 dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || cfg->dmr_udp_comp_ports[0] == '\0') {
+        return;
+    }
+    uint16_t map[DSD_UDP_COMP_PORT_MAP_SIZE];
+    int rejected = dsd_udp_comp_port_list_parse(cfg->dmr_udp_comp_ports, map);
+    if (rejected > 0) {
+        char msg[256];
+        DSD_SNPRINTF(msg, sizeof msg,
+                     "dmr_udp_comp_ports ignores %d entr%s: expected <index>=<port> with index %u..%u "
+                     "(0-2 are ETSI-defined, 3-94 reserved), port 1..65535 and one port per index, comma-separated",
+                     rejected, rejected == 1 ? "y" : "ies", DSD_UDP_COMP_PORT_IDX_FIRST, DSD_UDP_COMP_PORT_IDX_LAST);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, 0, section ? section : "mode", key ? key : "dmr_udp_comp_ports",
+                         msg);
+    }
+}
+
 /* INT keys only get a schema window check, and this key's window has to start at 0 so the
    always-emitted default validates. A 1..999 cap therefore passes the schema walk while the
    engine treats it as disabled, so say so here. A warning, not an error: the value loads. */
@@ -576,6 +597,7 @@ validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t*
     validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", diags);
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, "mode", "dmr_lrrp_ports", diags);
+    validate_composed_udp_comp_ports(cfg, "mode", "dmr_udp_comp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, "trunking", "scan_max_visit_ms", diags);
     validate_composed_analog_width(cfg, "analog", "nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, "analog", "am_bandwidth_hz", diags);
@@ -592,6 +614,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_trunk_scan_channel_map_conflict(cfg, section, "trunking.chan_csv", diags);
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, section, "trunking.p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, section, "mode.dmr_lrrp_ports", diags);
+    validate_composed_udp_comp_ports(cfg, section, "mode.dmr_udp_comp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, section, "trunking.scan_max_visit_ms", diags);
     validate_composed_analog_width(cfg, section, "analog.nfm_bandwidth_hz", diags);
     validate_composed_am_width(cfg, section, "analog.am_bandwidth_hz", diags);

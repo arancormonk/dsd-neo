@@ -129,6 +129,8 @@ dsd_cli_usage_section_io(void) {
     printf("  -L <file>     Specify Filename for LRRP Data Output.\n");
     printf("      --lrrp-extra-port <n>  Also decode UDP port <n> as LRRP (repeatable, max %d).\n",
            DSD_LRRP_EXTRA_PORT_MAX);
+    printf("      --dmr-udp-comp-port <idx>=<port>  Decode DMR compressed-UDP port index <idx> (95-127)\n");
+    printf("                 as UDP port <port> (repeatable, e.g. 97=4005).\n");
     printf("  -Q <file>     Specify Filename for OK-DMRlib Structured File Output. (placed in DSP folder)\n");
     printf("  -Q <file>     Specify Filename for M17 Float Stream Output. (placed in DSP folder)\n");
     printf("  -c <file>     Output symbol capture to .bin file\n");

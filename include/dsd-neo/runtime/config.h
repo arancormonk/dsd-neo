@@ -608,6 +608,11 @@ typedef struct dsdneoUserConfig {
     /* Comma-separated extra UDP ports decoded as DMR LRRP; empty means not set, so a
        reload leaves a CLI-supplied list alone. Split by core/lrrp_ports.h at apply time. */
     char dmr_lrrp_ports[64];
+    /* Comma-separated "<index>=<port>" links for the manufacturer-specific DMR compressed-UDP
+       port indices 95-127 ("97=4005,98=4007"); empty means not set, so a reload leaves a
+       CLI-supplied map alone. Sized for all 33 indices as "127=65535,". Split by
+       core/udp_comp_ports.h at apply time. */
+    char dmr_udp_comp_ports[400];
     /* The EDACS EA/ESK variant. Applied AFTER the decode preset, which resets
        both: see apply_mode_config(). esk is a boolean over the single 0xA0 mask
        the four CLI variants and the RadioReference apply handler all use. */

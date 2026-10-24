@@ -2141,6 +2141,72 @@ test_dmr_lrrp_ports_validation(void) {
     return result;
 }
 
+static int
+test_dmr_udp_comp_ports_validation(void) {
+    int result = 0;
+
+    // A well-formed list, at the top level or in a profile, produces no diagnostic for the key.
+    static const char* valid_ini = "[mode]\n"
+                                   "dmr_udp_comp_ports = \"97=4005, 98=4007,127=65535,97=4005\"\n"
+                                   "[profile.site]\n"
+                                   "mode.dmr_udp_comp_ports = \"95=4001\"\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(valid_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].key, "dmr_udp_comp_ports")) {
+            DSD_FPRINTF(stderr, "FAIL: valid dmr_udp_comp_ports produced a diagnostic: %s\n", diags.items[i].message);
+            result = 1;
+        }
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+
+    // Four unusable entries (a reserved index, one past 127, a second port for 97, port 0) are reported once as a
+    // warning, not an error.
+    static const char* bad_ini = "[mode]\n"
+                                 "dmr_udp_comp_ports = \"97=4005,50=4005,128=4005,97=4007,98=0\"\n";
+    if (write_temp_config(bad_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+    int found_warning = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].key, "dmr_udp_comp_ports")) {
+            if (diags.items[i].level == DSDCFG_DIAG_WARNING && strstr(diags.items[i].message, "ignores 4 entries")) {
+                found_warning++;
+            } else {
+                DSD_FPRINTF(stderr, "FAIL: unexpected dmr_udp_comp_ports diagnostic level=%d: %s\n",
+                            (int)diags.items[i].level, diags.items[i].message);
+                result = 1;
+            }
+        }
+    }
+    if (found_warning != 1) {
+        DSD_FPRINTF(stderr, "FAIL: expected one dmr_udp_comp_ports warning, found %d\n", found_warning);
+        result = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+
+    // A profile's list is checked the same way and the warning names the profile key.
+    int warnings = 0;
+    int errors = 0;
+    if (validate_ini_warning("[profile.site]\nmode.dmr_udp_comp_ports = \"94=4005\"\n", "profile.site",
+                             "mode.dmr_udp_comp_ports", "ignores 1 entry", &warnings, &errors)
+            != 1
+        || errors != 0) {
+        DSD_FPRINTF(stderr, "FAIL: expected a profile.site mode.dmr_udp_comp_ports warning (errors=%d)\n", errors);
+        result = 1;
+    }
+    return result;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2180,6 +2246,7 @@ main(void) {
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();
+    rc |= test_dmr_udp_comp_ports_validation();
     rc |= test_diags_have_line_numbers();
     rc |= test_empty_config();
     rc |= test_nonexistent_file();

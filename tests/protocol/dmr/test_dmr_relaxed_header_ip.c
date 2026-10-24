@@ -765,7 +765,8 @@ test_crc_valid_type1_pdu_dispatches_in_strict_mode(void) {
     dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
 
     assert(g_decode_ip_calls == 1U);
-    assert(g_decode_ip_last_len == 20U);
+    // One 12-octet block less its CRC32 (TS 102 361-1 9.3.22); counting it as two blocks gave 20.
+    assert(g_decode_ip_last_len == 8U);
     assert(g_decode_ip_first_byte == 0x45U);
 }
 
@@ -1290,7 +1291,8 @@ test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
 
     run_type1_pdu_for_sap(10U, block);
     assert(g_sd_pdu_calls == 1U);
-    assert(g_sd_pdu_last_len == 20U);
+    // One 12-octet block less its CRC32 (TS 102 361-1 9.3.22); counting it as two blocks gave 20.
+    assert(g_sd_pdu_last_len == 8U);
     assert(g_sd_pdu_first_byte == 0x83U);
     assert(g_sd_pdu_crc_valid == 1U);
     assert(g_decode_ip_calls == 0U);
@@ -1308,7 +1310,8 @@ test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
 
     run_type1_pdu_for_sap(3U, block);
     assert(g_udp_comp_calls == 1U);
-    assert(g_udp_comp_last_len == 20U);
+    // One 12-octet block less its CRC32 (TS 102 361-1 9.3.22); counting it as two blocks gave 20.
+    assert(g_udp_comp_last_len == 8U);
     assert(g_udp_comp_first_byte == 0x83U);
     assert(g_decode_ip_calls == 0U);
     assert(g_sd_pdu_calls == 0U);
@@ -2082,6 +2085,225 @@ test_motorola_encryption_header_updates_payload_state(void) {
     assert(state.data_ks_start[1] == 0);
 }
 
+// Feeds `blocks` data blocks of `width` octets (the CRC32 in the last four) to an armed type-1 assembler and
+// returns the length the SAP decoder was handed. CRC verdicts are not enforced (aggressive_framesync 0).
+static uint16_t
+run_type1_length_case(uint8_t sap, uint8_t width, uint8_t blocks, uint8_t poc, uint8_t slot) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    state.event_history_s = history;
+    state.currentslot = slot;
+    state.data_header_valid[slot] = 1;
+    state.data_header_blocks[slot] = blocks;
+    state.data_header_format[slot] = 2;
+    state.data_header_sap[slot] = sap;
+    state.data_block_counter[slot] = 1;
+    state.data_block_poc[slot] = poc;
+    reset_datacall_spy();
+    g_udp_comp_last_len = 0xFFFFU;
+    g_decode_ip_last_len = 0xFFFFU;
+    g_sd_pdu_last_len = 0xFFFFU;
+    for (uint8_t b = 0; b < blocks; b++) {
+        uint8_t block[24];
+        DSD_MEMSET(block, 0x5A, sizeof(block));
+        block[0] = (uint8_t)(0x40U + b);
+        dmr_block_assembler(&opts, &state, block, width, 0, 1);
+    }
+    if (sap == 3U) {
+        return g_udp_comp_last_len;
+    }
+    return (sap == 4U) ? g_decode_ip_last_len : g_sd_pdu_last_len;
+}
+
+// TS 102 361-1 9.3.22: the user data is the octets the blocks carried less the CRC32 and the pad
+// octets. A single block used to be counted twice, and a malformed width wrapped the length.
+static int
+test_type1_length_is_received_octets_less_crc_and_pad(void) {
+    int rc = 0;
+    static const uint8_t widths[] = {12U, 18U, 24U, 10U, 16U, 22U};
+    for (size_t i = 0; i < sizeof(widths); i++) {
+        for (uint8_t slot = 0; slot < 2; slot++) {
+            const uint8_t w = widths[i];
+            if (run_type1_length_case(3U, w, 1U, 0U, slot) != (uint16_t)(w - 4U)
+                || run_type1_length_case(4U, w, 1U, 0U, slot) != (uint16_t)(w - 4U)
+                || run_type1_length_case(10U, w, 1U, 0U, slot) != (uint16_t)(w - 4U)
+                || run_type1_length_case(3U, w, 3U, 0U, slot) != (uint16_t)(3U * w - 4U)) {
+                DSD_FPRINTF(stderr, "type1 length: width %u slot %u wrong\n", (unsigned)w, (unsigned)slot);
+                rc |= 1;
+            }
+        }
+    }
+    // The reporter's PDU: nine octets in one rate-3/4 unconfirmed block, 18 - 4 - 5 pad octets.
+    rc |= (run_type1_length_case(3U, 18U, 1U, 5U, 0U) != 9U);
+    rc |= (run_type1_length_case(4U, 24U, 2U, 7U, 1U) != (uint16_t)(48U - 4U - 7U));
+    // A pad count larger than the data (a relaxed-CRC header) is ignored rather than wrapped.
+    rc |= (run_type1_length_case(3U, 12U, 1U, 20U, 0U) != 8U);
+    // Widths too narrow to hold a CRC32 carry no data.
+    rc |= (run_type1_length_case(3U, 2U, 1U, 0U, 0U) != 0U);
+    rc |= (run_type1_length_case(3U, 3U, 1U, 0U, 0U) != 0U);
+    if (rc) {
+        DSD_FPRINTF(stderr, "type1 length cases failed\n");
+    }
+    return rc;
+}
+
+static void
+build_data_header_bits(uint8_t bits[196], uint8_t dpf, uint8_t sap, uint8_t bf_or_ab, uint8_t poc) {
+    DSD_MEMSET(bits, 0, 196);
+    set_bits(bits, 4, dpf, 4);
+    set_bits(bits, 8, sap, 4);
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    if (dpf == 13U || dpf == 14U) {
+        set_bits(bits, 2, (uint32_t)(bf_or_ab >> 4), 2); // appended blocks MSBs
+        set_bits(bits, 12, (uint32_t)(bf_or_ab & 0xFU), 4);
+    } else {
+        set_bits(bits, 3, (uint32_t)(poc >> 4), 1);
+        set_bits(bits, 12, (uint32_t)(poc & 0xFU), 4);
+        set_bits(bits, 65, bf_or_ab, 7);
+    }
+}
+
+// A standard header starts a new packet. Confirmed mode, an MNIS P_HEAD's flag and the assembler's
+// arming belonged to the packet before it, which may have been cut off.
+static int
+test_fresh_header_drops_interrupted_packet_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    opts.aggressive_framesync = 1;
+
+    for (uint8_t slot = 0; slot < 2; slot++) {
+        // Confirmed packet cut off, then an unconfirmed one: its blocks must not lose two octets each
+        // to a DBSN/CRC9 that is not there.
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = slot;
+        build_data_header_bits(bits, 3U, 3U, 3U, 0U);
+        dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+        rc |= (state.data_conf_data[slot] != 1U);
+        build_data_header_bits(bits, 2U, 3U, 1U, 0U);
+        dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+        if (state.data_conf_data[slot] != 0U || state.data_header_valid[slot] != 1U) {
+            DSD_FPRINTF(stderr, "slot %u: unconfirmed header after a cut-off confirmed one kept confirmed mode\n",
+                        (unsigned)slot);
+            rc |= 1;
+        }
+
+        // MNIS packet (standard header + Motorola P_HEAD with SAP 1) cut off, then an ordinary confirmed
+        // packet: its CRC9 verdicts must be counted from block 1.
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = slot;
+        build_data_header_bits(bits, 2U, 1U, 3U, 0U);
+        dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        set_bits(bits, 0, 1U, 4);
+        set_bits(bits, 4, 15U, 4);
+        set_bits(bits, 8, 0x10U, 8);
+        dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+        rc |= (state.data_p_head[slot] != 1U);
+        build_data_header_bits(bits, 3U, 4U, 1U, 0U);
+        dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+        if (state.data_p_head[slot] != 0U || state.data_conf_data[slot] != 1U) {
+            DSD_FPRINTF(stderr, "slot %u: confirmed header after a cut-off MNIS packet kept its P_HEAD flag\n",
+                        (unsigned)slot);
+            rc |= 1;
+        }
+
+        // A proprietary header continues the standard one: it keeps confirmed mode and the arming.
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = slot;
+        build_data_header_bits(bits, 3U, 4U, 3U, 0U);
+        dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        set_bits(bits, 0, 4U, 4);
+        set_bits(bits, 4, 15U, 4);
+        set_bits(bits, 8, 0x10U, 8);
+        dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+        if (state.data_conf_data[slot] != 1U || state.data_header_valid[slot] != 1U) {
+            DSD_FPRINTF(stderr, "slot %u: proprietary header dropped the standard header's state\n", (unsigned)slot);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+// Only formats with blocks after the header arm the assembler (TS 102 361-1 table 9.30; table 9.17A:
+// an SP_HEAD's Appended Blocks "shall be set to 0"). A header that does not arm it disarms it, so a
+// stray continuation cannot finish the packet a header interrupted.
+static int
+test_header_only_formats_disarm_the_assembler(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+
+    static const struct {
+        const char* tag;
+        uint8_t dpf;
+        uint8_t blocks;
+    } cases[] = {
+        {"reserved dpf 4", 4U, 2U},
+        {"reserved dpf 12", 12U, 2U},
+        {"sp_head", 14U, 0U},
+        {"dd_head without blocks", 13U, 0U},
+        {"response without blocks", 1U, 0U},
+        {"unconfirmed without blocks", 2U, 0U},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        for (uint8_t slot = 0; slot < 2; slot++) {
+            DSD_MEMSET(&state, 0, sizeof(state));
+            DSD_MEMSET(history, 0, sizeof(history));
+            state.event_history_s = history;
+            state.currentslot = slot;
+            build_data_header_bits(bits, 2U, 3U, 3U, 0U);
+            dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+            build_data_header_bits(bits, cases[i].dpf, 3U, cases[i].blocks, 0U);
+            if (cases[i].dpf == 1U) {
+                set_response_header_bits(bits);
+            }
+            dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+            if (state.data_header_valid[slot] != 0U) {
+                DSD_FPRINTF(stderr, "%s slot %u: header left the assembler armed\n", cases[i].tag, (unsigned)slot);
+                rc |= 1;
+            }
+            reset_datacall_spy();
+            uint8_t block[12];
+            DSD_MEMSET(block, 0x00, sizeof(block));
+            append_type1_crc32(block, sizeof(block));
+            dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+            if (g_udp_comp_calls != 0U || g_decode_ip_calls != 0U || g_sd_pdu_calls != 0U) {
+                DSD_FPRINTF(stderr, "%s slot %u: stray block was dispatched\n", cases[i].tag, (unsigned)slot);
+                rc |= 1;
+            }
+        }
+    }
+
+    // Formats with blocks still arm: R_HEAD and DD_HEAD with appended blocks, confirmed short data.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    build_data_header_bits(bits, 14U, 10U, 2U, 0U);
+    dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+    rc |= (state.data_header_valid[0] != 1U || state.data_header_blocks[0] != 2U);
+    build_data_header_bits(bits, 13U, 10U, 1U, 0U);
+    set_bits(bits, 1, 1U, 1); // A: confirmed
+    dmr_dheader(&opts, &state, dheader, bits, 1, 0);
+    rc |= (state.data_header_valid[0] != 1U || state.data_conf_data[0] != 1U);
+    return rc;
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
@@ -2116,6 +2338,9 @@ main(int argc, char** argv) {
     test_short_data_defined_sets_blocks_and_confirmed_flag();
     test_short_data_raw_padding_and_packet_poc_isolation();
     test_motorola_encryption_header_updates_payload_state();
+    rc |= test_type1_length_is_received_octets_less_crc_and_pad();
+    rc |= test_fresh_header_drops_interrupted_packet_state();
+    rc |= test_header_only_formats_disarm_the_assembler();
 
     static dsd_opts opts;
     static dsd_state state;

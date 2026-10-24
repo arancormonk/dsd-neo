@@ -195,6 +195,15 @@ dmr_dburst_apply_profile(dmr_data_burst_ctx* ctx) {
     }
 }
 
+// Per-block CRC9 verdict, indexed by the 1-based block counter. A counter past the 127 blocks a header can
+// announce has no row; such a block is never aggregated, so dropping its verdict loses nothing.
+static void
+dmr_dburst_set_block_verdict(const dmr_data_burst_ctx* ctx, uint8_t verdict) {
+    if (ctx->slot < 2U && ctx->blockcounter < sizeof(ctx->state->data_block_crc_valid[0])) {
+        ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = verdict;
+    }
+}
+
 static int
 dmr_dburst_keeps_data_p_head(uint8_t databurst) {
     return databurst == 0x06 || databurst == 0x07 || databurst == 0x08 || databurst == 0x0A || databurst == 0x0B;
@@ -272,9 +281,9 @@ dmr_dburst_bptc_crc_confirmed_1_2_rate(dmr_data_burst_ctx* ctx) {
     ctx->crc_computed = ComputeCrc9Bit(ctx->confdatabits, 87);
     if (ctx->crc_extracted == ctx->crc_computed) {
         ctx->crc_correct = 1;
-        ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = 1;
+        dmr_dburst_set_block_verdict(ctx, 1);
     } else {
-        ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = 0;
+        dmr_dburst_set_block_verdict(ctx, 0);
     }
 }
 
@@ -356,7 +365,7 @@ dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
         ctx->crc_correct = 1;
         if (ctx->databurst == 0x07 && ctx->state->data_conf_data[ctx->slot] == 1) {
             // The CRC9 verdict stays "not verified" for the location gates, but the event marker reads it as RAS.
-            ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = DMR_DATA_BLOCK_CRC_RAS;
+            dmr_dburst_set_block_verdict(ctx, DMR_DATA_BLOCK_CRC_RAS);
         }
     }
 
@@ -566,9 +575,9 @@ dmr_dburst_trellis_update_confirmed_crc(dmr_data_burst_ctx* ctx) {
     ctx->crc_computed = ComputeCrc9Bit(ctx->confdatabits, 135);
     if (ctx->crc_extracted == ctx->crc_computed) {
         ctx->crc_correct = 1;
-        ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = 1;
+        dmr_dburst_set_block_verdict(ctx, 1);
     } else {
-        ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = 0;
+        dmr_dburst_set_block_verdict(ctx, 0);
     }
 }
 
@@ -647,9 +656,9 @@ dmr_dburst_handle_full(dmr_data_burst_ctx* ctx) {
         ctx->crc_computed = ComputeCrc9Bit(ctx->confdatabits, (uint32_t)k);
         if (ctx->crc_extracted == ctx->crc_computed) {
             ctx->crc_correct = 1;
-            ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = 1;
+            dmr_dburst_set_block_verdict(ctx, 1);
         } else {
-            ctx->state->data_block_crc_valid[ctx->slot][ctx->blockcounter] = 0;
+            dmr_dburst_set_block_verdict(ctx, 0);
         }
     }
 

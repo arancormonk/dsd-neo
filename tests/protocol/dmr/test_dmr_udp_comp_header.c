@@ -80,7 +80,7 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
+decode_cellocator(dsd_opts* opts, dsd_state* state, const uint8_t* input, int len) {
     (void)opts;
     (void)state;
     (void)input;
@@ -421,6 +421,207 @@ main(void) {
                                 "t10 both truncated source");
         rc |= expect_has_substr(g_datacall_text, "DST: 0:0 (Radio Network):(In Extended Header, truncated);",
                                 "t10 both truncated destination");
+    }
+
+    // T12 (issue #746): the vector the reporter's Motorola system sends. SPID/DPID 97 are manufacturer
+    // specific and not linked to a port, so the payload is the only evidence; it is exactly one ARS
+    // Device Registration Ack (MOTOTRBO ARS spec 3.4.2: 00 02 BF 01, refresh 1 x 30 min). Both slots.
+    {
+        for (uint8_t slot = 0; slot < 2; slot++) {
+            const uint8_t pdu[] = {0x00U, 0x00U, 0x10U, 0x61U, 0x61U, 0x00U, 0x02U, 0xBFU, 0x01U};
+            reset_spies();
+            st.currentslot = slot;
+            st.dmr_lrrp_source[slot] = 1234;
+            st.dmr_lrrp_target[slot] = 5678;
+            DSD_SNPRINTF(st.dmr_lrrp_gps[slot], sizeof st.dmr_lrrp_gps[slot], "%s", "Data Call - stale");
+            dmr_udp_comp_pdu(&opts, &st, (uint16_t)sizeof pdu, pdu);
+            rc |= expect_count(g_datacall_calls, 1U, "t12 single notice");
+            rc |= expect_has_substr(g_datacall_text,
+                                    "SRC: 1:97 (Ethernet):(Manufacturer Specific); DST: 0:97 (Radio "
+                                    "Network):(Manufacturer Specific); ARS SRC: 1234; DST: 5678; ARS Ack: OK; "
+                                    "refresh 30 min;",
+                                    "t12 notice carries the ARS summary");
+            rc |= expect_str_eq(st.dmr_lrrp_gps[slot], "ARS SRC: 1234; DST: 5678; ARS Ack: OK; refresh 30 min; ",
+                                "t12 slot string rewritten");
+            rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "t12 control");
+        }
+        st.currentslot = 0;
+    }
+
+    // T13: ports in the extended headers. A radio (SAID 0) registering with the ARS server (DAID 1),
+    // 4005 -> 4005, with the spec's initial registration example for radio 11 (2.3.1).
+    {
+        const uint8_t pdu[] = {0x00U, 0x05U, 0x01U, 0x00U, 0x00U, 0x0FU, 0xA5U, 0x0FU, 0xA5U,
+                               0x00U, 0x07U, 0xF0U, 0x20U, 0x02U, 0x31U, 0x31U, 0x00U, 0x00U};
+        run_case(&opts, &st, pdu, sizeof pdu);
+        rc |= expect_has_substr(g_datacall_text,
+                                "(In Extended Header, UDP 4005); DST: 1:0 (Ethernet):(In Extended "
+                                "Header, UDP 4005); ARS SRC: 1234; DST: 5678; ARS Reg: 11; Initial;",
+                                "t13 registration");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "t13 control");
+    }
+
+    // T14: the radio's ARS port is fixed at 4005 while the server's is configurable (ARS spec 4.4.2,
+    // 4.4.4), so a registration to server port 4025 is still ARS. A claimed destination wins over a
+    // source that names a service: 5016 -> 4004 is XCMP, 4004 -> 5016 is text.
+    {
+        const uint8_t to_4025[] = {0x00U, 0x06U, 0x01U, 0x00U, 0x00U, 0x0FU, 0xA5U,
+                                   0x0FU, 0xB9U, 0x00U, 0x03U, 0xBFU, 0x10U, 0x80U};
+        run_case(&opts, &st, to_4025, sizeof to_4025);
+        rc |= expect_has_substr(g_datacall_text, "ARS SRC: 1234; DST: 5678; ARS Ack: OK; refresh 480 min;",
+                                "t14 source 4005 names ARS");
+
+        const uint8_t text_to_xcmp[] = {0x00U, 0x07U, 0x00U, 0x00U, 0x00U, 0x13U, 0x98U, 0x0FU, 0xA4U, 0x00U, 'H'};
+        run_case(&opts, &st, text_to_xcmp, sizeof text_to_xcmp);
+        rc |= expect_has_substr(g_datacall_text, "XCMP SRC: 1234; DST: 5678;", "t14 claimed destination wins");
+        if (staged_text(&st)[0] != '\0') {
+            DSD_FPRINTF(stderr, "t14 5016 -> 4004 decoded text '%s'\n", staged_text(&st));
+            rc |= 1;
+        }
+
+        const uint8_t xcmp_to_text[] = {0x00U, 0x08U, 0x00U, 0x00U, 0x00U, 0x0FU, 0xA4U, 0x13U, 0x98U, 0x00U, 'H'};
+        run_case(&opts, &st, xcmp_to_text, sizeof xcmp_to_text);
+        rc |= expect_str_eq(staged_text(&st), "H", "t14 destination 5016 is text");
+
+        const uint8_t lip_to_lrrp[] = {0x00U, 0x09U, 0x00U, 0x00U, 0x00U, 0x13U, 0x99U, 0x0FU, 0xA1U, 0x0DU};
+        run_case(&opts, &st, lip_to_lrrp, sizeof lip_to_lrrp);
+        rc |= expect_count(g_lip_calls, 0U, "t14 5017 -> 4001 is not LIP");
+        rc |= expect_has_substr(g_datacall_text, "LRRP SRC: 1234; DST: 5678; Truncated;", "t14 destination LRRP");
+    }
+
+    // T15: what the content check accepts and refuses on an unlinked manufacturer-specific index.
+    {
+        static const struct {
+            const char* tag;
+            uint8_t bytes[24];
+            uint8_t len;
+            const char* want; // NULL: must stay Unknown Decode Format
+        } cases[] = {
+            {"reg ack no timer", {0x00, 0x01, 0x3F}, 3, "ARS Ack: OK; refresh off;"},
+            {"reg ack fail no reason", {0x00, 0x01, 0x7F}, 3, "ARS Ack: FAIL;"},
+            {"reg ack fail reason", {0x00, 0x02, 0xFF, 0x00}, 4, "ARS Ack: FAIL - device not authorized;"},
+            {"csbk query ack", {0x00, 0x03, 0x3F, 0x10, 0x80}, 5, "ARS Ack: OK; refresh off;"},
+            {"device registration", {0x00, 0x07, 0xF0, 0x40, 0x02, 0x31, 0x31, 0x00, 0x00}, 9, "ARS Reg: 11; Refresh;"},
+            {"user registration",
+             {0x00, 0x10, 0xF5, 0x00, 0x02, 0x31, 0x31, 0x09, '9', '9', '9', '9', '9', '9', '9', '9', '9', 0x00},
+             18,
+             "ARS User Reg: 999999999; DEV: 11;"},
+            {"deregistration", {0x00, 0x01, 0x31}, 3, "ARS Dereg;"},
+            {"query", {0x00, 0x01, 0x74}, 3, "ARS Query;"},
+            {"user dereg", {0x00, 0x01, 0x76}, 3, "ARS User Dereg;"},
+            {"user ack bare", {0x00, 0x01, 0x37}, 3, "ARS User Ack: OK;"},
+            {"user ack session", {0x00, 0x02, 0xB7, 0x00}, 4, "ARS User Ack: OK; session until power cycle;"},
+            {"user ack fail no reason", {0x00, 0x01, 0x77}, 3, "ARS User Ack: FAIL;"},
+            {"user ack fail reason", {0x00, 0x02, 0xF7, 0x01}, 4, "ARS User Ack: FAIL - user validation failed;"},
+            // A TMS acknowledgement shares the 0xBF header octet; a recorded one rode index 98 (ok-dmrlib).
+            {"tms ack", {0x00, 0x03, 0xBF, 0x00, 0x07}, 5, NULL},
+            {"tms ack no reserved bit", {0x00, 0x04, 0x9F, 0x00, 0x95, 0x20}, 6, NULL},
+            {"tms ack short", {0x00, 0x02, 0x1F, 0x00}, 4, NULL},
+            {"tms text", {0x00, 0x05, 0xE0, 0x00, 0x01, 'h', 0x00}, 7, NULL},
+            {"lrrp", {0x0D, 0x02, 0x22, 0x01}, 4, NULL},
+            {"size short of payload", {0x00, 0x02, 0xBF, 0x01, 0x00}, 5, NULL},
+            {"size past payload", {0x00, 0x03, 0xBF, 0x01}, 4, NULL},
+            {"priority clear", {0x00, 0x01, 0x1F}, 3, NULL},
+            {"query with ext", {0x00, 0x02, 0xF4, 0x00}, 4, NULL},
+            {"dereg with ack", {0x00, 0x01, 0x71}, 3, NULL},
+            {"undefined type", {0x00, 0x01, 0x32}, 3, NULL},
+            {"device reg with user id", {0x00, 0x08, 0xF0, 0x20, 0x02, 0x31, 0x31, 0x01, 0x41, 0x00}, 10, NULL},
+            {"device reg bad event", {0x00, 0x07, 0xF0, 0x00, 0x02, 0x31, 0x31, 0x00, 0x00}, 9, NULL},
+            {"registration encoding", {0x00, 0x07, 0xF0, 0x21, 0x02, 0x31, 0x31, 0x00, 0x00}, 9, NULL},
+            {"second header ext", {0x00, 0x02, 0xBF, 0x81}, 4, NULL},
+            {"user ack session not zero", {0x00, 0x02, 0xB7, 0x05}, 4, NULL},
+            {"lv overrun", {0x00, 0x05, 0x70, 0x05, 0x31, 0x00, 0x00}, 7, NULL},
+            {"empty record", {0x00, 0x00, 0x00}, 3, NULL},
+        };
+
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            uint8_t pdu[5 + 24];
+            pdu[0] = 0x00U;
+            pdu[1] = 0x0AU;
+            pdu[2] = 0x10U;
+            pdu[3] = 0x62U; // 98
+            pdu[4] = 0x62U;
+            DSD_MEMCPY(pdu + 5, cases[i].bytes, cases[i].len);
+            run_case(&opts, &st, pdu, (size_t)(5U + cases[i].len));
+            if (cases[i].want != NULL) {
+                rc |= expect_has_substr(g_datacall_text, cases[i].want, cases[i].tag);
+                rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, cases[i].tag);
+            } else {
+                rc |= expect_no_substr(g_datacall_text, "ARS", cases[i].tag);
+                rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, cases[i].tag);
+            }
+        }
+    }
+
+    // T16: Reserved indices carry nothing a receiver may interpret, ARS-shaped or not. One unlinked
+    // manufacturer-specific endpoint is enough when the other endpoint names no decoder (port 6000).
+    {
+        const uint8_t reserved[] = {0x00U, 0x0BU, 0x10U, 0x3FU, 0x3FU, 0x00U, 0x02U, 0xBFU, 0x01U};
+        run_case(&opts, &st, reserved, sizeof reserved);
+        rc |= expect_no_substr(g_datacall_text, "ARS", "t16 reserved index");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "t16 reserved category");
+
+        const uint8_t one_mfr[] = {0x00U, 0x0CU, 0x10U, 0x61U, 0x00U, 0x17U, 0x70U, 0x00U, 0x02U, 0xBFU, 0x01U};
+        run_case(&opts, &st, one_mfr, sizeof one_mfr);
+        rc |= expect_has_substr(g_datacall_text, "ARS Ack: OK; refresh 30 min;", "t16 one unlinked endpoint");
+    }
+
+    // T17: a port in an extended header reaches every UDP service the IPv4 path decodes: TMS on 4007,
+    // and an --lrrp-extra-port port as LRRP. A one-octet LRRP after a decoded one does not inherit
+    // its summary.
+    {
+        const uint8_t tms[] = {0x00U, 0x0DU, 0x00U, 0x3FU, 0x00U, 0x0FU, 0xA7U, 0x00U,
+                               0x06U, 0xA0U, 0x00U, 0x80U, 0x04U, 'H',   0x00U};
+        run_case(&opts, &st, tms, sizeof tms);
+        rc |= expect_has_substr(g_datacall_text, "TMS SRC: 1234; DST: 5678;", "t17 tms");
+        rc |= expect_str_eq(staged_text(&st), "H", "t17 tms text");
+
+        opts.lrrp_extra_port_count = 1;
+        opts.lrrp_extra_ports[0] = 6001U;
+        const uint8_t extra[] = {0x00U, 0x0EU, 0x00U, 0x3FU, 0x00U, 0x17U, 0x71U, 0x0DU};
+        DSD_SNPRINTF(st.dmr_lrrp_gps[0], sizeof st.dmr_lrrp_gps[0], "%s", "LRRP SRC: 1; previous fix 41.5, -87.2");
+        run_case(&opts, &st, extra, sizeof extra);
+        rc |= expect_has_substr(g_datacall_text, "LRRP SRC: 1234; DST: 5678; Truncated;", "t17 extra port truncated");
+        rc |= expect_no_substr(g_datacall_text, "previous fix", "t17 no stale summary");
+        opts.lrrp_extra_port_count = 0;
+        opts.lrrp_extra_ports[0] = 0U;
+    }
+
+    // T18: a site that knows its radios' linkage maps an index to a port (ETSI TS 102 361-3 table 7.17
+    // note 2). The mapped port decodes as any resolved port, labelled as mapped; an unmapped index
+    // still goes by content, and a mapped index whose port has no decoder is not second-guessed.
+    {
+        opts.dmr_udp_comp_ports[97U - 95U] = 4005U;
+        opts.dmr_udp_comp_ports[98U - 95U] = 4007U;
+        const uint8_t ars[] = {0x00U, 0x0FU, 0x10U, 0x61U, 0x61U, 0x00U, 0x05U, 0xF0U, 0x20U, 0x02U, 0x31U, 0x31U};
+        run_case(&opts, &st, ars, sizeof ars);
+        rc |= expect_has_substr(g_datacall_text,
+                                "SRC: 1:97 (Ethernet):(Manufacturer Specific, mapped UDP 4005); DST: 0:97 (Radio "
+                                "Network):(Manufacturer Specific, mapped UDP 4005); ARS SRC: 1234; DST: 5678;",
+                                "t18 mapped ars");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "t18 mapped category");
+
+        const uint8_t tms_ack[] = {0x00U, 0x10U, 0x00U, 0x62U, 0x62U, 0x00U, 0x03U, 0xBFU, 0x00U, 0x07U};
+        run_case(&opts, &st, tms_ack, sizeof tms_ack);
+        rc |= expect_has_substr(g_datacall_text, "(Manufacturer Specific, mapped UDP 4007)", "t18 mapped tms label");
+        rc |= expect_has_substr(g_datacall_text, "TMS SRC: 1234; DST: 5678; Acknowledgment;", "t18 mapped tms ack");
+
+        opts.dmr_udp_comp_ports[99U - 95U] = 6000U;
+        const uint8_t unclaimed[] = {0x00U, 0x11U, 0x00U, 0x63U, 0x63U, 0x00U, 0x02U, 0xBFU, 0x01U};
+        run_case(&opts, &st, unclaimed, sizeof unclaimed);
+        rc |= expect_no_substr(g_datacall_text, "ARS", "t18 mapped to an undecoded port");
+        DSD_MEMSET(opts.dmr_udp_comp_ports, 0, sizeof opts.dmr_udp_comp_ports);
+    }
+
+    // T19: the P25 services that print IPv4 addresses name the radios on the compressed path, which
+    // carries no addresses.
+    {
+        const uint8_t atlas[] = {0x00U, 0x12U, 0x00U, 0x3FU, 0x00U, 0x24U, 0x91U, 0x01U};
+        run_case(&opts, &st, atlas, sizeof atlas);
+        rc |= expect_has_substr(g_datacall_text, "P25 Atlas SRC: 1234; DST: 5678;", "t19 atlas");
+        const uint8_t locn[] = {0x00U, 0x13U, 0x00U, 0x3FU, 0x00U, 0xC0U, 0x2EU, 0x0DU};
+        run_case(&opts, &st, locn, sizeof locn);
+        rc |= expect_has_substr(g_datacall_text, "P25 Tier 2 LOCN SRC: 1234; DST: 5678;", "t19 locn");
     }
 
     free(st.event_history_s);

@@ -148,7 +148,7 @@ test_print_info_reveals_full_aes128_key(void) {
     state.payload_keyid = kid;
     seed_key_array(&state, kid, 0x0123456789ABCDEFULL, 0ULL, 0xDEADBEEFDEADBEEFULL, 0ULL);
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     rc |= expect_int("aes128 print key loaded", ctx.aes_key_loaded, 1);
     if (capture_print_info(&ctx, 1, output, sizeof output) != 0) {
         return 1;
@@ -171,7 +171,7 @@ test_print_info_reveals_full_aes256_key_when_first_segment_zero(void) {
     state.payload_keyidR = kid;
     seed_key_array(&state, kid, 0ULL, 0x1112131415161718ULL, 0x2122232425262728ULL, 0x3132333435363738ULL);
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     rc |= expect_int("aes256 print rkey zero", ctx.rkey == 0ULL, 1);
     rc |= expect_int("aes256 print key loaded", ctx.aes_key_loaded, 1);
     if (capture_print_info(&ctx, 1, output, sizeof output) != 0) {
@@ -196,7 +196,7 @@ test_print_info_starts_on_its_own_line(void) {
     state.payload_keyid = kid;
     seed_key_array(&state, kid, 0x0123456789ABCDEFULL, 0ULL, 0xDEADBEEFDEADBEEFULL, 0ULL);
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     if (capture_print_info(&ctx, 1, output, sizeof output) != 0) {
         return 1;
     }
@@ -231,11 +231,13 @@ test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 16, ciphertext, sizeof(ciphertext));
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 32, ciphertext, sizeof(ciphertext));
     state.dmr_pdu_sf[slot][start + 48] = 0xA0;
+    // The three cipher blocks were received: they end at start + 48.
+    state.data_byte_ctr[slot] = (uint16_t)(start + 48U);
 
     g_lfsr_calls = 0;
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, state.data_byte_ctr[slot], &ctx);
     rc |= expect_int("aes128 ctx start", ctx.start, start);
-    rc |= expect_int("aes128 ctx end", ctx.end, 35);
+    rc |= expect_int("aes128 ctx end", ctx.end, 38);
     rc |= expect_int("aes128 key loaded", ctx.aes_key_loaded, 1);
     rc |= expect_int("aes128 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_int("aes128 zero-mi skips lfsr", g_lfsr_calls, 0);
@@ -274,9 +276,10 @@ test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback(void)
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 16, ciphertext, sizeof(ciphertext));
     DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 32, ciphertext, sizeof(ciphertext));
     state.dmr_pdu_sf[slot][start + 48] = 0xB0;
+    state.data_byte_ctr[slot] = (uint16_t)(start + 48U);
 
     g_lfsr_calls = 0;
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, state.data_byte_ctr[slot], &ctx);
     rc |= expect_int("aes256 manual key loaded", ctx.aes_key_loaded, 1);
     rc |= expect_int("aes256 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_int("aes256 zero-mi skips lfsr", g_lfsr_calls, 0);
@@ -285,6 +288,56 @@ test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback(void)
     rc |= expect_bytes("aes256 block 1", state.dmr_pdu_sf[slot] + start + 16, plaintext, sizeof(plaintext));
     rc |= expect_bytes("aes256 block 2", state.dmr_pdu_sf[slot] + start + 32, plaintext, sizeof(plaintext));
     rc |= expect_u8("aes256 trailing byte", state.dmr_pdu_sf[slot][start + 48], 0xB0);
+    return rc;
+}
+
+// The ECB path decrypts whole cipher blocks of what was received from the keystream offset on. With 48
+// octets received from offset 3, the third block would reach three octets that never arrived, so it
+// stays as received.
+static int
+test_aes128_zero_mi_ecb_stops_at_received_octets(void) {
+    static const uint8_t ciphertext[16] = {0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30,
+                                           0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
+    static const uint8_t plaintext[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                                          0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    const uint8_t slot = 0;
+    const uint8_t start = 3;
+    const int kid = 0x22;
+    int rc = 0;
+
+    seed_window(&state, slot, start, 0);
+    state.payload_algid = 4;
+    state.payload_keyid = kid;
+    state.payload_mi = 0;
+    seed_key_array(&state, kid, 0x0001020304050607ULL, 0x08090A0B0C0D0E0FULL, 0, 0);
+    DSD_MEMCPY(state.dmr_pdu_sf[slot] + start, ciphertext, sizeof(ciphertext));
+    DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 16, ciphertext, sizeof(ciphertext));
+    DSD_MEMCPY(state.dmr_pdu_sf[slot] + start + 32, ciphertext, sizeof(ciphertext));
+
+    dmr_block_crypto_load_ctx(&state, slot, state.data_byte_ctr[slot], &ctx);
+    rc |= expect_int("ecb bound decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
+    rc |= expect_bytes("ecb bound block 0", state.dmr_pdu_sf[slot] + start, plaintext, sizeof(plaintext));
+    rc |= expect_bytes("ecb bound block 1", state.dmr_pdu_sf[slot] + start + 16, plaintext, sizeof(plaintext));
+    rc |= expect_bytes("ecb bound block 2 untouched", state.dmr_pdu_sf[slot] + start + 32, ciphertext,
+                       sizeof(ciphertext));
+    return rc;
+}
+
+// More pad and offset octets than were received leave no ciphertext: the window is empty rather than
+// the rest of the buffer.
+static int
+test_negative_window_is_empty(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    const uint8_t slot = 1;
+    int rc = 0;
+
+    seed_window(&state, slot, 3U, 31U);
+    dmr_block_crypto_load_ctx(&state, slot, 20U, &ctx);
+    rc |= expect_int("negative window start", ctx.start, 3);
+    rc |= expect_int("negative window end", ctx.end, 0);
     return rc;
 }
 
@@ -305,7 +358,7 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
     seed_key_array(&state, kid, 0x0001020304050607ULL, 0x08090A0B0C0D0E0FULL, 0, 0);
 
     g_lfsr_calls = 0;
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     for (int i = 0; i < 16; i++) {
         iv[i] = (uint8_t)i;
     }
@@ -337,7 +390,7 @@ test_rc4_decrypts_window_with_key_id_lookup(void) {
     state.payload_mi = 0x01020304ULL;
     state.rkey_array[kid] = 0x0123456789ULL;
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     /* The window length sizes every write into plaintext below; a wrong one ends the case here. */
     if (expect_int("rc4 ctx end", ctx.end, 28) != 0) {
         return 1;
@@ -368,7 +421,7 @@ test_des_decrypts_window_with_manual_key_fallback(void) {
     state.payload_miR = 0x11223344ULL;
     state.RR = 0x0123456789ABCDEFULL;
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     /* The window length sizes every write into plaintext below; a wrong one ends the case here. */
     if (expect_int("des ctx end", ctx.end, 24) != 0) {
         return 1;
@@ -399,7 +452,7 @@ test_basic_privacy_decrypts_window(void) {
     stream[0] = (uint8_t)((BPK[state.K] >> 8U) & 0xFFU);
     stream[1] = (uint8_t)(BPK[state.K] & 0xFFU);
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     /* The window length sizes every write into plaintext below; a wrong one ends the case here. */
     if (expect_int("bp ctx end", ctx.end, 16) != 0) {
         return 1;
@@ -435,7 +488,7 @@ test_incomplete_aes_key_refused(void) {
             state.rkey_array[kid + offsets[seg]] = 0x2222222222222222ULL;
             state.rkey_array_loaded[kid + offsets[seg]] = 1U;
         }
-        dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+        dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
         rc |= expect_int(algs[i] == 5 ? "aes256 three segments not loaded" : "aes128 one segment not loaded",
                          ctx.aes_key_loaded, 0);
         rc |= expect_int("incomplete aes key refused", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 0);
@@ -463,7 +516,7 @@ test_imported_zero_keys_decrypt(void) {
                 state.rkey_array_loaded[kid + 0x201] = (unsigned char)imported;
                 state.rkey_array_loaded[kid + 0x301] = (unsigned char)imported;
             }
-            dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+            dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
             char tag[64];
             DSD_SNPRINTF(tag, sizeof tag, "alg %d %s zero key decrypts", algs[i], imported ? "imported" : "absent");
             rc |= expect_int(tag, dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), imported);
@@ -484,7 +537,7 @@ test_aes_missing_key_still_normalizes_alg(void) {
     state.payload_keyidR = 0x55;
     state.payload_miR = 0x01020304ULL;
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     rc |= expect_int("aes missing key not loaded", ctx.aes_key_loaded, 0);
     rc |= expect_int("aes missing key result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 0);
     rc |= expect_int("aes missing key alg normalized", state.payload_algidR, 0x25);
@@ -508,7 +561,7 @@ test_malformed_window_decrypt_rejects_without_mutating_payload(void) {
     fill_pattern(state.dmr_pdu_sf[slot], sizeof(state.dmr_pdu_sf[slot]), 0x91U);
     DSD_MEMCPY(before, state.dmr_pdu_sf[slot], sizeof(before));
 
-    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
     rc |= expect_int("malformed ctx keeps start", ctx.start, start);
     rc |= expect_int("malformed ctx empty window", ctx.end, 0);
     rc |= expect_int("malformed decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 0);
@@ -520,6 +573,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_aes128_zero_mi_uses_reference_ecb_block_count();
+    rc |= test_aes128_zero_mi_ecb_stops_at_received_octets();
+    rc |= test_negative_window_is_empty();
     rc |= test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback();
     rc |= test_aes_nonzero_mi_keeps_ofb_path();
     rc |= test_print_info_reveals_full_aes128_key();
