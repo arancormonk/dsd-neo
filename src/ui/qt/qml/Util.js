@@ -247,6 +247,18 @@ function fmtMhz(hz) {
     return mhzText(hz) + " MHz"
 }
 
+// A frequency as a value to tune or save rather than to read: to the Hz.
+// mhzText rounds to 10 Hz, so a carrier found at 851.015625 would be saved, and
+// tuned on the next start, as 851.01563. A whole multiple of 10 Hz keeps
+// mhzText's spelling, so every value written before reads the same; anything
+// finer keeps all six decimals, which the frequency fields accept.
+function mhzValueText(hz) {
+    var whole = Math.round(hz)
+    if (!isFinite(whole) || whole % 10 === 0)
+        return mhzText(hz)
+    return (whole / 1.0e6).toFixed(6)
+}
+
 // The receiver Explore or Signal search starts on: the remembered one, unless
 // that is a USB kind that is not plugged in while exactly the other kind is
 // (attached is the host's attachedDeviceSource: "usb", "airspy", "both" or

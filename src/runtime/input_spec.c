@@ -357,9 +357,9 @@ rtl_spec_parse_double(const char* token, double* out) {
     return 0;
 }
 
-/* A frequency field: Hz, or a number with a k, M or G suffix; 0 when it does not parse. */
+/* A frequency field's value: Hz, or a number with a k, M or G suffix; 0 when it does not parse. */
 static double
-rtl_spec_parse_freq(const char* s) {
+rtl_spec_parse_freq_value(const char* s) {
     const size_t len = strlen(s);
     if (len == 0) {
         return 0.0;
@@ -391,6 +391,18 @@ rtl_spec_parse_freq(const char* s) {
         return 0.0;
     }
     return value * factor;
+}
+
+/* A frequency field in Hz, rounded to the nearest Hz; 0 when it does not parse or does not fit. Rounded, not
+   truncated: a decimal MHz value is rarely exact in binary, and "128.155625M" multiplies out to 128155624.99999999,
+   which a cast would tune 1 Hz low. */
+static uint32_t
+rtl_spec_parse_freq(const char* s) {
+    const double rounded = rtl_spec_parse_freq_value(s) + 0.5;
+    if (!(rounded >= 0.5 && rounded < 4294967296.0)) {
+        return 0U;
+    }
+    return (uint32_t)rounded;
 }
 
 int
@@ -435,7 +447,7 @@ rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
     if (!curr) {
         return 0;
     }
-    opts->rtlsdr_center_freq = (uint32_t)rtl_spec_parse_freq(curr);
+    opts->rtlsdr_center_freq = rtl_spec_parse_freq(curr);
 
     int parsed = 0;
     curr = dsd_strtok_r(NULL, ":", saveptr);

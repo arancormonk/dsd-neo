@@ -264,7 +264,7 @@ Item {
                                     var hz = parseFloat(screen.freqText) * 1.0e6;
                                     return !isNaN(hz) && hz >= modelData.low && hz < modelData.high;
                                 }
-                                onClicked: freqField.text = Util.mhzText(modelData.start)
+                                onClicked: freqField.text = Util.mhzValueText(modelData.start)
                             }
                         }
                     }

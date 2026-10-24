@@ -33,6 +33,7 @@ target_sources(
         backup_stage.cpp
         call_history_filter.cpp
         call_history_model.cpp
+        frequency_query.cpp
         command_bridge.cpp
         decoder_host.cpp
         decryption_profiles_model.cpp

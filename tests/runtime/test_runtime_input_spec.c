@@ -7,6 +7,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -465,9 +466,78 @@ test_spec_bandwidth_field(void) {
     return rc;
 }
 
+/* A frequency field is rounded to the nearest Hz, never truncated: a decimal MHz value is rarely exact in binary, and
+   "128.155625M" multiplies out to 128155624.99999999, which a cast tuned 1 Hz low. The Qt app saves frequencies to
+   the Hz in this form. A value that does not fit a uint32_t reads as 0, as an unparsed one does. */
+static int
+test_spec_frequency_rounds_to_the_hz(void) {
+    static const char* const prefixes[] = {"rtl:0:", "rtltcp:127.0.0.1:1234:"};
+    int rc = 0;
+    for (size_t p = 0; p < sizeof prefixes / sizeof prefixes[0]; p++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        /* Every Hz across a stretch of the 128-256 MHz octave, where the products land just under the integer, and
+           a 10 Hz raster of the five-decimal values saved before. */
+        int misses = 0;
+        for (uint32_t hz = 128150000U; hz < 128170000U; hz++) {
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s%u.%06uM:30:0:48:0:2", prefixes[p],
+                         hz / 1000000U, hz % 1000000U);
+            if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtlsdr_center_freq != hz) {
+                if (misses++ < 3) {
+                    DSD_FPRINTF(stderr, "%s: tuned %u, want %u\n", opts->audio_in_dev, opts->rtlsdr_center_freq, hz);
+                }
+            }
+        }
+        for (uint32_t hz = 128000000U; hz < 130000000U; hz += 10U) {
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s%u.%05uM:30:0:48:0:2", prefixes[p],
+                         hz / 1000000U, (hz % 1000000U) / 10U);
+            if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtlsdr_center_freq != hz) {
+                if (misses++ < 6) {
+                    DSD_FPRINTF(stderr, "%s: tuned %u, want %u\n", opts->audio_in_dev, opts->rtlsdr_center_freq, hz);
+                }
+            }
+        }
+        if (misses != 0) {
+            DSD_FPRINTF(stderr, "%s: %d frequencies missed their Hz\n", prefixes[p], misses);
+            rc = 1;
+        }
+
+        static const struct {
+            const char* field;
+            uint32_t want;
+        } edges[] = {
+            {"128155625", 128155625U},
+            {"128155.625k", 128155625U},
+            {"0.128155625G", 128155625U},
+            {"4294967295", 4294967295U},
+            {"4294967296", 0U},
+            {"-5M", 0U},
+            {"nanM", 0U},
+            {"junk", 0U},
+        };
+
+        for (size_t i = 0; i < sizeof edges / sizeof edges[0]; i++) {
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s%s:30:0:48:0:2", prefixes[p],
+                         edges[i].field);
+            opts->rtlsdr_center_freq = 155340000U;
+            (void)dsd_rtl_input_spec_apply(opts);
+            if (opts->rtlsdr_center_freq != edges[i].want) {
+                DSD_FPRINTF(stderr, "%s: tuned %u, want %u\n", opts->audio_in_dev, opts->rtlsdr_center_freq,
+                            edges[i].want);
+                rc = 1;
+            }
+        }
+        free(opts);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_spec_frequency_rounds_to_the_hz();
     rc |= test_spec_squelch_grammar();
     rc |= test_spec_bandwidth_field();
     rc |= test_non_soapy_noop();

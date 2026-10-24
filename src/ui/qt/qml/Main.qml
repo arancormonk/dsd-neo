@@ -546,7 +546,7 @@ Window {
         target: metrics
         function onTunerChanged() {
             if (mainRoot.exploring && metrics.centerFreqHz > 0)
-                mainRoot.lastExploreFreqMhz = Util.mhzText(metrics.centerFreqHz);
+                mainRoot.lastExploreFreqMhz = Util.mhzValueText(metrics.centerFreqHz);
         }
     }
 
@@ -1217,11 +1217,11 @@ Window {
                 //
                 // Read once and guarded once. A zero reading — no tuner, or the
                 // options snapshot briefly unavailable — is not a frequency, and
-                // Util.mhzText(0) is the string "0.0000", which the session map,
+                // Util.mhzValueText(0) is the string "0.0000", which the session map,
                 // the monitor header and the save-as-system wizard would all then
                 // carry as if it were one. Empty is what monitorMeta() already
                 // knows to leave out.
-                var exploreFreqMhz = metrics.centerFreqHz > 0 ? Util.mhzText(metrics.centerFreqHz) : "";
+                var exploreFreqMhz = metrics.centerFreqHz > 0 ? Util.mhzValueText(metrics.centerFreqHz) : "";
                 if (exploreFreqMhz.length > 0)
                     mainRoot.lastExploreFreqMhz = exploreFreqMhz;
                 // The session is no longer the saved system it started as: its
@@ -1237,7 +1237,7 @@ Window {
                 callHistory.sessionUid = "";
             }
             onSaveAsSystem: function (freqHz) {
-                wizard.openForFound(mainRoot.sessionSystem, Util.mhzText(freqHz));
+                wizard.openForFound(mainRoot.sessionSystem, Util.mhzValueText(freqHz));
                 mainRoot.wizardOpen = true;
             }
         }

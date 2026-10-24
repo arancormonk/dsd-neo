@@ -1251,7 +1251,7 @@ Item {
         property string openedText: ""
 
         function open(hz) {
-            goToField.text = Util.mhzText(hz);
+            goToField.text = Util.mhzValueText(hz);
             openedText = goToField.text;
             visible = true;
             goToField.forceActiveFocus();
@@ -1321,7 +1321,7 @@ Item {
                     text: modelData.label
                     caret: false
                     active: screen.band ? screen.band.label === modelData.label : false
-                    onClicked: goToField.text = Util.mhzText(modelData.start)
+                    onClicked: goToField.text = Util.mhzValueText(modelData.start)
                 }
             }
         }

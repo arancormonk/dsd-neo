@@ -28,15 +28,24 @@ kind_accepts(int filterKind, bool voice, bool enc) {
     }
 }
 
-/** @brief Case-insensitive search over identity, payload text and the scan channel heard on. */
+/** @brief An ID's text when the row prints it; 0 is "none decoded", which no row shows. */
+QString
+shown_id(const QAbstractItemModel* source, const QModelIndex& idx, int role) {
+    const qulonglong id = source->data(idx, role).toULongLong();
+    return id > 0 ? QString::number(id) : QString();
+}
+
+/** @brief Case-insensitive search over identity, payload text, the scan channel and the frequency heard on. */
 bool
-text_matches(const QAbstractItemModel* source, const QModelIndex& idx, const QString& text) {
+text_matches(const QAbstractItemModel* source, const QModelIndex& idx, const QString& text,
+             const FrequencyQuery& frequency) {
     return source->data(idx, CallHistoryModel::NameRole).toString().contains(text, Qt::CaseInsensitive)
-           || source->data(idx, CallHistoryModel::TgRole).toString().contains(text)
-           || source->data(idx, CallHistoryModel::SrcRole).toString().contains(text)
+           || shown_id(source, idx, CallHistoryModel::TgRole).contains(text)
+           || shown_id(source, idx, CallHistoryModel::SrcRole).contains(text)
            || source->data(idx, CallHistoryModel::SourceNameRole).toString().contains(text, Qt::CaseInsensitive)
            || source->data(idx, CallHistoryModel::DetailRole).toString().contains(text, Qt::CaseInsensitive)
-           || source->data(idx, CallHistoryModel::ChannelRole).toString().contains(text, Qt::CaseInsensitive);
+           || source->data(idx, CallHistoryModel::ChannelRole).toString().contains(text, Qt::CaseInsensitive)
+           || frequency_query_matches(frequency, source->data(idx, CallHistoryModel::FreqHzRole).toLongLong());
 }
 
 } // namespace
@@ -57,8 +66,18 @@ CallHistoryFilterModel::setFilterText(const QString& text) {
     if (text == m_filterText) {
         return;
     }
-    applyFilterChange([&]() { m_filterText = text; });
+    applyFilterChange([&]() {
+        m_filterText = text;
+        m_query = text.trimmed();
+        m_frequency = frequency_query_parse(m_query);
+    });
+    Q_EMIT filterTextChanged();
     Q_EMIT filterChanged();
+}
+
+bool
+CallHistoryFilterModel::frequencyMatches(qint64 hz) const {
+    return frequency_query_matches(m_frequency, hz);
 }
 
 void
@@ -106,7 +125,7 @@ CallHistoryFilterModel::filterAcceptsRow(int source_row, const QModelIndex& sour
     if (!kind_accepts(m_filterKind, voice, enc)) {
         return false;
     }
-    return m_filterText.isEmpty() || text_matches(source, idx, m_filterText);
+    return m_query.isEmpty() || text_matches(source, idx, m_query, m_frequency);
 }
 
 } // namespace dsd_qt
