@@ -4687,6 +4687,12 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Target: `dsd-neo_fec`
 - Responsibilities: BCH, Golay, Hamming, RS, and BPTC helpers. Protocol-specific CRC/FCS helpers live with the
   corresponding protocol modules under `src/protocol/...`.
+- `bptc.c` / `<dsd-neo/fec/bptc.h>`: `BPTC_196x96_Extract_Data()` is the best-effort DMR payload extractor; a column
+  whose Hamming(13,9) decode fails keeps its received bits (the Hamming(15,11) rows correct every syndrome).
+  `BPTC_196x96_Decode_Codeword()` instead decodes a copy with full row and column copy-back (parity included, two
+  passes) and succeeds only on a valid product codeword, returning that codeword's payload, R bits and its distance to
+  the received bits. The decode is iterative, not nearest-codeword (some four-error patterns reach a different
+  codeword at distance 5), so callers gate on the distance.
 - Build files: `src/fec/CMakeLists.txt`
 
 ## Crypto

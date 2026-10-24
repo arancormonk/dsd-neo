@@ -11792,6 +11792,22 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_fec_bptc_rs PRIVATE dsd-neo_fec)
 add_test(NAME FEC_BPTC_RS COMMAND dsd-neo_test_fec_bptc_rs)
 
+# BPTC(196,96) failed-column copy-back and the full codeword decoder
+add_executable(
+    dsd-neo_test_fec_bptc_codeword
+    fec/test_fec_bptc_codeword.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_fec_bptc_codeword
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_fec_bptc_codeword
+    PRIVATE dsd-neo_core dsd-neo_test_support
+)
+add_test(NAME FEC_BPTC_CODEWORD COMMAND dsd-neo_test_fec_bptc_codeword)
+
 # BCH(63,16,11) decoder unit tests
 add_executable(dsd-neo_test_fec_bch_63_16_unit fec/test_fec_bch_63_16_unit.cpp)
 target_include_directories(
