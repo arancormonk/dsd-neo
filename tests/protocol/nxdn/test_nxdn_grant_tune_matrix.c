@@ -1664,6 +1664,60 @@ nxdn_run_in_place_follow_binds_call_case(void) {
     }
     return rc;
 }
+
+/* A followed call whose voice arrives with no message naming it (no VCALL, no SCCH: nothing reads the held call while
+ * it lasts) fades by a sync loss, which the engine's no-carrier pass reports (nxdn_held_call_note_call_end()). The held
+ * call was awaiting that call, the first to begin after the follow: the end binds it there, so the next anonymous
+ * transmission (within the hangtime when @p within, a gap record of unknown identity; past it, none) inherits neither
+ * the followed talkgroup's identity nor its priority, and an outranking preempting call never takes the receiver. */
+static int
+nxdn_run_unnamed_followed_call_fades_variant(int within) {
+    const char* const name =
+        within ? "type-c-unnamed-followed-call-fades-within-hangtime" : "type-c-unnamed-followed-call-fades-past";
+    type_c_fixture();
+    g_opts.trunk_hangtime = 2.0f;
+    policy_row(1100U, 10, 0);
+    policy_row(1200U, 100, 1);
+    int rc = 0;
+    at_seconds(9900.0);
+    send_assignment(0x04U, 1100U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 1U && g_state.nxdn_call.call_epoch == 0U, name,
+                      "follow", "the held call awaits its call");
+    at_seconds(9900.2);
+    voice_live();
+    late_entry_call();
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE, name,
+                      "voice", "the followed call's voice opened a call");
+    const uint64_t first = dsd_call_snapshot_transmission(&call);
+
+    at_seconds(9900.9);
+    voice_live();
+    (void)dsd_call_state_end_ex(&g_state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS); /* no-carrier pass */
+    nxdn_held_call_note_call_end(&g_state);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED
+                          && g_state.nxdn_call.call_epoch == first
+                          && fabs(g_state.nxdn_call.call_seen_m - call.ended_m) < 1e-6,
+                      name, "fade", "the end binds the held call to the call that faded");
+
+    at_seconds(within ? 9902.5 : 9904.0); /* past the reacquire gap; within or past the 2 s hangtime */
+    voice_live();
+    late_entry_call();
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && dsd_call_snapshot_transmission(&call) != first,
+                      name, "next", "the next transmission is a call of its own");
+    at_seconds(within ? 9902.6 : 9904.1);
+    voice_live();
+    send_assignment(0x05U, 1200U, 17U);
+    rc |= nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.valid == 0U, name, "next",
+                      "the next anonymous call is not preempted as the faded one");
+    return rc;
+}
+
+static int
+nxdn_run_unnamed_followed_call_fades_case(void) {
+    return nxdn_run_unnamed_followed_call_fades_variant(0) | nxdn_run_unnamed_followed_call_fades_variant(1);
+}
 #endif
 
 /* A resident Type-D call heard without a grant tune (the receiver parked on its repeater) ends with its DISC: the next,
@@ -1908,6 +1962,53 @@ nxdn_run_type_d_private_after_group_case(void) {
     return rc;
 }
 
+/* A Type-D private call (priority 0) whose talker an INFO3 source update names, and a busy message for it repeated
+ * while it is live: INFO3 may misname the talker, so its source never enters the held call's policy (Type-D admission
+ * judges a busy message by its target alone). A priority-100 row for that source never shields the call, and a p50
+ * preempting group takes the receiver after the dwell. */
+static int
+nxdn_run_type_d_private_info3_source_case(void) {
+    static const char* const name = "type-d-private-info3-source";
+    const nxdn_case held = type_d_fixture(1U, 1400U);
+    policy_row(1700U, 100, 0);
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9150.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    rc |=
+        nxdn_expect(g_tune_count == 1 && g_state.nxdn_call.private_call == 1U, name, "follow", "private call followed");
+    at_seconds(9150.2);
+    voice_live();
+    late_entry_call();
+    at_seconds(9150.3);
+    voice_live();
+    nxdn_run_case_decode(&held); /* names the anonymous call */
+    uint8_t message[32];
+    at_seconds(9150.4);
+    voice_live();
+    build_scch_identity(message, 1U, 0U, 1700U); /* INFO3: source 1700 */
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    at_seconds(9150.5);
+    voice_live();
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.private_call == 1U,
+                      name, "source", "the private call is still held");
+
+    nxdn_case other = held;
+    other.scch_gu = 0U;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9151.2);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "preempt",
+                      "a p50 preempt outranks the p0 private call (no priority from its INFO3 source)");
+    return rc;
+}
+
 /* A Type-D private call to 1450 is on the receiver's repeater when an INFO2 target message there names another
  * destination, 1460: the call it names is not the private one, and INFO2 carries no class, so it is of no known class
  * until a classified message names it. The private class never moves to the new target, which would ignore the
@@ -2047,6 +2148,7 @@ main(void) {
     rc |= nxdn_run_type_d_resident_sync_loss_case();
     rc |= nxdn_run_type_d_followed_new_call_case();
     rc |= nxdn_run_type_d_held_no_source_fallback_case();
+    rc |= nxdn_run_type_d_private_info3_source_case();
     rc |= nxdn_run_type_d_private_after_group_case();
     rc |= nxdn_run_type_d_info2_new_target_case();
     rc |= nxdn_run_type_c_takeover_ends_left_call_case();
@@ -2057,6 +2159,7 @@ main(void) {
     rc |= nxdn_run_sync_loss_reply_keeps_dwell_case();
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
+    rc |= nxdn_run_unnamed_followed_call_fades_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

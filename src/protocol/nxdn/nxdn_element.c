@@ -1758,6 +1758,14 @@ nxdn_hold_takes_over(const dsd_state* state, const dsd_nxdn_call_identity* cur, 
     return hold_matches && !(cur && cur->target == state->tg_hold);
 }
 
+/* The source the held call's policy is judged with: a Type-D call's none, as Type-D admission judges a busy message by
+ * its target alone (nxdn_scch_apply_busy_tune()): its source comes from INFO3 updates, which may misname the talker and
+ * so never reach policy, group or private. */
+static uint32_t
+nxdn_held_policy_source(const dsd_nxdn_call_identity* cur) {
+    return cur->type_d ? 0U : cur->source;
+}
+
 /* A preempting candidate takes the receiver from the held call it outranks (dsd_tg_policy_should_preempt()), judged
  * against that call as described from when it became the held call. A held call whose identity is not known is never
  * preempted. */
@@ -1768,17 +1776,18 @@ nxdn_preempts(const dsd_opts* opts, dsd_state* state, const dsd_nxdn_call_identi
         return 0;
     }
     const double now_m = dsd_decode_now_mono_s();
+    const uint32_t source = nxdn_held_policy_source(cur);
     dsd_tg_policy_call_route route;
     DSD_MEMSET(&route, 0, sizeof route);
     route.target_id = cur->target;
-    route.source_id = cur->source;
+    route.source_id = source;
     route.freq_hz = rx > 0 ? rx : cur->rx_freq_hz;
     route.channel =
         (nxdn_follow_valid(opts, state) && state->nxdn_follow.freq_hz == route.freq_hz) ? state->nxdn_follow.chan : 0;
     route.slot = -1;
-    /* Judged as its admission was: a Type-D call with no source fallback (nxdn_scch_apply_busy_tune()). */
+    /* Judged as its admission was: a Type-D call by its target alone, with no source fallback. */
     dsd_tg_policy_decision held;
-    (void)nxdn_policy_tune_allowed(opts, state, cur->target, cur->source, cur->private_call, cur->data_call,
+    (void)nxdn_policy_tune_allowed(opts, state, cur->target, source, cur->private_call, cur->data_call,
                                    cur->type_d ? 0 : 1, &held);
     if (dsd_tg_policy_describe_followed_call(state, &route, &held, cur->follow_m, now_m) != 0) {
         return 0;

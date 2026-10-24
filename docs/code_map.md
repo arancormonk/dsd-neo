@@ -4976,12 +4976,16 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     priority or its dwell. A release or Type-D termination on the followed route updates the binding from the ended
     call at once (`nxdn_call_identity_end()` refreshes it: the call's own end time), and so does a sync loss, which no
     NXDN message reports: the engine's no-carrier pass calls `nxdn_held_call_note_call_end()` (`nxdn_held_call.c`,
-    which only stamps the bound call's end and writes no ledger) right after it ends the calls. A reply's gap is so
+    which only stamps the bound call's end and writes no ledger; a held call still awaiting its call, a follow whose
+    voice no message named, binds there to the ended call when that is the first to begin after it was named, so the
+    next transmission never takes it) right after it ends the calls. A reply's gap is so
     measured from the end, however long ago the identity was last read. A held call known only from the call heard there (no
     valid route: a resident call, no grant tune) ends with that call: a release, DISC or Type-D termination clears it
     (`nxdn_call_identity_end()`), as its canonical end does, so the next call there is unknown until a message names
     it. A Type-D held call (`type_d`: followed from a busy message, named by an SCCH, or by a VCALL on an RTCH2 or the
-    followed Type-D route) is judged as Type-D admission judges it, with no source fallback.
+    followed Type-D route) is judged as Type-D admission judges it, by its target alone (`nxdn_held_policy_source()`):
+    no source fallback for a group call and no source for a private one, so an INFO3 source, which may misname the
+    talker, never reaches policy.
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
     hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per
@@ -5007,7 +5011,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     second the message is followed as before. INFO3 names no go-to repeater (`rep1` is a free repeater), so its source
     enrichment is unchanged and can misname a talker (documented limit); it never changes the target or the policy.
   - Ledger: `nxdn_preempts()` describes the held call (`dsd_tg_policy_describe_followed_call()`, start `follow_m`; a
-    Type-D one without the source fallback) before `dsd_tg_policy_should_preempt()`, with the candidate's route
+    Type-D one by its target alone) before `dsd_tg_policy_should_preempt()`, with the candidate's route
     `requires_tuner_retune`; a held call whose identity is not known is never preempted, only displaced by Hold. An
     accepted tune notes the followed call (`nxdn_note_follow()`): a follow that was no preemption first clears the
     ledger, so a call left there (the engine's hangtime return) does not read as a takeover; a preemption commits its
