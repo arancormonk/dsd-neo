@@ -816,6 +816,50 @@ test_cap_plus_seed_only_carrier(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Reception restricted to TS1: a status follows the p10 TS1 call and seeds a p100 companion on the rejected TS2. Before
+   the first voice the acquisition holds only the admitted slot, so a p100 preempting call on another carrier's TS1
+   takes the receiver after the dwell. A slot merely awaiting its colour-code check stays a held call: under a pending
+   DCC check the p90 seed still keeps a p60 candidate out, and a p95 one outranks both seeds. */
+static int
+test_cap_plus_seed_receive_slot_admission(dsd_opts* opts, dsd_state* st) {
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 77, "A", 100, 0);
+    seed_policy_row(st, 45, "A", 100, 1);
+    int rc = expect_true("slot filter parsed",
+                         dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 77U, 0U, 0U});
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    rc |= expect_true("cap+ follows the TS1 call and seeds the TS2 companion",
+                      st->trunk_vc_freq[0] == ST_F1 && sm->slots[1].target == 77U);
+    status_clock_at(1.0);
+    dmr_sm_busy_view_t view;
+    rc |= expect_true("acquisition holds only the admitted slot",
+                      dmr_sm_describe_held_calls(sm, opts, st, dsd_decode_now_mono_s(), &view) == 1
+                          && view.members == 0x1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 45U, 0U});
+    rc |= expect_true("cap+ p100 preempt outranks the admitted p10 call, not the rejected seed",
+                      st->trunk_vc_freq[0] == ST_F3);
+    status_env_done(st);
+
+    status_env(opts, st);
+    seed_policy_row(st, 42, "A", 10, 0);
+    seed_policy_row(st, 77, "A", 90, 0);
+    seed_policy_row(st, 43, "A", 60, 1);
+    seed_policy_row(st, 45, "A", 95, 1);
+    rc |= expect_true("dcc filter parsed",
+                      dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "7", "", "", NULL, 0) == 0);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){42U, 77U, 0U, 0U});
+    rc |= expect_true("cap+ seed-only follow under a pending check", st->trunk_vc_freq[0] == ST_F1);
+    status_clock_at(1.0);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 43U, 0U});
+    rc |= expect_true("cap+ pending check: p60 does not outrank the p90 seed", st->trunk_vc_freq[0] == ST_F1);
+    run_cap_plus_groups(opts, st, (const uint8_t[4]){0U, 0U, 45U, 0U});
+    rc |= expect_true("cap+ pending check: p95 outranks both seeds", st->trunk_vc_freq[0] == ST_F3);
+    status_env_done(st);
+    return rc;
+}
+
 /* Hold takes the receiver from a non-held carrier; a carrier whose companion slot carries the Hold group keeps it. */
 static int
 test_cap_plus_hold(dsd_opts* opts, dsd_state* st) {
@@ -2336,6 +2380,7 @@ main(void) {
     rc |= test_cap_plus_allow_list_does_not_hop(opts, st);
     rc |= test_cap_plus_preempt_ranking(opts, st);
     rc |= test_cap_plus_seed_only_carrier(opts, st);
+    rc |= test_cap_plus_seed_receive_slot_admission(opts, st);
     rc |= test_cap_plus_hold(opts, st);
     rc |= test_cap_plus_seed_identity_reconcile(opts, st);
     rc |= test_cap_plus_seed_private_activity(opts, st);

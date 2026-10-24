@@ -1822,12 +1822,34 @@ nxdn_end_left_call(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Whether the call on the air (slot 0's canonical call, active) is the one an announcement names: an NXDN call of
+ * @p target whose kind, when it has one, is the announcement's (a generic voice call, late entry, is of either class). */
+static int
+nxdn_on_air_call_is(const dsd_state* state, uint32_t target, int private_call, int data_call) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_NXDN(call.protocol) || call.policy_target_id != target) {
+        return 0;
+    }
+    switch (call.kind) {
+        case DSD_CALL_KIND_GROUP_VOICE: return !data_call && !private_call;
+        case DSD_CALL_KIND_PRIVATE_VOICE: return !data_call && private_call;
+        case DSD_CALL_KIND_DATA: return data_call;
+        default: return !data_call;
+    }
+}
+
 /* The receiver went to @p freq for @p target: the route and the held call are the followed one's, and the talkgroup
  * policy's preemption ledger holds it. A new call replaces whatever the ledger held, so nothing left there reads as a
  * takeover; a preemption commits its cooldown; the call the receiver still held is described from its follow time,
  * so a repeat of its announcement never restarts the dwell. Only that still-held call keeps its record: any other
  * follow discards the previous one (the engine's hangtime return leaves it behind, bound to a call that is over), so
- * the followed call never inherits its follow time or binding. */
+ * the followed call never inherits its follow time or binding. The held call binds to the call on the air when that is
+ * the announced one (nxdn_on_air_call_is()): a follow that left the carrier ended the call there
+ * (nxdn_end_left_call()), so a call still active is on the followed carrier, and the follow found it in place; its
+ * release then ends the held call, and the next transmission never inherits its identity. Else it awaits the first
+ * call to begin after the follow. */
 static void
 nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call, uint16_t chan,
                  long int freq, uint8_t repeater, const dsd_tg_policy_decision* decision, nxdn_follow_how how) {
@@ -1838,7 +1860,8 @@ nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private
     state->nxdn_follow.freq_hz = freq;
     state->nxdn_follow.chan = chan;
     state->nxdn_follow.repeater = repeater;
-    nxdn_call_identity_set(state, target, source, private_call, data_call, repeater != 0U, freq, now_m, 0);
+    const int on_air = nxdn_on_air_call_is(state, target, private_call, data_call);
+    nxdn_call_identity_set(state, target, source, private_call, data_call, repeater != 0U, freq, now_m, on_air);
     dsd_tg_policy_call_route route;
     DSD_MEMSET(&route, 0, sizeof route);
     route.target_id = target;

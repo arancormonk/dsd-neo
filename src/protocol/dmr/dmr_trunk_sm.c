@@ -1720,10 +1720,36 @@ dmr_sm_describe_identity(const dsd_opts* opts, dsd_state* state, const dmr_sm_sl
     return decision.tg_hold_match;
 }
 
+/* Before any voice, the slots a TUNED carrier's acquisition holds: the grant's slot (a slotless grant: each slot the
+   following status selected or seeded, known identity or not, and each slot named on the carrier, else none, the
+   grant's identity then standing for the carrier), each only on a slot the receive policy's slot filter admits (a seed
+   on a rejected slot never holds the receiver). The slot alone is judged (dsd_receive_grant_allows()): a slot whose
+   colour code is still being checked is held while the check runs. */
+static int
+dmr_sm_acquire_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts) {
+    int acquiring = 0;
+    if (ctx->vc_slot >= 0 && ctx->vc_slot <= 1) {
+        acquiring = 1 << ctx->vc_slot;
+    } else {
+        acquiring = ctx->vc_acquire_slots & 0x3;
+        for (int s = 0; s < 2; s++) {
+            if (dmr_sm_slot_identity_known(&ctx->slots[s]) && ctx->slots[s].carrier_hz == ctx->vc_freq_hz) {
+                acquiring |= 1 << s;
+            }
+        }
+    }
+    int members = 0;
+    for (int s = 0; s < 2; s++) {
+        if ((acquiring & (1 << s)) && dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
+            members |= 1 << s;
+        }
+    }
+    return members;
+}
+
 /* TUNED: which slots hold a call. Live voice or the slot's own hangtime tail, on a slot the receive policy admits (as for
-   the receive hold: rejected media never holds the receiver, its tail included); before any voice, the grant's slot (a
-   slotless grant: each slot the following status selected or seeded, known identity or not, and each slot named on the
-   carrier, else none, the grant's identity then standing for the carrier). */
+   the receive hold: rejected media never holds the receiver, its tail included); before any voice, the acquisition's
+   slots (dmr_sm_acquire_members()). */
 static int
 dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m,
                      dmr_sm_hold_e hold) {
@@ -1740,16 +1766,7 @@ dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
         }
     }
     if (hold == DMR_SM_HOLD_ACQUIRING) {
-        if (ctx->vc_slot >= 0 && ctx->vc_slot <= 1) {
-            members |= 1 << ctx->vc_slot;
-        } else {
-            members |= ctx->vc_acquire_slots & 0x3;
-            for (int s = 0; s < 2; s++) {
-                if (dmr_sm_slot_identity_known(&ctx->slots[s]) && ctx->slots[s].carrier_hz == ctx->vc_freq_hz) {
-                    members |= 1 << s;
-                }
-            }
-        }
+        members |= dmr_sm_acquire_members(ctx, opts);
     }
     return members;
 }

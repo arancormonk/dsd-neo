@@ -4962,8 +4962,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     previous record outright unless it re-follows the call the receiver still holds (`NXDN_FOLLOW_HELD`, a Type-D busy
     message repeated past the voice window): a record the engine's hangtime return left behind never lends the
     followed call its follow time or binding, even for the same target on the same channel. It is bound to the
-    canonical call it names (`call_epoch`: that call's `dsd_call_snapshot_transmission()`; a follow's identity binds to
-    the first call to begin after the tune, a VCALL's or SCCH's to the call on the air) and never outlives it
+    canonical call it names (`call_epoch`: that call's `dsd_call_snapshot_transmission()`; a VCALL's or SCCH's identity
+    binds to the call on the air, and so does a follow's that found the announced call in place
+    (`nxdn_on_air_call_is()`: its target, and its kind when it has one; a follow that left the carrier ended the call
+    there, so an active one is on the followed carrier), whose release then ends the held call, so the next
+    transmission never inherits its identity; any other follow's binds to the first call to begin after the tune) and
+    never outlives it
     (`nxdn_call_identity_refresh()`, before every read): its call's end, a sync loss included, clears it except on the
     followed route within the hangtime (a conversation is held in its gaps); another call clears it, and on the followed
     route one that began within the hangtime of the named call leaves a gap record (unknown, `valid` 0) whose renaming
@@ -5012,7 +5016,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `dmr_sm_end_left_calls()`) before the follow is noted, so the followed call's voice, before its VCALL names it,
     opens an epoch of its own that the held call binds to, never continuing the displaced call under its identity and
     policy, and no sync loss reacquires the displaced call there; a follow on the same carrier (the in-place repeat of
-    the held call) leaves the call on the air alone. DISC's return and a Type-D termination (repeater 31) tune clear
+    the held call, or a resident call's announcement) leaves the call on the air alone, and the held call binds to it
+    when it is the announced call. DISC's return and a Type-D termination (repeater 31) tune clear
     the route, the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25
     SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX` (also built on the real canonical call state as
     `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),
@@ -5361,7 +5366,9 @@ Private per-protocol modules worth knowing about:
     Before the first voice the held slots are the grant's slot; for a slotless status follow (Cap+), each slot the
     status selected (`dmr_sm_note_status_follow()`) or seeded (`dmr_sm_capplus_seed_arm()`), tracked apart from identity
     knowledge (`vc_acquire_slots`), so a private LSN or a seed a later status left unknown is a held call of unknown
-    identity, and each slot named on the carrier; once there is voice, each slot the receive policy admits whose voice
+    identity, and each slot named on the carrier, each only on a slot the receive slot filter admits
+    (`dsd_receive_grant_allows()`, the slot alone: a seed on a rejected slot holds nothing, while a slot whose colour
+    code is still being checked is held); once there is voice, each slot the receive policy admits whose voice
     is live or in its hangtime tail (a slot a receive edit rejected holds nothing, its tail included). ON_CC: calls
     heard on the carrier the receiver listens on (composite TSCC payload, XPT parking, late entry) whose identity is
     known there and admitted by the policy, on a slot the receive policy admits (`dsd_receive_allows()`, as for the
