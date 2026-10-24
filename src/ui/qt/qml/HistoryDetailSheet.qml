@@ -24,7 +24,7 @@ ModalSheet {
             Accessible.role: Accessible.StaticText
             Accessible.name: modelData
             readonly property bool navigationAllowed: Navigation.allows(sheet)
-            Accessible.ignored: !visible || !navigationAllowed
+            Accessible.ignored: !navigationAllowed || !visible
             text: modelData
             textFormat: Text.PlainText
             wrapMode: Text.WrapAnywhere

@@ -19,12 +19,12 @@ Item {
     // button is disabled exactly as before.
     property bool inputValid: true
     enabled: inputValid || Navigation.composing
-    activeFocusOnTab: enabled && inputValid && visible && Navigation.allows(control)
+    activeFocusOnTab: Navigation.allows(control) && enabled && inputValid && visible
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.focusable: true
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
         if (!enabled || !Navigation.allows(control))

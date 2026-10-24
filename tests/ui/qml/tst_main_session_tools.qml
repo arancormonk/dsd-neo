@@ -39,6 +39,9 @@ Item {
         readonly property var app: loader.item
         property bool originalOnboarding: false
         function init() {
+            // A recreated Activity used to re-enter accessibility and slot-height
+            // bindings while the monitor's tier groups settled their parents.
+            failOnWarning(/Binding loop detected/);
             verify(app !== null);
             testContext.useLifecycleHost(true);
             testContext.setLifecycleFailure("");

@@ -10,11 +10,11 @@ Item {
     property string accessibleName: name
     property bool interactive: false
     signal activated
-    activeFocusOnTab: interactive && enabled && Navigation.allows(row)
+    activeFocusOnTab: Navigation.allows(row) && interactive && enabled
     Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
     Accessible.name: accessibleName
     readonly property bool navigationAllowed: Navigation.allows(row)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
         if (interactive && enabled && Navigation.allows(row))

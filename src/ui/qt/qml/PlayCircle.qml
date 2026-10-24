@@ -11,11 +11,11 @@ Item {
     property bool featured: false
     property string accessibleName: qsTr("Listen")
     signal clicked
-    activeFocusOnTab: enabled && Navigation.allows(control)
+    activeFocusOnTab: Navigation.allows(control) && enabled
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
         if (enabled && Navigation.allows(control))

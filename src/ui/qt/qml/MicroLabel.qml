@@ -10,7 +10,8 @@ Text {
     Accessible.role: Accessible.Heading
     Accessible.name: text
     readonly property bool navigationAllowed: Navigation.allows(label)
-    Accessible.ignored: !visible || !navigationAllowed
+    // Gate first: see OutlineButton.
+    Accessible.ignored: !navigationAllowed || !visible
     font.family: Theme.mono
     font.pixelSize: Theme.fontSize(11)
     font.letterSpacing: Theme.fontSize(11) * 0.18

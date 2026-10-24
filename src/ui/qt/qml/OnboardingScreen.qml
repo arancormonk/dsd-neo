@@ -43,7 +43,7 @@ Item {
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
                 readonly property bool navigationAllowed: Navigation.allows(screen)
-                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 width: parent.width
                 text: qsTr("Hear your local airwaves")
                 font.family: Theme.sans
@@ -58,7 +58,7 @@ Item {
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
                 readonly property bool navigationAllowed: Navigation.allows(screen)
-                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 width: parent.width
                 text: qsTr("Police, fire, EMS and ham digital radio — decoded live on your phone.")
                 font.family: Theme.sans
@@ -94,7 +94,7 @@ Item {
                                 Accessible.role: Accessible.StaticText
                                 Accessible.name: text
                                 readonly property bool navigationAllowed: Navigation.allows(screen)
-                                Accessible.ignored: !visible || !navigationAllowed
+                                Accessible.ignored: !navigationAllowed || !visible
                                 anchors.centerIn: parent
                                 text: index + 1
                                 font.family: Theme.mono
@@ -107,7 +107,7 @@ Item {
                             Accessible.role: Accessible.StaticText
                             Accessible.name: text
                             readonly property bool navigationAllowed: Navigation.allows(screen)
-                            Accessible.ignored: !visible || !navigationAllowed
+                            Accessible.ignored: !navigationAllowed || !visible
                             width: parent.width - 40
                             wrapMode: Text.Wrap
                             text: modelData
@@ -142,7 +142,7 @@ Item {
                         Accessible.role: Accessible.StaticText
                         Accessible.name: text
                         readonly property bool navigationAllowed: Navigation.allows(screen)
-                        Accessible.ignored: !visible || !navigationAllowed
+                        Accessible.ignored: !navigationAllowed || !visible
                         width: parent.width
                         text: screen.dongleFailed ? qsTr("RTL-SDR needs attention") : screen.dongleReady ? qsTr("RTL-SDR dongle connected") : qsTr("No dongle detected")
                         wrapMode: Text.Wrap
@@ -155,7 +155,7 @@ Item {
                         Accessible.role: Accessible.StaticText
                         Accessible.name: text
                         readonly property bool navigationAllowed: Navigation.allows(screen)
-                        Accessible.ignored: !visible || !navigationAllowed
+                        Accessible.ignored: !navigationAllowed || !visible
                         objectName: "dongleStatusText"
                         width: parent.width
                         text: decoderHost.localDeviceStatus || (screen.dongleReady ? "RTL2832U · USB-OTG · " + qsTr("ready") : qsTr("plug one in, then tap Connect"))
@@ -179,7 +179,7 @@ Item {
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
                 readonly property bool navigationAllowed: Navigation.allows(screen)
-                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 width: parent.width
                 text: qsTr("Long sessions? A powered OTG hub keeps the dongle fed and your battery out of it.")
                 font.family: Theme.sans

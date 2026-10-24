@@ -810,11 +810,11 @@ Rectangle {
                     objectName: "scanAdvancedToggle"
                     width: parent.width
                     height: Math.max(66, advHeading.implicitHeight + 24)
-                    activeFocusOnTab: enabled && Navigation.allows(advHeader)
+                    activeFocusOnTab: Navigation.allows(advHeader) && enabled
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Advanced")
                     Accessible.description: screen.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed")
-                    Accessible.ignored: !visible || !Navigation.allows(advHeader)
+                    Accessible.ignored: !Navigation.allows(advHeader) || !visible
                     Accessible.onPressAction: toggle()
                     Keys.onSpacePressed: toggle()
                     Keys.onReturnPressed: toggle()

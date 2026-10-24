@@ -15,12 +15,12 @@ Item {
         if (enabled && interactive && Navigation.allows(control))
             toggled(!checked);
     }
-    activeFocusOnTab: enabled && interactive && Navigation.allows(control)
+    activeFocusOnTab: Navigation.allows(control) && enabled && interactive
     Accessible.role: Accessible.Switch
     Accessible.name: accessibleName
     Accessible.checkable: true
     Accessible.checked: checked
-    Accessible.ignored: !visible || !interactive || !Navigation.allows(control)
+    Accessible.ignored: !Navigation.allows(control) || !visible || !interactive
     Accessible.onPressAction: activate()
     Accessible.onToggleAction: activate()
     Keys.onSpacePressed: activate()

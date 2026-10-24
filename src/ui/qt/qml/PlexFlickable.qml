@@ -8,7 +8,7 @@ Flickable {
     Accessible.name: accessibleName
     Accessible.focusable: false
     readonly property bool navigationAllowed: Navigation.allows(viewport)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     function scrollPage(direction) {
         if (!enabled || !Navigation.allows(viewport))
             return;

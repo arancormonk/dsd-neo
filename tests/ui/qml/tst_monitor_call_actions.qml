@@ -23,6 +23,8 @@ Item {
             return item;
         }
         function init() {
+            // A session map without a name used to bind undefined to the monitor header.
+            failOnWarning(/MonitorScreen.qml.*Unable to assign/);
             testContext.resetCommands();
             testContext.setHostRunning(true);
             testContext.setMetric("leadSlot", 1);

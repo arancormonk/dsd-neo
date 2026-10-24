@@ -10,7 +10,7 @@ Item {
     property string text: ""
     signal clicked
 
-    activeFocusOnTab: enabled && Navigation.allows(control)
+    activeFocusOnTab: Navigation.allows(control) && enabled
     Accessible.role: Accessible.Button
     Accessible.name: text
     Accessible.focusable: true

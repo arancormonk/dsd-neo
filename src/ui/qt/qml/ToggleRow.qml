@@ -18,14 +18,14 @@ Item {
 
     width: parent ? parent.width : 0
     height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + 24)
-    activeFocusOnTab: enabled && Navigation.allows(row)
+    activeFocusOnTab: Navigation.allows(row) && enabled
     Accessible.role: Accessible.Switch
     Accessible.name: title
     Accessible.description: subtitle
     Accessible.checkable: true
     Accessible.checked: checked
     readonly property bool navigationAllowed: Navigation.allows(row)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     Accessible.onToggleAction: activate()
     function activate() {

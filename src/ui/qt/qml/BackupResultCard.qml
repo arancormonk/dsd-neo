@@ -56,7 +56,7 @@ UiPanel {
     Accessible.role: Accessible.AlertMessage
     Accessible.name: speech
     readonly property bool navigationAllowed: Navigation.allows(card)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
 
     function count(value) {
         var n = Number(value);

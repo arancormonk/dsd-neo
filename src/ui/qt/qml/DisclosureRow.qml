@@ -41,14 +41,14 @@ Item {
 
     width: parent ? parent.width : 0
     height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + verticalPadding)
-    activeFocusOnTab: tapEnabled && Navigation.allows(row)
+    activeFocusOnTab: Navigation.allows(row) && tapEnabled
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.description: accessibleDescription
     Accessible.checkable: expandable
     Accessible.checked: expandable && expanded
     readonly property bool navigationAllowed: Navigation.allows(row)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
         if (!enabled || !tapEnabled || !Navigation.allows(row))
