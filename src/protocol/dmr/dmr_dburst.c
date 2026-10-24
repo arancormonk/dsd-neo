@@ -378,7 +378,7 @@ int
 dmr_ras_signature(uint8_t databurst, uint8_t confirmed_data, const uint8_t* payload_bytes, uint8_t r_bits,
                   uint32_t distance, int standard_check_ok) {
     if (payload_bytes == NULL || !dmr_ras_eligible_type(databurst, confirmed_data) || r_bits == 0
-        || distance > DMR_RAS_MAX_DISTANCE || standard_check_ok) {
+        || distance > DSD_BPTC_196x96_UNIQUE_RADIUS || standard_check_ok) {
         return 0;
     }
 
@@ -402,15 +402,15 @@ dmr_ras_signature(uint8_t databurst, uint8_t confirmed_data, const uint8_t* payl
 }
 
 /* A RAS candidate (reserved bits set, standard check failed): decode the burst to a full codeword. Within
-   DMR_RAS_MAX_DISTANCE that codeword is the unique nearest one, so its payload, R and check replace the extractor's
-   best effort and its signature is recorded; further away, or none, the burst stays as extracted. */
+   DSD_BPTC_196x96_UNIQUE_RADIUS that codeword is the unique nearest one, so its payload, R and check replace the
+   extractor's best effort and its signature is recorded; further away, or none, the burst stays as extracted. */
 static void
 dmr_dburst_decode_ras_candidate(dmr_data_burst_ctx* ctx) {
     uint8_t bits[96];
     uint8_t r[3];
     uint32_t distance = 0;
     if (BPTC_196x96_Decode_Codeword(ctx->bptc_deinterleaved, bits, r, &distance) == 0
-        || distance > DMR_RAS_MAX_DISTANCE) {
+        || distance > DSD_BPTC_196x96_UNIQUE_RADIUS) {
         return;
     }
     DSD_MEMCPY(ctx->bptc_data_bits, bits, sizeof(ctx->bptc_data_bits));

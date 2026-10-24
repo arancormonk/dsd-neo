@@ -315,8 +315,9 @@ test_signature_rules(void) {
     static const uint8_t eligible[] = {0x01, 0x02, 0x03, 0x04, 0x06, 0x0B};
     for (size_t i = 0; i < sizeof eligible; i++) {
         CHECK("eligible R=4", dmr_ras_signature(eligible[i], 0, bytes, 4, 0, 0) == 1);
-        CHECK("eligible distance 4", dmr_ras_signature(eligible[i], 0, bytes, 4, DMR_RAS_MAX_DISTANCE, 0) == 1);
-        CHECK("distance 5", dmr_ras_signature(eligible[i], 0, bytes, 4, DMR_RAS_MAX_DISTANCE + 1U, 0) == 0);
+        CHECK("eligible distance 4",
+              dmr_ras_signature(eligible[i], 0, bytes, 4, DSD_BPTC_196x96_UNIQUE_RADIUS, 0) == 1);
+        CHECK("distance 5", dmr_ras_signature(eligible[i], 0, bytes, 4, DSD_BPTC_196x96_UNIQUE_RADIUS + 1U, 0) == 0);
         CHECK("R=0", dmr_ras_signature(eligible[i], 0, bytes, 0, 0, 0) == 0);
         CHECK("check passed", dmr_ras_signature(eligible[i], 0, bytes, 4, 0, 1) == 0);
         for (uint8_t r = 1; r <= 7; r++) {

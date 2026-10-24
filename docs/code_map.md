@@ -4688,7 +4688,9 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Responsibilities: BCH, Golay, Hamming, RS, and BPTC helpers. Protocol-specific CRC/FCS helpers live with the
   corresponding protocol modules under `src/protocol/...`.
 - `bptc.c` / `<dsd-neo/fec/bptc.h>`: `BPTC_196x96_Extract_Data()` is the best-effort DMR payload extractor; a column
-  whose Hamming(13,9) decode fails keeps its received bits (the Hamming(15,11) rows correct every syndrome).
+  whose Hamming(13,9) decode fails keeps its received bits (the Hamming(15,11) rows correct every syndrome). It copies
+  back data bits only, so a parity-bit error can still fail its second pass; then it takes the full decoder's codeword
+  if that lies within `DSD_BPTC_196x96_UNIQUE_RADIUS` (4) and reports no irrecoverable error.
   `BPTC_196x96_Decode_Codeword()` instead decodes a copy with full row and column copy-back (parity included, two
   passes) and succeeds only on a valid product codeword, returning that codeword's payload, R bits and its distance to
   the received bits. The decode is iterative, not nearest-codeword (some four-error patterns reach a different
@@ -5361,8 +5363,8 @@ Private per-protocol modules worth knowing about:
   RAS computes a burst's CRC (RS(12,9) parity for a voice LC) over the payload and a secret, and sets the BPTC
   reserved bits R(2..0), which ETSI fixes at zero. A BPTC burst whose extractor R is nonzero and whose standard
   check failed is a candidate: only then does the handler run `BPTC_196x96_Decode_Codeword()`, and when that reaches a
-  codeword within `DMR_RAS_MAX_DISTANCE` (4, the guaranteed radius of the minimum-distance-9 product code, so the
-  unique nearest codeword) the codeword's payload, R and check replace the extractor's and are what is dispatched.
+  codeword within `DSD_BPTC_196x96_UNIQUE_RADIUS` (4, the guaranteed radius of the minimum-distance-9 product code,
+  so the unique nearest codeword) the codeword's payload, R and check replace the extractor's and are dispatched.
   The signature is that codeword's R nonzero and check failed, on an eligible type (PI with FID 0x10 only, voice LC
   header and terminator, CSBK, MBC header, data header, confirmed rate-1/2 block, USBD; never the MBC continuation,
   rate 3/4, rate 1 or idle) and not Hytera (byte 1 0x68 where it is a FID or MFID: CSBK, MBC header, voice LC

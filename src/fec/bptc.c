@@ -137,7 +137,9 @@ bptc_196x96_extract_payload_and_r(uint8_t matrix[13][15], uint8_t extracted[96],
  *
  * @param DMRDataExtracted : Pointer where the DMR data will be written (96 bytes)
  *
- * @return The total number of irrecoverable Hamming check errors
+ * @return The total number of irrecoverable Hamming check errors of the second
+ *         pass, or 0 when BPTC_196x96_Decode_Codeword() then finds a codeword
+ *         within DSD_BPTC_196x96_UNIQUE_RADIUS, whose payload and R are written
  */
 uint32_t
 BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtracted[96], uint8_t R[3]) {
@@ -151,6 +153,20 @@ BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtr
     hamming_irrecoverable_error_nb += bptc_196x96_decode_cols(DataMatrix);
 
     bptc_196x96_extract_payload_and_r(DataMatrix, DMRDataExtracted, R);
+    if (hamming_irrecoverable_error_nb != 0) {
+        // Only data bits are copied back above, so a row- or column-parity error
+        // can still fail the second pass with the payload right. A codeword
+        // within the unique radius is the nearest one: take it instead.
+        uint8_t codeword_bits[96];
+        uint8_t codeword_r[3];
+        uint32_t distance = 0;
+        if (BPTC_196x96_Decode_Codeword(InputDeInteleavedData, codeword_bits, codeword_r, &distance) == 1
+            && distance <= DSD_BPTC_196x96_UNIQUE_RADIUS) {
+            DSD_MEMCPY(DMRDataExtracted, codeword_bits, sizeof codeword_bits);
+            DSD_MEMCPY(R, codeword_r, sizeof codeword_r);
+            return 0;
+        }
+    }
     return hamming_irrecoverable_error_nb;
 } /* End BPTC_196x96_Extract_Data() */
 

@@ -245,6 +245,61 @@ test_codeword_random_words(void) {
     printf("random words decoded to a codeword: %u of 10000\n", successes);
 }
 
+/* A row-parity and a column-parity error in one column: the extractor copies
+ * back data bits only, so that column still fails on the second pass although
+ * the payload is right. The extractor then falls back to the full codeword
+ * decoder, whose codeword within the unique radius is the nearest one. */
+static void
+test_extract_falls_back_to_nearest_codeword(void) {
+    uint8_t payload[96];
+    uint8_t word[196];
+    uint8_t out[96];
+    uint8_t r[3];
+    build_word(k_csbk_bytes, k_csbk_r, payload, word);
+    word[matrix_bit(4, 11)] ^= 1U; // row-parity bit
+    word[matrix_bit(9, 11)] ^= 1U; // column-parity bit
+    assert(BPTC_196x96_Extract_Data(word, out, r) == 0);
+    assert(memcmp(out, payload, sizeof out) == 0);
+    assert(memcmp(r, k_csbk_r, sizeof r) == 0);
+
+    // Capacity Plus channel status CSBK from the dmr_voice fixture, CRC good:
+    // errors at matrix (4,11), (6,10) and (9,11), distance 3.
+    static const char k_voice_csbk[] = "0000101111100000000100001110111000110000001001000"
+                                       "0000000000000000000000010000000000000000000000000"
+                                       "0001000000000011000111000110110011101100000111001"
+                                       "1111000111000010000001010100101011001110011010010";
+    static const uint8_t k_voice_csbk_bytes[12] = {0xBE, 0x10, 0xE3, 0x00, 0x00, 0x00,
+                                                   0x00, 0x00, 0x00, 0x00, 0xC1, 0xB3};
+    assert(sizeof k_voice_csbk == 197);
+    for (size_t i = 0; i < 196; i++) {
+        word[i] = (uint8_t)(k_voice_csbk[i] == '1');
+    }
+    dsd_unpack_bytes_to_bits(k_voice_csbk_bytes, 12, payload, 96, 12);
+    uint32_t distance = 0;
+    assert(decode(word, out, r, &distance) == 1);
+    assert(distance == 3);
+    assert(memcmp(out, payload, sizeof out) == 0);
+    assert(BPTC_196x96_Extract_Data(word, out, r) == 0);
+    assert(memcmp(out, payload, sizeof out) == 0);
+    assert(memcmp(r, k_csbk_r, sizeof r) == 0);
+
+    // Beyond the radius the extractor keeps its own result and its count:
+    // these five errors fail the second pass and reach a codeword at distance 5.
+    static const size_t flips[5] = {88, 127, 134, 144, 178};
+    build_word(k_csbk_bytes, k_csbk_r, payload, word);
+    for (size_t i = 0; i < 5; i++) {
+        word[flips[i]] ^= 1U;
+    }
+    uint8_t codeword_out[96];
+    uint8_t codeword_r[3];
+    assert(decode(word, codeword_out, codeword_r, &distance) == 1);
+    assert(distance == 5);
+    uint8_t copy[196];
+    DSD_MEMCPY(copy, word, sizeof copy);
+    assert(BPTC_196x96_Extract_Data(copy, out, r) > 0);
+    assert(distance > DSD_BPTC_196x96_UNIQUE_RADIUS);
+}
+
 /* A word the decoder cannot finish returns 0 with zeroed outputs. */
 static void
 test_codeword_rejects(void) {
@@ -286,6 +341,7 @@ main(void) {
     test_codeword_wrong_beyond_radius();
     test_codeword_random_words();
     test_codeword_rejects();
+    test_extract_falls_back_to_nearest_codeword();
     printf("FEC BPTC codeword tests passed.\n");
     return 0;
 }
