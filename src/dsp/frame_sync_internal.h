@@ -126,6 +126,13 @@ void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* stat
  *         modulation untouched.
  */
 int frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
+/** @brief Arm (non-zero) or disarm the 2 s CQPSK dwell the 4800/4 profile holds a CQPSK chain for. */
+void frame_sync_qpsk_dwell_set(int armed);
+/* The P25p1 chain comparison's shared steps (frame_sync_p25p1_compare.c). */
+/** @brief End a comparison (dsd_p25p1_mod_compare): no phase, and the trial flag that kept the votes off is down. */
+void frame_sync_p25p1_mod_compare_end(dsd_state* state);
+/** @brief The chain the comparison would keep if it ended now: the incumbent, unless the other chain has read more. */
+int frame_sync_p25p1_mod_compare_leader(const dsd_state* state);
 double frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
                                   double mac_hold, double dt, int* left_active, int* right_active);

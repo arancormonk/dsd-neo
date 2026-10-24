@@ -237,21 +237,15 @@ dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;
 }
 
-/* Mirrors the real helper in src/dsp/dsd_frame_sync.c (FRAME_SYNC_INTERNAL_HELPERS tests it there), so the assertions
- * below read what the tune does with its answer: the comparison ends on the chain leading so far. */
+/* dsd_frame_sync_p25p1_mod_compare_end_for_tune() is the real one (src/dsp/frame_sync_p25p1_compare.c); the CQPSK
+ * dwell it arms lives in frame sync. */
+static int g_qpsk_dwell_set_calls = 0;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state) {
-    if (!state || state->p25_p1_mod_compare.phase == 0) {
-        return;
-    }
-    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    const int leader =
-        (cmp->phase == 2 && cmp->trial_read > cmp->incumbent_read) ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
-    state->p25_p1_validated_rf_mod = leader;
-    state->rf_mod = leader;
-    state->p25_p1_mod_compare.phase = 0;
-    state->p25_p1_mod_probe_active = 0;
+frame_sync_qpsk_dwell_set(int armed) {
+    (void)armed;
+    g_qpsk_dwell_set_calls++;
 }
 
 /* Mirrors the real helper in src/dsp/dsd_frame_sync.c so the assertions below read the
@@ -956,6 +950,20 @@ test_chain_comparison_in_flight_tunes_on_the_leading_chain(dsd_opts* opts, dsd_s
     assert(g_rtl_cqpsk_enable == 1);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
     assert(state->rf_mod == 1 && state->p25_p1_mod_compare.phase == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A Phase 2 grant during the comparison: the voice channel is TDMA, which is CQPSK whatever chain the control
+     * channel's comparison leads on, and the grant named its slot and set the modulation before asking for the tune.
+     * The tune keeps the grant's CQPSK; only the learned P25p1 modulation goes back to the leading C4FM chain. */
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    state->p25_p2_active_slot = 0;
+    state->p25_vc_cqpsk_override = -1;
+    state->rf_mod = 1;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->p25_p1_validated_rf_mod == 0);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_mod_probe_active == 0);
     rtl_stream_clear_pending_retune_profile();
 }
 

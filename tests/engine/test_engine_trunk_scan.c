@@ -14177,15 +14177,13 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.
    The received-tone reset is mirrored from the real function (issue #522), so a switch that
    stopped calling it, or restored a target's tone after it, shows up here. */
-/* Mirrors src/dsp/dsd_frame_sync.c (FRAME_SYNC_INTERNAL_HELPERS covers it): a snapshot of a target mid-comparison
- * keeps the chain leading so far. */
-int
-dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state) {
-    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    if (cmp->phase == 0) {
-        return state->p25_p1_validated_rf_mod;
-    }
-    return (cmp->phase == 2 && cmp->trial_read > cmp->incumbent_read) ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
+/* dsd_frame_sync_p25p1_learned_rf_mod() is the real one (src/dsp/frame_sync_p25p1_compare.c), which arms the CQPSK
+ * dwell through this when a tune ends a comparison. */
+void frame_sync_qpsk_dwell_set(int armed);
+
+void
+frame_sync_qpsk_dwell_set(int armed) {
+    (void)armed;
 }
 
 void

@@ -192,8 +192,9 @@ void dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state);
  * A trunked grant or control-channel tune inherits the decoder's modulation and the learned P25p1 one, and while the
  * comparison measures the other chain both name that chain. This puts both back on the chain leading so far -- the
  * incumbent, unless the other chain has read more -- and ends the comparison without a verdict, so the tune that
- * follows lands on it. The front end is left to the tune. The engine's tune requests and the P25 grant path call it
- * before they read the modulation; it does nothing when no comparison runs.
+ * follows lands on it. A Phase 2 grant that has named its slot (dsd_state::p25_p2_active_slot) keeps the CQPSK it set:
+ * only the learned modulation goes back. The front end is left to the tune. The engine's tune requests call it before
+ * they read the modulation; it does nothing when no comparison runs.
  */
 void dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state);
 

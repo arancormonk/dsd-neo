@@ -3037,6 +3037,7 @@ compare_setup(dsd_opts* opts, dsd_state* state, int incumbent_rf_mod) {
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->rf_mod = incumbent_rf_mod;
     state->p25_p1_validated_rf_mod = -1;
+    state->p25_p2_active_slot = -1;
     state->symbolcnt = 50000U;
     reset_fake_profile_capture();
 }
@@ -3271,10 +3272,11 @@ test_p25p1_comparison_ends_cleanly(void) {
      * is touched. */
     compare_into_trial(&opts, &state, 1);
     compare_frame(&opts, &state, 46, 134);
-    state.p25_p1_validated_rf_mod = 1; /* as a target's restored snapshot would leave it */
+    assert(state.p25_p1_validated_rf_mod == 0);
+    state.p25_p1_validated_rf_mod = -1; /* as a restored snapshot of a target that learned nothing would leave it */
     dsd_frame_sync_reset_acquisition(&opts, &state, 0);
     assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
-    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_validated_rf_mod == -1);
 
     /* A dwell expiry that overtakes the other chain's pass ends it on the incumbent's chain, before the hunt decides
      * where to go: a P25p1-only session re-enters 4800/4 without normalising it. */
@@ -3290,8 +3292,11 @@ test_p25p1_comparison_ends_cleanly(void) {
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
 
-    /* A lock taken mid-pass ends it without a verdict and leaves the demodulator to the lock. */
+    /* A lock taken mid-pass ends it without a verdict and leaves the demodulator to the lock. The other chain's frame
+     * had overwritten the learned modulation; it goes back to the leading chain. */
     compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_validated_rf_mod == 1);
     opts.mod_cli_lock = 1;
     opts.mod_qpsk = 1;
     compare_idle(&opts, &state, 10);
@@ -3300,11 +3305,24 @@ test_p25p1_comparison_ends_cleanly(void) {
 
     /* So does a profile change: the demodulator belongs to the new profile. */
     compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_validated_rf_mod == 1);
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
     state.rf_mod = 2;
     compare_idle(&opts, &state, 10);
     assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
     assert(state.rf_mod == 2 && state.p25_p1_validated_rf_mod == 0);
+
+    /* A Phase 2 grant has claimed the modulation for its TDMA slot before the tune: the learned P25p1 modulation goes
+     * back to the leading chain, the decoder's stays CQPSK. */
+    compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    state.p25_p2_active_slot = 1;
+    state.rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_probe_active == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 0);
+    state.p25_p2_active_slot = -1;
 
     /* A tune ends a comparison on the chain leading so far: the incumbent unless the other chain has read more. */
     compare_into_trial(&opts, &state, 1);

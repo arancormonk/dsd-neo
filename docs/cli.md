@@ -660,8 +660,9 @@ Notes
   gives the other chain 1800 symbols of its own, and the chain that read more keeps the profile and is remembered, so
   returning to that carrier after a voice grant starts on it without comparing again. A transmission that ends before
   either chain has decoded a second frame decides nothing, and a remembered chain is forgotten once a dwell on it
-  decodes nothing. A trunked tune that comes mid-comparison lands on the chain leading so far. Without this, a C4FM
-  chain reading about half of a simulcast control channel's TSBKs held it for as long as the channel stayed up.
+  decodes nothing. A trunked tune that comes mid-comparison lands on the chain leading so far, except a Phase 2 voice
+  grant, which is CQPSK whatever the control channel's chain. Without this, a C4FM chain reading about half of a
+  simulcast control channel's TSBKs held it for as long as the channel stayed up.
   `-mq`, `-mc` and the other modulation locks skip all of it, on either side of the `-f` option.
 - D-STAR voice and ProVoice prove a transmission rather than a frame, because neither has a per-frame check worth the
   name. A D-STAR superframe spends 1992 symbols and a ProVoice frame 736, and the vocoder error counts both leave

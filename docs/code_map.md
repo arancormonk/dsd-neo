@@ -3865,17 +3865,19 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     dropped with the learned modulation (a CQPSK dwell that decodes nothing, an acquisition reset that forgets it), by
     a 4800/4 dwell on its own chain that decodes nothing (so a C4FM verdict cannot outlive its carrier), and is kept per
     trunk-scan target (the snapshot records the chain leading so far, `dsd_frame_sync_p25p1_learned_rf_mod()`).
-  - A comparison ends without a verdict at a carrier boundary (`carrier_seq`; the incumbent's chain is put back), a
-    profile change, a modulation lock or a trunked voice tune (the demodulator is theirs), a dwell expiry that
-    overtakes it (put back on the incumbent's chain before the hunt moves), and `dsd_frame_sync_reset_acquisition()`
-    (a trunk-scan switch, a row or input boundary; the caller owns the demodulator and the learned modulation). Every
-    engine tune request (`dsd_engine_trunk_tune_to_freq_request()`, `dsd_engine_trunk_tune_to_cc_request()`,
-    `dsd_engine_return_to_cc_request()`) first ends a comparison in flight on the chain leading so far, the incumbent
-    unless the other chain has read more (`dsd_frame_sync_p25p1_mod_compare_end_for_tune()`), so an FDMA grant, which
-    inherits `rf_mod`, and a control-channel tune, which reads the learned modulation, never land on a chain only
-    because its pass was running.
-    A grant tune that fails puts back the P25 machine's profile snapshot, taken before the tune, so `rf_mod` can be
-    left on the other chain then, with the comparison ended and the learned modulation on the leader.
+  - A comparison ends without a verdict at a carrier boundary (`carrier_seq`; the leading chain is put back), a
+    profile change, a modulation lock or a trunked voice tune (the demodulator is theirs; the learned modulation goes
+    back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves),
+    and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
+    a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
+    incumbent unless the other chain has read more.
+  - Tunes: every engine tune request (`dsd_engine_trunk_tune_to_freq_request()`,
+    `dsd_engine_trunk_tune_to_cc_request()`, `dsd_engine_return_to_cc_request()`) ends a comparison in flight on the
+    leading chain before it reads the modulation (`dsd_frame_sync_p25p1_mod_compare_end_for_tune()`, `frame_sync_p25p1_compare.c`, which
+    the engine tests link), so an FDMA grant, which inherits `rf_mod`, and a control-channel tune, which reads the
+    learned modulation, never land on a chain only because its pass was running. A Phase 2 grant has already put
+    `rf_mod` on CQPSK and named its slot (`p25_p2_active_slot`), and that modulation stays the tune's; only the learned
+    modulation goes back.
   - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
     gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The

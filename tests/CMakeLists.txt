@@ -7091,7 +7091,9 @@ target_link_libraries(
 )
 target_sources(
     dsd-neo_test_engine_trunk_retune_regression
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+        ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
 )
 add_test(
     NAME ENGINE_TRUNK_RETUNE_REGRESSION
@@ -7181,6 +7183,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
     ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan

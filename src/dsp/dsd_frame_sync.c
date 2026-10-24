@@ -226,6 +226,15 @@ qpsk_dwell_disarm(void) {
     dsd_atomic_u64_store_release(&g_qpsk_dwell_enter_ms, 0U);
 }
 
+void
+frame_sync_qpsk_dwell_set(int armed) {
+    if (armed) {
+        qpsk_dwell_arm();
+    } else {
+        qpsk_dwell_disarm();
+    }
+}
+
 /* Inside the 2 s CQPSK dwell: on CQPSK, armed, and less than 2 s of decode time since it was armed. */
 static int
 frame_sync_in_qpsk_dwell(const dsd_state* state) {
@@ -3901,18 +3910,6 @@ frame_sync_p25p1_mod_compare_allowed(const dsd_opts* opts, const dsd_state* stat
            && !(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1);
 }
 
-static void
-frame_sync_p25p1_mod_compare_end(dsd_state* state) {
-    state->p25_p1_mod_compare.phase = 0;
-    state->p25_p1_mod_probe_active = 0;
-}
-
-/* The chain the comparison would keep if it ended now: the incumbent, unless the other chain has read more. */
-static int
-frame_sync_p25p1_mod_compare_leader(const dsd_p25p1_mod_compare* cmp) {
-    return (cmp->phase == 2 && cmp->trial_read > cmp->incumbent_read) ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
-}
-
 /* The other chain's pass was the decoder's own experiment, not the profile failing: the dwell gets back what that pass
  * searched, and nothing it had spent before. */
 static void
@@ -3925,51 +3922,23 @@ frame_sync_p25p1_mod_compare_refund(dsd_state* state) {
 
 /* End a comparison without a verdict. The learned modulation the other chain's frames overwrote goes back to the
  * leading chain when @p restore_learned, and so does the demodulator when @p restore_chain says it is still the
- * comparison's to set (the profile, a lock or a trunked tune may own it now). With no @p opts the front end is left to
- * a tune that follows. */
+ * comparison's to set (the profile, a lock or a trunked tune may own it now). A tune ends one with
+ * dsd_frame_sync_p25p1_mod_compare_end_for_tune() instead, which leaves the front end to the tune. */
 static void
 frame_sync_p25p1_mod_compare_abort(const dsd_opts* opts, dsd_state* state, int restore_learned, int restore_chain) {
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
     if (cmp->phase == 0) {
         return;
     }
-    const int leader = frame_sync_p25p1_mod_compare_leader(cmp);
+    const int leader = frame_sync_p25p1_mod_compare_leader(state);
     if (restore_learned) {
         state->p25_p1_validated_rf_mod = leader;
     }
     cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
     if (restore_chain && state->rf_mod != leader) {
-        if (opts) {
-            frame_sync_p25p1_set_chain(opts, state, leader);
-        } else {
-            state->rf_mod = leader;
-            if (leader == 1) {
-                qpsk_dwell_arm();
-            } else {
-                qpsk_dwell_disarm();
-            }
-        }
+        frame_sync_p25p1_set_chain(opts, state, leader);
     }
     frame_sync_p25p1_mod_compare_end(state);
-}
-
-int
-dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state) {
-    if (!state) {
-        return -1;
-    }
-    if (state->p25_p1_mod_compare.phase != 0) {
-        return frame_sync_p25p1_mod_compare_leader(&state->p25_p1_mod_compare);
-    }
-    return state->p25_p1_validated_rf_mod;
-}
-
-void
-dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    frame_sync_p25p1_mod_compare_abort(NULL, state, 1, 1);
 }
 
 /* Settle the comparison on @p winner: the chain the profile keeps, and the learned modulation. */
@@ -4099,7 +4068,7 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     frame_sync_p25p1_mod_compare_refund(state);
-    const int winner = frame_sync_p25p1_mod_compare_leader(cmp);
+    const int winner = frame_sync_p25p1_mod_compare_leader(state);
     /* A verdict needs the winner to have validated something in its own pass: the other chain wins only by reading
      * more than the incumbent, but an incumbent whose only frame was the one that opened the comparison -- the
      * transmission ended, or one isolated NID decoded -- proved nothing against a pass over silence. */
