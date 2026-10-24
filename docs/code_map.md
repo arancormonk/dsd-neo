@@ -3867,8 +3867,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     trunk-scan target (the snapshot records the chain leading so far, `dsd_frame_sync_p25p1_learned_rf_mod()`).
   - A comparison ends without a verdict at a carrier boundary (`carrier_seq`; the leading chain is put back), a
     profile change, a modulation lock or a trunked voice tune (the demodulator is theirs; the learned modulation goes
-    back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves),
-    and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
+    back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves;
+    the expiry still judges the chain the dwell ran on), and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
     a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
     incumbent unless the other chain has read more.
   - Tunes: `dsd_engine_trunk_tune_to_freq_request()` and `dsd_engine_trunk_tune_to_cc_request()` (the latter also

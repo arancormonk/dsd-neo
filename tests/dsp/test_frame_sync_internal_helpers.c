@@ -3292,6 +3292,20 @@ test_p25p1_comparison_ends_cleanly(void) {
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
 
+    /* ... and judges the dwell on the chain it ran on: a C4FM trial pass overtaken on a CQPSK incumbent decoded nothing on
+     * CQPSK, so the learned CQPSK the abort puts back is not withdrawn. */
+    compare_into_trial(&opts, &state, 1);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    state.p25_p1_mod_probe_next_qpsk = 1;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    /* A step: the abort put the other chain under the caller's sync window. */
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_validated_rf_mod == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && state.rf_mod == 1);
+
     /* A lock taken mid-pass ends it without a verdict and leaves the demodulator to the lock. The other chain's frame
      * had overwritten the learned modulation; it goes back to the leading chain. */
     compare_into_trial(&opts, &state, 0);

@@ -4105,7 +4105,11 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
      * true whether or not the profile then rotates, and this is the one place a probe's flag is
      * cleared (a chain comparison clears its own when it ends), so it must be cleared before the
      * hold below returns -- a probe left active across a grant would pin rf_mod against the
-     * modulation votes for the whole call. A comparison the expiry overtook ends with it. */
+     * modulation votes for the whole call. A comparison the expiry overtook ends with it -- after the dwell's own
+     * profile and chain are noted, since the expiry judges the chain the dwell ran on, which in the other chain's pass
+     * is not the one the abort puts back. */
+    const int previous_idx = state->sps_hunt_idx;
+    const int previous_mod = state->rf_mod;
     frame_sync_p25p1_mod_compare_abort(opts, state, 1, 1);
     state->p25_p1_mod_probe_active = 0;
 
@@ -4140,8 +4144,6 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
                        ? state->sps_hunt_idx
                        : (preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
                                               : frame_sync_sps_hunt_unlocked_next_index(opts, state));
-    const int previous_idx = state->sps_hunt_idx;
-    const int previous_mod = state->rf_mod;
     if (frame_sync_trunk_scan_p25p1_trial(opts, state) && previous_mod != 1) {
         /* Both P25 phases are enabled per target. Waiting for 4800 -> 6000 ->
          * 4800 costs 3375 ms before CQPSK can be tried, beyond the default
@@ -4156,8 +4158,8 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
      * dsd_state::rf_mod and resets the modulation vote state without the index moving, and the
      * caller's sync window -- its level ring, its min/max, its history -- was captured under the
      * old modulation. Say so, so the window is rebuilt rather than matched across the change.
-     * The two comparisons are exact: the helper mutates nothing else once it is past its own
-     * no-op guard. */
+     * So is an overtaken comparison that put the other chain back. The two comparisons are
+     * exact: the helper mutates nothing else once it is past its own no-op guard. */
     return state->sps_hunt_idx != previous_idx || state->rf_mod != previous_mod;
 }
 
