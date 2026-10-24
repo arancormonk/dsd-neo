@@ -376,6 +376,48 @@ test_resident_receive_admission(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* On the followed carrier a slot a receive-slot edit stopped admitting holds nothing, its hangtime tail included: a
+   rejected p90 companion in its tail never blocks a p50 candidate over the admitted p10 call, and when only rejected
+   traffic is left in its tail (the followed grant's own slot rejected) the carrier is not held. */
+static int
+test_tuned_tail_receive_admission(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 500, "A", 90, 0);
+    seed_row(st, 300, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 500, 5);
+    int rc = expect_true("slot filter parsed",
+                         dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    clock_at(1.8);
+    voice(opts, st, 0);
+    dmr_sm_busy_view_t view;
+    rc |= expect_true("the rejected slot's tail is no held call",
+                      dmr_sm_describe_held_calls(sm(), opts, st, dsd_decode_now_mono_s(), &view) == 1
+                          && view.members == 0x1);
+    tv_grant(opts, st, LPCN_B, 0, 300, 3);
+    rc |= expect_true("p50 outranks the admitted p10 call", vc(st) == VC_B && sm()->vc_tg == 300);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+
+    init_env(opts, st, 2.0);
+    seed_row(st, 500, "A", 90, 0);
+    tv_grant(opts, st, LPCN_A, 1, 500, 5);
+    clock_at(1.0);
+    voice(opts, st, 1);
+    rc |= expect_true("slot filter parsed",
+                      dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    clock_at(1.5);
+    rc |= expect_true("only a rejected slot's tail: not held",
+                      dmr_sm_describe_held_calls(sm(), opts, st, dsd_decode_now_mono_s(), &view) == 0);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("an ordinary grant is followed", vc(st) == VC_B && sm()->vc_tg == 200);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    return rc;
+}
+
 /* 9: Hold takes the receiver from a non-held call, not from a carrier whose companion slot carries the Hold group. */
 static int
 test_hold(dsd_opts* opts, dsd_state* st) {
@@ -658,11 +700,16 @@ test_slot_move_republishes(dsd_opts* opts, dsd_state* st) {
     clock_at(0.4);
     rc |= expect_true("same-carrier move is in place",
                       submit_move(opts, st, VC_A, LPCN_A, 1, 1, 100, 7) == DMR_SM_GRANT_IN_PLACE && sm()->vc_slot == 1);
+    rc |= expect_true("the vacated slot's canonical call ended", dsd_call_state_get(st, 0U, &call) > 0
+                                                                     && call.ota_target_id == 100U
+                                                                     && call.phase == DSD_CALL_PHASE_ENDED);
     clock_at(0.5);
     voice(opts, st, 1);
     rc |= expect_true("the moved call's identity is published on its new slot",
                       dsd_call_state_get(st, 1U, &call) > 0 && call.ota_target_id == 100U
                           && call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_true("one ACTIVE snapshot of the moved call",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
     clock_at(0.8);
     voice(opts, st, 1);
     tv_grant(opts, st, LPCN_B, 0, 300, 3);
@@ -773,6 +820,7 @@ main(void) {
     rc |= test_tail(opts, st);
     rc |= test_resident(opts, st);
     rc |= test_resident_receive_admission(opts, st);
+    rc |= test_tuned_tail_receive_admission(opts, st);
     rc |= test_hold(opts, st);
     rc |= test_both_slots(opts, st);
     rc |= test_deferred_preemption(opts, st);

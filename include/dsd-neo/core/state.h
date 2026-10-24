@@ -516,6 +516,7 @@ typedef struct {
     uint8_t valid;
     uint8_t private_call;
     uint8_t data_call;
+    uint8_t type_d; /**< a Type-D (IDAS) call: judged as Type-D admission judges it, with no source fallback */
 } dsd_nxdn_call_identity;
 
 typedef struct p25_bandplan_row {

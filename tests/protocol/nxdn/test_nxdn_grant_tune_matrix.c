@@ -1230,6 +1230,185 @@ nxdn_run_type_d_private_reconcile_case(void) {
     return rc;
 }
 
+/* A Type-D fixture on repeater 6 with repeater 7 mapped too, untuned on the control channel. */
+static nxdn_case
+type_d_fixture(uint8_t gu, uint16_t id) {
+    const nxdn_case base = {
+        "type-d", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, gu, 6U, 3U, id, 938012500L,
+    };
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    nxdn_setup_fixture(&base);
+    g_state.trunk_chan_map[7] = 938512500L;
+    nxdn_install_hooks();
+    return base;
+}
+
+/* An anonymous call (late entry, before any message names it) opens on the receiver's channel. */
+static void
+late_entry_call(void) {
+    const dsd_call_observation late_entry = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(&g_state, &late_entry, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+}
+
+/* A resident Type-D call heard without a grant tune (the receiver parked on its repeater) ends with its DISC: the next,
+ * anonymous call there is not the ended one, so it yields only to Hold, never to a preempting call that merely
+ * outranks the ended call. */
+static int
+nxdn_run_type_d_resident_disc_case(void) {
+    static const char* const name = "type-d-resident-disc";
+    const nxdn_case base = type_d_fixture(0U, 1400U);
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = base.expected_freq; /* the receiver sits on repeater 6 */
+    policy_row(1400U, 10, 0);
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9000.0);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U, name, "resident",
+                      "the resident call is the held call");
+    at_seconds(9001.0);
+    voice_live();
+    send_disc();
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 0 && g_tune_cc_count == 0, name, "disc", "no grant tune to release");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 0U, name, "disc", "the ended call is no longer held");
+
+    at_seconds(9001.5);
+    voice_live();
+    late_entry_call();
+    nxdn_case other = base;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9002.0);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 0, name, "anonymous", "an anonymous call is not preempted as the ended one");
+    g_state.tg_hold = 1500U;
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == 938512500L, name, "hold", "it yields to Hold");
+    g_state.tg_hold = 0U;
+    return rc;
+}
+
+/* A Type-D held call is described as Type-D admission judges it, with no source fallback: an INFO3 source whose own
+ * row ranks high never lends that priority to the held, unlisted group, so a preempting call at the source's priority
+ * takes the receiver. */
+static int
+nxdn_run_type_d_held_no_source_fallback_case(void) {
+    static const char* const name = "type-d-held-no-source-fallback";
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    policy_row(1500U, 100, 1);
+    int rc = 0;
+
+    at_seconds(9100.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    rc |=
+        nxdn_expect(g_tune_count == 1 && g_state.nxdn_follow.repeater == 6U, name, "follow", "unlisted group followed");
+    at_seconds(9100.2);
+    voice_live();
+    late_entry_call();
+    at_seconds(9100.3);
+    voice_live();
+    nxdn_run_case_decode(&held); /* names the anonymous call */
+    uint8_t message[32];
+    at_seconds(9100.4);
+    voice_live();
+    build_scch_identity(message, 1U, 0U, 1500U); /* INFO3: source 1500 */
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    at_seconds(9100.5);
+    voice_live();
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.source == 1500U,
+                      name, "source", "the held call carries the INFO3 source");
+
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9101.0);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "preempt",
+                      "a p100 preempt outranks the unlisted held group (no priority from its source)");
+    return rc;
+}
+
+/* A busy message for the receiver's own repeater names a private call while the previous group call's canonical epoch
+ * is still active: the canonical call takes the message's private kind, so a later INFO2 target message for that
+ * destination keeps the held call private, never the stale group class (here a priority-100 group range over the
+ * private destination), nor a restarted dwell. */
+static int
+nxdn_run_type_d_private_after_group_case(void) {
+    static const char* const name = "type-d-private-after-group";
+    const nxdn_case held = type_d_fixture(0U, 1400U);
+    dsd_tg_policy_entry range;
+    if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
+        range.id_end = 1499U;
+        range.is_range = 1U;
+        range.priority = 100;
+        (void)dsd_tg_policy_add_range_entry(&g_state, &range);
+    }
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9200.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    rc |= nxdn_expect(g_tune_count == 1, name, "follow", "group followed");
+    at_seconds(9200.2);
+    voice_live();
+    const dsd_call_observation group = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1400U,
+        .policy_target_id = 1400U,
+    };
+    (void)dsd_call_state_observe(&g_state, &group, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+
+    nxdn_case priv = held;
+    priv.scch_gu = 1U;
+    priv.scch_id = 1450U;
+    at_seconds(9200.3);
+    voice_live();
+    nxdn_run_case_decode(&priv);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.policy_target_id == 1450U
+                          && call.kind == DSD_CALL_KIND_PRIVATE_VOICE,
+                      name, "busy", "the canonical call takes the busy message's private kind");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1450U
+                          && g_state.nxdn_call.private_call == 1U,
+                      name, "busy", "the held call is the private call");
+
+    uint8_t message[32];
+    at_seconds(9200.4);
+    voice_live();
+    build_scch_identity(message, 2U, 6U, 1450U); /* INFO2 target 1450 on the receiver's repeater */
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1450U
+                          && g_state.nxdn_call.private_call == 1U,
+                      name, "info2", "an INFO2 repeat keeps the held call private");
+
+    nxdn_case other = held;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9201.1);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "preempt",
+                      "a p50 preempt outranks the private call (no group range priority, dwell kept)");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1306,6 +1485,9 @@ main(void) {
     rc |= nxdn_run_type_d_takeover_case();
     rc |= nxdn_run_type_d_refollow_keeps_dwell_case();
     rc |= nxdn_run_type_d_private_reconcile_case();
+    rc |= nxdn_run_type_d_resident_disc_case();
+    rc |= nxdn_run_type_d_held_no_source_fallback_case();
+    rc |= nxdn_run_type_d_private_after_group_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

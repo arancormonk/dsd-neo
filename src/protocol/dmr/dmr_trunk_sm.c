@@ -1496,7 +1496,8 @@ dmr_sm_describe_identity(const dsd_opts* opts, dsd_state* state, const dmr_sm_sl
     return decision.tg_hold_match;
 }
 
-/* TUNED: which slots hold a call. Live voice or the slot's own hangtime tail; before any voice, the grant's slot (a
+/* TUNED: which slots hold a call. Live voice or the slot's own hangtime tail, on a slot the receive policy admits (as for
+   the receive hold: rejected media never holds the receiver, its tail included); before any voice, the grant's slot (a
    slotless grant: each slot the following status selected or seeded, known identity or not, and each slot named on the
    carrier, else none, the grant's identity then standing for the carrier). */
 static int
@@ -1505,8 +1506,10 @@ dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
     int members = 0;
     for (int s = 0; s < 2; s++) {
         const dmr_sm_slot_ctx_t* slot = &ctx->slots[s];
-        const int live =
-            dmr_sm_slot_voice_live(ctx, s, now_m) && dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s);
+        if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
+            continue;
+        }
+        const int live = dmr_sm_slot_voice_live(ctx, s, now_m);
         const int tail = slot->last_active_m > 0.0 && (now_m - slot->last_active_m) < ctx->hangtime_s;
         if (live || tail) {
             members |= 1 << s;
@@ -1589,10 +1592,11 @@ dmr_sm_describe_held_calls(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
         out->carrier_hz = ctx->vc_freq_hz;
         const dmr_sm_hold_e hold = dmr_sm_tuned_retention(ctx, opts, state, now_m, ctx->hangtime_s,
                                                           ctx->grant_timeout_s, dmr_sm_acquire_window(ctx));
-        out->held = hold != DMR_SM_HOLD_NONE;
-        if (out->held) {
+        if (hold != DMR_SM_HOLD_NONE) {
             members = dmr_sm_tuned_members(ctx, opts, state, now_m, hold);
         }
+        // A tail no admitted slot is in is only rejected traffic's: it holds nothing.
+        out->held = hold != DMR_SM_HOLD_NONE && !(hold == DMR_SM_HOLD_TAIL && members == 0);
     } else if (ctx->state == DMR_SM_ON_CC) {
         out->carrier_hz = dmr_cc_current_frequency(opts, ctx);
         if (out->carrier_hz > 0) {
@@ -1804,12 +1808,32 @@ dmr_sm_move_decision(const dsd_opts* opts, const dsd_state* state, const dmr_sm_
     return 1;
 }
 
+/* Whether the canonical call on @p slot is the moved call @p moved still published there: active, and naming its target
+   (or, for a private call, either party). */
+static int
+dmr_sm_slot_publishes_call(const dsd_state* state, int slot, const dmr_sm_slot_ctx_t* moved) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+    return target == moved->target || (!moved->judged_group && moved->source != 0U && target == moved->source);
+}
+
 /* A move on the carrier already tuned: when it names the other slot, the moved call's record goes there with its
-   follow time, and that slot becomes the followed one. */
+   follow time, and that slot becomes the followed one. The call's canonical epoch on the vacated slot ends there
+   (EXPLICIT, as a retune's) before its first voice on the new slot publishes it again, so one call never shows on both
+   slots. */
 static void
-dmr_sm_move_slot_in_place(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_slot_ctx_t* moved, int new_slot) {
+dmr_sm_move_slot_in_place(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_slot_ctx_t* moved,
+                          int new_slot) {
     if (new_slot >= 0 && new_slot != ctx->vc_slot) {
         if (ctx->vc_slot >= 0) {
+            if (dmr_sm_slot_publishes_call(state, ctx->vc_slot, moved)
+                && dsd_call_state_end_ex(state, (uint8_t)ctx->vc_slot, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT)
+                       > 0) {
+                dsd_event_sync_slot(opts, state, (uint8_t)ctx->vc_slot);
+            }
             // The call's activity moves with it: the vacated slot must not stay live or in hangtime as a phantom held
             // call of unknown identity.
             dmr_sm_slot_ctx_t* vacated = &ctx->slots[ctx->vc_slot];
@@ -1869,7 +1893,7 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
     const double now_m = dsd_decode_now_mono_s();
     if (resolved == DMR_SM_RESOLVE_SAME_FREQ) {
         dmr_sm_vc_identity_from_slot(ctx, &moved);
-        dmr_sm_move_slot_in_place(ctx, state, &moved, new_slot);
+        dmr_sm_move_slot_in_place(ctx, opts, state, &moved, new_slot);
         sm_log(opts, "move-in-place");
         return DMR_SM_GRANT_IN_PLACE;
     }

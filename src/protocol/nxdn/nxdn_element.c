@@ -1531,10 +1531,10 @@ nxdn_idas_assoc(const dsd_opts* opts, dsd_state* state, uint8_t rep) {
     return rx == rep_freq ? NXDN_IDAS_MATCH : NXDN_IDAS_OTHER;
 }
 
-/* Take @p target as the held call's identity. Its follow time moves only when the identity changes: another target or
- * kind, or another frequency when both are known. */
+/* Take @p target as the held call's identity, a Type-D call when @p type_d. Its follow time moves only when the
+ * identity changes: another target or kind, or another frequency when both are known. */
 static void
-nxdn_call_identity_set(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call,
+nxdn_call_identity_set(dsd_state* state, uint32_t target, uint32_t source, int private_call, int data_call, int type_d,
                        long int rx_freq_hz, double now_m) {
     dsd_nxdn_call_identity* const id = &state->nxdn_call;
     const uint8_t is_private = private_call ? 1U : 0U;
@@ -1549,6 +1549,7 @@ nxdn_call_identity_set(dsd_state* state, uint32_t target, uint32_t source, int p
     id->target = target;
     id->private_call = is_private;
     id->data_call = data_call ? 1U : 0U;
+    id->type_d = type_d ? 1U : 0U;
     if (source != 0U) {
         id->source = source;
     }
@@ -1578,9 +1579,9 @@ nxdn_reconcile_private(const dsd_state* state, const dsd_call_snapshot* call, in
 
 /* The held call is what the canonical call shows once a verified VCALL or an SCCH identity of the receiver's repeater
  * named it: a new call on the same carrier replaces the one followed there. A call whose classification is not known
- * (nxdn_reconcile_private()) leaves the held call unknown, so only Hold displaces it. */
+ * (nxdn_reconcile_private()) leaves the held call unknown, so only Hold displaces it. @p type_d: a Type-D call. */
 static void
-nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_private) {
+nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_private, int type_d) {
     if (opts->trunk_enable != 1) {
         return;
     }
@@ -1594,8 +1595,29 @@ nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_pri
         DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
         return;
     }
-    nxdn_call_identity_set(state, call.policy_target_id, call.ota_source_id, private_call, 0,
+    nxdn_call_identity_set(state, call.policy_target_id, call.ota_source_id, private_call, 0, type_d,
                            nxdn_receiver_freq(opts, state), dsd_decode_now_mono_s());
+}
+
+/* A call on the receiver's channel ended (a release, DISC, or a Type-D termination). A held call the receiver followed
+ * there stands until its route is released (nxdn_follow_release()); one known only from the call heard there (a
+ * resident call, no grant tune) ended with it, so the next call there is unknown until a message names it and yields
+ * only to Hold. */
+static void
+nxdn_call_identity_end(const dsd_opts* opts, dsd_state* state) {
+    if (nxdn_follow_valid(opts, state)) {
+        return;
+    }
+    DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
+    (void)dsd_tg_policy_clear_active_call(state, -1);
+}
+
+/* Whether the receiver is on a Type-D (IDAS) channel: the frame being decoded is an RTCH2's, or the route it followed
+ * is a Type-D repeater's. */
+static int
+nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state) {
+    return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
+           || (nxdn_follow_valid(opts, state) && state->nxdn_follow.repeater != 0U);
 }
 
 /* The held call when its identity is known here: one heard or followed on another frequency than the receiver's is
@@ -1634,8 +1656,10 @@ nxdn_preempts(const dsd_opts* opts, dsd_state* state, const dsd_nxdn_call_identi
     route.channel =
         (nxdn_follow_valid(opts, state) && state->nxdn_follow.freq_hz == route.freq_hz) ? state->nxdn_follow.chan : 0;
     route.slot = -1;
+    /* Judged as its admission was: a Type-D call with no source fallback (nxdn_scch_apply_busy_tune()). */
     dsd_tg_policy_decision held;
-    (void)nxdn_policy_tune_allowed(opts, state, cur->target, cur->source, cur->private_call, cur->data_call, 1, &held);
+    (void)nxdn_policy_tune_allowed(opts, state, cur->target, cur->source, cur->private_call, cur->data_call,
+                                   cur->type_d ? 0 : 1, &held);
     if (dsd_tg_policy_describe_followed_call(state, &route, &held, cur->follow_m, now_m) != 0) {
         return 0;
     }
@@ -1669,7 +1693,7 @@ nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private
     state->nxdn_follow.freq_hz = freq;
     state->nxdn_follow.chan = chan;
     state->nxdn_follow.repeater = repeater;
-    nxdn_call_identity_set(state, target, source, private_call, data_call, freq, now_m);
+    nxdn_call_identity_set(state, target, source, private_call, data_call, repeater != 0U, freq, now_m);
     dsd_tg_policy_call_route route;
     DSD_MEMSET(&route, 0, sizeof route);
     route.target_id = target;
@@ -2888,6 +2912,7 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         if (dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {
             dsd_event_sync_slot(opts, state, 0U);
         }
+        nxdn_call_identity_end(opts, state);
     }
     nxdn_vcall_print_summary(state, info);
     nxdn_vcall_load_key(opts, state, info);
@@ -2906,7 +2931,7 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
             nxdn_vcall_kind(info->call_type) == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0, state->nxdn_cipher_type != 0U, 0);
         nxdn_vcall_publish(opts, state, info);
         // Classified as admission classifies its assignment (nxdn_vcall_assgn_admit()): call type 4 is private.
-        nxdn_call_identity_reconcile(opts, state, info->call_type == 4U ? 1 : 0);
+        nxdn_call_identity_reconcile(opts, state, info->call_type == 4U ? 1 : 0, nxdn_receiver_on_type_d(opts, state));
     }
     nxdn_vcall_run_enc_lockout(opts, state, info);
 }
@@ -3210,6 +3235,7 @@ nxdn_scch_update_busy_display(dsd_opts* opts, dsd_state* state, const struct nxd
         if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
             dsd_event_sync_slot(opts, state, 0U);
         }
+        nxdn_call_identity_end(opts, state);
     } else if (info->rep1 != 0U) {
         const dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
@@ -3230,8 +3256,11 @@ nxdn_scch_update_busy_display(dsd_opts* opts, dsd_state* state, const struct nxd
     }
 }
 
+/* The live call takes an SCCH's source or target (0: keep the call's), and @p kind when the message classifies it
+ * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's), so a later unclassified message for the same
+ * target reads the class this one verified, never a previous call's. */
 static void
-nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_id) {
+nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_id, dsd_call_kind kind) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
         || !DSD_SYNC_IS_NXDN(call.protocol)) {
@@ -3240,7 +3269,7 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
-        .kind = call.kind,
+        .kind = kind != DSD_CALL_KIND_UNKNOWN ? kind : call.kind,
         .ota_target_id = target_id != 0U ? target_id : call.ota_target_id,
         .policy_target_id = target_id != 0U ? target_id : call.policy_target_id,
         .ota_source_id = source_id != 0U ? source_id : call.ota_source_id,
@@ -3286,8 +3315,10 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
      * another repeater is another call. */
     if (info->rep1 != 31U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
-        nxdn_scch_enrich_identity(state, 0U, info->id);
-        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0); // the message's G/U bit classifies its target
+        // The message's G/U bit classifies its target, for the canonical call as for the held one.
+        nxdn_scch_enrich_identity(state, 0U, info->id,
+                                  info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
+        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
@@ -3343,7 +3374,7 @@ nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
         DSD_FPRINTF(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                     info->id);
         if (info->now - state->last_vc_sync_time < 1) {
-            nxdn_scch_enrich_identity(state, info->id, 0U);
+            nxdn_scch_enrich_identity(state, info->id, 0U, DSD_CALL_KIND_UNKNOWN);
         }
     }
 }
@@ -3369,8 +3400,8 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
                     info->id);
         /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater. */
         if (info->now - state->last_vc_sync_time < 1 && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
-            nxdn_scch_enrich_identity(state, 0U, info->id);
-            nxdn_call_identity_reconcile(opts, state, -1);
+            nxdn_scch_enrich_identity(state, 0U, info->id, DSD_CALL_KIND_UNKNOWN);
+            nxdn_call_identity_reconcile(opts, state, -1, 1);
         }
     }
 }
