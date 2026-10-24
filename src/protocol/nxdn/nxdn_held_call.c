@@ -10,6 +10,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <stdint.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
