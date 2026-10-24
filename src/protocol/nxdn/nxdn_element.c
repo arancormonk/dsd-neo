@@ -3443,9 +3443,24 @@ nxdn_scch_update_busy_display(dsd_opts* opts, dsd_state* state, const struct nxd
     }
 }
 
+/* The class an SCCH naming @p target_id gives the live call @p call: the message's own (@p kind, a busy message's G/U
+ * bit), else the call's when the message names the call's target or none, else none: a message naming another target
+ * (an INFO2 target message) names another call, which a previous call's private or group class never describes. */
+static dsd_call_kind
+nxdn_scch_named_kind(const dsd_call_snapshot* call, uint32_t target_id, dsd_call_kind kind) {
+    if (kind != DSD_CALL_KIND_UNKNOWN) {
+        return kind;
+    }
+    if (target_id != 0U && call->policy_target_id != 0U && target_id != call->policy_target_id) {
+        return DSD_CALL_KIND_VOICE;
+    }
+    return call->kind;
+}
+
 /* The live call takes an SCCH's source or target (0: keep the call's), and @p kind when the message classifies it
- * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's), so a later unclassified message for the same
- * target reads the class this one verified, never a previous call's. */
+ * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
+ * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
+ * verified, never a previous call's. */
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_id, dsd_call_kind kind) {
     dsd_call_snapshot call;
@@ -3456,7 +3471,7 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
-        .kind = kind != DSD_CALL_KIND_UNKNOWN ? kind : call.kind,
+        .kind = nxdn_scch_named_kind(&call, target_id, kind),
         .ota_target_id = target_id != 0U ? target_id : call.ota_target_id,
         .policy_target_id = target_id != 0U ? target_id : call.policy_target_id,
         .ota_source_id = source_id != 0U ? source_id : call.ota_source_id,

@@ -1908,6 +1908,65 @@ nxdn_run_type_d_private_after_group_case(void) {
     return rc;
 }
 
+/* A Type-D private call to 1450 is on the receiver's repeater when an INFO2 target message there names another
+ * destination, 1460: the call it names is not the private one, and INFO2 carries no class, so it is of no known class
+ * until a classified message names it. The private class never moves to the new target, which would ignore the
+ * priority-100 group range over it and let a p50 preempting group displace it: a held call of unknown class yields only
+ * to Hold. */
+static int
+nxdn_run_type_d_info2_new_target_case(void) {
+    static const char* const name = "type-d-info2-new-target";
+    const nxdn_case held = type_d_fixture(1U, 1450U);
+    dsd_tg_policy_entry range;
+    if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
+        range.id_end = 1499U;
+        range.is_range = 1U;
+        range.priority = 100;
+        (void)dsd_tg_policy_add_range_entry(&g_state, &range);
+    }
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9250.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    nxdn_run_case_decode(&held);
+    at_seconds(9250.2);
+    voice_live();
+    late_entry_call();
+    at_seconds(9250.3);
+    voice_live();
+    nxdn_run_case_decode(&held); /* names the call: private 1450 */
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.policy_target_id == 1450U
+                          && call.kind == DSD_CALL_KIND_PRIVATE_VOICE && g_state.nxdn_call.valid == 1U
+                          && g_state.nxdn_call.private_call == 1U,
+                      name, "private", "the private call to 1450 is held");
+
+    uint8_t message[32];
+    at_seconds(9250.4);
+    voice_live();
+    build_scch_identity(message, 2U, 6U, 1460U); /* INFO2 target 1460 on the receiver's repeater */
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.policy_target_id == 1460U
+                          && call.kind != DSD_CALL_KIND_PRIVATE_VOICE,
+                      name, "info2", "the call INFO2 names takes no private class from the previous call");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 0U, name, "info2", "the held call is of no known class");
+
+    nxdn_case other = held;
+    other.scch_gu = 0U;
+    other.scch_rep1 = 7U;
+    other.scch_id = 1500U;
+    at_seconds(9252.0);
+    voice_live();
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 1, name, "preempt", "a p50 preempting group never displaces it");
+    g_state.tg_hold = 1500U;
+    nxdn_run_case_decode(&other);
+    rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == 938512500L, name, "hold", "it yields to Hold");
+    g_state.tg_hold = 0U;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1989,6 +2048,7 @@ main(void) {
     rc |= nxdn_run_type_d_followed_new_call_case();
     rc |= nxdn_run_type_d_held_no_source_fallback_case();
     rc |= nxdn_run_type_d_private_after_group_case();
+    rc |= nxdn_run_type_d_info2_new_target_case();
     rc |= nxdn_run_type_c_takeover_ends_left_call_case();
     rc |= nxdn_run_type_d_takeover_ends_left_call_case();
     rc |= nxdn_run_refollow_after_hangtime_return_case();

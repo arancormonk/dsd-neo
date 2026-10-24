@@ -5000,7 +5000,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     MATCH (its mapped frequency is the receiver's), OTHER, or UNKNOWN (no repeater 1-30, unmapped, or the receiver's
     frequency unknown). The live call takes the message's target (`nxdn_scch_enrich_identity()`) only on MATCH, and a
     busy message's G/U bit sets the canonical call's group or private kind, so a later INFO2 for that target never reads
-    a previous call's class; UNKNOWN never relabels. While voice is live a busy message for OTHER takes the receiver for
+    a previous call's class; an INFO2 naming another target than the live call's names another call, which takes no
+    class from it (`nxdn_scch_named_kind()`: a generic voice call, so the held call is unknown and yields only to Hold
+    until a classified message names it); UNKNOWN never relabels. While voice is live a busy message for OTHER takes the receiver for
     the held talkgroup over a call not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a
     second the message is followed as before. INFO3 names no go-to repeater (`rep1` is a free repeater), so its source
     enrichment is unchanged and can misname a talker (documented limit); it never changes the target or the policy.
@@ -5019,10 +5021,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     policy, and no sync loss reacquires the displaced call there; a follow on the same carrier (the in-place repeat of
     the held call, or a resident call's announcement) leaves the call on the air alone, and the held call binds to it
     when it is the announced call or one nothing has named yet. DISC's return and a Type-D termination (repeater 31) tune clear
-    the route, the held call and the ledger (`nxdn_follow_release()`). All of it runs in frame decoding, under the P25
+    the route, the held call and the ledger (`nxdn_follow_release()`). A frame channel whose message retunes the
+    receiver (a follow, a preemption, a termination's return) ends that frame's decoding (`nxdn_frame_left_carrier()` in
+    `nxdn_frame.c`: the trunk-tuning generation or the newest unresolved tune request moved, as P25 Phase 2's retune
+    token, a pending tune included): its later channels and voice were read on the carrier left, so a VCALL there never
+    reopens the displaced call on the new carrier nor plays its voice as the new carrier's. All of it runs in frame
+    decoding, under the P25
     SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX` (also built on the real canonical call state as
     `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),
-    `NXDN_ELEMENT_BOUNDS`, `ENGINE_TRUNK_SCAN`, `ENGINE_NO_CARRIER_RESET`.
+    `NXDN_ELEMENT_BOUNDS`, `NXDN_FRAME_ROUTING`, `ENGINE_TRUNK_SCAN`, `ENGINE_NO_CARRIER_RESET`.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
   received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
   scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
