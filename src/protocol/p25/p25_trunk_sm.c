@@ -931,6 +931,16 @@ log_preempt_decision(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
                 route->channel & 0xFFFF, route->freq_hz, route->slot);
 }
 
+/* An encryption-lockout release a grant would make. A clear-bit release is only committed when the grant is
+ * accepted (p25_grant_commit_enc_release()), so a grant refused later -- by preemption dwell, a pending tune, a
+ * duplicate -- leaves the ledger and its reprobe marking for the repeat that is accepted. */
+typedef enum {
+    P25_ENC_RELEASE_PLAN_NONE = 0,
+    P25_ENC_RELEASE_PLAN_RESIDUE,      // a non-blocking (stale-epoch) entry: drop it with its backoff
+    P25_ENC_RELEASE_PLAN_REPROBE,      // a blocking entry released on the grant bit: the call is a reprobe
+    P25_ENC_RELEASE_PLAN_CORROBORATED, // prospective evaluation only: the corroborated release a commit would make
+} p25_enc_release_plan_e;
+
 typedef struct {
     int svc;
     int svc_valid;
@@ -941,6 +951,7 @@ typedef struct {
     int enc_lockout_reprobe;
     int is_indiv;
     int tg;
+    p25_enc_release_plan_e enc_release_plan;
 } p25_grant_eval_ctx_t;
 
 static int
@@ -1144,16 +1155,15 @@ p25_grant_enc_release_evidence(const dsd_state* state, const p25_grant_eval_ctx_
 }
 
 static void
-p25_grant_release_enc_lockout_on_grant_bit(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
-                                           p25_grant_eval_ctx_t* eval_ctx, uint32_t target, int is_group) {
+p25_grant_plan_enc_release_on_grant_bit(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state,
+                                        p25_grant_eval_ctx_t* eval_ctx, uint32_t target, int is_group) {
     if (!dsd_enc_lockout_is_blocked(opts, state, target, is_group)) {
         // Nothing was blocking -- no entry, or a stale-epoch entry after new key
         // material. The grant is admitted either way, so drop any residue but do
         // not treat the call as a reprobe. The backoff goes with the entry it
         // was earned against, or a target that just had new key material loaded
         // serves out a cooldown from before the change.
-        (void)dsd_enc_lockout_release(state, target, is_group);
-        p25_grant_enc_reprobe_forget(ctx, target, is_group);
+        eval_ctx->enc_release_plan = P25_ENC_RELEASE_PLAN_RESIDUE;
         return;
     }
     // The target re-locked after its last re-admission on this same evidence,
@@ -1165,16 +1175,38 @@ p25_grant_release_enc_lockout_on_grant_bit(p25_sm_ctx_t* ctx, const dsd_opts* op
                      is_group ? "group" : "private", target);
         return;
     }
-    if (dsd_enc_lockout_release(state, target, is_group)) {
-        // The ledger armed from corroborated undecryptable voice, while this
-        // admission rests on one grant bit, so downstream timing treats the call
-        // as a reprobe rather than followed traffic until its voice classifies.
-        // The cooldown is *not* recorded here: handle_grant still has six ways
-        // to reject this assignment, and a window that prices a probe must not
-        // be spent on one that never ran. p25_grant_note_enc_reprobe_admitted()
-        // records it where the slot is actually taken over.
-        eval_ctx->enc_lockout_reprobe = 1;
+    // The ledger armed from corroborated undecryptable voice, while this
+    // admission rests on one grant bit, so downstream timing treats the call
+    // as a reprobe rather than followed traffic until its voice classifies.
+    // Neither the release nor the cooldown happens here: handle_grant still
+    // has several ways to reject this assignment, and a release spent on one
+    // that never ran would hand the accepted repeat a followed call instead of
+    // a reprobe. p25_grant_commit_enc_release() releases where the slot is
+    // actually taken over, and p25_grant_note_enc_reprobe_admitted() records
+    // the cooldown there.
+    eval_ctx->enc_release_plan = P25_ENC_RELEASE_PLAN_REPROBE;
+    eval_ctx->enc_lockout_reprobe = 1;
+}
+
+// Commit the release a grant planned, now that it is accepted.
+static void
+p25_grant_commit_enc_release(p25_sm_ctx_t* ctx, dsd_state* state, p25_grant_eval_ctx_t* eval_ctx) {
+    if (!ctx || !state || !eval_ctx || eval_ctx->tg <= 0) {
+        return;
     }
+    const uint32_t target = (uint32_t)eval_ctx->tg;
+    const int is_group = !eval_ctx->is_indiv;
+    switch (eval_ctx->enc_release_plan) {
+        case P25_ENC_RELEASE_PLAN_RESIDUE:
+            (void)dsd_enc_lockout_release(state, target, is_group);
+            p25_grant_enc_reprobe_forget(ctx, target, is_group);
+            break;
+        case P25_ENC_RELEASE_PLAN_REPROBE: (void)dsd_enc_lockout_release(state, target, is_group); break;
+        case P25_ENC_RELEASE_PLAN_NONE:
+        case P25_ENC_RELEASE_PLAN_CORROBORATED:
+        default: break;
+    }
+    eval_ctx->enc_release_plan = P25_ENC_RELEASE_PLAN_NONE;
 }
 
 // Charge the backoff for a re-admission that actually claimed the carrier.
@@ -1191,9 +1223,15 @@ p25_grant_note_enc_reprobe_admitted(p25_sm_ctx_t* ctx, const p25_grant_eval_ctx_
 // being processed: the policy-only and voice-start evaluations share this
 // helper and would otherwise consume the one-shot ledger release on the weak
 // evidence without carrying the reprobe marking into grant timing.
+typedef enum {
+    P25_GRANT_EVAL_RECHECK = 0,     // policy-only and voice-start re-evaluations
+    P25_GRANT_EVAL_ASSIGNMENT = 1,  // an assignment being processed: plans the clear-bit release
+    P25_GRANT_EVAL_PROSPECTIVE = 2, // read-only: what an assignment would decide, writing nothing
+} p25_grant_eval_mode_e;
+
 static void
 p25_grant_release_enc_lockout_if_clear(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
-                                       p25_grant_eval_ctx_t* eval_ctx, int commit) {
+                                       p25_grant_eval_ctx_t* eval_ctx, p25_grant_eval_mode_e mode) {
     if (!opts || !state || !eval_ctx || !p25_grant_is_voice_call(eval_ctx) || eval_ctx->tg <= 0) {
         return;
     }
@@ -1208,14 +1246,18 @@ p25_grant_release_enc_lockout_if_clear(p25_sm_ctx_t* ctx, const dsd_opts* opts, 
 
     switch (p25_grant_enc_release_evidence(state, eval_ctx)) {
         case P25_ENC_RELEASE_CORROBORATED:
+            if (mode == P25_GRANT_EVAL_PROSPECTIVE) {
+                eval_ctx->enc_release_plan = P25_ENC_RELEASE_PLAN_CORROBORATED;
+                break;
+            }
             // Stronger evidence than the grant bit the backoff was earned
             // against, so it retires that backoff along with the entry.
             (void)dsd_enc_lockout_release(state, target, is_group);
             p25_grant_enc_reprobe_forget(ctx, target, is_group);
             break;
         case P25_ENC_RELEASE_GRANT_BIT:
-            if (commit) {
-                p25_grant_release_enc_lockout_on_grant_bit(ctx, opts, state, eval_ctx, target, is_group);
+            if (mode != P25_GRANT_EVAL_RECHECK) {
+                p25_grant_plan_enc_release_on_grant_bit(ctx, opts, state, eval_ctx, target, is_group);
             }
             break;
         case P25_ENC_RELEASE_NONE:
@@ -1239,6 +1281,26 @@ p25_grant_policy_candidate_is_better(const dsd_tg_policy_decision* candidate, co
         return (candidate->priority > best->priority) ? 1 : 0;
     }
     return (candidate->preempt_requested && !best->preempt_requested) ? 1 : 0;
+}
+
+// Blocks that deny tuning; the rest only restrict media.
+#define P25_GRANT_TUNE_DENY_BLOCKS                                                                                     \
+    (~((uint32_t)DSD_TG_POLICY_BLOCK_AUDIO | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD                                      \
+       | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM))
+
+// Judge @p target as the planned lockout release leaves it: the ledger entry the release removes no longer blocks.
+static void
+p25_grant_apply_planned_release(const p25_grant_eval_ctx_t* eval_ctx, uint32_t target,
+                                dsd_tg_policy_decision* decision) {
+    if (!eval_ctx || !decision || eval_ctx->tg <= 0 || target != (uint32_t)eval_ctx->tg
+        || (eval_ctx->enc_release_plan != P25_ENC_RELEASE_PLAN_REPROBE
+            && eval_ctx->enc_release_plan != P25_ENC_RELEASE_PLAN_CORROBORATED)) {
+        return;
+    }
+    decision->block_reasons &= ~(uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT;
+    if ((decision->block_reasons & P25_GRANT_TUNE_DENY_BLOCKS) == 0U) {
+        decision->tune_allowed = 1;
+    }
 }
 
 static int
@@ -1265,6 +1327,7 @@ p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const 
             != 0) {
             return -1;
         }
+        p25_grant_apply_planned_release(eval_ctx, target, &candidate);
         // A block on the supergroup itself is final (see DSD_TG_POLICY_BLOCK_OTA_FINAL):
         // a member reprieve here cost an encryption-locked SG a tune / classify /
         // re-lock cycle per grant update, and let unlisted members in blacklist
@@ -1301,8 +1364,13 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
         policy_ctx.encrypted_call = 0;
     }
     if (policy_ctx.is_indiv) {
-        return dsd_tg_policy_evaluate_private_grant(opts, state, (uint32_t)ev->src, (uint32_t)ev->dst,
-                                                    policy_ctx.encrypted_call, policy_ctx.data_call, out_decision);
+        if (dsd_tg_policy_evaluate_private_grant(opts, state, (uint32_t)ev->src, (uint32_t)ev->dst,
+                                                 policy_ctx.encrypted_call, policy_ctx.data_call, out_decision)
+            != 0) {
+            return -1;
+        }
+        p25_grant_apply_planned_release(&policy_ctx, (uint32_t)ev->dst, out_decision);
+        return 0;
     }
     return p25_grant_eval_group_policy(opts, state, ev, &policy_ctx, out_decision);
 }
@@ -1358,7 +1426,7 @@ p25_grant_track_src_tg(dsd_state* state, const p25_sm_event_t* ev, const p25_gra
 // outcome it carries into grant timing through @p out_eval_ctx.
 static int
 grant_allowed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
-              dsd_tg_policy_decision* out_decision, p25_grant_eval_ctx_t* out_eval_ctx, int commit) {
+              dsd_tg_policy_decision* out_decision, p25_grant_eval_ctx_t* out_eval_ctx, p25_grant_eval_mode_e commit) {
     p25_grant_eval_ctx_t eval_ctx;
     dsd_tg_policy_decision decision;
     // Filled before every return: the context carries enc_lockout_reprobe into
@@ -1566,8 +1634,9 @@ p25_stale_regrant_update_blocked(const p25_sm_ctx_t* ctx, p25_sm_recent_call_end
     // sequence when its initial assignment was missed during the CC return.
     // Permit one validation tune after a short hold. If it produces no voice,
     // keep the identity quarantine active so later updates cannot loop tunes.
+    // Observing the update is immediate; spending the probe waits for the grant to be accepted
+    // (p25_grant_start_stale_regrant_probe()), so a grant refused later -- a preemption still in its dwell -- keeps it.
     if (age_s >= P25_STALE_REGRANT_PROBE_DELAY_S && !guard->probe_attempted) {
-        guard->probe_attempted = 1;
         guard->last_match_m = now_m;
         if (out_probe) {
             *out_probe = 1;
@@ -1634,6 +1703,66 @@ p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, 
     route->requires_tuner_retune = needs_retune;
 }
 
+/* Whether a voice assignment on the slot is still awaiting the voice its wait (acquire_since_m) began for: no voice
+ * start or stop has ended that wait. */
+static int
+p25_slot_awaiting_voice(const p25_sm_slot_ctx_t* slot_ctx) {
+    return slot_ctx->grant_active && !slot_ctx->data_call && !slot_ctx->voice_active && slot_ctx->acquire_since_m > 0.0
+           && !slot_ctx->acquire_ended;
+}
+
+/* Whether the slot's followed conversation lapsed: its last transmission ended no earlier than the follow began and
+ * nothing followed it for a whole hangtime (@p lapse_s), while a companion slot kept the carrier. */
+static int
+p25_slot_follow_lapsed(const p25_sm_slot_ctx_t* slot_ctx, double lapse_s, double now_m) {
+    // The stop must postdate the slot's latest start: a conversation that resumed within its hangtime has not lapsed
+    // because an older stop is far behind. A stop at the follow's own clock reading is an ending too: an assignment,
+    // its voice and its end can share one decode-clock reading. A grant accepted within the hangtime whose voice is
+    // still awaited continues the conversation: its repeats past the hangtime are no new call.
+    return !slot_ctx->voice_active && !p25_slot_awaiting_voice(slot_ctx) && slot_ctx->last_stop_m > 0.0
+           && slot_ctx->last_stop_m >= slot_ctx->followed_since_m && slot_ctx->last_stop_m >= slot_ctx->last_start_m
+           && now_m - slot_ctx->last_stop_m >= lapse_s;
+}
+
+/* Stamp when the slot began following this call: a repeat or re-grant of the same call on the same carrier within its
+ * conversation keeps the stamp; another call, or the same talkgroup again after the conversation lapsed, restarts it.
+ * Preemption dwell runs from it. */
+static void
+p25_slot_note_follow(p25_sm_slot_ctx_t* slot_ctx, int target_id, int is_group, long freq, double lapse_s,
+                     double now_m) {
+    is_group = is_group ? 1 : 0;
+    if (slot_ctx->followed_since_m > 0.0 && slot_ctx->followed_target == target_id
+        && slot_ctx->followed_is_group == is_group && slot_ctx->followed_freq_hz == freq
+        && !p25_slot_follow_lapsed(slot_ctx, lapse_s, now_m)) {
+        return;
+    }
+    slot_ctx->followed_since_m = now_m;
+    slot_ctx->followed_target = target_id;
+    slot_ctx->followed_is_group = is_group;
+    slot_ctx->followed_freq_hz = freq;
+}
+
+/* A call accepted on logical slot @p slot after the slot's conversation lapsed is a new conversation: it is followed
+ * from now. */
+static void
+p25_slot_forget_lapsed_follow(p25_sm_ctx_t* ctx, const dsd_state* state, int slot, double now_m) {
+    if (slot >= 0 && slot <= 1
+        && p25_slot_follow_lapsed(&ctx->slots[slot], p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m)) {
+        ctx->slots[slot].followed_since_m = now_m;
+    }
+}
+
+static double
+p25_slot_followed_since(const p25_sm_slot_ctx_t* slot_ctx, double now_m) {
+    return slot_ctx->followed_since_m > 0.0 ? slot_ctx->followed_since_m : now_m;
+}
+
+/* The follow time of logical slot @p slot, or @p now_m when it names none. */
+static double
+p25_ctx_followed_since(const p25_sm_ctx_t* ctx, int slot, double now_m) {
+    return (slot >= 0 && slot <= 1) ? p25_slot_followed_since(&ctx->slots[slot], now_m) : now_m;
+}
+
 static int
 p25_grant_candidate_displaces_active(const p25_sm_ctx_t* ctx, const dsd_state* state,
                                      const dsd_tg_policy_call_route* route) {
@@ -1658,10 +1787,83 @@ p25_grant_candidate_displaces_active(const p25_sm_ctx_t* ctx, const dsd_state* s
     return 0;
 }
 
+/* Tell the policy what the SM holds on its carrier right before asking whether a candidate may displace it: every
+ * assigned slot, by its policy target, with the time the SM began following that call. A transmission's end clears
+ * its record while hangtime keeps the carrier, and a group list reload may have replaced the records; without this a
+ * held conversation could never be outranked, or would restart its dwell. */
+static int p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx);
+static int p25_voice_slot_assignment_pending(const p25_sm_slot_ctx_t* slot_ctx);
+
+/* Whether a TDMA slot still holds its call: live voice, an assignment awaiting its first voice, or the gap after its
+ * transmission within the hangtime. A slot whose call ended longer ago than that keeps its assignment while the
+ * companion slot goes on, but holds nothing a candidate must outrank. */
+static int
+p25_grant_slot_holds_call(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_slot_ctx_t* slot_ctx,
+                          double now_m) {
+    if (p25_voice_slot_epoch_active(slot_ctx)) {
+        return 1;
+    }
+    // An assignment awaiting its voice holds the slot for the acquisition window only: one that never produced voice
+    // (a stale-regrant probe, say) must not shield the companion's call once the window has passed. The window runs
+    // from when the wait began, so repeats of a grant whose voice never comes cannot renew it; the wait's own state,
+    // not the order of clock readings, says it is outstanding. A data assignment produces no voice; its repeats are
+    // what show it is still live.
+    if (slot_ctx->data_call) {
+        if (p25_voice_slot_assignment_pending(slot_ctx) && slot_ctx->last_grant_m > 0.0
+            && now_m - slot_ctx->last_grant_m < ctx->config.grant_timeout_s) {
+            return 1;
+        }
+    } else if (p25_slot_awaiting_voice(slot_ctx) && now_m - slot_ctx->acquire_since_m < ctx->config.grant_timeout_s) {
+        return 1;
+    }
+    return slot_ctx->last_stop_m > 0.0 && now_m >= slot_ctx->last_stop_m
+           && (now_m - slot_ctx->last_stop_m) < p25_sm_effective_hangtime(state, ctx->config.hangtime_s);
+}
+
+static void
+p25_grant_describe_held_calls(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
+    const int slots = ctx->vc_is_tdma ? 2 : 1;
+    for (int s = 0; s < slots; s++) {
+        const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
+        const int route_slot = ctx->vc_is_tdma ? s : -1;
+        if (!slot_ctx->grant_active || slot_ctx->target_id <= 0 || slot_ctx->freq_hz != ctx->vc_freq_hz
+            || (ctx->vc_is_tdma && !p25_grant_slot_holds_call(ctx, state, slot_ctx, now_m))) {
+            if (ctx->vc_is_tdma) {
+                (void)dsd_tg_policy_clear_active_call(state, s);
+            }
+            continue;
+        }
+        dsd_tg_policy_decision held;
+        const int evaluated =
+            slot_ctx->is_group
+                ? dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)slot_ctx->target_id,
+                                                    (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0), 0,
+                                                    slot_ctx->data_call, &held)
+                : dsd_tg_policy_evaluate_private_grant(opts, state, (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0),
+                                                       (uint32_t)slot_ctx->target_id, 0, slot_ctx->data_call, &held);
+        if (evaluated != 0) {
+            continue;
+        }
+        dsd_tg_policy_call_route route;
+        DSD_MEMSET(&route, 0, sizeof(route));
+        route.target_id = (uint32_t)slot_ctx->target_id;
+        route.source_id = (uint32_t)(slot_ctx->src > 0 ? slot_ctx->src : 0);
+        route.freq_hz = slot_ctx->freq_hz;
+        route.channel = slot_ctx->channel;
+        route.slot = route_slot;
+        (void)dsd_tg_policy_describe_followed_call(state, &route, &held, p25_slot_followed_since(slot_ctx, now_m),
+                                                   now_m);
+    }
+}
+
+/* Returns 1 when the grant may proceed (nothing displaced, or the displaced call was released for it) and 0 when it
+ * is refused. @p out_preempted is set when the carrier was released for the candidate, so the caller commits the
+ * takeover's cooldown once the candidate is acquired. */
 static int
 p25_grant_preempt_active_call_if_needed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
                                         const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision,
-                                        double now_m) {
+                                        double now_m, int* out_preempted) {
+    *out_preempted = 0;
     if (!ctx || !opts || !state || !route || !decision || ctx->state != P25_SM_TUNED) {
         return 1;
     }
@@ -1673,6 +1875,7 @@ p25_grant_preempt_active_call_if_needed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
         sm_log(opts, state, "grant-preempt-flag-off");
         return 0;
     }
+    p25_grant_describe_held_calls(ctx, opts, state, now_m);
     if (!dsd_tg_policy_should_preempt(opts, state, route, decision, now_m)) {
         log_preempt_decision(ctx, opts, state, route, decision, "policy-reject", 0);
         sm_log(opts, state, "grant-preempt-reject");
@@ -1680,7 +1883,18 @@ p25_grant_preempt_active_call_if_needed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
     }
     log_preempt_decision(ctx, opts, state, route, decision, "policy-allow", 1);
     sm_log(opts, state, "grant-preempt-accept");
-    return do_release(ctx, opts, state, "grant-preempt", 0);
+    // A return to the CC that fails or defers arms the force-release latch, and the next tick would drop the held
+    // call for a candidate this grant never acquired. A refused preemption keeps the held call: the latch goes back
+    // to what it was, and a later repeat of the candidate retries.
+    const int prior_force_release = state->p25_sm_force_release;
+    if (!do_release(ctx, opts, state, "grant-preempt", 0)) {
+        state->p25_sm_force_release = prior_force_release;
+        p25_sm_diagf(opts, state, ctx, "grant_preempt_release_refused", "target=%u freq=%ld", route->target_id,
+                     route->freq_hz);
+        return 0;
+    }
+    *out_preempted = 1;
+    return 1;
 }
 
 static void
@@ -1707,6 +1921,16 @@ static void
 p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     if (!ctx || slot < 0 || slot > 1) {
         return;
+    }
+    // An assignment still awaiting its first voice keeps the start of that wait through a clear: an assignment-form
+    // repeat is replaced through here, and must not renew how long a voiceless assignment holds the slot. A new follow
+    // restarts the wait (p25_slot_note_grant()).
+    const p25_sm_slot_ctx_t* cleared = &ctx->slots[slot];
+    const int still_awaited =
+        cleared->grant_active && !cleared->voice_active && cleared->acquire_since_m > 0.0 && !cleared->acquire_ended;
+    if (!still_awaited) {
+        ctx->slots[slot].acquire_since_m = 0.0;
+        ctx->slots[slot].acquire_ended = 0;
     }
     p25_sm_clear_one_slot_activity(ctx, slot);
     ctx->slots[slot].algid = 0;
@@ -1801,6 +2025,8 @@ p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
         }
         p25_call_end_slot(opts, state, s, dsd_decode_now_mono_s());
         p25_grant_clear_one_slot_state(ctx, s);
+        // The call left this slot: a later call here, even of the same talkgroup, is followed anew.
+        ctx->slots[s].followed_since_m = 0.0;
         p25_grant_clear_policy_slot(state, s);
         if (state) {
             state->p25_p2_audio_allowed[s] = 0;
@@ -1816,17 +2042,28 @@ static uint32_t g_p25_grant_seq;
 
 static void
 p25_slot_note_grant(p25_sm_slot_ctx_t* slot_ctx, double now_m) {
+    // A repeat of the grant while its voice is still awaited keeps the wait's start, also across the slot clear an
+    // assignment-form repeat goes through; anything that ended that wait (another call followed, a transmission begun
+    // or ended, a clear after voice) starts a new one. The flag, not the stamps, says the wait ended: the grant, its
+    // voice and its end can share one clock reading.
+    const double since_m = slot_ctx->acquire_since_m;
+    if (since_m <= 0.0 || slot_ctx->followed_since_m > since_m || slot_ctx->acquire_ended) {
+        slot_ctx->acquire_since_m = now_m;
+        slot_ctx->acquire_ended = 0;
+    }
     slot_ctx->last_grant_m = now_m;
     slot_ctx->grant_seq = ++g_p25_grant_seq;
 }
 
 static void
-p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq, int target_id,
-                             const p25_grant_eval_ctx_t* eval_ctx, int slot, double now_m) {
+p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev, long freq,
+                             int target_id, const p25_grant_eval_ctx_t* eval_ctx, int slot, double now_m) {
     if (!ctx || !ev || slot < 0 || slot > 1) {
         return;
     }
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    p25_slot_note_follow(slot_ctx, target_id, ev->is_group, freq,
+                         p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m);
     slot_ctx->grant_active = 1;
     slot_ctx->freq_hz = freq;
     slot_ctx->channel = ev->channel;
@@ -1929,8 +2166,13 @@ p25_sm_clear_followed_history(p25_sm_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
-    ctx->slots[0].last_followed_m = 0.0;
-    ctx->slots[1].last_followed_m = 0.0;
+    for (int s = 0; s < 2; s++) {
+        ctx->slots[s].last_followed_m = 0.0;
+        ctx->slots[s].followed_since_m = 0.0;
+        ctx->slots[s].followed_target = 0;
+        ctx->slots[s].followed_is_group = 0;
+        ctx->slots[s].followed_freq_hz = 0;
+    }
 }
 
 static void
@@ -1997,7 +2239,7 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_data_call = data_call;
     p25_grant_initialize_timing(ctx, state, now_m, reused_carrier, data_call);
     const int logical_slot = p25_grant_logical_slot(ctx, slot);
-    p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, logical_slot, now_m);
+    p25_grant_store_slot_context(ctx, state, ev, freq, target_id, eval_ctx, logical_slot, now_m);
     if (state) {
         if (ctx->vc_is_tdma && logical_slot >= 0 && logical_slot <= 1) {
             state->p25_p2_media_rejected[logical_slot] = 0;
@@ -2285,7 +2527,7 @@ p25_grant_duplicate_starts_new_epoch(const p25_sm_ctx_t* ctx, const p25_sm_event
 static int
 p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                            const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
-                           int target_id, const p25_grant_eval_ctx_t* eval_ctx, double now_m) {
+                           int target_id, p25_grant_eval_ctx_t* eval_ctx, double now_m) {
     int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     if (!p25_grant_duplicate_route_matches(ctx, opts, state, ev, route, freq, target_id, data_call)) {
         return 0;
@@ -2299,6 +2541,10 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
         return 0;
     }
 
+    // The repeat is accepted: the clear-bit release it planned is spent now, before anything re-reads the ledger.
+    p25_grant_commit_enc_release(ctx, state, eval_ctx);
+    // An update accepted after the slot's conversation lapsed (a new talker on a held destination) is a new call.
+    p25_slot_forget_lapsed_follow(ctx, state, p25_grant_logical_slot(ctx, route->slot), now_m);
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
     p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call, now_m);
     // A duplicate can still be the update that spent the ledger release, and
@@ -2318,7 +2564,10 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
         ctx->t_voice_m = 0.0;
     }
     p25_grant_refresh_reused_carrier_watchdogs(state, now_m);
-    (void)dsd_tg_policy_note_active_call(state, route, decision, now_m);
+    // A repeat describes the call already followed: its dwell runs from when it was first followed, and it is no
+    // takeover (dsd_tg_policy_describe_followed_call()).
+    (void)dsd_tg_policy_describe_followed_call(state, route, decision, p25_ctx_followed_since(ctx, call_slot, now_m),
+                                               now_m);
     p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_duplicate", "freq=%ld tg=%d target=%d slot=%d data=%d", freq,
                  ctx->vc_tg, target_id, route->slot, data_call);
     sm_log(opts, state, "grant-same-freq");
@@ -2548,6 +2797,9 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
                       const p25_grant_eval_ctx_t* eval_ctx) {
     const int slot = grant->logical_slot;
     if (grant->clear_policy_slot_only) {
+        // A slot whose conversation lapsed while the companion kept the carrier starts a new one: read it before the
+        // clear wipes the slot's last stop.
+        p25_slot_forget_lapsed_follow(ctx, state, slot, grant->now_m);
         p25_grant_clear_one_slot_state(ctx, slot);
         // Taking the slot over is the cancel the countdown used to be given
         // explicitly -- but only for an assignment the SM has reason to follow.
@@ -2568,6 +2820,15 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
                                grant->reused_carrier);
 }
 
+/* A grant allowed through as the stale-regrant guard's one validation probe was accepted (followed, or taken as a
+ * repeat of the call already followed): the probe is spent. A grant refused later keeps it. */
+static void
+p25_grant_spend_stale_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx_t* grant) {
+    if (grant->stale_regrant_probe && grant->logical_slot >= 0 && grant->logical_slot <= 1) {
+        ctx->recent_call_ends[grant->logical_slot].probe_attempted = 1;
+    }
+}
+
 static void
 p25_grant_start_stale_regrant_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx_t* grant) {
     if (!ctx || !grant) {
@@ -2575,6 +2836,67 @@ p25_grant_start_stale_regrant_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx
     }
     ctx->vc_stale_regrant_probe = grant->stale_regrant_probe;
     ctx->vc_stale_regrant_probe_slot = grant->stale_regrant_probe ? grant->logical_slot : -1;
+    p25_grant_spend_stale_probe(ctx, grant);
+}
+
+/* The accepted call is what the SM now holds; a re-grant of the call it already followed keeps that call's dwell.
+ * Only a preemption is a takeover, and it commits its cooldown explicitly: the release cleared the records of the
+ * call it displaced. */
+static void
+p25_grant_note_followed(const p25_sm_ctx_t* ctx, dsd_state* state, const p25_grant_route_ctx_t* grant,
+                        const dsd_tg_policy_decision* decision, int preempted) {
+    const int follow_slot = grant->logical_slot >= 0 && grant->logical_slot <= 1 ? grant->logical_slot : 0;
+    (void)dsd_tg_policy_describe_followed_call(state, &grant->route, decision,
+                                               p25_ctx_followed_since(ctx, follow_slot, grant->now_m), grant->now_m);
+    if (preempted) {
+        (void)dsd_tg_policy_commit_preemption(state, grant->now_m);
+    }
+}
+
+/* What an assignment would decide for @p ev, without writing anything: no ledger release, no backoff, no call-skip
+ * touch, no log. Patch-aware like the assignment path. */
+static int
+p25_grant_prospective_decision(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+                               const p25_sm_event_t* ev, dsd_tg_policy_decision* out) {
+    p25_grant_eval_ctx_t eval_ctx = p25_grant_eval_ctx_from_event(ev);
+    p25_grant_apply_clear_override(opts, state, &eval_ctx);
+    p25_grant_apply_crypto_probe(opts, &eval_ctx);
+    p25_grant_release_enc_lockout_if_clear((p25_sm_ctx_t*)ctx, opts, state, &eval_ctx, P25_GRANT_EVAL_PROSPECTIVE);
+    return p25_grant_eval_policy(opts, state, ev, &eval_ctx, out) == 0;
+}
+
+/* A grant announced on a voice channel for another carrier (ev->preempt_only) only matters as a preemption: it is
+ * considered while the SM holds a voice channel, for a talkgroup whose policy asks to preempt. Anything else is
+ * dropped before it touches SM state, so the continuous updates a site sends for other calls cannot restart the
+ * held call's timers. Returns 1 for every other grant. */
+static int
+p25_grant_preempt_only_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+                                 const p25_sm_event_t* ev) {
+    if (!ev->preempt_only) {
+        return 1;
+    }
+    if (ctx->state != P25_SM_TUNED || ctx->vc_freq_hz == 0) {
+        return 0;
+    }
+    const long freq = process_channel_to_freq(opts, state, ev->channel);
+    if (freq == 0 || freq == ctx->vc_freq_hz) {
+        return 0;
+    }
+    dsd_tg_policy_decision decision;
+    if (!p25_grant_prospective_decision(ctx, opts, state, ev, &decision)) {
+        return 0;
+    }
+    // A skipped call announced here is still on the air: keep its skip alive as the control channel's grants would,
+    // or it expires mid-call and the skipped call takes the receiver.
+    if (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP) {
+        const uint32_t ota_target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
+        const double now_m = dsd_decode_now_mono_s();
+        dsd_tg_policy_call_skip_touch(state, ota_target, now_m);
+        if (decision.target_id != ota_target) {
+            dsd_tg_policy_call_skip_touch(state, decision.target_id, now_m);
+        }
+    }
+    return decision.tune_allowed && decision.preempt_requested;
 }
 
 /* ============================================================================
@@ -2592,8 +2914,12 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
 
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
 
+    if (!p25_grant_preempt_only_candidate(ctx, opts, state, ev)) {
+        return;
+    }
+
     // Check grant policy
-    if (!grant_allowed(ctx, opts, state, ev, &decision, &eval_ctx, 1)) {
+    if (!grant_allowed(ctx, opts, state, ev, &decision, &eval_ctx, P25_GRANT_EVAL_ASSIGNMENT)) {
         return;
     }
 
@@ -2617,10 +2943,12 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     // still need normal grant handling so the slot context is replaced.
     if (p25_grant_handle_duplicate(ctx, opts, state, ev, &grant.route, &decision, grant.freq, grant.target_id,
                                    &eval_ctx, grant.now_m)) {
+        p25_grant_spend_stale_probe(ctx, &grant);
         return;
     }
 
-    if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &grant.route, &decision, grant.now_m)) {
+    int preempted = 0;
+    if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &grant.route, &decision, grant.now_m, &preempted)) {
         return;
     }
     grant.clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, opts, state, ev, grant.freq, grant.slot);
@@ -2632,6 +2960,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
     p25_sm_cancel_pending_cc_acquisition(ctx);
+    p25_grant_commit_enc_release(ctx, state, &eval_ctx);
     p25_grant_clear_moved_target_slots(ctx, opts, state, grant.slot, ev, grant.target_id, grant.freq,
                                        eval_ctx.data_call);
     p25_grant_claim_slots(ctx, state, ev, &grant, &eval_ctx);
@@ -2644,7 +2973,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     ctx->grant_count++;
     p25_grant_debug_log_tdma(opts, state, ctx, ev, grant.freq, grant.ted_sps);
 
-    (void)dsd_tg_policy_note_active_call(state, &grant.route, &decision, grant.now_m);
+    p25_grant_note_followed(ctx, state, &grant, &decision, preempted);
     p25_sm_diagf(opts, state, ctx, "grant_accept",
                  "ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d needs_retune=%d "
                  "prio=%d preempt=%d data=%d reused_carrier=%d stale_probe=%d",
@@ -2653,6 +2982,35 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
                  grant.stale_regrant_probe);
 
     set_state(ctx, opts, state, P25_SM_TUNED, "grant");
+}
+
+int
+p25_sm_grant_candidate_rank(const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                            p25_sm_grant_rank_t* out) {
+    dsd_tg_policy_decision decision;
+    if (!opts || !state || !ev || !out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!p25_grant_prospective_decision(p25_sm_get_ctx(), opts, state, ev, &decision)) {
+        return 0;
+    }
+    out->tune_allowed = decision.tune_allowed ? 1 : 0;
+    out->hold_match = decision.tg_hold_match ? 1 : 0;
+    out->priority = decision.priority;
+    out->preempt = decision.preempt_requested ? 1 : 0;
+    return 1;
+}
+
+int
+p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, int tg, int svc_bits) {
+    if (!opts || opts->trunk_tune_enc_calls != 0 || (svc_bits >= 0 && (svc_bits & 0x10) != 0)) {
+        return 0;
+    }
+    if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
+        return 0;
+    }
+    return svc_bits < 0 || (svc_bits & 0x40) != 0;
 }
 
 void
@@ -2664,7 +3022,7 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
     p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, tg, src, svc_bits);
     dsd_tg_policy_decision decision;
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    if (grant_allowed(ctx, opts, state, &ev, &decision, NULL, 0)) {
+    if (grant_allowed(ctx, opts, state, &ev, &decision, NULL, P25_GRANT_EVAL_RECHECK)) {
         p25_sm_diagf(opts, state, ctx, "grant_policy_only", "ch=0x%04X tg=%d src=%d svc=0x%02X policy_tg=%u",
                      channel & 0xFFFF, tg, src, svc_bits & 0xFF, decision.target_id);
     }
@@ -3674,6 +4032,8 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     dsd_tg_policy_call_route route;
     p25_grant_fill_route(&route, call_ev, slot_ctx->freq_hz, ctx->vc_is_tdma ? slot : -1, 0, target_id);
     p25_voice_start_clear_stale_reprobe(slot_ctx, call_ev, target_id);
+    p25_slot_note_follow(slot_ctx, target_id, call_ev->is_group, slot_ctx->freq_hz,
+                         p25_sm_effective_hangtime(state, ctx->config.hangtime_s), now_m);
     slot_ctx->target_id = target_id;
     slot_ctx->ota_tg = call_ev->is_group ? call_ev->tg : 0;
     slot_ctx->dst = call_ev->is_group ? 0 : call_ev->dst;
@@ -3686,7 +4046,9 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     ctx->vc_tg = target_id;
     ctx->vc_src = call_ev->src;
     p25_voice_set_state_identity(state, slot, call_ev);
-    (void)dsd_tg_policy_note_active_call(state, &route, decision, now_m);
+    // Voice on the carrier the SM holds describes what it follows; only an accepted grant is a takeover.
+    (void)dsd_tg_policy_describe_followed_call(state, &route, decision, p25_slot_followed_since(slot_ctx, now_m),
+                                               now_m);
     p25_voice_start_update_crypto(ctx, state, slot, logical_slot, call_ev, eval_ctx, changes, now_m);
     p25_call_publish_observation(ctx, opts, state, slot, changes->new_epoch, changes->coalesce_canonical_epoch,
                                  changes->continuous_activity, P25_CALL_OBS_VOICE_EVIDENCE, now_m);
@@ -3745,7 +4107,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
 
     dsd_tg_policy_decision decision;
     p25_grant_eval_ctx_t eval_ctx;
-    if (!grant_allowed(ctx, opts, state, &call_ev, &decision, &eval_ctx, 0)) {
+    if (!grant_allowed(ctx, opts, state, &call_ev, &decision, &eval_ctx, P25_GRANT_EVAL_RECHECK)) {
         p25_call_end_slot(opts, state, slot, now_m);
         p25_voice_close_slot_media(ctx, opts, state, slot);
         p25_voice_clear_slot_grant(ctx, state, slot);
@@ -3974,6 +4336,7 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
     if (new_epoch) {
         ctx->slots[s].last_start_m = now_m;
     }
+    ctx->slots[s].acquire_ended = 1; // the assignment's voice came: a later grant awaits a new transmission
     p25_voice_start_clear_activity_guards(ctx, opts, state, s, why, now_m);
     p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
 
@@ -4285,6 +4648,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
         state->p25_p1_identity_epoch_started = 0;
     }
     ctx->slots[s].last_stop_m = now_m;
+    ctx->slots[s].acquire_ended = 1;
     // This slot followed traffic right up to now: an observation, not a
     // decision about the carrier, and a companion that is still busy keeps the
     // countdown from running on its own. The one assignment that is not
@@ -4496,6 +4860,8 @@ p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
     p25_ptt_marker_invalidate(ctx, slot);
     ctx->slots[slot].grant_active = 0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
+    // The slot's assignment is abandoned: a later call there, even of the same talkgroup, is followed anew.
+    ctx->slots[slot].followed_since_m = 0.0;
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
 }
 
@@ -7154,6 +7520,7 @@ p25_sm_emit_mac_release(dsd_opts* opts, dsd_state* state, int slot, double obser
     ctx->slots[slot].voice_active = 0;
     ctx->slots[slot].last_active_m = 0.0;
     ctx->slots[slot].last_stop_m = ended_m;
+    ctx->slots[slot].acquire_ended = 1;
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
     }

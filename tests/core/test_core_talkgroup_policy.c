@@ -731,6 +731,51 @@ test_live_active_priority(void) {
     return rc;
 }
 
+/* The held call a candidate on the same target, channel and slot is is the same call only in the same class: a
+   talkgroup and a unit may share a number, so a group candidate named like a held private call is another call, which
+   displaces it by priority once the dwell has run; a candidate of the held call's own class is that call, never a
+   preemption of it. Each way round, on a single slot and across a retune. */
+static int
+test_preemption_same_call_by_class(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    for (int held_private = 0; held_private < 2; held_private++) {
+        for (int slot = -1; slot <= 0; slot++) {
+            rc |= expect_true("clear before class case", dsd_tg_policy_clear_active_call(st, -1) == 0);
+            dsd_tg_policy_call_route held;
+            dsd_tg_policy_decision held_dec;
+            init_route(&held, 1401, 7, 936012500L, 16, slot, 0);
+            init_decision(&held_dec, 1401, 7, 0, 0, 1);
+            held_dec.private_call = held_private;
+            rc |= expect_true("note held call", dsd_tg_policy_note_active_call(st, &held, &held_dec, 0.0) == 0);
+
+            dsd_tg_policy_call_route cand;
+            dsd_tg_policy_decision cand_dec;
+            init_route(&cand, 1401, 7, 936012500L, 16, slot, slot == -1 ? 1 : 0);
+            init_decision(&cand_dec, 1401, 7, 100, 1, 1);
+            cand_dec.private_call = !held_private;
+            rc |= expect_true("same number, other class: another call that displaces the held one",
+                              dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 2.0) == 1);
+            cand_dec.private_call = held_private;
+            rc |= expect_true("same number, same class: the held call itself, never a preemption",
+                              dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 2.0) == 0);
+        }
+    }
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
 static int
 test_preemption_helpers(void) {
     int rc = 0;
@@ -863,6 +908,326 @@ test_preemption_helpers(void) {
 
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
+static int
+write_policy_file(const char* path, const char* rows) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return 1;
+    }
+    DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n%s", rows);
+    fclose(fp);
+    return 0;
+}
+
+/* The held call is what a protocol describes right before asking, the cooldown is what an accepted takeover commits,
+ * and a list reload or clear keeps both. */
+/* A learned radio alias names a radio: it never decides a talkgroup's mode, priority, preemption or allow-list
+ * membership, while private calls (radio IDs) and labels still see it, behind any talkgroup row. */
+static int
+test_alias_rows_never_decide_talkgroup_policy(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_decision d;
+    char mode[8];
+    char name[50];
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+
+    DSD_MEMSET(&e, 0, sizeof(e));
+    e.id_start = 1000;
+    e.id_end = 1999;
+    e.is_range = 1;
+    DSD_SNPRINTF(e.mode, sizeof(e.mode), "%s", "A");
+    DSD_SNPRINTF(e.name, sizeof(e.name), "%s", "Fire");
+    e.priority = 100;
+    e.preempt = 1;
+    e.audio = e.record = e.stream = 1;
+    e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+    rc |= expect_true("seed priority range", dsd_tg_policy_add_range_entry(st, &e) == 0);
+    init_entry(&e, 1500, "D", "Radio 1500", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias inside range", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("evaluate shadowed tg", dsd_tg_policy_evaluate_group_call(&opts, st, 1500, 7, 0, 0, &d) == 0);
+    rc |= expect_true("range priority beats alias", d.priority == 100 && d.preempt_requested == 1);
+    rc |= expect_true("range row matched", d.match == DSD_TG_POLICY_MATCH_RANGE && strcmp(d.name, "Fire") == 0);
+
+    init_entry(&e, 1600, "DE", "Encrypted radio", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("seed DE alias", dsd_tg_policy_append_exact(st, &e) == 0);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1600, 7, 0, 0, &d);
+    rc |= expect_true("DE alias does not block tg", d.tune_allowed == 1 && d.priority == 100);
+    (void)dsd_tg_policy_evaluate_private_call(&opts, st, 1600, 9, 0, 0, &d);
+    rc |= expect_true("private call still sees the radio's alias", d.tune_allowed == 0);
+
+    init_entry(&e, 3000, "D", "Radio 3000", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("seed persisted alias", dsd_tg_policy_append_exact(st, &e) == 0);
+    opts.trunk_use_allow_list = 1;
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 3000, 7, 0, 0, &d);
+    rc |= expect_true("alias does not list a tg",
+                      d.tune_allowed == 0 && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST));
+    (void)dsd_tg_policy_evaluate_private_call(&opts, st, 3000, 9, 0, 0, &d);
+    rc |= expect_true("alias lists its radio", d.tune_allowed == 1);
+    opts.trunk_use_allow_list = 0;
+
+    init_entry(&e, 3000, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("seed tg row after alias", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("label prefers tg row",
+                      dsd_tg_policy_lookup_label(st, 3000, mode, sizeof(mode), name, sizeof(name)) == 1
+                          && strcmp(name, "Dispatch") == 0);
+
+    free_test_state(st);
+    return rc;
+}
+
+/* Edits by bounds address the talkgroup row; an ID held only by a learned alias is taken over, never duplicated. */
+static int
+test_edits_prefer_talkgroup_rows(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_entry values;
+    dsd_tg_policy_lookup lookup;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    init_entry(&e, 500, "D", "Radio", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    DSD_MEMSET(&values, 0, sizeof(values));
+    values.priority = 100;
+    values.preempt = 1;
+    rc |= expect_true(
+        "priority edit on alias collision",
+        dsd_tg_policy_set_fields(st, 500, 500, &values, DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT)
+            == 0);
+    rc |= expect_true("taken over in place", dsd_tg_policy_entry_count(st) == 1);
+    rc |= expect_true("listening toggle", dsd_tg_policy_set_mode(st, 500, 500, "B") == 0);
+    rc |= expect_true("lockout keeps one row", dsd_tg_policy_entry_count(st) == 1);
+    dsd_tg_policy_lookup_id(st, 500, &lookup);
+    rc |= expect_true("priority survives toggle",
+                      lookup.entry.priority == 100 && lookup.entry.preempt == 1 && strcmp(lookup.entry.mode, "B") == 0);
+    init_entry(&e, 500, "D", "Radio renamed", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("tg row keeps a later alias out", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_KEPT);
+
+    /* An alias ahead of a talkgroup row (an older file) never captures the edit. */
+    init_entry(&e, 600, "D", "Radio 600", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("seed alias first", dsd_tg_policy_append_exact(st, &e) == 0);
+    init_entry(&e, 600, "A", "Ops", DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.priority = 80;
+    rc |= expect_true("seed tg row second", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("toggle the tg row", dsd_tg_policy_set_mode(st, 600, 600, "B") == 0);
+    rc |= expect_true("alias untouched", dsd_tg_policy_entry_at(st, 1, &e) && strcmp(e.mode, "D") == 0);
+    rc |= expect_true("tg row toggled",
+                      dsd_tg_policy_entry_at(st, 2, &e) && strcmp(e.mode, "B") == 0 && e.priority == 80);
+
+    /* A heard-only selection over an alias-only ID takes it over. */
+    init_entry(&e, 700, "D", "Radio 700", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias 700", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    const size_t before = dsd_tg_policy_entry_count(st);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_selection sel = {-1, 700, 700};
+    rc |= expect_true("heard selection over alias",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &sel, 1, 0) == 0);
+    dsd_tg_policy_lookup_id(st, 700, &lookup);
+    rc |= expect_true("heard selection took the alias over",
+                      dsd_tg_policy_entry_count(st) == before && strcmp(lookup.entry.mode, "B") == 0
+                          && lookup.entry.source == DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    free_test_state(st);
+    return rc;
+}
+
+/* What makes a captured edit stale: a change to the rows it addresses, not learned aliases or session avoids. */
+static int
+test_edit_version_tolerance(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_state* lazy = (dsd_state*)calloc(1, sizeof(*lazy));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_tg_policy_entry e;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    char path_template[64];
+    int fd = -1;
+    if (!st || !lazy || !opts) {
+        free_test_state(st);
+        free_test_state(lazy);
+        free(opts);
+        return 1;
+    }
+    init_entry(&e, 100, "A", "Fire", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("seed row", dsd_tg_policy_append_exact(st, &e) == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    init_entry(&e, 777001, "D", "Radio", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("alias learned after capture", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("session avoid after capture", dsd_tg_policy_session_avoid_add(st, 4242) == 0);
+    rc |= expect_true("capture still valid", dsd_tg_policy_edit_version_valid(st, context, generation) == 1);
+    rc |= expect_true("other context stale", dsd_tg_policy_edit_version_valid(st, context + 1u, generation) == 0);
+    {
+        uint64_t now_context = 0;
+        unsigned int now_generation = 0;
+        dsd_tg_policy_table_version(st, &now_context, &now_generation);
+        rc |= expect_true("future generation stale",
+                          dsd_tg_policy_edit_version_valid(st, context, now_generation + 1u) == 0);
+    }
+    rc |= expect_true("talkgroup edit", dsd_tg_policy_set_mode(st, 100, 100, "B") == 0);
+    rc |= expect_true("capture stale after edit", dsd_tg_policy_edit_version_valid(st, context, generation) == 0);
+
+    dsd_tg_policy_table_version(st, &context, &generation);
+    DSD_SNPRINTF(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-edit-XXXXXX");
+    fd = dsd_mkstemp(path_template);
+    if (fd >= 0) {
+        (void)dsd_close(fd);
+        rc |= expect_true("write list", write_policy_file(path_template, "100,A,Fire,0,false,on,on,on,\n") == 0);
+        DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+        rc |= expect_true("reload", dsd_tg_policy_reload_group_file(opts, st) == 0);
+        rc |= expect_true("capture stale after reload", dsd_tg_policy_edit_version_valid(st, context, generation) == 0);
+        (void)remove(path_template);
+    } else {
+        rc = 1;
+    }
+
+    /* Nothing loaded at capture time: decoder writes that create the context in place keep (0, 0) valid. */
+    rc |= expect_true("empty capture valid", dsd_tg_policy_edit_version_valid(lazy, 0, 0) == 1);
+    {
+        dsd_tg_policy_call_route r;
+        dsd_tg_policy_decision d;
+        DSD_MEMSET(&r, 0, sizeof(r));
+        DSD_MEMSET(&d, 0, sizeof(d));
+        r.target_id = 9;
+        r.channel = 1;
+        r.slot = -1;
+        d.tune_allowed = 1;
+        rc |= expect_true("ledger write creates context", dsd_tg_policy_note_active_call(lazy, &r, &d, 1.0) == 0);
+    }
+    init_entry(&e, 777002, "D", "Radio", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    (void)dsd_tg_policy_learn_exact(lazy, &e);
+    rc |= expect_true("empty capture valid over lazy context", dsd_tg_policy_edit_version_valid(lazy, 0, 0) == 1);
+    rc |= expect_true("lazy context talkgroup edit", dsd_tg_policy_set_mode(lazy, 55, 55, "B") == 0);
+    rc |= expect_true("empty capture stale after edit", dsd_tg_policy_edit_version_valid(lazy, 0, 0) == 0);
+
+    free_test_state(st);
+    free_test_state(lazy);
+    free(opts);
+    return rc;
+}
+
+static int
+test_followed_call_bookkeeping(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_tg_policy_call_route held;
+    dsd_tg_policy_call_route cand;
+    dsd_tg_policy_decision held_dec;
+    dsd_tg_policy_decision cand_dec;
+    char path_template[64];
+    int fd = -1;
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+
+    init_route(&held, 100, 1, 851000000L, 10, -1, 0);
+    init_decision(&held_dec, 100, 1, 50, 1, 1);
+    init_route(&cand, 200, 2, 852000000L, 20, -1, 1);
+    init_decision(&cand_dec, 200, 2, 60, 1, 1);
+
+    /* Describing a held call that itself has preempt is not a takeover: no cooldown, and dwell runs from the start the
+     * protocol gives, not from now. */
+    rc |= expect_true("describe held call", dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0) == 0);
+    rc |= expect_true("described call outranked after its dwell",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 1);
+    /* The protocol's follow time is authoritative even for a matching record: the call left the slot and came back
+     * (A, B, A) without the ledger seeing B, so its dwell restarts. */
+    rc |= expect_true("describe a call that came back",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.9, 5.0) == 0);
+    rc |= expect_true("its dwell runs from its new follow time",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 0);
+    rc |= expect_true("describe the continuing call",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0) == 0);
+    rc |= expect_true("continuing call keeps its dwell", dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0));
+    held_dec.priority = 70;
+    rc |= expect_true("describe refreshes priority",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0) == 0);
+    rc |= expect_true("refreshed priority outranks candidate",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 0);
+    held_dec.priority = 50;
+    (void)dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 0.0, 5.0);
+
+    /* A private call on the same number is another call: describing it installs its own start. */
+    held_dec.private_call = 1;
+    rc |= expect_true("describe private call on the group's number",
+                      dsd_tg_policy_describe_followed_call(st, &held, &held_dec, 4.95, 5.0) == 0);
+    rc |= expect_true("class change restarts the dwell",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 5.0) == 0);
+    held_dec.private_call = 0;
+
+    /* Noting into an empty ledger stamps nothing either: there was no call to take over. */
+    rc |= expect_true("clear ledger", dsd_tg_policy_clear_active_call(st, -1) == 0);
+    rc |= expect_true("note into empty ledger", dsd_tg_policy_note_active_call(st, &held, &held_dec, 10.0) == 0);
+    rc |= expect_true("note into empty ledger stamps no cooldown",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 10.8) == 1);
+
+    /* An accepted takeover commits the cooldown even though the release already cleared the displaced record. */
+    rc |= expect_true("release clears ledger", dsd_tg_policy_clear_active_call(st, -1) == 0);
+    rc |= expect_true("note preempting call", dsd_tg_policy_note_active_call(st, &cand, &cand_dec, 11.0) == 0);
+    rc |= expect_true("commit takeover", dsd_tg_policy_commit_preemption(st, 11.0) == 0);
+    {
+        dsd_tg_policy_call_route third;
+        dsd_tg_policy_decision third_dec;
+        init_route(&third, 300, 3, 853000000L, 30, -1, 1);
+        init_decision(&third_dec, 300, 3, 90, 1, 1);
+        rc |= expect_true("committed cooldown refuses next takeover",
+                          dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 11.8) == 0);
+        rc |= expect_true("cooldown expires", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 12.1) == 1);
+
+        /* A list reload keeps the held call and the committed cooldown, with priorities from the new rows. */
+        DSD_SNPRINTF(path_template, sizeof(path_template), "%s", "dsd-neo-test-tg-follow-XXXXXX");
+        fd = dsd_mkstemp(path_template);
+        if (fd < 0) {
+            free_test_state(st);
+            free(opts);
+            return 1;
+        }
+        (void)dsd_close(fd);
+        rc |=
+            expect_true("write reload file", write_policy_file(path_template, "200,A,HELD,95,false,on,on,on,\n") == 0);
+        DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+        rc |= expect_true("commit takeover before reload", dsd_tg_policy_commit_preemption(st, 20.0) == 0);
+        rc |= expect_true("reload", dsd_tg_policy_reload_group_file(opts, st) == 0);
+        third_dec.priority = 100;
+        rc |=
+            expect_true("reload keeps cooldown", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 20.5) == 0);
+        third_dec.priority = 90;
+        rc |= expect_true("reload keeps held call with new priority",
+                          dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5) == 0);
+        third_dec.priority = 100;
+        rc |=
+            expect_true("reload held call outranked", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5));
+        rc |= expect_true("clear list", dsd_tg_policy_clear(st) == 0);
+        rc |= expect_true("clear keeps held call", dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5));
+        third_dec.priority = 0;
+        third_dec.preempt_requested = 1;
+        rc |= expect_true("clear refreshed held priority to zero",
+                          dsd_tg_policy_should_preempt(opts, st, &third, &third_dec, 21.5) == 0);
+        (void)remove(path_template);
+    }
+
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
     free_test_state(st);
     free(opts);
     return rc;
@@ -1265,9 +1630,13 @@ test_set_fields_remove_bounds(void) {
                       dsd_tg_policy_set_fields(st, 2, 1, &value, DSD_TG_POLICY_FIELD_NAME) == 1);
     dsd_tg_policy_make_exact_entry(99, "D", "Alias", DSD_TG_POLICY_SOURCE_IMPORTED, &row);
     dsd_tg_policy_append_exact(st, &row);
-    rc |=
-        expect_true("alias edit refused", dsd_tg_policy_set_fields(st, 99, 99, &value, DSD_TG_POLICY_FIELD_NAME) == 1);
     rc |= expect_true("alias remove refused", dsd_tg_policy_remove_bounds(st, 99, 99) == 1);
+    rc |= expect_true("alias collision edit takes the row over",
+                      dsd_tg_policy_set_fields(st, 99, 99, &value, DSD_TG_POLICY_FIELD_NAME) == 0);
+    dsd_tg_policy_lookup_id(st, 99, &found);
+    rc |= expect_true("taken-over alias is a talkgroup row",
+                      found.entry.source == DSD_TG_POLICY_SOURCE_USER_LOCKOUT && strcmp(found.entry.mode, "A") == 0);
+    rc |= expect_true("taken-over row removable", dsd_tg_policy_remove_bounds(st, 99, 99) == 0);
     free_test_state(st);
     return rc;
 }
@@ -1710,8 +2079,13 @@ main(void) {
     rc |= test_evaluator_behaviors();
     rc |= test_group_file_append_helper();
     rc |= test_preemption_helpers();
+    rc |= test_preemption_same_call_by_class();
     rc |= test_live_active_priority();
     rc |= test_reload_group_file();
+    rc |= test_followed_call_bookkeeping();
+    rc |= test_alias_rows_never_decide_talkgroup_policy();
+    rc |= test_edits_prefer_talkgroup_rows();
+    rc |= test_edit_version_tolerance();
     rc |= test_mode_edits_and_enumeration();
     rc |= test_group_file_rewrite();
     rc |= test_scan_row_policy_activity();

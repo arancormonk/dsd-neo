@@ -754,7 +754,7 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     ldu2_print_decode_result(&frame);
     ldu2_maybe_enc_lockout(&opts, &state, &frame);
     ldu2_report_decryption_key(&opts, &state);
-    ldu2_handle_lsd_alias(&opts, &state, &frame);
+    ldu2_handle_lsd_alias(&state, &frame);
 
     rc |= expect_int("decoded ALGID", state.payload_algid, 0x84);
     rc |= expect_int("decoded KID", state.payload_keyid, 0x1234);
@@ -788,7 +788,7 @@ test_ldu2_alias_without_canonical_call(void) {
     state.data_block_counter[0] = 1;
     DSD_MEMCPY(state.dmr_alias_block_segment[0][0][0], "TEST", 4U);
 
-    ldu2_maybe_finalize_lsd_alias(&opts, &state);
+    ldu2_maybe_finalize_lsd_alias(&state);
 
     rc |= expect_int("alias without call skips policy", g_policy_make_calls, 0);
     rc |= expect_int("alias without call resets format", state.dmr_alias_format[0], 0);

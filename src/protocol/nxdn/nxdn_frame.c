@@ -36,6 +36,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -100,6 +101,11 @@ typedef struct {
 
     int nxdn_bit_buffer[364];
     uint8_t nxdn_reliab_buffer[364];
+
+    /* The trunk-tuning generation and newest unresolved tune request when the frame's channels began to decode
+       (nxdn_frame_left_carrier()). */
+    uint64_t tune_generation;
+    uint64_t tune_pending_request;
 } nxdn_frame_ctx;
 
 typedef struct {
@@ -513,51 +519,102 @@ nxdn_frame_channel_of(const nxdn_frame_ctx* ctx) {
     return (uint8_t)NXDN_FRAME_CHANNEL_TRAFFIC;
 }
 
+/* Note where the receiver is before the frame's channels decode: the completed trunk-tuning generation and the newest
+   unresolved tune request (a PENDING retune counts at once), as P25 Phase 2's retune token does. */
 static void
-nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_frame_note_tuning(nxdn_frame_ctx* ctx) {
+    ctx->tune_generation = dsd_trunk_tuning_generation();
+    ctx->tune_pending_request = dsd_trunk_tuning_pending_request();
+}
+
+/* Whether a channel of this frame retuned the receiver (a grant or busy repeater message followed, a Type-D
+   termination's return to the control channel): what is left of the frame was read on the carrier left, so none of it
+   may name, reopen or play a call where the receiver went. */
+static int
+nxdn_frame_left_carrier(const nxdn_frame_ctx* ctx) {
+    return dsd_trunk_tuning_generation() != ctx->tune_generation
+           || dsd_trunk_tuning_pending_request() != ctx->tune_pending_request;
+}
+
+static void
+nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->scch) {
         nxdn_deperm_scch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab, ctx->direction);
+        if (nxdn_frame_left_carrier(ctx)) {
+            return;
+        }
     }
-
     if (ctx->udch2) {
         nxdn_deperm_facch3_udch2_soft(opts, state, (uint8_t*)ctx->facch3_bits, (uint8_t*)ctx->facch3_reliab, 0);
     }
     if (ctx->facch3) {
         nxdn_deperm_facch3_udch2_soft(opts, state, (uint8_t*)ctx->facch3_bits, (uint8_t*)ctx->facch3_reliab, 1);
     }
+}
 
+static void
+nxdn_decode_sacch_cac_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->sacch) {
         nxdn_deperm_sacch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab);
     }
     if (ctx->cac) {
         nxdn_deperm_cac_soft(opts, state, (uint8_t*)ctx->cac_bits, (uint8_t*)ctx->cac_reliab);
     }
+}
 
+static void
+nxdn_decode_facch2_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->udch) {
         nxdn_deperm_facch2_udch_soft(opts, state, (uint8_t*)ctx->facch2_bits, (uint8_t*)ctx->facch2_reliab, 0);
     }
     if (ctx->facch2) {
         nxdn_deperm_facch2_udch_soft(opts, state, (uint8_t*)ctx->facch2_bits, (uint8_t*)ctx->facch2_reliab, 1);
     }
+}
 
+static void
+// cppcheck-suppress constParameterCallback -- one step of the nxdn_channel_step table, which shares one signature.
+nxdn_decode_sacch2_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->sacch2) {
         nxdn_deperm_sacch2_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab);
     }
-    if (ctx->pich_tch & 1) {
+    if ((ctx->pich_tch & 1) && !nxdn_frame_left_carrier(ctx)) {
         nxdn_deperm_pich_tch_soft(opts, state, (uint8_t*)ctx->facch_bits_a, (uint8_t*)ctx->facch_reliab_a, ctx->lich);
     }
-    if (ctx->pich_tch & 2) {
+    if ((ctx->pich_tch & 2) && !nxdn_frame_left_carrier(ctx)) {
         nxdn_deperm_pich_tch_soft(opts, state, (uint8_t*)ctx->facch_bits_b, (uint8_t*)ctx->facch_reliab_b, ctx->lich);
     }
+}
 
+static void
+nxdn_decode_facch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->facch & 1) {
         nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_a, (uint8_t*)ctx->facch_reliab_a,
                                ctx->facch == 3 ? 1U : 0U);
     }
-    if (ctx->facch & 2) {
+    if ((ctx->facch & 2) && !nxdn_frame_left_carrier(ctx)) {
         nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_b, (uint8_t*)ctx->facch_reliab_b,
                                ctx->facch == 3 ? 2U : 0U);
     }
+}
+
+/* Decode the frame's signalling channels in their order. Returns 1 when one of them retuned the receiver
+   (nxdn_frame_left_carrier()): no channel after it is decoded (the steps also stop between their own channels). */
+static int
+nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
+    typedef void (*nxdn_channel_step)(dsd_opts*, dsd_state*, const nxdn_frame_ctx*);
+    static const nxdn_channel_step k_steps[] = {
+        nxdn_decode_scch_channels,   nxdn_decode_sacch_cac_channels, nxdn_decode_facch2_channels,
+        nxdn_decode_sacch2_channels, nxdn_decode_facch_channels,
+    };
+    nxdn_frame_note_tuning(ctx);
+    for (size_t i = 0; i < sizeof(k_steps) / sizeof(k_steps[0]); i++) {
+        k_steps[i](opts, state, ctx);
+        if (nxdn_frame_left_carrier(ctx)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void
@@ -611,6 +668,27 @@ nxdn_finalize_sync_reject(dsd_state* state) {
     if (state->lastsynctype == DSD_SYNC_NONE) {
         state->carrier = 0;
         state->synctype = DSD_SYNC_NONE;
+    }
+}
+
+/* A frame whose channels decoded on the carrier it was read on: a confirmed transmission keeps the carrier active, and
+   its voice plays. */
+static void
+nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (nxdn_confirm_is_confirmed(state)) {
+        nxdn_mark_carrier_sync_active(state);
+        if (opts->scanner_mode == 1) {
+            /* Hold the scanner a little past this frame so the gap to the next one does
+             * not read as loss of signal. */
+            state->last_cc_sync_time = dsd_decode_time() + 2;
+        }
+    }
+
+    nxdn_process_voice_and_mbe(opts, state, ctx);
+    nxdn_handle_post_voice_facch2_lfsr(state, ctx);
+
+    if ((opts->payload == 1 && !ctx->voice) || opts->payload == 0) {
+        DSD_FPRINTF(stderr, "\n");
     }
 }
 
@@ -672,27 +750,18 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
     nxdn_update_sacch_mode(state, ctx.lich);
     state->nxdn_frame_channel = nxdn_frame_channel_of(&ctx);
-    nxdn_decode_control_channels(opts, state, &ctx);
+    const int left_carrier = nxdn_decode_control_channels(opts, state, &ctx);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     nxdn_confirm_end_frame(state);
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
-
-    if (nxdn_confirm_is_confirmed(state)) {
-        nxdn_mark_carrier_sync_active(state);
-        if (opts->scanner_mode == 1) {
-            /* Hold the scanner a little past this frame so the gap to the next one does
-             * not read as loss of signal. */
-            state->last_cc_sync_time = dsd_decode_time() + 2;
-        }
-    }
-
-    nxdn_process_voice_and_mbe(opts, state, &ctx);
-    nxdn_handle_post_voice_facch2_lfsr(state, &ctx);
-
-    if ((opts->payload == 1 && !ctx.voice) || opts->payload == 0) {
+    if (left_carrier) {
+        /* A channel of the frame retuned the receiver: its remaining channels and voice were read on the carrier left
+           and are dropped, and nothing of it stamps the carrier reached as active. */
         DSD_FPRINTF(stderr, "\n");
+        goto END;
     }
+    nxdn_finish_decoded_frame(opts, state, &ctx);
 
 END:
     if (!frame_read) {

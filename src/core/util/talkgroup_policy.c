@@ -29,6 +29,9 @@ typedef struct {
     size_t count;
     size_t capacity;
     unsigned int generation;
+    /* The generation after the last change to rows a frontend edits (anything but learned aliases): an edit captured
+     * at or after it still addresses the same rows. */
+    unsigned int structural_generation;
 } dsd_tg_policy_table;
 
 const char*
@@ -114,6 +117,9 @@ struct dsd_tg_policy_store {
     } call_skips;
 
     size_t references;
+    /* Created in place by a decoder write (ledger, alias, avoid), not loaded or edited: a frontend that saw no list
+     * at all still addresses it. */
+    uint8_t lazy;
     dsd_tg_policy_active_table active;
     uint64_t context_id;
     uint64_t snapshot_source_context_id;
@@ -370,6 +376,7 @@ tg_policy_ctx_get_mut(dsd_state* state, int create_if_missing) {
     if (!ctx) {
         return NULL;
     }
+    ctx->lazy = 1;
     if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, ctx, tg_policy_context_free) != 0) {
         tg_policy_context_free(ctx);
         return NULL;
@@ -424,14 +431,36 @@ tg_policy_find_policy_exact_idx_first(const dsd_tg_policy_context* ctx, uint32_t
     return -1;
 }
 
+/* A learned over-the-air radio alias: a row naming a radio, never a talkgroup. Persisted aliases come back as imported
+ * mode-D rows, so the mode is the durable mark. */
 static int
-tg_policy_find_bounds_idx_first(const dsd_tg_policy_context* ctx, uint32_t id_start, uint32_t id_end) {
+tg_policy_entry_is_learned_alias(const dsd_tg_policy_entry* entry) {
+    return entry->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS || strcmp(entry->mode, "D") == 0;
+}
+
+/* The first row with these bounds that is (@p alias 0) or is not (@p alias 1) a learned alias. */
+static int
+tg_policy_find_bounds_idx_kind(const dsd_tg_policy_context* ctx, uint32_t id_start, uint32_t id_end, int alias) {
+    if (!ctx) {
+        return -1;
+    }
     for (size_t i = 0; i < ctx->table.count; i++) {
-        if (ctx->table.entries[i].id_start == id_start && ctx->table.entries[i].id_end == id_end) {
+        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
+        if (e->id_start == id_start && e->id_end == id_end && tg_policy_entry_is_learned_alias(e) == (alias != 0)) {
             return (int)i;
         }
     }
     return -1;
+}
+
+/* The row an edit by bounds addresses: the first non-alias row, else (@p take_alias) an exact alias row to take over. */
+static int
+tg_policy_find_edit_idx(const dsd_tg_policy_context* ctx, uint32_t id_start, uint32_t id_end, int take_alias) {
+    const int user = tg_policy_find_bounds_idx_kind(ctx, id_start, id_end, 0);
+    if (user >= 0 || !take_alias || id_start != id_end) {
+        return user;
+    }
+    return tg_policy_find_bounds_idx_kind(ctx, id_start, id_end, 1);
 }
 
 static int DSD_ATTR_USED
@@ -451,16 +480,28 @@ tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_e
     return 1;
 }
 
+/* Every mutation advances the generation (snapshots re-copy). A structural one also moves the edit anchor; a wrap is
+ * structural so the edit interval stays bounded. */
 static void
-tg_policy_table_note_mutation(dsd_tg_policy_context* ctx) {
+tg_policy_table_note_mutation_kind(dsd_tg_policy_context* ctx, int structural) {
     if (!ctx) {
         return;
     }
     ctx->table.generation++;
     if (ctx->table.generation == 0u) {
         ctx->table.generation = 1u;
+        structural = 1;
+    }
+    if (structural) {
+        ctx->table.structural_generation = ctx->table.generation;
+        ctx->lazy = 0;
     }
     tg_policy_refresh_active_priorities(ctx);
+}
+
+static void
+tg_policy_table_note_mutation(dsd_tg_policy_context* ctx) {
+    tg_policy_table_note_mutation_kind(ctx, 1);
 }
 
 static size_t
@@ -523,6 +564,9 @@ dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id) {
     const int created = ctx == NULL;
     if (created) {
         ctx = tg_policy_context_alloc();
+        if (ctx) {
+            ctx->lazy = 1;
+        }
     }
     if (!ctx) {
         return -1;
@@ -545,7 +589,7 @@ dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id) {
                 (ctx->session_avoid_count - index) * sizeof(*ctx->session_avoids));
     ctx->session_avoids[index] = id;
     ++ctx->session_avoid_count;
-    tg_policy_table_note_mutation(ctx);
+    tg_policy_table_note_mutation_kind(ctx, 0);
     return 0;
 }
 
@@ -554,7 +598,7 @@ dsd_tg_policy_session_avoid_clear(dsd_state* state) {
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
     if (ctx && ctx->session_avoid_count) {
         ctx->session_avoid_count = 0;
-        tg_policy_table_note_mutation(ctx);
+        tg_policy_table_note_mutation_kind(ctx, 0);
     }
 }
 
@@ -690,8 +734,8 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
     return 0;
 }
 
-int
-dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry) {
+static int
+tg_policy_store_append_kind(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int structural) {
     if (!store || !entry
         || !(entry->is_range ? tg_policy_entry_valid_range(entry) : tg_policy_entry_valid_exact(entry))) {
         return 1;
@@ -705,8 +749,13 @@ dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry
         return -1;
     }
     store->table.entries[store->table.count++] = normalized;
-    tg_policy_table_note_mutation(store);
+    tg_policy_table_note_mutation_kind(store, structural);
     return 0;
+}
+
+int
+dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry) {
+    return tg_policy_store_append_kind(store, entry, 1);
 }
 
 int
@@ -741,22 +790,30 @@ dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
         return DSD_TG_POLICY_LEARN_FAILED;
     }
     tg_policy_copy_entry_normalized(&normalized, entry);
-    // No policy context yet means no row for this ID either: appending creates the context.
-    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
-    const int policy_idx = ctx != NULL ? tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start) : -1;
-    if (ctx == NULL || policy_idx < 0) {
-        return dsd_tg_policy_append_exact(state, &normalized) == 0 ? DSD_TG_POLICY_LEARN_ADDED
-                                                                   : DSD_TG_POLICY_LEARN_FAILED;
+    // A learned alias only ever appends or replaces an alias row: it moves the generation for snapshots but leaves
+    // every row a frontend edits where it was, so edits captured before it stay valid.
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return DSD_TG_POLICY_LEARN_FAILED;
     }
-    dsd_tg_policy_entry* stored = &ctx->table.entries[policy_idx];
+    if (tg_policy_find_bounds_idx_kind(ctx, normalized.id_start, normalized.id_start, 0) >= 0) {
+        return DSD_TG_POLICY_LEARN_KEPT;
+    }
+    const int alias_idx = tg_policy_find_bounds_idx_kind(ctx, normalized.id_start, normalized.id_start, 1);
+    if (alias_idx < 0) {
+        return tg_policy_store_append_kind(ctx, &normalized, 0) == 0 ? DSD_TG_POLICY_LEARN_ADDED
+                                                                     : DSD_TG_POLICY_LEARN_FAILED;
+    }
+    dsd_tg_policy_entry* stored = &ctx->table.entries[alias_idx];
     if (stored->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS) {
+        // A persisted alias from the group file: the file's first row wins, as on a reload.
         return DSD_TG_POLICY_LEARN_KEPT;
     }
     if (tg_policy_learned_fields_equal(stored, &normalized)) {
         return DSD_TG_POLICY_LEARN_UNCHANGED;
     }
     *stored = normalized;
-    tg_policy_table_note_mutation(ctx);
+    tg_policy_table_note_mutation_kind(ctx, 0);
     return DSD_TG_POLICY_LEARN_REPLACED;
 }
 
@@ -855,11 +912,10 @@ dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end, con
     if (!ctx) {
         return -1;
     }
-    int index = tg_policy_find_bounds_idx_first(ctx, id_start, id_end);
+    int index = tg_policy_find_edit_idx(ctx, id_start, id_end, 1);
     if (index >= 0) {
         dsd_tg_policy_entry* entry = &ctx->table.entries[index];
-        if (id_start == id_end
-            && (entry->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS || strcmp(entry->mode, "D") == 0)) {
+        if (tg_policy_entry_is_learned_alias(entry)) {
             // An explicit TG edit takes ownership of an alias collision; radio metadata is not TG metadata.
             dsd_tg_policy_make_exact_entry(id_start, mode, "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, entry);
         } else {
@@ -889,7 +945,7 @@ dsd_tg_policy_set_mode_at(dsd_state* state, size_t index, const char* mode) {
 
 static int
 tg_policy_row_editable(const dsd_tg_policy_entry* entry) {
-    return entry->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && strcmp(entry->mode, "D") != 0;
+    return !tg_policy_entry_is_learned_alias(entry);
 }
 
 static int
@@ -945,12 +1001,13 @@ dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, c
     if (!ctx) {
         return -1;
     }
-    int index = tg_policy_find_bounds_idx_first(ctx, id_start, id_end);
+    int index = tg_policy_find_edit_idx(ctx, id_start, id_end, 1);
     dsd_tg_policy_entry entry;
     if (index >= 0) {
         entry = ctx->table.entries[index];
         if (!tg_policy_row_editable(&entry)) {
-            return 1;
+            // An explicit TG edit takes ownership of an alias collision, as dsd_tg_policy_set_mode() does.
+            dsd_tg_policy_make_exact_entry(id_start, "A", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entry);
         }
     } else {
         dsd_tg_policy_make_exact_entry(id_start, "A", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entry);
@@ -1011,11 +1068,12 @@ prepare_selection_entry(const dsd_tg_policy_context* ctx, dsd_tg_policy_entry* e
         if (item->id_start != item->id_end) {
             return 1;
         }
-        int existing = ctx ? tg_policy_find_bounds_idx_first(ctx, item->id_start, item->id_end) : -1;
-        if (existing >= 0) {
+        if (tg_policy_find_bounds_idx_kind(ctx, item->id_start, item->id_end, 0) >= 0) {
             return 1;
         }
-        row = (*used)++;
+        // A heard talkgroup whose ID only collides with a learned alias takes that row over, as an edit does.
+        const int alias = tg_policy_find_bounds_idx_kind(ctx, item->id_start, item->id_end, 1);
+        row = alias >= 0 ? (size_t)alias : (*used)++;
         dsd_tg_policy_make_exact_entry(item->id_start, "A", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entries[row]);
     }
     tg_policy_entry_apply_mode(&entries[row], listening ? "A" : "B");
@@ -1032,12 +1090,20 @@ selection_new_context(dsd_state* state) {
     return ctx;
 }
 
-static int
-selection_version_matches(const dsd_state* state, uint64_t context, unsigned int generation) {
+int
+dsd_tg_policy_edit_version_valid(const dsd_state* state, uint64_t context, unsigned int generation) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
     uint64_t current_context = 0;
     unsigned int current_generation = 0;
     dsd_tg_policy_table_version(state, &current_context, &current_generation);
-    return context == current_context && generation == current_generation;
+    if (!ctx) {
+        return context == 0u && generation == 0u;
+    }
+    if (context == current_context) {
+        const unsigned int anchor = ctx->table.structural_generation;
+        return generation - anchor <= current_generation - anchor;
+    }
+    return context == 0u && generation == 0u && ctx->lazy && ctx->table.structural_generation == 0u;
 }
 
 int
@@ -1046,7 +1112,7 @@ dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsign
     if (!state || !selection || !count || (unsigned int)listening > 1U) {
         return 1;
     }
-    if (!selection_version_matches(state, context, generation)) {
+    if (!dsd_tg_policy_edit_version_valid(state, context, generation)) {
         return 1;
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
@@ -1094,8 +1160,8 @@ dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end
     if (!ctx || id_start > id_end) {
         return 1;
     }
-    int index = tg_policy_find_bounds_idx_first(ctx, id_start, id_end);
-    if (index < 0 || !tg_policy_row_editable(&ctx->table.entries[index])) {
+    int index = tg_policy_find_edit_idx(ctx, id_start, id_end, 0);
+    if (index < 0) {
         return 1;
     }
     DSD_MEMMOVE(&ctx->table.entries[index], &ctx->table.entries[index + 1],
@@ -1105,20 +1171,39 @@ dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end
     return 0;
 }
 
+/* The first exact row for @p id, preferring a talkgroup/user row over a learned alias (@p allow_alias 0 skips aliases). */
 static int
-tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out) {
+tg_policy_lookup_exact_in_ctx_kind(const dsd_tg_policy_context* ctx, uint32_t id, int allow_alias,
+                                   dsd_tg_policy_lookup* out) {
+    int alias_idx = -1;
     if (!ctx || !out) {
         return 0;
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->is_range == 0u && e->id_start == id && e->id_end == id) {
+        if (e->is_range != 0u || e->id_start != id || e->id_end != id) {
+            continue;
+        }
+        if (!tg_policy_entry_is_learned_alias(e)) {
             out->match = DSD_TG_POLICY_MATCH_EXACT;
             out->entry = *e;
             return 1;
         }
+        if (alias_idx < 0) {
+            alias_idx = (int)i;
+        }
+    }
+    if (allow_alias && alias_idx >= 0) {
+        out->match = DSD_TG_POLICY_MATCH_EXACT;
+        out->entry = ctx->table.entries[alias_idx];
+        return 1;
     }
     return 0;
+}
+
+static int
+tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out) {
+    return tg_policy_lookup_exact_in_ctx_kind(ctx, id, 1, out);
 }
 
 static int
@@ -1133,7 +1218,7 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
         uint64_t span = 0;
-        if (e->is_range == 0u) {
+        if (e->is_range == 0u || tg_policy_entry_is_learned_alias(e)) {
             continue;
         }
         if (id < e->id_start || id > e->id_end) {
@@ -1149,6 +1234,25 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     return best_idx;
 }
 
+/* A talkgroup's row: a non-alias exact row, else the narrowest range. A learned radio alias names a radio, so it never
+ * decides a talkgroup's mode, priority, preemption or media. */
+static int
+tg_policy_lookup_group_in_ctx(const dsd_tg_policy_context* ctx, uint32_t tg, dsd_tg_policy_lookup* out) {
+    if (!ctx || !ctx->table.entries || ctx->table.count == 0) {
+        return 0;
+    }
+    if (tg_policy_lookup_exact_in_ctx_kind(ctx, tg, 0, out)) {
+        return 1;
+    }
+    const int range = tg_policy_find_best_range_idx(ctx, tg);
+    if (range < 0) {
+        return 0;
+    }
+    out->match = DSD_TG_POLICY_MATCH_RANGE;
+    out->entry = ctx->table.entries[range];
+    return 1;
+}
+
 static void
 tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
     for (int slot = 0; slot < 2; ++slot) {
@@ -1157,15 +1261,12 @@ tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
             continue;
         }
         dsd_tg_policy_lookup lookup = {0};
-        int matched = tg_policy_lookup_exact_in_ctx(ctx, call->tg, &lookup);
-        if (!matched && call->private_call) {
-            matched = tg_policy_lookup_exact_in_ctx(ctx, call->src, &lookup);
-        } else if (!matched) {
-            const int range = tg_policy_find_best_range_idx(ctx, call->tg);
-            if (range >= 0) {
-                lookup.entry = ctx->table.entries[range];
-                matched = 1;
-            }
+        int matched = 0;
+        if (call->private_call) {
+            matched = tg_policy_lookup_exact_in_ctx(ctx, call->tg, &lookup)
+                      || tg_policy_lookup_exact_in_ctx(ctx, call->src, &lookup);
+        } else {
+            matched = tg_policy_lookup_group_in_ctx(ctx, call->tg, &lookup);
         }
         // Only policy changes; dwell and preemption cooldowns keep their ages.
         call->priority = matched ? lookup.entry.priority : 0;
@@ -1252,6 +1353,8 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.count = src->table.count;
     clone->table.capacity = src->table.count;
     clone->table.generation = src->table.generation;
+    clone->table.structural_generation = src->table.structural_generation;
+    clone->lazy = src->lazy;
     clone->active = src->active;
     clone->call_skips = src->call_skips;
     if (src->session_avoid_count) {
@@ -1400,7 +1503,8 @@ tg_policy_group_apply_lookup(const dsd_state* state, uint32_t tg, dsd_tg_policy_
     int local_record_block = 0;
     int local_stream_block = 0;
 
-    if (dsd_tg_policy_lookup_id(state, tg, &lookup) == 0 && lookup.match != DSD_TG_POLICY_MATCH_NONE) {
+    DSD_MEMSET(&lookup, 0, sizeof(lookup));
+    if (tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), tg, &lookup)) {
         tg_policy_decision_apply_entry(out, &lookup.entry, lookup.match);
         local_mode_blocking = tg_policy_mode_is_blocking(lookup.entry.mode);
         local_audio_block = (!local_mode_blocking && lookup.entry.audio == 0u);
@@ -2015,18 +2119,22 @@ tg_policy_route_is_complete(const dsd_tg_policy_call_route* route) {
     return 1;
 }
 
+/* Whether active call @p c is the candidate's own call (@p route on @p slot, of class @p private_call): its target,
+   channel and slot, and its group or private class, as tg_policy_describe_slot() keeps a record only for the same
+   class. A talkgroup and a unit may share a number, so a candidate of the other class is another call. */
 static int
 tg_policy_active_call_matches_route_slot(const dsd_tg_policy_active_call* c, const dsd_tg_policy_call_route* route,
-                                         int slot) {
+                                         int slot, int private_call) {
     if (!c || !route) {
         return 0;
     }
-    return c->valid && c->tg == route->target_id && c->channel == route->channel && c->slot == slot;
+    return c->valid && c->tg == route->target_id && c->channel == route->channel && c->slot == slot
+           && (c->private_call != 0) == (private_call != 0);
 }
 
 static int
 tg_policy_collect_displaced_all_slots(const dsd_tg_policy_context* ctx, const dsd_tg_policy_call_route* route,
-                                      int slot_match, int displaced[2], int* displaced_count) {
+                                      int slot_match, int private_call, int displaced[2], int* displaced_count) {
     if (!ctx || !route || !displaced || !displaced_count) {
         return -1;
     }
@@ -2035,7 +2143,7 @@ tg_policy_collect_displaced_all_slots(const dsd_tg_policy_context* ctx, const ds
         if (!c->valid) {
             continue;
         }
-        if (tg_policy_active_call_matches_route_slot(c, route, slot_match)) {
+        if (tg_policy_active_call_matches_route_slot(c, route, slot_match, private_call)) {
             return 1;
         }
         displaced[(*displaced_count)++] = i;
@@ -2045,7 +2153,7 @@ tg_policy_collect_displaced_all_slots(const dsd_tg_policy_context* ctx, const ds
 
 static int
 tg_policy_collect_displaced_slots(const dsd_tg_policy_context* ctx, const dsd_tg_policy_call_route* route,
-                                  int displaced[2], int* displaced_count) {
+                                  int private_call, int displaced[2], int* displaced_count) {
     const dsd_tg_policy_active_call* c = NULL;
 
     if (!ctx || !route || !displaced || !displaced_count) {
@@ -2054,17 +2162,17 @@ tg_policy_collect_displaced_slots(const dsd_tg_policy_context* ctx, const dsd_tg
     *displaced_count = 0;
 
     if (route->slot == -1) {
-        return tg_policy_collect_displaced_all_slots(ctx, route, -1, displaced, displaced_count);
+        return tg_policy_collect_displaced_all_slots(ctx, route, -1, private_call, displaced, displaced_count);
     }
     if (route->requires_tuner_retune) {
-        return tg_policy_collect_displaced_all_slots(ctx, route, route->slot, displaced, displaced_count);
+        return tg_policy_collect_displaced_all_slots(ctx, route, route->slot, private_call, displaced, displaced_count);
     }
 
     c = &ctx->active.calls[route->slot];
     if (!c->valid) {
         return 0;
     }
-    if (tg_policy_active_call_matches_route_slot(c, route, route->slot)) {
+    if (tg_policy_active_call_matches_route_slot(c, route, route->slot, private_call)) {
         return 1;
     }
     displaced[(*displaced_count)++] = route->slot;
@@ -2118,7 +2226,8 @@ dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
         return 0;
     }
 
-    collect_result = tg_policy_collect_displaced_slots(ctx, candidate_route, displaced, &displaced_count);
+    collect_result =
+        tg_policy_collect_displaced_slots(ctx, candidate_route, candidate->private_call, displaced, &displaced_count);
     if (collect_result != 0) {
         return 0;
     }
@@ -2165,7 +2274,7 @@ tg_policy_should_note_preempt(const dsd_tg_policy_active_call* c, const dsd_tg_p
     if (!c || !route || !decision) {
         return 0;
     }
-    if (tg_policy_active_call_matches_route(c, route)) {
+    if (!c->valid || tg_policy_active_call_matches_route(c, route)) {
         return 0;
     }
     return decision->preempt_requested && decision->priority > c->priority;
@@ -2204,6 +2313,58 @@ dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route*
         tg_policy_note_active_slot(ctx, 1, route, decision, now_mono_s);
     } else {
         tg_policy_note_active_slot(ctx, route->slot, route, decision, now_mono_s);
+    }
+    return 0;
+}
+
+static void
+tg_policy_describe_slot(dsd_tg_policy_context* ctx, int slot, const dsd_tg_policy_call_route* route,
+                        const dsd_tg_policy_decision* decision, double start_mono_s, double now_mono_s) {
+    dsd_tg_policy_active_call* c = &ctx->active.calls[slot];
+    // A group call and a private call sharing a number are different calls: the new one starts its own dwell.
+    if (tg_policy_active_call_matches_route(c, route) && c->private_call == decision->private_call) {
+        // The protocol's follow time is authoritative: a call that left the slot and came back (A, B, A) is followed
+        // anew even when the ledger never saw B.
+        c->start_mono_s = start_mono_s;
+        c->priority = decision->priority;
+        c->private_call = decision->private_call;
+        c->src = route->source_id;
+        c->freq_hz = route->freq_hz;
+        c->last_seen_mono_s = now_mono_s;
+        return;
+    }
+    DSD_MEMSET(c, 0, sizeof(*c));
+    tg_policy_active_call_assign_from_route(c, route, decision, now_mono_s);
+    c->start_mono_s = start_mono_s;
+}
+
+int
+dsd_tg_policy_describe_followed_call(dsd_state* state, const dsd_tg_policy_call_route* route,
+                                     const dsd_tg_policy_decision* decision, double start_mono_s, double now_mono_s) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx || !route || !decision || !tg_policy_route_is_complete(route)) {
+        return 1;
+    }
+    if (route->slot == -1) {
+        tg_policy_describe_slot(ctx, 0, route, decision, start_mono_s, now_mono_s);
+        tg_policy_describe_slot(ctx, 1, route, decision, start_mono_s, now_mono_s);
+    } else {
+        tg_policy_describe_slot(ctx, route->slot, route, decision, start_mono_s, now_mono_s);
+    }
+    return 0;
+}
+
+int
+dsd_tg_policy_commit_preemption(dsd_state* state, double now_mono_s) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return 1;
+    }
+    ctx->active.last_global_preempt_mono_s = now_mono_s;
+    for (int slot = 0; slot < 2; slot++) {
+        if (ctx->active.calls[slot].valid) {
+            ctx->active.calls[slot].last_preempt_mono_s = now_mono_s;
+        }
     }
     return 0;
 }
@@ -2262,6 +2423,17 @@ tg_policy_reload_validate_candidate(const dsd_state* imported) {
     return 0;
 }
 
+/* A list reload or clear replaces the rows, not the calls being followed: the held calls and the last takeover's
+ * cooldown move to the new context, re-ranked by its rows. */
+static void
+tg_policy_carry_active(dsd_tg_policy_context* dst, const dsd_tg_policy_context* src, unsigned int next_generation) {
+    if (src) {
+        dst->active = src->active;
+    }
+    dst->active.generation = next_generation;
+    tg_policy_refresh_active_priorities(dst);
+}
+
 int
 dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
     dsd_state* imported = NULL;
@@ -2316,7 +2488,9 @@ dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
 
     imported_ctx = (dsd_tg_policy_context*)imported_policy;
     imported_ctx->table.generation = next_table_generation;
-    imported_ctx->active.generation = next_active_generation;
+    imported_ctx->table.structural_generation = next_table_generation;
+    imported_ctx->lazy = 0;
+    tg_policy_carry_active(imported_ctx, current_ctx, next_active_generation);
 
     if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, imported_policy, imported_cleanup) != 0) {
         if (imported_cleanup) {
@@ -2358,7 +2532,8 @@ dsd_tg_policy_clear(dsd_state* state) {
         return -1;
     }
     empty_ctx->table.generation = next_table_generation;
-    empty_ctx->active.generation = next_active_generation;
+    empty_ctx->table.structural_generation = next_table_generation;
+    tg_policy_carry_active(empty_ctx, current_ctx, next_active_generation);
 
     if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, empty_ctx, tg_policy_context_free) != 0) {
         tg_policy_context_free(empty_ctx);
@@ -2406,3 +2581,17 @@ dsd_tg_policy_store*
 dsd_tg_policy_store_create(void) {
     return tg_policy_context_alloc();
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void dsd_tg_policy_test_set_generation(dsd_state* state, unsigned int generation, unsigned int structural_generation);
+
+/* Place a live context's generations near the wrap, which no test can reach by mutating. */
+void
+dsd_tg_policy_test_set_generation(dsd_state* state, unsigned int generation, unsigned int structural_generation) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (ctx) {
+        ctx->table.generation = generation;
+        ctx->table.structural_generation = structural_generation;
+    }
+}
+#endif

@@ -570,7 +570,9 @@ field, and the decoder refuses the rest when it applies the command.
   `8` name, `16` tags); fields not in the mask keep their value.
   `policy_context` and `policy_generation` (from `status.tg_policy`) are
   required, as they are for `tg_row_remove`, `tg_list_export` and
-  `tg_selection_set`.
+  `tg_selection_set`. A captured pair stays valid while only learned
+  over-the-air aliases and session avoids change the list; a reload, a clear,
+  another list or any edit of a talkgroup row makes it stale (`-2`).
 * **`tg_selection_set`**: `path` names a CSV of `table_index,start,end` rows the
   decoder reads, `count` the number of rows, `listening` the value to apply.
 * **`decryption_apply`**: `type` (`basic`, `hex`, `rc4`, `scrambler`,

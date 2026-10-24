@@ -522,6 +522,15 @@ nxdn_cc_hunt_note_tuner_frequency(const dsd_state* state, long freq_hz) {
     }
 }
 
+long
+nxdn_cc_hunt_receiver_frequency(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_get(state);
+    return ctx ? nxdn_cc_hunt_attributed_frequency(ctx, opts) : nxdn_cc_hunt_tuner_frequency(opts);
+}
+
 void
 nxdn_cc_hunt_forget_attribution(const dsd_state* state) {
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);

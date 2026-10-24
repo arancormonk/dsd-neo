@@ -614,6 +614,41 @@ test_unfollowed_grant_frequency_stays_off_the_voice_call(void) {
 
 // The voice channel a trunking receiver followed is this carrier, so a voice LC heard there stamps it. The engine sets
 // trunk_vc_freq[] and trunk_is_tuned together when it tunes a grant (dsd_engine_update_vc_tune_state()).
+/* A voice LC that passed its check names the slot's call for the DMR trunk state machine (the identity a preemption
+   candidate is compared with), with LC provenance; an LC that failed its check names nothing. */
+static void
+test_checked_voice_lc_names_the_trunk_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lc_bits[80];
+    uint32_t irr = 0U;
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    state.trunk_cc_freq = 851012500L;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_sm_init(&opts, &state);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+
+    state.currentslot = 1;
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+    assert(sm->slots[1].target == 1001U && sm->slots[1].source == 2002U);
+    assert(sm->slots[1].prov == (uint8_t)DMR_SM_ID_LC && sm->slots[1].judged_group == 1U);
+    assert(sm->slots[1].carrier_hz == 851012500L);
+
+    state.currentslot = 0;
+    irr = 0U;
+    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 3003U, 4004U);
+    dmr_flco(&opts, &state, lc_bits, 0U, &irr, 1U);
+    assert(sm->slots[0].target == 0U && sm->slots[0].prov == (uint8_t)DMR_SM_ID_NONE);
+
+    dmr_sm_init(NULL, NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_followed_voice_channel_frequency_reaches_the_voice_call(void) {
     static dsd_opts opts;
@@ -2151,6 +2186,33 @@ test_capacity_plus_status_names_calls_no_lc_named(void) {
     const Event_History* staged = &history[0].Event_History_Items[0];
     assert(staged->target_id == CAPPLUS_TG_SLOT0);
     assert(strcmp(staged->t_name, "Ops 109") == 0);
+    capplus_env_done(&state);
+}
+
+// Parked on the rest channel, an anonymous resident call plays on its TS2 (LSN 2). A status naming that LSN's group is
+// followed in place (the receiver stays on the carrier, so the call goes on): its seed names the call already on the
+// air, which nothing named yet, in its own epoch.
+static void
+test_capacity_plus_status_seed_names_adopted_resident_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+
+    capplus_follow_env(&opts, &state, history);
+    capplus_voice_superframe(&opts, &state, 1U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.ota_target_id == 0U);
+    const uint64_t epoch = call.epoch;
+
+    capplus_clock_advance(CAPPLUS_FRAME_NS);
+    capplus_run_status(&opts, &state, 2, CAPPLUS_TG_SLOT1, 0, 0U);
+    assert(opts.rtlsdr_center_freq == (uint32_t)CAPPLUS_CC_FREQ);
+    assert(dmr_sm_get_ctx()->state == DMR_SM_TUNED && dmr_sm_get_ctx()->vc_freq_hz == CAPPLUS_CC_FREQ);
+    capplus_voice_superframe(&opts, &state, 1U);
+    assert(dsd_call_state_get(&state, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch == epoch);
+    assert(call.ota_target_id == CAPPLUS_TG_SLOT1);
     capplus_env_done(&state);
 }
 
@@ -3872,6 +3934,7 @@ main(void) {
     test_flco_canonical_crypto_uses_algorithm_aware_keys();
     test_unfollowed_grant_frequency_stays_off_the_voice_call();
     test_followed_voice_channel_frequency_reaches_the_voice_call();
+    test_checked_voice_lc_names_the_trunk_slot();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     test_flco_scan_hook_reports_encrypted_service_option();
     test_hytera_flco_scan_hook_uses_final_call_type();
@@ -3886,6 +3949,7 @@ main(void) {
     test_capacity_plus_abandon_keeps_the_rest_channel();
     test_capacity_plus_status_names_calls_no_lc_named();
     test_capacity_plus_status_seed_yields_to_lc_identity();
+    test_capacity_plus_status_seed_names_adopted_resident_call();
     test_capacity_plus_status_seed_expires_with_its_carrier();
     test_capacity_plus_status_seed_waits_for_pending_tune();
     test_capacity_plus_status_seed_carries_fragment_provenance();

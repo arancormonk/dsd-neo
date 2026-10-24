@@ -91,8 +91,10 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     if (begins_epoch) {
         DSD_MEMSET(call, 0, sizeof(*call));
         call->epoch = ++g_stub_epoch;
+        call->transmission_epoch = call->epoch;
         call->phase = DSD_CALL_PHASE_ACTIVE;
         call->slot = observation->slot;
+        call->started_m = observation->observed_m;
     }
     call->protocol = observation->protocol;
     call->kind = observation->kind;
@@ -242,6 +244,15 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     // backend, and a test that wants a window must supply both endpoints itself.
     g_stub_calls[slot].ended_m = observed_m > 0.0 ? observed_m : 0.0;
     return 1;
+}
+
+/* This stub never reacquires an ended epoch (every begin after an end opens a transmission of its own), so it answers
+   as its own observe behaves: nothing may be reacquired. */
+int
+dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m) {
+    (void)call;
+    (void)now_m;
+    return 0;
 }
 
 int

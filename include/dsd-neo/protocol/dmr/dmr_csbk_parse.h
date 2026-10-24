@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -41,6 +42,12 @@ struct dmr_csbk_result {
     /* Optional resolved frequency in Hz when known (0 if unknown). */
     long freq_hz;
 
+    /* The grant's classification and talkgroup policy verdict, as the CSBK layer judged it (dmr_csbk_handle() hands
+       them to the trunk state machine, which never re-evaluates a grant). */
+    int data_call;
+    int policy_valid;
+    dsd_tg_policy_decision policy;
+
     const uint8_t* bits;
     const uint8_t* bytes;
 };
@@ -57,7 +64,8 @@ int dmr_csbk_parse(const uint8_t* cs_pdu_bits, const uint8_t* cs_pdu, struct dmr
  * Central dispatch helper for CSBK trunking actions.
  *
  * Currently routes channel-grant CSBKs to the DMR Tier III trunking
- * state machine using the parsed fields in @p res.
+ * state machine (dmr_sm_submit_grant()) using the parsed fields in @p res,
+ * with the call kind and policy verdict the CSBK layer computed.
  */
 void dmr_csbk_handle(const struct dmr_csbk_result* res, dsd_opts* opts, dsd_state* state);
 

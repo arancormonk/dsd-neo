@@ -7540,6 +7540,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
+            "LINKER:--wrap=dsd_tg_policy_clear_active_call"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
             "LINKER:--wrap=svc_tcp_connect_audio"
@@ -9513,9 +9514,11 @@ endif()
 add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
-    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_clamp
@@ -9541,9 +9544,11 @@ add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
 add_executable(
     dsd-neo_test_dmr_t3_sm_release
     protocol/dmr/test_dmr_t3_sm_release.c
-    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_release
@@ -9569,9 +9574,11 @@ add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 add_executable(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
     protocol/dmr/test_dmr_t3_sm_return_to_cc_matrix.c
-    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
@@ -9601,9 +9608,11 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_t3_shim
     protocol/dmr/test_dmr_t3_shim.c
-    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_shim
@@ -11975,6 +11984,18 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_grant_policy PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_GRANT_POLICY COMMAND dsd-neo_test_p25_grant_policy)
 
+# P25 talkgroup preemption from voice-channel announcements (P2 updates, P1 LC), hangtime, dwell and cooldown
+add_executable(dsd-neo_test_p25_preempt protocol/p25/test_p25_preempt.c)
+target_include_directories(
+    dsd-neo_test_p25_preempt
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_preempt
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_PREEMPT COMMAND dsd-neo_test_p25_preempt)
+
 # DMR grant policy behavior (allow-list, explicit block modes, private source allow-list)
 add_executable(
     dsd-neo_test_dmr_grant_policy
@@ -11986,6 +12007,15 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_dmr_grant_policy PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
+
+# DMR talkgroup priority and preemption (busy view, hold-or-preempt gate, slot identities, ledger)
+add_executable(dsd-neo_test_dmr_preempt protocol/dmr/test_dmr_preempt.c)
+target_include_directories(
+    dsd-neo_test_dmr_preempt
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_dmr_preempt PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_PREEMPT COMMAND dsd-neo_test_dmr_preempt)
 
 # NXDN grant policy behavior (allow-list, private source allow-list, group source fallback)
 add_executable(
@@ -12016,6 +12046,28 @@ target_link_libraries(
 add_test(
     NAME NXDN_GRANT_TUNE_MATRIX
     COMMAND dsd-neo_test_nxdn_grant_tune_matrix
+)
+
+# The same matrix on the real canonical call state (its own end and start times), plus the cases that need them
+add_executable(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    protocol/nxdn/test_nxdn_grant_tune_matrix.c
+)
+target_compile_definitions(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    PRIVATE NXDN_MATRIX_REAL_CALL_STATE=1
+)
+target_include_directories(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
+    PRIVATE dsd-neo_proto_nxdn
+)
+add_test(
+    NAME NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE
+    COMMAND dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
 )
 
 add_executable(
@@ -14402,6 +14454,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_dburst_profile
     dsd-neo_test_dmr_embedded_gps_position_error
     dsd-neo_test_dmr_grant_policy
+    dsd-neo_test_dmr_preempt
     dsd-neo_test_dmr_locn_time_fallback
     dsd-neo_test_dmr_lrrp_crc_gating
     dsd-neo_test_dmr_lrrp_empty_payload_type

@@ -125,6 +125,7 @@ typedef struct {
 typedef struct {
     double seen_m;          /**< decode clock: the last CRC-passed PDU that named the call, or its speech */
     double alloc_m;         /**< decode clock: when its channel allocation was last set; 0 for none */
+    double followed_m;      /**< decode clock: when the state machine started following it; 0 never followed */
     tetra_chan_alloc alloc; /**< the traffic channel it was last allocated; no timeslots for none */
     uint32_t called_ssi;    /**< called party: the GSSI of a group call, the ISSI of an individual one; 0 unknown */
     uint32_t calling_ssi;   /**< calling party; 0 unknown */

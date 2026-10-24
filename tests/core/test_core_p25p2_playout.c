@@ -1109,9 +1109,10 @@ test_alert_fence_survives_reclaim(void) {
     return rc;
 }
 
-/* Policy that moves without a note while a call's frames wait: a row learned over the air (a talker alias) lists the
-   call's talkgroup again under the allow list, and a hold set by a path that took no verdict mutes the call. Each
-   emission notices the policy table's version and the hold moved and takes the call's verdict again. */
+/* Policy that moves without a note while a call's frames wait: a row written without one (an upsert) lists the call's
+   talkgroup again under the allow list, and a hold set by a path that took no verdict mutes the call. Each emission
+   notices the policy table's version and the hold moved and takes the call's verdict again. A learned radio alias
+   could not list it: aliases never decide a talkgroup's policy. */
 static int
 test_policy_write_retakes_the_verdict(void) {
     int rc = 0;
@@ -1124,12 +1125,12 @@ test_policy_write_retakes_the_verdict(void) {
     dsd_p25p2_playout_note_policy(&g_opts, &g_state);
     rc |= expect_int("the allow list blocks the unlisted call", g_state.p25p2_playout.slot[0].live_verdict.blocked, 1);
     dsd_tg_policy_entry row;
-    rc |= expect_int("learned row",
-                     dsd_tg_policy_make_exact_entry(100U, "A", "alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row), 0);
-    rc |= expect_int("learned row added",
+    rc |= expect_int("listed row",
+                     dsd_tg_policy_make_exact_entry(100U, "A", "listed", DSD_TG_POLICY_SOURCE_IMPORTED, &row), 0);
+    rc |= expect_int("listed row added",
                      dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING), 0);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
-    rc |= expect_int("the learned row lets the waiting frames play", g_block_count, 4);
+    rc |= expect_int("the listed row lets the waiting frames play", g_block_count, 4);
 
     setup(0, 2);
     seed_call(&g_state, 0U, 100U, 1000U);

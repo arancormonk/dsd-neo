@@ -177,7 +177,10 @@ ModalSheet {
         enabled: sheet.priorityValue > 0
     }
     Text {
-        text: qsTr("P25 trunking only")
+        objectName: "preemptHint"
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: listenToggle.checked ? qsTr("Preempt interrupts a lower-priority call when the system announces this talkgroup during it.") : qsTr("Not tuned: priority and preempt have no effect.")
         color: Theme.textSecondary
     }
     GradientButton {

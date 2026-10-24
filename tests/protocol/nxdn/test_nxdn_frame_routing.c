@@ -15,6 +15,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -95,6 +96,19 @@ static int g_stub_cac_ok;
 static int g_stub_facch_ok;
 /* The CAC that makes the eleventh failure in a row: the real deperm resets the sync state, synctype included. */
 static int g_stub_cac_resets_sync;
+/* The SCCH's message retunes the receiver (a busy repeater message followed, a preemption): the tune's result, or
+   -1 for no tune. */
+static int g_stub_scch_tune = -1;
+
+static dsd_trunk_tune_result
+stub_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)freq;
+    (void)ted_sps;
+    (void)request_id;
+    return (dsd_trunk_tune_result)g_stub_scch_tune;
+}
 
 static void
 nxdn_stub_note_crc(dsd_state* state, int crc_ok, nxdn_evidence evidence) {
@@ -128,6 +142,7 @@ reset_state(void) {
     g_stub_cac_ok = 1;
     g_stub_facch_ok = 1;
     g_stub_cac_resets_sync = 0;
+    g_stub_scch_tune = -1;
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
@@ -239,12 +254,15 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
 
 void
 nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
-    (void)opts;
-    (void)state;
     (void)bits;
     (void)reliab;
     nxdn_stub_note_crc(state, g_stub_scch_ok, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
+    if (g_stub_scch_tune >= 0) {
+        dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
+        (void)dsd_trunk_tuning_hook_tune_to_freq(opts, state, 938512500L, 0, NULL);
+        dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    }
     g_facch_part_mask |= (int)direction << 8;
 }
 
@@ -776,6 +794,40 @@ test_frame_channel_follows_the_lich(void) {
     return rc;
 }
 
+/* A Type-D V2+F1 frame (RTCH2, LICH 0x73: SCCH, then a FACCH1 and voice) whose SCCH retunes the receiver (a busy
+   repeater message preempting the call there): the FACCH1 and voice after it were read on the carrier left, so neither
+   decodes, as a frame the carrier boundary splits is dropped. An accepted tune (completed, or still pending) leaves the
+   carrier; a failed one leaves the receiver where it was, and the frame decodes whole. */
+static int
+test_frame_retuned_by_its_scch_stops(void) {
+    static const struct {
+        int result;
+        int decodes_rest;
+        const char* label;
+    } k_cases[] = {
+        {-1, 1, "no tune"},
+        {DSD_TRUNK_TUNE_RESULT_OK, 0, "accepted tune"},
+        {DSD_TRUNK_TUNE_RESULT_PENDING, 0, "pending tune"},
+        {DSD_TRUNK_TUNE_RESULT_FAILED, 1, "failed tune"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        reset_state();
+        g_stub_scch_tune = k_cases[i].result;
+        char label[96];
+        (void)route_frame(0x73U);
+        DSD_SNPRINTF(label, sizeof label, "%s: SCCH decoded", k_cases[i].label);
+        rc |= expect_int(label, g_scch_calls, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s: FACCH1 decoded", k_cases[i].label);
+        rc |= expect_int(label, g_facch_calls, k_cases[i].decodes_rest);
+        DSD_SNPRINTF(label, sizeof label, "%s: voice played", k_cases[i].label);
+        rc |= expect_int(label, g_voice_calls, k_cases[i].decodes_rest);
+        dsd_trunk_tuning_requests_reset();
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -791,6 +843,7 @@ main(void) {
     rc |= test_frame_split_by_a_carrier_boundary_is_dropped();
     rc |= test_frame_cut_by_an_input_interruption_is_dropped();
     rc |= test_frame_channel_follows_the_lich();
+    rc |= test_frame_retuned_by_its_scch_stops();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

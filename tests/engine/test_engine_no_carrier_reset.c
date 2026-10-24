@@ -1020,6 +1020,44 @@ test_direct_rtl_return_records_the_tuner_frequency(void) {
     return rc;
 }
 
+/* The no-carrier pass ends NXDN's followed call by sync loss (no TX_REL) and tells NXDN: the held call bound to it takes
+   the end time at that boundary, so a reply within the hangtime is measured from the end, not from the last read. */
+static int
+test_no_carrier_binds_nxdn_held_call_to_the_end(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_decode_clock_use_test(5000200ULL * 1000000ULL); // +0.2 s past a 5000 s origin
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1100U,
+        .policy_target_id = 1100U,
+        .ota_source_id = 2100U,
+    };
+    int rc =
+        expect_true("nxdn call on the air", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot call;
+    rc |= expect_true("nxdn call snapshot", dsd_call_state_get(state, 0U, &call) > 0);
+    state->nxdn_call.valid = 1U;
+    state->nxdn_call.target = 1100U;
+    state->nxdn_call.call_epoch = dsd_call_snapshot_transmission(&call);
+    state->nxdn_call.call_seen_m = dsd_decode_now_mono_s(); // last read at +0.2 s
+    dsd_decode_clock_use_test(5004000ULL * 1000000ULL);     // the carrier lost at +4 s
+    noCarrier(opts, state);
+    rc |= expect_true("the sync loss ended the call",
+                      dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_true("the held call is bound to the call's end",
+                      fabs(state->nxdn_call.call_seen_m - call.ended_m) < 1e-6
+                          && fabs(call.ended_m - dsd_decode_now_mono_s()) < 1e-6);
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The no-carrier pass clears the DMR payload crypto, and with it a PI held for the call a lost voice LC header would
    have opened: a sync loss leaves no verified pre-call crypto for whatever decodes next. */
 static int
@@ -6896,6 +6934,7 @@ main(void) {
     rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
     rc |= test_direct_rtl_return_records_the_tuner_frequency();
     rc |= test_no_carrier_drops_dmr_precall_pi();
+    rc |= test_no_carrier_binds_nxdn_held_call_to_the_end();
     rc |= test_dmr_explicit_return_destination();
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
     rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();

@@ -79,6 +79,15 @@ void nxdn_cc_hunt_note_retune(const dsd_opts* opts, dsd_state* state);
 void nxdn_cc_hunt_note_tuner_frequency(const dsd_state* state, long freq_hz);
 
 /**
+ * @brief The frequency the tuner says the receiver is on (rigctl, else the RTL centre), attributed once per tuning
+ * generation as a CAC's is: a rigctl query is a network round trip, asked at most once per generation, a failed one
+ * included. A receiver moved outside the decoder within a generation is not seen until the next one.
+ *
+ * @return the frequency in Hz; 0 when no tuner names one.
+ */
+long nxdn_cc_hunt_receiver_frequency(const dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief Forget which frequency the receiver is on: a new rigctl connection's peer (a restarted receiver, say) may sit
  * anywhere, without any tune the decoder made. The next CAC asks the tuner again.
  */

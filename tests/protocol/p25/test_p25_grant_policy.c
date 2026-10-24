@@ -996,12 +996,12 @@ main(void) {
     dsd_tg_policy_entry edited = {.preempt = 1};
     rc |= expect_true("enable D1 preempt through policy API",
                       dsd_tg_policy_set_fields(&st, 1601, 1601, &edited, DSD_TG_POLICY_FIELD_PREEMPT) == 0);
+    /* The SM's follow time is what dwell runs from: age it rather than the ledger. */
     dsd_tg_policy_clear_active_call(&st, -1);
-    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_decode_now_mono_s());
+    p25_sm_get_ctx()->slots[0].followed_since_m = dsd_decode_now_mono_s();
     p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
     rc |= expect_true("D1 preempt respects dwell", st.p25_sm_tune_count == before);
-    dsd_tg_policy_clear_active_call(&st, -1);
-    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_decode_now_mono_s() - 2.0);
+    p25_sm_get_ctx()->slots[0].followed_since_m = dsd_decode_now_mono_s() - 2.0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
     rc |= expect_true("[P25 SM] preempt-policy-allow",
                       st.p25_sm_tune_count == before + 1 && p25_sm_get_ctx()->vc_tg == 1601);

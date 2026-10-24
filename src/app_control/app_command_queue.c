@@ -3143,6 +3143,21 @@ hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_r
    return of its own, and of a tune or return of its own still in flight (tetra_sm_owns_return(); a return in flight
    leaves it resting on the control channel, or IDLE when trunking was off as it was asked for), whose failure would
    otherwise put that call and its voice channel back onto the carrier the operator chose. */
+/* An operator move gives up a call the DMR machine followed, whose release clears the talkgroup policy's followed-call
+   ledger: under the P25 SM tick guard, which the watchdog's releases write it under (talkgroup_policy.h). A DMR or
+   NXDN trunk's manual retune runs unguarded (p25_sm_owns_trunk()), so the guard is taken here unless held. */
+static void
+dmr_sm_note_operator_move(dmr_sm_ctx_t* dmr, dsd_opts* opts, dsd_state* state) {
+    const int take = !p25_sm_tick_guard_held_by_caller();
+    if (take) {
+        p25_sm_tick_guard_enter();
+    }
+    dmr_sm_cold_start_note_retune(dmr, opts, state);
+    if (take) {
+        p25_sm_tick_guard_leave();
+    }
+}
+
 /* A manual return to the control channel is an operator move for the DMR machine that owns the trunk: a call it followed
    (a grant, a Capacity Plus status) is given up, and it listens where the receiver went for a full window. Left TUNED,
    the call's deadlines would return the receiver again later. With @p only_followed, a machine that is no longer TUNED
@@ -3165,7 +3180,7 @@ hand_dmr_sm_over(dsd_opts* opts, dsd_state* state, int only_followed, long cc_fr
         }
         return;
     }
-    dmr_sm_cold_start_note_retune(dmr, opts, state);
+    dmr_sm_note_operator_move(dmr, opts, state);
 }
 
 static void
@@ -3308,7 +3323,7 @@ cycle_rearms_cold_start_window(dsd_opts* opts, dsd_state* state, int p25_live) {
     if (!p25_live) {
         p25_sm_tick_guard_leave();
     }
-    dmr_sm_cold_start_note_retune(dmr_sm_get_ctx(), opts, state);
+    dmr_sm_note_operator_move(dmr_sm_get_ctx(), opts, state);
     nxdn_cc_hunt_note_retune(opts, state);
 }
 
@@ -6235,10 +6250,8 @@ tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int e
  * would allow a row from the previous scan target to address a different list. */
 static int
 tg_edit_check_version(dsd_state* state, uint64_t context, unsigned int generation) {
-    uint64_t current_context = 0;
-    unsigned int current_generation = 0;
-    dsd_tg_policy_table_version(state, &current_context, &current_generation);
-    if (context != current_context || generation != current_generation) {
+    // A learned alias or a session avoid since the capture moves the generation but no row the edit addresses.
+    if (!dsd_tg_policy_edit_version_valid(state, context, generation)) {
         ui_set_toast(state, 3, "Talkgroup list changed: stale edit rejected");
         return UI_CMD_APPLY_FAILED;
     }

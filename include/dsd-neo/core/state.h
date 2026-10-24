@@ -500,6 +500,36 @@ typedef struct {
  * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
  * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
  */
+/* NXDN trunking: where the receiver followed a call to (dsd_state::nxdn_follow). */
+typedef struct {
+    long int freq_hz; /**< the voice channel's frequency; 0 none */
+    uint16_t chan;    /**< its channel number (DFA OFN on a DFA site; Type-D repeater number) */
+    uint8_t repeater; /**< Type-D go-to repeater (1-30); 0 on Type-C */
+} dsd_nxdn_follow_route;
+
+/* NXDN trunking: the call the receiver holds (dsd_state::nxdn_call). */
+typedef struct {
+    double follow_m;     /**< decode clock: when this identity became the held call; moves only when it changes */
+    long int rx_freq_hz; /**< the receiver frequency it was heard or followed on; 0 not known */
+    uint32_t target;     /**< talkgroup, or the destination of a private call */
+    uint32_t source;     /**< source unit; 0 not known */
+    uint8_t valid;
+    uint8_t private_call;
+    uint8_t data_call;
+    uint8_t type_d; /**< a Type-D (IDAS) call: judged as Type-D admission judges it, with no source fallback */
+    /**
+     * The canonical call the identity names (dsd_call_snapshot_transmission() of slot 0's call), so it never outlives
+     * that call: another call, or its end (on the followed route, past the hangtime), leaves the held call unknown.
+     * 0 while it awaits its call: the first one to begin after call_floor, the canonical epoch when it was named.
+     */
+    uint64_t call_epoch;
+    uint64_t call_floor;
+    double call_seen_m; /**< decode clock: when the named call was last seen active, or when it ended */
+    /** The named call is over and another (call_epoch) began on the followed route within the hangtime: valid is 0 (an
+     * unknown held call) and the rest stays only so that naming that call as the same one keeps follow_m. */
+    uint8_t gap;
+} dsd_nxdn_call_identity;
+
 typedef struct p25_bandplan_row {
     uint8_t iden;    // identifier 0-15
     uint8_t is_tdma; // 1 seeds p25_iden_tdma, 0 seeds p25_iden_fdma
@@ -1977,6 +2007,15 @@ struct dsd_state {
     // NXDN trunking: last observed call grant mapping (for UI/logging)
     uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
+    /* NXDN trunking: the voice channel route the receiver last followed a grant or busy repeater message to
+     * (nxdn_element.c). It names only where the receiver went, never which call is on it, and holds only while the
+     * receiver is still tuned there (trunk_is_tuned with trunk_vc_freq[0] == freq_hz). Travels with a trunk scan
+     * target. */
+    dsd_nxdn_follow_route nxdn_follow;
+    /* NXDN trunking: the call the receiver holds, as the talkgroup policy's preemption judges it: the followed grant's,
+     * then reconciled from verified VCALLs and SCCH identities that belong to the receiver's repeater. Travels with a
+     * trunk scan target. */
+    dsd_nxdn_call_identity nxdn_call;
 
     //multi-key array
     int keyloader;            //let us know the keyloader is active

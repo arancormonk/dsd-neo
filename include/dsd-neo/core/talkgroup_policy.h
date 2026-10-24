@@ -191,6 +191,28 @@ int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
 int dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route* route,
                                    const dsd_tg_policy_decision* decision, double now_mono_s);
 int dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
+/**
+ * @brief Record the call a protocol is holding, right before it asks dsd_tg_policy_should_preempt().
+ *
+ * @p start_mono_s is the time the protocol started following that call (a stable stamp, never "now" for a continuing
+ * call), so dwell runs from the call rather than from now. A record that already matches @p route (target, channel,
+ * slot, call class) keeps its cooldown and takes the fresh priority and start; a missing or different one is replaced.
+ * Never stamps a preemption cooldown: describing what is held is not a takeover. Slot -1 describes both slots.
+ *
+ * @return 0 recorded, 1 invalid arguments or an incomplete route.
+ */
+int dsd_tg_policy_describe_followed_call(dsd_state* state, const dsd_tg_policy_call_route* route,
+                                         const dsd_tg_policy_decision* decision, double start_mono_s,
+                                         double now_mono_s);
+/**
+ * @brief Commit an accepted takeover's cooldown once the preempting call was acquired.
+ *
+ * A protocol's release clears the displaced records before the preempting call is noted, so the takeover is committed
+ * explicitly: this stamps the global cooldown and the records now held.
+ *
+ * @return 0 committed, 1 invalid state.
+ */
+int dsd_tg_policy_commit_preemption(dsd_state* state, double now_mono_s);
 
 int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
 
@@ -256,9 +278,19 @@ int dsd_tg_policy_entry_at(const dsd_state* state, size_t index, dsd_tg_policy_e
 /** Live source context identity and table generation; both 0 without a context.
  * Every row mutation advances the generation. Equal pairs mean equal rows; snapshots report their source id. */
 void dsd_tg_policy_table_version(const dsd_state* state, uint64_t* out_context_id, unsigned int* out_generation);
-/** Set the mode of the first row with exactly these bounds, keeping its name, tags, priority,
- * preempt and source, and re-deriving audio/record/stream from mode. A missing exact id is
- * appended with an empty name and source USER_LOCKOUT; a missing range is refused.
+/**
+ * @brief Whether an edit captured at (@p context, @p generation) still addresses the same rows.
+ *
+ * True when the context is the live one and nothing but learned over-the-air aliases and session avoids changed since
+ * the capture (they move the generation for snapshots but never a row a frontend edits), or when nothing was loaded
+ * at capture time (0, 0) and the live context was only created in place by such decoder writes. A reload, clear,
+ * another store, or any edit of a talkgroup row makes it stale.
+ */
+int dsd_tg_policy_edit_version_valid(const dsd_state* state, uint64_t context, unsigned int generation);
+/** Set the mode of the first talkgroup (non-alias) row with exactly these bounds, keeping its name, tags,
+ * priority, preempt and source, and re-deriving audio/record/stream from mode. An exact id held only by a learned
+ * alias takes that row over (empty name, source USER_LOCKOUT); a missing exact id is appended the same way; a
+ * missing range is refused.
  * Creates the context when absent.
  * Returns 0 applied, 1 invalid (NULL state/mode, empty or over-long mode, reversed bounds,
  * missing range), -1 allocation failure. */
@@ -273,9 +305,9 @@ typedef struct {
     uint32_t id_end;
 } dsd_tg_policy_selection;
 
-/** Apply an exact captured selection atomically. Context/generation mismatches
- * or invalid rows return 1; allocation failure returns -1, leaving policy intact.
- * Existing aliases, ranges, priority and preemption are retained. */
+/** Apply an exact captured selection atomically. A stale capture (dsd_tg_policy_edit_version_valid())
+ * or invalid rows return 1; allocation failure returns -1, leaving policy intact. A heard-only ID held
+ * only by a learned alias takes that row over. Ranges, priority and preemption are retained. */
 int dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsigned int generation,
                                           const dsd_tg_policy_selection* selection, size_t count, int listening);
 
@@ -287,14 +319,16 @@ enum {
     DSD_TG_POLICY_FIELD_TAGS = 1U << 4
 };
 
-/** Edit the first row with these bounds, or append an exact/range row (default A).
+/** Edit the first talkgroup (non-alias) row with these bounds, or append an exact/range row (default A).
  * Selected values come from entry.mode (A/B), priority (0..100), preempt (0/1), name and tags.
  * Unselected metadata is preserved; changing mode derives media flags.
- * Alias/source RUNTIME_ALIAS and mode-D rows are immutable.
- * Returns 0 applied, 1 invalid fields/bounds/alias, -1 allocation failure. */
+ * Learned alias rows (source RUNTIME_ALIAS or mode D) are never edited as such: an exact ID held only by one
+ * takes it over as a fresh talkgroup row, as dsd_tg_policy_set_mode() does.
+ * Returns 0 applied, 1 invalid fields/bounds, -1 allocation failure. */
 int dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, const dsd_tg_policy_entry* values,
                              uint32_t mask);
-/** Remove the first row with these bounds. Returns 0 removed, 1 missing/invalid/alias.
+/** Remove the first talkgroup (non-alias) row with these bounds. Returns 0 removed, 1 missing/invalid (an ID held
+ * only by a learned alias has nothing to remove).
  * Remaining rows keep their order; a successful edit advances the table generation. */
 int dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end);
 /** Atomically rewrite opts->group_in_file from the effective table using a sibling temporary file.

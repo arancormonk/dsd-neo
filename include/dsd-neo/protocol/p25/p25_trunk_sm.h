@@ -126,6 +126,7 @@ typedef struct {
     int ptt_signature_valid;                           // 1 when ptt_signature and observed_m are authoritative
     uint32_t grant_seq;                                // IDLE: the slot's grant_seq when the IDLE was observed
     int grant_seq_valid;                               // 1 when grant_seq is set
+    int preempt_only; // GRANT announced on a voice channel for another carrier: considered only as a preemption
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -155,6 +156,13 @@ typedef struct {
     double last_followed_m;
     // Group identity retained while the TDMA media rejection latch is set.
     uint32_t rejected_target_id;
+    // The call this slot has followed since followed_since_m: target, kind and carrier. A repeat or a re-grant of
+    // the same call keeps the stamp, so preemption dwell runs from when the call was first followed; a different
+    // call, a physical retune or a release restarts it (p25_sm_clear_followed_history()).
+    double followed_since_m;
+    int followed_target;
+    int followed_is_group;
+    long followed_freq_hz;
 
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
@@ -178,6 +186,12 @@ typedef struct {
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
     uint32_t grant_seq;      // SM-wide sequence number of the last_grant_m stamp. Orders a grant against an
                              // IDLE observed at the same clock reading, which time alone cannot (issue #747).
+    double acquire_since_m;  // Start of the wait for this assignment's voice. Repeats of the grant keep it, in update
+                             // or assignment form; a new follow, a voice start or stop since it, or a slot cleared
+                             // after voice restarts it. Bounds how long a voiceless assignment holds the slot against
+                             // preemption.
+    int acquire_ended;       // 1 once a voice start or stop ended the wait acquire_since_m began. A flag, not a time
+                             // comparison: the grant, its voice and its end can share one decode-clock reading.
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
     double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
     int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT
@@ -872,6 +886,41 @@ void p25_sm_emit_crypto_pending_epoch(dsd_opts* opts, dsd_state* state, int slot
  * @param src Source RID.
  */
 void p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
+
+/** What an assignment for an announced call would decide, for ranking calls announced together. */
+typedef struct {
+    int tune_allowed; /**< the policy admits it */
+    int hold_match;   /**< it is the held talkgroup */
+    int priority;     /**< 0..100 from its row */
+    int preempt;      /**< its row asks to preempt */
+} p25_sm_grant_rank_t;
+
+/**
+ * @brief The policy decision an assignment for @p ev would reach, without writing anything.
+ *
+ * Patch-aware and lockout-release-aware like the grant path, but no ledger release, backoff, call-skip touch or log.
+ * Decoders rank several calls announced together with it (hold match, then priority) before dispatching them.
+ *
+ * @return 1 when @p out was evaluated, 0 otherwise.
+ */
+int p25_sm_grant_candidate_rank(const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                p25_sm_grant_rank_t* out);
+
+/**
+ * @brief Whether an announced group call would be tuned only as a silent probe under encrypted-call lockout.
+ *
+ * With encrypted calls not tuned (trunk_tune_enc_calls == 0), a call whose service options say encrypted, or that
+ * carries none, is admissible only as a probe that may turn out encrypted and silent -- unless its talkgroup belongs
+ * to a patch with a clear key. Decoders rank audible calls before probes when several are announced together, so a
+ * probe cannot take the receiver from a clear call listed beside it.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state (patch keys).
+ * @param tg Announced talkgroup.
+ * @param svc_bits Its service options, or P25_SM_SVC_UNKNOWN when absent.
+ * @return 1 for a silent probe, 0 otherwise.
+ */
+int p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, int tg, int svc_bits);
 
 /* ============================================================================
  * Helper: SACCH slot mapping

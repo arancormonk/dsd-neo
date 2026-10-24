@@ -707,7 +707,7 @@ test_ldu1_softid_alias_state(void) {
     ctx.lsd1_okay = 1;
     ctx.lsd2_okay = 1;
 
-    p25p1_ldu1_handle_softid(&opts, &state, &ctx);
+    p25p1_ldu1_handle_softid(&state, &ctx);
     rc |= expect_int("softid counter after segment", state.data_block_counter[0], 2);
     rc |= expect_int("softid policy make", g_policy_make_calls, 1);
     rc |= expect_int("softid policy learns once", g_policy_learn_calls, 1);
@@ -722,7 +722,7 @@ test_ldu1_softid_alias_state(void) {
     ctx.lsd_hex2 = 0x0B;
     ctx.lsd1_okay = 1;
     ctx.lsd2_okay = 1;
-    p25p1_ldu1_handle_softid(&opts, &state, &ctx);
+    p25p1_ldu1_handle_softid(&state, &ctx);
     rc |= expect_int("softid begin format", state.dmr_alias_format[0], 0x02);
     rc |= expect_int("softid begin clamped length", state.dmr_alias_block_len[0], 8);
     rc |= expect_int("softid begin counter", state.data_block_counter[0], 0);
@@ -741,12 +741,12 @@ test_ldu1_softid_alias_state(void) {
     ctx.lsd_hex2 = 0x7F;
     ctx.lsd1_okay = 1;
     ctx.lsd2_okay = 1;
-    p25p1_ldu1_handle_softid(&opts, &state, &ctx);
+    p25p1_ldu1_handle_softid(&state, &ctx);
     rc |= expect_int("softid invalid chars advance counter", state.data_block_counter[0], 2);
     rc |= expect_int("softid invalid chars kept zero", state.dmr_alias_block_segment[0][0][0][0], 0);
     rc |= expect_int("softid encrypted policy make", g_policy_make_calls, 1);
     rc |= expect_int("softid encrypted policy learns once", g_policy_learn_calls, 1);
-    rc |= expect_cstr("softid encrypted no-key mode", g_last_policy_mode, "DE");
+    rc |= expect_cstr("softid encrypted alias stays mode D", g_last_policy_mode, "D");
     rc |= expect_cstr("softid invalid alias name empty", g_last_policy_name, "");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -767,7 +767,7 @@ test_ldu1_softid_alias_state(void) {
     ctx.lsd_hex2 = 0x42;
     ctx.lsd1_okay = 1;
     ctx.lsd2_okay = 1;
-    p25p1_ldu1_handle_softid(&opts, &state, &ctx);
+    p25p1_ldu1_handle_softid(&state, &ctx);
     rc |= expect_cstr("softid pending conflict remains clear mode", g_last_policy_mode, "D");
 
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -776,7 +776,7 @@ test_ldu1_softid_alias_state(void) {
     ctx.lsd_hex2 = 0x04;
     ctx.lsd1_okay = 1;
     ctx.lsd2_okay = 0;
-    p25p1_ldu1_handle_softid(&opts, &state, &ctx);
+    p25p1_ldu1_handle_softid(&state, &ctx);
     rc |= expect_int("softid begin rejects bad second LSD", state.dmr_alias_format[0], 0);
     rc |= expect_int("softid begin reject preserves counter", state.data_block_counter[0], 0);
     return rc;

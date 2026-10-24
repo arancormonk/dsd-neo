@@ -402,7 +402,7 @@ p25p1_ldu1_softid_reset_format(dsd_state* state, const ldu1_decode_ctx_t* ctx) {
 }
 
 static void
-p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) {
+p25p1_ldu1_softid_finalize_alias(dsd_state* state, int k) {
     if (k < state->dmr_alias_block_len[0] || state->dmr_alias_format[0] != 0x02) {
         return;
     }
@@ -428,12 +428,10 @@ p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) 
     }
 
     if (tsrc != 0) {
-        const char* mode = "D";
+        // A learned alias names a radio and is always mode D: an encrypted radio's calls are locked out by the
+        // encryption ledger, and a DE row would read as a talkgroup lockout once the list is saved and reloaded.
         dsd_tg_policy_entry alias_entry;
-        if (p25_crypto_metadata_is_confirmed_encrypted(state, 0) && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
-            mode = "DE";
-        }
-        if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
+        if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
             == 0) {
             (void)dsd_tg_policy_learn_exact(state, &alias_entry);
         }
@@ -445,10 +443,10 @@ p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) 
 }
 
 static void
-p25p1_ldu1_handle_softid(const dsd_opts* opts, dsd_state* state, const ldu1_decode_ctx_t* ctx) {
+p25p1_ldu1_handle_softid(dsd_state* state, const ldu1_decode_ctx_t* ctx) {
     int k = p25p1_ldu1_softid_append_segment(state, ctx);
     p25p1_ldu1_softid_reset_format(state, ctx);
-    p25p1_ldu1_softid_finalize_alias(opts, state, k);
+    p25p1_ldu1_softid_finalize_alias(state, k);
 }
 #endif
 
@@ -510,7 +508,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     p25p1_ldu1_print_payload(opts, LCW_bytes, &ctx);
 
 #ifdef SOFTID
-    p25p1_ldu1_handle_softid(opts, state, &ctx);
+    p25p1_ldu1_handle_softid(state, &ctx);
 #else
     UNUSED2(ctx.lsd1_okay, ctx.lsd2_okay);
 #endif // SOFTID

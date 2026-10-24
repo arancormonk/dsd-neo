@@ -358,6 +358,31 @@ test_priority_preemption(void) {
     session_close(&s);
 }
 
+/* The preemption ledger is cleared while a call is followed (a release elsewhere, a scan target's restart): the
+ * followed call is described from when it was followed, so a candidate that outranks it is not held back by a dwell
+ * restarted at the candidate, nor by a cooldown read from the followed call's own preempt flag. The accepted takeover
+ * then starts the cooldown that refuses the next candidate until it ran out. */
+static void
+test_preemption_after_ledger_cleared(void) {
+    session s = session_open();
+    policy_row(s.state, 0x100u, 10, 1);
+    policy_row(s.state, 0x300u, 50, 1);
+    policy_row(s.state, 0x400u, 80, 1);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+    at_seconds(1002.0);
+    assert(dsd_tg_policy_clear_active_call(s.state, -1) == 0);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 2, 140);
+    assert(followed_call(s.state) == 0x0C && g_tunes == 2 && g_tuned_hz == CARRIER_HZ(140));
+    at_seconds(1002.8); /* past 0x0C's dwell, inside the takeover's cooldown */
+    send_setup(&s, 0x400u, 0x0D, TTB_SPEECH_GROUP, 2, 150);
+    assert(followed_call(s.state) == 0x0C && g_tunes == 2);
+    at_seconds(1003.1);
+    send_setup(&s, 0x400u, 0x0E, TTB_SPEECH_GROUP, 2, 160);
+    assert(followed_call(s.state) == 0x0E && g_tunes == 3 && g_tuned_hz == CARRIER_HZ(160));
+    session_close(&s);
+}
+
 /* The followed call becomes end-to-end encrypted (D-TX GRANTED encryption control, table 14.18) while encrypted calls
  * are not followed: its group is locked out and the receiver goes back to the control channel. */
 static void
@@ -3184,6 +3209,7 @@ main(void) {
     test_unknown_party_never_tunes();
     test_hold_takes_over();
     test_priority_preemption();
+    test_preemption_after_ledger_cleared();
     test_followed_call_turns_encrypted();
     test_reduced_key_decides_its_carrier();
     test_followed_call_renamed();

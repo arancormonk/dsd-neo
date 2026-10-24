@@ -2943,6 +2943,15 @@ seed_nxdn_identity(dsd_state* state, uint16_t grant_chan, long int grant_freq, u
     state->nxdn_base_freq = base_freq;
     state->nxdn_step = step;
     state->nxdn_bw = bw;
+    /* The followed route and held call travel with the target too; derived from the grant so each target differs. */
+    state->nxdn_follow.freq_hz = grant_freq;
+    state->nxdn_follow.chan = grant_chan;
+    state->nxdn_follow.repeater = (uint8_t)(grant_chan & 0x1FU);
+    state->nxdn_call.valid = grant_freq != 0 ? 1U : 0U;
+    state->nxdn_call.target = (uint32_t)grant_chan + 1000U;
+    state->nxdn_call.source = sys_code;
+    state->nxdn_call.rx_freq_hz = grant_freq;
+    state->nxdn_call.follow_m = (double)grant_chan;
 }
 
 static int
@@ -2953,14 +2962,22 @@ expect_nxdn_identity(const char* label, const dsd_state* state, uint16_t grant_c
         || state->nxdn_location_sys_code != sys_code || state->nxdn_location_site_code != site_code
         || strcmp(state->nxdn_location_category, category) != 0 || state->nxdn_idas_system_id != sys_code * 3U
         || state->nxdn_idas_site_code != (uint8_t)(site_code * 2U) || state->nxdn_rcn != rcn
-        || state->nxdn_base_freq != base_freq || state->nxdn_step != step || state->nxdn_bw != bw) {
+        || state->nxdn_base_freq != base_freq || state->nxdn_step != step || state->nxdn_bw != bw
+        || state->nxdn_follow.freq_hz != grant_freq || state->nxdn_follow.chan != grant_chan
+        || state->nxdn_follow.repeater != (grant_freq != 0 ? (uint8_t)(grant_chan & 0x1FU) : 0U)
+        || state->nxdn_call.valid != (grant_freq != 0 ? 1U : 0U)
+        || (grant_freq != 0
+            && (state->nxdn_call.target != (uint32_t)grant_chan + 1000U || state->nxdn_call.source != sys_code
+                || state->nxdn_call.rx_freq_hz != grant_freq
+                || fabs(state->nxdn_call.follow_m - (double)grant_chan) > 1e-9))) {
         DSD_FPRINTF(stderr,
                     "%s NXDN identity mismatch chan=%u freq=%ld ran=%u sys=%u site=%u cat='%s' idas=%u/%u rcn=%u "
-                    "base=%u step=%u bw=%u\n",
+                    "base=%u step=%u bw=%u follow=%ld/%u/%u call=%u/%u\n",
                     label, state->nxdn_grant_chan, state->nxdn_grant_freq, state->nxdn_last_ran,
                     state->nxdn_location_sys_code, state->nxdn_location_site_code, state->nxdn_location_category,
                     state->nxdn_idas_system_id, state->nxdn_idas_site_code, state->nxdn_rcn, state->nxdn_base_freq,
-                    state->nxdn_step, state->nxdn_bw);
+                    state->nxdn_step, state->nxdn_bw, state->nxdn_follow.freq_hz, state->nxdn_follow.chan,
+                    state->nxdn_follow.repeater, state->nxdn_call.valid, state->nxdn_call.target);
         return 1;
     }
     return 0;
@@ -9847,6 +9864,37 @@ test_visit_limit_ineligible_alternate_rearms(void) {
     return run_visit_limit_ineligible_alternate_rearms(0) | run_visit_limit_ineligible_alternate_rearms(1);
 }
 
+/* A switch whose tune fails rolls the receiver back to the target it was on, with that target's NXDN followed route and
+ * held call as they were: the failed candidate's fresh state must not replace them. */
+static int
+test_nxdn_state_survives_failed_switch_rollback(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,nxdn-trunk,461000000,,250,,\n"
+                        "b,nxdn-trunk,462000000,,250,,\n",
+                        0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_active_target(&state, "nxdn rollback init", 0U);
+    seed_nxdn_identity(&state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
+    g_counting_tune_to_cc_failures_remaining = 1;
+    test_rc |= expect_control_rc("nxdn failed switch and rollback",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 1);
+    test_rc |= expect_active_target(&state, "nxdn failed switch and rollback", 0U);
+    /* A restored target forgets its RAN until one is decoded again, as every visit does. */
+    test_rc |= expect_nxdn_identity("rolled back target", &state, 12, 461012500, (unsigned int)-1, 0x25U, 3, "Type-C",
+                                    1, 96, 12, 4);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /*
  * The load-bearing case for requirement 8: the cap fires while a P25 call is being followed.
  * The carrier is released before the outgoing snapshot is saved, so the receiver leaves with
@@ -13808,6 +13856,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_nxdn_state_survives_failed_switch_rollback);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_diag_isolated_per_target);
     rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
     rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);

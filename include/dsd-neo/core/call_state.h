@@ -230,6 +230,13 @@ typedef struct {
 typedef struct {
     uint64_t revision;
     uint64_t epoch;
+    /**
+     * The epoch that opened this logical transmission: this epoch's own, or, for an epoch that reacquired a
+     * recoverably-ended one, that epoch's transmission_epoch. State bound to a call (a trunking identity) keys on it
+     * (dsd_call_snapshot_transmission()), so a fade the canonical layer healed keeps the binding and a new transmission
+     * never inherits it.
+     */
+    uint64_t transmission_epoch;
     uint64_t ota_target_id;
     uint64_t policy_target_id;
     uint64_t ota_source_id;
@@ -310,6 +317,15 @@ typedef struct {
     char source_label[DSD_CALL_IDENTITY_TEXT_SIZE];
     uint64_t source_label_id;
 } dsd_call_snapshot;
+
+/** The logical transmission @p call belongs to (dsd_call_snapshot::transmission_epoch, else its own epoch); 0 none. */
+static inline uint64_t
+dsd_call_snapshot_transmission(const dsd_call_snapshot* call) {
+    if (!call) {
+        return 0U;
+    }
+    return call->transmission_epoch != 0U ? call->transmission_epoch : call->epoch;
+}
 
 typedef struct {
     uint64_t revision;
@@ -501,6 +517,16 @@ int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
  * reason is added, so callers ask here instead of comparing reasons themselves.
  */
 int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
+
+/**
+ * True while the ended epoch @p call may still be reacquired at @p now_m (decode clock): it ended for a recoverable
+ * reason, names a call, and its reason's own heal window (DSD_CALL_REACQUIRE_GAP_S after a sync loss,
+ * DSD_CALL_TERMINATOR_HEAL_GAP_S after an unverified terminator) has not run out. The same rule dsd_call_state_observe()
+ * applies before it heals a transmission, short of what the reopening observation itself must satisfy (an unverified
+ * terminator's heal takes only identity-less voice, and no reopen may name another call): a binding to the
+ * transmission (dsd_call_snapshot_transmission()) that holds while this is true holds for the call a heal reopens.
+ */
+int dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m);
 
 /**
  * Called after dsd_call_state_observe() heals a recoverably-ended epoch, with the ending

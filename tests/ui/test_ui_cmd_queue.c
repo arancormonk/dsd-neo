@@ -208,6 +208,22 @@ __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, 
     return g_skip_arm_refused ? -1 : __real_dsd_tg_policy_call_skip_arm(state, id, src, fallback, now_mono_s);
 }
 
+/* The followed-call ledger is written under the P25 SM tick guard (talkgroup_policy.h), which the watchdog's own
+   releases hold: a protocol releasing a call from a command counts here when it clears the ledger without it. */
+static int g_ledger_clear_calls = 0;
+static int g_ledger_clear_unguarded = 0;
+int __real_dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
+int __wrap_dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
+
+int
+__wrap_dsd_tg_policy_clear_active_call(dsd_state* state, int slot) {
+    g_ledger_clear_calls++;
+    if (!p25_sm_tick_guard_held_by_caller()) {
+        g_ledger_clear_unguarded++;
+    }
+    return __real_dsd_tg_policy_clear_active_call(state, slot);
+}
+
 /* An armed connect succeeds or fails without a socket; a success leaves the options as the
    real service's input switch does (issue #634): TCP input on the requested endpoint, named for it, a new stream. */
 int
@@ -5361,12 +5377,16 @@ test_manual_moves_hand_a_dmr_follow_over(void) {
         state.trunk_lcn_freq[0] = 853000000L;
         dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
         dmr_sm_init_ctx(dmr, &opts, &state);
-        dmr_sm_note_status_follow(&opts, &state, 852000000L);
+        dmr_sm_note_status_follow(&opts, &state, 852000000L, -1, 0);
         opts.trunk_is_tuned = 1;
         reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
         const int cmd = cycle ? DSD_APP_CMD_CHANNEL_CYCLE : DSD_APP_CMD_RETURN_CC;
         rc |= expect_int("manual move queued", dsd_app_command_action(cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        g_ledger_clear_calls = 0;
+        g_ledger_clear_unguarded = 0;
         rc |= expect_int("manual move drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true("giving the followed call up clears the followed-call ledger under the tick guard",
+                          g_ledger_clear_calls > 0 && g_ledger_clear_unguarded == 0);
         rc |= expect_true("manual move tunes", g_io_control_tune_freq == (cycle ? 853000000L : 851000000L));
         rc |= expect_true(cycle ? "a channel cycle gives the followed call up and listens on the new frequency"
                                 : "Return to CC gives the followed call up and listens on the control channel",
@@ -5412,7 +5432,7 @@ test_manual_moves_hand_a_dmr_follow_over(void) {
     hooks.dmr_ctx = scan_dmr_ctx;
     dsd_trunk_scan_hooks_set(&hooks);
     dmr_sm_init_ctx(&g_scan_dmr_ctx, &opts, &state);
-    dmr_sm_note_status_follow(&opts, &state, 852000000L);
+    dmr_sm_note_status_follow(&opts, &state, 852000000L, -1, 0);
     opts.trunk_is_tuned = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |=
@@ -6589,6 +6609,22 @@ test_talkgroup_row_commands(void) {
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
     dsd_app_drain_cmds(opts, state);
     rc |= expect_contains("stale generation set refused", state->ui_msg, "stale");
+    // A radio alias learned over the air while the sheet was open does not make the priority edit stale.
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    {
+        dsd_tg_policy_entry learned;
+        dsd_tg_policy_make_exact_entry(3000, "D", "Talker", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &learned);
+        rc |= expect_int("alias renamed while editing", dsd_tg_policy_learn_exact(state, &learned),
+                         DSD_TG_POLICY_LEARN_REPLACED);
+    }
+    edit.priority = 75;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    {
+        dsd_tg_policy_lookup applied;
+        dsd_tg_policy_lookup_id(state, 2000, &applied);
+        rc |= expect_int("edit applied across a learned alias", applied.entry.priority, 75);
+    }
     edit.priority = 99;
     edit.id_start = edit.id_end = 2002;
     dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
@@ -6596,11 +6632,15 @@ test_talkgroup_row_commands(void) {
     dsd_app_drain_cmds(opts, state);
     dsd_tg_policy_lookup lookup;
     dsd_tg_policy_lookup_id(state, 2002, &lookup);
-    rc |= expect_int("alias priority unchanged", lookup.entry.priority, 50);
-    dsd_app_tg_range_payload rem = {2002, 2002, edit.policy_context, edit.policy_generation};
+    // A mode-D row is a persisted radio alias: a talkgroup edit of that ID takes the row over as a talkgroup row.
+    rc |= expect_int("alias collision taken over by the edit", lookup.entry.priority, 99);
+    rc |= expect_str("taken-over row listens", lookup.entry.mode, "A");
+    rc |= expect_int("taken over in place", (int)dsd_tg_policy_entry_count(state), 6);
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_tg_range_payload rem = {3000, 3000, edit.policy_context, edit.policy_generation};
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
     dsd_app_drain_cmds(opts, state);
-    rc |= expect_int("mode D remove refused", (int)dsd_tg_policy_entry_count(state), 6);
+    rc |= expect_int("learned alias remove refused", (int)dsd_tg_policy_entry_count(state), 6);
 
     union {
         unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];

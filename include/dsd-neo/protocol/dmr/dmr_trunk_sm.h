@@ -16,9 +16,11 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_TRUNK_SM_H_H
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 
@@ -50,6 +52,23 @@ typedef enum {
     DMR_SM_EV_SYNC_LOST,  // Sync lost
 } dmr_sm_event_type_e;
 
+/* Where a GRANT event came from: a channel grant, a C_MOVE of a call already on the air, or a channel status the
+ * CSBK layer selected (Hytera XPT). */
+typedef enum {
+    DMR_SM_ORIGIN_GRANT = 0,
+    DMR_SM_ORIGIN_MOVE = 1,
+    DMR_SM_ORIGIN_STATUS = 2,
+} dmr_sm_origin_e;
+
+/* What dmr_sm_submit_grant() did with a grant. */
+typedef enum {
+    DMR_SM_GRANT_FOLLOWED = 0, // the receiver was tuned to it (or a matched C_MOVE moved the followed call there)
+    DMR_SM_GRANT_IN_PLACE = 1, // already on its carrier: nothing to tune (a matched C_MOVE took the new slot)
+    DMR_SM_GRANT_REFUSED = 2,  // policy, receive admission, channel map or trust refused it
+    DMR_SM_GRANT_BUSY = 3,     // the receiver holds a call the grant may neither hold over nor preempt
+    DMR_SM_GRANT_DEFERRED = 4, // the tune was not accepted: nothing changed
+} dmr_sm_grant_result_e;
+
 typedef struct {
     dmr_sm_event_type_e type;
     int slot;     // 0 (left/TS1) or 1 (right/TS2), -1 if N/A
@@ -59,16 +78,59 @@ typedef struct {
     int src;      // Source RID
     int dst;      // Destination RID (for individual GRANT)
     int is_group; // 1 for group grant, 0 for individual
+
+    /* GRANT only. The CSBK/status layer judges talkgroup policy and hands its verdict over: the machine never
+       re-evaluates a grant (a matched C_MOVE excepted, which keeps the followed call's own classification). */
+    dsd_call_kind kind;     // GROUP_VOICE / PRIVATE_VOICE / DATA as the CSBK layer classified it
+    int identity_known;     // 0: the target is a hash or placeholder (XPT private): never held, matched or preempting
+    int caller_busy;        // the caller's own legacy window says the receiver is busy (Con+, Cap+, XPT)
+    dmr_sm_origin_e origin; // grant, C_MOVE or status selection
+    int policy_valid;       // the caller evaluated @ref policy for this grant
+    dsd_tg_policy_decision policy; // its verdict, data-call and private classification included
 } dmr_sm_event_t;
 
 /* ============================================================================
  * Per-Slot Activity Context
  * ============================================================================ */
 
+/* Where a slot's call identity came from. An LC always wins: a later channel status replaces only a seed. */
+typedef enum {
+    DMR_SM_ID_NONE = 0,  // no identity: the call on the slot (if any) is unknown
+    DMR_SM_ID_SEED = 1,  // a Capacity Plus channel status named it
+    DMR_SM_ID_GRANT = 2, // the grant the machine followed named it
+    DMR_SM_ID_LC = 3,    // a voice LC that passed its check named it
+} dmr_sm_identity_prov_e;
+
 typedef struct {
     int voice_active;     // 1 if voice currently active on this slot
     double last_active_m; // Monotonic timestamp of last activity
-    int tg;               // Current talkgroup for this slot
+
+    /* The call on this slot of carrier_hz, as far as the machine knows it (decoder thread only). kind UNKNOWN: none.
+       follow_m is when the machine started holding that call; it moves only when the call (its policy class, target
+       or carrier) changes, so a preemption's dwell runs from the conversation's first follow. */
+    uint32_t target;
+    uint32_t source;
+    uint8_t kind;         // dsd_call_kind
+    uint8_t prov;         // dmr_sm_identity_prov_e
+    uint8_t judged_group; // judged by group policy (a Tier III data grant followed as a group is)
+    uint8_t data_call;
+    /* DSD_CRC_* bits of what named the identity (a RAS-accepted grant, status or LC under -F, a Cap+ status's every
+       fragment, or a move's burst with the identity it moved): what a C_MOVE republishes carries them. */
+    uint8_t crc_flags;
+    int channel;     // LPCN, or the Capacity Plus LSN, the call was announced on
+    long carrier_hz; // the carrier the identity belongs to
+    double follow_m; // decode clock
+
+    /* The canonical call the identity names (dsd_call_snapshot_transmission() of the slot's call), so it never outlives
+       that call: another call on the slot, or its end (on the followed carrier, past the hangtime), leaves the slot
+       unknown. 0 while the identity awaits its call: the first one to begin on the slot after call_floor, the slot's
+       epoch when it was named. */
+    uint64_t call_epoch;
+    uint64_t call_floor;
+    double call_seen_m; // decode clock: when the named call was last seen active, or when it ended
+    /* The named call is over and another (call_epoch) began on the followed carrier within the hangtime: the record
+       names no call (unknown) and stays only so that naming that call as the same one keeps follow_m. */
+    uint8_t gap;
 } dmr_sm_slot_ctx_t;
 
 /* How long a Capacity Plus channel-status seed waits for the voice it names (decode clock). Matches the status's own
@@ -95,6 +157,7 @@ typedef struct {
 
 typedef struct {
     dmr_sm_state_e state;
+    int initialized;
 
     // Per-slot activity (index 0 = TS1/left, index 1 = TS2/right)
     dmr_sm_slot_ctx_t slots[2];
@@ -109,16 +172,25 @@ typedef struct {
     int vc_is_group;
     int vc_identity_published;
     int vc_status_follow; // a Capacity Plus status followed it: its release goes to the latest announced rest channel
+    /* Bit s: the status that followed this carrier selected or seeded slot s. Before the first voice those slots hold
+       the carrier whatever their identity is now (a private LSN, or a seed a later status made unknown, holds it as a
+       call of unknown identity). Cleared with the slots' records (every follow, release and acquisition). */
+    int vc_acquire_slots;
     // DSD_CRC_* bits of the CSBK or MBC that granted this channel (a RAS grant under -F). The grant's identity is
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
+    int cc_hunt_index;
     uint8_t vc_crc_flags;
 
     // Timing (monotonic only)
-    double t_tune_m;                       // Time of last VC tune
+    double t_tune_m; // Time of last VC tune
+    /* When the receiver arrived on the followed carrier: the follow tune that left another carrier, 0 when the follow
+       adopted the carrier the receiver was already on (every call heard there is that carrier's). */
+    double t_carrier_m;
     double receive_check_started_m;        // Bounded acquisition while receive admission is pending/rejected
     dsd_receive_carriers receive_carriers; // Colour code last verified on each voice channel
     long receive_check_freq_hz;            // The voice channel that window belongs to (a new one starts its own)
     int receive_codes_fresh;               // Its codes were forgotten at its tune: what it holds now it proved
+    int vc_data_call;                      // the grant was a data call (its policy was judged with data_call set)
     double t_voice_m;                      // Time of last voice activity
     double t_cc_sync_m;                    // Time of last CC sync
 
@@ -134,7 +206,6 @@ typedef struct {
     uint64_t cc_tune_request_id;
     int cc_acquiring;
     int cc_confirmed;
-    int cc_hunt_index;
 
     // Startup control-channel hunt (issue #703): a single-system session whose start frequency yields no validated
     // control within cc_grace_s walks its channel map with the ordinary hunt. Decoder thread only.
@@ -146,6 +217,7 @@ typedef struct {
     // walks the map; it only listens where it is, or retunes the frequency it parks on. System-scoped: kept across a
     // same-system re-init (dmr_sm_begin_cc_acquisition()), cleared by dmr_sm_note_system_replaced().
     int site_without_cc;
+    int vc_identity_known; // vc_tg/vc_dst/vc_src name the call (not an XPT placeholder or a Cap+ status follow)
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
@@ -157,6 +229,7 @@ typedef struct {
     // HUNTING was entered because the control-channel window ran out (tick_on_cc()): validated content arriving before
     // the next hunt step opens that window again. 0 in every other state and for any other way into HUNTING.
     int cc_window_lost;
+    int vc_status_grant; // a channel status (XPT) selected the grant: acquisition protection is the status window's
 
     // The receiver frequency last read from rigctl at rx_seen_generation, so a burst does not query it again: dropped
     // at an operator move, and stale once a trunk tune moves the generation on.
@@ -173,7 +246,6 @@ typedef struct {
     dmr_sm_capplus_seed_t capplus_seed[2];
 
     // Initialized flag
-    int initialized;
 } dmr_sm_ctx_t;
 
 /* ============================================================================
@@ -245,12 +317,117 @@ void dmr_sm_note_receiver_unknown(dmr_sm_ctx_t* ctx);
  *  while nothing attributes the receiver frequency, at most once per tuning generation for rigctl. */
 int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
 
+/** @brief Where the receiver is now as the machine knows it: the carrier it follows, else the one it listens on (as
+ *  dmr_sm_receiver_on() reads it); 0 when nothing names it. Read before a follow's tune, it says whether the follow
+ *  leaves that carrier. */
+long dmr_sm_receiver_frequency(const dsd_opts* opts);
+
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
- *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. */
-void dmr_sm_note_status_follow(const dsd_opts* opts, const dsd_state* state, long freq_hz);
+ *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is
+ *  where the receiver was before the tune (dmr_sm_receiver_frequency(); 0 unknown): a follow that leaves that carrier
+ *  ends its calls (EXPLICIT) there, one that stays on it keeps the calls on the air and their identities. @p slot is the
+ *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. */
+void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz);
+
+/* ----------------------------------------------------------------------------
+ * Talkgroup priority and preemption
+ *
+ * Every function below runs on the decoder thread under the P25 SM tick guard (frame dispatch and the DMR tick hold
+ * it): they write the talkgroup policy's followed-call ledger, whose contract requires that guard, and never take it.
+ * ---------------------------------------------------------------------------- */
+
+/* The calls the receiver holds, as the machine's own retention rule sees them. */
+typedef struct {
+    int held;              // a call holds the receiver: an ordinary grant elsewhere is not followed
+    long carrier_hz;       // the carrier held (TUNED: the followed voice channel; ON_CC: where it listens); 0 unknown
+    int resident;          // held by calls heard on a parked carrier (composite TSCC, XPT parking), not a followed one
+    int unknown_identity;  // a held call has no known identity: only Hold displaces it
+    int holds_hold_target; // a held call is on the Hold talkgroup
+    int members;           // bit s: slot s holds a call (0x3: both, or the grant's slotless call)
+} dmr_sm_busy_view_t;
+
+/* How a candidate on another carrier may take the receiver from the calls it holds. */
+typedef enum {
+    DMR_SM_DISPLACE_NONE = 0,
+    DMR_SM_DISPLACE_HOLD = 1,    // the candidate is on the Hold talkgroup and no held call is
+    DMR_SM_DISPLACE_PREEMPT = 2, // dsd_tg_policy_should_preempt() over every held call
+} dmr_sm_displace_e;
+
+/**
+ * @brief Describe the calls the receiver holds and record them in the talkgroup policy's followed-call ledger.
+ *
+ * TUNED: held while the machine's retention rule keeps the carrier (live voice, hangtime tail, acquisition before the
+ * first voice or a pending receive check; a status-selected carrier's acquisition only for
+ * DMR_CAPPLUS_SEED_WINDOW_S). ON_CC: held by calls heard on the carrier it listens on whose identity the policy admits.
+ * Each held slot is described (dsd_tg_policy_describe_followed_call(), start = its follow time) and every other ledger
+ * slot is cleared, so dsd_tg_policy_should_preempt() compares a candidate with exactly what is held.
+ *
+ * @return 1 when held.
+ */
+int dmr_sm_describe_held_calls(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m,
+                               dmr_sm_busy_view_t* out);
+
+/**
+ * @brief Whether a candidate on another carrier may take the receiver from @p view (read-only).
+ *
+ * Hold: the candidate matches Hold and no held call does. Preempt: a decision the caller evaluated for a known identity,
+ * no held call of unknown identity, and dsd_tg_policy_should_preempt() against the ledger dmr_sm_describe_held_calls()
+ * wrote. Evaluating several candidates stamps nothing.
+ */
+dmr_sm_displace_e dmr_sm_may_displace(const dmr_sm_busy_view_t* view, const dsd_opts* opts, const dsd_state* state,
+                                      const dsd_tg_policy_call_route* candidate, const dsd_tg_policy_decision* decision,
+                                      int policy_valid, int identity_known, double now_m);
+
+/**
+ * @brief Submit a grant (or a C_MOVE, or a status selection) to the machine.
+ *
+ * A candidate on another carrier while the receiver is held (or @ref dmr_sm_event_t::caller_busy) is followed only by
+ * Hold over a non-held call or by preemption; a decision-less event never is. One on the carrier already followed
+ * (IN_PLACE) names the call of its slot. A C_MOVE of the followed call (as the followed slot's identity names it) is
+ * matched independently of its destination slot and refused only when its retained classification is denied tuning
+ * for a reason other than a Hold mismatch.
+ */
+dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
+
+/**
+ * @brief Record the followed call in the talkgroup policy ledger after an accepted follow.
+ *
+ * Clears the ledger, notes @p route, and commits the takeover's cooldown when @p preempted.
+ */
+void dmr_sm_policy_note_follow(dsd_state* state, const dsd_tg_policy_call_route* route,
+                               const dsd_tg_policy_decision* decision, int preempted, double now_m);
+
+/**
+ * @brief A voice LC that passed its check named the call on @p slot: the slot's identity, with LC provenance, bound to
+ * the canonical call the LC was just published on (it ends with that call).
+ *
+ * Recorded for the carrier the machine follows (TUNED) or listens on (ON_CC). A same-call LC keeps the follow time.
+ */
+void dmr_sm_note_lc_identity(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
+                             uint32_t target, uint32_t source);
+
+/**
+ * @brief A Capacity Plus status names group @p tg on @p lsn: a status-followed slot whose identity a seed gave on that
+ * LSN, whose named call is over (an LC's included: its authority ends with its call), or that has no identity at all
+ * (one that expired with its call while the companion slot kept the carrier), takes the group, with a new follow time
+ * unless it is the same call, and the status's CRC provenance (@p crc_flags, DSD_CRC_*: every fragment's). An @p active LSN with no group (@p tg 0: a private or data call) leaves that
+ * slot's identity unknown and its activity as it was; an idle one (neither) changes nothing.
+ */
+void dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int lsn, uint32_t tg,
+                                      int active, uint8_t crc_flags);
+
+/**
+ * @brief A channel status (Hytera XPT) names the call on @p slot of carrier @p freq_hz: group @p tg, or (@p tg 0,
+ * @p active) a call of no known identity (a private call). On the carrier the machine follows, a slot whose identity a
+ * grant gave (not a checked LC naming the call still there) takes the group, with a new follow time when the call
+ * changes, or becomes unknown; on the followed slot the grant's identity follows it, so it no longer stands for the
+ * slot's call either. An idle slot (neither) changes nothing.
+ */
+void dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, long freq_hz, uint32_t tg,
+                                  int active);
 
 /** @brief Return 1 while the startup window is armed or a startup hunt runs (issue #703). */
 int dmr_sm_cold_start_active(const dmr_sm_ctx_t* ctx);
@@ -266,8 +443,8 @@ int dmr_sm_cold_start_due(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const d
  * the receiver frequency the tune left in opts->rtlsdr_center_freq. @p tg 0 clears the slot. The seed only ever names
  * a call whose voice LCs have not: see dmr_sm_emit_voice_sync().
  */
-void dmr_sm_capplus_seed_arm(dmr_sm_ctx_t* ctx, int slot, uint32_t tg, int lsn, long freq_hz, uint32_t receiver_hz,
-                             uint8_t crc_flags, uint64_t generation_before_tune);
+void dmr_sm_capplus_seed_arm(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, uint32_t tg, int lsn, long freq_hz,
+                             uint32_t receiver_hz, uint8_t crc_flags, uint64_t generation_before_tune);
 
 /** @brief Forget the Capacity Plus channel-status seed of @p slot (-1: both). */
 void dmr_sm_capplus_seed_clear(dmr_sm_ctx_t* ctx, int slot);
@@ -314,6 +491,9 @@ void dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
  * @brief Emit a group voice grant event.
+ *
+ * The emit_*_grant wrappers carry no policy decision: while the receiver holds a call they are busy, never a Hold or
+ * preemption candidate (dmr_sm_submit_grant()); with nothing held they are followed as before.
  */
 void dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src);
 
@@ -360,6 +540,8 @@ dmr_sm_ev_group_grant(long freq_hz, int lpcn, int tg, int src) {
     ev.tg = tg;
     ev.src = src;
     ev.is_group = 1;
+    ev.kind = DSD_CALL_KIND_GROUP_VOICE;
+    ev.identity_known = 1;
     return ev;
 }
 
@@ -373,6 +555,8 @@ dmr_sm_ev_indiv_grant(long freq_hz, int lpcn, int dst, int src) {
     ev.dst = dst;
     ev.src = src;
     ev.is_group = 0;
+    ev.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    ev.identity_known = 1;
     return ev;
 }
 

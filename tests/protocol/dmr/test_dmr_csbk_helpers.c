@@ -6,6 +6,7 @@
 #include "dsd-neo/core/safe_api.h"
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -24,31 +25,27 @@ static int g_last_lpcn;
 static int g_last_slot;
 static int g_last_target;
 static int g_last_source;
+static dmr_sm_event_t g_last_event;
 
-void
+/* The trunk state machine's grant entry: what the CSBK layer hands it, classification and policy verdict included. */
+dmr_sm_grant_result_e
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sm_emit_group_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int tg, int src) {
+dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     (void)opts;
     (void)state;
-    g_group_calls++;
-    g_last_freq = freq_hz;
-    g_last_lpcn = lpcn;
-    g_last_slot = slot;
-    g_last_target = tg;
-    g_last_source = src;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sm_emit_indiv_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int dst, int src) {
-    (void)opts;
-    (void)state;
-    g_indiv_calls++;
-    g_last_freq = freq_hz;
-    g_last_lpcn = lpcn;
-    g_last_slot = slot;
-    g_last_target = dst;
-    g_last_source = src;
+    g_last_event = *ev;
+    if (ev->is_group) {
+        g_group_calls++;
+        g_last_target = ev->tg;
+    } else {
+        g_indiv_calls++;
+        g_last_target = ev->dst;
+    }
+    g_last_freq = ev->freq_hz;
+    g_last_lpcn = ev->lpcn;
+    g_last_slot = ev->slot;
+    g_last_source = ev->src;
+    return DMR_SM_GRANT_FOLLOWED;
 }
 
 static void
@@ -68,6 +65,7 @@ reset_grant_spy(void) {
     g_last_slot = -1;
     g_last_target = 0;
     g_last_source = 0;
+    DSD_MEMSET(&g_last_event, 0, sizeof(g_last_event));
 }
 
 static void
@@ -133,6 +131,10 @@ test_parse_and_handle_group_grant(void) {
     assert(result.target == 0x123456U);
     assert(result.source == 0x654321U);
 
+    result.policy_valid = 1;
+    result.policy.tune_allowed = 1;
+    result.policy.priority = 70;
+    result.policy.preempt_requested = 1;
     dmr_csbk_handle(&result, &opts, &state);
     assert(g_group_calls == 1);
     assert(g_indiv_calls == 0);
@@ -141,6 +143,53 @@ test_parse_and_handle_group_grant(void) {
     assert(g_last_slot == 1);
     assert(g_last_target == 0x123456);
     assert(g_last_source == 0x654321);
+    // The CSBK layer's classification and verdict travel to the state machine (it never re-evaluates a grant).
+    assert(g_last_event.type == DMR_SM_EV_GRANT);
+    assert(g_last_event.kind == DSD_CALL_KIND_GROUP_VOICE);
+    assert(g_last_event.identity_known == 1);
+    assert(g_last_event.origin == DMR_SM_ORIGIN_GRANT);
+    assert(g_last_event.caller_busy == 0);
+    assert(g_last_event.policy_valid == 1);
+    assert(g_last_event.policy.tune_allowed == 1);
+    assert(g_last_event.policy.priority == 70);
+    assert(g_last_event.policy.preempt_requested == 1);
+}
+
+/* A Tier III data grant followed as a group (data tuning on: the opcode was rewritten to 49) keeps its data
+   classification, which its policy was judged with. */
+static void
+test_handle_data_grant_keeps_classification(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    struct dmr_csbk_result result = {0};
+    reset_grant_spy();
+
+    result.opcode = 49U;
+    result.freq_hz = 851025000L;
+    result.lpcn = 7U;
+    result.lcn = 0U;
+    result.target = 1300U;
+    result.source = 2300U;
+    result.data_call = 1;
+    result.policy_valid = 1;
+    result.policy.tune_allowed = 1;
+    result.policy.data_call = 1;
+    dmr_csbk_handle(&result, &opts, &state);
+    assert(g_group_calls == 1);
+    assert(g_last_event.kind == DSD_CALL_KIND_DATA);
+    assert(g_last_event.is_group == 1 && g_last_event.tg == 1300);
+    assert(g_last_event.policy.data_call == 1);
+    assert(g_last_slot == 0);
+
+    // A private grant with data tuning off stays individual, with its data classification.
+    reset_grant_spy();
+    result.opcode = 51U;
+    result.policy.private_call = 1;
+    dmr_csbk_handle(&result, &opts, &state);
+    assert(g_indiv_calls == 1);
+    assert(g_last_event.kind == DSD_CALL_KIND_DATA);
+    assert(g_last_event.dst == 1300 && g_last_event.src == 2300);
+    assert(g_last_event.policy.private_call == 1);
 }
 
 static void
@@ -170,6 +219,8 @@ test_handle_individual_and_ignored_paths(void) {
     assert(g_last_slot == 1);
     assert(g_last_target == 77);
     assert(g_last_source == 88);
+    assert(g_last_event.kind == DSD_CALL_KIND_PRIVATE_VOICE);
+    assert(g_last_event.policy_valid == 0);
 
     result.opcode = 47U;
     dmr_csbk_handle(&result, &opts, &state);
@@ -196,6 +247,7 @@ main(void) {
     test_parse_non_grant_header_only();
     test_parse_and_handle_group_grant();
     test_handle_individual_and_ignored_paths();
+    test_handle_data_grant_keeps_classification();
     test_opcode_names_cover_grant_table();
     DSD_FPRINTF(stdout, "DMR_CSBK_HELPERS: OK\n");
     return 0;

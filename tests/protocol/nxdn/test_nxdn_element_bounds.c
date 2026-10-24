@@ -2923,11 +2923,21 @@ test_osm_info2_special_messages_are_not_targets(void) {
     }
     rc |= expect_int("osm-info2-special-no-tune", g_tune_freq_calls, 0);
 
-    /* A busy repeater message names the call's destination. */
+    /* A busy repeater message names a call's destination: the call heard here only when its go-to repeater is the
+     * receiver's. Repeater 5 has no frequency mapped, so it cannot be placed and the call keeps its target. */
     DSD_MEMSET(message, 0, sizeof(message));
     write_bits_u64(message, 0U, 2U, 2U);
     write_bits_u64(message, 3U, 5U, 5U);
     write_bits_u64(message, 13U, 0x0321U, 11U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("osm-info2-busy-unmapped-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("osm-info2-busy-unmapped-target", call.ota_target_id, 0x0456U);
+
+    /* Repeater 5 mapped, and the receiver there (a rigctl peer on an audio input reports it). */
+    g_mapped_channel = 5U;
+    g_mapped_channel_freq = 852512500L;
+    opts->use_rigctl = 1;
+    g_current_rigctl_freq = 852512500L;
     NXDN_decode_scch(opts, state, message, 1U);
     rc |= expect_int("osm-info2-busy-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_u64("osm-info2-busy-target", call.ota_target_id, 0x0321U);

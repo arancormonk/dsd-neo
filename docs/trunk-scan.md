@@ -457,9 +457,13 @@ During scanning:
   call's termination message and then treats as the control channel (without it the return waits for the DISC
   message or hangtime, and a `CH 31 has no frequency mapping` notice is logged once). Calls are followed from
   the SCCH Busy Repeater message; while the site is idle nothing but `dwell_ms` keeps the target parked, so
-  give it a dwell of several seconds. This path is inherited from DSD-FME, which tested it on a two-channel
-  Type-D system; DSD-neo has not verified it against a live Type-D site. An `--iq-capture` of a home repeater
-  spanning an idle period and one call (see `docs/testing.md`) is what would confirm it.
+  give it a dwell of several seconds. While a call is heard, a busy or target message relabels it only when its
+  `Go to Repeater` maps to the frequency the receiver is on (the followed repeater, the tuner, or a rigctl peer's
+  reported frequency); one for another repeater is another call, which takes the receiver only for the held
+  talkgroup or a preempting talkgroup of higher priority, so the `chan_csv` rows are what tell the two apart.
+  This path is inherited from DSD-FME, which tested it on a two-channel Type-D system; DSD-neo has not
+  verified it against a live Type-D site. An `--iq-capture` of a home repeater spanning an idle period and one
+  call (see `docs/testing.md`) is what would confirm it.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
   While held, a failed retune retries the held target after the cooldown instead of moving on.
   A still-pending accepted tune can temporarily show its requested frequency, including during recovery from a
