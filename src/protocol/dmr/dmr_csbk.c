@@ -2804,7 +2804,8 @@ dmr_cspdu_xpt_reconcile_followed(const dsd_state* state, const dmr_xpt_entry ent
 
 /* One XPT status bank: as for Capacity Plus (dmr_cspdu_cap_plus_3e_try_tune_grants()), at most one entry is handed to
    the trunk state machine, the best by Hold, priority and channel order among those eligible, and while the receiver
-   holds a call only Hold over a non-held call or a preemption is eligible. An unknown private identity never is. */
+   holds a call only Hold over a non-held call or a preemption is eligible. An unknown private identity never is, nor,
+   inside the status's voice window, an entry on the carrier the receiver holds or is parked on. */
 static void
 dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const dmr_xpt_entry entries[DMR_XPT_ENTRY_COUNT],
                        uint8_t xpt_bank) {
@@ -2826,6 +2827,11 @@ dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const dmr_xpt_entry ent
         dsd_tg_policy_decision policy_decision;
         const long freq = dmr_cspdu_xpt_entry_freq(opts, state, e, slot_idx, trunking, &policy_decision);
         if (freq == 0) {
+            continue;
+        }
+        if (caller_busy && freq == view.carrier_hz) {
+            /* Inside the voice window a call on the carrier the receiver holds or is parked on is left alone: a submit
+               there from the control channel would retune, reset the blocks and clear the live slot's activity. */
             continue;
         }
         const int identity_known = e->kind == DMR_XPT_KIND_GROUP;

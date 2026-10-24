@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1229,6 +1230,82 @@ test_xpt_status_reconciles_followed_slot(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A status naming another group on the followed slot is subordinate to a checked LC's identity there, in place as in
+   its reconciliation: an unlisted status target never replaces the p100 call the LC named, so a p60 preempt elsewhere
+   stays busy on the next status. */
+static int
+test_xpt_status_in_place_keeps_lc_identity(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    seed_policy_row(st, 77, "A", 10, 0);
+    seed_policy_row(st, 100, "A", 100, 0);
+    seed_policy_row(st, 99, "A", 60, 1);
+    st->trunk_chan_map[1] = 461262500L;
+    st->trunk_chan_map[3] = 461287500L;
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){77U, 0U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    int rc = expect_true("xpt follows group 77", st->trunk_vc_freq[0] == 461262500L && sm->state == DMR_SM_TUNED);
+    status_clock_at(0.5);
+    accepted_voice_now(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100U, 1U);
+    rc |= expect_true("the checked LC names the followed slot's call",
+                      sm->slots[0].target == 100U && sm->slots[0].prov == (uint8_t)DMR_SM_ID_LC);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){3U, 0U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){55U, 0U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("an unlisted status target leaves the LC's identity in place",
+                      st->trunk_vc_freq[0] == 461262500L && sm->slots[0].target == 100U
+                          && sm->slots[0].prov == (uint8_t)DMR_SM_ID_LC);
+    status_clock_at(2.0);
+    accepted_voice_now(opts, st, 0);
+    status_window_closed(st);
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 0U, 3U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 0U, 99U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("a p60 preempt does not displace the LC's p100 call", st->trunk_vc_freq[0] == 461262500L);
+    status_env_done(st);
+    return rc;
+}
+
+/* Parked on an XPT carrier while an admitted resident call plays: inside the status's voice window a status naming that
+   same carrier is not followed (no retune, no block reset, the live slot's activity kept). */
+static int
+test_xpt_resident_same_carrier_in_voice_window(dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    status_env(opts, st);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 461250000U;
+    st->trunk_cc_freq = 461250000L;
+    dmr_sm_init(opts, st);
+    st->trunk_chan_map[2] = 461250000L; // LSN 2 (TS2) is the parked carrier
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 55U, 5U);
+    st->last_vc_sync_time = dsd_decode_time(); // the status's voice window is open
+    dmr_sm_ctx_t* sm = dmr_sm_get_ctx();
+    const double active_m = sm->slots[1].last_active_m;
+    build_xpt_site_status(bits, bytes, 0U, 0U, (const uint8_t[6]){0U, 3U, 0U, 0U, 0U, 0U},
+                          (const uint8_t[6]){0U, 55U, 0U, 0U, 0U, 0U});
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    int rc = expect_true("xpt resident same-carrier status inside the voice window is not followed",
+                         g_status_tunes == 0 && sm->state == DMR_SM_ON_CC);
+    rc |=
+        expect_true("the live slot's call and activity are kept",
+                    sm->slots[1].target == 55U && active_m > 0.0 && fabs(sm->slots[1].last_active_m - active_m) < 1e-9);
+    status_env_done(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2003,6 +2080,8 @@ main(void) {
     rc |= test_con_plus_policy_before_window(opts, st);
     rc |= test_xpt_busy_carrier(opts, st);
     rc |= test_xpt_status_reconciles_followed_slot(opts, st);
+    rc |= test_xpt_status_in_place_keeps_lc_identity(opts, st);
+    rc |= test_xpt_resident_same_carrier_in_voice_window(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

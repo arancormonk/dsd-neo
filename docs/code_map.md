@@ -5334,7 +5334,8 @@ Private per-protocol modules worth knowing about:
     and `dsd_tg_policy_should_preempt()` over every held slot); otherwise `grant-busy`. A candidate on the held carrier
     is followed as before (IN_PLACE), and names its slot's call (`dmr_sm_grant_reconcile_in_place()`): another call
     there takes the slot's record with its follow time now (on the followed slot, the grant identity too); a repeat of
-    the call the slot names, or of the grant followed there, keeps record and follow time.
+    the call the slot names, or of the grant followed there, keeps record and follow time. A status's in-place entry
+    (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time) come from the followed grant (a slotless grant's at its first accepted voice), an in-place
     grant, Cap+ seeds and status reconciliation (a seeded LSN the status shows carrying a private or data call keeps the
@@ -5366,7 +5367,9 @@ Private per-protocol modules worth knowing about:
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order
-    decides (with no priorities, channel order as before). XPT entries keep their status kind: 3 (group, 8-bit ID) is a
+    decides (with no priorities, channel order as before). Inside the voice window an entry on the carrier the receiver
+    holds or is parked on is not submitted (Cap+ follows it only outside the window, when nothing else is eligible), so
+    a resident call is never retuned, block-reset or cleared from the control channel. XPT entries keep their status kind: 3 (group, 8-bit ID) is a
     group candidate; 2 (private, the value a hash or placeholder) only with private tuning on, as an unknown identity
     whose decision is built without any endpoint lookup (allow-list, Hold and private-off block it; priority 0, no
     preemption) and published by the voice LC only; 1 and 0 are not followed; private needs no group tuning.

@@ -1958,7 +1958,8 @@ dmr_sm_grant_names_call(const dmr_sm_event_t* ev, uint32_t target, const dmr_sm_
    assignment of the slot) takes the slot's record with its follow time now, so preemption compares a candidate with
    it and its dwell runs from the assignment; on the followed slot it is the grant identity as well. A repeat of the
    call the slot names, or of the grant the machine followed there, keeps the record and its follow time. A slotless
-   grant, or one whose target is a placeholder, names no slot's call. */
+   grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces only a seed
+   or grant identity, never the call a checked LC named on that carrier (as dmr_sm_status_slot_reconcile()). */
 static void
 dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, long freq) {
     const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
@@ -1966,6 +1967,9 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, lon
         return;
     }
     dmr_sm_slot_ctx_t* rec = &ctx->slots[ev->slot];
+    if (ev->origin == DMR_SM_ORIGIN_STATUS && rec->prov == (uint8_t)DMR_SM_ID_LC && rec->carrier_hz == freq) {
+        return;
+    }
     dmr_sm_slot_ctx_t grant;
     const int followed_slot = ev->slot == ctx->vc_slot;
     if (dmr_sm_grant_names_call(ev, target, rec, freq)
