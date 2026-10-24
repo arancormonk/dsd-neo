@@ -129,6 +129,13 @@ test_tea1_reduced(void) {
     tetra_tea1_keystream_reduced(0x67757D92u, 0x01234567u, out, (int)sizeof(out));
     check(memcmp(out, tea1_ks, sizeof(out)) == 0, "TEA1 keyed vector from its reduced key");
 
+    /* The register of a key is the reduced key that gives its key stream. */
+    static const uint8_t zero_key[10] = {0};
+    static const uint8_t keyed[10] = {0xA7, 0x98, 0x39, 0xE4, 0xBA, 0x88, 0xEE, 0x54, 0xA0, 0x29};
+    check(tetra_tea1_reduce_key(zero_key) == 0xC24E273Bu && tetra_tea1_reduce_key(keyed) == 0x67757D92u
+              && tetra_tea1_reduce_key(NULL) == 0u,
+          "TEA1 key registers of the published keys");
+
     /* Register 0 is a key like any other. */
     DSD_MEMSET(untouched, 0x5A, sizeof(untouched));
     DSD_MEMCPY(out, untouched, sizeof(out));

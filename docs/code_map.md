@@ -4678,7 +4678,7 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   number, location area and colour code, pinned by TETRA_crypto's four TB5 vectors (`TETRA_CRYPTO`).
   `tetra_tea1_keystream_reduced()` runs TEA1 from its 32-bit key register (the reduced ECK) instead of an ECK: the
   register TEA1 compresses the ECK into before it generates anything, which belongs to the one channel TB5 made that ECK
-  for. It is the only file that includes the upstream headers.
+  for; `tetra_tea1_reduce_key()` gives that register of an ECK. It is the only file that includes the upstream headers.
 - `tetra_ta61.c` (declared in `<dsd-neo/crypto/tetra_tea.h>`) is TA61, the encrypted short identity of EN 300 392-7
   clause 4.2.6 (`tetra_ta61_encrypt()` / `_decrypt()`: a 24-bit SSI and its ESI under an 80-bit SCK or CCK), with the
   HURDLE block encryption it runs on, ported from the pinned TETRA_crypto `taa1.c` / `hurdle.c` (Apache-2.0, see
@@ -5811,28 +5811,37 @@ slot, KSS(216) in a second half slot (STCH-2, an SB's block 2), which `tetra_nb_
 the TDMA clock and hyperframe, TB5 of the carrier being received (`tetra_air_sig_slot()`). A fragmented TM-SDU keeps
 its ciphertext pieces (`tetra_mac_fragment::piece`, each with its slot's initial value, carrier and offset) and is
 decrypted piece by piece at its MAC-END, whose piece is the allocation then the last fragment (`fragment_open()`); an
-encrypted first fragment with an allocation, or a piece that cannot be kept, leaves the TM-SDU undecrypted
-(`cipher_lost`).
+encrypted first fragment with an allocation, or a piece that cannot be kept (more than `TETRA_MAC_FRAG_PIECES`, 128:
+an N.202 TM-SDU in fragments averaging 21 bits, which associated PDUs ahead of each MAC-FRAG can leave), leaves the
+TM-SDU undecrypted (`cipher_lost`).
 
 Basic link signalling carries no check of its plaintext, so a decrypted TM-SDU is acted on only when its own plaintext
 proved itself (`tetra_air_sig_open()`): every candidate (the network's 80-bit key with its named TEA, or each of
-TEA1..TEA3; a TEA1 reduced key of exactly this channel) decrypts it, the digest of each plaintext is kept as evidence
-(`tetra_state_t::air_evidence`: 512 entries, `TETRA_AIR_EVIDENCE_S` = 1 s, at most 16 of one clear header, cleared at
-a carrier boundary and another cell), and an earlier TM-SDU of the same clear header (PDU kind, address type and value,
+TEA1..TEA3; a TEA1 reduced key of exactly this channel, after every 80-bit key whatever the key slots, so a proof that
+both give names identities) decrypts it, the digest of each plaintext is kept as evidence
+(`tetra_state_t::air_evidence`: 512 entries, `TETRA_AIR_EVIDENCE_S` = 1 s and, for a fragmented TM-SDU, as long again
+as it took to arrive (`tetra_air_sig_input::span_s`, at most `TETRA_AIR_EVIDENCE_SPAN_S`), at most 16 of one clear
+header, cleared at a carrier boundary and another cell), and an earlier TM-SDU of the same clear header (PDU kind, address type and value,
 label, usage marker, encryption mode, allocation flag), length, carrier, location area and colour code, taken under
 another initial value, that decrypted to the same plaintext under a candidate proves that candidate. Only 48 or more
 encrypted bits count; a wrong key, wrong TEA, or a PDU under a key the user lacks (DCK, MGCK, a second TEA, another key
 version) matches with a chance of about 2^-L + 2^-64 per comparison, at most 64 comparisons a PDU. Nothing reads the
 cell's broadcast security class. A first copy, a TM-SDU sent once or shorter than 48 bits is handled as before
 (`resource_encrypted()`, `deliver_encrypted()`); a proved one is parsed as a clear one (`resource_parse()`,
-`complete_fragment()`), carrying its encryption mode and key to the call records. A proof notes its TEA as the
+`complete_fragment()`), carrying its encryption mode and key to the call records, which take them before anything
+judges the call (`tetra_calls_on_event()`; the MAC reports no unread allocation for it to `tetra_calls_on_addressed()`).
+A rebuilt TM-SDU's digest puts its MAC-END's allocation first (`tetra_air_sig_input::alloc_at`, `alloc_bits`), so two
+copies fragmented apart prove each other; until it is decrypted the fragment buffer holds that allocation beside the
+TM-SDU (`TETRA_MAC_FRAG_BITS`), and the rebuilt TM-SDU is held to N.202. A proof notes its TEA as the
 network's KSG evidence. A proved PDU's encrypted short identity is decrypted with TA61 under the 80-bit key that proved
 it (`tetra_air_sig_identity()`, `tetra_mac_address::esi_decrypted`; the `-Z` line shows `SSI(n from ESI m)`); a reduced
 key leaves it, so its D-SETUPs name no called party. The cell key epoch (`air_epoch`) moves when a SYSINFO announces
 another SCK-VN or CCK-id (CCK flag set), SCKN or GCK support (on a cell that offers air encryption), when the
-encryption mode's parity settles on the other value (three encrypted headers in a row, `tetra_air_sig_note_parity()`),
-and at another cell; a call's key applies only under the epoch and parity it proved under and while the same key (and
-named TEA) is loaded. No key, ECK, register or key stream bit is printed. Tests: `TETRA_AIR_SIGNALLING` (TETRA_crypto's
+encryption mode's parity settles on the other value (three encrypted headers in a row, `tetra_air_sig_note_parity()`,
+or a TM-SDU proved under it, which settles it before its key is stamped, so a key proved during a key version change
+is current at once), and at another cell; a call's key applies only under the epoch and parity it proved under and while the same key (and
+named TEA) is loaded, while the call's latest allocation names the key version parity it proved under
+(`tetra_calls_air_key_applies()`), and a reduced key only while the call is on its channel. No key, ECK, register or key stream bit is printed. Tests: `TETRA_AIR_SIGNALLING` (TETRA_crypto's
 own TB5 and TEA2 key streams, frozen; wrong keys and TEAs; two TEAs under one key; a DCK stand-in; PDU association and
 the second half slot; a fragmented TM-SDU; a reduced key; the key epoch; the repeat rules and a busy carrier),
 `TETRA_CRYPTO` (TA61).
@@ -5882,7 +5891,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune, counted from the later
   of the tune and the last maintenance event before the first speech (`tetra_sm_note_maintenance()`, `t_maint_m`,
   rolled back with `t_tune_m`): an ACCESS-ASSIGN PDU of a followed timeslot carrying the call's usage marker, or a
-  CRC-passed PDU there addressed to a party of the call (the T.209 events of EN 300 392-2 clause 23.5.6.1.2; the 4 s
+  CRC-passed PDU there addressed to a party of the call, a MAC-D-BLCK to its event label included whether or not its
+  TM-SDU can be read (`tetra_calls_on_label_pdu()`; the label is clear), never to all (the broadcast SSI or the all-ones event label; `address_maintains()`;
+  on the record's own channel, carrier, frequency and timeslot, which an allocation that moved the call without the
+  receiver leaves; the T.209 events of EN 300 392-2 clause 23.5.6.1.2; the 4 s
   and the before-first-speech scope are the scanner's, not T.209's 18 multiframes), so a call set up and silent is
   not left and re-entered every 4 s while its channel is kept for it. It drops the call
   without a tune when another owner released the shared tuning state (`opts->trunk_is_tuned` cleared: a tuner
@@ -6042,9 +6054,17 @@ single "current call".
   one of them on this channel) and never tunes. A usage marker assignment (address type 110) applies with the
   allocation of its own PDU or MAC-END, to the directions it assigns, and is ignored without one (EN 300 392-2 clause
   23.5.5): the record the readable allocation went to (`tetra_mac_sdu::alloc_taker`) takes it as its downlink traffic
-  usage marker when the allocation assigns the downlink (`call_bind_usage_marker()`); any allocation of the record's
-  downlink ends the last one, an allocation of the uplink alone keeps it, and losing the channel (another call's
-  allocation of it, "go to the MCCH", another cell) ends it. A "go to the MCCH" allocation (timeslots 0000,
+  usage marker when the allocation assigns the downlink (`call_bind_usage_marker()`); any allocation that moves the
+  record ends the last one, and losing the channel (another call's allocation of it, "go to the MCCH", another
+  cell) ends it. An allocation of the uplink alone of the record's own channel (carrier, frequency where both are
+  known, timeslots) leaves a record that holds a downlink allocation as it was, its usage marker included, now an
+  allocation of the downlink alone (`call_attach()`, `alloc_keeps_downlink()`): the uplink and the downlink of a
+  channel are allocated apart (clauses 23.3.4, 23.5.5). One of another channel replaces the record's channel (clause
+  23.5.4.2.1), whose downlink an MS then receives by the normal procedures (clause 23.5.4.3.3) with no downlink usage
+  marker of the call there. A clear or decrypted allocation that comes with a call PDU sets the call's
+  encryption before the PDU is judged (`call_take_encryption()` in `tetra_calls_on_event()`); a followed call that a
+  PDU's downlink allocation moves is judged for its encryption once the allocation is attached, on the channel it
+  allocates (a reduced key decrypts its own channel only). A "go to the MCCH" allocation (timeslots 0000,
   table 21.87) of the followed call releases it, and retires the call either way (`tetra_sm_retire_call()`, the
   rollback of a tune or return in flight included): where the release cannot be made (a tune in flight for the rest
   of the burst, the call's own reallocation's included, or the return refused or deferred) the state machine follows
@@ -6151,10 +6171,24 @@ single "current call".
   in successive slots of the channel (frame 18 being none) in frames 1 to 17 with header other than 00 and the call's
   marker give it and prove the call on the carrier, which a call followed onto another carrier needs, since its
   traffic slot carries speech and no signalling of it; N.212 (3) received without the marker or T.212 (18 TDMA frames)
-  without one take it back. Addressed signalling and short data prove the call but give no permission. N.208 (3) of
+  without one (at 72 slots) take it back; an AACH of frame 18 that could not be read breaks no run, another usage
+  marker bound to the record starts the run over (the same one assigned again does not), and of the follow's timeslots
+  only those the record still holds count while the record is on the followed carrier and frequency, its usage marker
+  valid or not.
+  A "Replace" (or "Replace + CSS channel") of the followed call's channel to an assigned channel of its downlink, with a
+  usage marker assignment, keeps the permission the call held when it is followed without leaving the carrier
+  (`alloc_keeps_reception()`, `calls_keep_reception()`; the exception to case d) of clause 23.8.2.3.2); any other
+  allocation of the call, "Quit", an additional channel, one with no marker or of the uplink alone of another channel,
+  ends a permission held (`call_attach()`, `call_end_reception()`), followed or not, the one a tune in flight's
+  rollback would put back included, and leaves an N.213 run alone while none is held; a
+  withdrawal in the same PDU applies after; and one the receiver retunes for regains it on the new carrier as every
+  follow onto another carrier does.
+  A CC withdrawal ends the permission and the run but not the N.208 count; one for the call a tune in flight left is
+  what that tune puts back if it fails (`tetra_sm_rollback::followed_rx`). Addressed signalling and short data prove the call but give no permission. N.208 (3) of
   them saying the channel is no longer the call's (header 00, UMx, a downlink marker neither UMa nor the call's, and for
   an allocation of both directions an uplink given to other traffic; clause 23.5.6.1.1) end the follow as "go to the
-  MCCH" does, whatever maintains it. A follow with no record, or a record that holds no allocation, keeps the gate
+  MCCH" does, whatever maintains it; the record's allocation goes with it only while it still describes the channel
+  lost, so one that moved the call elsewhere since stays. A follow with no record, or a record that holds no allocation, keeps the gate
   above. Not trunking, one timeslot is heard at a time, the first with speech that plays, until that
   speech stops for `TETRA_CALL_SPEECH_END_S` (`tetra_voice_hold()`, `tetra_calls_t::held`), and on the downlink only a
   timeslot the clock places: a burst it cannot place could be the held timeslot's or any other's (the uplink has no

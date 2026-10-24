@@ -10,6 +10,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -161,6 +162,12 @@ followed_id(const dsd_state* state) {
     return tetra_sm_followed_call_id(state, &id) ? (int)id : -1;
 }
 
+/* The followed call's identifier, as followed_id(), from the TETRA state alone. */
+static int
+followed_id_ts(const tetra_state_t* ts) {
+    return ts->sm.state == (uint8_t)TETRA_SM_TUNED && !ts->sm.followed_retired ? (int)ts->sm.followed.call_id : -1;
+}
+
 /* A new record for @p call_id: a free entry, else the one heard from least recently that is not followed. */
 static tetra_call_t*
 calls_new(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint16_t call_id) {
@@ -201,6 +208,8 @@ call_has_party(const tetra_call_t* c, uint32_t ssi) {
 /* The record's downlink usage marker goes with the channel it was assigned on (EN 300 392-2 clause 23.5.5). */
 static void
 call_drop_usage_marker(tetra_call_t* c) {
+    c->usage_marker_before =
+        (uint8_t)((c->flags & TETRA_CALL_F_USAGE_MARKER) != 0u ? (uint8_t)(c->usage_marker + 1u) : 0u);
     c->usage_marker = 0U;
     c->flags = (uint8_t)(c->flags & ~TETRA_CALL_F_USAGE_MARKER);
 }
@@ -449,6 +458,15 @@ air_decryptable(const dsd_state* state, uint8_t air_enc, int carrier) {
     return tetra_enc_mode_encrypted(air_enc) && tetra_air_key_usable_on(state, carrier);
 }
 
+int
+tetra_calls_air_key_applies(const dsd_state* state, const tetra_call_t* c) {
+    /* The key that proved the call's allocation: still the cell's, of the key version the call's latest allocation
+     * names (its encryption mode's parity, EN 300 392-7 clause 6.5.1), and a reduced key on its own channel only. */
+    return c && c->air_key.valid && tetra_air_sig_key_current(state, &c->air_key)
+           && (c->air_enc & 1u) == c->air_key.parity
+           && (c->air_key.kind != DSD_TETRA_AIR_KEY_TEA1_REDUCED || call_carrier(state, c) == (int)c->air_key.carrier);
+}
+
 /* Air interface encryption of @p c's speech a key stream here undoes. A call whose allocation came in signalling a key
  * decrypted takes that key and no other, while it applies (tetra_air_sig_key_current()): the key the signalling proved
  * is the one of the call's addressed party, and a key change the cell announced since leaves it to the next proof.
@@ -459,7 +477,7 @@ call_air_decryptable(const dsd_state* state, const tetra_call_t* c) {
         return 0;
     }
     if (c->air_key.valid) {
-        return tetra_air_sig_key_current(state, &c->air_key);
+        return tetra_calls_air_key_applies(state, c);
     }
     return air_decryptable(state, c->air_enc, call_carrier(state, c));
 }
@@ -953,16 +971,90 @@ calls_leave_taken_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, c
  * even the call's own, or the return refused or deferred) the state machine follows the channel without the call,
  * and a tune in flight that fails puts the channel back without it; after a release that was made it changes
  * nothing, and a return in flight that fails comes back without the call too. */
+/* An allocation of the uplink alone of the call's own channel leaves its downlink, which the decoder receives, as it
+ * was: the uplink and downlink of a channel may be allocated apart (EN 300 392-2 clauses 23.3.4, 23.5.5). One of
+ * another channel replaces the call's channel, whose downlink the MS then receives by the normal procedures for an
+ * assigned channel (clause 23.5.4.3.3), with no downlink usage marker of the call there. */
+static int
+alloc_keeps_downlink(const tetra_call_t* c, const tetra_chan_alloc* alloc) {
+    return alloc->timeslots != 0u && (alloc->up_down & 1u) == 0u && c->alloc.timeslots != 0u
+           && (c->alloc.up_down & 1u) != 0u && alloc->timeslots == c->alloc.timeslots
+           && alloc->carrier == c->alloc.carrier
+           && (alloc->freq_hz == 0L || c->alloc.freq_hz == 0L || alloc->freq_hz == c->alloc.freq_hz);
+}
+
+/* @p alloc, from @p sdu, replaces a call's channel as EN 300 392-2 clause 23.8.2.3.2 lets an MS keep its receive
+ * permission across: "Replace" or "Replace + CSS channel", an assigned channel, its downlink, with a usage marker
+ * assignment; a withdrawal in the same PDU takes it back after (call_receive_switch()). */
+static int
+alloc_replaces_with_marker(const tetra_chan_alloc* alloc, const tetra_mac_sdu* sdu) {
+    return (alloc->type == 0u || alloc->type == 3u) && alloc->timeslots != 0u && (alloc->up_down & 1u) != 0u && sdu
+           && sdu->has_addr && sdu->addr.type == TETRA_MAC_ADDR_SSI_USAGE;
+}
+
+/* The followed call holds receive permission and @p alloc keeps it (alloc_replaces_with_marker()). */
+static int
+alloc_keeps_reception(const dsd_state* state, const tetra_call_t* c, const tetra_chan_alloc* alloc,
+                      const tetra_mac_sdu* sdu) {
+    return followed_id(state) == (int)c->call_id && tetra_confirm_followed_rx(state)
+           && alloc_replaces_with_marker(alloc, sdu);
+}
+
+/* Only a "Replace" with a usage marker carries @p c's receive permission to the channel it allocates (clause
+ * 23.8.2.3.2); after "Quit" (clause 23.5.4.2.1 c)), an additional channel, one with no marker or of the uplink alone of
+ * another channel, the call's next authorisation or N.213 gives it again. A permission held goes, the followed call's
+ * and what a tune in flight from it would put back if it failed; an N.213 run while none is held stays. */
+static void
+call_end_reception(dsd_state* state, tetra_state_t* ts, const tetra_call_t* c) {
+    if (followed_id(state) == (int)c->call_id && tetra_confirm_followed_rx(state)) {
+        tetra_confirm_set_followed_rx(state, 0);
+    }
+    tetra_sm_rollback* const prev = &ts->sm.pending_prev;
+    if (ts->sm.pending_request_id != 0U && prev->state == (uint8_t)TETRA_SM_TUNED && !prev->followed_retired
+        && prev->followed.call_id == c->call_id) {
+        prev->followed_rx = 0;
+    }
+}
+
+/* The followed call's replacement channel (alloc_keeps_reception()) was followed without leaving the carrier: the
+ * receive permission it held goes on there. One the receiver retunes for regains it on the new carrier from a CC
+ * message or N.213, as every follow onto another carrier does. */
+static void
+calls_keep_reception(dsd_state* state, const tetra_state_t* ts, const tetra_sm_grant* before, uint32_t epoch) {
+    tetra_sm_grant g;
+    /* The same timeslots are the same channel: the follow, and the permission with it, did not change. */
+    if (tetra_sm_followed(state, &g) && g.freq_hz == before->freq_hz && g.carrier == before->carrier
+        && g.call_id == before->call_id && g.timeslots != before->timeslots && ts->confirm.carrier_epoch == epoch
+        && ts->sm.pending_request_id == 0U) {
+        tetra_confirm_set_followed_rx(state, 1);
+    }
+}
+
+/* The assigned channel's encryption follows the PDU that allocated it (EN 300 392-7 clause 6.7.1.3): clear, or
+ * ciphertext that the key now the call's decrypted (tetra_air_sig.h). */
+static void
+call_take_encryption(tetra_call_t* c, const tetra_mac_sdu* sdu) {
+    c->air_enc = sdu ? (uint8_t)(sdu->enc_mode & 3u) : (uint8_t)TETRA_ENC_MODE_NONE;
+    if (sdu && sdu->air_key.valid && tetra_enc_mode_encrypted(sdu->enc_mode)) {
+        c->air_key = sdu->air_key;
+    } else {
+        DSD_MEMSET(&c->air_key, 0, sizeof c->air_key);
+    }
+}
+
 static void
 call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_chan_alloc* alloc,
             int may_follow, const tetra_mac_sdu* sdu) {
     const uint16_t id = c->call_id;
-    /* A downlink usage marker is valid on the channel it was assigned with only (EN 300 392-2 clause 23.5.5): an
-     * allocation of the downlink ends it, and the PDU's own usage marker assignment, if any, binds it to the new channel
-     * once the PDU is delivered (call_bind_usage_marker()). An allocation of the uplink alone leaves it. */
-    if (alloc->timeslots == 0u || (alloc->up_down & 1u) != 0u) {
-        call_drop_usage_marker(c);
+    if (alloc_keeps_downlink(c, alloc)) {
+        /* Its uplink is another allocation's now: the downlink stays, allocated alone. */
+        c->alloc.up_down = 1u;
+        return;
     }
+    /* A downlink usage marker is valid on the channel it was assigned with only (EN 300 392-2 clause 23.5.5): an
+     * allocation that moves the call ends it, and the PDU's own usage marker assignment, if any, binds it to the new
+     * channel once the PDU is delivered (call_bind_usage_marker()). */
+    call_drop_usage_marker(c);
     if (alloc->timeslots == 0u) {
         DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
         c->alloc_m = 0.0;
@@ -972,19 +1064,22 @@ call_attach(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c
         tetra_sm_retire_call(state, id);
         return;
     }
+    tetra_sm_grant before = {0};
+    const int replaced = alloc_keeps_reception(state, c, alloc, sdu);
+    const int keep_rx = may_follow && replaced && tetra_sm_followed(state, &before);
+    const uint32_t epoch = ts->confirm.carrier_epoch;
+    if (!alloc_replaces_with_marker(alloc, sdu)) {
+        call_end_reception(state, ts, c);
+    }
     c->alloc = *alloc;
     c->alloc_m = dsd_decode_now_mono_s();
-    /* The assigned channel's encryption follows the PDU that allocated it (EN 300 392-7 clause 6.7.1.3): clear, or
-     * ciphertext that the key now the call's decrypted (tetra_air_sig.h). */
-    c->air_enc = sdu ? (uint8_t)(sdu->enc_mode & 3u) : (uint8_t)TETRA_ENC_MODE_NONE;
-    if (sdu && sdu->air_key.valid && tetra_enc_mode_encrypted(sdu->enc_mode)) {
-        c->air_key = sdu->air_key;
-    } else {
-        DSD_MEMSET(&c->air_key, 0, sizeof c->air_key);
-    }
+    call_take_encryption(c, sdu);
     const int takes_followed = calls_take_channel(opts, state, ts, c);
     if (may_follow) {
         call_consider(opts, state, ts, c, takes_followed);
+    }
+    if (keep_rx) {
+        calls_keep_reception(state, ts, &before, epoch);
     }
     if (takes_followed) {
         calls_leave_taken_channel(opts, state, ts, c);
@@ -1223,7 +1318,12 @@ call_bind_usage_marker(tetra_state_t* ts, const tetra_mac_sdu* sdu) {
     }
     tetra_call_t* const c = calls_find(ts, sdu->alloc_taker);
     if (c && c->alloc.timeslots != 0u) {
+        /* AACHs of another marker corroborate nothing of this one (N.213). */
+        if (c->usage_marker_before != (uint8_t)(sdu->addr.usage_marker + 1u) && followed_id_ts(ts) == (int)c->call_id) {
+            ts->confirm.rx_run = 0;
+        }
         c->usage_marker = sdu->addr.usage_marker;
+        c->usage_marker_before = 0U;
         c->flags = (uint8_t)(c->flags | TETRA_CALL_F_USAGE_MARKER);
     }
 }
@@ -1292,34 +1392,64 @@ call_receive_switch_of(const tetra_call_event* ev) {
     }
 }
 
+/* @p c's U-plane switching: the followed call's receive permission, or, while a tune from it is in flight, what that
+ * tune would put back if it failed. */
 static void
-call_receive_switch(dsd_state* state, const tetra_call_event* ev) {
+call_receive_switch(dsd_state* state, tetra_state_t* ts, const tetra_call_t* c, const tetra_call_event* ev) {
     const int sw = call_receive_switch_of(ev);
-    if (sw != 0) {
+    if (sw == 0) {
+        return;
+    }
+    if (followed_id(state) == (int)c->call_id) {
         tetra_confirm_set_followed_rx(state, sw > 0);
+    }
+    tetra_sm_rollback* const prev = &ts->sm.pending_prev;
+    if (ts->sm.pending_request_id != 0U && prev->state == (uint8_t)TETRA_SM_TUNED && !prev->followed_retired
+        && prev->followed.call_id == c->call_id) {
+        prev->followed_rx = (uint8_t)(sw > 0);
     }
 }
 
 /* The PDU being decoded came on the followed channel: a followed timeslot (as the TDMA clock places it) of the carrier
  * the receiver follows. */
 static int
-calls_on_followed_channel(const dsd_state* state, const tetra_state_t* ts) {
+calls_on_followed_channel(const dsd_state* state, const tetra_state_t* ts, const tetra_call_t* c) {
     tetra_sm_grant g;
-    return tetra_sm_followed(state, &g) && ts->sm.pending_request_id == 0U
-           && (g.timeslots & tetra_slot_bit(calls_pdu_timeslot(ts))) != 0u;
+    const uint8_t bit = tetra_slot_bit(calls_pdu_timeslot(ts));
+    if (!tetra_sm_followed(state, &g) || ts->sm.pending_request_id != 0U || (g.timeslots & bit) == 0u) {
+        return 0;
+    }
+    /* An allocation that moved the call without moving the receiver leaves the followed channel no longer its. */
+    return c->alloc.timeslots == 0u
+           || (c->alloc.carrier == g.carrier && (c->alloc.freq_hz == 0L || c->alloc.freq_hz == g.freq_hz)
+               && (c->alloc.timeslots & bit) != 0u);
 }
 
 /* What a PDU of @p c means beyond its record. The followed call is on this carrier (tetra_confirm), may have turned
  * undecryptable, and its canonical call carries what the PDU said; so does the heard call's, until its transmission
  * ceased. */
+/* A PDU to @p addr maintains the followed channel (clause 23.5.6.1.2): addressed to a party of the call, never to all
+ * (the broadcast SSI, or the all-ones event label, which keeps labels across a channel change). */
+static int
+address_maintains(const tetra_mac_address* addr) {
+    uint32_t ssi = 0;
+    if (address_ssi(addr, &ssi)) {
+        return ssi != 0xFFFFFFu;
+    }
+    return addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_KEEP;
+}
+
 static void
-call_after_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c) {
+call_after_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c, const tetra_mac_sdu* sdu,
+               int judge_crypto) {
     if (followed_id(state) == (int)c->call_id) {
         tetra_confirm_note_followed_call(state);
-        if (calls_on_followed_channel(state, ts)) {
+        if (sdu && sdu->has_addr && address_maintains(&sdu->addr) && calls_on_followed_channel(state, ts, c)) {
             tetra_sm_note_maintenance(state);
         }
-        call_check_followed_crypto(opts, state, c);
+        if (judge_crypto) {
+            call_check_followed_crypto(opts, state, c);
+        }
         if (tetra_confirm_carrier_proven(state)) {
             calls_publish_followed(opts, state, ts);
         }
@@ -1328,6 +1458,19 @@ call_after_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
     if (call_is_heard(opts, ts, c) && c->phase != TETRA_CALL_CEASED && tetra_confirm_carrier_proven(state)) {
         calls_publish_call(opts, state, ts, c, &c->alloc);
     }
+}
+
+/* An allocation that came with a PDU of a call belongs to that call alone, tracked or not: @p c takes it (none when no
+ * record holds the call). 1 when there was one to take. */
+static int
+call_takes_allocation(tetra_mac_sdu* sdu, const tetra_call_t* c) {
+    if (!sdu || !sdu->has_alloc || sdu->alloc_taken) {
+        return 0;
+    }
+    sdu->alloc_taken = 1;
+    sdu->alloc_taker_valid = (uint8_t)(c != NULL);
+    sdu->alloc_taker = c ? c->call_id : 0U;
+    return 1;
 }
 
 void
@@ -1340,13 +1483,7 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     if (ev->kind == TETRA_CALL_EV_SETUP) {
         c = call_setup(opts, state, ts, c, ev, sdu);
     }
-    /* An allocation that came with a PDU of a call belongs to that call alone, tracked or not. */
-    const int alloc = sdu && sdu->has_alloc && !sdu->alloc_taken;
-    if (alloc) {
-        sdu->alloc_taken = 1;
-        sdu->alloc_taker_valid = (uint8_t)(c != NULL);
-        sdu->alloc_taker = c ? c->call_id : 0U;
-    }
+    const int alloc = call_takes_allocation(sdu, c);
     if (!c) {
         TETRA_LOG_VERBOSE(ts, 2, "[TETRA CALL] %s for call %u, which no record holds; ignored\n",
                           k_event_names[ev->kind], (unsigned)ev->call_id);
@@ -1362,19 +1499,27 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     call_apply(opts, state, ts, c, ev, sdu);
     call_follow_renamed(state, old_id, c->call_id);
     c->seen_m = dsd_decode_now_mono_s();
+    /* A decrypted allocation that came with the PDU carries the key that proved it: the call is judged by that key
+     * from here (call_after_pdu(), call_attach()), not by the one a key change since left it, and on the channel it
+     * allocates, once attached (a reduced key decrypts its own channel only). */
+    const int moves = alloc && !sdu->alloc_unread && sdu->alloc.timeslots != 0u && (sdu->alloc.up_down & 1u) != 0u;
+    if (moves) {
+        call_take_encryption(c, sdu);
+    }
     if (ev->kind == TETRA_CALL_EV_TX_CEASED) {
         calls_end_call(opts, state, ts, c->call_id);
     }
-    call_after_pdu(opts, state, ts, c);
+    call_after_pdu(opts, state, ts, c, sdu, !moves);
     if (alloc) {
         sdu->alloc_taker = c->call_id; /* a D-INFO or D-CALL RESTORE may have renamed it */
         call_attach(opts, state, ts, c, &sdu->alloc, 1, sdu);
     }
+    if (moves && followed_id(state) == (int)c->call_id) {
+        call_check_followed_crypto(opts, state, c);
+    }
     /* The PDU's U-plane switching applies to the followed call, the one its allocation may just have followed included
      * (a grant on the carrier the receiver is on). */
-    if (followed_id(state) == (int)c->call_id) {
-        call_receive_switch(state, ev);
-    }
+    call_receive_switch(state, ts, c, ev);
     /* What the PDU and its allocation changed reaches the canonical call carrying it now, on a carrier not proven yet
      * too: the call was published before, and the PDU passed its CRC. */
     calls_sync_published(opts, state, ts, c);
@@ -1432,7 +1577,7 @@ tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_addre
     const int followed = followed_id(state) == (int)c->call_id;
     if (followed) {
         tetra_confirm_note_followed_call(state);
-        if (calls_on_followed_channel(state, ts)) {
+        if (address_maintains(addr) && calls_on_followed_channel(state, ts, c)) {
             tetra_sm_note_maintenance(state);
         }
     }
@@ -1446,6 +1591,22 @@ tetra_calls_on_addressed(dsd_opts* opts, dsd_state* state, const tetra_mac_addre
         call_check_followed_crypto(opts, state, c);
     }
     calls_sync_published(opts, state, ts, c);
+}
+
+void
+tetra_calls_on_label_pdu(const dsd_opts* opts, dsd_state* state, uint16_t event_label) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    const tetra_mac_address addr = {.type = TETRA_MAC_ADDR_EVENT_LABEL, .event_label = event_label};
+    const tetra_call_t* const c = calls_by_address(opts, state, ts, &addr);
+    if (c && followed_id(state) == (int)c->call_id) {
+        tetra_confirm_note_followed_call(state);
+        if (address_maintains(&addr) && calls_on_followed_channel(state, ts, c)) {
+            tetra_sm_note_maintenance(state);
+        }
+    }
 }
 
 /* ---- Direct mode (EN 300 396-3) ------------------------------------------------------------------------------- */
@@ -1766,7 +1927,9 @@ calls_leave_lost_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
     TETRA_LOG_VERBOSE(ts, 1, "[TETRA CALL] call=%u: %u ACCESS-ASSIGN PDUs say its channel is no longer its; left\n",
                       (unsigned)g->call_id, TETRA_N208_AACH);
     tetra_call_t* const c = followed_id(state) >= 0 ? calls_find(ts, g->call_id) : NULL;
-    if (c) {
+    /* Only the allocation of the channel lost goes: one that moved the call elsewhere since is the call's still. */
+    if (c && c->alloc.carrier == g->carrier && (c->alloc.freq_hz == 0L || c->alloc.freq_hz == g->freq_hz)
+        && (c->alloc.timeslots & g->timeslots) != 0u) {
         DSD_MEMSET(&c->alloc, 0, sizeof c->alloc);
         c->alloc_m = 0.0;
         call_drop_usage_marker(c);
@@ -1782,7 +1945,10 @@ calls_leave_lost_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
  * call's downlink usage marker @p um. */
 static void
 aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* g, unsigned header, unsigned f1,
-                        uint8_t um) {
+                        const tetra_call_t* c) {
+    const uint8_t um = c->usage_marker;
+    /* The channel is the record's timeslots of the follow: an allocation may have narrowed it since. */
+    const uint8_t slots = (uint8_t)(c->alloc.timeslots & g->timeslots);
     tetra_confirm_t* const cf = &ts->confirm;
     if (header == 0u || f1 != um) {
         cf->rx_run = 0;
@@ -1797,7 +1963,7 @@ aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_gran
     }
     const int successive = cf->rx_run > 0u
                            && slots_between(cf->rx_run_start, ts->tdma_slot_start)
-                                  == next_channel_slot(cf->rx_run_tn, cf->rx_run_fn, g->timeslots);
+                                  == next_channel_slot(cf->rx_run_tn, cf->rx_run_fn, slots);
     cf->rx_run = (uint8_t)(successive ? (cf->rx_run < UINT8_MAX ? cf->rx_run + 1u : cf->rx_run) : 1u);
     cf->rx_run_tn = ts->tn;
     cf->rx_run_fn = ts->fn;
@@ -1823,6 +1989,17 @@ aach_on_followed_channel(const dsd_state* state, const tetra_state_t* ts, tetra_
            && (g->timeslots & tetra_slot_bit(calls_pdu_timeslot(ts))) != 0u;
 }
 
+/* The burst's timeslot is one of the follow that the followed call's record, on the followed carrier, no longer holds:
+ * an allocation narrowed the call's channel without moving the receiver. */
+static int
+aach_slot_left(const dsd_state* state, const tetra_state_t* ts, const tetra_sm_grant* g) {
+    const int id = followed_id(state);
+    const tetra_call_t* const c = id >= 0 ? calls_find_const(ts, (uint16_t)id) : NULL;
+    return c && c->alloc.timeslots != 0u && c->alloc.carrier == g->carrier
+           && (c->alloc.freq_hz == 0L || c->alloc.freq_hz == g->freq_hz)
+           && (c->alloc.timeslots & tetra_slot_bit(calls_pdu_timeslot(ts))) == 0u;
+}
+
 /* T.212: a time without an ACCESS-ASSIGN PDU of the call's traffic, whatever was received meanwhile. */
 static void
 aach_t212(tetra_state_t* ts, const tetra_sm_grant* g) {
@@ -1831,7 +2008,7 @@ aach_t212(tetra_state_t* ts, const tetra_sm_grant* g) {
         cf->rx_qual_valid = 1;
         cf->rx_qual_start = ts->tdma_slot_start;
     }
-    if (cf->rx_perm && slots_between(cf->rx_qual_start, ts->tdma_slot_start) > TETRA_T212_SLOTS) {
+    if (cf->rx_perm && slots_between(cf->rx_qual_start, ts->tdma_slot_start) >= TETRA_T212_SLOTS) {
         TETRA_LOG_VERBOSE(ts, 2, "[TETRA CALL] call=%u: traffic reception stops (T.212)\n", (unsigned)g->call_id);
         cf->rx_perm = 0;
     }
@@ -1873,15 +2050,20 @@ tetra_calls_on_aach(dsd_opts* opts, dsd_state* state, int read, uint16_t pdu) {
     if (!ts || !aach_on_followed_channel(state, ts, &g)) {
         return;
     }
+    if (aach_slot_left(state, ts, &g)) {
+        return; /* a timeslot of the follow the call holds no more */
+    }
+    const tetra_call_t* const c = calls_followed_marked(state, ts, &g);
     aach_t212(ts, &g);
     if (!read) {
-        /* Not received: the run of successive slots breaks. */
-        ts->confirm.rx_run = 0;
+        /* Not received: the run of successive slots breaks, unless it is frame 18's, no slot of the channel. */
+        if (!tetra_tdma_control_frame(ts)) {
+            ts->confirm.rx_run = 0;
+        }
         return;
     }
     /* Header, field 1, field 2 (table 21.82). */
     const unsigned fields[3] = {(pdu >> 12) & 3u, (pdu >> 6) & 0x3Fu, pdu & 0x3Fu};
-    const tetra_call_t* const c = calls_followed_marked(state, ts, &g);
     const int control_frame = tetra_tdma_control_frame(ts);
     if (c && aach_maintains(control_frame, fields[0], fields[1], fields[2], c->usage_marker)) {
         tetra_sm_note_maintenance(state);
@@ -1891,7 +2073,7 @@ tetra_calls_on_aach(dsd_opts* opts, dsd_state* state, int read, uint16_t pdu) {
         return;
     }
     if (c) {
-        aach_receive_permission(state, ts, &g, fields[0], fields[1], c->usage_marker);
+        aach_receive_permission(state, ts, &g, fields[0], fields[1], c);
     }
 }
 

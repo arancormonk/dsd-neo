@@ -170,7 +170,11 @@ tetra_confirm_set_followed_rx(dsd_state* state, int on) {
         return;
     }
     if (!on) {
-        confirm_forget_rx(c);
+        /* A CC withdrawal ends the permission and its run of AACHs, not what the channel's AACHs said of the channel
+         * (N.208). */
+        c->rx_perm = 0;
+        c->rx_run = 0;
+        c->rx_adverse = 0;
         return;
     }
     const tetra_state_t* const ts = tetra_st_peek(state);

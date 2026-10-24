@@ -58,25 +58,35 @@ air_sig_reduced_here(const dsd_tetra_air_key* key, const tetra_state_t* ts, uint
            && key->cc == (uint8_t)(ts->colour & 0x3Fu);
 }
 
+/* A loaded key of the network being received. */
+static int
+air_sig_key_of_net(const dsd_tetra_air_key* key, const tetra_state_t* ts) {
+    return key->loaded && key->mcc == ts->mcc && key->mnc == ts->mnc;
+}
+
 /* The candidates for the network being received on carrier @p cn: its 80-bit key with the TEA it names, or with each
  * of TEA1..TEA3 when it names none (a SwMI may run several, EN 300 392-7 clause 6.3.1, so the network's evidence does
  * not narrow them), then a TEA1 reduced key of exactly this channel. */
 static int
 air_sig_candidates(const dsd_state* state, const tetra_state_t* ts, uint16_t cn, tetra_air_cand* out) {
     int n = 0;
+    /* 80-bit keys first, whatever their slots: a proof takes the first candidate that proves, and a reduced key of the
+     * same key stream holds no key for TA61 (tetra_air_sig_identity()). */
     for (int i = 0; i < DSD_TETRA_AIR_KEY_SLOTS && n < TETRA_AIR_CANDIDATES; i++) {
         const dsd_tetra_air_key* const key = &state->tetra_air_keys[i];
-        if (!key->loaded || key->mcc != ts->mcc || key->mnc != ts->mnc) {
+        if (!air_sig_key_of_net(key, ts) || key->kind != DSD_TETRA_AIR_KEY_CK) {
             continue;
         }
-        if (key->kind == DSD_TETRA_AIR_KEY_CK) {
-            const int named = key->alg >= 1U && key->alg <= 3U;
-            const uint8_t first = named ? (uint8_t)(key->alg - 1U) : 0U;
-            const uint8_t last = named ? first : 2U;
-            for (uint8_t ksg = first; ksg <= last && n < TETRA_AIR_CANDIDATES; ksg++) {
-                air_sig_candidate(key, ksg, &out[n++]);
-            }
-        } else if (air_sig_reduced_here(key, ts, cn)) {
+        const int named = key->alg >= 1U && key->alg <= 3U;
+        const uint8_t first = named ? (uint8_t)(key->alg - 1U) : 0U;
+        const uint8_t last = named ? first : 2U;
+        for (uint8_t ksg = first; ksg <= last && n < TETRA_AIR_CANDIDATES; ksg++) {
+            air_sig_candidate(key, ksg, &out[n++]);
+        }
+    }
+    for (int i = 0; i < DSD_TETRA_AIR_KEY_SLOTS && n < TETRA_AIR_CANDIDATES; i++) {
+        const dsd_tetra_air_key* const key = &state->tetra_air_keys[i];
+        if (air_sig_key_of_net(key, ts) && air_sig_reduced_here(key, ts, cn)) {
             air_sig_candidate(key, 0U, &out[n++]);
         }
     }
@@ -97,7 +107,8 @@ air_sig_fingerprint(const tetra_air_cand* c) {
     for (size_t i = 0; i < sizeof c->key; i++) {
         h = (h ^ c->key[i]) * 16777619U;
     }
-    return h;
+    /* 0 marks a candidate that decrypted nothing (air_sig_digests()). */
+    return h != 0U ? h : 1U;
 }
 
 /* XOR @p nbits of @p bits with key stream bits @p offset.. of initial value @p iv on carrier @p cn under @p c. */
@@ -183,7 +194,7 @@ air_sig_find_proof(const tetra_state_t* ts, const tetra_air_sig_header* h, uint1
         }
         for (int i = 0; i < TETRA_AIR_EVIDENCE_MAX; i++) {
             const tetra_air_evidence* const e = &ts->air_evidence[i];
-            if (!air_sig_same_header(e, h, ts, cn, nbits) || e->iv == iv || now_m - e->at_m > TETRA_AIR_EVIDENCE_S) {
+            if (!air_sig_same_header(e, h, ts, cn, nbits) || e->iv == iv || now_m - e->at_m > e->keep_s) {
                 continue;
             }
             for (int j = 0; j < (int)e->ncand; j++) {
@@ -200,14 +211,14 @@ air_sig_find_proof(const tetra_state_t* ts, const tetra_air_sig_header* h, uint1
  * expired or the oldest entry. */
 static void
 air_sig_keep(tetra_state_t* ts, const tetra_air_sig_header* h, uint16_t cn, int nbits, uint32_t iv,
-             const uint32_t* cand_id, const uint64_t* digest, int ncand, double now_m) {
+             const uint32_t* cand_id, const uint64_t* digest, int ncand, double now_m, double keep_s) {
     tetra_air_evidence* slot = NULL;
     tetra_air_evidence* oldest_same = NULL;
     tetra_air_evidence* oldest = NULL;
     int same = 0;
     for (int i = 0; i < TETRA_AIR_EVIDENCE_MAX; i++) {
         tetra_air_evidence* const e = &ts->air_evidence[i];
-        if (!e->used || now_m - e->at_m > TETRA_AIR_EVIDENCE_S || e->at_m > now_m) {
+        if (!e->used || now_m - e->at_m > e->keep_s || e->at_m > now_m) {
             if (!slot) {
                 slot = e;
             }
@@ -234,6 +245,7 @@ air_sig_keep(tetra_state_t* ts, const tetra_air_sig_header* h, uint16_t cn, int 
     DSD_MEMSET(slot, 0, sizeof(*slot));
     slot->used = 1;
     slot->at_m = now_m;
+    slot->keep_s = keep_s;
     slot->iv = iv;
     slot->kind = h->kind;
     slot->addr_type = h->addr_type;
@@ -274,65 +286,114 @@ tetra_air_sig_slot(const dsd_opts* opts, const dsd_state* state, int offset, tet
     return piece->iv != 0U;
 }
 
-/* The candidate an earlier copy proves for a TM-SDU long enough to count, which is then kept as evidence itself; -1 for
- * none. */
+/* The candidate an earlier copy proves for a TM-SDU long enough to count, which is then kept as evidence itself, for as
+ * much longer as it took to arrive; -1 for none. */
 static int
-air_sig_prove(tetra_state_t* ts, const tetra_air_sig_header* h, uint16_t cn, int nbits, uint32_t iv,
+air_sig_prove(tetra_state_t* ts, const tetra_air_sig_header* h, uint16_t cn, const tetra_air_sig_input* in,
               const uint32_t* cand_id, const uint64_t* digest, int ncand) {
-    if (nbits < TETRA_AIR_PROOF_MIN_BITS) {
+    if (in->nbits < TETRA_AIR_PROOF_MIN_BITS) {
         return -1;
     }
     const double now_m = dsd_decode_now_mono_s();
-    const int proved = air_sig_find_proof(ts, h, cn, nbits, iv, cand_id, digest, ncand, now_m);
-    air_sig_keep(ts, h, cn, nbits, iv, cand_id, digest, ncand, now_m);
+    double span_s = in->span_s > 0.0 ? in->span_s : 0.0;
+    span_s = span_s < TETRA_AIR_EVIDENCE_SPAN_S ? span_s : TETRA_AIR_EVIDENCE_SPAN_S;
+    const uint32_t iv = in->pieces[0].iv;
+    const int proved = air_sig_find_proof(ts, h, cn, in->nbits, iv, cand_id, digest, ncand, now_m);
+    air_sig_keep(ts, h, cn, in->nbits, iv, cand_id, digest, ncand, now_m, TETRA_AIR_EVIDENCE_S + span_s);
     return proved;
+}
+
+/* The digest of plaintext @p pt as evidence: a rebuilt TM-SDU's MAC-END allocation moved to its front, so two copies
+ * fragmented apart compare alike. -1 when the allocation does not read there. */
+static int
+air_sig_canonical_digest(const tetra_air_sig_input* in, const uint8_t* pt, uint64_t* digest) {
+    if (in->alloc_at < 0 || !in->alloc_bits) {
+        *digest = air_sig_digest(pt, in->nbits);
+        return 1;
+    }
+    const int n = in->alloc_bits(pt, in->nbits, in->alloc_at, in->alloc_ctx);
+    if (n < 0 || in->alloc_at + n > in->nbits) {
+        return 0;
+    }
+    uint8_t canonical[TETRA_MAC_FRAG_BITS];
+    DSD_MEMCPY(canonical, pt + in->alloc_at, (size_t)n);
+    DSD_MEMCPY(canonical + n, pt, (size_t)in->alloc_at);
+    DSD_MEMCPY(canonical + n + in->alloc_at, pt + in->alloc_at + n, (size_t)(in->nbits - in->alloc_at - n));
+    *digest = air_sig_digest(canonical, in->nbits);
+    DSD_SECURE_ZERO(canonical, (size_t)in->nbits);
+    return 1;
 }
 
 /* Decrypt under every candidate: each one's fingerprint and plaintext digest, the fingerprint 0 for one that could not
  * decrypt (it matches nothing). Returns 1 when one could. @p pt is scratch, zeroed after. */
 static int
-air_sig_digests(const tetra_state_t* ts, const tetra_air_cand* cand, int ncand, const uint8_t* ct, int nbits,
-                const tetra_mac_piece* pieces, int npieces, uint8_t* pt, uint32_t* cand_id, uint64_t* digest) {
+air_sig_digests(const tetra_state_t* ts, const tetra_air_cand* cand, int ncand, const tetra_air_sig_input* in,
+                uint8_t* pt, uint32_t* cand_id, uint64_t* digest) {
     int decrypted = 0;
     for (int k = 0; k < ncand; k++) {
         cand_id[k] = 0U;
-        if (air_sig_decrypt(ts, &cand[k], ct, nbits, pieces, npieces, pt)) {
+        if (air_sig_decrypt(ts, &cand[k], in->ct, in->nbits, in->pieces, in->npieces, pt)
+            && air_sig_canonical_digest(in, pt, &digest[k])) {
             cand_id[k] = air_sig_fingerprint(&cand[k]);
-            digest[k] = air_sig_digest(pt, nbits);
             decrypted = 1;
         }
     }
-    DSD_SECURE_ZERO(pt, (size_t)nbits);
+    DSD_SECURE_ZERO(pt, (size_t)in->nbits);
     return decrypted;
 }
 
+static int
+air_sig_input_ok(const tetra_air_sig_input* in) {
+    return in && in->ct && in->pieces && in->npieces >= 1 && in->nbits >= 1 && in->nbits <= TETRA_MAC_FRAG_BITS;
+}
+
+static void
+air_sig_epoch_moves(tetra_state_t* ts, const char* why) {
+    ts->air_epoch++;
+    TETRA_LOG_VERBOSE(ts, 1, "[TETRA AIR] the cell's key may have changed (%s); calls decrypt again once proved\n",
+                      why);
+}
+
+/* The cell signals under key version parity @p parity: another than the settled one moves the cell key epoch. */
+static void
+air_sig_settle_parity(tetra_state_t* ts, uint8_t parity) {
+    if (ts->air_parity_known && ts->air_parity != parity) {
+        air_sig_epoch_moves(ts, "the encryption mode's key version parity changed");
+    }
+    ts->air_parity = parity;
+    ts->air_parity_known = 1;
+    ts->air_parity_next = parity;
+    ts->air_parity_run = AIR_SIG_PARITY_RUN;
+}
+
+/* A proved TM-SDU settles the parity it was sent under at once, ahead of the run of headers: its key is that version's,
+ * and the epoch it is stamped with is the one the headers still to come leave in place. */
 int
-tetra_air_sig_open(dsd_state* state, const tetra_air_sig_header* h, const uint8_t* ct, int nbits,
-                   const tetra_mac_piece* pieces, int npieces, uint8_t* pt, tetra_air_cand* used) {
+tetra_air_sig_open(dsd_state* state, const tetra_air_sig_header* h, const tetra_air_sig_input* in, uint8_t* pt,
+                   tetra_air_cand* used) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    const int args_ok = h && ct && pieces && pt && used && npieces >= 1;
-    if (!ts || !args_ok || nbits < 1 || nbits > TETRA_MAC_TM_SDU_MAX_BITS) {
+    if (!ts || !h || !pt || !used || !air_sig_input_ok(in)) {
         return 0;
     }
-    const uint16_t cn = pieces[0].carrier;
+    const uint16_t cn = in->pieces[0].carrier;
     tetra_air_cand cand[TETRA_AIR_CANDIDATES];
     const int ncand = air_sig_candidates(state, ts, cn, cand);
     uint32_t cand_id[TETRA_AIR_CANDIDATES] = {0};
     uint64_t digest[TETRA_AIR_CANDIDATES] = {0};
-    const int decrypted =
-        ncand > 0 && air_sig_digests(ts, cand, ncand, ct, nbits, pieces, npieces, pt, cand_id, digest);
-    const int proved = decrypted ? air_sig_prove(ts, h, cn, nbits, pieces[0].iv, cand_id, digest, ncand) : -1;
-    if (proved < 0 || !air_sig_decrypt(ts, &cand[proved], ct, nbits, pieces, npieces, pt)) {
+    const int decrypted = ncand > 0 && air_sig_digests(ts, cand, ncand, in, pt, cand_id, digest);
+    const int proved = decrypted ? air_sig_prove(ts, h, cn, in, cand_id, digest, ncand) : -1;
+    if (proved < 0 || !air_sig_decrypt(ts, &cand[proved], in->ct, in->nbits, in->pieces, in->npieces, pt)) {
         DSD_SECURE_ZERO(cand, sizeof cand);
         return 0;
     }
     *used = cand[proved];
+    air_sig_settle_parity(ts, (uint8_t)(h->enc_mode & 1u));
     used->epoch = ts->air_epoch;
     used->parity = (uint8_t)(h->enc_mode & 1u);
     DSD_SECURE_ZERO(cand, sizeof cand);
     /* A plaintext only its own key stream gives again names the network's algorithm. */
     (void)tetra_air_ksg_remember(state, used->mcc, used->mnc, used->ksg);
-    TETRA_LOG_VERBOSE(ts, 2, "[TETRA AIR] %d-bit TM-SDU proved by a repeat under %s%s\n", nbits,
+    TETRA_LOG_VERBOSE(ts, 2, "[TETRA AIR] %d-bit TM-SDU proved by a repeat under %s%s\n", in->nbits,
                       air_sig_tea_name(used->ksg),
                       used->kind == DSD_TETRA_AIR_KEY_TEA1_REDUCED ? " (reduced key)" : "");
     return 1;
@@ -354,13 +415,6 @@ tetra_air_sig_identity(const tetra_air_cand* used, tetra_mac_address* addr) {
 
 /* ---- The cell's key ---------------------------------------------------------------------------------------------- */
 
-static void
-air_sig_epoch_moves(tetra_state_t* ts, const char* why) {
-    ts->air_epoch++;
-    TETRA_LOG_VERBOSE(ts, 1, "[TETRA AIR] the cell's key may have changed (%s); calls decrypt again once proved\n",
-                      why);
-}
-
 void
 tetra_air_sig_note_parity(dsd_state* state, uint8_t enc_mode) {
     tetra_state_t* const ts = tetra_st_existing(state);
@@ -374,14 +428,9 @@ tetra_air_sig_note_parity(dsd_state* state, uint8_t enc_mode) {
     } else if (ts->air_parity_run < UINT8_MAX) {
         ts->air_parity_run++;
     }
-    if (ts->air_parity_run < AIR_SIG_PARITY_RUN) {
-        return;
+    if (ts->air_parity_run >= AIR_SIG_PARITY_RUN) {
+        air_sig_settle_parity(ts, parity);
     }
-    if (ts->air_parity_known && ts->air_parity != parity) {
-        air_sig_epoch_moves(ts, "the encryption mode's key version parity changed");
-    }
-    ts->air_parity = parity;
-    ts->air_parity_known = 1;
 }
 
 void

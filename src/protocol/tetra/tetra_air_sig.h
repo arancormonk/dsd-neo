@@ -34,10 +34,13 @@ extern "C" {
 #endif
 
 /** Seconds an encrypted TM-SDU is kept for a repeat to prove: allocations repeat within a frame and late-entry
- * D-SETUPs within three in the networks seen; 18 frames leave room. */
-#define TETRA_AIR_EVIDENCE_S     1.0
+ * D-SETUPs within three in the networks seen; 18 frames leave room. A fragmented TM-SDU is kept as much longer as it
+ * took to arrive (tetra_air_sig_input::span_s), so a repeat as long has time to arrive too. */
+#define TETRA_AIR_EVIDENCE_S      1.0
+/** The most a fragmented TM-SDU's arrival lengthens its keeping: TETRA_MAC_FRAG_PIECES fragments, one a frame. */
+#define TETRA_AIR_EVIDENCE_SPAN_S 8.0
 /** Encrypted bits a TM-SDU needs before a repeat of it proves anything. */
-#define TETRA_AIR_PROOF_MIN_BITS 48
+#define TETRA_AIR_PROOF_MIN_BITS  48
 
 /* tetra_air_sig_header::kind */
 enum {
@@ -57,22 +60,37 @@ typedef struct {
     uint8_t um;    /**< usage marker as sent */
 } tetra_air_sig_header;
 
+/** An encrypted TM-SDU to open: @p nbits ciphertext bits made of @p npieces pieces, each under its own slot's key
+ * stream. A rebuilt TM-SDU whose MAC-END carried a channel allocation has it at bit @p alloc_at of its plaintext
+ * (-1: none); @p alloc_bits gives its length there (-1 when it does not read), so the allocation is compared in one
+ * place however the TM-SDU was fragmented. */
+typedef struct {
+    const uint8_t* ct;
+    const tetra_mac_piece* pieces;
+    int (*alloc_bits)(const uint8_t* pt, int nbits, int at, const void* ctx);
+    const void* alloc_ctx;
+    int nbits;
+    int npieces;
+    int alloc_at;
+    double span_s; /**< seconds from its first piece to its last (0 for one piece) */
+} tetra_air_sig_input;
+
 /** The slot the block being decoded came in as an encrypted piece: its initial value, the carrier being received and
  * the key stream bit @p offset its PDUs start at. 0 when it cannot be decrypted: no TDMA clock or hyperframe, direct
  * mode or the uplink, no carrier number, or no key for the network at all. */
 int tetra_air_sig_slot(const dsd_opts* opts, const dsd_state* state, int offset, tetra_mac_piece* piece);
 
 /**
- * @brief Decrypt the encrypted TM-SDU @p ct (@p nbits ciphertext bits made of @p npieces pieces, each under its own
- * slot's key stream) and decide whether its plaintext is acted on.
+ * @brief Decrypt the encrypted TM-SDU @p in and decide whether its plaintext is acted on.
  *
  * Every candidate key of the network decrypts it, and the digest of each plaintext is kept as evidence. When an earlier
  * TM-SDU with header @p h and the same length, taken in another slot, decrypted to the same plaintext under a
- * candidate, that candidate proved it: its plaintext goes to @p pt (@p nbits bits), the candidate to @p used, its TEA
- * to the network's KSG evidence, and 1 is returned. 0 otherwise: the TM-SDU stays ciphertext.
+ * candidate, that candidate proved it: its plaintext goes to @p pt (@p in->nbits bits, at most TETRA_MAC_FRAG_BITS),
+ * the candidate to @p used, its TEA to the network's KSG evidence, and 1 is returned. 0 otherwise: the TM-SDU stays
+ * ciphertext.
  */
-int tetra_air_sig_open(dsd_state* state, const tetra_air_sig_header* h, const uint8_t* ct, int nbits,
-                       const tetra_mac_piece* pieces, int npieces, uint8_t* pt, tetra_air_cand* used);
+int tetra_air_sig_open(dsd_state* state, const tetra_air_sig_header* h, const tetra_air_sig_input* in, uint8_t* pt,
+                       tetra_air_cand* used);
 
 /** The SSI of @p addr when it is an encrypted short identity and @p used is an 80-bit key: TA61 decrypts it under
  * that key (EN 300 392-7 clause 4.2.6), which is the SCK or CCK the operator loaded. A reduced key holds no 80-bit
@@ -80,7 +98,8 @@ int tetra_air_sig_open(dsd_state* state, const tetra_air_sig_header* h, const ui
 int tetra_air_sig_identity(const tetra_air_cand* used, tetra_mac_address* addr);
 
 /** The encryption mode of an encrypted downlink MAC header: its low bit is the cell's key version parity (EN 300
- * 392-7 clause 6.5.1), which a run of headers settles; a settled parity switching moves the cell key epoch. */
+ * 392-7 clause 6.5.1), which a run of headers, or a TM-SDU proved under it (tetra_air_sig_open()), settles; a settled
+ * parity switching moves the cell key epoch. */
 void tetra_air_sig_note_parity(dsd_state* state, uint8_t enc_mode);
 
 /** A SYSINFO: the SCK-VN or CCK-id of one with the CCK flag set (@p cck_flag, @p value; EN 300 392-7 clause

@@ -25,6 +25,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -354,7 +355,9 @@ discard_fragment(tetra_mac_fragment* f) {
 
 static int
 fragment_append(tetra_mac_fragment* f, const uint8_t* bits, int nbits) {
-    if (nbits < 0 || nbits > (int)sizeof f->bits - (int)f->nbits) {
+    /* A clear TM-SDU is at most N.202; an encrypted one keeps its MAC-END's allocation too until it is decrypted. */
+    const int cap = f->enc_mode == TETRA_ENC_MODE_NONE ? TETRA_MAC_TM_SDU_MAX_BITS : (int)sizeof f->bits;
+    if (nbits < 0 || nbits > cap - (int)f->nbits) {
         return 0;
     }
     if (nbits > 0) {
@@ -384,6 +387,7 @@ start_fragment(mac_block* b, const tetra_mac_address* addr, uint8_t enc_mode, co
     }
     discard_fragment(f);
     f->active = 1;
+    f->start_m = dsd_decode_now_mono_s();
     f->enc_mode = (uint8_t)(enc_mode & 3u);
     f->cc = (int8_t)b->cc;
     f->addr = *addr;
@@ -596,8 +600,9 @@ resource_decrypt(mac_block* b, const uint8_t* bits, const tetra_mac_resource* h,
     piece.start = 0;
     piece.nbits = (uint16_t)(end - h->body);
     const tetra_air_sig_header sh = cipher_header(&h->addr, TETRA_AIR_SIG_RESOURCE, h->enc_mode, h->alloc_present);
+    const tetra_air_sig_input in = {bits + h->body, &piece, NULL, NULL, (int)piece.nbits, 1, -1, 0.0};
     uint8_t pt[MAC_FULL_SLOT_BITS];
-    if (!tetra_air_sig_open(b->state, &sh, bits + h->body, (int)piece.nbits, &piece, 1, pt, used)) {
+    if (!tetra_air_sig_open(b->state, &sh, &in, pt, used)) {
         return 0;
     }
     DSD_MEMCPY(clear, bits, (size_t)h->pdu_bits);
@@ -653,7 +658,9 @@ resource_parse(mac_block* b, const uint8_t* bits, int nbits, tetra_mac_resource*
     if (h->alloc_present) {
         print_allocation(b, &ctx.alloc);
     }
-    publish_resource_header(b, h);
+    /* A decrypted allocation is no unread ciphertext: the call it attaches to takes its encryption and key from it
+     * (call_attach()), before anything judges the call by them. */
+    publish_address(b, &h->addr, h->enc_mode, used ? 0u : h->alloc_present);
     deliver_tm_sdu(b, bits + r.pos, end - r.pos, &ctx);
     DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
     return h->pdu_bits;
@@ -733,7 +740,7 @@ complete_fragment(mac_block* b, const tetra_chan_alloc* alloc, uint8_t enc_mode,
         ctx.alloc = *alloc;
         print_allocation(b, alloc);
     }
-    publish_address(b, &f->addr, enc_mode, alloc != NULL);
+    publish_address(b, &f->addr, enc_mode, alloc != NULL && !used);
     if (used) {
         char note[40] = "";
         char addr[96];
@@ -749,6 +756,15 @@ complete_fragment(mac_block* b, const tetra_chan_alloc* alloc, uint8_t enc_mode,
     discard_fragment(f);
 }
 
+/* The length of the channel allocation element at bit @p at of @p pt (its cell's band and offset from @p ctx, a
+ * tetra_state_t), or -1 when it does not read (tetra_air_sig_input::alloc_bits). */
+static int
+allocation_bits(const uint8_t* pt, int nbits, int at, const void* ctx) {
+    tetra_bit_reader r = tetra_bits_reader(pt, nbits, at);
+    tetra_chan_alloc alloc;
+    return read_allocation(&r, (const tetra_state_t*)ctx, &alloc) ? r.pos - at : -1;
+}
+
 /* An encrypted TM-SDU at its MAC-END, all its pieces kept: when a key decrypts it and a repeat proved the plaintext, it
  * is delivered like a clear one. The MAC-END's piece decrypts to its channel allocation, if any, then the last
  * fragment (EN 300 392-7 clause 6.7.1.2). Returns 1 when it was. */
@@ -760,9 +776,17 @@ fragment_open(mac_block* b, uint32_t alloc_present) {
     }
     const int end_start = f->piece[f->npieces - 1u].start;
     const tetra_air_sig_header sh = cipher_header(&f->addr, TETRA_AIR_SIG_FRAGMENTED, f->enc_mode, alloc_present);
-    uint8_t pt[TETRA_MAC_TM_SDU_MAX_BITS];
+    const tetra_air_sig_input in = {f->bits,
+                                    f->piece,
+                                    allocation_bits,
+                                    b->ts,
+                                    f->nbits,
+                                    f->npieces,
+                                    alloc_present != 0u ? end_start : -1,
+                                    dsd_decode_now_mono_s() - f->start_m};
+    uint8_t pt[TETRA_MAC_FRAG_BITS];
     tetra_air_cand used;
-    if (!tetra_air_sig_open(b->state, &sh, f->bits, f->nbits, f->piece, f->npieces, pt, &used)) {
+    if (!tetra_air_sig_open(b->state, &sh, &in, pt, &used)) {
         return 0;
     }
     int total = f->nbits;
@@ -782,6 +806,13 @@ fragment_open(mac_block* b, uint32_t alloc_present) {
             pt[end_start + (i - r.pos)] = pt[i];
         }
         total -= r.pos - end_start;
+    }
+    if (total > TETRA_MAC_TM_SDU_MAX_BITS) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  rebuilt TM-SDU longer than N.202; dropped\n", b->cc);
+        DSD_SECURE_ZERO(pt, sizeof pt);
+        DSD_SECURE_ZERO(&used, sizeof used);
+        discard_fragment(f);
+        return 1;
     }
     DSD_MEMCPY(f->bits, pt, (size_t)total);
     f->nbits = (uint16_t)total;
@@ -1141,7 +1172,8 @@ d_blck_decrypt(mac_block* b, const uint8_t* ct, int n, uint8_t enc_mode, uint8_t
     piece.start = 0;
     piece.nbits = (uint16_t)n;
     const tetra_air_sig_header sh = cipher_header(&ctx->addr, TETRA_AIR_SIG_D_BLCK, enc_mode, 0u);
-    return tetra_air_sig_open(b->state, &sh, ct, n, &piece, 1, pt, &ctx->air_key);
+    const tetra_air_sig_input in = {ct, &piece, NULL, NULL, n, 1, -1, 0.0};
+    return tetra_air_sig_open(b->state, &sh, &in, pt, &ctx->air_key);
 }
 
 /* MAC PDU type 11: MAC-U-SIGNAL on STCH (table 21.80), MAC-D-BLCK on a full slot (table 21.61). */
@@ -1183,6 +1215,8 @@ parse_supplementary(mac_block* b, const uint8_t* bits, int nbits) {
     }
     DSD_FPRINTF(stderr, "[TETRA MAC-D-BLCK] CC=%d  enc=%s  event_label=%u  sdu_bits=%d%s\n", b->cc,
                 tetra_enc_mode_name((uint8_t)enc_mode), (unsigned)event_label, end - r.pos, note);
+    /* The event label is clear whether or not the TM-SDU can be read (EN 300 392-7 clause 6.7.1.2). */
+    tetra_calls_on_label_pdu(b->opts, b->state, (uint16_t)event_label);
     if (decrypted) {
         llc_deliver(b, pt, end - r.pos, &ctx);
         DSD_SECURE_ZERO(pt, sizeof pt);

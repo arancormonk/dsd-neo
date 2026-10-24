@@ -178,6 +178,8 @@ typedef struct {
     uint8_t timeout;        /**< call time-out (table 14.50) */
     uint8_t usage_marker;   /**< downlink traffic usage marker assigned with @c alloc (TETRA_CALL_F_USAGE_MARKER) */
     tetra_air_cand air_key; /**< the key whose decrypted signalling gave @c alloc, when it was ciphertext */
+    uint8_t usage_marker_before; /**< 1 + the usage marker the last allocation ended, 0 for none: one it assigns again
+                                      is no new marker (tetra_calls.c) */
 } tetra_call_t;
 
 /* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the
@@ -257,11 +259,15 @@ typedef struct {
 
 /* N.202, the largest TM-SDU (EN 300 392-2 annex B.2). */
 #define TETRA_MAC_TM_SDU_MAX_BITS 2632
+/* What an encrypted fragmented TM-SDU keeps until its MAC-END: the TM-SDU and the channel allocation element in the
+ * MAC-END's ciphertext (EN 300 392-7 clause 6.7.1.2), which table 21.87 keeps under 128 bits. */
+#define TETRA_MAC_FRAG_BITS       (TETRA_MAC_TM_SDU_MAX_BITS + 128)
 
 /** Reconstruction of one fragmented downlink TM-SDU (EN 300 392-2 clause 23.4.3.1.1). */
 /* Ciphertext pieces an encrypted fragmented TM-SDU keeps until its MAC-END: one per fragment, each under the key
- * stream segment of its own slot (EN 300 392-7 clause 6.4.2.2). The smallest fragment fills what an SCH/HD leaves. */
-#define TETRA_MAC_FRAG_PIECES     32
+ * stream segment of its own slot (EN 300 392-7 clause 6.4.2.2). Associated PDUs ahead of a MAC-FRAG leave it less than
+ * its block, so this allows fragments averaging 21 bits of an N.202 TM-SDU; a TM-SDU cut finer stays ciphertext. */
+#define TETRA_MAC_FRAG_PIECES     128
 
 /** One encrypted piece of a fragmented TM-SDU: @c nbits ciphertext bits at @c start of the fragment buffer, sent in
  * the slot of initial value @c iv on carrier @c carrier from key stream bit @c offset. */
@@ -276,15 +282,16 @@ typedef struct {
 typedef struct {
     uint8_t active;      /* a MAC-RESOURCE with length indication 111111 started a TM-SDU */
     uint8_t enc_mode;    /* its encryption mode (TETRA_ENC_MODE_*): not 00, every fragment is ciphertext */
-    uint8_t npieces;     /* encrypted: the pieces of bits[] so far */
+    uint16_t npieces;    /* encrypted: the pieces of bits[] so far */
     uint8_t cipher_lost; /* encrypted: a piece could not be kept, so the TM-SDU cannot be decrypted */
     tetra_mac_piece piece[TETRA_MAC_FRAG_PIECES];
     uint8_t idle_half_slots; /* half slots of this timeslot since the last fragment, for the N.203 limit */
     uint32_t slot_start;     /* tdma_slot_start of the last block of this timeslot: the slots the clock counted since */
+    double start_m;          /* decode clock at the first fragment: how long the TM-SDU took to arrive */
     int8_t cc;               /* colour code of the block that started the TM-SDU */
     tetra_mac_address addr;  /* address of the starting MAC-RESOURCE; MAC-FRAG and MAC-END carry none */
     uint16_t nbits;          /* TM-SDU bits rebuilt so far */
-    uint8_t bits[TETRA_MAC_TM_SDU_MAX_BITS]; /* one bit per byte */
+    uint8_t bits[TETRA_MAC_FRAG_BITS]; /* one bit per byte: the TM-SDU, encrypted with its MAC-END's allocation */
 } tetra_mac_fragment;
 
 /** The security information a cell broadcasts in its SYSINFO extended services broadcast (EN 300 392-7 table A.104,
@@ -312,6 +319,7 @@ typedef struct {
  * candidate's plaintext (tetra_air_sig.c). */
 typedef struct {
     double at_m;                            /* decode clock when it was taken */
+    double keep_s;                          /* how long it is kept: TETRA_AIR_EVIDENCE_S and its arrival time */
     uint64_t digest[TETRA_AIR_CANDIDATES];  /* plaintext digest under candidate cand_id[i] */
     uint32_t cand_id[TETRA_AIR_CANDIDATES]; /* fingerprint of each candidate it was decrypted under */
     uint32_t iv;                            /* initial value of its (first) slot */

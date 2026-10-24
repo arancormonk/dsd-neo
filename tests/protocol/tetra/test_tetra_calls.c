@@ -3477,8 +3477,8 @@ test_maintenance_keeps_a_silent_channel(void) {
 }
 
 /* B3 (clause 23.5.5): a usage marker assignment applies with the channel allocation of its own PDU, to the directions
- * that allocation assigns. One without an allocation binds nothing; an allocation of the uplink alone keeps the
- * downlink marker; one of the downlink without a marker ends it, and one with a marker replaces it. */
+ * that allocation assigns. One without an allocation binds nothing; an allocation of the uplink alone of the call's
+ * channel keeps the downlink marker; one of the downlink without a marker ends it, and one with a marker replaces it. */
 static void
 test_usage_marker_follows_its_allocation(void) {
     session s = session_open();
@@ -3538,6 +3538,399 @@ test_receive_permission_boundaries(void) {
     assert(followed_call(s.state) == 0x0A && tetra_st(s.state)->sm.followed.carrier == 120U);
     assert(tetra_confirm_followed_rx(s.state) && !tetra_calls_followed_rx(s.state));
     assert(!followed_speech_plays(&s, 2, 1000.5));
+    session_close(&s);
+}
+
+/* Review fixes: an allocation of the uplink alone leaves the followed call's downlink channel and its receive
+ * permission; an AACH of frame 18 that could not be read breaks no N.213 run (frame 18 is no slot of the channel);
+ * T.212 ends the permission at 18 frames exactly; and a PDU to all (the broadcast SSI) maintains no channel, even when
+ * the followed call is the broadcast group's. */
+static void
+test_receive_permission_edges(void) {
+    const unsigned um = TEST_USAGE_MARKER;
+    session s = followed_on_another_carrier();
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+    }
+    assert(tetra_calls_followed_rx(s.state));
+    ttb_block b = {0};
+    int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0x100u);
+    ttb_resource_flags(&b, 1);
+    ttb_allocation(&b, 4, 2, 120); /* the uplink of the same channel, alone */
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    assert(c->alloc.up_down == 1u && tetra_calls_followed_rx(s.state));
+    assert(followed_speech_plays(&s, 2, 1000.2));
+    session_close(&s);
+
+    s = followed_on_another_carrier();
+    aach_burst(&s, 2, 16, 1, 1, 3, um, um);
+    aach_burst(&s, 2, 17, 1, 1, 3, um, um);
+    aach_burst(&s, 2, 18, 1, 0, 0, 0, 0); /* frame 18, unread */
+    aach_burst(&s, 2, 1, 2, 1, 3, um, um);
+    assert(tetra_confirm_followed_rx(s.state));
+    aach_burst(&s, 2, 1, 3, 0, 0, 0, 0); /* 18 frames (72 slots) after the last qualifying one */
+    assert(!tetra_confirm_followed_rx(s.state));
+    session_close(&s);
+
+    s = session_open();
+    tetra_confirm_burst_begin(s.state);
+    send_setup(&s, 0xFFFFFFu, 0x0B, TTB_SPEECH_GROUP, 4, 120); /* a call to all, followed onto carrier 120 */
+    (void)tetra_confirm_burst_end(s.state);
+    assert(followed_call(s.state) == 0x0B);
+    at_seconds(1002.0);
+    tetra_st(s.state)->tdma_valid = 1;
+    tetra_st(s.state)->tn = 2;
+    DSD_MEMSET(&b, 0, sizeof b);
+    start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, 0xFFFFFFu);
+    ttb_resource_flags(&b, 0);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s.opts, s.state);
+    send_tx_granted(&s, 0xFFFFFFu, 0x0B, 0x4444u);
+    assert(tetra_st(s.state)->sm.t_maint_m < 1002.0);
+    session_close(&s);
+}
+
+/* A MAC-RESOURCE to the call's group 0x100 with an allocation of type @p type (table 21.87) of @p slots, direction
+ * @p up_down, on @p carrier, assigning usage marker @p um (-1: none), and CMCE PDU @p cmce (NULL: header only, with
+ * no block before it that proved the carrier). */
+static void
+send_allocation_as(session* s, uint32_t type, uint32_t slots, uint32_t up_down, int um, uint32_t carrier,
+                   const ttb_block* cmce) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, um >= 0 ? TETRA_MAC_ADDR_SSI_USAGE : TETRA_MAC_ADDR_SSI, 0x100u);
+    if (um >= 0) {
+        ttb_put(&b, (uint32_t)um, 6);
+    }
+    ttb_resource_flags(&b, 1);
+    const int at = b.n;
+    ttb_allocation(&b, slots, up_down, carrier);
+    ttb_set(&b, at, type, 2);
+    if (cmce) {
+        ttb_put(&b, 2, 4); /* BL-UDATA */
+        ttb_put_bits(&b, cmce->bits, cmce->n);
+        tetra_confirm_note_signalling(s->state); /* after a block that proved the carrier, as send_block() */
+    }
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* send_allocation_as() of a "Replace" on carrier 120. */
+static void
+send_allocation(session* s, uint32_t slots, uint32_t up_down, int um) {
+    send_allocation_as(s, 0, slots, up_down, um, 120, NULL);
+}
+
+/* More edges: an uplink-only reassignment of a channel allocated both ways leaves its downlink alone, so N.208 no longer
+ * reads the uplink marker; a CC withdrawal keeps the channel-loss count; another usage marker starts the N.213 count
+ * over; AACHs of a timeslot the call holds no more count for nothing; and a withdrawal during a tune in flight is what
+ * the tune puts back if it fails. */
+static void
+test_receive_permission_more_edges(void) {
+    const unsigned um = TEST_USAGE_MARKER;
+    session s = followed_on_another_carrier();
+    tetra_calls_find(s.state, 0x0A)->alloc.up_down = 3;
+    send_allocation(&s, 4, 2, 7); /* the uplink to another user */
+    assert(tetra_calls_peek(s.state, 0x0A)->alloc.up_down == 1u);
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 2, fn, 1, 1, 3, um, 7);
+    }
+    assert(followed_call(s.state) == 0x0A && g_returns == 0);
+    session_close(&s);
+
+    s = followed_on_another_carrier();
+    aach_burst(&s, 2, 1, 1, 1, 0, 0, 0);
+    aach_burst(&s, 2, 2, 1, 1, 0, 0, 0);
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_TX_WAIT, 0x0A, 1);
+    aach_burst(&s, 2, 3, 1, 1, 0, 0, 0);
+    assert(followed_call(s.state) != 0x0A && g_returns == 1);
+    session_close(&s);
+
+    s = followed_on_another_carrier();
+    aach_burst(&s, 2, 1, 1, 1, 3, um, um);
+    aach_burst(&s, 2, 2, 1, 1, 3, um, um);
+    send_allocation(&s, 4, 1, 7); /* the same channel, a new marker */
+    aach_burst(&s, 2, 3, 1, 1, 3, 7, 7);
+    assert(!tetra_confirm_followed_rx(s.state));
+    aach_burst(&s, 2, 4, 1, 1, 3, 7, 7);
+    aach_burst(&s, 2, 5, 1, 1, 3, 7, 7);
+    assert(tetra_confirm_followed_rx(s.state));
+    session_close(&s);
+
+    s = session_open();
+    tetra_confirm_burst_begin(s.state);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 6, 120); /* TN2 and TN3 */
+    (void)tetra_confirm_burst_end(s.state);
+    send_allocation(&s, 4, 1, (int)um); /* narrowed to TN2 */
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 3, fn, 1, 1, 0, 0, 0); /* TN3 back to common control */
+    }
+    assert(followed_call(s.state) == 0x0A && g_returns == 0);
+    session_close(&s);
+
+    s = followed_on_another_carrier();
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+    }
+    assert(tetra_confirm_followed_rx(s.state));
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 121); /* its own reallocation, the tune in flight */
+    const uint64_t request = tetra_st(s.state)->sm.pending_request_id;
+    assert(request != 0U);
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_TX_WAIT, 0x0A, 1);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(followed_call(s.state) == 0x0A && tetra_st(s.state)->sm.followed.carrier == 120U);
+    assert(!tetra_confirm_followed_rx(s.state));
+    session_close(&s);
+}
+
+/* Round three: an allocation repeating the channel and its marker keeps the N.213 count; an unread AACH of a timeslot
+ * the call no longer holds breaks no run; and a PDU on the followed channel once the call's record moved off it
+ * maintains nothing. */
+static void
+test_receive_permission_record_moves(void) {
+    const unsigned um = TEST_USAGE_MARKER;
+    session s = followed_on_another_carrier();
+    aach_burst(&s, 2, 1, 1, 1, 3, um, um);
+    aach_burst(&s, 2, 2, 1, 1, 3, um, um);
+    send_allocation(&s, 4, 1, (int)um);
+    aach_burst(&s, 2, 3, 1, 1, 3, um, um);
+    assert(tetra_confirm_followed_rx(s.state));
+    session_close(&s);
+
+    s = session_open();
+    tetra_confirm_burst_begin(s.state);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 6, 120);
+    (void)tetra_confirm_burst_end(s.state);
+    send_allocation(&s, 4, 1, (int)um);
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+        aach_burst(&s, 3, fn, 1, 0, 0, 0, 0);
+    }
+    assert(tetra_confirm_followed_rx(s.state));
+    session_close(&s);
+
+    s = followed_on_another_carrier();
+    send_allocation(&s, 2, 1, (int)um); /* the record moves to TN3; the receiver stays on TN2 */
+    at_seconds(1003.0);
+    tetra_st(s.state)->tdma_valid = 1;
+    tetra_st(s.state)->tn = 2;
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    assert(tetra_st(s.state)->sm.t_maint_m < 1003.0);
+    session_close(&s);
+}
+
+/* A MAC-D-BLCK addressed by event label @p label on timeslot @p tn of the followed carrier, of encryption mode @p enc:
+ * its TM-SDU an LLC PDU no call reads (type 1000, advanced link), or as much ciphertext, which no key opens. */
+static void
+send_d_blck(session* s, uint32_t label, uint8_t tn, uint32_t enc) {
+    ttb_block b = {0};
+    ttb_put(&b, 3, 2); /* supplementary MAC PDU */
+    ttb_put(&b, 0, 1); /* MAC-D-BLCK */
+    ttb_put(&b, 1, 1); /* fill bit indication */
+    ttb_put(&b, enc, 2);
+    ttb_put(&b, label, 10);
+    ttb_put(&b, 0, 2); /* napping permission, no slot granting */
+    ttb_put(&b, 8, 4); /* LLC PDU type 1000 */
+    ttb_put(&b, 0, 20);
+    ttb_put(&b, 0, 20);
+    ttb_put(&b, 1, 1);
+    while (b.n < TTB_SCH_F_BITS) {
+        ttb_put(&b, 0, 1);
+    }
+    tetra_st(s->state)->tdma_valid = 1;
+    tetra_st(s->state)->tn = tn;
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* Round four: N.208 ends the follow but leaves an allocation that moved the call elsewhere since (on another carrier, or
+ * the same carrier number in another band); an AACH of a timeslot the record no longer holds counts for nothing even
+ * once the record's usage marker is gone (and counts again once the record is in another band); a MAC-D-BLCK to the call's event label maintains its channel as an addressed
+ * MAC-RESOURCE does; and maintenance compares the frequency of the record's allocation too. */
+static void
+test_receive_permission_round_four(void) {
+    for (int band = 0; band < 2; band++) {
+        session s = followed_on_another_carrier();
+        tetra_sm_grant g;
+        assert(tetra_sm_followed(s.state, &g) && g.freq_hz != 0L);
+        tetra_call_t* const c = tetra_calls_find(s.state, 0x0A);
+        if (band) {
+            c->alloc.freq_hz = g.freq_hz + 100000000L;
+        } else {
+            c->alloc.carrier = 121;
+        }
+        for (uint8_t fn = 1; fn <= 3; fn++) {
+            aach_burst(&s, 2, fn, 1, 1, 0, 0, 0);
+        }
+        assert(followed_call(s.state) != 0x0A && g_returns == 1);
+        assert(c->alloc.timeslots == 4u && c->alloc.carrier == (band ? 120u : 121u));
+        session_close(&s);
+    }
+
+    session s = session_open();
+    tetra_confirm_burst_begin(s.state);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 6, 120); /* TN2 and TN3 */
+    (void)tetra_confirm_burst_end(s.state);
+    send_allocation(&s, 4, 1, -1); /* narrowed to TN2, no usage marker */
+    assert((tetra_calls_peek(s.state, 0x0A)->flags & TETRA_CALL_F_USAGE_MARKER) == 0u);
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 3, fn, 1, 1, 0, 0, 0); /* TN3 back to common control */
+    }
+    assert(followed_call(s.state) == 0x0A && g_returns == 0 && tetra_calls_peek(s.state, 0x0A)->alloc.timeslots == 4u);
+    session_close(&s);
+    /* The same narrowing in another band moved the call off the followed channel: its timeslots are no longer the
+     * record's to filter, and N.208 reads them. */
+    s = session_open();
+    tetra_confirm_burst_begin(s.state);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 6, 120);
+    (void)tetra_confirm_burst_end(s.state);
+    tetra_call_t* const moved = tetra_calls_find(s.state, 0x0A);
+    moved->alloc.timeslots = 4u;
+    moved->alloc.freq_hz += 100000000L;
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 3, fn, 1, 1, 0, 0, 0);
+    }
+    assert(followed_call(s.state) != 0x0A && g_returns == 1);
+    session_close(&s);
+
+    s = followed_on_another_carrier();
+    tetra_st(s.state)->tdma_valid = 1;
+    tetra_st(s.state)->tn = 2;
+    send_event_label(&s, 0x100u, 0x55u, 0, 0);
+    assert((tetra_calls_peek(s.state, 0x0A)->flags & TETRA_CALL_F_EVENT_LABEL) != 0u);
+    at_seconds(1004.0);
+    send_d_blck(&s, 0x55u, 3, 0);
+    send_d_blck(&s, 0x56u, 2, 0);
+    assert(tetra_st(s.state)->sm.t_maint_m < 1004.0);
+    send_d_blck(&s, 0x55u, 2, 0);
+    assert(tetra_st(s.state)->sm.t_maint_m >= 1004.0 && tetra_confirm_followed_call_proven(s.state));
+    tetra_sm_grant g;
+    assert(tetra_sm_followed(s.state, &g));
+    tetra_calls_find(s.state, 0x0A)->alloc.freq_hz = g.freq_hz + 100000000L;
+    at_seconds(1005.0);
+    send_d_blck(&s, 0x55u, 2, 0);
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    assert(tetra_st(s.state)->sm.t_maint_m < 1005.0);
+    session_close(&s);
+}
+
+/* Round five: an allocation of the uplink alone of another channel replaces the call's channel (EN 300 392-2 clauses
+ * 23.5.4.2.1, 23.5.4.3.3), its downlink, marker and permission with it; a MAC-D-BLCK whose TM-SDU no key opens still
+ * maintains by its clear event label; and a "Replace" of the followed channel on the same carrier, with a usage marker
+ * and no withdrawal, keeps the receive permission (clause 23.8.2.3.2, the exception to case d)), which "Quit", one
+ * with no marker, or a withdrawal in the same PDU does not. */
+static void
+test_receive_permission_round_five(void) {
+    const unsigned um = TEST_USAGE_MARKER;
+    for (uint32_t carrier = 120; carrier <= 121; carrier++) {
+        session s = followed_on_another_carrier();
+        for (uint8_t fn = 1; fn <= 3; fn++) {
+            aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+        }
+        assert(tetra_confirm_followed_rx(s.state));
+        const uint32_t slots = carrier == 120u ? 2u : 4u; /* TN3, or TN2 of the other carrier */
+        if (carrier != 120u) {
+            tetra_calls_find(s.state, 0x0A)->alloc.freq_hz = 0L; /* allocated while the band was unknown */
+        }
+        send_allocation_as(&s, 0, slots, 2, -1, carrier, NULL); /* the uplink alone */
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+        assert(c->alloc.timeslots == slots && c->alloc.up_down == 2u && c->alloc.carrier == carrier);
+        assert((c->flags & TETRA_CALL_F_USAGE_MARKER) == 0u && !tetra_calls_followed_rx(s.state));
+        session_close(&s);
+    }
+
+    session s = followed_on_another_carrier();
+    tetra_st(s.state)->tdma_valid = 1;
+    tetra_st(s.state)->tn = 2;
+    send_event_label(&s, 0x100u, 0x55u, 0, 0);
+    at_seconds(1004.0);
+    send_d_blck(&s, 0x55u, 2, 1);
+    assert(tetra_st(s.state)->sm.t_maint_m >= 1004.0);
+    session_close(&s);
+
+    for (int variant = 0; variant < 4; variant++) {
+        s = followed_on_another_carrier();
+        for (uint8_t fn = 1; fn <= 3; fn++) {
+            aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+        }
+        assert(tetra_confirm_followed_rx(s.state));
+        /* The call's D-INFO moving it to TN3; a D-TX WAIT carrying the replacement withdraws the permission after. */
+        ttb_block cmce = {0};
+        ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+        ttb_put(&cmce, variant == 3 ? TETRA_CMCE_D_TX_WAIT : TETRA_CMCE_D_INFO, 5);
+        ttb_put(&cmce, 0x0A, 14);
+        ttb_put(&cmce, 0, variant == 3 ? 1 : 2);
+        ttb_put(&cmce, 0, 1); /* O-bit */
+        send_allocation_as(&s, variant == 1 ? 2u : 0u, 2, 1, variant == 2 ? -1 : (int)um, 120, &cmce);
+        tetra_sm_grant g;
+        assert(tetra_sm_followed(s.state, &g) && g.call_id == 0x0A && g.timeslots == 2u && g_tunes == 1);
+        assert(tetra_confirm_followed_rx(s.state) == (variant == 0));
+        assert(followed_speech_plays(&s, 3, 1000.5) == (variant == 0));
+        session_close(&s);
+    }
+
+    /* Header-only allocations away and back: "Quit" ends the permission, which the marker back on the channel does not
+     * give again before N.213; a "Replace" each way carries it. An allocation while no permission is held leaves the
+     * N.213 run alone. */
+    for (uint32_t type = 0; type <= 2; type += 2) {
+        s = followed_on_another_carrier();
+        for (uint8_t fn = 1; fn <= 3; fn++) {
+            aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+        }
+        send_allocation_as(&s, type, 2, 1, 7, 120, NULL); /* TN3 */
+        assert(tetra_confirm_followed_rx(s.state) == (type == 0u));
+        send_allocation_as(&s, 0, 4, 1, 8, 120, NULL); /* back to TN2 */
+        aach_burst(&s, 2, 4, 1, 1, 3, 8, 8);
+        assert(tetra_confirm_followed_rx(s.state) == (type == 0u));
+        assert(followed_speech_plays(&s, 2, 1000.5) == (type == 0u));
+        session_close(&s);
+    }
+    s = followed_on_another_carrier();
+    aach_burst(&s, 2, 1, 1, 1, 3, um, um);
+    aach_burst(&s, 2, 2, 1, 1, 3, um, um);
+    send_allocation_as(&s, 2, 4, 1, (int)um, 120, NULL);
+    aach_burst(&s, 2, 3, 1, 1, 3, um, um);
+    assert(tetra_confirm_followed_rx(s.state));
+    session_close(&s);
+
+    /* A "Quit" while a tune from the call is in flight ends what that tune puts back if it fails, too. */
+    s = followed_on_another_carrier();
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+    }
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 121);
+    const uint64_t request = tetra_st(s.state)->sm.pending_request_id;
+    assert(request != 0U && tetra_st(s.state)->sm.pending_prev.followed_rx == 1u);
+    send_allocation_as(&s, 2, 4, 1, (int)um, 120, NULL);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tetra_sm_tick(s.opts, s.state);
+    assert(followed_call(s.state) == 0x0A && tetra_st(s.state)->sm.followed.carrier == 120U);
+    assert(!tetra_confirm_followed_rx(s.state));
+    session_close(&s);
+
+    /* A "Replace" of the same channel changes nothing: two of N.212's three adverse AACHs stay counted. */
+    s = followed_on_another_carrier();
+    for (uint8_t fn = 1; fn <= 3; fn++) {
+        aach_burst(&s, 2, fn, 1, 1, 3, um, um);
+    }
+    aach_burst(&s, 2, 4, 1, 1, 2, 1, 0);
+    aach_burst(&s, 2, 5, 1, 1, 2, 1, 0);
+    ttb_block info = {0};
+    ttb_put(&info, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&info, TETRA_CMCE_D_INFO, 5);
+    ttb_put(&info, 0x0A, 14);
+    ttb_put(&info, 0, 2);
+    ttb_put(&info, 0, 1); /* O-bit */
+    send_allocation_as(&s, 0, 4, 1, (int)um, 120, &info);
+    assert(tetra_confirm_followed_rx(s.state));
+    aach_burst(&s, 2, 6, 1, 1, 2, 1, 0);
+    assert(!tetra_confirm_followed_rx(s.state) && followed_call(s.state) == 0x0A);
     session_close(&s);
 }
 
@@ -3618,6 +4011,11 @@ main(void) {
     test_maintenance_keeps_a_silent_channel();
     test_usage_marker_follows_its_allocation();
     test_receive_permission_boundaries();
+    test_receive_permission_edges();
+    test_receive_permission_more_edges();
+    test_receive_permission_record_moves();
+    test_receive_permission_round_four();
+    test_receive_permission_round_five();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;
 }

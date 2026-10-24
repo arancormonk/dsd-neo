@@ -17,6 +17,10 @@ void tetra_tea_keystream(int alg, const uint8_t key[10], uint32_t iv, uint8_t* o
  * does nothing. */
 void tetra_tea1_keystream_reduced(uint32_t key_register, uint32_t iv, uint8_t* out, int nbytes);
 
+/* The 32-bit key register TEA1 compresses the 10-byte key (an ECK) into: the reduced key of
+ * tetra_tea1_keystream_reduced() that gives the same key stream. The caller wipes it after use; NULL gives 0. */
+uint32_t tetra_tea1_reduce_key(const uint8_t key[10]);
+
 /* EN 300 392-7 clause 6.3.2.1. Out-of-range slot, frame, multiframe or direction returns 0. */
 uint32_t tetra_tea_build_iv(uint8_t tn, uint8_t fn, uint8_t mn, uint16_t hn, uint8_t dir);
 

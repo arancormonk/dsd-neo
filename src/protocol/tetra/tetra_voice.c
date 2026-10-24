@@ -363,7 +363,7 @@ voice_decrypt(const dsd_opts* opts, const dsd_state* state, const tetra_speech* 
     /* A call whose allocation came in decrypted signalling takes the key that decrypted it, while it applies. */
     const tetra_call_t* const c = sp->kind == TETRA_SPEECH_CALL ? tetra_calls_peek(state, sp->call_id) : NULL;
     if (c && c->air_key.valid) {
-        return tetra_enc_mode_encrypted(sp->air_enc)
+        return tetra_enc_mode_encrypted(sp->air_enc) && tetra_calls_air_key_applies(state, c)
                && tetra_air_sig_decrypt_voice(opts, state, &c->air_key, frame_bits, nbits, kss);
     }
     return tetra_air_decrypt_voice(opts, state, sp->air_enc, frame_bits, nbits, kss);

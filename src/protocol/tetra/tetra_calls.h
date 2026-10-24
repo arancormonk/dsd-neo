@@ -210,9 +210,19 @@ const tetra_call_t* tetra_calls_followed(const dsd_state* state);
  */
 void tetra_calls_on_aach(dsd_opts* opts, dsd_state* state, int read, uint16_t pdu);
 
+/** A CRC-passed MAC-D-BLCK addressed by @p event_label, its TM-SDU readable or not (the label is clear): for the
+ * followed call whose party holds the label on this channel, it proves the call on the carrier and maintains its
+ * channel (tetra_sm_note_maintenance()), as an addressed MAC-RESOURCE does. */
+void tetra_calls_on_label_pdu(const dsd_opts* opts, dsd_state* state, uint16_t event_label);
+
 /** 1 when the followed call holds receive permission on its channel with a downlink usage marker valid there: what its
  * traffic needs once its record holds an allocation (tetra_voice_gate.c). */
 int tetra_calls_followed_rx(const dsd_state* state);
+
+/** 1 when the key that proved call @p c's allocation (tetra_call_t::air_key) decrypts its speech now: still current
+ * (tetra_air_sig_key_current()), of the key version parity of the call's latest allocation, and a reduced key only on
+ * its own channel. */
+int tetra_calls_air_key_applies(const dsd_state* state, const tetra_call_t* c);
 
 /**
  * @brief The receiver reached the followed channel (tetra_trunk_sm.c): when the followed call is the canonical call,
