@@ -16,10 +16,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h> // IWYU pragma: keep
-#include <sys/time.h>
+#include <string.h>   // IWYU pragma: keep
+#include <sys/time.h> // IWYU pragma: keep
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h> // IWYU pragma: keep
+/* The SDK's own headers come in through airspy.c below. */
+// IWYU pragma: no_include <airspy.h>
+// IWYU pragma: no_include <airspy_commands.h>
+// IWYU pragma: no_include <iqconverter_float.h>
+// IWYU pragma: no_include <iqconverter_int16.h>
 
 enum { kMaxQueued = 64, kMaxLive = 128, kMaxQuarantined = 128 };
 

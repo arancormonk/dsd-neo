@@ -13,7 +13,6 @@
 /* Every system header librtlsdr.c uses comes in here, before its heap calls are renamed below. */
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
-#include <errno.h>
 #include <libusb.h>
 #include <pthread.h>
 #include <rtl-sdr.h>

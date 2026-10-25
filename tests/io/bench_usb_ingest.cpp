@@ -40,6 +40,8 @@
 #include "airspy_sdk_double.h"
 #endif
 
+struct rtl_device;
+
 namespace {
 
 struct BenchOptions {
@@ -88,7 +90,8 @@ print_usage(const char* argv0) {
 
 int
 parse_options(int argc, char** argv, BenchOptions* options) {
-    for (int i = 1; i < argc; ++i) {
+    /* Every option takes a value: each pass reads a pair. */
+    for (int i = 1; i < argc; i += 2) {
         const char* arg = argv[i];
         const char* value = i + 1 < argc ? argv[i + 1] : nullptr;
         if (std::strcmp(arg, "--backend") == 0 && value) {
@@ -112,7 +115,6 @@ parse_options(int argc, char** argv, BenchOptions* options) {
         } else {
             return -1;
         }
-        ++i;
     }
     return 0;
 }

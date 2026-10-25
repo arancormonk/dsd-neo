@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <stdint.h>
 #include <stdio.h>
 

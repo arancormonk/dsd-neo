@@ -4,10 +4,10 @@
  * device failure (-ETIMEDOUT), and commits the receiver's ending, once its silence reaches the limit (5000 ms; 300 ms
  * here, sampled every 20 ms). Only samples end a silence. RTL-SDR: a reader that never calls back, or stops calling
  * back, trips it; a steady stream never does, a stop inside the unplug-owner grace keeps it silent, a reader exit that
- * overlaps the monitor's verdict, or races it, is reported once, and a monitor that cannot start fails the start. Airspy: retunes
- * that deliver nothing still accrue silence, while a stream that keeps delivering never trips, however often it is
- * retuned, however long a retune or a control change takes, or when a retune fails and rolls back. The "stream stopped" verdict waits out
- * the grace and is dropped only by samples, not by a restart alone.
+ * overlaps the monitor's verdict, or races it, is reported once, and a monitor that cannot start fails the start.
+ * Airspy: retunes that deliver nothing still accrue silence, while a stream that keeps delivering never trips, however
+ * often it is retuned, however long a retune or a control change takes, or when a retune fails and rolls back. The
+ * "stream stopped" verdict waits out the grace and is dropped only by samples, not by a restart alone.
  */
 
 #include <assert.h>
@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/input_ring.h>
 #include <errno.h>
 #include <memory>
+#include <stddef.h>
 #include <stdint.h>
 #include "rtl_stream_test_support.h"
 
@@ -29,6 +30,8 @@
 #include <dsd-neo/core/airspy_config.h>
 #include "airspy_sdk_double.h"
 #endif
+
+struct rtl_device;
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
