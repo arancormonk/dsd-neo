@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.os.SystemClock
 import java.io.File
@@ -239,6 +240,41 @@ private fun aDetachStopsOnlyTheSessionThatUsesTheReceiver(owner: String) {
     check(DsdNative.stopCauses == stops) { "$owner: stops ${DsdNative.stopCauses}" }
     check(!rig.record().optBoolean("ready") && DsdNative.usbFd == -1) { "$owner: the connection is released either way" }
     check(rig.text() == "Device detached" && rig.kind() == "detached")
+    awaitClosed(rig.usb.opened.single(), "$owner: the connection closes once nothing uses it")
+}
+
+private fun awaitClosed(connection: UsbDeviceConnection, what: String) {
+    val deadline = System.nanoTime() + 2_000_000_000L
+    while (!connection.closed && System.nanoTime() < deadline) Thread.sleep(10)
+    check(connection.closed) { what }
+}
+
+// #647: a retained receiver unplugged during an rtl_tcp, UDP or file session is closed at once, not held until that
+// session ends (or leaked after the release timeout while it runs on).
+private fun aDetachDuringAnotherSessionClosesTheConnection() {
+    val rig = Rig()
+    val device = rtl()
+    rig.connect(device)
+    DsdNative.running = true
+    rig.unplug(device)
+    check(DsdNative.stopCauses.isEmpty()) { "the other session keeps running" }
+    awaitClosed(rig.usb.opened.single(), "the connection closes while the other session runs")
+}
+
+// #647: a session configured for the local receiver holds its connection open until the session ends, descriptor taken
+// or not.
+private fun aConfiguredSessionKeepsTheConnectionUntilItEnds() {
+    val rig = Rig()
+    val device = rtl()
+    rig.connect(device)
+    DsdNative.sessionUsesLocalReceiver = true
+    rig.unplug(device)
+    check(DsdNative.stopCauses == listOf("detached"))
+    val connection = rig.usb.opened.single()
+    Thread.sleep(300)
+    check(!connection.closed) { "the connection stays open while the session that uses it ends" }
+    DsdNative.sessionUsesLocalReceiver = false
+    awaitClosed(connection, "the connection closes once the session ended")
 }
 
 private fun anUnrelatedDetachChangesNothing() {
@@ -266,6 +302,8 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "detach_unused" to { aDetachStopsOnlyTheSessionThatUsesTheReceiver("none") },
     "detach_session" to { aDetachStopsOnlyTheSessionThatUsesTheReceiver("session") },
     "detach_descriptor" to { aDetachStopsOnlyTheSessionThatUsesTheReceiver("descriptor") },
+    "detach_other_session" to ::aDetachDuringAnotherSessionClosesTheConnection,
+    "detach_configured" to ::aConfiguredSessionKeepsTheConnectionUntilItEnds,
     "detach_unrelated" to ::anUnrelatedDetachChangesNothing,
 )
 

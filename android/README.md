@@ -869,9 +869,13 @@ Java keeps ownership of the descriptor throughout: `libusb_wrap_sys_device()` do
 not take it over. Closing the `UsbDeviceConnection` while the engine still has the
 descriptor wrapped is a use-after-close, so `UsbSourceManager.release()` clears the
 native slot immediately — that only affects the *next* open — and then hands the
-close to a background thread that waits for `nativeIsRunning()` to go false. Both
-callers (a detach broadcast, `DecoderService.onDestroy()`) therefore return without
-blocking. If the engine never stops, the connection is deliberately leaked: one
+close to a background thread. That thread waits while the engine has the descriptor
+wrapped (`nativeIsUsbFdInUse()`) or a session configured for the local receiver has
+not ended (`nativeSessionUsesLocalReceiver()`, which covers one that has not taken
+the descriptor yet); an rtl_tcp, UDP or file session never takes it, so a receiver
+unplugged during one is closed at once. Both callers (a detach broadcast, a source
+switch while stopped) therefore return without blocking. If the engine never lets
+go within 10 s, the connection is deliberately leaked: one
 descriptor held for the rest of the process's life beats pulling it out from under
 an in-flight USB transfer.
 

@@ -353,10 +353,12 @@ object UsbSourceManager {
      *
      * Both conditions matter. [DsdNative.nativeIsUsbFdInUse] is the precise one — it
      * brackets exactly the period during which libusb has the descriptor wrapped —
-     * while [DsdNative.nativeIsRunning] additionally covers a run that is about to
-     * take it but has not reached input setup yet. Waiting on "running" alone would
-     * be both too coarse and, in the moment between a configured start and the engine
-     * thread being scheduled, too narrow.
+     * while [DsdNative.nativeSessionUsesLocalReceiver] additionally covers a session
+     * configured for the local receiver that has not reached input setup yet, and
+     * holds until its run's result is in. Whether the engine runs at all is not
+     * asked: an rtl_tcp, UDP or file session never takes the descriptor, and waiting
+     * for it to end would leak the connection of a receiver unplugged during it
+     * (#647).
      *
      * If it never lets go the connection is deliberately leaked: one file descriptor
      * held for the rest of the process's life is a far better outcome than pulling it
@@ -364,9 +366,9 @@ object UsbSourceManager {
      */
     private fun closeWhenEngineStops(open: UsbDeviceConnection) {
         var waited = 0L
-        while (DsdNative.nativeIsRunning() || DsdNative.nativeIsUsbFdInUse()) {
+        while (DsdNative.nativeIsUsbFdInUse() || DsdNative.nativeSessionUsesLocalReceiver()) {
             if (waited >= RELEASE_TIMEOUT_MS) {
-                Log.e(TAG, "engine still running after ${RELEASE_TIMEOUT_MS}ms; leaking the USB connection")
+                Log.e(TAG, "engine still using the receiver after ${RELEASE_TIMEOUT_MS}ms; leaking the USB connection")
                 return
             }
             try {
