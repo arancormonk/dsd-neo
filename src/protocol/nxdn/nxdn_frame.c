@@ -308,6 +308,17 @@ nxdn_print_normal_sync_banner(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* A frame sync accepted on a frame whose LICH failed prints nothing by default, since the banner waits for a LICH. The
+ * payload log (-Z) shows it, so a sync taken on noise is visible even when the LICH turns it away. */
+static void
+nxdn_report_lich_reject(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (opts->payload != 1) {
+        return;
+    }
+    nxdn_print_normal_sync_banner(opts, state);
+    DSD_FPRINTF(stderr, "LICH ERR %02X\n", ctx->lich_full);
+}
+
 static void
 nxdn_print_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->idas) {
@@ -707,14 +718,16 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
     nxdn_prepare_lich_parity(&ctx);
     if (!nxdn_validate_lich_parity(state, &ctx)) {
+        dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt, DSD_NXDN96_LICH_PARITY_ERROR);
+        nxdn_report_lich_reject(opts, state, &ctx);
         goto END;
     }
-    if (!nxdn_validate_lich_direction(opts, state, &ctx)) {
+    if (!nxdn_validate_lich_direction(opts, state, &ctx) || !nxdn_apply_lich_profile(state, &ctx)) {
+        dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt, DSD_NXDN96_LICH_WRONG);
+        nxdn_report_lich_reject(opts, state, &ctx);
         goto END;
     }
-    if (!nxdn_apply_lich_profile(state, &ctx)) {
-        goto END;
-    }
+    dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt, DSD_NXDN96_LICH_GOOD);
 
     state->carrier = 1;
     nxdn_print_sync_banner(opts, state, &ctx);
@@ -733,6 +746,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         nxdn_mark_bad_sync(state);
+        dsd_nxdn96_sync_clear(&state->nxdn96_sync);
         DSD_FPRINTF(stderr, "\n");
         goto END;
     }

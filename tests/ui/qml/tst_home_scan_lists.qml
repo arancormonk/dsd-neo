@@ -15,6 +15,8 @@ Item {
 
     TestCase {
         function init() {
+            // A session map without a name used to bind undefined to the monitor header.
+            failOnWarning(/MonitorScreen.qml.*Unable to assign/);
             testContext.useLifecycleHost(true);
             while (scanLists.count)
                 scanLists.remove(0);

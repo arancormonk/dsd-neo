@@ -16,6 +16,8 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -488,6 +490,18 @@ main(void) {
     enc->trunk_enable = 0;
     assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
     expect_auto_status(&view, "off on digital");
+    /* Auto trunking enables ProVoice too, but with no EDACS addressing selected it is no EDACS session: the dynamic
+       squelch is off on its digital channels, and selecting EDACS (standard addressing, as -fh -fa) makes it one. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, enc, est) == 0);
+    enc->trunk_enable = 1;
+    est->ea_mode = -1;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    assert(!view.edacs_voice);
+    expect_auto_status(&view, "off on digital");
+    est->ea_mode = 0;
+    assert(dsd_app_squelch_view_get(enc, est, &view) == 0);
+    assert(view.edacs_voice && !view.edacs_call);
+    expect_auto_status(&view, "EDACS analog calls, as auto");
     dsd_state_ext_free_all(est);
     free(est);
     free(enc);

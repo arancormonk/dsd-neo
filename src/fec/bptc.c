@@ -11,9 +11,11 @@
  */
 
 /* Include ------------------------------------------------------------------*/
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Define -------------------------------------------------------------------*/
@@ -99,6 +101,9 @@ bptc_196x96_decode_cols(uint8_t matrix[13][15]) {
         }
         if (Hamming_13_9_decode(col_uncorrected, col_corrected, 1) == false) {
             errors++;
+            // The decoder leaves col_corrected unwritten on failure. Keep the
+            // received column rather than uninitialized or previous-column data.
+            continue;
         }
         for (uint32_t j = 0; j < 9; j++) {
             matrix[j][i] = col_corrected[j];
@@ -131,7 +136,9 @@ bptc_196x96_extract_payload_and_r(uint8_t matrix[13][15], uint8_t extracted[96],
  *
  * @param DMRDataExtracted : Pointer where the DMR data will be written (96 bytes)
  *
- * @return The total number of irrecoverable Hamming check errors
+ * @return The total number of irrecoverable Hamming check errors of the second
+ *         pass, or 0 when BPTC_196x96_Decode_Codeword() then finds a codeword
+ *         within DSD_BPTC_196x96_UNIQUE_RADIUS, whose payload and R are written
  */
 uint32_t
 BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtracted[96], uint8_t R[3]) {
@@ -145,8 +152,135 @@ BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtr
     hamming_irrecoverable_error_nb += bptc_196x96_decode_cols(DataMatrix);
 
     bptc_196x96_extract_payload_and_r(DataMatrix, DMRDataExtracted, R);
+    if (hamming_irrecoverable_error_nb != 0) {
+        // Only data bits are copied back above, so a row- or column-parity error
+        // can still fail the second pass with the payload right. A codeword
+        // within the unique radius is the nearest one: take it instead.
+        uint8_t codeword_bits[96];
+        uint8_t codeword_r[3];
+        uint32_t distance = 0;
+        if (BPTC_196x96_Decode_Codeword(InputDeInteleavedData, codeword_bits, codeword_r, &distance) == 1
+            && distance <= DSD_BPTC_196x96_UNIQUE_RADIUS) {
+            DSD_MEMCPY(DMRDataExtracted, codeword_bits, sizeof codeword_bits);
+            DSD_MEMCPY(R, codeword_r, sizeof codeword_r);
+            return 0;
+        }
+    }
     return hamming_irrecoverable_error_nb;
 } /* End BPTC_196x96_Extract_Data() */
+
+/* One row and column pass that writes every corrected bit back, parity bits
+ * included. A failed decode leaves its row or column as received. */
+static void
+bptc_196x96_full_pass(uint8_t matrix[13][15]) {
+    for (uint32_t i = 0; i < 9; i++) {
+        (void)Hamming_15_11_decode(matrix[i], NULL, 1);
+    }
+    uint8_t col[13];
+    for (uint32_t i = 0; i < 15; i++) {
+        for (uint32_t j = 0; j < 13; j++) {
+            col[j] = matrix[j][i];
+        }
+        (void)Hamming_13_9_decode(col, NULL, 1);
+        for (uint32_t j = 0; j < 13; j++) {
+            matrix[j][i] = col[j];
+        }
+    }
+}
+
+/* True when every row and column has a zero syndrome. The column-parity rows
+ * 9-12 follow from the others by linearity; they are checked all the same. */
+static bool
+bptc_196x96_is_codeword(uint8_t matrix[13][15]) {
+    uint8_t line[15];
+    for (uint32_t i = 0; i < 13; i++) {
+        for (uint32_t j = 0; j < 15; j++) {
+            line[j] = matrix[i][j];
+        }
+        if (Hamming_15_11_decode(line, NULL, 1) == false) {
+            return false;
+        }
+        for (uint32_t j = 0; j < 15; j++) {
+            if (line[j] != matrix[i][j]) {
+                return false;
+            }
+        }
+    }
+    uint8_t col[13];
+    for (uint32_t i = 0; i < 15; i++) {
+        for (uint32_t j = 0; j < 13; j++) {
+            col[j] = matrix[j][i];
+        }
+        if (Hamming_13_9_decode(col, NULL, 1) == false) {
+            return false;
+        }
+        for (uint32_t j = 0; j < 13; j++) {
+            if (col[j] != matrix[j][i]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/*
+ * @brief : Decode a deinterleaved 196 bits buffer to a full BPTC (196,96)
+ *          codeword, for callers that need the codeword itself rather than
+ *          the best-effort payload of BPTC_196x96_Extract_Data().
+ *
+ * Two row and column passes run on a copy with every corrected bit written
+ * back, parity bits included. The decode is iterative, not nearest-codeword:
+ * some patterns of few errors reach a different codeword further away, so
+ * callers gate on the returned distance.
+ *
+ * @param input196 : DMR data deinterleaved (196 bytes, one bit each, unchanged)
+ *
+ * @param out96 : Where the codeword's 96 payload bits are written
+ *
+ * @param r3 : Where the codeword's reserved bits are written, in the order of
+ *             BPTC_196x96_Extract_Data()'s R
+ *
+ * @param distance : Where the number of the 195 product-code bits (bit 0 is
+ *                   not part of the code) that differ between input196 and the
+ *                   codeword is written
+ *
+ * @return 1 when the passes reach a valid codeword; 0 otherwise, with out96,
+ *         r3 and distance zeroed (nothing is written when an argument is NULL)
+ */
+int
+BPTC_196x96_Decode_Codeword(const uint8_t* input196, uint8_t* out96, uint8_t* r3, uint32_t* distance) {
+    if (input196 == NULL || out96 == NULL || r3 == NULL || distance == NULL) {
+        return 0;
+    }
+    uint8_t received[13][15];
+    uint8_t matrix[13][15];
+    bptc_196x96_fill_matrix(input196, received);
+    // A received codeword is its own nearest one: the passes would change nothing.
+    if (bptc_196x96_is_codeword(received)) {
+        bptc_196x96_extract_payload_and_r(received, out96, r3);
+        *distance = 0;
+        return 1;
+    }
+    DSD_MEMCPY(matrix, received, sizeof matrix);
+    bptc_196x96_full_pass(matrix);
+    bptc_196x96_full_pass(matrix);
+    if (!bptc_196x96_is_codeword(matrix)) {
+        DSD_MEMSET(out96, 0, 96);
+        DSD_MEMSET(r3, 0, 3);
+        *distance = 0;
+        return 0;
+    }
+
+    uint32_t diff = 0;
+    for (uint32_t i = 0; i < 13; i++) {
+        for (uint32_t j = 0; j < 15; j++) {
+            diff += (uint32_t)(matrix[i][j] != received[i][j]);
+        }
+    }
+    bptc_196x96_extract_payload_and_r(matrix, out96, r3);
+    *distance = diff;
+    return 1;
+} /* End BPTC_196x96_Decode_Codeword() */
 
 /*
  * @brief : This function extract the 77 bits of a deinteleaved 128 bits

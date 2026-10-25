@@ -295,9 +295,11 @@ slco_xpt(dsd_opts* opts, dsd_state* state, int free_lcn, int corrupt) {
     slco_send(opts, state, payload, corrupt);
 }
 
+/* A fresh carrier: the record and the DMR RAS evidence the cases before left (a carrier boundary resets both). */
 static void
 clear_record(dsd_state* state) {
     dsd_rxid_reset(state);
+    dmr_ras_reset(state);
 }
 
 /* The received identity record (dsd_state::rx_id) takes the identity of the same checked messages, whether or not a

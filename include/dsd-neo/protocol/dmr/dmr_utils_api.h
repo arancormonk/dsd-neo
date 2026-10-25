@@ -26,6 +26,8 @@ uint16_t ComputeCrcCCITT(const uint8_t* DMRData);
 /** @brief Compute and optionally correct CRC for full link control block. */
 uint32_t ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t* CRCComputed,
                                              uint32_t CRCMask);
+/** @brief Check the full link control's RS(12,9) parity without correcting it (1 = valid codeword). */
+uint32_t CheckFullLinkControlCrc(const uint8_t* FullLinkControlDataBytes, uint32_t CRCMask);
 /** @brief Compute 5-bit CRC used in certain DMR headers. */
 uint8_t ComputeCrc5Bit(const uint8_t* DMRData);
 /** @brief Compute 9-bit CRC used by certain DMR payloads. */

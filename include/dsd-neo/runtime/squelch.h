@@ -178,26 +178,27 @@ int dsd_squelch_dynamic_in_force(const dsd_opts* opts, const dsd_state* state);
 int dsd_squelch_noise_has_no_fm(const dsd_opts* opts);
 
 /**
- * @brief Whether @p opts follows EDACS analog voice calls (issue #625): EDACS/ProVoice frames with trunking on, off the
- * analog family and the M17 encoder. On a radio input the auto squelch runs on the 9600 bit/s FSK path EDACS reads
- * (a NOISE setting runs as AUTO there, the FSK discriminator's output being peak-normalised), and EDACS ends an analog
- * call on its gate; on audio input no dynamic squelch runs for it. 0 for NULL.
+ * @brief Whether the session follows EDACS analog voice calls (issue #625): a selected EDACS session
+ * (dsd_edacs_session(), so not Auto merely enabling ProVoice) with trunking on, off the analog family and the M17
+ * encoder. On a radio input the auto squelch runs on the 9600 bit/s FSK path EDACS reads (a NOISE setting runs as AUTO
+ * there, the FSK discriminator's output being peak-normalised), and EDACS ends an analog call on its gate; on audio
+ * input no dynamic squelch runs for it. 0 for NULL @p opts; a NULL @p state counts as no EDACS addressing selected.
  */
-int dsd_squelch_edacs_analog_voice(const dsd_opts* opts);
+int dsd_squelch_edacs_analog_voice(const dsd_opts* opts, const dsd_state* state);
 
 /**
- * @brief Whether a dynamic setting has no analog channel to run on under @p opts (issue #625): neither the analog
- * family, the M17 encoder's monitor nor EDACS analog voice (dsd_squelch_edacs_analog_voice()). CRC and FEC decide a
- * digital channel's traffic. 1 for NULL.
+ * @brief Whether a dynamic setting has no analog channel to run on (issue #625): neither the analog family, the M17
+ * encoder's monitor nor EDACS analog voice (dsd_squelch_edacs_analog_voice()). CRC and FEC decide a digital channel's
+ * traffic. 1 for NULL @p opts.
  */
-int dsd_squelch_channel_digital(const dsd_opts* opts);
+int dsd_squelch_channel_digital(const dsd_opts* opts, const dsd_state* state);
 
 /**
- * @brief The input kind a dynamic setting resolves against under @p opts: dsd_squelch_input_kind(), except that the M17
- * encoder and EDACS analog voice read as DSD_SQUELCH_INPUT_OTHER (no radio input) on audio input, where neither runs a
- * dynamic squelch: the PCM noise squelch serves the FM monitor only (issue #625).
+ * @brief The input kind a dynamic setting resolves against: dsd_squelch_input_kind(), except that the M17 encoder and
+ * EDACS analog voice read as DSD_SQUELCH_INPUT_OTHER (no radio input) on audio input, where neither runs a dynamic
+ * squelch: the PCM noise squelch serves the FM monitor only (issue #625).
  */
-int dsd_squelch_dynamic_input_kind(const dsd_opts* opts);
+int dsd_squelch_dynamic_input_kind(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Whether the RTL stream's per-sample flags carry a dynamic squelch's gate for a reader of its own (EDACS analog

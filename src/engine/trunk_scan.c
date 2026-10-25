@@ -24,6 +24,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -144,6 +145,8 @@ typedef struct {
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
     int p25_p1_validated_rf_mod;
+    int p25_p1_mod_verdict_valid;
+    int p25_p1_mod_verdict_rf_mod;
     int p25_sm_mode;
     int nac;
     int samplesPerSymbol;
@@ -1658,7 +1661,11 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p25_sys_is_tdma = state->p25_sys_is_tdma;
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
-    snapshot->p25_p1_validated_rf_mod = state->p25_p1_validated_rf_mod;
+    /* A chain comparison in flight has the other chain's frames in p25_p1_validated_rf_mod: the target keeps the chain
+       leading so far. */
+    snapshot->p25_p1_validated_rf_mod = dsd_frame_sync_p25p1_learned_rf_mod(state);
+    snapshot->p25_p1_mod_verdict_valid = state->p25_p1_mod_compare.verdict_valid;
+    snapshot->p25_p1_mod_verdict_rf_mod = state->p25_p1_mod_compare.verdict_rf_mod;
     snapshot->p25_sm_mode = state->p25_sm_mode;
     snapshot->nac = state->nac;
     snapshot->samplesPerSymbol = state->samplesPerSymbol;
@@ -1698,6 +1705,11 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     state->p25_p1_validated_rf_mod = snapshot->p25_p1_validated_rf_mod;
+    /* The chain comparison's verdict is learned modulation too. A comparison in flight was the target left's, and the
+       switch's dsd_frame_sync_reset_acquisition() ends it. */
+    state->p25_p1_mod_compare.verdict_valid = snapshot->p25_p1_mod_verdict_valid;
+    state->p25_p1_mod_compare.verdict_rf_mod = snapshot->p25_p1_mod_verdict_rf_mod;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
     state->p25_sm_mode = snapshot->p25_sm_mode;
     state->nac = snapshot->nac;
     state->samplesPerSymbol = snapshot->samplesPerSymbol;
@@ -2527,6 +2539,8 @@ trunk_scan_load_profile(dsd_trunk_scan_target_runtime* rt, char* error, size_t e
 static int
 trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd_state* state,
                                 const dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
+    /* A watchdog tune still pending is the session's before the scan: reconciled now, it reaches no target. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_trunk_scan_snapshot* empty_snapshot = &coord->scratch_snapshot;
     trunk_scan_seed_empty_snapshot(empty_snapshot, opts, state);
     double now_m = trunk_scan_now_m();
@@ -2925,6 +2939,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     if (!coord || next >= coord->count) {
         return -1;
     }
+    /* A P25 watchdog tune's notice still pending belongs to the target it tuned, the one being left: reconciled into
+       that target's state before its snapshot is saved, it never reaches the next target's
+       (dsd_frame_sync_apply_off_thread_tunes()). */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_scan_key_change key_change = {0};
     if (trunk_scan_prepare_switch(opts, state, &coord->targets[next].keys, &key_change)) {
         return TRUNK_SCAN_PREPARE_FAILED;
@@ -2940,7 +2958,8 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
-            dsd_rxid_apply_trunk_tune(state);
+            /* The release's own return to the control channel; the RAS evidence goes at the switch below either way. */
+            (void)dsd_rxid_apply_trunk_tune(state);
             coord->rollback_rx_id = state->rx_id;
             coord->forced_visit_release = 0;
         } else {
@@ -2958,8 +2977,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
        is in none of them, and the incoming carrier's pieces would complete it, so it goes. */
     dsd_engine_forget_carrier_decoding(opts, state);
     /* So does the identity it received: the incoming target's carrier names its own. And the dibits the frame sync and
-       the decoders hold buffered from the outgoing carrier head no frame of the incoming one. */
+       the decoders hold buffered from the outgoing carrier head no frame of the incoming one. Nor does the DMR RAS
+       evidence (no target snapshot holds it). */
     dsd_rxid_reset(state);
+    dmr_ras_reset(state);
     dsd_state_note_carrier_change(state);
 
     coord->active = next;
@@ -2977,7 +2998,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     (void)dsd_scan_key_change_commit(state, &key_change);
     dsd_scan_option_values values_scratch;
     (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(rt, &values_scratch));
-    dsd_engine_scan_ensure_output(opts);
+    dsd_engine_scan_ensure_output(opts, state);
     dsd_scan_groups_enter(state, rt->profile);
     (void)dsd_scan_maps_enter(state, rt->profile);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
@@ -3026,9 +3047,13 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
         return 0;
     }
     double now_m = trunk_scan_now_m();
+    /* The rollback snapshot is the original target's whole, a watchdog tune still pending reconciled into it. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_trunk_scan_snapshot* original_snapshot = &coord->scratch_snapshot;
     trunk_scan_save_snapshot(state, original_snapshot);
-    dsd_rxid_apply_trunk_tune(state);
+    if (dsd_rxid_apply_trunk_tune(state)) {
+        dmr_ras_reset(state);
+    }
     coord->rollback_rx_id = state->rx_id;
     size_t original_active = coord->active;
     int save_current = 1;
@@ -3083,6 +3108,9 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_restore_snapshot(state, original_snapshot);
     state->rx_id = coord->rollback_rx_id;
     state->rx_id_trunk_tune_pending = 0U; /* a retune of the switches undone, whose carriers the receiver left */
+    /* The switches reset the RAS evidence, which no snapshot keeps: the restored record shows none until the carrier
+       proves it again. */
+    dmr_ras_reset(state);
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active]);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
     (void)dsd_scan_key_change_commit(state, &rollback);

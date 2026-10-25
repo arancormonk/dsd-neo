@@ -55,12 +55,33 @@ reserved bits (a data header, UDT, a DPF 15 chain, confirmed rate-1/2 blocks, an
 continuation both go through the real burst handler, so its channel-learning notice carries the MBC's
 provenance, and a voice LC header) and pin the exact provenance bits: `[RAS]` at ordinary severity for RAS
 alone, `[CRC ERR]` once any check fails, and no RAS at all under the separate relaxed-CRC configuration,
-which never runs the heuristic. Its unchanged MNIS LRRP vector comes from
+which never accepts RAS. Its unchanged MNIS LRRP vector comes from
 [DSD-FME issue 283](https://github.com/lwvmobile/dsd-fme/issues/283).
 The 46 received octets end in CRC `0FE81D14`; the two extra zero octets in that issue's dump are buffer
 fill. The former CRC span computes `FF38D9C7`, while the corrected span matches the transmitted value.
 A one-bit payload mutation must not publish in strict mode. With `-F` and `-L`, the clean captured MNIS
 packet must append exactly one location row, while the CRC32-failed packet must append none.
+
+`DMR_RAS_SIGNATURE` pins the RAS signature (`dmr_ras_signature()`) per burst layout (eligible types, any nonzero
+reserved value, the distance gate of 4, a failed standard check, the Hytera 0x68 exclusion only where byte 1 is a
+FID or MFID, PI with FID 0x10 only) and runs BPTC-encoded bursts with chosen deinterleaved bit errors through the
+real burst handler. A clean non-RAS CSBK whose errors the ordinary extractor turns into reserved value 4 with a
+failed CRC (bits 1/12/31/42, whose codeword lies at distance 5, and 1/12/136/162, which decodes to none) is a
+failure under `-F` and not dispatched; the 1/2/16/17 miscorrection likewise. A RAS CSBK is accepted clean and at
+distance 1 to 4, dispatching the codeword's payload where the extractor's is wrong (bits 29/74/75/90), and not at
+distance 5 or without `-F`. A RAS voice LC header carrying another LC's RS(12,9) parity, one symbol away, is never
+RS-corrected into that LC: a failure without `-F`, the original LC as RAS under `-F`, and no TDMA proof either way.
+Bits 1/12/102/151 make the extractor read reserved value 4 and a wrong octet while the nearest codeword is the
+original R = 0 one at distance 4: a non-RAS CSBK is then dispatched without `-F`, unmarked, and proves TDMA; a voice
+LC with one RS symbol error goes through ordinary RS correction and publishes its call; a CSBK whose CRC fails is a
+plain failure under `-F`, never RAS.
+The error patterns behave the same on any codeword (both decoders are syndrome decoders of linear codes).
+`DMR_RAS_DETECT` sends the same bursts for carrier-level detection: two signatures confirm RAS with or without `-F`
+(the notice once, only without it), bursts that are no signature or of no carrier never count, and the reset and a
+BS colour relock forget the evidence; each other reset point is pinned beside the received identity test of its
+module (see the received identity record in `docs/code_map.md`). `DECODE_IQ_DMR_T3_RAS_CC_DETECT` replays the RAS
+control channel without `-F` and requires the notice and no accepted content; `DECODE_IQ_DMR_T3_CC` and
+`DECODE_IQ_DMR_POLARITY_AUTO` are its controls and must never print it.
 
 `CORE_EVENTS_STAGED_PAYLOAD` checks that data-notice staging is independent of active-call enrichment.
 `CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders retain their state strings while suppressing
@@ -320,6 +341,17 @@ thresholds at least 10 dB either side of it. The measurement is recorded beside 
 registration; re-measure it there if the fixture or the channel filter changes. The
 `scan_mode_replay` host installs row zero's options and takes a configured squelch default from
 `DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB`, because I/Q replay has no other way to set one.
+
+`nxdn96_weak` is `nxdn96` with complex Gaussian noise added at 8 dB wideband SNR (signal power over noise across the
+whole 48 kHz capture; seed 8007, `DERIVED_AWGN`), 192 kB. It pins NXDN96 acquisition on a weak call
+(`DECODE_IQ_NXDN96_WEAK`): acquiring on the FSW right after the preamble left this realization reading one FSW symbol
+wrong on every frame and failing every SACCH, so not one RAN decoded, where acquiring on two FSWs a frame apart decodes
+36. Over 72 realizations (0-10 dB, six seeds, with and without a two-ray echo) the four-level FSW reading read real
+FSWs within two bit errors in 94% of hits at 6-10 dB and 85% at 0-4 dB. Allowing three bit errors gained 0.4 RAN frames
+a call on average, mostly at 2 dB, and let receiver noise acquire on LowVHF, faNXDN and faNXDNScan.
+`nxdn96_weak_0db` (seed 17, 0 dB, 192 kB) guards the gate itself (`DECODE_IQ_NXDN96_WEAK_0DB`, at least 25 RANs): it
+decodes 29 with the two-bit gate and 30 with the matcher before these rules, the same over eight sample shifts, and 10
+with the gate held to one bit.
 
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify

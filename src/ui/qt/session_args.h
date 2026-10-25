@@ -39,9 +39,15 @@ struct SessionArgPrefs {
     bool skipEncrypted = true;
     bool persistTgLockouts = true;
     bool autoPpm = false;
+    /* Relaxed CRC: -F for the session, unless the extra options name the CRC policy themselves. */
+    bool relaxedCrc = false;
     double hangtimeSec = 2.0;
     QString extraArgs;
 };
+
+/** @brief The app-wide defaults @p prefs holds, as a session starts with them; the struct's defaults for nullptr. The
+ *         one mapping a saved system, Explore, search and a scan list share. */
+SessionArgPrefs session_args_prefs(const AppPrefs* prefs);
 
 /** @brief Why session_args_build() refused; None means the argv is usable. */
 /** Shared token gate: refuse key display and grouped short options; retain

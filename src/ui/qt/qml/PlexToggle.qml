@@ -21,7 +21,7 @@ Switch {
     font.pixelSize: Theme.fontSize(15)
     implicitHeight: Math.max(Theme.minimumTouchSize, contentItem.implicitHeight + topPadding + bottomPadding)
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     FocusFrame {}
     contentItem: Text {
         text: control.text

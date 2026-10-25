@@ -16,6 +16,8 @@
  * 2024-03 EDACS-FME display improvements
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/app_control/crc_policy_view.h>
+#include <dsd-neo/app_control/dmr_ras_view.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include "dsd-neo/core/input_level.h"
@@ -31,6 +33,7 @@
 #include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -727,7 +730,7 @@ ui_row_analog_power_field(ui_row* row, const dsd_opts* opts) {
 
 static void
 ui_render_pulse_analog_output(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->audio_out_type == 0 && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
+    if (opts->audio_out_type == 0 && (dsd_edacs_session(opts, state) || opts->monitor_input_audio == 1)) {
         ui_row row;
         ui_io_row_begin(&row);
         ui_row_field(&row, "| Pulse Analog Output: %i kHz; %i Ch;", opts->pulse_raw_rate_out / 1000,
@@ -1499,8 +1502,10 @@ ui_render_audio_decode_header_fields(dsd_opts* opts, const dsd_state* state) {
     }
     ui_print_label_pad("Decoding");
     printw("[%s] ", opts->output_name);
-    if (opts->aggressive_framesync == 0) {
-        printw("CRC/(RAS) ");
+    dsd_app_crc_policy crc;
+    dsd_app_crc_policy_view(opts, state, &crc);
+    if (crc.effective) {
+        printw("Relaxed CRC ");
     }
 }
 
@@ -3249,6 +3254,17 @@ ui_print_dmr_dcc(const char* mode, const dsd_state* state) {
     }
 }
 
+/* "RAS; " beside the colour code once the carrier is confirmed to use RAS, "RAS (-F decodes); " while relaxed CRC is
+   off, "RAS (channel sets strict CRC); " while a scan row's own --strict-crc runs over -F (dmr_ras_view.h). */
+static void
+ui_print_dmr_ras(const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_dmr_ras ras;
+    dsd_app_dmr_ras_view(opts, state, &ras);
+    if (ras.detected) {
+        printw("%s; ", dsd_app_dmr_ras_label(&ras));
+    }
+}
+
 /* The vendor, trunking brand, site, Hytera XPT free channel and Capacity Plus rest channel this carrier sent; the rest
    LSN's frequency is the channel map's. */
 /* The vendor a feature set ID names, as the header has long shown it: NULL for one this table does not know. */
@@ -3264,8 +3280,9 @@ ui_dmr_vendor_name(uint8_t mfid) {
 }
 
 static void
-ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
+ui_render_p25_dmr_header_dmr_bs(const dsd_opts* opts, const dsd_state* state) {
     ui_print_dmr_dcc("BS", state);
+    ui_print_dmr_ras(opts, state);
     const dsd_received_identity* const id = ui_rxid(state, DSD_RXID_FAMILY_DMR);
     const char* const vendor = ui_rxid_has(id, DSD_RXID_DMR_VENDOR) ? ui_dmr_vendor_name(id->dmr_vendor) : NULL;
     if (vendor != NULL) {
@@ -3377,9 +3394,10 @@ static void
 ui_render_p25_dmr_header(const dsd_opts* opts, const dsd_state* state) {
     printw("| ");
     if (DSD_SYNC_IS_DMR_BS(ncurses_last_synctype)) {
-        ui_render_p25_dmr_header_dmr_bs(state);
+        ui_render_p25_dmr_header_dmr_bs(opts, state);
     } else if (DSD_SYNC_IS_DMR_MS(ncurses_last_synctype)) {
         ui_print_dmr_dcc("MS", state);
+        ui_print_dmr_ras(opts, state);
     } else if (DSD_SYNC_IS_P25P1(ncurses_last_synctype)) {
         ui_render_p25_dmr_header_p25p1(opts, state);
     } else if (DSD_SYNC_IS_P25P2(ncurses_last_synctype)) {

@@ -244,11 +244,11 @@ search_stage_gain(const search_coord* c, const dsd_opts* opts, const dsd_state* 
 }
 
 static int
-search_open_audio(const search_coord* c, dsd_opts* opts, int analog) {
+search_open_audio(const search_coord* c, dsd_opts* opts, const dsd_state* state, int analog) {
     if (!c->visit) {
         return 0;
     }
-    return analog ? dsd_audio_ensure_analog_output(opts) : dsd_audio_ensure_digital_output(opts);
+    return analog ? dsd_audio_ensure_analog_output(opts) : dsd_audio_ensure_digital_output(opts, state);
 }
 
 static int
@@ -276,7 +276,7 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
     if (dsd_scan_mode_options(opts, state, &values)) {
         return -1;
     }
-    if (search_open_audio(c, opts, analog) < 0) {
+    if (search_open_audio(c, opts, state, analog) < 0) {
         return -1;
     }
     search_stage_gain(c, opts, state, target);

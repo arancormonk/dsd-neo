@@ -718,6 +718,16 @@ test_cac_crc_failure_reset(void) {
      * element decoder (issue #411). */
     state.NxdnElementsContent.MessageType = 0x22U;
 
+    /* The frame sync's join histories, stamped on the count the reset rewinds: an M17 word at 100 and 292 would pair
+     * with one at 484 after it, and an NXDN96 lock would time the next FSW from 99. */
+    state.m17_join_hits.symbolcnt[0] = 100U;
+    state.m17_join_hits.kind[0] = 1U;
+    state.m17_join_hits.symbolcnt[1] = 292U;
+    state.m17_join_hits.kind[1] = 1U;
+    state.m17_join_hits.next = 2U;
+    state.nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_NEG;
+    state.nxdn96_sync.lock_symbolcnt = 99U;
+
     for (int i = 0; i < 10; i++) {
         nxdn_handle_cac(&opts, &state, trellis, m_data, 1U);
     }
@@ -741,6 +751,10 @@ test_cac_crc_failure_reset(void) {
     rc |= expect_int("cac-reset-payload-keyid", state.payload_keyid, 0);
     rc |= expect_int("cac-reset-payload-mi", (int)state.payload_mi, 0);
     rc |= expect_u8_at("cac-reset-aes-iv", 0U, state.aes_ivR[0], 0U);
+    rc |= expect_int(
+        "cac-reset-forgets-the-m17-join-words",
+        state.m17_join_hits.kind[0] == 0U && state.m17_join_hits.kind[1] == 0U && state.m17_join_hits.next == 0U, 1);
+    rc |= expect_int("cac-reset-forgets-the-nxdn96-lock", state.nxdn96_sync.lock_type, 0);
 
     nxdn_handle_cac(&opts, &state, trellis, m_data, 1U);
     rc |= expect_int("cac-counter-cleared-after-reset", state.carrier, 0);

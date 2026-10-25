@@ -2080,6 +2080,7 @@ nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, long int fre
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->lastsynctype = DSD_SYNC_NONE;
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     return 1;
 }
 
@@ -3355,6 +3356,7 @@ nxdn_scch_busy_tuned(dsd_state* state, const struct nxdn_scch_info* info, long i
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->lastsynctype = DSD_SYNC_NONE;
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     (void)keyring_load_scalar_key(state, 0, (int)info->id);
     if (state->M == 1) {
         nxdn_cipher_force(state, 0x1);

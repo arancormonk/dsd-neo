@@ -12,6 +12,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
@@ -667,7 +668,9 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             LOG_INFO("NOTICE: TCP Connection Success!\n");
             return 0;
         }
-        if (opts->frame_m17 == 1) {
+        /* An M17-only session (-fz) waits for its server; under Auto, as in any other mode, a refused connect is an
+           error. */
+        if (dsd_m17_only_session(opts)) {
             dsd_sleep_ms(1000);
             continue;
         }
@@ -942,7 +945,9 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     }
 
     opts->audio_out_type = 8;
-    if (opts->monitor_input_audio != 1 && opts->frame_provoice != 1) {
+    /* Port + 2 carries the -8 monitor and an EDACS session's analog voice; Auto merely enabling ProVoice writes
+       none. */
+    if (opts->monitor_input_audio != 1 && !dsd_edacs_session(opts, state)) {
         return 0;
     }
 
@@ -956,9 +961,7 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
         LOG_INFO("NOTICE: %s:", opts->udp_hostname);
         LOG_INFO("NOTICE: %d \n", opts->udp_portno + 2);
     }
-    if (opts->frame_provoice == 1 && opts->trunk_enable == 1) {
-        opts->monitor_input_audio = 0;
-    }
+    (void)dsd_edacs_session_trunked_monitor_off(opts, state);
     return 0;
 }
 
@@ -1004,7 +1007,7 @@ dsd_engine_setup_open_audio_paths(dsd_opts* opts, dsd_state* state) {
         opts->split = 1;
         opts->pulse_digi_rate_out = 8000;
         opts->pulse_digi_out_channels = 1;
-        if (opts->audio_out_type == 0 && openAudioOutput(opts) != 0) {
+        if (opts->audio_out_type == 0 && openAudioOutput(opts, state) != 0) {
             return -1;
         }
         return 0;
@@ -1074,12 +1077,12 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
  * #625); the M17 encoder's VOX says its own once its user data is read (dsd_engine_note_m17_encoder_squelch()).
  */
 static int
-dsd_engine_setup_check_noise_squelch(const dsd_opts* opts) {
+dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* state) {
     const int mode = opts->rtl_squelch_mode;
     if (!dsd_squelch_mode_is_dynamic(mode)) {
         return 0;
     }
-    if (dsd_squelch_edacs_analog_voice(opts)) {
+    if (dsd_squelch_edacs_analog_voice(opts, state)) {
         if (!dsd_opts_input_is_radio(opts)) {
             LOG_INFO("NOTICE: --squelch %s runs on a radio input only: on this input an EDACS analog call ends on its "
                      "release marker or the fallback watchdog.\n",
@@ -1143,7 +1146,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
-    if (dsd_engine_setup_check_noise_squelch(opts) != 0) {
+    if (dsd_engine_setup_check_noise_squelch(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
@@ -2106,6 +2109,8 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     state->m17_pre_run = 0;
     state->m17_pre_candidate = 0;
     state->m17_pre_candidate_ttl = 0;
+    dsd_sync_hit_history_clear(&state->m17_join_hits);
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     m17_confirm_reset(state);
     /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
      * cannot span the dead channel that brought us here (issue #421). */
@@ -2881,8 +2886,10 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
            (dsd_engine_note_input_replaced()), here at the stream's start (issue #703). */
         dsd_trunk_tuning_requests_reset();
     }
-    /* What the carrier left sent is not the next one's identity: the received identity starts over. */
+    /* What the carrier left sent is not the next one's identity: the received identity starts over, and so does the
+       DMR RAS evidence. */
     dsd_rxid_reset(state);
+    dmr_ras_reset(state);
     state->carrier_seq++;
     /* Nor is a frame whose sync the hunt finds next, while what it reads back was buffered on the carrier left. */
     dsd_state_note_carrier_change(state);
@@ -3108,8 +3115,10 @@ dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
         return;
     }
     /* The received identity outlives the gap, as the last one heard, but no longer reads as live; a retune accepted
-       since the last frame drops the access code of the carrier it left. */
+       since the last frame drops the access code of the carrier it left. RAS is proved again by the next carrier, or
+       the next transmission. */
     dsd_rxid_apply_trunk_tune(state);
+    dmr_ras_reset(state);
     dsd_rxid_mark_stale(state);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
@@ -3171,14 +3180,14 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
 #endif
 
 static int
-live_scanner_open_audio_if_needed(dsd_opts* opts) {
+live_scanner_open_audio_if_needed(dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
         if (openAudioInput(opts) != 0) {
             return -1;
         }
     }
     if (opts->audio_out_type == 0) {
-        if (openAudioOutput(opts) != 0) {
+        if (openAudioOutput(opts, state) != 0) {
             return -1;
         }
     }
@@ -3284,7 +3293,9 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
         dsd_engine_cold_start_tick_locked(opts, state);
     }
     /* A retune these ticks accepted, before the next frame's first read. */
-    dsd_rxid_apply_trunk_tune(state);
+    if (dsd_rxid_apply_trunk_tune(state)) {
+        dmr_ras_reset(state);
+    }
     return frame_dispatchable;
 }
 
@@ -3549,7 +3560,7 @@ liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* 
         return -1;
     }
 #endif
-    if (live_scanner_open_audio_if_needed(opts) != 0) {
+    if (live_scanner_open_audio_if_needed(opts, state) != 0) {
         return -1;
     }
     /* The input is open, so the peer of an audio input is the one that demodulates it: ask it for the width the
@@ -3856,8 +3867,8 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
 }
 
 static int
-dsd_engine_run_open_audio_output_if_needed(dsd_opts* opts) {
-    if (opts->audio_out_type == 0 && openAudioOutput(opts) != 0) {
+dsd_engine_run_open_audio_output_if_needed(dsd_opts* opts, const dsd_state* state) {
+    if (opts->audio_out_type == 0 && openAudioOutput(opts, state) != 0) {
         return -1;
     }
     return 0;
@@ -3883,7 +3894,7 @@ dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_l
         return -1;
     }
 #endif
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
@@ -3897,7 +3908,7 @@ dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
                             int* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
@@ -3912,7 +3923,7 @@ dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
                             int* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
@@ -3925,7 +3936,7 @@ static int
 dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
                                    int* lifecycle_started) {
     opts->pulse_digi_rate_out = 8000;
-    if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
+    if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
@@ -4059,6 +4070,9 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     dsd_exitflag_store(0);
     /* This thread decodes the run: its accepted retunes drop the received identity's access code at once. */
     dsd_engine_set_decoder_thread(1);
+    /* A run boundary, before the P25 watchdog starts: its tunes read the decision this state publishes, not one an
+       earlier session left, and no notice the earlier session's watchdog posted is reconciled into this one. */
+    dsd_frame_sync_off_thread_tunes_reset(state);
 
     /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first
        record (the P25 SM log's event=init) and before the stream, the watchdog or a frontend reads the clock. Only on
@@ -4097,6 +4111,8 @@ ENGINE_OUT:
         hooks->stop(opts, state, hooks->context);
     }
     dsd_engine_cleanup(opts, state);
+    /* The watchdog has stopped: what this session published and noted goes with it. */
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
     /* The stream has stopped: the next session's decode time is the system's again. */
     dsd_engine_decode_clock_leave_replay(opts, state);
     dsd_engine_set_decoder_thread(0);

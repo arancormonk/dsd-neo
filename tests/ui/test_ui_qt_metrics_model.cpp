@@ -1516,6 +1516,77 @@ test_scan_row() {
     freeState(&state);
 }
 
+/* DMR RAS and the Relaxed CRC policy, from the app-control views every frontend reads (dmr_ras_view.h,
+ * crc_policy_view.h): the site sheet's RAS field and hint, and the Settings switch with its "this channel" line. Read
+ * by property name, as QML reads them. */
+static void
+test_dmr_ras_and_crc_policy() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int sites = 0;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::siteChanged, [&]() { ++sites; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controls; });
+    const auto read = [&model](const char* name) { return model.property(name); };
+
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    model.refresh(&opts, &state);
+    expect("ras: the properties exist", read("dmrRasDetected").isValid() && read("dmrRasNeedsRelaxed").isValid()
+                                            && read("relaxedCrcConfigured").isValid()
+                                            && read("relaxedCrcEffective").isValid()
+                                            && read("relaxedCrcRowOverride").isValid());
+    expect("ras: none on a plain DMR carrier",
+           !read("dmrRasDetected").toBool() && !read("dmrRasNeedsRelaxed").toBool());
+    expect("ras: strict by default", !read("relaxedCrcConfigured").toBool() && !read("relaxedCrcEffective").toBool()
+                                         && !read("relaxedCrcRowOverride").toBool());
+
+    int site_before = sites;
+    dsd_rxid_note_dmr_ras(&state);
+    model.refresh(&opts, &state);
+    expect("ras: detected, relaxed CRC needed",
+           read("dmrRasDetected").toBool() && read("dmrRasNeedsRelaxed").toBool() && sites == site_before + 1);
+
+    int control_before = controls;
+    site_before = sites;
+    dsd_opts_set_relaxed_crc(&opts, 1);
+    model.refresh(&opts, &state);
+    expect("ras: relaxed CRC on decodes it", read("dmrRasDetected").toBool() && !read("dmrRasNeedsRelaxed").toBool());
+    expect("ras: the policy follows -F", read("relaxedCrcConfigured").toBool() && read("relaxedCrcEffective").toBool()
+                                             && !read("relaxedCrcRowOverride").toBool());
+    expect("ras: the policy and the hint each announce themselves",
+           controls == control_before + 1 && sites == site_before + 1);
+
+    /* A scan row with its own --strict-crc decides for this channel while the configured value stays on. */
+    expect("ras: enter a DMR row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_option_values strict_row{};
+    strict_row.present = DSD_SCAN_OPT_CRC;
+    strict_row.strict_crc = 1;
+    expect("ras: strict row installed", dsd_scan_mode_options(&opts, &state, &strict_row) == 0);
+    model.refresh(&opts, &state);
+    expect("ras: a strict row overrides", read("relaxedCrcConfigured").toBool() && !read("relaxedCrcEffective").toBool()
+                                              && read("relaxedCrcRowOverride").toBool());
+    expect("ras: the strict row needs relaxed CRC again", read("dmrRasNeedsRelaxed").toBool());
+    dsd_scan_mode_leave(&opts, &state);
+    model.refresh(&opts, &state);
+    expect("ras: leaving the row restores the configured policy", read("relaxedCrcEffective").toBool()
+                                                                      && !read("relaxedCrcRowOverride").toBool()
+                                                                      && !read("dmrRasNeedsRelaxed").toBool());
+
+    /* Another carrier: no RAS until it proves its own. */
+    dsd_rxid_reset(&state);
+    model.refresh(&opts, &state);
+    expect("ras: a carrier boundary clears it",
+           !read("dmrRasDetected").toBool() && !read("dmrRasNeedsRelaxed").toBool());
+    model.clear();
+    expect("ras: a stop clears the policy",
+           !read("relaxedCrcConfigured").toBool() && !read("relaxedCrcEffective").toBool());
+    freeState(&state);
+}
+
 /* Issue #621: on audio input with a rigctl peer (-U) that demodulates it, the analog width is the passband the peer is
  * asked for. The monitor's Passband row offers it, no DSP rate bounds it, and an unset NFM width stands for -B (or the
  * peer's own passband without one), which the sheet shows and steps from. Without the peer PCM input filters nothing,
@@ -1785,6 +1856,7 @@ main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_tetra_rows();
     test_scan_row();
+    test_dmr_ras_and_crc_policy();
     test_rigctl_audio_passband();
     test_options_readiness();
     test_replay_input();

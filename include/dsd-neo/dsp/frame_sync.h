@@ -40,16 +40,37 @@ typedef enum {
  * Twice that leaves room for a noisy junction without leaving a candidate standing long enough
  * for an unrelated window to open a frame on it (issue #399).
  */
-#define DSD_FRAME_SYNC_M17_CANDIDATE_TTL   8
+#define DSD_FRAME_SYNC_M17_CANDIDATE_TTL       8
 
 /**
  * @brief Consecutive matching windows that make an alternating run an M17 preamble candidate.
  *
  * A single 8-symbol window within one error of the marker is not rare enough to act on -- noise
- * produces them, and each one used to open the whole M17 chain. A real preamble is 192 symbols,
- * so it offers some 180 consecutive matches and can spare these eight many times over.
+ * produces them, and each one used to open the whole M17 chain -- and neither is a run of eight,
+ * which sign-sliced receiver noise produced a few times a second. A real preamble is 192 symbols,
+ * so it offers some 180 consecutive matches and can spare 32 many times over; a transmission
+ * landed in after its preamble joins on its sync word three frames running instead
+ * (DSD_FRAME_SYNC_M17_FRAME_SYMBOLS).
  */
-#define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 8
+#define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS     32
+
+/** @brief Symbols in every NXDN frame: 384 bits, 192 symbols at either rate (NXDN TS 1-A 4.4; 40 ms at 9600 bps). */
+#define DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS      192U
+
+/** @brief How far an NXDN96 FSW may sit from a frame's spacing and still count, in symbols (TS 1-A 5.3.1.1.2 allows
+ * ±2 while the timing is held). */
+#define DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE 1U
+
+/** @brief Frames after the last accepted NXDN96 FSW its lock still times the next one by: the receiver loses frame
+ * sync after N7 = 5 FSWs missed in a row (TS 1-A 5.3.2, Table 5.9-3), so the sixth frame's FSW still counts. */
+#define DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES  6U
+
+/** @brief Marks an NXDN96 FSW hit (dsd_nxdn96_sync::hits) whose four-level reading was within the specification's two
+ * bit errors, as acquisition needs it; the plain sync type is a sign-only hit. */
+#define DSD_FRAME_SYNC_NXDN96_CLEAR_HIT        0x80U
+
+/** @brief Symbols in every M17 frame: a 16-bit sync burst and 368 bits of payload (M17 spec, Frame; 40 ms). */
+#define DSD_FRAME_SYNC_M17_FRAME_SYMBOLS       192U
 
 /**
  * @brief Non-zero when a symbol profile's level count admits only GFSK.
@@ -176,6 +197,75 @@ int dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* 
  * @param state Decoder state; NULL is a no-op.
  */
 void dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state);
+
+/**
+ * @brief End a P25p1 chain comparison in flight (dsd_p25p1_mod_compare) because the receiver is about to be retuned.
+ *
+ * A trunked grant or control-channel tune inherits the decoder's modulation and the learned P25p1 one, and while the
+ * comparison measures the other chain both name that chain. This puts both back on the chain leading so far -- the
+ * incumbent, unless the other chain has read more -- and ends the comparison without a verdict, so the tune that
+ * follows lands on it. A Phase 2 grant that has named its slot (dsd_state::p25_p2_active_slot) keeps the CQPSK it set:
+ * only the learned modulation goes back. The front end is left to the tune. The engine's voice and control-channel tune
+ * requests call it before they read the modulation, and put the comparison back when the tune fails; it does nothing
+ * when no comparison runs.
+ */
+void dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state);
+
+/**
+ * @brief The P25p1 modulation the session has learned, as a snapshot of it should record it: while a chain comparison
+ * runs, the chain leading so far rather than dsd_state::p25_p1_validated_rf_mod, which the other chain's frames
+ * overwrite during its pass. -1 for nothing learned.
+ */
+int dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state);
+
+/**
+ * @brief The P25p1 decision the decoder thread publishes for a tune made on another thread (the P25 watchdog's), read
+ * whole in one atomic load (dsd_frame_sync_p25p1_read_decision()).
+ */
+typedef struct {
+    int raw;     /* the published value, which a notice carries (dsd_frame_sync_note_off_thread_tune()) */
+    int running; /* a chain comparison runs */
+    int learned; /* the learned modulation: the leading chain while one runs; 0 C4FM, 1 CQPSK, -1 nothing learned */
+} dsd_p25p1_decision;
+
+/**
+ * @brief Publish @p state's P25p1 chain comparison and learned modulation (dsd_frame_sync_p25p1_learned_rf_mod()).
+ *
+ * The decoder thread owns both, and every step of the comparison publishes; a caller that writes either itself (a
+ * decoded NID's stamp, a tune's rollback, a trunk-scan target's restore) publishes after it.
+ */
+void dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state);
+
+/**
+ * @brief Read the published decision, once. Safe from any thread. An off-thread tune reads it once and uses that read
+ * both for the chain it tunes and for its notice.
+ */
+void dsd_frame_sync_p25p1_read_decision(dsd_p25p1_decision* out);
+
+/**
+ * @brief Note an accepted tune made off the decoder thread, with the decision it read (@p read) and tuned by. The
+ * decoder thread reconciles it at its next frame sync step (dsd_frame_sync_apply_off_thread_tunes()). Safe from any
+ * thread.
+ */
+void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
+
+/** @brief Whether a tune off the decoder thread awaits dsd_frame_sync_apply_off_thread_tunes(). Decoder thread. */
+int dsd_frame_sync_off_thread_tune_pending(void);
+
+/**
+ * @brief On the decoder thread, reconcile the tunes made off it since the last call, whatever the comparison did since:
+ * forget the sync join histories, make the learned modulation the chain the latest tune set, end a comparison still
+ * running there without a verdict, drop a verdict reached since on a comparison that tune captured, and put rf_mod and
+ * the front end (@p opts) back on the chain the tune set if a step since moved them. Runs under the P25 SM tick guard
+ * (taken when the caller does not hold it). 1 when one was reconciled.
+ */
+int dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief A run boundary (a new session on @p state, or its end): seed the published decision from @p state (or with
+ * nothing learned for NULL) and drop the notices posted so far, before the P25 watchdog starts. Decoder thread.
+ */
+void dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state);
 
 /**
  * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.

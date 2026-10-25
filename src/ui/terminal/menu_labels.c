@@ -10,6 +10,7 @@
 
 #include "menu_labels.h"
 #include <dsd-neo/app_control/analog_width_view.h>
+#include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
@@ -357,9 +358,10 @@ lbl_hpf_d(const void* v, char* b, size_t n) {
 const char*
 lbl_crc_relax(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const dsd_scan_settings* configured = menu_configured_scan_settings();
-    int relaxed = ((configured ? configured->aggressive_framesync : c->opts->aggressive_framesync) == 0);
-    DSD_SNPRINTF(b, n, "Relaxed CRC checks [%s]", onoff(relaxed));
+    /* The configured value the toggle edits; a scan row's own -F or --strict-crc says so when the toggle is pressed. */
+    dsd_app_crc_policy policy;
+    dsd_app_crc_policy_view(c ? c->opts : NULL, dsd_app_get_latest_snapshot(), &policy);
+    DSD_SNPRINTF(b, n, "Relaxed CRC checks [%s]", onoff(policy.configured));
     return b;
 }
 

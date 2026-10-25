@@ -22,11 +22,11 @@
 /* Why a dynamic setting in force runs as it does here (dsd_squelch_resolution): the policy every surface shares. The M17
    encoder's monitor and EDACS analog voice are analog channels (issue #625), with no dynamic squelch on audio input. */
 static uint8_t
-squelch_view_resolution(const dsd_opts* opts, const dsd_app_squelch_view* view) {
+squelch_view_resolution(const dsd_opts* opts, const dsd_state* state, const dsd_app_squelch_view* view) {
     const dsd_squelch_setting in_force = dsd_squelch_setting_dynamic(
         view->effective_noise ? DSD_SQUELCH_MODE_NOISE : DSD_SQUELCH_MODE_AUTO, view->effective_margin_db);
     return (uint8_t)dsd_squelch_setting_resolve(
-        &in_force, dsd_squelch_dynamic_input_kind(opts), dsd_squelch_channel_digital(opts),
+        &in_force, dsd_squelch_dynamic_input_kind(opts, state), dsd_squelch_channel_digital(opts, state),
         dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM, NULL);
 }
 
@@ -48,11 +48,12 @@ squelch_view_fill_running(const dsd_state* state, dsd_app_squelch_view* out) {
 /* Under a dynamic setting in force: why it is off here, how it runs, and what the tracker or the noise squelch shows. */
 static void
 squelch_view_fill_dynamic(const dsd_opts* opts, const dsd_state* state, dsd_app_squelch_view* out) {
-    out->auto_resolution = squelch_view_resolution(opts, out);
+    out->auto_resolution = squelch_view_resolution(opts, state, out);
     squelch_view_fill_running(state, out);
     /* EDACS reads the gate during an analog call only; the tracker that runs between calls (the control channel's
        carrier) says nothing about one (issue #625). */
-    out->edacs_voice = dsd_squelch_edacs_analog_voice(opts) && out->auto_resolution == DSD_SQUELCH_RESOLVED_AS_SET;
+    out->edacs_voice =
+        dsd_squelch_edacs_analog_voice(opts, state) && out->auto_resolution == DSD_SQUELCH_RESOLVED_AS_SET;
     out->edacs_call = out->edacs_voice && state->squelch_edacs_call ? 1U : 0U;
     out->noise_as_auto =
         out->effective_noise

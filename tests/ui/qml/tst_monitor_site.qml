@@ -43,6 +43,12 @@ Item {
             testContext.setMetric("tetraSiteLa", -1);
             testContext.setMetric("p25Phase2Seed", "");
             testContext.setMetric("p25Phase2SeedSet", false);
+            testContext.setMetric("dmrRasDetected", false);
+            testContext.setMetric("dmrRasNeedsRelaxed", false);
+            testContext.setMetric("relaxedCrcConfigured", false);
+            testContext.setMetric("relaxedCrcEffective", false);
+            testContext.setMetric("relaxedCrcRowOverride", false);
+            testContext.setMetric("optionsKnown", false);
             Ui.Theme.resetFontScale();
             root.width = 411;
             root.height = 700;
@@ -195,6 +201,119 @@ Item {
             compare(item("siteEdacsArea").text, "0");
             compare(item("siteEdacsCcLcn").text, "12");
             item("siteSheet").visible = false;
+        }
+        // DMR RAS (Restricted Access to System): the field and its hint read the app-control RAS view, in the
+        // terminal's and the console notice's words with the app's name for -F, and the sheet turns Relaxed CRC on
+        // through the same command and preference Settings uses.
+        function rasHelp() {
+            return "Relaxed CRC accepts control and data whose CRC check failed, and marks them. Turned on here, it stays on for later sessions until Settings turns it off.";
+        }
+        function rasNeedsRelaxed() {
+            return "DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; Relaxed CRC decodes them.";
+        }
+        function test_dmr_ras_field_and_relaxed_crc() {
+            testContext.useLifecycleHost(true);
+            testContext.resetCommands();
+            prefs.relaxedCrc = false;
+            try {
+                testContext.setMetric("siteProtocol", "DMR");
+                testContext.setMetric("siteLine", "DMR · CC 1 · RAS");
+                testContext.setMetric("siteConfirmed", true);
+                testContext.setMetric("dmrColorCode", 1);
+                testContext.setMetric("optionsKnown", true);
+                item("siteSheet").visible = true;
+                // No RAS: no field, no hint, no action.
+                tryCompare(item("siteDmrColor"), "visible", true);
+                verify(!item("siteDmrRas").visible);
+                verify(!item("siteDmrRasNote").visible);
+                verify(!item("siteRelaxedCrcButton").visible);
+
+                // RAS while Relaxed CRC is off.
+                testContext.setMetric("dmrRasDetected", true);
+                testContext.setMetric("dmrRasNeedsRelaxed", true);
+                tryCompare(item("siteDmrRas"), "visible", true);
+                compare(item("siteDmrRas").text, "RAS");
+                compare(item("siteDmrRas").parent.children[0].text, "Access");
+                verify(item("siteDmrRasNote").visible);
+                compare(item("siteDmrRasNote").text, rasNeedsRelaxed());
+                var button = item("siteRelaxedCrcButton");
+                verify(button.visible && button.enabled);
+                compare(button.text, "Turn on Relaxed CRC");
+                // What the action changes, beside it: the app-wide setting, in the Settings row's words.
+                verify(item("siteRelaxedCrcHelp").visible);
+                compare(item("siteRelaxedCrcHelp").text, rasHelp());
+                button.forceActiveFocus(Qt.TabFocusReason);
+                button.activate();
+                compare(commands.relaxedCrcRequests(), [true]);
+                compare(prefs.relaxedCrc, true);
+                compare(button.enabled, false); // waits for the session to confirm
+                verify(item("siteCloseButton").activeFocus, "focus moves to Close before the button disables");
+                testContext.setMetric("relaxedCrcConfigured", true);
+                testContext.setMetric("relaxedCrcEffective", true);
+                testContext.setMetric("dmrRasNeedsRelaxed", false);
+                tryCompare(button, "visible", false);
+                verify(!item("siteRelaxedCrcHelp").visible);
+                verify(item("siteCloseButton").activeFocus, "a keyboard user keeps a place in the sheet");
+                compare(item("siteDmrRasNote").text, "Relaxed CRC is on, so this RAS system's control and data decode.");
+                compare(item("siteDmrRas").text, "RAS");
+
+                // Relaxed CRC configured on under a scan row with its own --strict-crc: the row decides for this
+                // channel, the hint says so, and there is nothing left to turn on.
+                testContext.setMetric("relaxedCrcRowOverride", true);
+                testContext.setMetric("relaxedCrcEffective", false);
+                testContext.setMetric("dmrRasNeedsRelaxed", true);
+                tryCompare(item("siteDmrRasNote"), "text", rasNeedsRelaxed()
+                    + " This channel sets strict CRC itself; Relaxed CRC applies from the next channel without its own.");
+                verify(!item("siteRelaxedCrcButton").visible);
+                verify(!item("siteRelaxedCrcHelp").visible);
+
+                // Configured off under the same strict row: nothing says the configured value covers the next channel,
+                // and turning it on still matters for the channels after this one.
+                testContext.setMetric("relaxedCrcConfigured", false);
+                tryCompare(item("siteDmrRasNote"), "text", rasNeedsRelaxed());
+                verify(item("siteRelaxedCrcButton").visible && item("siteRelaxedCrcButton").enabled);
+                compare(item("siteRelaxedCrcHelp").text, rasHelp()
+                    + " This channel sets strict CRC itself, so it applies from the next channel.");
+                testContext.resetCommands();
+                item("siteRelaxedCrcButton").activate();
+                compare(commands.relaxedCrcRequests(), [true]);
+                compare(item("siteRelaxedCrcButton").enabled, false);
+                // A request belongs to the sheet it was made in: closed and opened again, the action is live.
+                item("siteSheet").visible = false;
+                item("siteSheet").visible = true;
+                verify(item("siteRelaxedCrcButton").enabled, "closing the sheet drops the pending request");
+                // So does a session change.
+                item("siteRelaxedCrcButton").activate();
+                compare(item("siteRelaxedCrcButton").enabled, false);
+                testContext.setLifecyclePhase(2);
+                verify(item("siteRelaxedCrcButton").enabled, "a session change drops the pending request");
+                testContext.setLifecyclePhase(0);
+
+                // A refused command leaves the preference alone and says so.
+                testContext.setMetric("relaxedCrcRowOverride", false);
+                testContext.setMetric("relaxedCrcConfigured", false);
+                prefs.relaxedCrc = false;
+                commands.setRelaxedCrcAccepted(false);
+                tryCompare(item("siteRelaxedCrcButton"), "visible", true);
+                item("siteRelaxedCrcButton").activate();
+                compare(prefs.relaxedCrc, false);
+                compare(item("siteDmrRasNote").text, rasNeedsRelaxed());
+                compare(item("siteRelaxedCrcError").text, "Could not change the running decoder's setting. Try again.");
+                verify(item("siteRelaxedCrcError").visible);
+
+                // Another protocol's sheet never shows the DMR field.
+                testContext.setMetric("siteProtocol", "P25");
+                testContext.setMetric("siteLine", "P25 · NAC 293");
+                tryCompare(item("siteDmrRas"), "visible", false);
+                verify(!item("siteDmrRasNote").visible);
+                verify(!item("siteRelaxedCrcButton").visible);
+                verify(!item("siteRelaxedCrcError").visible);
+                item("siteSheet").visible = false;
+            } finally {
+                prefs.relaxedCrc = false;
+                testContext.resetCommands();
+                testContext.useLifecycleHost(false);
+            }
         }
         function test_compact_site_reachable() {
             root.width = 320;

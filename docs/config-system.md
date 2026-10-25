@@ -683,8 +683,11 @@ changing the selected frame mask. This allows shared presets such as `auto` and
 candidates.
 
 `decode = "auto"` enables every digital candidate in the five-profile hunt
-matrix below, exactly as CLI `-fa` and the interactive Auto choice do. All three
-entry points select the same decoder set; only `-fa` additionally resets the
+matrix below (every digital mode except TETRA, so NXDN48 and NXDN96 too), exactly
+as CLI `-fa` and the interactive Auto choice do. Auto is also the default: a
+`[mode]` section without a `decode` key, or no `[mode]` at all, leaves a session
+on the decoder set it starts with, which is this one. All three entry points
+select the same decoder set; only `-fa` additionally resets the
 demodulator to C4FM and the audio layout to stereo, because on the config path
 those belong to the `demod` and `dmr_mono` keys, which are applied after the
 preset and therefore win. The hunt matrix:
@@ -701,10 +704,12 @@ Profiles without an enabled candidate are skipped. A successful sync retains
 the active rate, level count, symbol timing, and RTL-family channel profile.
 
 Autosave records the decoder set only when a preset reproduces it exactly: an
-`-fa` session saves `decode = "auto"` and reloads with every decoder enabled,
-while a session whose decoder set matches no preset saves no `decode` key at
-all and reloads with the initialization defaults left alone. Independent keys
-such as `dmr_mono` are still saved either way.
+`-fa` session, and one that never named a mode, saves `decode = "auto"` and
+reloads with every decoder enabled, while a session whose decoder set matches
+no preset saves no `decode` key at all and reloads with the decoder set it
+starts with left alone. An autosave written before Auto became the default
+(without a `decode` key) therefore reloads as Auto. Independent keys such as
+`dmr_mono` are still saved either way.
 Passive analog monitoring, native AM and already-framed M17 UDP input are
 outside this frame-sync hunt.
 

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -252,6 +253,15 @@ main(int argc, char** argv) {
             rc = 1;
         } else {
             printf("ENGINE_RESTART: run %d decoded \"%s\"\n", iteration, EXPECTED_PAYLOAD);
+        }
+        /* The P25p1 decision the run published for its watchdog's tunes, and their notices, end with the run: the next
+           session's watchdog reads nothing this one learned. */
+        dsd_p25p1_decision decision;
+        dsd_frame_sync_p25p1_read_decision(&decision);
+        if (decision.learned != -1 || decision.running || dsd_frame_sync_off_thread_tune_pending()) {
+            DSD_FPRINTF(stderr, "FAIL: run %d left its P25p1 decision published (learned %d, running %d)\n", iteration,
+                        decision.learned, decision.running);
+            rc = 1;
         }
 
         capture_destroy(&cap);

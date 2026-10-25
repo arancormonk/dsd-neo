@@ -4901,6 +4901,52 @@ test_monitor_converter_starts_over_where_the_stream_breaks(void) {
     g_tone_fs = 48000.0;
 }
 
+/* -6 records the input in every mode (docs/cli.md): a digital session's unsynced blocks reach the raw WAV with NXDN,
+   dPMR or M17 enabled too, under Auto (-fa) and NXDN48 alone (-fi) as with P25 alone (-f1). */
+static void
+test_raw_wav_records_unsynced_blocks_in_every_mode(void) {
+    enum { MODES = 3 };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    float block[960];
+    for (int m = 0; m < MODES; m++) {
+        install_fake_rtl_hooks(0);
+        init_analog_monitor_fixture(&opts, &state);
+        opts.analog_only = 0;
+        opts.monitor_input_audio = 0;
+        if (m == 0) {
+            opts.frame_dstar = opts.frame_x2tdma = opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_nxdn48 = 1;
+            opts.frame_nxdn96 = opts.frame_dmr = opts.frame_dpmr = opts.frame_provoice = opts.frame_ysf = 1;
+            opts.frame_m17 = 1;
+        } else if (m == 1) {
+            opts.frame_nxdn48 = 1;
+        } else {
+            opts.frame_p25p1 = 1;
+        }
+        char raw_path[DSD_TEST_PATH_MAX];
+        opts.wav_out_raw = open_raw_wav_out(raw_path, sizeof(raw_path), RAW_WAV_SINK_RATE);
+        assert(opts.wav_out_raw != NULL);
+        g_tone_phase = 0.0;
+        g_tone_fs = 48000.0;
+        fill_tone_block(block, 960U, 700.0, 3000.0);
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(&opts, &state, block, 960U) == 960U);
+        sf_close(opts.wav_out_raw);
+        opts.wav_out_raw = NULL;
+        SF_INFO info;
+        DSD_MEMSET(&info, 0, sizeof(info));
+        SNDFILE* wav = sf_open(raw_path, SFM_READ, &info);
+        assert(wav != NULL);
+        sf_close(wav);
+        if (info.frames != 960) {
+            DSD_FPRINTF(stderr, "raw WAV in mode %d: %lld frames, want 960\n", m, (long long)info.frames);
+        }
+        assert(info.frames == 960);
+        (void)remove(raw_path);
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 /* The -6 raw WAV across the same events: every block is written, and the converter starts over only where input was
    dropped (a dropped part-collected block) or the stream moved (a retune), never at a reception boundary. */
 static void
@@ -5296,6 +5342,7 @@ main(void) {
     test_monitor_at_48_khz_is_unconverted();
     test_monitor_converter_starts_over_where_the_stream_breaks();
     test_raw_wav_runs_on_across_a_reception_boundary();
+    test_raw_wav_records_unsynced_blocks_in_every_mode();
     test_mixed_rate_block_neither_plays_nor_records();
     test_provisional_rate_keeps_the_block();
     test_unconvertible_rate_stays_silent();

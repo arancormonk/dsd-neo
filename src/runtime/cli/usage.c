@@ -259,7 +259,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
 static void
 dsd_cli_usage_section_decode(void) {
     printf("Decoder options:\n");
-    printf("  -fa           Auto Detection\n");
+    printf("  -fa           Auto Detection (the default): every digital mode except TETRA (NXDN included)\n");
     printf("  -fA           Passive Analog Audio Monitor (NFM on a radio input)\n");
     printf("      --nfm-bandwidth-hz <Hz>  NFM channel-filter width, the full RF passband in whole Hz (8000..25000;\n");
     printf("                               default 16000). Not the tuner or audio bandwidth; it must fit the DSP\n");
@@ -347,7 +347,8 @@ dsd_cli_usage_section_decode(void) {
            "present.\n");
     printf("  *** configure M17 UDP/IP frame input with -i m17udp[:0.0.0.0:17000] and -fU\n");
     printf("\n");
-    printf("  NOTE: All frame types are now auto-detectable with -fa using multi-rate SPS hunting.\n");
+    printf(
+        "  NOTE: With no -f (or -fa) every frame type except TETRA is auto-detected using multi-rate SPS hunting.\n");
     printf("        M17 polarity is auto-detected from preamble; use -xz only to force inverted.\n");
     printf("\n");
 }

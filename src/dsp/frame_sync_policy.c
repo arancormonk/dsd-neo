@@ -102,6 +102,20 @@ frame_sync_trunk_scan_p25p1_trial(const dsd_opts* opts, const dsd_state* state) 
 }
 
 int
+frame_sync_sps_hunt_p25_probe_next_index(const dsd_opts* opts, int current) {
+    const int p1 = opts && opts->frame_p25p1 == 1;
+    const int p2 = opts && opts->frame_p25p2 == 1;
+    if (p1 && p2) {
+        return current == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4
+                                                            : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    if (p1) {
+        return DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    return p2 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : -1;
+}
+
+int
 dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return 3;

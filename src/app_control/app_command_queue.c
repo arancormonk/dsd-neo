@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -1371,6 +1373,7 @@ static void
 ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
     const int taken = ui_rxid_guard_enter(guard_held);
     dsd_rxid_reset(state);
+    dmr_ras_reset(state);
     dsd_state_note_carrier_change(state);
     ui_rxid_guard_leave(taken);
 }
@@ -1853,9 +1856,9 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_enable != 1 || (opts->frame_p25p1 != 1 && opts->frame_p25p2 != 1)) {
         return 0;
     }
-    /* Before any protocol is proven, -ft's startup control-channel hunt owns the receiver and no P25 recovery would
-       time a selected control channel out: the entry is an operator move, which restarts the hunt's window on the new
-       frequency without declaring it the control channel (issue #703). */
+    /* Before any protocol is proven, the P25 startup control-channel hunt of -ft or Auto owns the receiver and no P25
+       recovery would time a selected control channel out: the entry is an operator move, which restarts the hunt's
+       window on the new frequency without declaring it the control channel (issue #703). */
     if (!dsd_trunk_p25_recovery_allowed(opts, state) && dsd_trunk_p25_cold_start_presumed(opts, state)
         && dsd_state_trunk_cold_start_eligible(opts, state)) {
         return 0;
@@ -3881,8 +3884,8 @@ apply_cfg_pulse_in_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUse
 }
 
 static void
-apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_out_dev,
-                                int old_audio_out_type) {
+apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg,
+                                const char* old_audio_out_dev, int old_audio_out_type) {
     if (!cfg->has_output || cfg->output_backend != DSDCFG_OUTPUT_PULSE || old_audio_out_type != 0
         || opts->audio_out_type != 0) {
         return;
@@ -3901,7 +3904,7 @@ apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, con
     } else {
         opts->pa_output_idx[0] = '\0';
     }
-    if (openAudioOutput(opts) != 0) {
+    if (openAudioOutput(opts, state) != 0) {
         LOG_ERROR("Config: failed to open PulseAudio output\n");
     }
 }
@@ -4067,7 +4070,7 @@ apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUse
                           staged);
     apply_cfg_note_reopen(
         opts, state, apply_cfg_pulse_in_hot_restart(opts, state, cfg, in->audio_in_dev, in->audio_in_type), staged);
-    apply_cfg_pulse_out_hot_restart(opts, cfg, old_audio_out_dev, old_audio_out_type);
+    apply_cfg_pulse_out_hot_restart(opts, state, cfg, old_audio_out_dev, old_audio_out_type);
 }
 
 int
@@ -4205,6 +4208,8 @@ static const int k_ui_cmd_action_ids[] = {
 
 static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
+    /* Also an action: no payload flips Relaxed CRC, an int32_t sets it (ui_cmd_payload_is_valid()). */
+    DSD_APP_CMD_AGGR_SYNC_TOGGLE,
     DSD_APP_CMD_FORCE_KEY_SET,
     DSD_APP_CMD_GAIN_DELTA,
     DSD_APP_CMD_AGAIN_DELTA,
@@ -4516,7 +4521,7 @@ ui_cmd_payload_is_valid(const struct dsd_app_command* c) {
         return 0;
     }
     if (ui_cmd_is_action_id(c->id)) {
-        return c->n == 0U;
+        return c->n == 0U || (c->id == DSD_APP_CMD_AGGR_SYNC_TOGGLE && ui_cmd_payload_has_min_size(c, sizeof(int32_t)));
     }
     if (ui_cmd_id_in_list(c->id, k_ui_cmd_i32_ids, sizeof k_ui_cmd_i32_ids / sizeof k_ui_cmd_i32_ids[0])) {
         return ui_cmd_payload_has_min_size(c, sizeof(int32_t));
@@ -4668,11 +4673,26 @@ ui_cmd_handle_hpf_d_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return 1;
 }
 
+_Static_assert(sizeof(((dsd_state*)0)->ui_msg) >= (size_t)DSD_APP_CRC_POLICY_NOTICE_SIZE,
+               "the relaxed CRC notice lands in dsd_state::ui_msg whole");
+
+/* Relaxed CRC is one setting (dsd_opts_set_relaxed_crc()). The command runs against the configured baseline while a
+   scan row is on air (command_updates_scan_mode()); a row's own -F or --strict-crc stays in force over the edit until
+   the row leaves, and the toast says so. Without a payload it flips the setting (the terminal key and menu row); an
+   int32_t payload sets it, so a frontend acting on a snapshot one command behind cannot turn it the wrong way. */
 static int
 ui_cmd_handle_aggr_sync_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
-    (void)c;
-    opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1;
+    int on = dsd_opts_relaxed_crc(opts) ? 0 : 1;
+    if (c && c->n >= sizeof(int32_t)) {
+        int32_t value = 0;
+        DSD_MEMCPY(&value, c->data, sizeof value);
+        on = value != 0 ? 1 : 0;
+    }
+    dsd_opts_set_relaxed_crc(opts, on);
+    char notice[DSD_APP_CRC_POLICY_NOTICE_SIZE];
+    if (dsd_app_crc_policy_edit_notice(opts, state, notice, sizeof notice) == 1) {
+        ui_set_toast(state, 3, "%s", notice);
+    }
     return 1;
 }
 
@@ -4912,14 +4932,16 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
  * selected. Applying a preset ends both call epochs, drops the auto-modulation
  * votes and releases the modulation locks -- so re-applying the mode already in
  * effect would cut a live call and revert an operator's QPSK pick on a tap that
- * asked for nothing to change. Compared through dsd_infer_decode_mode_preset(),
- * which is the same reading the control binds to, so the skip and the selection
- * cannot answer differently.
+ * asked for nothing to change. A single preset is compared through
+ * dsd_infer_decode_mode_preset(), which is the same reading the control binds to, so
+ * for it the skip and the selection cannot answer differently.
  *
- * AUTO is excluded because there the reading is not an identification: AUTO is that
- * helper's catch-all for any frame set matching no single preset, so a session with
- * one protocol switched off answers AUTO without being it, and "listen for
- * everything" has to stay able to widen such a set back out.
+ * AUTO is read exactly instead (dsd_infer_decode_mode_preset_exact()), so there the
+ * two differ by design: AUTO is the lossy helper's catch-all for any frame set
+ * matching no single preset, so a session with one protocol switched off answers
+ * AUTO (its chip is lit) without being it, and "listen for everything" has to stay
+ * able to widen such a set back out. A session already on the whole AUTO set (-fa,
+ * and the default) is in Auto, and keeps its calls and modulation like any other.
  *
  * @param c        Command whose payload is already known to be wide enough.
  * @param out_mode Receives the requested mode whenever one could be read.
@@ -4941,7 +4963,9 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
         ui_set_toast(state, 5, "Refused: %s", dsd_decode_mode_needs_iq_text(*out_mode));
         return UI_CMD_APPLY_UNSUPPORTED;
     }
-    if (*out_mode != DSDCFG_MODE_AUTO && dsd_infer_decode_mode_preset(opts) == *out_mode) {
+    const dsdneoUserDecodeMode current =
+        *out_mode == DSDCFG_MODE_AUTO ? dsd_infer_decode_mode_preset_exact(opts) : dsd_infer_decode_mode_preset(opts);
+    if (current == *out_mode) {
         ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(*out_mode));
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -4978,6 +5002,22 @@ typedef struct {
 
 static ui_follow_state g_analog_entry_staged_follow;
 
+/* The EDACS addressing (dsd_state::ea_mode, esk_mask), which every preset but EDACS/ProVoice's and Auto's leaves
+   (dsd_stage_decode_mode_preset()) and no receive setting carries: a refused switch off an EDACS session puts it back
+   with the settings, or the EDACS decoder reads no control channel message. */
+typedef struct {
+    int ea_mode;
+    unsigned short esk_mask;
+} ui_edacs_addressing;
+
+static ui_edacs_addressing g_analog_entry_staged_edacs;
+
+static ui_edacs_addressing
+ui_edacs_addressing_of(const dsd_state* state) {
+    const ui_edacs_addressing a = {state->ea_mode, state->esk_mask};
+    return a;
+}
+
 static struct {
     int armed;
     int kind; /* the dsd_analog_demod the switch is onto */
@@ -4987,10 +5027,13 @@ static struct {
        (ui_commit_mode_identity()). */
     int commit_identity;
     dsd_scan_settings before;
-    ui_follow_state before_follow; /* the follow state before the switch, as `before` is its settings */
+    ui_follow_state before_follow;    /* the follow state before the switch, as `before` is its settings */
+    ui_edacs_addressing before_edacs; /* and the EDACS addressing */
     dsd_scan_settings after;
-    int has_between[2];           /* by dsd_analog_demod */
-    dsd_scan_settings between[2]; /* the settings the last superseded switch onto that kind left */
+    ui_edacs_addressing after_edacs;
+    int has_between[2];                   /* by dsd_analog_demod */
+    dsd_scan_settings between[2];         /* the settings the last superseded switch onto that kind left */
+    ui_edacs_addressing between_edacs[2]; /* and the addressing */
 } g_analog_entry;
 
 static void
@@ -5000,6 +5043,7 @@ ui_stage_analog_entry(const dsd_opts* opts, const dsd_state* state) {
     f->trunk_is_tuned = opts->trunk_is_tuned;
     DSD_MEMCPY(f->p25_vc_freq, state->p25_vc_freq, sizeof f->p25_vc_freq);
     DSD_MEMCPY(f->trunk_vc_freq, state->trunk_vc_freq, sizeof f->trunk_vc_freq);
+    g_analog_entry_staged_edacs = ui_edacs_addressing_of(state);
 }
 
 /*
@@ -5155,14 +5199,17 @@ ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog
     const int supersedes = g_analog_entry.armed && dsd_scan_settings_equal(&g_analog_entry_staged, &armed_after, 0);
     if (supersedes && dsd_analog_demod_is_valid(g_analog_entry.kind)) {
         g_analog_entry.between[g_analog_entry.kind] = g_analog_entry.after;
+        g_analog_entry.between_edacs[g_analog_entry.kind] = g_analog_entry.after_edacs;
         g_analog_entry.has_between[g_analog_entry.kind] = 1;
     } else if (!supersedes) {
         g_analog_entry.before = g_analog_entry_staged;
         g_analog_entry.before_follow = g_analog_entry_staged_follow;
+        g_analog_entry.before_edacs = g_analog_entry_staged_edacs;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_FM] = 0;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_AM] = 0;
     }
     dsd_scan_settings_capture(opts, state, &g_analog_entry.after);
+    g_analog_entry.after_edacs = ui_edacs_addressing_of(state);
     g_analog_entry.kind = opts->analog_demod;
     g_analog_entry.armed = 1;
 }
@@ -5377,6 +5424,24 @@ ui_settle_leave_revert_refused_at_once(dsd_opts* opts, dsd_state* state, const s
  * that request is made (a width of the kind restored changed while the switch was pending, which the rate cannot filter,
  * goes back to the one the front end runs), so the leave's rule only settles what the request, held or not, asked for.
  */
+/* The EDACS addressing that goes back with @p rollback (ui_analog_entry_rollback()): the one from before the switch, or
+   the one the superseded switch onto the kind the front end kept (@p kept) left. A command that set it since the
+   switch stands. */
+static void
+ui_revert_analog_entry_addressing(dsd_state* state, const dsd_scan_settings* rollback,
+                                  const svc_monitor_refusal* kept) {
+    if (state->ea_mode != g_analog_entry.after_edacs.ea_mode
+        || state->esk_mask != g_analog_entry.after_edacs.esk_mask) {
+        return;
+    }
+    const ui_edacs_addressing* edacs = &g_analog_entry.before_edacs;
+    if (rollback != &g_analog_entry.before && kept && dsd_analog_demod_is_valid(kept->kept_kind)) {
+        edacs = &g_analog_entry.between_edacs[kept->kept_kind];
+    }
+    state->ea_mode = edacs->ea_mode;
+    state->esk_mask = edacs->esk_mask;
+}
+
 static int
 ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc_monitor_refusal* kept) {
     if (!g_analog_entry.armed) {
@@ -5389,7 +5454,9 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     /* A width set after the switch does not mean the settings moved on, and the revert keeps it. */
     const int reverted = ui_analog_entry_unmoved(&now);
     if (reverted) {
-        dsd_scan_settings back = *ui_analog_entry_rollback(kept);
+        const dsd_scan_settings* rollback = ui_analog_entry_rollback(kept);
+        dsd_scan_settings back = *rollback;
+        ui_revert_analog_entry_addressing(state, rollback, kept);
         ui_analog_entry_keep_widths(&back, &now);
         /* What such a command set since the switch stands; what the switch itself set goes back with it. */
         ui_analog_entry_keep_unpublished(&back, &now, &g_analog_entry.after);
@@ -5411,7 +5478,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
         if (opts->analog_only) {
             (void)dsd_audio_ensure_analog_output(opts);
         } else {
-            (void)dsd_audio_ensure_digital_output(opts);
+            (void)dsd_audio_ensure_digital_output(opts, state);
         }
         dsd_symbol_analog_block_reset(state);
     }
@@ -5687,11 +5754,11 @@ decode_mode_stage_preset(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode 
 /* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and a
    digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
 static void
-decode_mode_ensure_output(dsd_opts* opts) {
+decode_mode_ensure_output(dsd_opts* opts, const dsd_state* state) {
     if (opts->analog_only) {
         (void)dsd_audio_ensure_analog_output(opts);
     } else {
-        (void)dsd_audio_ensure_digital_output(opts);
+        (void)dsd_audio_ensure_digital_output(opts, state);
     }
 }
 
@@ -5743,6 +5810,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     const int was_analog = opts->analog_only != 0;
     const int was_analog_family = dsd_opts_is_analog_family(opts);
     const int was_kind = opts->analog_demod;
+    const int was_edacs_session = dsd_edacs_session(opts, state);
     /* Asked before anything changes: a front end that would refuse the analog receive profile the new mode publishes
        leaves the session in its mode, instead of an analog decoder on a front end running something else. */
     if (decode_mode_check_receive_profile(opts, state, mode) != 0) {
@@ -5768,7 +5836,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
 #endif
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
-    decode_mode_ensure_output(opts);
+    decode_mode_ensure_output(opts, state);
     decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
@@ -5791,6 +5859,10 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     ui_commit_mode_change(opts, state);
     if (put_back) {
         return UI_CMD_APPLY_FAILED;
+    }
+    /* A switch that makes the session an EDACS one gets the -8 override startup gives one (as the EA toggle does). */
+    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
     }
     /* Under a scan's scope too: the carrier proves again, under the mode now in force, that it is two-slot TDMA. */
     state->tdma_carrier = 0U;
@@ -6116,10 +6188,11 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             state->nxdn_step = 0;
             state->nxdn_bw = 0;
             /* And what the received identity holds of them: the DMR trunking site, keeping the colour code the reset
-               keeps, and the NXDN location and IDAS site with the RAN. */
+               keeps, the DMR RAS evidence, and the NXDN location and IDAS site with the RAN. */
             {
                 const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
                 dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 0);
+                dmr_ras_reset(state);
                 dsd_rxid_forget_system(state, DSD_RXID_FAMILY_NXDN, 1);
                 ui_rxid_guard_leave(taken);
             }
@@ -6168,7 +6241,10 @@ apply_cmd_lockout_resolve_target(const dsd_state* state, const struct dsd_app_co
         DSD_MEMCPY(&slot, c->data, 1U);
     }
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, slot & 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+    /* An EDACS call has no talkgroup lockout to apply (as Skip passes it by); another protocol's call is locked out
+       whatever decoders are enabled beside it. */
+    if (dsd_call_state_get(state, slot & 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || DSD_SYNC_IS_EDACS(call.protocol)) {
         return 0;
     }
     // The over-the-air target, as Skip uses: it is the talkgroup every frontend
@@ -6665,9 +6741,6 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     uint8_t slot = 0U;
     uint32_t target = 0U;
     int upsert_rc = 0;
-    if (opts->frame_provoice == 1) {
-        return 1;
-    }
     if (!apply_cmd_lockout_resolve_target(state, c, &slot, &target)) {
         return 1;
     }
@@ -6702,14 +6775,17 @@ apply_cmd_skip_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     if (c->id != DSD_APP_CMD_SKIP_SLOT) {
         return UI_CMD_APPLY_UNHANDLED;
     }
-    if (!state || opts->frame_provoice == 1) {
+    if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
     uint8_t slot = 0;
     DSD_MEMCPY(&slot, c->data, sizeof slot);
     slot &= 1U;
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+    /* No call, or an EDACS call (EDACS has no call skip), is a no-op; another protocol's call is skipped whatever
+       decoders are enabled beside it, Auto's ProVoice included. */
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || DSD_SYNC_IS_EDACS(call.protocol)) {
         return UI_CMD_APPLY_COMPLETED;
     }
     const uint64_t target = call.ota_target_id ? call.ota_target_id : call.policy_target_id;
@@ -6752,7 +6828,14 @@ apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
     if (opts->frame_provoice != 1) {
         return;
     }
+    /* The first toggle under plain Auto selects EDACS addressing (-1 -> 0), and with it an EDACS session: what session
+       start gives one, the trunked UDP -8 override and the raw sink (or UDP port + 2), it gets now. */
+    const int was_edacs_session = dsd_edacs_session(opts, state);
     state->ea_mode = (state->ea_mode == 0) ? 1 : 0;
+    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
+        (void)dsd_audio_ensure_analog_output(opts);
+    }
     state->edacs_site_id = 0;
     state->edacs_lcn_count = 0;
     state->edacs_cc_lcn = 0;
@@ -7626,10 +7709,10 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_fro
  * DSD_APP_CMD_DECODE_MODE_SET does for the same move: the sink the new family writes to, the part-collected analog
  * monitor block of the old family's samples dropped, and on an RTL front end the receive-family switch with symbol
  * timing at the live demod rate (decode_mode_republish()). Without it the front end stays on the old family's
- * demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it
- * had, except that a digital mode writing raw audio (ProVoice, or the -8 source monitor) gets the raw sink a session
- * started in another digital mode never opened, as DECODE_MODE_SET gives it (dsd_audio_ensure_digital_output() is
- * idempotent), and that the digital modes it configures are noted with an RTL front end, as DECODE_MODE_SET notes them
+ * demodulator. A [mode] that stays inside its family keeps the config-apply behaviour it had, except that a digital
+ * mode writing raw audio (an EDACS session, or the -8 source monitor) gets the raw sink a session started in another
+ * digital mode never opened, as DECODE_MODE_SET gives it (dsd_audio_ensure_digital_output() is idempotent), and that
+ * the digital modes it configures are noted with an RTL front end, as DECODE_MODE_SET notes them
  * (svc_note_digital_decode_modes()): after a live switch onto the digital family they pick the FSK channel profile the
  * front end's CQPSK toggle returns to.
  */
@@ -7686,8 +7769,8 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
         return rc;
     }
     if (analog_only == old_analog_only) {
-        if (!analog_only && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-            (void)dsd_audio_ensure_digital_output(opts);
+        if (!analog_only && (dsd_edacs_session(opts, state) || opts->monitor_input_audio == 1)) {
+            (void)dsd_audio_ensure_digital_output(opts, state);
         }
         svc_note_digital_decode_modes(opts, state);
         return rc;
@@ -7695,7 +7778,7 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     if (analog_only) {
         (void)dsd_audio_ensure_analog_output(opts);
     } else {
-        (void)dsd_audio_ensure_digital_output(opts);
+        (void)dsd_audio_ensure_digital_output(opts, state);
     }
     dsd_symbol_analog_block_reset(state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -7750,6 +7833,30 @@ cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_i
     }
 }
 
+/* The apply commits here, past everything before it that can put the session back: a [mode] that stands leaves TETRA
+   unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and one
+   put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
+   (dsd_stage_user_config_to_opts()). */
+static void
+cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_edacs_session) {
+    if (cfg->has_mode) {
+        ui_commit_mode_change(opts, state);
+    }
+    /* A [mode], or an EDACS addressing mode the config set with or without one. */
+    ui_commit_mode_identity(opts, state);
+    /* A config that leaves the session an EDACS one it was not (edacs_ea, with or without a decode key, an
+       EDACS/ProVoice [mode]) gets what startup gives one, as the EA toggle does; read after any rollback put the receive
+       side back. */
+    if (!old_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
+        /* And the raw sink (or UDP port + 2) its analog calls play on, which plain Auto did not open at start: a
+           decode key's family change opened the sinks the mode writes already (apply_cfg_receive_family_change()). */
+        if (!cfg->has_mode) {
+            (void)dsd_audio_ensure_digital_output(opts, state);
+        }
+    }
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -7774,6 +7881,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
     const dsdneoUserDecodeMode old_decode_mode = dsd_infer_decode_mode_preset_exact(opts);
+    const int old_edacs_session = dsd_edacs_session(opts, state);
 
     DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
     DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
@@ -7816,15 +7924,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
-    /* The apply commits here, past everything above that can put the session back: a [mode] that stands leaves TETRA
-       unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and
-       one put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
-       (dsd_stage_user_config_to_opts()). */
-    if (cfg.has_mode) {
-        ui_commit_mode_change(opts, state);
-    }
-    /* A [mode], or an EDACS addressing mode the config set with or without one. */
-    ui_commit_mode_identity(opts, state);
+    cfg_commit_mode(opts, state, &cfg, old_edacs_session);
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);
     if (radio_rc != 0) {

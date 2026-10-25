@@ -989,7 +989,7 @@ Item {
                 readonly property bool navigationAllowed: Navigation.allows(backToResults)
                 Accessible.ignored: !navigationAllowed
                 Accessible.onPressAction: goBack()
-                activeFocusOnTab: !radioReference.busy && Navigation.allows(backToResults)
+                activeFocusOnTab: Navigation.allows(backToResults) && !radioReference.busy
                 Keys.onReturnPressed: goBack()
                 Keys.onSpacePressed: goBack()
                 FocusFrame {}

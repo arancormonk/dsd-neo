@@ -376,10 +376,12 @@ Item {
         }
         // While a session runs: where the search is. Its lines (statusLines) are
         // always kept for it, so a longer range name or channel count never
-        // moves the page.
+        // moves the page. Idle, the slot is the text's own height: its height,
+        // not implicitHeight, whose getter lays out pending text and changes
+        // itself under the binding reading it (a binding loop).
         Item {
             width: parent.width
-            height: screen.sessionActive ? screen.statusLines * Math.ceil(statusMetrics.lineSpacing) : statusText.implicitHeight
+            height: screen.sessionActive ? screen.statusLines * Math.ceil(statusMetrics.lineSpacing) : statusText.height
             Text {
                 id: statusText
                 objectName: "searchStatusLine"

@@ -175,9 +175,7 @@ Item {
         // Deferred: inside the signal the view is still applying the model
         // change, and a position asserted there does not survive it.
         function onCountChanged() {
-            Qt.callLater(root.pinToLatest)
-            // A prepend above the viewport moves the first row, not contentY.
-            Qt.callLater(root.noteOffset)
+            afterCountChange.restart()
         }
 
         // A drag that starts before the finger lifts is the reader deciding where
@@ -232,7 +230,26 @@ Item {
                 root.noteOffset()
             }
             if (root.deferred)
-                Qt.callLater(root.pinToLatest)
+                afterRelease.restart()
         }
+    }
+
+    // The deferred calls run from timers this object owns rather than
+    // Qt.callLater: a call queued that way still runs after the list and this
+    // object are torn down (the monitor or a history screen closing as calls
+    // land), in a context that no longer exists.
+    Timer {
+        id: afterCountChange
+        interval: 0
+        onTriggered: {
+            root.pinToLatest()
+            // A prepend above the viewport moves the first row, not contentY.
+            root.noteOffset()
+        }
+    }
+    Timer {
+        id: afterRelease
+        interval: 0
+        onTriggered: root.pinToLatest()
     }
 }

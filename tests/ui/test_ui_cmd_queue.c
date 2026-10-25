@@ -18,6 +18,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -2059,6 +2060,25 @@ test_operator_retune_rearms_cold_start(void) {
     rc |= expect_int("the entry after a raw P25 sync marks the hunt to park", sm->cold_start_park_pending, 1);
     rc |= expect_true("and restarts its window", sm->t_cold_start_armed_m >= before);
     rc |= expect_true("and declares no control channel", state.p25_cc_freq != 853000000L);
+
+    // Auto (-fa) presumes P25 for the startup hunt as -ft does: the entry is an operator move there too.
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_provoice = opts.frame_dpmr = opts.frame_m17 = 1;
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1;
+    state.ea_mode = -1;
+    sm->cold_start_park_pending = 0;
+    sm->t_cold_start_armed_m = 1.0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    before = dsd_decode_now_mono_s();
+    rc |= expect_int("Auto entry queued", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 854000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("Auto entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the Auto entry selects no control channel", g_cc_tune_calls, 0);
+    rc |= expect_int("the Auto entry tuned the radio", g_io_control_tune_calls, 1);
+    rc |= expect_int("the Auto entry marks the P25 startup hunt to park", sm->cold_start_park_pending, 1);
+    rc |= expect_true("and restarts its window", sm->t_cold_start_armed_m >= before);
+    opts.frame_nxdn48 = opts.frame_nxdn96 = opts.frame_provoice = opts.frame_dpmr = opts.frame_m17 = 0;
+    opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 0;
     state.lastsynctype = DSD_SYNC_NONE;
 
     sm->cold_start_park_pending = 0;
@@ -4390,6 +4410,31 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("auto re-enables p25", opts.frame_p25p1, 1);
     rc |= expect_int("auto keeps dmr", opts.frame_dmr, 1);
     rc |= expect_contains("auto names its own row", state.ui_msg, "Auto");
+    freeState(&state);
+
+    /* A session already running exactly the AUTO set (-fa, and the default) is in Auto, so a tap on the lit Auto chip
+     * changes nothing either: no call ends and the operator's QPSK pick and its lock stay. A set Auto only labels
+     * (one decoder switched off) still widens, as above. */
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("-fa session",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_counter = 7;
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1503);
+    rc |= expect_int("repeat auto mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AUTO),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat auto mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat auto keeps the operator's modulation", opts.mod_qpsk, 1);
+    rc |= expect_int("repeat auto keeps the modulation lock", opts.mod_cli_lock, 1);
+    rc |= expect_int("repeat auto leaves the hunt dwell alone", state.sps_hunt_counter, 7);
+    rc |= expect_call_phase("repeat auto leaves slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_call_phase("repeat auto leaves slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_contains("repeat auto still names the mode", state.ui_msg, "Auto");
 
     /* Both carry a payload, so the payload-less action API must refuse them. */
     rc |= expect_int("mod set rejects an action submit", dsd_app_command_action(DSD_APP_CMD_MOD_SET),
@@ -5861,6 +5906,7 @@ test_scoped_setting_toggles(void) {
     }
     init_test_context(opts, state);
     int rc = 0;
+    opts->audio_out_type = 9; /* Input Monitor turned on opens its sink: the null output opens none */
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->wav_sample_rate = 48000;
     opts->use_cosine_filter = 1;
@@ -6056,7 +6102,7 @@ test_scoped_row_option_commands(void) {
     rc |= expect_int("configured force updated", configured.force_key, 1);
     rc |= expect_int("configured mute updated", configured.dmr_mute_encL, 0);
     rc |= expect_int("configured CRC updated", configured.aggressive_framesync, 0);
-    rc |= expect_int("configured CSBK CRC default preserved", configured.dmr_crc_relaxed_default, 0);
+    rc |= expect_int("configured DMR CRC default follows", configured.dmr_crc_relaxed_default, 1);
     rc |= expect_int("configured data updated", configured.trunk_tune_data_calls, 1);
     rc |= expect_int("configured encrypted updated", configured.trunk_tune_enc_calls, 0);
     rc |= expect_int("queue data default again", post_empty(DSD_APP_CMD_TRUNK_DATA_TOGGLE),
@@ -6148,12 +6194,15 @@ test_scoped_direct_key_mutes(void) {
             dsd_scan_mode_leave(opts, state);
         }
     }
+    /* Relaxed CRC is one setting: the toggle moves the DMR CRC default with aggressive_framesync. */
     for (int relaxed = 0; relaxed < 2; relaxed++) {
-        opts->dmr_crc_relaxed_default = (uint8_t)relaxed;
+        dsd_opts_set_relaxed_crc(opts, relaxed);
         for (int toggle = 0; toggle < 2; toggle++) {
             post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
             (void)dsd_app_drain_cmds(opts, state);
-            rc |= expect_int("menu CRC toggle preserves CSBK policy", opts->dmr_crc_relaxed_default, relaxed);
+            const int want = (toggle == 0) ? !relaxed : relaxed;
+            rc |= expect_int("menu CRC toggle moves the DMR CRC default", opts->dmr_crc_relaxed_default, want);
+            rc |= expect_int("menu CRC toggle moves aggressive_framesync", opts->aggressive_framesync, !want);
         }
     }
     freeState(state);
@@ -7371,6 +7420,81 @@ test_temporary_lockout_commands(uint8_t slot) {
     return rc;
 }
 
+/* Seed an active group call on slot 0 of @p protocol to talkgroup @p tg. */
+static int
+seed_slot0_call(dsd_opts* opts, dsd_state* state, int protocol, uint64_t tg) {
+    dsd_call_observation observation = {.protocol = protocol,
+                                        .slot = 0U,
+                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                        .ota_target_id = tg,
+                                        .policy_target_id = tg,
+                                        .ota_source_id = 1,
+                                        .observed_m = dsd_decode_now_mono_s()};
+    const int rc =
+        expect_int("seed carve-out call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    return rc;
+}
+
+/*
+ * TG lockout and call skip pass an EDACS call by (EDACS has neither), but only an EDACS call: Auto enables ProVoice
+ * beside P25, DMR and NXDN, and a lockout or skip of a P25 or DMR call there applies, with or without EDACS addressing
+ * selected. Under the EDACS/ProVoice preset an EDACS call's lockout and skip stay no-ops, as before.
+ */
+static int
+test_lockout_and_skip_pass_only_an_edacs_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    static const int protocols[] = {DSD_SYNC_P25P1_POS, DSD_SYNC_DMR_BS_VOICE_POS};
+    for (int ea = -1; ea <= 0; ea++) {
+        for (size_t i = 0; i < sizeof protocols / sizeof protocols[0]; i++) {
+            init_decode_mode_context(&opts, &state);
+            rc |= expect_int(
+                "auto set",
+                dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+            state.ea_mode = ea;
+            opts.persist_tg_lockouts = 0;
+            rc |= seed_slot0_call(&opts, &state, protocols[i], 321U);
+            rc |= expect_true("auto lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+            rc |= expect_int("auto lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |=
+                expect_true("auto locks out the call's talkgroup", dsd_tg_policy_session_avoid_contains(&state, 321U));
+            freeState(&state);
+
+            init_decode_mode_context(&opts, &state);
+            (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+            state.ea_mode = ea;
+            rc |= seed_slot0_call(&opts, &state, protocols[i], 321U);
+            const double now = dsd_decode_now_mono_s();
+            rc |= expect_true("auto skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0U) > 0);
+            rc |= expect_int("auto skip drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_true("auto skips the call", dsd_tg_policy_call_skip_active(&state, 321U, now));
+            rc |= expect_call_phase("auto skip ends the call", &state, 0U, DSD_CALL_PHASE_ENDED);
+            freeState(&state);
+        }
+    }
+
+    /* An EDACS call, under Auto with EDACS selected and under the EDACS/ProVoice preset: both stay no-ops. */
+    static const dsdneoUserDecodeMode modes[] = {DSDCFG_MODE_AUTO, DSDCFG_MODE_EDACS_PV};
+    for (size_t m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+        init_decode_mode_context(&opts, &state);
+        (void)dsd_apply_decode_mode_preset(modes[m], DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+        state.ea_mode = 0;
+        opts.persist_tg_lockouts = 0;
+        rc |= seed_slot0_call(&opts, &state, DSD_SYNC_EDACS_POS, 654U);
+        const double now = dsd_decode_now_mono_s();
+        rc |= expect_true("edacs lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+        rc |= expect_true("edacs skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0U) > 0);
+        rc |= expect_int("edacs lockout and skip drained", dsd_app_drain_cmds(&opts, &state), 2);
+        rc |= expect_true("edacs lockout is a no-op", !dsd_tg_policy_session_avoid_contains(&state, 654U));
+        rc |= expect_true("edacs skip is a no-op", dsd_tg_policy_call_skip_count(&state, now) == 0);
+        rc |= expect_call_phase("edacs call stays active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+        freeState(&state);
+    }
+    return rc;
+}
+
 static int
 test_skip_commands(uint8_t slot) {
     static dsd_opts opts;
@@ -7423,11 +7547,6 @@ test_skip_commands(uint8_t slot) {
             rc |=
                 expect_int("seed skip call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
             dsd_event_sync_slot(&opts, &state, slot);
-            opts.frame_provoice = 1;
-            rc |= expect_true("ProVoice skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, slot) > 0);
-            rc |= expect_int("ProVoice skip drained", dsd_app_drain_cmds(&opts, &state), 1);
-            rc |= expect_true("ProVoice skip no-op", dsd_tg_policy_call_skip_count(&state, now) == 0);
-            opts.frame_provoice = 0;
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
             g_skip_arm_refused = 1;
             rc |= expect_true("refused skip arm queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, slot) > 0);
@@ -8822,14 +8941,15 @@ static int g_ensure_digital_rate;
 /* g_ensure_off_null_calls is defined with the other test state at the top of the file. */
 
 static void
-note_ensure_output(const dsd_opts* opts, const char* helper, int digital) {
+note_ensure_output(const dsd_opts* opts, const dsd_state* state, const char* helper, int digital) {
     if (digital && g_ensure_fake_digital_sink != NULL
-        && (const void*)opts->audio_out_stream == g_ensure_fake_digital_sink && opts->frame_provoice != 1
+        && (const void*)opts->audio_out_stream == g_ensure_fake_digital_sink && !dsd_edacs_session(opts, state)
         && opts->monitor_input_audio != 1) {
         g_ensure_fake_digital_sink_calls++;
         return;
     }
-    if (opts->audio_out_type != 9) {
+    /* The null output opens nothing, nor does UDP output (a socket through the UDP audio hook, never a host device). */
+    if (opts->audio_out_type != 9 && opts->audio_out_type != 8) {
         g_ensure_off_null_calls++;
         DSD_FPRINTF(stderr, "%s reached with audio_out_type %d; start the case from init_decode_mode_context()\n",
                     helper, opts->audio_out_type);
@@ -8839,18 +8959,18 @@ note_ensure_output(const dsd_opts* opts, const char* helper, int digital) {
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts);
-int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
+int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state);
 
 int
 __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
-    note_ensure_output(opts, "dsd_audio_ensure_analog_output()", 0);
+    note_ensure_output(opts, NULL, "dsd_audio_ensure_analog_output()", 0);
     g_ensure_analog_calls++;
     return 0;
 }
 
 int
-__wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
-    note_ensure_output(opts, "dsd_audio_ensure_digital_output()", 1);
+__wrap_dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state) {
+    note_ensure_output(opts, state, "dsd_audio_ensure_digital_output()", 1);
     g_ensure_digital_calls++;
     g_ensure_digital_channels = opts->pulse_digi_out_channels;
     g_ensure_digital_rate = opts->pulse_digi_rate_out;
@@ -8884,6 +9004,250 @@ test_decode_mode_set_ensures_family_sink(void) {
     rc |= expect_int("digital sink mode drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("digital mode ensures the digital sink", g_ensure_digital_calls, 1);
     rc |= expect_int("digital mode leaves the raw sink", g_ensure_analog_calls, 0);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Plain Auto opens no EDACS raw sink at start (no EDACS addressing selected). The first EA toggle selects EDACS
+ * addressing (ea_mode -1 -> 0), and with it the session becomes an EDACS one whose raw sink is opened then; a toggle
+ * between the two addressing modes changes nothing about the sink. Input Monitor turned on opens the sink it writes.
+ */
+static int
+test_edacs_selection_and_input_monitor_ensure_their_sink(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("plain auto",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    rc |= expect_int("plain auto has no EDACS addressing", state.ea_mode, -1);
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+    rc |= expect_int("first EA toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("first EA toggle selects standard addressing", state.ea_mode, 0);
+    rc |= expect_int("selecting EDACS ensures its raw sink", g_ensure_analog_calls, 1);
+    post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+    rc |= expect_int("second EA toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("second EA toggle selects extended addressing", state.ea_mode, 1);
+    rc |= expect_int("an addressing change opens nothing more", g_ensure_analog_calls, 1);
+    freeState(&state);
+
+    /* A config that selects EDACS addressing on plain Auto, with or without a [mode] decode key, makes the session an
+       EDACS one, whose raw sink it opens: Auto opened none at start. */
+    for (int has_mode = 0; has_mode <= 1; has_mode++) {
+        init_decode_mode_context(&opts, &state);
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+        opts.monitor_input_audio = 0;
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_mode = has_mode;
+        cfg.decode_mode = DSDCFG_MODE_AUTO;
+        cfg.has_edacs_variant = 1;
+        cfg.edacs_ea = 1;
+        g_ensure_analog_calls = g_ensure_digital_calls = 0;
+        (void)dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int(has_mode ? "config [mode] + edacs_ea: an EDACS session" : "config edacs_ea: an EDACS session",
+                         dsd_edacs_session(&opts, &state), 1);
+        /* The digital output an EDACS session writes, its raw sink with it (dsd_audio_ensure_digital_output()). */
+        rc |= expect_int(has_mode ? "config [mode] + edacs_ea opens its sinks" : "config edacs_ea opens its sinks",
+                         g_ensure_digital_calls, 1);
+        freeState(&state);
+    }
+
+    /* `-fa -T -8 -o udp`: the toggle that makes the session EDACS turns -8 off, as startup does for `-fh -T -8 -o udp`
+       (engine output setup); the same session untrunked, or trunked on another output, keeps it, as startup does. */
+    static const struct {
+        int out_type;
+        int trunk;
+        int monitor_after;
+        const char* tag;
+    } k_monitor_cases[] = {
+        {8, 1, 0, "trunked udp: selecting EDACS turns -8 off"},
+        {8, 0, 1, "untrunked udp: selecting EDACS keeps -8"},
+        {9, 1, 1, "trunked null output: selecting EDACS keeps -8"},
+    };
+
+    for (size_t i = 0; i < sizeof k_monitor_cases / sizeof k_monitor_cases[0]; i++) {
+        init_decode_mode_context(&opts, &state);
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+        opts.audio_out_type = k_monitor_cases[i].out_type;
+        opts.trunk_enable = k_monitor_cases[i].trunk;
+        opts.monitor_input_audio = 1;
+        post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+        rc |= expect_int("monitor case EA toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(k_monitor_cases[i].tag, opts.monitor_input_audio, k_monitor_cases[i].monitor_after);
+        /* Already an EDACS session: a second toggle changes nothing about -8. */
+        opts.monitor_input_audio = 1;
+        post_empty(DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
+        rc |= expect_int("monitor case second EA toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("an addressing change keeps -8", opts.monitor_input_audio, 1);
+        freeState(&state);
+    }
+
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.monitor_input_audio = 0;
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    rc |= expect_int("input monitor queued", dsd_app_command_action(DSD_APP_CMD_INPUT_MONITOR_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("input monitor drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("input monitor on", opts.monitor_input_audio, 1);
+    rc |= expect_int("input monitor ensures its sink", g_ensure_analog_calls, 1);
+    freeState(&state);
+    return rc;
+}
+
+/* A trunked UDP session (`-T -8 -o udp`) under plain Auto, or under DMR, with -8 on: no EDACS session yet. */
+static void
+init_trunked_udp_monitor_session(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, int trunk) {
+    init_decode_mode_context(opts, state);
+    (void)dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    state->ea_mode = -1;
+    opts->audio_out_type = 8;
+    opts->trunk_enable = trunk;
+    opts->monitor_input_audio = 1;
+}
+
+/*
+ * The other two ways a running session becomes an EDACS one apply the trunked UDP -8 override startup applies (`-fh -T
+ * -8 -o udp`), as the EA toggle does: a decode-mode switch to EDACS/ProVoice, and a config apply that selects EDACS
+ * addressing (Auto with edacs_ea). Untrunked, or already an EDACS session, -8 stays.
+ */
+static int
+test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    static const dsdneoUserDecodeMode k_from[] = {DSDCFG_MODE_AUTO, DSDCFG_MODE_DMR};
+    for (size_t i = 0; i < sizeof k_from / sizeof k_from[0]; i++) {
+        for (int trunk = 0; trunk <= 1; trunk++) {
+            init_trunked_udp_monitor_session(&opts, &state, k_from[i], trunk);
+            rc |= expect_int("edacs mode queued",
+                             dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_EDACS_PV),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int("edacs mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int("edacs mode is an EDACS session", dsd_edacs_session(&opts, &state), 1);
+            rc |= expect_int(trunk ? "trunked switch to EDACS turns -8 off" : "untrunked switch to EDACS keeps -8",
+                             opts.monitor_input_audio, trunk ? 0 : 1);
+            /* Already EDACS: switching to Auto keeps the addressing and the session, and -8 turned back on stays. */
+            opts.monitor_input_audio = 1;
+            rc |= expect_int("edacs to auto queued",
+                             dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AUTO),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int("edacs to auto drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_int("an EDACS session staying one keeps -8", opts.monitor_input_audio, 1);
+            freeState(&state);
+        }
+    }
+
+    for (int trunk = 0; trunk <= 1; trunk++) {
+        init_trunked_udp_monitor_session(&opts, &state, DSDCFG_MODE_AUTO, trunk);
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_mode = 1;
+        cfg.decode_mode = DSDCFG_MODE_AUTO;
+        cfg.has_edacs_variant = 1;
+        cfg.edacs_ea = 1;
+        rc |= expect_int("config edacs_ea queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config edacs_ea drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config edacs_ea is an EDACS session", dsd_edacs_session(&opts, &state), 1);
+        rc |= expect_int(trunk ? "trunked config edacs_ea turns -8 off" : "untrunked config edacs_ea keeps -8",
+                         opts.monitor_input_audio, trunk ? 0 : 1);
+        /* The same config again: already an EDACS session, -8 turned back on stays. */
+        opts.monitor_input_audio = 1;
+        rc |= expect_int("config edacs_ea again queued",
+                         dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config edacs_ea again drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config on an EDACS session keeps -8", opts.monitor_input_audio, 1);
+        freeState(&state);
+    }
+    return rc;
+}
+
+/*
+ * A -m lock holds across a config apply whose [mode] names a decode set and no demod: the preset keeps the lock's
+ * modulation (`-mq` then `decode = "p25p1"` runs P25p1 on the QPSK lock, as `-mq -f1` does). A [mode] demod applies
+ * after the preset and decides the modulation itself.
+ */
+static int
+test_config_mode_without_demod_keeps_the_modulation_lock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "config p25p1 without demod");
+    rc |= expect_int("config p25p1 without demod: P25p1", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_P25P1, 1);
+    rc |= expect_int("config p25p1 without demod: lock kept", opts.mod_cli_lock, 1);
+    rc |= expect_int("config p25p1 without demod: QPSK kept", opts.mod_qpsk == 1 && opts.mod_c4fm == 0, 1);
+    rc |= expect_int("config p25p1 without demod: rf_mod QPSK", state.rf_mod, 1);
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_P25P1;
+    cfg.has_demod = 1;
+    cfg.demod_path = DSDCFG_DEMOD_C4FM;
+    rc |= expect_int("config p25p1 with demod queued",
+                     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config p25p1 with demod drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("config p25p1 with demod: C4FM", opts.mod_c4fm == 1 && opts.mod_qpsk == 0, 1);
+    rc |= expect_int("config p25p1 with demod: rf_mod C4FM", state.rf_mod, 0);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Leaving EDACS for another mode leaves its addressing: EDACS (here with -fE's extended addressing and ESK), then DMR,
+ * then Auto is plain Auto, not an EDACS session, and a trunked one presumes P25 for its startup hunt. EDACS straight to
+ * Auto keeps it (above). A scan row's own preset is no such switch: a DMR row on air and left keeps the configured
+ * EDACS addressing.
+ */
+static int
+test_leaving_edacs_clears_its_addressing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.trunk_enable = 1;
+    static const dsdneoUserDecodeMode k_path[] = {DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DMR, DSDCFG_MODE_AUTO};
+    for (size_t i = 0; i < sizeof k_path / sizeof k_path[0]; i++) {
+        rc |= expect_int("mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)k_path[i]),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+        if (k_path[i] == DSDCFG_MODE_EDACS_PV) {
+            state.ea_mode = 1;
+            state.esk_mask = 0xA0;
+        }
+    }
+    rc |= expect_int("EDACS, DMR, Auto: no addressing", state.ea_mode, -1);
+    rc |= expect_int("EDACS, DMR, Auto: no ESK", state.esk_mask, 0);
+    rc |= expect_int("EDACS, DMR, Auto is no EDACS session", dsd_edacs_session(&opts, &state), 0);
+    rc |= expect_int("EDACS, DMR, Auto presumes P25", dsd_trunk_p25_cold_start_presumed(&opts, &state), 1);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    state.ea_mode = 1;
+    state.esk_mask = 0xA0;
+    rc |= expect_int("dmr row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("dmr row runs DMR", opts.frame_dmr, 1);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("dmr row left: EDACS again", opts.frame_provoice, 1);
+    rc |= expect_int("dmr row left: addressing kept", state.ea_mode, 1);
+    rc |= expect_int("dmr row left: ESK kept", state.esk_mask, 0xA0);
     freeState(&state);
     return rc;
 }
@@ -9009,6 +9373,22 @@ test_identity_forgetting_commands_clear_the_record(void) {
     post_empty(DSD_APP_CMD_DMR_RESET);
     rc |= expect_int("dmr reset drained again", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("dmr reset forgets the nxdn location and ran", (int)state.rx_id.valid, 0);
+    /* And the DMR RAS evidence: a confirmation goes with its part (the colour code stays), and one signature before the
+       reset and one after do not confirm. */
+    dsd_rxid_reset(&state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dmr_ras_note_signature(&state);
+    dmr_ras_note_signature(&state);
+    rc |= expect_int("ras confirmed", (int)state.rx_id.valid, DSD_RXID_ACCESS | DSD_RXID_DMR_RAS);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained with ras", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("dmr reset forgets ras", (int)state.rx_id.valid, DSD_RXID_ACCESS);
+    rc |= expect_int("dmr reset forgets the confirmation", dmr_ras_confirmed(&state), 0);
+    dmr_ras_note_signature(&state);
+    post_empty(DSD_APP_CMD_DMR_RESET);
+    rc |= expect_int("dmr reset drained with one signature", dsd_app_drain_cmds(&opts, &state), 1);
+    dmr_ras_note_signature(&state);
+    rc |= expect_int("one signature on each side of a dmr reset", dmr_ras_confirmed(&state), 0);
     freeState(&state);
 
     init_decode_mode_context(&opts, &state);
@@ -9078,10 +9458,12 @@ test_user_moves_while_trunking_forget_the_record(void) {
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
     seed_p25_record(&state);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
+    state.dmr_ras_signatures = 1U; /* the carrier left's RAS evidence */
     rc |= expect_int("user return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("user return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("a user return-to-CC forgets the record", (int)state.rx_id.valid, 0);
+    rc |= expect_int("a user return-to-CC forgets the RAS evidence", (int)state.dmr_ras_signatures, 0);
     rc |= expect_true("the ended call keeps the system it ended with",
                       state.event_history_s[0].Event_History_Items[1].sys_id2 == 0x348U);
     freeState(&state);
@@ -11232,6 +11614,32 @@ test_config_apply_switches_rtl_receive_family(void) {
     rc |= expect_int("config provoice asks for no family", g_analog_req_calls, 0);
     rc |= expect_int("config provoice opens its raw sink", g_ensure_digital_calls, 1);
     rc |= expect_int("config provoice is not the analog monitor", g_ensure_analog_calls, 0);
+
+    /* ProVoice to Auto keeps the addressing the EDACS/ProVoice preset selected: still an EDACS session, whose raw sink
+       is ensured. Plain Auto, with no EDACS addressing selected, writes no raw audio, and Auto with edacs_ea selects
+       EDACS again. */
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AUTO, "config edacs to auto");
+    rc |= expect_int("config edacs to auto ensures its raw sink", g_ensure_digital_calls, 1);
+    state.ea_mode = -1;
+    reset_rx_family_wrap();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_AUTO, "config plain auto");
+    rc |= expect_int("config plain auto opens no raw sink", g_ensure_digital_calls + g_ensure_analog_calls, 0);
+    reset_rx_family_wrap();
+    {
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_mode = 1;
+        cfg.decode_mode = DSDCFG_MODE_AUTO;
+        cfg.has_edacs_variant = 1;
+        cfg.edacs_ea = 1;
+        rc |= expect_int("config auto edacs_ea queued",
+                         dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config auto edacs_ea drained", dsd_app_drain_cmds(&opts, &state), 1);
+    }
+    rc |= expect_int("config auto edacs_ea selects extended addressing", state.ea_mode, 1);
+    rc |= expect_int("config auto edacs_ea ensures the raw sink", g_ensure_digital_calls, 1);
 
     g_fake_digital_rate = 0U;
     state.rtl_ctx = NULL;
@@ -14893,6 +15301,68 @@ test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
         (void)dsd_app_drain_cmds(&opts, &state);
         DSD_SNPRINTF(tag, sizeof tag, "tetra %s: taken, TETRA left", via[config]);
         rc |= expect_true(tag, opts.analog_only == 1 && opts.frame_tetra == 0 && tetra_session_left(&state));
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
+/*
+ * An EDACS session's switch onto Analog or AM that the front end refuses, by its request or where it lands, goes back
+ * to the EDACS session with its addressing: the analog preset leaves EDACS addressing (ea_mode, esk_mask), which no
+ * receive setting carries, so the switch's rollback keeps it, and without it the EDACS decoder reads no control
+ * channel message. A switch that stands leaves it.
+ */
+static int
+test_refused_switch_onto_analog_keeps_edacs_addressing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const int kinds[] = {DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
+    char tag[96];
+    int rc = 0;
+    for (int k = 0; k < 2; k++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.0M:0:0:48");
+        opts.rtl_dsp_bw_khz = 48;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_EDACS_PV);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        state.ea_mode = 1; /* -fE: extended addressing with the ESK */
+        state.esk_mask = 0xA0;
+        reset_rx_family_wrap();
+        g_fake_cqpsk = 0;
+        g_fake_analog_family = 0;
+
+        g_analog_req_result = -1;
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)kinds[k]);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        g_analog_req_result = 0;
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d refused at once: back on EDACS with its addressing", k);
+        rc |= expect_true(tag, opts.analog_only == 0 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_EDACS_PV
+                                   && state.ea_mode == 1 && state.esk_mask == 0xA0);
+
+        reset_rx_family_wrap();
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)kinds[k]);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d pending: on the analog monitor", k);
+        rc |= expect_true(tag, opts.analog_only == 1);
+        demod_thread_refuses_analog_keeping_kind(0, DSD_ANALOG_DEMOD_FM, 0);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d refused where it landed: back on EDACS with its addressing", k);
+        rc |= expect_true(tag, opts.analog_only == 0 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_EDACS_PV
+                                   && state.ea_mode == 1 && state.esk_mask == 0xA0);
+
+        reset_rx_family_wrap();
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)kinds[k]);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        demod_thread_lands(0);
+        g_fake_analog_family = 1;
+        (void)dsd_app_drain_cmds(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d taken: the addressing left", k);
+        rc |= expect_true(tag, opts.analog_only == 1 && state.ea_mode == -1 && state.esk_mask == 0);
         state.rtl_ctx = NULL;
         freeState(&state);
     }
@@ -19506,6 +19976,10 @@ main(void) {
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= test_decode_mode_set_ensures_family_sink();
+    rc |= test_edacs_selection_and_input_monitor_ensure_their_sink();
+    rc |= test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off();
+    rc |= test_leaving_edacs_clears_its_addressing();
+    rc |= test_config_mode_without_demod_keeps_the_modulation_lock();
     rc |= test_decode_mode_set_closes_nfm_recording_named();
     rc |= test_provoice_toggle_closes_nfm_recording_named();
     rc |= test_identity_forgetting_commands_clear_the_record();
@@ -19593,6 +20067,7 @@ main(void) {
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
+    rc |= test_refused_switch_onto_analog_keeps_edacs_addressing();
     rc |= test_queued_switch_off_tetra_commits_once_taken();
     rc |= test_mode_change_forgets_identity_once_it_stands();
     rc |= test_refused_switch_off_tetra_keeps_the_follow();
@@ -19649,6 +20124,7 @@ main(void) {
     rc |= test_patched_call_user_blocks_target_supergroup();
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
+    rc |= test_lockout_and_skip_pass_only_an_edacs_call();
     rc |= test_skip_commands(0);
     rc |= test_skip_commands(1);
     rc |= test_temporary_lockout_commands(0);

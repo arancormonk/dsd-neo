@@ -93,10 +93,22 @@ static int g_set_event_log_rc;
 static char g_set_event_log_path[256];
 
 int
-openAudioOutput(dsd_opts* opts) {
+openAudioOutput(dsd_opts* opts, const dsd_state* state) {
     (void)opts;
+    (void)state;
     g_open_audio_calls++;
     return g_open_audio_rc;
+}
+
+/* The analog sink Input Monitor turns on: a session that did not start with -8 opened none (Auto included). */
+static int g_ensure_analog_calls;
+static int g_ensure_analog_rc;
+
+int
+dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return g_ensure_analog_rc;
 }
 
 void
@@ -290,8 +302,21 @@ test_audio_actions(void) {
 
     cmd.id = DSD_APP_CMD_INPUT_MONITOR_TOGGLE;
     cmd.n = 0;
+    g_ensure_analog_calls = 0;
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
     rc |= expect_int("input monitor toggle enables", opts.monitor_input_audio, 1);
+    rc |= expect_int("input monitor enable opens its sink", g_ensure_analog_calls, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_int("input monitor toggle disables", opts.monitor_input_audio, 0);
+    rc |= expect_int("input monitor disable opens nothing", g_ensure_analog_calls, 1);
+    /* A sink that cannot open leaves the monitor off and says so. */
+    g_ensure_analog_rc = -1;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    g_ensure_analog_rc = 0;
+    rc |= expect_int("input monitor stays off without a sink", opts.monitor_input_audio, 0);
+    rc |= expect_true("input monitor sink failure is said", strstr(state.ui_msg, "Input Monitor") != NULL);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_int("input monitor enables once the sink opens", opts.monitor_input_audio, 1);
     cmd.id = DSD_APP_CMD_COSINE_FILTER_TOGGLE;
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
     rc |= expect_int("cosine filter toggle enables", opts.use_cosine_filter, 1);

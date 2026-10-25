@@ -30,21 +30,28 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "dsd-neo/platform/platform.h"
 #include "dsd-neo/platform/sockets.h"
+#include "dsd-neo/platform/threading.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
 #include "scan_analog_internal.h"
 
@@ -235,6 +242,23 @@ dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;
 }
 
+/* dsd_frame_sync_p25p1_mod_compare_end_for_tune() is the real one (src/dsp/frame_sync_p25p1_compare.c); the CQPSK
+ * dwell it arms lives in frame sync. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+frame_sync_qpsk_dwell_set(int armed) {
+    (void)armed;
+}
+
+/* The frame sync's chain step (dsd_frame_sync.c), which a reconciled notice runs to put the decoder back on the chain
+ * the tune set: the decoder's modulation, as the real one sets it with the front end. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
+    (void)opts;
+    state->rf_mod = chain;
+}
+
 /* Mirrors the real helper in src/dsp/dsd_frame_sync.c so the assertions below read the
  * behavior rather than the stub. */
 void
@@ -284,6 +308,23 @@ void
 p25_sm_tick_guard_leave(void) {
     assert(g_tick_guard_held);
     g_tick_guard_held = 0;
+}
+
+/* Whether the P25 machine hunts a control channel (a startup or recovery probe): read under the tick guard. */
+static int g_p25_hunt_in_flight = 0;
+
+p25_sm_ctx_t*
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_get_ctx(void) {
+    return NULL;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_hunt_probe_in_flight(const p25_sm_ctx_t* ctx) {
+    (void)ctx;
+    assert(g_tick_guard_held);
+    return g_p25_hunt_in_flight;
 }
 
 void
@@ -708,8 +749,14 @@ rtl_stream_analog_family_active(void) {
 
 /* Nothing outstanding lands a family either (issue #583), so these retunes attach no family, unless a case puts the
  * front end behind an analog target. */
+/* Runs inside a tune, as the decoder thread would run meanwhile beside a watchdog tune (NULL: nothing). */
+static void (*g_mid_tune)(void);
+
 int
 rtl_stream_family_landing_after_pending(void) {
+    if (g_mid_tune) {
+        g_mid_tune();
+    }
     g_rtl_after_pending_reads++;
     const int answer = g_rtl_family_landing_after_pending;
     if (g_rtl_after_pending_fails_after_read) {
@@ -879,6 +926,457 @@ test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd
     g_rtl_family_landing_after_pending = 0;
     g_runtime_config_is_set = 0;
     g_trunk_scan_active_p25_cqpsk_is_set = 0;
+    rtl_stream_clear_pending_retune_profile();
+}
+
+/* The decision the decoder published, as one read sees it (dsd_frame_sync_p25p1_read_decision()): the chain a
+ * comparison in flight leads on (-1 for none), and the learned modulation. */
+static int
+published_leading(void) {
+    dsd_p25p1_decision d;
+    dsd_frame_sync_p25p1_read_decision(&d);
+    return d.running ? d.learned : -1;
+}
+
+static int
+published_learned(void) {
+    dsd_p25p1_decision d;
+    dsd_frame_sync_p25p1_read_decision(&d);
+    return d.learned;
+}
+
+/* A P25p1 chain comparison (dsd_p25p1_mod_compare) is in the other chain's pass, with rf_mod and the learned modulation
+ * on that chain, when a tune comes. */
+static void
+seed_chain_comparison_in_trial(dsd_opts* opts, dsd_state* state, int incumbent, uint32_t incumbent_read,
+                               uint32_t trial_read) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->frame_p25p1 = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p2_active_slot = -1;
+    state->lastsynctype = 0;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->p25_p1_mod_compare.phase = 2;
+    state->p25_p1_mod_compare.incumbent_rf_mod = incumbent;
+    state->p25_p1_mod_compare.incumbent_read = incumbent_read;
+    state->p25_p1_mod_compare.trial_read = trial_read;
+    state->p25_p1_mod_probe_active = 1;
+    state->rf_mod = !incumbent;
+    state->p25_p1_validated_rf_mod = !incumbent;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_pending_active = 0;
+    g_rtl_pending_cqpsk = -1;
+    g_rtl_pending_channel_profile = -1;
+    /* As every step of the decoder's comparison does. */
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+}
+
+/* A grant or a control-channel tune that comes while the chain comparison is in the other chain's pass lands on the
+ * chain leading so far, not on the one the pass happens to be trying: a CQPSK incumbent that read an LSM control
+ * channel whole but one faded TSBK must not hand a grant decoded on the C4FM trial a C4FM voice channel. */
+static void
+test_chain_comparison_in_flight_tunes_on_the_leading_chain(dsd_opts* opts, dsd_state* state) {
+    /* The decoder thread's tunes: a grant a frame decoded, a command, the no-carrier pass. */
+    dsd_engine_set_decoder_thread(1);
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->rf_mod == 1 && state->p25_p1_validated_rf_mod == 1);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_mod_compare.verdict_valid == 0);
+    assert(state->p25_p1_mod_probe_active == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* The other chain leads: it is the one the voice channel gets. */
+    seed_chain_comparison_in_trial(opts, state, 0, 402, 1206);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
+    assert(state->p25_p1_mod_compare.phase == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A control-channel tune (a hunt probe, a return) restores the leading chain as the learned modulation too. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 134);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->rf_mod == 1 && state->p25_p1_mod_compare.phase == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A Phase 2 grant during the comparison: the voice channel is TDMA, which is CQPSK whatever chain the control
+     * channel's comparison leads on, and the grant named its slot and set the modulation before asking for the tune.
+     * The tune keeps the grant's CQPSK; only the learned P25p1 modulation goes back to the leading C4FM chain. */
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    state->p25_p2_active_slot = 0;
+    state->p25_vc_cqpsk_override = -1;
+    state->rf_mod = 1;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->p25_p1_validated_rf_mod == 0);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_mod_probe_active == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A tune that fails or is deferred moves nothing: the comparison goes on in the pass it was in, on the chain the
+     * front end is re-requested on, rather than ending with the decoder on the leader and the front end on the trial
+     * chain. */
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->p25_p1_mod_compare.phase == 2 && state->p25_p1_mod_probe_active == 1);
+    assert(state->rf_mod == 1 && state->p25_p1_validated_rf_mod == 1);
+    assert(g_rtl_cqpsk_enable == 1);
+    rtl_stream_clear_pending_retune_profile();
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    assert(state->p25_p1_mod_compare.phase == 2 && state->rf_mod == 1 && state->p25_p1_validated_rf_mod == 1);
+    assert(g_rtl_cqpsk_enable == 1);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A CQPSK probe with no comparison running: an accepted grant tune retires it, so the trial's handback cannot
+     * switch the voice channel the grant chose; a tune that fails moves nothing and keeps it. */
+    seed_chain_comparison_in_trial(opts, state, 1, 0, 0);
+    state->p25_p1_mod_compare.phase = 0;
+    state->rf_mod = 1;
+    state->p25_p1_validated_rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->p25_p1_mod_probe_active == 0 && state->rf_mod == 1);
+    rtl_stream_clear_pending_retune_profile();
+    seed_chain_comparison_in_trial(opts, state, 1, 0, 0);
+    state->p25_p1_mod_compare.phase = 0;
+    state->rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->p25_p1_mod_probe_active == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A return with no control channel to go to retunes nothing, so the comparison goes on too. */
+    seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->p25_p1_mod_compare.phase == 2 && state->rf_mod == 1);
+    /* So does one with trunking off and a control channel known, and the control channel's timing is not applied
+       under it: that would put rf_mod on the CQPSK incumbent the learned modulation still names while the front end
+       stays on the C4FM trial, and restart the dwell the comparison refunds. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 0);
+    opts->trunk_enable = 0;
+    state->p25_cc_freq = 851000000;
+    state->p25_p1_validated_rf_mod = 1;
+    state->sps_hunt_counter = 1234;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->p25_p1_mod_compare.phase == 2);
+    assert(state->rf_mod == 0);
+    assert(state->sps_hunt_counter == 1234);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
+    dsd_engine_set_decoder_thread(1);
+}
+
+/* The decoder thread owns the chain comparison and runs it in the hunt, outside the P25 SM tick guard, while the P25
+ * watchdog's tick tunes on its own thread (a recovery's control-channel candidate, a return). Such a tune leaves the
+ * comparison alone: it lands on the chain the decoder published as leading, and the decoder thread ends the
+ * comparison at its next frame sync step, which applies the tune. */
+static void
+test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(dsd_opts* opts, dsd_state* state) {
+    static dsd_p25p1_mod_compare before;
+    dsd_engine_set_decoder_thread(0); /* the watchdog's thread */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* A CQPSK incumbent in front, the C4FM trial on the demodulator. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    state->p25_p1_mod_compare.seen_symbolcnt = 77U;
+    before = state->p25_p1_mod_compare;
+    assert(published_leading() == 1);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(memcmp(&state->p25_p1_mod_compare, &before, sizeof before) == 0);
+    assert(state->p25_p1_mod_probe_active == 1 && state->p25_p1_validated_rf_mod == 0);
+    assert(g_rtl_cqpsk_enable == 1 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->rf_mod == 1);
+    assert(dsd_frame_sync_off_thread_tune_pending());
+    rtl_stream_clear_pending_retune_profile();
+    /* The decoder thread applies it: the comparison ends on the leading chain, with no verdict. */
+    dsd_engine_set_decoder_thread(1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_mod_probe_active == 0);
+    assert(state->p25_p1_mod_compare.verdict_valid == 0 && state->p25_p1_validated_rf_mod == 1);
+    assert(published_leading() == -1 && !dsd_frame_sync_off_thread_tune_pending());
+    dsd_engine_set_decoder_thread(0);
+
+    /* The decoder's comparison moves on while the tune was made: a C4FM trial frame since puts C4FM in front. The
+     * comparison ends on the chain the tune chose all the same, which the front end now runs, so the CQPSK hold the
+     * learned modulation keeps is the tune's. */
+    seed_chain_comparison_in_trial(opts, state, 1, 268, 268);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    state->p25_p1_mod_compare.trial_read += 134U;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    assert(published_leading() == 0);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_validated_rf_mod == 1);
+    assert(published_learned() == 1);
+    /* Two tunes before the decoder's next step: the later one's chain. */
+    dsd_engine_set_decoder_thread(0);
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    state->p25_p1_mod_compare.incumbent_read = 0U;
+    state->p25_p1_mod_compare.trial_read = 1206U;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852012500, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 0 && state->rf_mod == 0);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    state->p25_p1_mod_compare.incumbent_read = 1206U;
+    state->p25_p1_mod_compare.trial_read = 0U;
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
+    assert(state->p25_p1_validated_rf_mod == 0);
+    dsd_engine_set_decoder_thread(0);
+
+    /* A voice-channel tune from that thread lands on the leading chain too. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    before = state->p25_p1_mod_compare;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(memcmp(&state->p25_p1_mod_compare, &before, sizeof before) == 0);
+    assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
+    rtl_stream_clear_pending_retune_profile();
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* One that fails moves nothing and notes nothing: the decoder's modulation goes back to the trial chain. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    before = state->p25_p1_mod_compare;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(memcmp(&state->p25_p1_mod_compare, &before, sizeof before) == 0);
+    assert(state->rf_mod == 0 && !dsd_frame_sync_off_thread_tune_pending());
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rtl_stream_clear_pending_retune_profile();
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
+    dsd_engine_set_decoder_thread(1);
+}
+
+/* The decoder thread's next trial frame, counted while a watchdog tune runs: C4FM, the trial chain, goes in front. */
+static dsd_state* g_mid_tune_state;
+
+static void
+decoder_counts_a_c4fm_trial_frame(void) {
+    g_mid_tune_state->p25_p1_mod_compare.trial_read += 2000U;
+    dsd_frame_sync_p25p1_mod_compare_publish(g_mid_tune_state);
+}
+
+/*
+ * An off-thread tune makes one coherent read of the decision the decoder publishes and uses it for both the chain it
+ * tunes and its notice, and the decoder reconciles every notice whatever its comparison did since:
+ *  - a decision that moves on during the tune does not split it: the control channel and the notice take the read the
+ *    tune began with;
+ *  - a comparison the tune captured that settles before the notice is reconciled ends with the learned modulation on
+ *    the chain the tune set, and its verdict, measured on the carrier the tune left, dropped;
+ *  - a run boundary seeds the decision from the new session, so a watchdog tune before its first NID reads nothing
+ *    learned, and drops the notices of the session before.
+ */
+static void
+test_off_thread_tune_reads_the_decision_once(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_set_decoder_thread(1);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    /* CQPSK leads when the tune begins; C4FM by the time it picks the control channel's chain. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    g_mid_tune_state = state;
+    g_mid_tune = decoder_counts_a_c4fm_trial_frame;
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    g_mid_tune = NULL;
+    assert(g_rtl_cqpsk_enable == 1 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(state->rf_mod == 1);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_validated_rf_mod == 1 && published_learned() == 1);
+
+    /* The tune captures a comparison C4FM leads; the decoder settles it on CQPSK, with a verdict, before reconciling
+     * the notice. The learned modulation goes to the chain the tune set and the verdict goes. */
+    seed_chain_comparison_in_trial(opts, state, 1, 268, 1206);
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 0 && state->rf_mod == 0);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    state->p25_p1_mod_compare.phase = 0;
+    state->p25_p1_mod_probe_active = 0;
+    state->p25_p1_validated_rf_mod = 1;
+    state->p25_p1_mod_compare.verdict_valid = 1;
+    state->p25_p1_mod_compare.verdict_rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
+    assert(state->p25_p1_validated_rf_mod == 0 && state->p25_p1_mod_compare.verdict_valid == 0);
+    assert(published_learned() == 0);
+
+    /* A session that learned CQPSK and left a notice ends; a fresh one starts. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
+    assert(published_learned() == 1);
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    seed_chain_comparison_in_trial(opts, state, 1, 0, 0);
+    state->p25_p1_mod_compare.phase = 0;
+    state->p25_p1_mod_probe_active = 0;
+    state->p25_p1_validated_rf_mod = -1;
+    state->rf_mod = 0;
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 0 && published_learned() == -1);
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 0 && state->rf_mod == 0);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+}
+
+/* The two threads at once, as the watchdog's tick and the decoder's hunt run: the watchdog's tunes, and the decoder's
+ * comparison steps and its application of those tunes, touch the comparison only on the decoder thread, and the
+ * decoder's chain steps run under the tick guard the tunes run under (run under ThreadSanitizer to check it). */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+} retune_race_ctx;
+
+/* The P25 SM tick guard on a mutex, re-entrant as the engine installs it for the frame sync's chain steps. */
+static dsd_mutex_t g_race_guard;
+static _Thread_local int g_race_guard_held;
+
+static int
+race_guard_enter(void) {
+    if (g_race_guard_held) {
+        return 0;
+    }
+    (void)dsd_mutex_lock(&g_race_guard);
+    g_race_guard_held = 1;
+    return 1;
+}
+
+static void
+race_guard_leave(void) {
+    g_race_guard_held = 0;
+    (void)dsd_mutex_unlock(&g_race_guard);
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    retune_race_watchdog(void* arg) {
+    const retune_race_ctx* ctx = (const retune_race_ctx*)arg;
+    for (int i = 0; i < 200; i++) {
+        /* p25_sm_try_tick(): the tick, and the tunes it makes, run under the guard. */
+        const int taken = race_guard_enter();
+        (void)dsd_engine_trunk_tune_to_cc_request(ctx->opts, ctx->state, 852000000 + (i & 1) * 12500, 10, 0U);
+        if (taken) {
+            race_guard_leave();
+        }
+    }
+    DSD_THREAD_RETURN;
+}
+
+static void
+test_chain_comparison_watchdog_tunes_race_the_hunt(dsd_opts* opts, dsd_state* state) {
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    dsd_engine_set_decoder_thread(1);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    assert(dsd_mutex_init(&g_race_guard) == 0);
+    dsd_frame_sync_hooks_set(
+        &(dsd_frame_sync_hooks){.tick_guard_enter = race_guard_enter, .tick_guard_leave = race_guard_leave});
+    retune_race_ctx ctx = {opts, state};
+    dsd_thread_t watchdog;
+    assert(dsd_thread_create(&watchdog, retune_race_watchdog, &ctx) == 0);
+    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    for (int i = 0; i < 20000; i++) {
+        if (cmp->phase == 0) {
+            cmp->phase = 2;
+            cmp->incumbent_rf_mod = 1;
+            cmp->incumbent_read = 1206U;
+            cmp->trial_read = 0U;
+            state->p25_p1_mod_probe_active = 1;
+        }
+        cmp->seen_symbolcnt++;
+        cmp->trial_read += 134U;
+        dsd_frame_sync_p25p1_mod_compare_publish(state);
+        (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    }
+    assert(dsd_thread_join(watchdog) == 0);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    dsd_frame_sync_hooks_set(NULL);
+    (void)dsd_mutex_destroy(&g_race_guard);
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
+    dsd_engine_set_decoder_thread(1);
+    rtl_stream_clear_pending_retune_profile();
+}
+
+/* A trunk retune leaves the carrier as a carrier boundary does: the frame sync's NXDN96 lock and hits and its M17 join
+ * words go with it, so neither the lock's flywheel nor a word the carrier left sent pairs with the carrier reached. An
+ * NXDN DISC returns through dsd_engine_trunk_tune_to_cc_request() with no boundary of its own; a grant tunes through
+ * dsd_engine_trunk_tune_to_freq_request(). The watchdog's leave them to the decoder thread's next frame sync step. */
+static void
+seed_sync_join_histories(dsd_state* state) {
+    state->nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_NEG;
+    state->nxdn96_sync.lock_symbolcnt = 4000U;
+    state->nxdn96_sync.hits.kind[0] = (uint8_t)DSD_SYNC_NXDN_NEG;
+    state->m17_join_hits.kind[0] = 1U;
+    state->m17_join_hits.next = 1U;
+}
+
+static int
+sync_join_histories_empty(const dsd_state* state) {
+    return state->nxdn96_sync.lock_type == 0U && state->nxdn96_sync.hits.kind[0] == 0U
+           && state->m17_join_hits.kind[0] == 0U && state->m17_join_hits.next == 0U;
+}
+
+static void
+test_trunk_retune_forgets_sync_join_histories(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 2;
+    state->p25_p2_active_slot = -1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_engine_set_decoder_thread(1);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+
+    seed_sync_join_histories(state);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461750000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(sync_join_histories_empty(state));
+    seed_sync_join_histories(state);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 461762500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(sync_join_histories_empty(state));
+    /* A tune that fails left nothing. */
+    seed_sync_join_histories(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461775000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->nxdn96_sync.lock_type == (uint8_t)DSD_SYNC_NXDN_NEG);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    /* Off the decoder thread the histories wait for it. */
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461787500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->nxdn96_sync.lock_type == (uint8_t)DSD_SYNC_NXDN_NEG);
+    dsd_engine_set_decoder_thread(1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
+    assert(sync_join_histories_empty(state));
+    dsd_engine_set_decoder_thread(1);
     rtl_stream_clear_pending_retune_profile();
 }
 
@@ -1890,6 +2388,8 @@ check_rxid_watchdog_tunes(dsd_opts* opts, dsd_state* state) {
     assert(state->rx_id.valid == rxid_system && state->rx_id.p25_sysid == 0x1A3U);
     assert(g_tick_guard_enters == 0U);
     g_tick_guard_held = 0;
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    dsd_engine_set_decoder_thread(1);
 }
 
 /* The decoder thread's own retunes between frames (a frame sync release, a tick, the no-carrier pass, a command) drop
@@ -1916,14 +2416,214 @@ check_rxid_decoder_tunes(dsd_opts* opts, dsd_state* state) {
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2F0U);
     assert(state->rx_id.valid == (rxid_system | DSD_RXID_ACCESS) && state->rx_id.access == 0x2F0U);
     assert(state->rx_id.epoch == epoch_before_decoder_tunes);
-    dsd_engine_set_decoder_thread(0);
+    dsd_engine_set_decoder_thread(1);
     opts->trunk_enable = 0;
     state->p25_cc_freq = 0;
     opts->trunk_is_tuned = 0;
 }
 
+/* The DMR RAS evidence is the carrier's: an accepted trunk tune resets it (dmr_ras_reset()) where its drop is applied.
+   The decoder thread's own tunes, a voice channel grant and a control channel return or hunt probe, reset it at once,
+   and one requested inside a frame dispatch resets it there. One the P25 watchdog makes on its thread writes nothing
+   of it: the evidence and the part wait, with the drop, for the decoder thread, whose application resets them
+   (ENGINE_PROTOCOL_DISPATCH before a frame, ENGINE_COLD_START_HUNT after the synced frame's ticks, ENGINE_TRUNK_SCAN
+   at an advance). A refused tune resets nothing. Each case runs with one signature (which must not confirm with one
+   more after the tune) and with a confirmation (whose part goes). */
+static void
+check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_enable = 1;
+    for (int confirmed = 0; confirmed <= 1; confirmed++) {
+        for (int kind = 0; kind < 6; kind++) {
+            dsd_rxid_reset(state);
+            dmr_ras_reset(state);
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+            dmr_ras_note_signature(state);
+            if (confirmed) {
+                dmr_ras_note_signature(state);
+                assert(dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+            }
+            opts->trunk_is_tuned = 0;
+            g_setfreq_result = true;
+            g_tick_guard_held = 0;
+            state->frame_dispatch_active = 0;
+            switch (kind) {
+                case 0: /* a grant the decoder thread follows */
+                    dsd_engine_set_decoder_thread(1);
+                    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_OK);
+                    break;
+                case 1: /* a control channel hunt probe on the decoder thread */
+                    dsd_engine_set_decoder_thread(1);
+                    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_OK);
+                    break;
+                case 2: /* the watchdog's grant: the decoder thread applies it later */
+                case 3: /* the watchdog's return to the control channel */
+                    dsd_engine_set_decoder_thread(0);
+                    g_tick_guard_held = 1;
+                    if (kind == 2) {
+                        assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                               == DSD_TRUNK_TUNE_RESULT_OK);
+                    } else {
+                        assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851000000, 0, 0U)
+                               == DSD_TRUNK_TUNE_RESULT_OK);
+                    }
+                    assert(state->rx_id_trunk_tune_pending == 1U);
+                    break;
+                case 4: /* a tune a frame's handler makes off the marked decoder thread, inside the dispatch */
+                    dsd_engine_set_decoder_thread(0);
+                    g_tick_guard_held = 1;
+                    state->frame_dispatch_active = 1;
+                    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_OK);
+                    assert(state->rx_id_trunk_tune_pending == 0U);
+                    state->frame_dispatch_active = 0;
+                    break;
+                default: /* a refused tune */
+                    dsd_engine_set_decoder_thread(1);
+                    g_setfreq_result = false;
+                    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U)
+                           == DSD_TRUNK_TUNE_RESULT_FAILED);
+                    g_setfreq_result = true;
+                    break;
+            }
+            g_tick_guard_held = 0;
+            dsd_engine_set_decoder_thread(1);
+            if (kind == 2 || kind == 3 || kind == 5) {
+                /* The watchdog's tunes wait for the decoder thread; a refused one changes nothing. */
+                assert(state->dmr_ras_signatures == (confirmed ? 2U : 1U));
+                assert(((state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U) == (confirmed != 0));
+                continue;
+            }
+            assert(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+            dmr_ras_note_signature(state);
+            assert(!dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+        }
+    }
+    dsd_rxid_reset(state);
+    dmr_ras_reset(state);
+    opts->trunk_enable = 0;
+    opts->trunk_is_tuned = 0;
+}
+
+/* An Auto (-fa) trunked session on rigctl that no protocol has proven yet: P25 presumes the control channel. */
+static void
+auto_probe_session(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = opts->frame_nxdn48 = opts->frame_nxdn96 = 1;
+    opts->frame_dpmr = opts->frame_provoice = opts->frame_dstar = opts->frame_x2tdma = opts->frame_ysf = 1;
+    opts->frame_m17 = 1;
+    state->ea_mode = -1;
+    state->p25_cc_is_tdma = 2; // no P25 control channel seen
+    state->p25_p2_active_slot = -1;
+    // Before the probe: noise NXDN syncs, and the frame-sync hunt on 2400/4 forced the GFSK chain.
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->rf_mod = 2;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->sps_hunt_counter = 17;
+    g_setfreq_result = true;
+    g_p25_hunt_in_flight = 1; // the P25 startup hunt's probe
+}
+
+/*
+ * The P25-driven startup and recovery probes choose the P25 chain from what proves the session P25 -- a P25 owner, or
+ * the startup presumption of a set that decodes P25 -- never from raw sync history or a GFSK modulation the frame-sync
+ * hunt forced: under Auto a dead frequency yields noise NXDN syncs, and the hunt forces rf_mod 2 on 2400/4 and 9600/2.
+ */
+static void
+test_p25_probe_chain_from_validated_evidence(dsd_opts* opts, dsd_state* state) {
+    auto_probe_session(opts, state);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4); // the startup probe lands on the P25 rate
+    assert(state->sps_hunt_counter == 0);
+
+    // Recovery under a validated P25 owner: raw DMR sync and the hunt's GFSK do not decide either.
+    auto_probe_session(opts, state);
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_P25;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+    state->p25_cc_is_tdma = 1; // a Phase 2 control channel
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 452000000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state->sps_hunt_counter == 0);
+
+    // Another validated owner keeps its own chain: NXDN control named it.
+    auto_probe_session(opts, state);
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 17);
+
+    // The presumption is the P25 hunt's, not every tune's: with no P25 probe in flight (an IDAS Type-D busy-repeater
+    // tune under Auto -T, before its SCCH run confirmed NXDN) the engine's return to the control channel keeps the NXDN
+    // chain.
+    auto_probe_session(opts, state);
+    g_p25_hunt_in_flight = 0;
+    state->p25_cc_freq = 451000000;
+    opts->trunk_is_tuned = 1;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 17);
+    assert(state->rf_mod == 2);
+    auto_probe_session(opts, state);
+    g_p25_hunt_in_flight = 0;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 17);
+
+    // A selected EDACS session (-fh -fa) presumes nothing: its own GFSK chain stays.
+    auto_probe_session(opts, state);
+    state->ea_mode = 0;
+    state->synctype = state->lastsynctype = DSD_SYNC_EDACS_POS;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 854000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+
+    // TETRA's sync is decided before the P25 presumption: no frame set runs TETRA beside P25 (the TETRA preset turns P25
+    // off, every other selector turns TETRA off), and a TETRA sync can only come from the TETRA decoder, so this order
+    // costs a P25 session nothing and keeps TETRA's pi/4-DQPSK chain whatever the frame flags say.
+    auto_probe_session(opts, state);
+    opts->frame_tetra = 1;
+    state->synctype = DSD_SYNC_TETRA_SB_POS;
+    state->lastsynctype = DSD_SYNC_TETRA_NDB_NEG;
+    state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 380012500, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    assert(state->sps_hunt_counter == 17);
+
+#ifdef USE_RADIO
+    // On an RTL front end the startup probe queues the P25 C4FM chain at 4800 sym/s, not the GFSK one.
+    auto_probe_session(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->use_rigctl = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 2400;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 455000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+#endif
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+}
+
 int
 main(void) {
+    /* This thread decodes, as the engine's tunes assume; the cases that stand for the P25 watchdog's say so. */
+    dsd_engine_set_decoder_thread(1);
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -1951,6 +2651,7 @@ main(void) {
 #ifdef USE_RADIO
     test_rigctl_on_rtl_input_follows_the_frequency_only();
 #endif
+    test_p25_probe_chain_from_validated_evidence(opts, state);
 
     /* DMR trunking active via protocol-agnostic flag only. */
     opts->trunk_enable = 1;
@@ -2170,6 +2871,7 @@ main(void) {
 
     check_rxid_watchdog_tunes(opts, state);
     check_rxid_decoder_tunes(opts, state);
+    check_rxid_tunes_reset_dmr_ras(opts, state);
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */
@@ -2915,7 +3617,6 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
-    opts->mod_qpsk = 0;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 851000000;
     state->trunk_cc_freq = 851000000;
@@ -2948,7 +3649,6 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
-    opts->mod_qpsk = 0;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 851000000;
     state->trunk_cc_freq = 851000000;
@@ -2973,7 +3673,6 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
-    opts->mod_qpsk = 0;
     opts->mod_cli_lock = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 851000000;
@@ -3063,6 +3762,11 @@ main(void) {
 #ifdef USE_RADIO
     test_trunked_targets_after_an_analog_target_keep_their_cqpsk(opts, state);
     test_gfsk_retune_decides_its_family_once(opts, state);
+    test_chain_comparison_in_flight_tunes_on_the_leading_chain(opts, state);
+    test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(opts, state);
+    test_off_thread_tune_reads_the_decision_once(opts, state);
+    test_chain_comparison_watchdog_tunes_race_the_hunt(opts, state);
+    test_trunk_retune_forgets_sync_join_histories(opts, state);
 #endif
 
     dsd_decode_clock_use_system();

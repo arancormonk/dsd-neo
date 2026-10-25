@@ -165,16 +165,32 @@ dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_inp
     return 0;
 }
 
+/* A preset's own modulation, unless a -m lock already names one. The lock is the operator naming the demodulator, "no
+ * auto override", and it holds whichever side of the preset it is written on: `-mq -f1` is `-f1 -mq`. The mid-session
+ * path releases the lock before it applies a preset (decode_mode_stage_preset()). A config's [mode] demod applies after
+ * the preset; without one the lock stands, so `-mq` then a config `decode = "p25p1"` runs P25p1 on QPSK. */
+static void
+decode_mode_preset_modulation(dsd_opts* o, dsd_state* s, int rf_mod) {
+    if (o->mod_cli_lock) {
+        return;
+    }
+    o->mod_c4fm = rf_mod == 0;
+    o->mod_qpsk = rf_mod == 1;
+    o->mod_gfsk = rf_mod == 2;
+    s->rf_mod = rf_mod;
+}
+
 static void
 decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
-    /* AUTO means "hunt every digital protocol", and it means that from all three entry points.
-       The config and interactive paths used to skip this block entirely -- a behavior-preserving
-       carve-out from when their preset code was separate -- which left `decode = "auto"` and the
-       wizard's Auto decoding only the dsd_init defaults, no NXDN, dPMR, ProVoice or M17. It also
-       broke the autosave round trip: a -fa session saves as `auto` and came back narrower than it
-       went out. The audio layout and modulation below stay CLI-only, because the config path owns
-       those through [mode] demod and its output keys, and the interactive path through the wizard's
-       own answers. */
+    /* AUTO means "hunt every digital protocol", and it means that from all three entry points. It is
+       also the default: initOpts() starts every session on this decoder set and on the CLI-only
+       modulation and audio layout below, so a session that names no -f runs exactly -fa. The config
+       and interactive paths used to skip this block entirely -- a behavior-preserving carve-out from
+       when their preset code was separate -- which left `decode = "auto"` and the wizard's Auto
+       decoding only the old dsd_init default set, no NXDN, dPMR, ProVoice or M17. It also broke the
+       autosave round trip: a -fa session saves as `auto` and came back narrower than it went out. The
+       audio layout and modulation below stay CLI-only, because the config path owns those through
+       [mode] demod and its output keys, and the interactive path through the wizard's own answers. */
     o->frame_dstar = 1;
     o->frame_x2tdma = 1;
     o->frame_p25p1 = 1;
@@ -230,10 +246,7 @@ decode_mode_apply_p25p1(dsd_opts* o, dsd_state* s) {
     o->frame_m17 = 0;
     o->dmr_stereo = 0;
     s->dmr_stereo = 0;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
@@ -257,10 +270,7 @@ decode_mode_apply_p25p2(dsd_opts* o, dsd_state* s) {
     o->frame_m17 = 0;
     s->samplesPerSymbol = 8;
     s->symbolCenter = 3;
-    o->mod_c4fm = 0;
-    o->mod_qpsk = 1;
-    o->mod_gfsk = 0;
-    s->rf_mod = 1;
+    decode_mode_preset_modulation(o, s, 1);
     o->dmr_stereo = 1;
     s->dmr_stereo = 0;
     o->dmr_mono = 0;
@@ -320,10 +330,7 @@ decode_mode_apply_nxdn48(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->frame_m17 = 0;
     s->samplesPerSymbol = 20;
     s->symbolCenter = 9;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->dmr_stereo = 0;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         s->dmr_stereo = 0;
@@ -349,10 +356,7 @@ decode_mode_apply_nxdn96(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->frame_m17 = 0;
     s->samplesPerSymbol = 20;
     s->symbolCenter = 9;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->dmr_stereo = 0;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         s->dmr_stereo = 0;
@@ -376,10 +380,7 @@ decode_mode_apply_x2tdma(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->frame_provoice = 0;
     o->frame_ysf = 0;
     o->frame_m17 = 0;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = (p == DSD_DECODE_PRESET_PROFILE_INTERACTIVE) ? 1 : 2;
     o->dmr_stereo = 0;
@@ -401,10 +402,7 @@ decode_mode_apply_ysf(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->frame_provoice = 0;
     o->frame_ysf = 1;
     o->frame_m17 = 0;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
@@ -473,10 +471,7 @@ decode_mode_apply_edacs_pv(dsd_opts* o, dsd_state* s) {
     o->frame_m17 = 0;
     s->samplesPerSymbol = 5;
     s->symbolCenter = 2;
-    o->mod_c4fm = 0;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 1;
-    s->rf_mod = 2;
+    decode_mode_preset_modulation(o, s, 2);
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
@@ -500,10 +495,7 @@ decode_mode_apply_dpmr(dsd_opts* o, dsd_state* s) {
     o->frame_m17 = 0;
     s->samplesPerSymbol = 20;
     s->symbolCenter = 9;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
@@ -525,10 +517,7 @@ decode_mode_apply_m17(dsd_opts* o, dsd_state* s) {
     o->frame_dpmr = 0;
     o->frame_ysf = 0;
     o->frame_m17 = 1;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
@@ -552,10 +541,7 @@ decode_mode_apply_tdma(dsd_opts* o, dsd_state* s) {
     o->frame_provoice = 0;
     o->frame_ysf = 0;
     o->frame_m17 = 0;
-    o->mod_c4fm = 1;
-    o->mod_qpsk = 0;
-    o->mod_gfsk = 0;
-    s->rf_mod = 0;
+    decode_mode_preset_modulation(o, s, 0);
     o->dmr_stereo = 1;
     o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
@@ -579,10 +565,7 @@ decode_mode_apply_tetra(dsd_opts* o, dsd_state* s) {
     o->frame_tetra = 1;
     s->samplesPerSymbol = 3;
     s->symbolCenter = 1;
-    o->mod_c4fm = 0;
-    o->mod_qpsk = 1;
-    o->mod_gfsk = 0;
-    s->rf_mod = 1;
+    decode_mode_preset_modulation(o, s, 1);
     o->dmr_stereo = 0;
     s->dmr_stereo = 0;
     o->pulse_digi_rate_out = 8000;
@@ -711,6 +694,15 @@ dsd_stage_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         preset->apply_profiled(profile, opts, state);
     } else if (preset->apply) {
         preset->apply(opts, state);
+    }
+
+    /* EDACS addressing (and its ESK) belongs to the EDACS session: every preset but EDACS/ProVoice's, which selects
+       standard addressing, and Auto's, which keeps it (dsd_edacs_session()), leaves it. Left selected, EDACS, then DMR,
+       then Auto would be an EDACS session again. A scan row's preset keeps the configured addressing
+       (scan_scope_apply_row_decoder()). */
+    if (mode != DSDCFG_MODE_EDACS_PV && mode != DSDCFG_MODE_AUTO) {
+        state->ea_mode = -1;
+        state->esk_mask = 0;
     }
 
     /* Analog monitor is a mode like any other, so leaving it is part of choosing a

@@ -189,9 +189,12 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   target parks, and a failed or unanswered hop is retried there, never by walking the target's map.
   DMR state-machine logs at verbosity 1 or higher identify `cc-lost`, `cc-probe`, `cc-listen`, `decoded-cc`,
   and failed tunes. `decoded-cc` is logged on acquisition even when the SM was already in its CC state.
-- Standalone `-T` auto decoding also retains the validated P25 or DMR recovery owner through loss of sync.
-  Unrelated decodes and stray syncs cannot take ownership; validated P25/DMR control or grants can. Explicit
-  decoder modes and trunk-scan target selection still constrain which protocol may recover.
+- Standalone `-T` auto decoding (`-fa`, or no `-f`) also retains the validated P25, DMR or NXDN recovery owner through
+  loss of sync. Unrelated decodes and stray syncs cannot take ownership; validated P25/DMR control or grants can, and
+  so can NXDN control (a CAC that passed its CRC, or a confirmed IDAS Type-D SCCH, after which no NXDN hunt runs).
+  Before any owner is named, P25 runs the startup control-channel hunt (see
+  [Startup control-channel hunt](cli.md#startup-control-channel-hunt)), except in an EDACS session. Explicit decoder
+  modes and trunk-scan target selection still constrain which protocol may recover.
 - `--scan-voice-only`: digital conventional targets hold only from decoded voice media (headers and data no longer
   hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the

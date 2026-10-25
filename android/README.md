@@ -1194,6 +1194,14 @@ system, area and control channel LCN, the dPMR color code or M17 CAN, TETRA
 MCC, MNC, color code and location area, the control channel frequency where
 this receiver heard the control channel, and the voice frequency being followed.
 
+A DMR carrier confirmed as RAS (Restricted Access to System: its control and data
+fail the standard CRC, two bursts with that signature on this carrier) shows
+**Access RAS** in the sheet. While Relaxed CRC is off the sheet explains it in the
+terminal notice's words and offers **Turn on Relaxed CRC**, which sets the running
+session and the app preference below; under a scan row whose own `--strict-crc`
+decides for the channel it says so instead. Once Relaxed CRC is on it says the
+system's control and data decode.
+
 The sheet's **Phase 2 seed** row shows the WACN.SYS.NAC triple the Phase 2
 descrambler runs on (for example `BEE00.348.293`), marked "(set)" when `-X` or
 the menu set it by hand. It is configuration, not received identity, so it never
@@ -1271,6 +1279,18 @@ defaults to 2.0 seconds (0.0–30.0); a saved system can override it under Advan
 or leave its field empty to follow the app default. Extra decoder arguments containing
 `-t` take precedence. Channel scanning enabled with `-Y` also uses this value as
 its dwell timer; scan lists have separate dwell settings.
+
+**Decoding → Relaxed CRC** (off by default) accepts control and data whose CRC
+check failed and marks them; DMR RAS systems need it. Every session the app starts
+(a saved system, Explore, a search hit, a scan list) gets `-F`, unless the system's
+or the app's Extra decoder arguments contain `-F` or `--strict-crc`, which win. It
+also applies to the running session at once: the switch shows that session's value
+until it confirms. While a scan row with its own `-F` or `--strict-crc` is on air,
+the row decides for its channel and the switch says so (**This channel: Off (scan
+row)**); the switch edits the value beneath it.
+
+The wizard's **Auto** decode chip is the default: it decodes every digital mode
+except TETRA (NXDN included).
 
 To check P25 timing, Extra decoder arguments must include a writable filename,
 for example `--p25-sm-log /data/user/0/io.github.arancormonk.dsdneo/files/p25-sm.log`.

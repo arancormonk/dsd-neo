@@ -64,7 +64,7 @@ Rectangle {
         selectionColor: Qt.alpha(Theme.cyan, 0.35)
         selectedTextColor: Theme.textPrimary
         clip: true
-        activeFocusOnTab: control.enabled && Navigation.allows(control)
+        activeFocusOnTab: Navigation.allows(control) && control.enabled
         Accessible.role: Accessible.EditableText
         Accessible.name: control.label
         Accessible.description: [control.unit, control.hint, control.error].filter(function (s) {
@@ -72,7 +72,7 @@ Rectangle {
         }).join(". ")
         Accessible.passwordEdit: echoMode === TextInput.Password
         readonly property bool navigationAllowed: Navigation.allows(control)
-        Accessible.ignored: !visible || !navigationAllowed
+        Accessible.ignored: !navigationAllowed || !visible
         onAccepted: {
             control.accepted();
             if (control.nextField)
@@ -112,7 +112,7 @@ Rectangle {
     }
 
     TapHandler {
-        enabled: control.enabled && Navigation.allows(control)
+        enabled: Navigation.allows(control) && control.enabled
         onTapped: input.forceActiveFocus()
     }
 }

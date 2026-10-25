@@ -125,6 +125,10 @@ enum {
     DSD_RXID_CC_FREQ = 1U << 19,           /**< cc_freq_hz: this system's control channel, where it was received. */
     DSD_RXID_DMR_XPT_FREE_LCN = 1U << 20,  /**< dmr_xpt_free_lcn: the Hytera XPT site's free channel (LCN). */
     DSD_RXID_DMR_VENDOR = 1U << 21, /**< dmr_vendor: the manufacturer's feature set ID a checked LC or CSBK carried. */
+    /** The carrier's DMR bursts carry RAS (Restricted Access to System): two RAS signature bursts on this carrier
+     * confirmed it (dmr_ras_note_signature()). A property of the codewords received, never a decoded field; carrier
+     * scoped, so the DMR RAS reset (dmr_ras_reset()) drops it at every carrier change, a trunk tune included. */
+    DSD_RXID_DMR_RAS = 1U << 22,
 };
 
 /** The system identity received on the carrier being decoded. Read a value only while its valid bit is set. */
@@ -207,14 +211,16 @@ void dsd_rxid_trunk_tune(dsd_state* state);
  * thread runs, under processFrame()'s hold on the guard, it applies the drop at once: a handler that publishes or
  * decodes more bursts after the retune (DMR's burst loop) shows and notes only the reached carrier's code. Outside one
  * it writes nothing of the record; the engine's trunk tuning applies the drop itself when the decoder thread retuned.
- * A refused retune must not call this. */
-void dsd_rxid_request_trunk_tune(dsd_state* state);
+ * A refused retune must not call this. Returns 1 when it applied the drop at once (inside a frame dispatch), 0 when
+ * the drop waits: the engine resets the DMR RAS evidence (dmr_ras_reset()) wherever a drop is applied. */
+int dsd_rxid_request_trunk_tune(dsd_state* state);
 /** Decoder thread, under the P25 SM tick guard: applies a requested retune's drop (dsd_rxid_trunk_tune()) once. A
  * decoder-thread retune applies it where it is made; one the watchdog requested waits for the decode loop, which
  * applies it before a frame's first note and after the trunking ticks that follow the frame, for the no-carrier pass
  * before the record goes stale, and for a trunk-scan rollback before it keeps the record: it is applied before anything
- * the carrier it reached sends is noted. dsd_rxid_reset() forgets a request. */
-void dsd_rxid_apply_trunk_tune(dsd_state* state);
+ * the carrier it reached sends is noted. dsd_rxid_reset() forgets a request. Returns 1 when it applied a drop, 0 when
+ * none was pending: the engine then resets the DMR RAS evidence (dmr_ras_reset()), which is the DMR decoder's. */
+int dsd_rxid_apply_trunk_tune(dsd_state* state);
 
 /** The access code of @p kind (dsd_access_code_kind) a checked message of @p family carried on this carrier. Another
  * value than a valid one drops the family's other parts (another system shares the carrier); M17 drops nothing. */
@@ -236,6 +242,11 @@ void dsd_rxid_note_dmr_brand(dsd_state* state, const char* brand);
 /** The manufacturer's feature set ID @p mfid of a checked full LC or CSBK (0, the standard set, names none). */
 void dsd_rxid_note_dmr_vendor(dsd_state* state, uint8_t mfid);
 void dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode);
+/** The DMR decoder confirmed RAS on this carrier (dmr_ras_note_signature()): sets DSD_RXID_DMR_RAS. It notes no decoded
+ * field, so it neither moves the epoch nor names another system. */
+void dsd_rxid_note_dmr_ras(dsd_state* state);
+/** Drops DSD_RXID_DMR_RAS (dmr_ras_reset()), whatever frame is being dispatched; the epoch stays. */
+void dsd_rxid_forget_dmr_ras(dsd_state* state);
 /** A checked Hytera XPT site status, call alert or short LC: the logical channel number the site names free now (its
  * 4-bit field as sent). It changes with the site's traffic, so each note replaces the last. */
 void dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn);

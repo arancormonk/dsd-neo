@@ -555,6 +555,21 @@ dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* sta
     return width_hz > 0 ? width_hz : 0;
 }
 
+/* The configured Relaxed CRC the CRC policy view reads, as scan_mode.c reads it: the stubbed configured view while one
+ * is set, dsd_opts otherwise. */
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_scan_mode_configured_relaxed_crc(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (!configured) {
+        return dsd_opts_relaxed_crc(opts) ? 1 : 0;
+    }
+    return (configured->aggressive_framesync == 0 || configured->dmr_crc_relaxed_default != 0) ? 1 : 0;
+}
+
 /* Issue #527: the configured tone policy the rx tone view names beside a row's own, as scan_mode.c reads it: the
  * stubbed configured view while one is set, dsd_opts otherwise. */
 void
@@ -850,6 +865,49 @@ test_visual_aids_title_names_the_backend(void) {
 }
 #endif
 
+/*
+ * The output lines name the sinks that are open: "Pulse Analog Output" for an EDACS session or the -8 monitor, not for
+ * Auto merely enabling ProVoice with no EDACS addressing selected; "UDP Analog Output" only for an open socket on
+ * port + 2.
+ */
+static void
+test_analog_output_lines_follow_open_sinks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_out_type = 0;
+    opts.pulse_raw_rate_out = 48000;
+    opts.pulse_raw_out_channels = 1;
+    opts.frame_p25p1 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_provoice = opts.frame_m17 = 1;
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    state.ea_mode = -1;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert(strstr(g_printw_capture, "Pulse Analog Output") == NULL);
+    state.ea_mode = 0; /* EDACS addressing selected (-fh -fa) */
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| Pulse Analog Output: 48 kHz; 1 Ch;");
+    state.ea_mode = -1;
+    opts.monitor_input_audio = 1;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| Pulse Analog Output: 48 kHz; 1 Ch;");
+
+    opts.audio_out_type = 8;
+    DSD_SNPRINTF(opts.udp_hostname, sizeof opts.udp_hostname, "%s", "127.0.0.1");
+    opts.udp_portno = 23456;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456;");
+    assert(strstr(g_printw_capture, "UDP Analog Output") == NULL);
+    opts.udp_sockfdA = (dsd_socket_t)42;
+    reset_printw_capture();
+    ui_render_audio_output_block(&opts, &state);
+    assert_capture_contains("| UDP Analog Output: 127.0.0.1:23458;");
+}
+
 static void
 test_input_source_helpers(void) {
     static dsd_opts opts;
@@ -911,6 +969,24 @@ test_dmr_mono_override_terminal_reporting(void) {
     reset_printw_capture();
     ui_render_audio_decode_section(&opts, &state, 0);
     assert_capture_contains("*Preferred (3)");
+
+    /* The Decoding line names relaxed CRC, the setting in force (crc_policy_view.h), not a protocol: it said "CRC/(RAS)"
+       whenever -F was on. A scan row's own --strict-crc decides while it is on air. */
+    dsd_opts_set_relaxed_crc(&opts, 1);
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("Relaxed CRC ");
+    assert(strstr(g_printw_capture, "CRC/(RAS)") == NULL);
+    static const dsd_scan_option_values strict_row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
+    g_scan_row_options = &strict_row;
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert(strstr(g_printw_capture, "Relaxed CRC") == NULL);
+    g_scan_row_options = NULL;
+    dsd_opts_set_relaxed_crc(&opts, 0);
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert(strstr(g_printw_capture, "Relaxed CRC") == NULL);
 
     ncurses_last_synctype = DSD_SYNC_NONE;
 }
@@ -4235,6 +4311,41 @@ test_identity_lines_read_the_received_record(void) {
     ui_render_p25_dmr_header(opts, state);
     assert_capture_equals("| DMR BS - DCC: 01; ");
 
+    /* RAS on the carrier (dmr_ras_view.h): beside the colour code, with the hint that -F decodes it while relaxed CRC is
+       off; a mobile or direct-mode carrier the same. The longest form adds 18 columns to the colour code's 21. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 0U);
+    dsd_rxid_note_dmr_ras(state);
+    dsd_opts_set_relaxed_crc(opts, 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 00; RAS (-F decodes); ");
+    dsd_opts_set_relaxed_crc(opts, 1);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 00; RAS; ");
+    dsd_rxid_note_dmr_vendor(state, 0x10U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 452000000U);
+    dsd_opts_set_relaxed_crc(opts, 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR BS - DCC: 00; RAS (-F decodes); Motorola; Freq: 452.000000 MHz");
+    ncurses_last_synctype = DSD_SYNC_DMR_MS_DATA;
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR MS - DCC: 00; RAS (-F decodes); ");
+    dsd_opts_set_relaxed_crc(opts, 1);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR MS - DCC: 00; RAS; ");
+    dsd_rxid_forget_dmr_ras(state);
+    reset_printw_capture();
+    ui_render_p25_dmr_header(opts, state);
+    assert_capture_equals("| DMR MS - DCC: 00; ");
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_opts_set_relaxed_crc(opts, 0);
+    opts->aggressive_framesync = 0; /* as calloc left it */
+
     /* EDACS: the site header only once this carrier named a site. */
     dsd_rxid_reset(state);
     state->edacs_site_id = 9;
@@ -4279,6 +4390,7 @@ main(void) {
     test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();
+    test_analog_output_lines_follow_open_sinks();
 #ifdef USE_RADIO
     test_visual_aids_title_names_the_backend();
 #endif

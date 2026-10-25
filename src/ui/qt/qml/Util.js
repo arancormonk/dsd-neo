@@ -15,15 +15,16 @@ function idText(id) {
 }
 
 // Decode chip catalog: label ↔ CLI flags. The empty flag is the engine's own
-// default (P25 Phase 1+2, DMR and YSF enabled together), so "Auto" passes
-// nothing. Each entry carries the whole flag set its system type needs — the
-// user picks what they are listening to, never a demodulator: a simulcast P25
-// site needs QPSK (`-mq`) or it reads at ~1 dB and never locks, so that travels
-// with the chip rather than surfacing as a "modulation" question.
+// default, the Auto decoder set (-fa: NXDN and every other digital mode
+// except TETRA), so "Auto" passes nothing. Each entry carries the whole flag set
+// its system type needs — the user picks what they are listening to, never a
+// demodulator: a simulcast P25 site needs QPSK (`-mq`) or it reads at ~1 dB
+// and never locks, so that travels with the chip rather than surfacing as a
+// "modulation" question.
 var DECODE_MODES = [
     {
-        label: "Auto — P25/DMR/YSF", short: "Auto", flag: "",
-        hint: "Figures it out — good first choice for most systems."
+        label: "Auto", short: "Auto", flag: "",
+        hint: "Decodes every digital mode except TETRA (NXDN included) — good first choice for most systems."
     },
     {
         // -ft, not -f1: the statewide/county systems this chip is pitched at are
@@ -40,7 +41,7 @@ var DECODE_MODES = [
     },
     {
         // -mq alone, not -f1 -mq: QPSK is what LSM needs, and the engine's default
-        // decode set already covers both P25 Phase 1 and Phase 2.
+        // decode set, Auto, already covers both P25 Phase 1 and Phase 2.
         label: "P25 Simulcast", short: "P25 LSM", flag: "-mq", trunked: true,
         hint: "Simulcast P25 (LSM) — pick this when standard P25 never locks or sounds garbled."
     },

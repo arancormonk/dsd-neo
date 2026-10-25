@@ -47,7 +47,7 @@ Column {
             Accessible.role: Accessible.EditableText
             Accessible.name: qsTr("Frequency in MHz")
             readonly property bool navigationAllowed: Navigation.allows(root)
-            Accessible.ignored: !visible || !navigationAllowed
+            Accessible.ignored: !navigationAllowed || !visible
             font.family: Theme.mono
             font.pixelSize: Theme.fontSize(root.pixelSize)
             font.weight: Font.Medium

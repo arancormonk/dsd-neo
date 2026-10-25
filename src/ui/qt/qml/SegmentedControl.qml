@@ -44,13 +44,13 @@ Rectangle {
                 readonly property real textHeight: segmentLabel.implicitHeight
                 onTextHeightChanged: Qt.callLater(control.measureLabels)
 
-                activeFocusOnTab: enabled && Navigation.allows(control)
+                activeFocusOnTab: Navigation.allows(control) && enabled
                 Accessible.role: Accessible.RadioButton
                 Accessible.name: modelData
                 Accessible.checkable: true
                 Accessible.checked: active
                 readonly property bool navigationAllowed: Navigation.allows(control)
-                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: choose()
                 function choose() {
                     if (!enabled || !Navigation.allows(control))

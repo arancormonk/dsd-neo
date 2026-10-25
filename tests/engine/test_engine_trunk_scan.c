@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -60,6 +61,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "analog_tone_policy.h"
+#include "frame_sync_internal.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -95,7 +97,8 @@ dsd_audio_ensure_analog_output(dsd_opts* opts) {
 }
 
 int
-dsd_audio_ensure_digital_output(dsd_opts* opts) {
+dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state) {
+    (void)state;
     (void)opts;
     g_ensure_digital_calls++;
     return 0;
@@ -4426,6 +4429,130 @@ test_nxdn_trunk_target_holds_while_tuned(void) {
     return rc;
 }
 
+/* The P25p1 chain comparison's verdict is learned modulation, so it travels with each target's snapshot like
+ * p25_p1_validated_rf_mod; a comparison in flight belongs to the target being left. */
+static int
+test_p25p1_mod_verdict_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "p25 verdict scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    /* The first target is mid-comparison when the scan leaves it: the other chain (C4FM) has overwritten the learned
+     * modulation, while the CQPSK incumbent leads. The target keeps the leader. */
+    state.p25_p1_validated_rf_mod = 0;
+    state.p25_p1_mod_compare.verdict_valid = 1;
+    state.p25_p1_mod_compare.verdict_rf_mod = 1;
+    state.p25_p1_mod_compare.phase = 2;
+    state.p25_p1_mod_compare.incumbent_rf_mod = 1;
+    state.p25_p1_mod_compare.incumbent_read = 1206;
+    state.p25_p1_mod_compare.trial_read = 134;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_p1_mod_compare.verdict_valid != 0
+        || state.p25_p1_validated_rf_mod != -1) {
+        DSD_FPRINTF(stderr, "fresh p25 target took the first target's chain verdict valid=%d learned=%d\n",
+                    state.p25_p1_mod_compare.verdict_valid, state.p25_p1_validated_rf_mod);
+        test_rc = 1;
+    }
+
+    /* The second target is mid-comparison when the scan leaves it. */
+    state.p25_p1_mod_compare.phase = 2;
+    state.p25_p1_mod_probe_active = 1;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_p1_mod_compare.verdict_valid != 1
+        || state.p25_p1_mod_compare.verdict_rf_mod != 1 || state.p25_p1_validated_rf_mod != 1
+        || state.p25_p1_mod_compare.phase != 0 || state.p25_p1_mod_probe_active != 0) {
+        DSD_FPRINTF(stderr, "restored p25 target lost its chain verdict valid=%d mod=%d phase=%d trial=%d\n",
+                    state.p25_p1_mod_compare.verdict_valid, state.p25_p1_mod_compare.verdict_rf_mod,
+                    state.p25_p1_mod_compare.phase, state.p25_p1_mod_probe_active);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A P25 watchdog tune's notice belongs to the target it tuned: one still pending when the scan leaves that target is
+ * reconciled into the target's own state before its snapshot is saved, not into the next target's, whose learned
+ * modulation the next control-channel tune reads. */
+static int
+test_p25p1_watchdog_notice_stays_with_its_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "watchdog notice scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    /* B learns CQPSK on a first visit. */
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    state.p25_p1_validated_rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(&state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    /* Back on A, which learned C4FM; the watchdog tunes it and its notice is still pending when the scan moves on. */
+    state.p25_p1_validated_rf_mod = 0;
+    dsd_frame_sync_p25p1_mod_compare_publish(&state);
+    dsd_p25p1_decision read;
+    dsd_frame_sync_p25p1_read_decision(&read);
+    dsd_frame_sync_note_off_thread_tune(&read);
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_p1_validated_rf_mod != 1
+        || dsd_frame_sync_off_thread_tune_pending()) {
+        DSD_FPRINTF(stderr, "target b took target a's watchdog tune: active=%zu learned=%d pending=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.p25_p1_validated_rf_mod,
+                    dsd_frame_sync_off_thread_tune_pending());
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(1.04);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_p1_validated_rf_mod != 0) {
+        DSD_FPRINTF(stderr, "target a lost its own tune: learned=%d\n", state.p25_p1_validated_rf_mod);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_nxdn_state_isolated_per_target(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -6530,6 +6657,97 @@ test_target_switch_forgets_the_received_identity(void) {
         || state.rx_id.p25_wacn != before.p25_wacn || state.rx_id.p25_sysid != before.p25_sysid) {
         DSD_FPRINTF(stderr, "rx-id: a rolled-back switch did not restore the record: active=%zu valid=%08X\n",
                     dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The DMR RAS evidence (dmr_ras.c) is the carrier's and no target snapshot keeps it: every target switch resets it
+ * (dmr_ras_reset()), and so does a rollback, which puts back the record the advance started with but not the evidence,
+ * so the part the record held goes too until the carrier proves it again. One signature before the switch or the
+ * rollback and one after never confirm. */
+static int
+test_target_switch_and_rollback_reset_dmr_ras(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,\n"
+                             "b,dmr-trunk,453000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "ras scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    double now = 0.0;
+    for (int confirmed = 0; confirmed <= 1; confirmed++) {
+        for (int rollback = 0; rollback <= 1; rollback++) {
+            dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+            dmr_ras_note_signature(&state);
+            if (confirmed) {
+                dmr_ras_note_signature(&state);
+            }
+            const size_t active = dsd_engine_trunk_scan_active_index(&state);
+            g_counting_tune_to_cc_failures_remaining = rollback ? 2 : 0;
+            now += 5.0; /* past the dwell and any retry cooldown a rolled-back switch left */
+            trunk_scan_test_set_now(now);
+            dsd_engine_trunk_scan_tick(&opts, &state);
+            const int moved = dsd_engine_trunk_scan_active_index(&state) != active;
+            if (moved == rollback || dmr_ras_confirmed(&state) || (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U) {
+                DSD_FPRINTF(stderr, "ras: %s kept the evidence (confirmed=%d moved=%d signatures=%u valid=%08X)\n",
+                            rollback ? "a rollback" : "a switch", confirmed, moved, (unsigned)state.dmr_ras_signatures,
+                            (unsigned)state.rx_id.valid);
+                test_rc = 1;
+            }
+            dmr_ras_note_signature(&state);
+            if (dmr_ras_confirmed(&state)) {
+                DSD_FPRINTF(stderr, "ras: one signature after %s confirmed\n", rollback ? "a rollback" : "a switch");
+                test_rc = 1;
+            }
+            dmr_ras_reset(&state);
+        }
+    }
+
+    /* The last rollback left b cooling down: the next advance finds nothing eligible and stays, but the retune drop the
+       P25 watchdog requested meanwhile is applied there (before the advance keeps the record), and with it the RAS
+       evidence of the carrier that retune left goes. */
+    const size_t stayed = dsd_engine_trunk_scan_active_index(&state);
+    dsd_rxid_note_access(&state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dmr_ras_note_signature(&state);
+    dmr_ras_note_signature(&state);
+    (void)dsd_rxid_request_trunk_tune(&state);
+    now += 0.3;
+    trunk_scan_test_set_now(now);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != stayed || state.rx_id_trunk_tune_pending != 0U
+        || dmr_ras_confirmed(&state) || (state.rx_id.valid & DSD_RXID_DMR_RAS) != 0U) {
+        DSD_FPRINTF(stderr,
+                    "ras: an advance with nothing eligible kept the evidence (moved=%d pending=%u valid=%08X)\n",
+                    dsd_engine_trunk_scan_active_index(&state) != stayed, (unsigned)state.rx_id_trunk_tune_pending,
+                    (unsigned)state.rx_id.valid);
         test_rc = 1;
     }
 
@@ -13857,6 +14075,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_nxdn_state_survives_failed_switch_rollback);
+    rc |= run_with_default_tune_hook(test_p25p1_mod_verdict_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_p25p1_watchdog_notice_stays_with_its_target);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_diag_isolated_per_target);
     rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
     rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);
@@ -13895,6 +14115,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_failed_alternate_retune_republishes_restored_target);
     rc |= run_with_default_tune_hook(test_dmr_targets_pass_sps_to_retune_paths);
     rc |= run_with_default_tune_hook(test_target_switch_forgets_the_received_identity);
+    rc |= run_with_default_tune_hook(test_target_switch_and_rollback_reset_dmr_ras);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);
@@ -14017,12 +14238,30 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.
    The received-tone reset is mirrored from the real function (issue #522), so a switch that
    stopped calling it, or restored a target's tone after it, shows up here. */
+/* dsd_frame_sync_p25p1_learned_rf_mod() is the real one (src/dsp/frame_sync_p25p1_compare.c), which arms the CQPSK
+ * dwell through this (frame_sync_internal.h) when a tune ends a comparison. */
+void
+frame_sync_qpsk_dwell_set(int armed) {
+    (void)armed;
+}
+
+/* ... and puts the decoder back on a tuned chain through this when it reconciles a watchdog tune. */
+void
+frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
+    (void)opts;
+    state->rf_mod = chain;
+}
+
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
-    (void)opts;
     (void)forget;
+    /* As the real reset's chain step does: a watchdog tune's notice still pending is reconciled first. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     state->profile_proof_valid = 0;
     state->sps_hunt_counter = 0;
+    /* As the real reset does: a P25p1 chain comparison in flight ends, with no verdict and nothing restored. */
+    state->p25_p1_mod_compare.phase = 0;
+    state->p25_p1_mod_probe_active = 0;
     const uint32_t generation = state->analog_rx.generation + 1U;
     DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
     state->analog_rx.generation = generation;

@@ -8,11 +8,11 @@ Item {
     signal clicked
     implicitWidth: Theme.minimumTouchSize
     implicitHeight: Theme.minimumTouchSize
-    activeFocusOnTab: enabled && Navigation.allows(control)
+    activeFocusOnTab: Navigation.allows(control) && enabled
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
         if (!enabled || !Navigation.allows(control))

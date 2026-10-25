@@ -18,6 +18,7 @@
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -34,6 +35,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_test_support.h"
 
@@ -455,6 +457,43 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.rf_mod == 0);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DSTAR_SYNC, 24) == DSD_SYNC_DSTAR_VOICE_POS);
 
+    /* -mq with no -f (a RadioReference simulcast import) runs the default set, Auto. Its NXDN48, dPMR and ProVoice
+     * profiles are timed differently, so the locked QPSK hunt still steps only 4800/4 <-> 4800/2, as under the
+     * pre-Auto default. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dpmr = 1;
+    opts.frame_provoice = 1;
+    opts.frame_ysf = 1;
+    opts.frame_m17 = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    for (int step = 0; step < 4; step++) {
+        const int from = state.sps_hunt_idx;
+        state.sps_hunt_counter =
+            dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        assert(state.sps_hunt_idx
+               == (from == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 ? DSD_FRAME_SYNC_SPS_PROFILE_4800_2
+                                                             : DSD_FRAME_SYNC_SPS_PROFILE_4800_4));
+        assert(state.samplesPerSymbol == 10);
+        assert(state.rf_mod == 1);
+    }
+
     /* At 16 kHz, 4800 and 6000 symbols/s both round to 3 SPS. Generic demodulator
      * locks still rotate gates, but the profile-specific -m2/M selection must not. */
     reset(&opts, &state);
@@ -532,6 +571,86 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.sps_hunt_idx == 3);
     assert(state.samplesPerSymbol == 20);
     assert(state.symbolCenter == 8);
+}
+
+static int g_p25_probe_in_flight;
+static int g_p25_probe_queries;
+
+static int
+fake_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_p25_probe_queries++;
+    return g_p25_probe_in_flight;
+}
+
+/* One expired dwell of the unlocked hunt, starting from @p from. */
+static int
+step_auto_hunt_from(dsd_opts* opts, dsd_state* state, int from) {
+    state->sps_hunt_idx = from;
+    state->sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(opts, state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(opts, state);
+    return state->sps_hunt_idx;
+}
+
+/*
+ * Auto under trunking: while a P25-driven startup or recovery probe is in flight, the hunt steps only between the P25
+ * profiles (4800/4 -> 6000/4), the sequence a P25-only rotation runs, so a probe tries a Phase 2 control channel
+ * within its dwell; with no probe the full Auto rotation runs (4800/4 -> 2400/4 -> ...). The engine answers the query
+ * once per step; with nothing installed there is no probe.
+ */
+static void
+test_sps_hunt_p25_probe_rotation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.trunk_enable = 1;
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_nxdn96 = 1; // -fa
+    opts.frame_dpmr = opts.frame_provoice = opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = 1;
+    opts.frame_m17 = 1;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+
+    dsd_frame_sync_hooks_set(NULL); // nothing installed: no probe, the full rotation
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+
+    // The 4800/4 dwell of a trunked P25 session ends inside a hunt probe's two seconds, so the probe makes its one
+    // step, to 6000/4, before it ends.
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS < 2 * 4800);
+
+    g_p25_probe_queries = 0;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.p25_probe_in_flight = fake_p25_probe_in_flight});
+    g_p25_probe_in_flight = 1;
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(g_p25_probe_queries == 1); // one query per step
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    // A profile the full rotation left the probe on (a GFSK one included) steps back to the P25 rate.
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_9600_2) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_2400_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    // Without the dwell spent nothing steps, and nothing is asked.
+    g_p25_probe_queries = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 0;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(g_p25_probe_queries == 0);
+
+    // The probe ended (an owner named, or the hunt parked): the full Auto rotation resumes.
+    g_p25_probe_in_flight = 0;
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+
+    // A Phase 1 only set stays on 4800/4 while a probe is in flight.
+    g_p25_probe_in_flight = 1;
+    opts.frame_p25p2 = opts.frame_x2tdma = 0;
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    opts.frame_p25p2 = opts.frame_x2tdma = 1;
+    dsd_frame_sync_hooks_set(NULL);
 }
 
 /*
@@ -1362,10 +1481,11 @@ test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
 
-    /* Past the frame the matcher is live again, on its own two-hit terms. */
+    /* Past the frame the matcher is live again, on its own two-hit terms: the second hit a frame after the first. */
     state.symbolcnt = 1000 + DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 }
 
@@ -1591,6 +1711,8 @@ test_symbol_replay_requires_explicit_nxdn_variant(void) {
         opts.frame_nxdn96 = 1;
         state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
         assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+        /* NXDN96's second hit is the next frame's, 192 symbols on. */
+        state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
         assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
         assert(dsd_frame_sync_active_nxdn_variant(&opts, &state) == DSD_NXDN_VARIANT_96);
     }
@@ -1690,6 +1812,539 @@ test_a_p25p1_frame_suppresses_m17_candidates(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
 }
 
+/* The windows an alternating run of @p windows symbols presents, one per symbol: the marker and its inversion in
+ * turn, as a real preamble reads one symbol over. */
+static void
+feed_m17_alternating_windows(dsd_opts* opts, dsd_state* state, int windows) {
+    for (int i = 0; i < windows; i++) {
+        state->symbolcnt++;
+        (void)dsd_frame_sync_test_try_protocol_matches(opts, state, (i & 1) ? M17_PIV : M17_PRE, 8);
+    }
+}
+
+static void
+m17_join_setup(dsd_opts* opts, dsd_state* state) {
+    reset(opts, state);
+    opts->frame_m17 = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->min = -3.0f;
+    state->max = 3.0f;
+    state->symbolcnt = 7000;
+}
+
+/*
+ * M17's way in used to be any alternating run of eight windows followed by a sync word within one error, and receiver
+ * noise supplies that a few times a second (the noise_floor fixture opened 27 M17 frames in 10 s under -fz). The same
+ * weakness was how a transmission joined mid-stream got in: no preamble, so a run in the payload and a lucky word.
+ * Every M17 frame is 192 symbols, a sync burst and 184 symbols of payload (M17 spec, Frame), and stream and BERT frames
+ * follow each other back to back, so a transmission in progress offers its frame's sync word every 192 symbols --
+ * something noise does not. The same exact sync word three frames running now joins a transmission, for that one
+ * frame, and the preamble, which a transmission sends for 192 symbols, must run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS
+ * windows.
+ */
+static int
+m17_word_three_frames(dsd_opts* opts, dsd_state* state, const char* first, const char* second, const char* third) {
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, first, 8) == DSD_SYNC_NONE);
+    state->symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(opts, state, second, 8) == DSD_SYNC_NONE);
+    state->symbolcnt += 192;
+    return dsd_frame_sync_test_try_protocol_matches(opts, state, third, 8);
+}
+
+static void
+test_m17_joins_on_a_sync_word_three_frames_running(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A stream joined mid-transmission: the first two words only mark the place, the third joins. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_STR) == DSD_SYNC_M17_STR_POS);
+    /* ... and the frames after it chain as ever, once the joined frame proved itself. */
+    state.m17_confirm_weak_streak = 1;
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
+
+    /* A join opens one frame. A joined frame that proved nothing hands the next none of its permission: the words
+     * behind it are forgotten, and the stream waits for three fresh ones. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_STR) == DSD_SYNC_M17_STR_POS);
+    state.symbolcnt += 192;
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_STR) == DSD_SYNC_M17_STR_POS);
+
+    /* Every exact word is remembered, whichever path takes it: a BERT run that loses its PRBS lock rejoins on the
+     * frames it was read on, the one its preamble opened and the one the lock continued. */
+    m17_join_setup(&opts, &state);
+    feed_m17_alternating_windows(&opts, &state, DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS);
+    state.symbolcnt++;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+    state.m17_bert_locked = 1;
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+    state.m17_bert_locked = 0;
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+
+    /* Two words a frame apart are what dead channels offer by chance, so they are not enough on their own. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+
+    /* Not a frame apart, no join: one symbol either way, or a frame and a half. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 191;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 2;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 96;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+
+    /* Before a lock every payload window is read too, and a payload matches some sync word a few times a frame. Those
+     * hits are remembered beside the real ones; they must not hide them. */
+    m17_join_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 50;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PKT, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 50;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 92;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 30;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_NONE);
+    state.symbolcnt += 162;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_STR_POS);
+
+    /* Different words a frame apart are not one transmission's frames. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_STR, M17_LSF) == DSD_SYNC_NONE);
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_STR, M17_LSF, M17_STR) == DSD_SYNC_NONE);
+
+    /* The LSF word repeats only as an inverted stream (an LSF is sent once), and BERT joins on its own word -- or on
+     * the packet word, its inversion, when the session's polarity says the transmission is inverted. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_LSF, M17_LSF, M17_LSF) == DSD_SYNC_M17_STR_NEG);
+
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_BRT, M17_BRT, M17_BRT) == DSD_SYNC_M17_BRT_POS);
+
+    m17_join_setup(&opts, &state);
+    opts.inverted_m17 = 1;
+    assert(m17_word_three_frames(&opts, &state, M17_PKT, M17_PKT, M17_PKT) == DSD_SYNC_M17_BRT_NEG);
+
+    /* A packet is never joined: its one CRC covers every packet frame, so a packet joined after its first cannot be
+     * read, and the packet word turns up a frame apart in NXDN96 data frames' LICH. Nor is a BERT word under an
+     * inverted session, which is an inverted packet. */
+    m17_join_setup(&opts, &state);
+    assert(m17_word_three_frames(&opts, &state, M17_PKT, M17_PKT, M17_PKT) == DSD_SYNC_NONE);
+    m17_join_setup(&opts, &state);
+    opts.inverted_m17 = 1;
+    assert(m17_word_three_frames(&opts, &state, M17_BRT, M17_BRT, M17_BRT) == DSD_SYNC_NONE);
+
+    /* A short alternating run -- what noise supplies -- latches nothing, so the word behind it opens nothing. */
+    m17_join_setup(&opts, &state);
+    feed_m17_alternating_windows(&opts, &state, 8);
+    assert(state.m17_pre_candidate == 0);
+    state.symbolcnt++;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_NONE);
+
+    /* A preamble that runs as long as the rule asks still opens the LSF behind it. */
+    m17_join_setup(&opts, &state);
+    feed_m17_alternating_windows(&opts, &state, DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS);
+    assert(state.m17_pre_candidate != 0);
+    state.symbolcnt++;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
+}
+
+/*
+ * NXDN96's frame sync word is ten symbols in five variants per polarity, sliced on sign, so about one arbitrary window in
+ * a hundred matches, and the matcher's two hits could be any distance apart: receiver noise opened 20 NXDN96 frames in
+ * the noise_floor fixture's 10 s under -fn. An NXDN frame is 384 bits, 192 symbols at 9600 bps (NXDN TS 1-A 4.4: one
+ * frame per 40 ms), and every frame opens with the FSW. The receiver rules (TS 1-A 5.3, Table 5.9-3) acquire on two
+ * FSWs a frame apart and hold the lock through five missed FSWs. The 2400/4 matcher (NXDN48) keeps its two hits at
+ * any distance.
+ */
+static void
+nxdn96_sync_setup(dsd_opts* opts, dsd_state* state) {
+    reset(opts, state);
+    opts->frame_nxdn96 = 1;
+    opts->msize = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->min = -3.0f;
+    state->max = 3.0f;
+    state->symbolcnt = 5000;
+}
+
+/* Four-level readings of the NXDN FSW (TS 1-A 4.4.4): clean, and with every magnitude swapped -- the signs right and
+ * nothing else, which is what a window of noise matching on signs reads as. */
+static const float k_nxdn_fsw_clean[10] = {-3.0f, 1.0f, -3.0f, 3.0f, -3.0f, -3.0f, 3.0f, 3.0f, -1.0f, 3.0f};
+static const float k_nxdn_fsw_swapped[10] = {-1.0f, 3.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -3.0f, 1.0f};
+
+/* One NXDN96 FSW at the current count, read on four levels (@p swapped: the noise-like reading) at @p polarity, and,
+ * when the matcher takes it, its frame's LICH reported as nxdn_frame() reports it, eight symbols on. */
+static int
+nxdn96_fsw(dsd_opts* opts, dsd_state* state, int polarity, int swapped, dsd_nxdn96_lich_result lich) {
+    float levels[10];
+    for (int i = 0; i < 10; i++) {
+        levels[i] = (float)polarity * (swapped ? k_nxdn_fsw_swapped[i] : k_nxdn_fsw_clean[i]);
+    }
+    const int sync = dsd_frame_sync_test_eval_window(opts, state, polarity > 0 ? NXDN_FSW : INV_NXDN_FSW, levels, 10);
+    if (DSD_SYNC_IS_NXDN(sync)) {
+        dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt + 8U, lich);
+    }
+    return sync;
+}
+
+static void
+test_nxdn96_follows_the_receiver_sync_rules(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
+
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    /* A second hit that is not a frame later only marks a new place (N1 = 2: two FSWs a frame apart). */
+    state.symbolcnt += 100;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* A transmission's frames follow on. */
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* A locked transmission rides out missed FSWs: five in a row (N7), each next one a symbol off the frame grid. */
+    state.symbolcnt += 6U * 192U + 1U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 2U * 192U - 1U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* The next frame's FSW is held to its signs, as ever; one after a missed frame to N7's two bit errors as well. */
+    state.symbolcnt += 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 2U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
+    /* Six missed lose the lock, and so does a hit two symbols off, or one of the other polarity. */
+    state.symbolcnt += 5U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192U + 2U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192U;
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
+
+    /* Acquisition takes the second FSW within a symbol of a frame on, either way, at either polarity. */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 193;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 191;
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NXDN_NEG);
+
+    /* Payload hits in between, of either polarity, do not hide the FSW a frame back. */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 40;
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 60;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 92;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* An accept leaves lastsynctype on the type it accepted, as every other matcher's does, however the payload hit
+     * before it read: the frame's notices and its end-of-frame check read the protocol from it. */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 100;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 92;
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NXDN_NEG);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_NEG);
+    /* A hit a frame after one of the other polarity is not that frame's FSW. */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+
+    /* One FSW behind the preamble's tail (N6) does not acquire alone: see frame_sync_nxdn96_accepts(). */
+    nxdn96_sync_setup(&opts, &state);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, "11111313113331" NXDN_FSW, 24) == DSD_SYNC_NONE);
+}
+
+/*
+ * The lock follows the LICH as TS 1-A 5.3 has it: the LICH conditions apply only when the LICH's parity holds, and
+ * frame sync is lost after S1 = 5 good-parity LICHs in a row that name no frame of the channel (5.3.2, Table 5.9-3).
+ * A real call's frame whose LICH fails its parity does not drop the lock; an accept on noise, whose LICH fails, does
+ * not refresh it either, so a lock still lapses N7 frames after the call.
+ */
+static void
+test_nxdn96_lock_follows_the_lich(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
+    const dsd_nxdn96_lich_result parity = DSD_NXDN96_LICH_PARITY_ERROR;
+    const dsd_nxdn96_lich_result wrong = DSD_NXDN96_LICH_WRONG;
+
+    /* A call: acquired, then a frame whose LICH parity fails. The next frame is still taken. */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, parity) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+
+    /* After the call: an accept whose LICH fails is not the call, and the lock keeps the call's last good frame. A hit
+     * seven frames after that frame is past N7, though it is only four after the failed accept. */
+    const uint32_t last_good = state.symbolcnt;
+    state.symbolcnt = last_good + 3U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, parity) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt = last_good + 7U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+
+    /* Four good-parity LICHs naming something else are borne; the fifth in a row loses frame sync (S1). */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    for (int i = 0; i < 4; i++) {
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, wrong) == DSD_SYNC_NXDN_POS);
+    }
+    assert(state.nxdn96_sync.lock_type == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, wrong) == DSD_SYNC_NXDN_POS);
+    assert(state.nxdn96_sync.lock_type == 0U);
+    /* ... and the hits with it: the next FSW acquires afresh. */
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
+}
+
+static int
+sync_hits_empty(const dsd_sync_hit_history* history) {
+    for (int i = 0; i < DSD_SYNC_HIT_HISTORY_LEN; i++) {
+        if (history->kind[i] != 0U) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/*
+ * The NXDN96 lock and hits, and the M17 join history, are evidence of one carrier and one acquisition, as the windows
+ * are: an acquisition reset or a carrier change (a tune, a probe, a trunk-scan switch) forgets them, so a lock does not
+ * carry its flywheel over to the next carrier and an FSW the carrier left sent does not pair with the next one's. The
+ * next carrier acquires on two FSWs of its own.
+ */
+static void
+test_nxdn96_and_m17_histories_end_with_the_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
+
+    /* 0: an acquisition reset; 1: a carrier change; 2: a trunk retune made off the decoder thread (the P25 watchdog's),
+     * which the matcher applies before it reads the lock. */
+    for (int boundary = 0; boundary < 3; boundary++) {
+        nxdn96_sync_setup(&opts, &state);
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+        assert(state.nxdn96_sync.lock_type == DSD_SYNC_NXDN_POS);
+        state.m17_join_hits.kind[0] = 1U;
+        state.m17_join_hits.symbolcnt[0] = state.symbolcnt;
+        state.m17_join_hits.next = 1U;
+        if (boundary == 2) {
+            dsd_p25p1_decision read;
+            dsd_frame_sync_p25p1_read_decision(&read);
+            dsd_frame_sync_note_off_thread_tune(&read);
+            assert(state.nxdn96_sync.lock_type == DSD_SYNC_NXDN_POS); /* the decoder thread's to forget */
+            state.symbolcnt += 192;
+            assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+            assert(!dsd_frame_sync_off_thread_tune_pending());
+            assert(sync_hits_empty(&state.m17_join_hits));
+            state.symbolcnt += 192;
+            assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+            continue;
+        }
+        if (boundary) {
+            dsd_state_note_carrier_change(&state);
+            state.symbol_clock += 1000U; /* the next carrier's windows are whole */
+        } else {
+            dsd_frame_sync_reset_acquisition(&opts, &state, 0);
+            state.min = -3.0f; /* the slicer the next carrier warms */
+            state.max = 3.0f;
+        }
+        assert(state.nxdn96_sync.lock_type == 0U && state.nxdn96_sync.pending_type == 0U);
+        assert(sync_hits_empty(&state.nxdn96_sync.hits));
+        assert(sync_hits_empty(&state.m17_join_hits) && state.m17_join_hits.next == 0U);
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    }
+}
+
+/*
+ * The FSW the specification detects is 20 bits, 10 four-level symbols, within two bit errors; the sign-sliced window
+ * here is ten bits, which one arbitrary window in a hundred matches. Acquisition reads the window's levels too: hits
+ * whose levels name the wrong magnitudes -- what receiver noise that happens to have the signs offers -- do not
+ * acquire, while a clean FSW does.
+ */
+static void
+test_nxdn96_acquires_on_the_four_level_fsw(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
+
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* Once locked, the next frame is timed by the lock, as the receiver's flywheel does. */
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NXDN_POS);
+}
+
+/* One NXDN96 frame: the FSW, the LICH of a trunked outbound data frame (0101111, scrambled), and payload. Its LICH puts
+ * the exact M17 packet word in the window ending at the frame's 15th symbol (review of the M17/NXDN96 joins). */
+static void
+nxdn96_udch_frame(char* frame, int fsw_lost, int inverted) {
+    static const char head[] = NXDN_FSW "13333113";
+    DSD_MEMCPY(frame, head, 18);
+    if (fsw_lost) {
+        frame[0] = '1';
+        frame[1] = '1';
+    }
+    for (int i = 18; i < 192; i++) {
+        frame[i] = "3311"[(i - 18) % 4];
+    }
+    if (inverted) {
+        for (int i = 0; i < 192; i++) {
+            frame[i] = frame[i] == '1' ? '3' : '1';
+        }
+    }
+}
+
+/* Read @p count symbols the way getFrameSync() does, a window of up to 24 behind each; an accepted sync hands its frame
+ * to the handler, which reads the rest of it, and the search starts again with an empty window. */
+static void
+read_symbol_stream(dsd_opts* opts, dsd_state* state, const char* symbols, int count, int* nxdn, int* m17) {
+    char window[25];
+    int filled = 0;
+    int i = 0;
+    while (i < count) {
+        state->symbolcnt++;
+        if (filled == 24) {
+            DSD_MEMMOVE(window, window + 1, 23);
+            filled = 23;
+        }
+        window[filled++] = symbols[i];
+        window[filled] = '\0';
+        const int sync = dsd_frame_sync_test_try_protocol_matches(opts, state, window, filled);
+        int consumed = 0;
+        if (DSD_SYNC_IS_NXDN(sync)) {
+            (*nxdn)++;
+            consumed = 182;
+            dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt + 8U, DSD_NXDN96_LICH_GOOD);
+        } else if (sync != DSD_SYNC_NONE) {
+            (*m17)++;
+            consumed = 184;
+        }
+        int step = 1;
+        if (consumed > 0) {
+            const int left = count - 1 - i;
+            const int skip = consumed < left ? consumed : left;
+            state->symbolcnt += (uint32_t)skip;
+            step += skip;
+            filled = 0;
+        }
+        i += step;
+    }
+}
+
+/*
+ * A trunked NXDN96 data call carries an exact M17 packet word in every frame's LICH, 192 symbols apart. Under Auto, one
+ * lost FSW used to give that word three frames running while NXDN96 waited out its own acquisition, and the M17 join
+ * took the frame -- reading on into the next FSW, so NXDN96 never got its window back, while the join re-took every
+ * frame from its own hits. The call stays NXDN96: the lock rides out the lost FSW, and M17 joins no packet.
+ */
+static void
+test_an_nxdn96_data_call_stays_nxdn96_under_auto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char stream[12 * 192];
+    for (int f = 0; f < 12; f++) {
+        nxdn96_udch_frame(stream + (size_t)f * 192U, f == 5, 0);
+    }
+
+    reset(&opts, &state);
+    opts.frame_nxdn96 = 1;
+    opts.frame_m17 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 9000;
+    int nxdn = 0;
+    int m17 = 0;
+    read_symbol_stream(&opts, &state, stream, (int)sizeof(stream), &nxdn, &m17);
+    assert(m17 == 0);
+    assert(nxdn == 10); /* every frame but the first, which only marks, and the one whose FSW was lost */
+
+    /* With NXDN96 off the frames are M17's to judge alone, and their packet word joins nothing. */
+    reset(&opts, &state);
+    opts.frame_m17 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 9000;
+    nxdn = 0;
+    m17 = 0;
+    read_symbol_stream(&opts, &state, stream, (int)sizeof(stream), &nxdn, &m17);
+    assert(m17 == 0 && nxdn == 0);
+
+    /* Inverted, the same LICH holds the exact BERT word instead, which M17 does join. The call stays NXDN96 under Auto
+     * all the same: the lock rides out the lost FSW, so M17 never sees the word three frames running. */
+    for (int f = 0; f < 12; f++) {
+        nxdn96_udch_frame(stream + (size_t)f * 192U, f == 5, 1);
+    }
+    reset(&opts, &state);
+    opts.frame_nxdn96 = 1;
+    opts.frame_m17 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 9000;
+    nxdn = 0;
+    m17 = 0;
+    read_symbol_stream(&opts, &state, stream, (int)sizeof(stream), &nxdn, &m17);
+    assert(m17 == 0);
+    assert(nxdn == 10);
+}
+
+static void
+test_nxdn48_keeps_two_hits_at_any_distance(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* NXDN48 on 2400/4 is unchanged. */
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 5000;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    state.symbolcnt += 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+}
+
 /* Issue #445. The spans above cover a frame; this covers the gap a hunt step opens. A proof of
  * 2400/4 says a transmission is running there, and a step onto 4800/4 offers that same signal,
  * read at twice its rate, to two matchers weak enough to take it. Armed by hand here: what the
@@ -1727,10 +2382,11 @@ test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers(void) {
     assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
 
     /* Once the transmission can no longer be running, the matcher is live again on its own
-     * two-hit terms. */
+     * two-hit terms: the second hit a frame after the first. */
     state.symbolcnt = 1000 + DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* M17: the run latches nothing and the word behind it is refused, so no candidate is left
@@ -1799,6 +2455,7 @@ test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols(void) {
     state.symbolcnt = 1000 + 100;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's second hit is a frame on */
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* A proof read on 4800/4 -- P25p1's, say -- is inert here: what this guard acts on is a
@@ -1815,6 +2472,7 @@ test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols(void) {
     state.symbolcnt = 1000 + 100;
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS; /* NXDN96's second hit is a frame on */
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 
     /* And it never mutes the protocol whose transmission armed it: on 2400/4 itself, NXDN48
@@ -2535,6 +3193,139 @@ test_p25p1_auto_hunt_alternates_cqpsk_probe(void) {
     assert(state.p25_p1_mod_probe_active == 1);
 }
 
+/* Start a CQPSK probe on 4800/4 the way an expired dwell does, with @p configure choosing the decoders. */
+static int
+start_cqpsk_probe(dsd_opts* opts, dsd_state* state, void (*configure)(dsd_opts* opts)) {
+    static int fake_rtl_context;
+    reset(opts, state);
+    opts->frame_p25p1 = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    configure(opts);
+    state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->rf_mod = 0;
+    state->p25_p1_validated_rf_mod = -1;
+    state->p25_p1_mod_probe_next_qpsk = 1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(opts, state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state->sps_hunt_counter = dwell;
+    (void)frame_sync_no_sync_sps_hunt(opts, state);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state->rf_mod == 1 && state->p25_p1_mod_probe_active == 1);
+    return dwell;
+}
+
+static void
+configure_p25p1_only(dsd_opts* opts) {
+    (void)opts;
+}
+
+static void
+configure_with_dmr(dsd_opts* opts) {
+    opts->frame_dmr = 1;
+}
+
+static void
+configure_with_nxdn96(dsd_opts* opts) {
+    opts->frame_nxdn96 = 1;
+}
+
+static void
+configure_with_ysf(dsd_opts* opts) {
+    opts->frame_ysf = 1;
+}
+
+static void
+configure_with_m17(dsd_opts* opts) {
+    opts->frame_m17 = 1;
+}
+
+static void
+configure_trunk_scan_target_with_dmr(dsd_opts* opts) {
+    opts->frame_p25p2 = 1;
+    opts->frame_dmr = 1;
+    opts->trunk_scan_enabled = 1;
+    opts->trunk_enable = 1;
+}
+
+/*
+ * The CQPSK trial cannot hear DMR, NXDN96, YSF or M17, and it held the votes off for its whole dwell, so on a session
+ * that decodes those too every other 4800/4 visit was deaf to them: a DMR carrier that arrived in one lost the dwell
+ * and a whole rotation (faDMRNXDNScan, 121 DMR frames). A CQPSK carrier decodes on the chain within a frame, so a
+ * trial that has validated nothing by half its dwell gives the rest of it back to C4FM and the votes.
+ */
+static void
+test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int lastt = 24;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    void (*const with_fsk[])(dsd_opts*) = {configure_with_dmr, configure_with_nxdn96, configure_with_ysf,
+                                           configure_with_m17};
+    for (size_t i = 0; i < sizeof(with_fsk) / sizeof(with_fsk[0]); i++) {
+        const int dwell = start_cqpsk_probe(&opts, &state, with_fsk[i]);
+        state.sps_hunt_counter = dwell / 2 - 1;
+        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+        assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+        reset_fake_profile_capture();
+        state.sps_hunt_counter = dwell / 2;
+        /* A step: the demodulator changed under the caller's sync window, which getFrameSync() leaves to rebuild it --
+         * but not a no-sync exit. The dwell goes on, so the P25 SM's accounting and noCarrier() are not owed: running
+         * them would end calls and reset the decoder's frame state halfway through a dwell that has not expired. */
+        g_vc_no_sync_hook_calls = 0;
+        g_no_carrier_hook_calls = 0;
+        dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
+            .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+            .no_carrier = fake_no_carrier,
+        });
+        assert(dsd_frame_sync_test_hunt_budget_exit(&opts, &state) == FRAME_SYNC_HUNT_CHAIN_HANDBACK);
+        dsd_frame_sync_hooks_set(NULL);
+        assert(g_no_carrier_hook_calls == 0);
+        assert(g_vc_no_sync_hook_calls == 0);
+        assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+        assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+        assert(g_profile_cqpsk == 0);
+        /* The rest of the dwell is the profile's: the counter runs on, and the votes are free again. */
+        assert(state.sps_hunt_counter == dwell / 2);
+        if (opts.frame_dmr == 1 || opts.frame_nxdn96 == 1) {
+            dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+            lastt = 24;
+            frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+            assert(state.rf_mod == 2);
+        }
+        /* Handed back once: further calls before the dwell ends change nothing. */
+        const int mod = state.rf_mod;
+        state.sps_hunt_counter = dwell - 1;
+        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+        assert(state.rf_mod == mod);
+    }
+
+    /* P25p1 alone keeps the whole dwell on trial, as before. */
+    int dwell = start_cqpsk_probe(&opts, &state, configure_p25p1_only);
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    /* So does a trunk-scan P25 target's trial, whose schedule fits the CQPSK trial and Phase 2 in one visit. */
+    dwell = start_cqpsk_probe(&opts, &state, configure_trunk_scan_target_with_dmr);
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    /* And a CQPSK dwell that is measuring a chain comparison rather than probing. */
+    dwell = start_cqpsk_probe(&opts, &state, configure_with_dmr);
+    state.p25_p1_mod_compare.phase = 2;
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * A trial the votes can revoke before it decodes anything is not a trial: entering GFSK takes
  * a single vote. While a probe is on trial the modulation heuristics do not get to answer.
@@ -2687,6 +3478,643 @@ test_validated_cqpsk_survives_rotation_but_not_disproof(void) {
         }
         assert(state.p25_p1_validated_rf_mod == 1);
     }
+}
+
+/* A P25p1 frame whose NID decoded on the chain the demodulator is on: getFrameSync() searched @p search symbols and
+ * returned on its sync, the handler read @p read, and getFrameSync() is entered again. */
+static void
+compare_frame(dsd_opts* opts, dsd_state* state, uint32_t search, uint32_t read) {
+    state->symbolcnt += search;
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    state->symbolcnt += read;
+    state->p25_p1_validated_rf_mod = state->rf_mod;
+    state->p25_p1_validated_symbolcnt = state->symbolcnt;
+    frame_sync_p25p1_mod_compare_note(opts, state);
+}
+
+/* A no-sync return after @p symbols of search, and the entry after it. */
+static void
+compare_idle(dsd_opts* opts, dsd_state* state, uint32_t symbols) {
+    state->symbolcnt += symbols;
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    frame_sync_p25p1_mod_compare_note(opts, state);
+}
+
+static void
+compare_setup(dsd_opts* opts, dsd_state* state, int incumbent_rf_mod) {
+    static int fake_rtl_context;
+    reset(opts, state);
+    opts->frame_p25p1 = 1;
+    opts->frame_p25p2 = 1;
+    opts->frame_dmr = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->rf_mod = incumbent_rf_mod;
+    state->p25_p1_validated_rf_mod = -1;
+    state->p25_p2_active_slot = -1;
+    state->symbolcnt = 50000U;
+    reset_fake_profile_capture();
+}
+
+/* One search pass of a control channel's one-block TSDUs on the current chain, from the first frame's sync: every
+ * slot (134 symbols read, 46 searched) when @p every is 1, one slot in @p every otherwise. */
+static void
+compare_pass(dsd_opts* opts, dsd_state* state, int every) {
+    const uint32_t slot = 180U;
+    uint32_t used = 0;
+    int frames = 0;
+    while (used + slot * (uint32_t)every <= (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+        const uint32_t search = frames == 0 ? 0U : slot * (uint32_t)every - 134U;
+        compare_frame(opts, state, search, 134U);
+        used += search + 134U;
+        frames++;
+    }
+    compare_idle(opts, state, (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - used);
+}
+
+/*
+ * A chain that decodes part of an LSM simulcast control channel decodes, so the binary trial took it and its own
+ * proofs kept it for as long as the channel stayed up: the 769 MHz capture's control channel spent 164 s on C4FM at
+ * half the TSBKs the CQPSK chain reads. The first validated frame of an acquisition now measures what that chain's
+ * validated frames read over a search pass; one that let a frame go by unread in it has the other chain measured,
+ * and the chain that read more keeps the profile.
+ */
+static void
+test_p25p1_partial_chain_loses_the_comparison(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    /* C4FM reads one TSBK in three; its first opens the comparison and the votes are kept off the chain. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    assert(state.p25_p1_mod_probe_active == 1);
+    assert(state.rf_mod == 0);
+    for (int i = 0; i < 2; i++) {
+        compare_frame(&opts, &state, 3 * 180 - 134, 134);
+        assert(state.rf_mod == 0);
+    }
+    /* Its pass let frames go by unread: the pass ends on the other chain. */
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 134 - 2 * 3 * 180);
+    assert(state.rf_mod == 1);
+    assert(g_profile_cqpsk == 1 && g_profile_rate == 4800);
+    assert(state.p25_p1_mod_probe_active == 1);
+    /* CQPSK reads every TSBK: it wins, keeps the profile and becomes the learned modulation. */
+    state.sps_hunt_counter = 1500;
+    compare_pass(&opts, &state, 1);
+    assert(state.rf_mod == 1);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+    assert(state.sps_hunt_counter == 0);
+    /* One comparison per acquisition: the chain it chose opens no other. */
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 0);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1);
+
+    /* A chain that reads the carrier back to back is never tried against: CQPSK first and whole stays, untouched. */
+    compare_setup(&opts, &state, 1);
+    compare_pass(&opts, &state, 1);
+    assert(state.rf_mod == 1);
+    assert(g_profile_set_calls == 0);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+
+    /* The other way round: CQPSK came first reading one TSBK in three, C4FM reads them all. */
+    compare_setup(&opts, &state, 1);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0);
+    assert(g_profile_cqpsk == 0);
+    compare_pass(&opts, &state, 1);
+    assert(state.rf_mod == 0);
+    assert(state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_probe_active == 0);
+
+    /* One TSBK missed in a pass the chain otherwise reads whole is a frame gone by: the other chain is measured. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    for (int i = 0; i < 4; i++) {
+        compare_frame(&opts, &state, 46, 134);
+    }
+    compare_frame(&opts, &state, 46 + 180, 134);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 6 * 134 - 5 * 46 - 180);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
+
+    /* A call's LDUs follow each other with almost no search: no trial. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 864);
+    compare_frame(&opts, &state, 2, 864);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 2 * 864 - 2);
+    assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_validated_rf_mod == 0);
+
+    /* A tie keeps the incumbent, put back on its chain. */
+    compare_setup(&opts, &state, 0);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0 && g_profile_cqpsk == 0);
+    assert(state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_probe_active == 0);
+    /* ... and the verdict holds against the next frame on it. */
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 0 && state.rf_mod == 0);
+
+    /* A carrier boundary ends a comparison without a verdict; the next acquisition compares afresh. */
+    compare_setup(&opts, &state, 0);
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1);
+    state.carrier_seq++;
+    compare_idle(&opts, &state, 100);
+    assert(state.p25_p1_mod_probe_active == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 1);
+
+    /* Nothing is compared under a modulation lock, off the RTL front end, on a trunked voice channel, or on a profile
+     * P25p1 does not own. */
+    compare_setup(&opts, &state, 1);
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 0);
+
+    compare_setup(&opts, &state, 0);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+
+    compare_setup(&opts, &state, 0);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
+
+    compare_setup(&opts, &state, 1);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    compare_pass(&opts, &state, 3);
+    assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/* Run a comparison into the other chain's pass: the incumbent reads one TSBK in three (it misses frames). */
+static void
+compare_into_trial(dsd_opts* opts, dsd_state* state, int incumbent_rf_mod) {
+    compare_setup(opts, state, incumbent_rf_mod);
+    compare_pass(opts, state, 3);
+    assert(state->p25_p1_mod_compare.phase == 2);
+    assert(state->rf_mod == !incumbent_rf_mod);
+}
+
+/*
+ * How a comparison ends when its passes are cut short or read nothing, and what it leaves behind.
+ */
+static void
+test_p25p1_comparison_ends_cleanly(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    /* A transmission that ends inside the incumbent's pass: its opening frame is all either pass validated, so there is
+     * nothing to choose between and no verdict. The incumbent's chain is put back, nothing is stamped as learned, and
+     * the carrier's next frame compares afresh. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    const uint32_t stamped = state.p25_p1_validated_symbolcnt;
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state.p25_p1_mod_compare.phase == 2);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 0 && g_profile_cqpsk == 0);
+    assert(state.p25_p1_mod_probe_active == 0);
+    assert(state.p25_p1_validated_symbolcnt == stamped);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_mod_probe_active == 1);
+
+    /* An opening frame long enough to fill most of the incumbent's pass (a data PDU) is not a pass that read the
+     * carrier whole: with no frame after it, the pass has measured nothing, and the other chain gets its pass. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 1000);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 1000);
+    assert(state.p25_p1_mod_compare.phase == 2 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 1);
+
+    /* The other chain's pass is the decoder's experiment: the dwell gets back what that pass searched, no more. */
+    compare_setup(&opts, &state, 0);
+    compare_frame(&opts, &state, 0, 134);
+    for (int i = 0; i < 2; i++) {
+        compare_frame(&opts, &state, 3 * 180 - 134, 134);
+    }
+    state.sps_hunt_counter = 300;
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 134 - 2 * 3 * 180);
+    assert(state.p25_p1_mod_compare.phase == 2);
+    state.sps_hunt_counter = 2100;
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.rf_mod == 0);
+    assert(state.sps_hunt_counter == 300);
+
+    /* A verdict's own stamp is not a frame: with the verdict gone, the next entry opens nothing until a frame
+     * validates. */
+    state.p25_p1_mod_compare.verdict_valid = 0;
+    compare_idle(&opts, &state, 10);
+    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_mod_compare.phase == 0);
+
+    /* A C4FM verdict is withdrawn the way a learned CQPSK is: by a dwell on that chain that decodes nothing. */
+    compare_setup(&opts, &state, 1);
+    compare_pass(&opts, &state, 3);
+    compare_pass(&opts, &state, 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 0);
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0);
+
+    /* ... and a CQPSK verdict with the learned CQPSK it set. */
+    compare_setup(&opts, &state, 0);
+    compare_pass(&opts, &state, 3);
+    compare_pass(&opts, &state, 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 1);
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.p25_p1_mod_compare.verdict_valid == 0 && state.p25_p1_validated_rf_mod == -1);
+
+    /* An acquisition reset in the other chain's pass ends the comparison without a verdict. Its caller owns the
+     * demodulator and the learned modulation from there (a trunk-scan switch has restored the target's), so neither
+     * is touched. */
+    compare_into_trial(&opts, &state, 1);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_validated_rf_mod == 0);
+    state.p25_p1_validated_rf_mod = -1; /* as a restored snapshot of a target that learned nothing would leave it */
+    dsd_frame_sync_reset_acquisition(&opts, &state, 0);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_validated_rf_mod == -1);
+
+    /* A dwell expiry that overtakes the other chain's pass ends it on the incumbent's chain, before the hunt decides
+     * where to go: a P25p1-only session re-enters 4800/4 without normalising it. */
+    compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    state.p25_p1_mod_probe_next_qpsk = 0;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    (void)frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+
+    /* ... and judges the dwell on the chain it ran on: a C4FM trial pass overtaken on a CQPSK incumbent decoded nothing
+     * on CQPSK, so the learned CQPSK the abort puts back is not withdrawn. */
+    compare_into_trial(&opts, &state, 1);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    state.p25_p1_mod_probe_next_qpsk = 1;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    /* A step: the abort put the other chain under the caller's sync window. */
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_validated_rf_mod == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && state.rf_mod == 1);
+
+    /* A lock taken mid-pass ends it without a verdict and leaves the demodulator to the lock. The other chain's frame
+     * had overwritten the learned modulation; it goes back to the leading chain. */
+    compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    compare_idle(&opts, &state, 10);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.p25_p1_mod_probe_active == 0 && state.p25_p1_validated_rf_mod == 0);
+
+    /* So does a profile change: the demodulator belongs to the new profile. */
+    compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.rf_mod = 2;
+    compare_idle(&opts, &state, 10);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 2 && state.p25_p1_validated_rf_mod == 0);
+
+    /* A Phase 2 grant has claimed the modulation for its TDMA slot before the tune: the learned P25p1 modulation goes
+     * back to the leading chain, the decoder's stays CQPSK. */
+    compare_into_trial(&opts, &state, 0);
+    compare_frame(&opts, &state, 46, 134);
+    state.p25_p2_active_slot = 1;
+    state.rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_probe_active == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 0);
+    state.p25_p2_active_slot = -1;
+
+    /* A tune ends a comparison on the chain leading so far: the incumbent unless the other chain has read more. */
+    compare_into_trial(&opts, &state, 1);
+    compare_frame(&opts, &state, 46, 134);
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_compare.verdict_valid == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1 && state.p25_p1_mod_probe_active == 0);
+    compare_into_trial(&opts, &state, 0);
+    for (int i = 0; i < 9; i++) {
+        compare_frame(&opts, &state, 46, 134);
+    }
+    assert(state.p25_p1_mod_compare.phase == 2);
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/* A notice of the P25 watchdog's tune, which read the decision @p state publishes now (its comparison, its leader). */
+static void
+post_watchdog_tune_of(const dsd_state* state) {
+    dsd_p25p1_decision read;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    dsd_frame_sync_p25p1_read_decision(&read);
+    dsd_frame_sync_note_off_thread_tune(&read);
+}
+
+/*
+ * Serialized chain steps. The P25 watchdog's control-channel tune completes after getFrameSync() looked for notices and
+ * before the comparison's pass ends and switches the chain: the step re-checks inside the tick guard, reconciles the
+ * tune, and stands down, so the chain the tune installed stays. A reconciled notice also puts the decoder and the front
+ * end back on the tuned chain when a step already moved them.
+ */
+static void
+test_p25p1_chain_steps_serialize_with_watchdog_tunes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+
+    /* CQPSK leads a pass that missed frames, which would end on the C4FM trial's pass. */
+    compare_setup(&opts, &state, 1);
+    compare_frame(&opts, &state, 0, 134);
+    for (int i = 0; i < 2; i++) {
+        compare_frame(&opts, &state, 3 * 180 - 134, 134);
+    }
+    assert(state.p25_p1_mod_compare.phase == 1 && state.rf_mod == 1);
+    post_watchdog_tune_of(&state);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 134 - 2 * 3 * 180);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_probe_active == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1);
+    assert(g_profile_set_calls == 0);
+    assert(!dsd_frame_sync_off_thread_tune_pending());
+
+    /* A state already wrong: the tune set CQPSK, a step since put the decoder and the front end on C4FM. */
+    compare_setup(&opts, &state, 1);
+    compare_frame(&opts, &state, 0, 134);
+    post_watchdog_tune_of(&state);
+    state.p25_p1_mod_compare.phase = 0;
+    state.p25_p1_mod_probe_active = 0;
+    state.rf_mod = 0;
+    reset_fake_profile_capture();
+    assert(dsd_frame_sync_apply_off_thread_tunes(&opts, &state) == 1);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1);
+    assert(g_profile_set_calls == 1 && g_profile_cqpsk == 1);
+    /* Applying it again changes nothing. */
+    assert(dsd_frame_sync_apply_off_thread_tunes(&opts, &state) == 0 && g_profile_set_calls == 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/*
+ * A validated frame's stamp belongs to the carrier it came on. A boundary with no comparison running (a trunk-scan
+ * switch's acquisition reset, a decoder-thread tune, a carrier change) consumes it, so the first hunt on the next
+ * carrier, on a learned CQPSK with no verdict, opens no comparison from it: a zero-length opening frame would count
+ * even back-to-back clean TSDUs as missed and push a healthy CQPSK carrier onto C4FM for a trial.
+ */
+static void
+test_p25p1_stale_validation_opens_no_comparison(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int boundary = 0; boundary < 3; boundary++) {
+        compare_setup(&opts, &state, 1);
+        state.p25_p1_validated_rf_mod = 1;
+        /* The outgoing carrier's last frame, stamped by dispatch and not yet read by a hunt. */
+        state.symbolcnt += 134U;
+        state.p25_p1_validated_symbolcnt = state.symbolcnt;
+        if (boundary == 0) {
+            dsd_frame_sync_reset_acquisition(&opts, &state, 0);
+            state.min = -3.0f;
+            state.max = 3.0f;
+        } else if (boundary == 1) {
+            dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+        } else {
+            state.carrier_seq++;
+        }
+        /* The target restored with a learned CQPSK, no verdict; the next hunt. */
+        state.rf_mod = 1;
+        state.p25_p1_validated_rf_mod = 1;
+        state.p25_p1_mod_compare.verdict_valid = 0;
+        /* The hunt's entry, with the outgoing frame's read still on the mark: only the boundary stands between it and
+         * a comparison. */
+        state.sps_hunt_symbolcnt_mark = state.symbolcnt - 134U;
+        frame_sync_p25p1_mod_compare_note(&opts, &state);
+        assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_probe_active == 0);
+        /* A frame of the carrier reached opens one as ever. */
+        compare_frame(&opts, &state, 46U, 134U);
+        assert(state.p25_p1_mod_compare.phase == 1);
+    }
+}
+
+/*
+ * A modulation lock always wins over a watchdog tune's notice, whichever comes first, either lock: the notice's
+ * reconcile still forgets the histories, ends the comparison and drops the verdict, but puts neither the decoder nor
+ * the front end on its chain against the lock; and the lock's application puts the front end on the locked chain with
+ * the decoder.
+ */
+static void
+test_p25p1_lock_wins_over_a_watchdog_notice(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    for (int lock_qpsk = 0; lock_qpsk <= 1; lock_qpsk++) {
+        for (int notice_first = 0; notice_first <= 1; notice_first++) {
+            /* The tune captured a comparison led by the chain the lock is not. */
+            compare_setup(&opts, &state, !lock_qpsk);
+            compare_frame(&opts, &state, 0, 134);
+            if (notice_first) {
+                post_watchdog_tune_of(&state);
+            }
+            opts.mod_cli_lock = 1;
+            opts.mod_qpsk = lock_qpsk;
+            opts.mod_c4fm = !lock_qpsk;
+            reset_fake_profile_capture();
+            dsd_frame_sync_test_apply_cli_mod_lock(&opts, &state);
+            assert(state.rf_mod == lock_qpsk && state.p25_p1_mod_compare.phase == 0);
+            assert(g_profile_set_calls >= 1 && g_profile_cqpsk == lock_qpsk);
+            if (!notice_first) {
+                state.p25_p1_mod_compare.phase = 1; /* as the decoder's comparison stood when the watchdog read it */
+                state.p25_p1_mod_compare.incumbent_rf_mod = !lock_qpsk;
+                post_watchdog_tune_of(&state);
+                state.p25_p1_mod_compare.phase = 0;
+            }
+            /* A notice posted first is reconciled by the lock's own step (a chain step re-checks inside the guard); one
+             * posted after it, by the next one. */
+            state.p25_p1_mod_compare.verdict_valid = 1;
+            reset_fake_profile_capture();
+            const int reconciled = dsd_frame_sync_apply_off_thread_tunes(&opts, &state);
+            assert(reconciled == !notice_first && !dsd_frame_sync_off_thread_tune_pending());
+            assert(state.rf_mod == lock_qpsk && g_profile_set_calls == 0 && state.p25_p1_mod_compare.phase == 0);
+            if (reconciled) {
+                assert(state.p25_p1_mod_compare.verdict_valid == 0);
+            }
+            dsd_frame_sync_test_apply_cli_mod_lock(&opts, &state);
+            assert(state.rf_mod == lock_qpsk && g_profile_set_calls == 0);
+        }
+    }
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/* An accepted tune retires a CQPSK probe in flight, with no comparison running: a tune on the decoder thread
+ * (dsd_frame_sync_p25p1_mod_compare_end_for_tune()) and a watchdog tune's reconciled notice alike. The chain the tune
+ * chose is the receiver's from there, and the trial's handback, whose dwell the tune left, must not switch it. */
+static void
+test_p25p1_tunes_retire_a_probe(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    compare_setup(&opts, &state, 1);
+    state.p25_p1_mod_probe_active = 1;
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.p25_p1_mod_probe_active == 0 && state.rf_mod == 1);
+
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    compare_setup(&opts, &state, 1);
+    state.p25_p1_mod_probe_active = 1;
+    post_watchdog_tune_of(&state);
+    assert(dsd_frame_sync_apply_off_thread_tunes(&opts, &state) == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+}
+
+/* The P25 SM tick guard as the engine installs it (re-entrant), on a test mutex. */
+static dsd_mutex_t g_test_guard;
+static _Thread_local int g_test_guard_held;
+
+static int
+test_guard_enter(void) {
+    if (g_test_guard_held) {
+        return 0;
+    }
+    (void)dsd_mutex_lock(&g_test_guard);
+    g_test_guard_held = 1;
+    return 1;
+}
+
+static void
+test_guard_leave(void) {
+    g_test_guard_held = 0;
+    (void)dsd_mutex_unlock(&g_test_guard);
+}
+
+typedef struct {
+    dsd_state* state;
+    int tunes;
+} chain_race_ctx;
+
+/* The watchdog: tunes under the guard, each with one read of the decision, putting the decoder's modulation on the
+ * leading chain as the off-thread tune does, and posting its notice. */
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    chain_race_watchdog(void* arg) {
+    chain_race_ctx* ctx = (chain_race_ctx*)arg;
+    for (int i = 0; i < ctx->tunes; i++) {
+        const int taken = test_guard_enter();
+        dsd_p25p1_decision read;
+        dsd_frame_sync_p25p1_read_decision(&read);
+        if (read.running && read.learned >= 0) {
+            ctx->state->rf_mod = read.learned;
+        }
+        dsd_frame_sync_note_off_thread_tune(&read);
+        if (taken) {
+            test_guard_leave();
+        }
+    }
+    DSD_THREAD_RETURN;
+}
+
+/*
+ * The decoder's comparison against a stream of watchdog tunes on another thread (run under ThreadSanitizer to check
+ * it): every step that changes the comparison or the chain runs under the guard the tunes take, and at the end the
+ * decoder's modulation is the chain the learned modulation names.
+ */
+static void
+test_p25p1_chain_steps_race_watchdog_tunes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_mutex_init(&g_test_guard) == 0);
+    dsd_frame_sync_hooks_set(
+        &(dsd_frame_sync_hooks){.tick_guard_enter = test_guard_enter, .tick_guard_leave = test_guard_leave});
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    compare_setup(&opts, &state, 1);
+    chain_race_ctx ctx = {&state, 400};
+    dsd_thread_t watchdog;
+    assert(dsd_thread_create(&watchdog, chain_race_watchdog, &ctx) == 0);
+    for (int i = 0; i < 4000; i++) {
+        if (state.p25_p1_mod_compare.phase == 0) {
+            /* A frame validated on the chain in force (dispatch stamps it under the guard) opens a comparison. */
+            const int taken = test_guard_enter();
+            state.symbolcnt += 46U;
+            state.sps_hunt_symbolcnt_mark = state.symbolcnt;
+            state.symbolcnt += 134U;
+            if (state.rf_mod == 0 || state.rf_mod == 1) {
+                state.p25_p1_validated_rf_mod = state.rf_mod;
+            }
+            state.p25_p1_validated_symbolcnt = state.symbolcnt;
+            state.p25_p1_mod_compare.verdict_valid = 0;
+            dsd_frame_sync_p25p1_mod_compare_publish(&state);
+            frame_sync_p25p1_mod_compare_note(&opts, &state);
+            if (taken) {
+                test_guard_leave();
+            }
+            continue;
+        }
+        /* The comparison's passes: one-block TSDUs, one in three, then the search the pass ends on. */
+        state.symbolcnt += 406U;
+        state.sps_hunt_symbolcnt_mark = state.symbolcnt;
+        state.symbolcnt += 134U;
+        frame_sync_p25p1_mod_compare_note(&opts, &state);
+        (void)dsd_frame_sync_apply_off_thread_tunes(&opts, &state);
+    }
+    assert(dsd_thread_join(watchdog) == 0);
+    (void)dsd_frame_sync_apply_off_thread_tunes(&opts, &state);
+    const int taken = test_guard_enter();
+    assert(state.p25_p1_mod_compare.phase != 0 || state.p25_p1_validated_rf_mod < 0
+           || state.rf_mod == state.p25_p1_validated_rf_mod);
+    if (taken) {
+        test_guard_leave();
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    (void)dsd_mutex_destroy(&g_test_guard);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
 /*
@@ -3541,6 +4969,7 @@ main(void) {
     test_sps_hunt_withheld_verdict_refunds_only_its_own_cycle();
     test_sps_hunt_restart_dwell_resets_the_whole_budget();
     test_sps_hunt_holds_the_profile_on_a_tuned_voice_channel();
+    test_sps_hunt_p25_probe_rotation();
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();
@@ -3565,6 +4994,13 @@ main(void) {
     test_the_p25p1_frame_suppression_is_scoped_to_its_own_profile();
     test_the_p25p1_frame_guard_survives_symbolcnt_rollover();
     test_a_p25p1_frame_suppresses_m17_candidates();
+    test_m17_joins_on_a_sync_word_three_frames_running();
+    test_nxdn96_follows_the_receiver_sync_rules();
+    test_nxdn96_lock_follows_the_lich();
+    test_nxdn96_and_m17_histories_end_with_the_carrier();
+    test_nxdn96_acquires_on_the_four_level_fsw();
+    test_an_nxdn96_data_call_stays_nxdn96_under_auto();
+    test_nxdn48_keeps_two_hits_at_any_distance();
     test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers();
     test_the_2400_4_proof_suppression_still_blends_levels();
     test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols();
@@ -3577,8 +5013,16 @@ main(void) {
     test_trunk_scan_p25_probe_fits_visit();
     test_p25p1_auto_hunt_alternates_cqpsk_probe();
     test_p25p1_probe_survives_its_dwell();
+    test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes();
     test_validated_p25p1_modulation_outranks_the_heuristics();
     test_validated_cqpsk_survives_rotation_but_not_disproof();
+    test_p25p1_partial_chain_loses_the_comparison();
+    test_p25p1_comparison_ends_cleanly();
+    test_p25p1_chain_steps_serialize_with_watchdog_tunes();
+    test_p25p1_stale_validation_opens_no_comparison();
+    test_p25p1_tunes_retire_a_probe();
+    test_p25p1_lock_wins_over_a_watchdog_notice();
+    test_p25p1_chain_steps_race_watchdog_tunes();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();
     test_decode_mode_profiles_agree_with_the_sps_hunt_table();

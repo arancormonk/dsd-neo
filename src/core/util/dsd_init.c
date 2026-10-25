@@ -229,17 +229,19 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->serial_fd = -1;
     DSD_SNPRINTF(opts->serial_dev, sizeof opts->serial_dev, "%s", "/dev/ttyUSB0");
     opts->resume = 0;
+    /* Auto is the default: exactly the decoder set decode_mode_apply_auto() (-fa) installs, so a session that names no
+       -f, a config without a decode key and the frontends' Auto choice all decode every digital mode but TETRA. */
     opts->frame_dstar = 1;
     opts->frame_x2tdma = 1;
     opts->frame_p25p1 = 1;
     opts->frame_p25p2 = 1;
-    opts->frame_nxdn48 = 0;
-    opts->frame_nxdn96 = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
     opts->frame_dmr = 1;
-    opts->frame_dpmr = 0;
-    opts->frame_provoice = 0;
+    opts->frame_dpmr = 1;
+    opts->frame_provoice = 1;
     opts->frame_ysf = 1;
-    opts->frame_m17 = 0;
+    opts->frame_m17 = 1;
     opts->mod_c4fm = 1;
     opts->mod_qpsk = 0;
     opts->mod_gfsk = 0;
@@ -1049,13 +1051,14 @@ init_state_p25_patch_defaults(dsd_state* state) {
 
 /* What a decoded P25p1 NID has taught this session, and nothing else has any way to know:
  * which demodulator carried the frame (#423), and that the symbol profile under it is
- * carrying P25p1 at all (#400). Both start out untaught. */
+ * carrying P25p1 at all (#400). Both start out untaught, with no chain comparison run. */
 static void
 init_state_p25p1_nid_learning(dsd_state* state) {
     state->p25_p1_validated_rf_mod = -1;
     state->p25_p1_validated_symbolcnt = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
+    DSD_MEMSET(&state->p25_p1_mod_compare, 0, sizeof(state->p25_p1_mod_compare));
 }
 
 /* Trunk-scan publication for the frontends. Reset here so a re-initialised state
@@ -1321,6 +1324,8 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->m17_pre_run = 0;
     state->m17_pre_candidate = 0;
     state->m17_pre_candidate_ttl = 0;
+    dsd_sync_hit_history_clear(&state->m17_join_hits);
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     state->m17_confirmed = 0;
     state->m17_confirm_weak_streak = 0;
     state->m17_confirm_frame_evidence = 0;

@@ -353,6 +353,38 @@ ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t*
 } /* End ComputeAndCorrectFullLinkControlCrc() */
 
 /*
+ * @brief : This function checks the Reed-Solomon(12,9) parity of the full
+ *          link control without correcting anything: a RAS link control
+ *          carries a private parity that ordinary correction would "fix"
+ *          into a different, valid link control
+ *
+ * @param FullLinkControlDataBytes : A buffer pointer of the DMR data bytes (12 bytes, unchanged)
+ *
+ * @param CRCMask : The 24 bit CRC mask to apply
+ *
+ * @return 0 = the syndrome is not zero
+ *         1 = the received word is a valid codeword
+ */
+uint32_t
+CheckFullLinkControlCrc(const uint8_t* FullLinkControlDataBytes, uint32_t CRCMask) {
+    rs_12_9_codeword_t word;
+    rs_12_9_poly_t syndrome;
+
+    if (FullLinkControlDataBytes == NULL) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < 12; i++) {
+        word.data[i] = FullLinkControlDataBytes[i];
+    }
+    word.data[9] ^= (uint8_t)(CRCMask >> 16);
+    word.data[10] ^= (uint8_t)(CRCMask >> 8);
+    word.data[11] ^= (uint8_t)(CRCMask);
+
+    rs_12_9_calc_syndrome(&word, &syndrome);
+    return rs_12_9_check_syndrome(&syndrome) == 0 ? 1U : 0U;
+} /* End CheckFullLinkControlCrc() */
+
+/*
  * @brief : This function compute the 5 bit CRC of the DMR voice burst data
  *          See ETSI TS 102 361-1 chapter B.3.11
  *

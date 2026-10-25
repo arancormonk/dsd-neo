@@ -55,6 +55,7 @@ class AppPrefs : public QObject {
     Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts WRITE setPersistTgLockouts NOTIFY persistTgLockoutsChanged)
     Q_PROPERTY(double hangtimeSec READ hangtimeSec WRITE setHangtimeSec NOTIFY hangtimeSecChanged)
     Q_PROPERTY(bool autoPpm READ autoPpm WRITE setAutoPpm NOTIFY autoPpmChanged)
+    Q_PROPERTY(bool relaxedCrc READ relaxedCrc WRITE setRelaxedCrc NOTIFY relaxedCrcChanged)
     Q_PROPERTY(int gainDb READ gainDb WRITE setGainDb NOTIFY gainDbChanged)
     Q_PROPERTY(int ppm READ ppm WRITE setPpm NOTIFY ppmChanged)
     Q_PROPERTY(int bandwidthKhz READ bandwidthKhz WRITE setBandwidthKhz NOTIFY bandwidthKhzChanged)
@@ -178,6 +179,10 @@ class AppPrefs : public QObject {
     bool autoPpm() const;
     void setAutoPpm(bool on);
 
+    /** @brief Relaxed CRC (-F) for every session the app starts; off by default. Settings also applies it live. */
+    bool relaxedCrc() const;
+    void setRelaxedCrc(bool on);
+
     int gainDb() const;
     void setGainDb(int db);
 
@@ -247,6 +252,7 @@ class AppPrefs : public QObject {
     void persistTgLockoutsChanged();
     void hangtimeSecChanged();
     void autoPpmChanged();
+    void relaxedCrcChanged();
     void gainDbChanged();
     void ppmChanged();
     void bandwidthKhzChanged();

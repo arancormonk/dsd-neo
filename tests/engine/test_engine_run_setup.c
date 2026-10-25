@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -99,6 +100,9 @@ reset_rtl_start_fakes(int create_result, int start_result) {
 /* Issue #589: the rigctl connection the engine opens at start (a fake socket for the one port a case names) and the
    peer record handed to it. */
 static int g_rigctl_fake_port = 0;
+/* A TCP audio server that refuses every connect, counted; the third ends the session, so a retry loop stops. */
+static int g_tcp_refusing_port = 0;
+static int g_tcp_refused_connects = 0;
 static int g_rigctl_rebind_calls = 0;
 static dsd_socket_t g_rigctl_rebind_old = 0;
 static dsd_socket_t g_rigctl_rebind_new = 0;
@@ -111,6 +115,12 @@ dsd_socket_t
 __wrap_Connect(char* hostname, int portno) {
     if (g_rigctl_fake_port != 0 && portno == g_rigctl_fake_port) {
         return (dsd_socket_t)777;
+    }
+    if (g_tcp_refusing_port != 0 && portno == g_tcp_refusing_port) {
+        if (++g_tcp_refused_connects >= 3) {
+            dsd_exitflag_store(1);
+        }
+        return DSD_INVALID_SOCKET;
     }
     return __real_Connect(hostname, portno);
 }
@@ -1293,6 +1303,9 @@ test_squelch_notices_for_edacs_and_the_encoder(void) {
         {"soapy:driver=test:851.0125M:7:0:24", 0, 0, 1, DSD_SQUELCH_MODE_AUTO, NULL, "EDACS"},
         {NULL, 0, 0, 1, DSD_SQUELCH_MODE_AUTO, "an EDACS analog call ends on its release marker",
          "--squelch auto needs a radio input"},
+        /* Auto trunking with no EDACS addressing selected is no EDACS session: the noise squelch is its own. */
+        {"soapy:driver=test:851.0125M:7:0:24", 0, 0, 2, DSD_SQUELCH_MODE_NOISE, NULL, "EDACS"},
+        {NULL, 0, 0, 2, DSD_SQUELCH_MODE_AUTO, "--squelch auto needs a radio input", "EDACS"},
     };
 
     int test_rc = 0;
@@ -1310,8 +1323,12 @@ test_squelch_notices_for_edacs_and_the_encoder(void) {
         if (cases[i].encoder) {
             DSD_SNPRINTF(state->m17dat, sizeof state->m17dat, "M17:7:SRC:DST:48000:%d", cases[i].vox);
         }
-        if (cases[i].edacs) {
-            opts->frame_provoice = 1;
+        if (cases[i].edacs == 1) {
+            /* -fh -T: the EDACS/ProVoice preset selects standard addressing. */
+            (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+            opts->trunk_enable = 1;
+        } else if (cases[i].edacs == 2) {
+            (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
             opts->trunk_enable = 1;
         }
         const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(cases[i].mode, 12);
@@ -1514,6 +1531,105 @@ test_startup_asks_the_session_passband(void) {
 }
 #endif
 
+/* What output setup left open when the decoder started: the UDP analog socket (port + 2) and the -8 source monitor. */
+typedef struct {
+    int analog_socket;
+    int monitor;
+} udp_analog_seen;
+
+static int
+note_udp_analog_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)state;
+    udp_analog_seen* seen = (udp_analog_seen*)context;
+    seen->analog_socket = opts->udp_sockfdA != DSD_INVALID_SOCKET;
+    seen->monitor = opts->monitor_input_audio;
+    return 0;
+}
+
+enum { UDP_SESSION_AUTO, UDP_SESSION_AUTO_EDACS, UDP_SESSION_EDACS };
+
+/* `-o udp:127.0.0.1:23456` for @p kind (Auto with no EDACS addressing, -fh -fa, -fh), trunked or not, with -8 or
+   not. */
+static int
+run_udp_output_session(int kind, int trunk, int monitor, udp_analog_seen* seen) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (kind == UDP_SESSION_AUTO_EDACS || kind == UDP_SESSION_EDACS) {
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    }
+    if (kind == UDP_SESSION_AUTO || kind == UDP_SESSION_AUTO_EDACS) {
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    }
+    opts->trunk_enable = trunk;
+    opts->monitor_input_audio = monitor;
+    DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "udp:127.0.0.1:23456");
+    const dsd_engine_lifecycle_hooks hooks = {.start = note_udp_analog_at_start, .context = seen};
+    const int rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+    free_test_runtime(opts, state);
+    return expect_true("udp output session runs", rc == 0);
+}
+
+/*
+ * Auto enables ProVoice, but a session with no EDACS addressing selected opens no UDP analog socket on port + 2 and,
+ * trunked, keeps -8 on; an EDACS session (-fh -fa, -fh) opens the socket and, trunked, turns -8 off as before.
+ */
+static int
+test_udp_analog_socket_follows_the_edacs_session(void) {
+    int rc = 0;
+    udp_analog_seen seen = {-1, -1};
+    rc |= run_udp_output_session(UDP_SESSION_AUTO, 0, 0, &seen);
+    rc |= expect_true("auto opens no udp analog socket", seen.analog_socket == 0);
+    rc |= run_udp_output_session(UDP_SESSION_AUTO, 1, 1, &seen);
+    rc |= expect_true("auto -T -8 opens the socket -8 writes", seen.analog_socket == 1);
+    rc |= expect_true("auto -T keeps -8", seen.monitor == 1);
+    rc |= run_udp_output_session(UDP_SESSION_AUTO_EDACS, 0, 0, &seen);
+    rc |= expect_true("-fh -fa opens the udp analog socket", seen.analog_socket == 1);
+    rc |= run_udp_output_session(UDP_SESSION_EDACS, 1, 1, &seen);
+    rc |= expect_true("-fh -T opens the udp analog socket", seen.analog_socket == 1);
+    rc |= expect_true("-fh -T turns -8 off", seen.monitor == 0);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+/* The connects a `tcp:` input made against a refusing server before setup gave up, for the decoders @p mode sets. */
+static int
+run_refused_tcp_input(dsdneoUserDecodeMode mode, int* connects, int* rc_out) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    (void)dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    g_tcp_refusing_port = 45323;
+    g_tcp_refused_connects = 0;
+    dsd_exitflag_store(0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:45323");
+    *rc_out = dsd_engine_run_with_lifecycle(opts, state, NULL);
+    *connects = g_tcp_refused_connects;
+    g_tcp_refusing_port = 0;
+    dsd_exitflag_store(0);
+    free_test_runtime(opts, state);
+    return 0;
+}
+
+/* A TCP audio connect that fails is an error at once, under Auto too; only an M17-only session (-fz) waits for its
+   server, retrying. */
+static int
+test_tcp_connect_retry_is_m17_only(void) {
+    int connects = 0;
+    int run_rc = 0;
+    int rc = run_refused_tcp_input(DSDCFG_MODE_AUTO, &connects, &run_rc);
+    rc |= expect_true("auto tcp connect failure rejects setup", run_rc != 0);
+    rc |= expect_true("auto tries the tcp server once", connects == 1);
+    rc |= run_refused_tcp_input(DSDCFG_MODE_M17, &connects, &run_rc);
+    rc |= expect_true("-fz retries the tcp server", connects == 3);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -1552,6 +1668,10 @@ main(void) {
     rc |= test_config_channel_map_weighs_the_tone_filter();
     rc |= test_noise_squelch_needs_fm();
     rc |= test_squelch_notices_for_edacs_and_the_encoder();
+    rc |= test_udp_analog_socket_follows_the_edacs_session();
+#ifdef DSD_NEO_TEST_RIGCTL_WRAP
+    rc |= test_tcp_connect_retry_is_m17_only();
+#endif
 
     if (rc == 0) {
         printf("ENGINE_RUN_SETUP: OK\n");

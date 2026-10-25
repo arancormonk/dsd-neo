@@ -85,6 +85,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString carrierIdentityProtocol READ carrierIdentityProtocol NOTIFY siteChanged)
     Q_PROPERTY(QString carrierIdentityText READ carrierIdentityText NOTIFY siteChanged)
     Q_PROPERTY(bool carrierIdentityLive READ carrierIdentityLive NOTIFY siteChanged)
+    /* DMR RAS confirmed on the carrier, and whether Relaxed CRC is needed to decode it, from the app-control RAS view
+       (app_control/dmr_ras_view.h) the terminal header reads too. */
+    Q_PROPERTY(bool dmrRasDetected READ dmrRasDetected NOTIFY siteChanged)
+    Q_PROPERTY(bool dmrRasNeedsRelaxed READ dmrRasNeedsRelaxed NOTIFY siteChanged)
 
     /* WP-F3: one notification group for copied decode-quality readings. */
     Q_PROPERTY(bool qualityValid READ qualityValid NOTIFY qualityChanged)
@@ -316,6 +320,11 @@ class MetricsModel : public QObject {
      * snapshots were taken under the same row scope (dsd_app_scan_row_view::opts_match). */
     Q_PROPERTY(bool scanRowSynced READ scanRowSynced NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
+    /* Relaxed CRC (-F) from the app-control policy view (app_control/crc_policy_view.h): the configured value a
+       command edits, the value in force, and whether the scan row on air sets its own and so decides it. */
+    Q_PROPERTY(bool relaxedCrcConfigured READ relaxedCrcConfigured NOTIFY controlChanged)
+    Q_PROPERTY(bool relaxedCrcEffective READ relaxedCrcEffective NOTIFY controlChanged)
+    Q_PROPERTY(bool relaxedCrcRowOverride READ relaxedCrcRowOverride NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
     /* The decode clock's wall-clock now, for QML that ages or cuts off decoded stamps. */
     Q_PROPERTY(qlonglong decodeNowMs READ decodeNowMs NOTIFY decodeNowMsChanged)
@@ -525,6 +534,31 @@ class MetricsModel : public QObject {
     bool
     carrierIdentityLive() const {
         return m_view.site.carrierIdentityLive;
+    }
+
+    bool
+    dmrRasDetected() const {
+        return m_view.site.dmrRasDetected;
+    }
+
+    bool
+    dmrRasNeedsRelaxed() const {
+        return m_view.site.dmrRasNeedsRelaxed;
+    }
+
+    bool
+    relaxedCrcConfigured() const {
+        return m_view.relaxed_crc_configured;
+    }
+
+    bool
+    relaxedCrcEffective() const {
+        return m_view.relaxed_crc_effective;
+    }
+
+    bool
+    relaxedCrcRowOverride() const {
+        return m_view.relaxed_crc_row_override;
     }
 
     explicit MetricsModel(QObject* parent = nullptr);
@@ -2013,6 +2047,8 @@ class MetricsModel : public QObject {
         bool p25Phase2SeedSet = false;
         bool siteConfirmed = false;
         bool carrierIdentityLive = false;
+        bool dmrRasDetected = false;
+        bool dmrRasNeedsRelaxed = false;
         bool operator==(const SiteView& other) const;
     };
 
@@ -2173,6 +2209,9 @@ class MetricsModel : public QObject {
         QString receive_status;
         bool scan_row_active = false;
         bool scan_row_synced = false;
+        bool relaxed_crc_configured = false;
+        bool relaxed_crc_effective = false;
+        bool relaxed_crc_row_override = false;
         bool tetra_visible = false;
         bool tetra_encrypted = false;
         bool tetra_on_traffic = false;
@@ -2348,7 +2387,15 @@ class MetricsModel : public QObject {
                    && tuner_controlled == other.tuner_controlled && replay_input == other.replay_input
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other);
+                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other)
+                   && relaxedCrcEquals(other);
+        }
+
+        bool
+        relaxedCrcEquals(const View& other) const {
+            return relaxed_crc_configured == other.relaxed_crc_configured
+                   && relaxed_crc_effective == other.relaxed_crc_effective
+                   && relaxed_crc_row_override == other.relaxed_crc_row_override;
         }
     };
 
@@ -2362,6 +2409,7 @@ class MetricsModel : public QObject {
     static void fillTetraSite(SiteView& site, const dsd_received_identity& id);
     static void fillFamilySite(SiteView& site, uint8_t family, const dsd_state* snapshot);
     static void fillSiteView(View& next, const dsd_state* snapshot);
+    static void fillCrcPolicy(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m);
     static void fillQualityView(View& next, const dsd_state* snapshot);
 

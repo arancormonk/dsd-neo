@@ -1145,12 +1145,16 @@ test_typed_scan_tune_boundaries(void) {
     rc |= expect_true("typed P25 metadata", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_P25) == 0);
     state->last_cc_sync_time = time(NULL);
     noCarrier(opts, state);
-    rc |= expect_true("typed startup waits for scheduled entry", g_rtl_tune_calls == 0 && !opts->frame_nxdn48);
+    /* The session runs the default set, Auto, which decodes NXDN48 too: the row's mode is committed when the set
+       becomes NXDN48 alone. */
+    rc |= expect_true("typed startup waits for scheduled entry",
+                      g_rtl_tune_calls == 0 && dsd_infer_decode_mode_preset_exact(opts) == DSDCFG_MODE_AUTO);
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
     rc |= expect_true("typed automatic mode and profile commit",
-                      opts->frame_nxdn48 && state->lcn_freq_roll == 1 && g_rtl_symbol_rate_hz == 2400
-                          && g_rtl_symbol_levels == 4 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+                      dsd_infer_decode_mode_preset_exact(opts) == DSDCFG_MODE_NXDN48 && state->lcn_freq_roll == 1
+                          && g_rtl_symbol_rate_hz == 2400 && g_rtl_symbol_levels == 4
+                          && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
     state->lcn_scan_hold = 1;
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
@@ -4501,7 +4505,14 @@ test_received_identity_lifetime(void) {
     const uint32_t epoch = state->rx_id.epoch;
     state->symbol_clock = 5000U;
     rc |= expect_true("rx-id: no carrier left yet", !dsd_state_carrier_settling(state, 144U));
+    state->nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_POS;
+    state->nxdn96_sync.hits.kind[0] = (uint8_t)DSD_SYNC_NXDN_POS;
+    state->m17_join_hits.kind[0] = 1U;
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    /* The sync join histories are the carrier left's evidence: no NXDN96 lock or hit, nor M17 word, pairs across it. */
+    rc |= expect_true("rx-id: the boundary forgets the sync join histories",
+                      state->nxdn96_sync.lock_type == 0U && state->nxdn96_sync.hits.kind[0] == 0U
+                          && state->m17_join_hits.kind[0] == 0U);
     rc |= expect_true("rx-id: a carrier boundary forgets the record",
                       state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE && state->rx_id.valid == 0U
                           && state->rx_id.epoch != epoch);
@@ -4520,6 +4531,47 @@ test_received_identity_lifetime(void) {
     /* Every boundary kind runs the same reset. */
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
     rc |= expect_true("rx-id: a scan step forgets the record", state->rx_id.valid == 0U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The DMR RAS evidence (dmr_ras.c) lives as long as the carrier: a carrier boundary of every kind and the no-carrier
+   pass's identity step reset it (dmr_ras_reset()), so one signature before either and one after never confirm, and a
+   confirmation goes with its part (the step keeps the record's other values, stale). */
+static int
+test_dmr_ras_carrier_lifetime(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    static const dsd_carrier_boundary_kind kinds[] = {DSD_CARRIER_BOUNDARY_TUNE, DSD_CARRIER_BOUNDARY_SCAN_STEP,
+                                                      DSD_CARRIER_BOUNDARY_SOURCE};
+    for (int point = 0; point < 4; point++) {
+        for (int confirmed = 0; confirmed <= 1; confirmed++) {
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+            dmr_ras_note_signature(state);
+            if (confirmed) {
+                dmr_ras_note_signature(state);
+                rc |= expect_true("ras: confirmed before the reset point",
+                                  dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) != 0U);
+            }
+            if (point < 3) {
+                dsd_engine_carrier_boundary(opts, state, kinds[point], 0);
+            } else {
+                noCarrier(opts, state);
+                rc |= expect_true("ras: the no-carrier step keeps the colour code",
+                                  (state->rx_id.valid & DSD_RXID_ACCESS) != 0U);
+            }
+            rc |= expect_true("ras: the reset point drops the evidence",
+                              !dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+            dmr_ras_note_signature(state);
+            rc |= expect_true("ras: one signature after the reset point does not confirm",
+                              !dmr_ras_confirmed(state) && (state->rx_id.valid & DSD_RXID_DMR_RAS) == 0U);
+            dmr_ras_reset(state);
+        }
+    }
     free_test_runtime(opts, state);
     return rc;
 }
@@ -6874,6 +6926,7 @@ main(void) {
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
     rc |= test_received_identity_lifetime();
+    rc |= test_dmr_ras_carrier_lifetime();
     rc |= test_carrier_boundary_restarts_the_evidence();
     rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_receive_boundary_closes_only_rejected_capture();

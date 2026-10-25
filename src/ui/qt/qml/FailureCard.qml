@@ -10,7 +10,7 @@ UiPanel {
     Accessible.name: message
     Accessible.description: source
     readonly property bool navigationAllowed: Navigation.allows(card)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     property string announcedMessage: ""
     function announceFailure() {
         if (visible && message.length && announcedMessage !== message && typeof Accessible.announce === "function") {

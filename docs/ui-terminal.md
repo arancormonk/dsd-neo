@@ -722,7 +722,7 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `i` | Toggle inversion |
 | `m` | Cycle modulation optimization mode |
 | `M` | Toggle and retain the P25 Phase 2 C4FM/QPSK modulation selection |
-| `F` | Toggle aggressive sync/CRC relax helpers |
+| `F` | Toggle Relaxed CRC checks (the same setting as `-F` / `--strict-crc`) |
 | `D` | DMR reset (useful when a system goes off the rails) |
 | `A` | Toggle ProVoice ESK mask (ProVoice modes) |
 | `S` | Toggle ProVoice standard/EA mode (ProVoice modes) |
@@ -991,7 +991,17 @@ no old identity. A part not received yet prints dashes in its column:
   parameter warnings still read the seed, as the descrambler does.
 - DMR: the trunking brand, Tier III/Connect Plus/XPT site, the Hytera XPT site's free channel (`Free LCN: 4;`) and
   Capacity Plus rest LSN as received (the rest LSN's frequency is the channel map's); a Tier III system code alone shows
-  as `SYS: 0A3F;`.
+  as `SYS: 0A3F;`. A carrier that uses Motorola RAS (Restricted Access to System) shows `RAS;` after the colour code
+  once two of its bursts carried the RAS signature, `RAS (-F decodes);` while Relaxed CRC is off, as it is by default:
+  its control and data fail the standard CRC, so only `-F` (or the `F` toggle) decodes them. With `-F` on, a scan
+  row's own `--strict-crc` shows `RAS (channel sets strict CRC);` instead: that channel keeps strict CRC, and pressing
+  `F` would turn `-F` off for the others. The detection is the
+  carrier's, so every change of carrier, a trunk follow included, a colour-code change and the DMR reset (`D`) clear
+  it, and so does the gap between transmissions.
+
+  ```text
+  | DMR BS - DCC: 00; RAS (-F decodes);
+  ```
 - NXDN: the location (category, system, site) as received; IDAS shows the SCCH area, site code and Type-D system ID.
 - EDACS: the site header shows once this carrier named a site, with the control channel LCN it named.
 - M17: `CAN: --` until a CRC-checked LSF names one (0 is a CAN).
@@ -1024,7 +1034,7 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their
 toggles are remembered and restored when leaving compact; switching one on while compact shows a brief
 "hidden in compact view" toast), the detailed Audio Decode section, the optional P25 sections, and the
-Channels list. The condensed Status block also omits the Voice Error counters and the `CRC/(RAS)` decoder
+Channels list. The condensed Status block also omits the Voice Error counters and the `Relaxed CRC` decoder
 indicator from the full Audio Decode section — leave compact view to inspect those. The setting is
 session-only and is not persisted to the config file.
 
@@ -1052,7 +1062,8 @@ keyring slots print separately when they differ). “Loaded” does not claim su
 redacted unless `--show-keys` is enabled. Explicit forcing (BP, RC4 or TYT) replaces these lines with its own status.
 
 Force, CRC, mute and voice-gate controls edit the configured baseline while a scan row constrains their effective
-values; menu labels show that baseline. These edits are policy, not acquisition: they apply at once without ending
-the current call or re-hunting sync. Group-file imports also update the baseline, with the parked row's group policy
-restored afterward. Scalar key entry retains its existing temporary behavior. See the CSV documentation for the
-`options` column and per-row explicit-off switches.
+values; menu labels show that baseline, and a CRC toggle under a row's own `-F` or `--strict-crc` says the row
+overrides it (`Default relaxed CRC -> On; this channel overrides it (Off)`). These edits are policy, not acquisition:
+they apply at once without ending the current call or re-hunting sync. Group-file imports also update the baseline,
+with the parked row's group policy restored afterward. Scalar key entry retains its existing temporary behavior. See
+the CSV documentation for the `options` column and per-row explicit-off switches.

@@ -49,14 +49,14 @@ Item {
     readonly property real displayHz: rail.dragging ? rail.pendingHz : (rail.settling ? rail.settleHz : rail.tunedHz)
 
     implicitHeight: Math.max(48, Theme.fontSize(10) + 24)
-    activeFocusOnTab: enabled && Navigation.allows(rail)
+    activeFocusOnTab: Navigation.allows(rail) && enabled
     Accessible.role: Accessible.Slider
     Accessible.name: qsTr("Coarse tuning: %1 MHz").arg((displayHz / 1e6).toFixed(3))
     readonly property real value: displayHz / 1e6
     readonly property real minimumValue: Util.TUNER_LOW_HZ / 1e6
     readonly property real maximumValue: Util.TUNER_HIGH_HZ / 1e6
     readonly property bool navigationAllowed: Navigation.allows(rail)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onIncreaseAction: nudge(1e6)
     Accessible.onDecreaseAction: nudge(-1e6)
     Keys.onRightPressed: nudge(1e6)
@@ -226,7 +226,7 @@ Item {
     }
 
     DragHandler {
-        enabled: rail.enabled && Navigation.allows(rail)
+        enabled: Navigation.allows(rail) && rail.enabled
         target: null
         xAxis.enabled: true
         yAxis.enabled: false

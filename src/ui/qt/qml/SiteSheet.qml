@@ -19,6 +19,64 @@ ModalSheet {
             visible = false;
     }
 
+    // DMR RAS (Restricted Access to System): its control and data fail the
+    // standard CRC, which Relaxed CRC accepts. The sheet turns Relaxed CRC on
+    // through the command and preference Settings uses, and waits for the
+    // session's snapshot to confirm it.
+    readonly property bool rasShown: metrics.siteProtocol === "DMR" && metrics.dmrRasDetected === true
+    readonly property bool relaxedCrcConfigured: metrics.relaxedCrcConfigured === true
+    // Offered while the configured value is off, a scan row's own --strict-crc
+    // on air included: turning it on still covers the channels after this one.
+    readonly property bool offerRelaxedCrc: rasShown && metrics.dmrRasNeedsRelaxed === true && !relaxedCrcConfigured
+    // Configured on, but the scan row on air keeps strict CRC for its channel.
+    readonly property bool rowKeepsStrict: metrics.dmrRasNeedsRelaxed === true && metrics.relaxedCrcRowOverride === true && relaxedCrcConfigured
+    readonly property bool sessionRunning: decoderHost.sessionState === 2
+    property bool relaxedCrcPending: false
+    property string relaxedCrcError: ""
+    onRelaxedCrcConfiguredChanged: {
+        if (relaxedCrcConfigured) {
+            relaxedCrcPending = false;
+            relaxedCrcAckTimer.stop();
+        }
+    }
+    onRasShownChanged: relaxedCrcError = ""
+    // A request belongs to the session and the sheet it was made in.
+    onVisibleChanged: resetRelaxedCrc()
+    onSessionRunningChanged: resetRelaxedCrc()
+
+    function resetRelaxedCrc() {
+        relaxedCrcPending = false;
+        relaxedCrcAckTimer.stop();
+        relaxedCrcError = "";
+    }
+
+    function turnOnRelaxedCrc() {
+        if (relaxedCrcPending)
+            return;
+        relaxedCrcError = "";
+        if (!commands.setRelaxedCrc(true)) {
+            relaxedCrcError = qsTr("Could not change the running decoder's setting. Try again.");
+            return;
+        }
+        prefs.relaxedCrc = true;
+        // The button disables while the session confirms, then goes: a keyboard
+        // user's place moves to Close first.
+        if (relaxedCrcButton.activeFocus)
+            siteCloseButton.forceActiveFocus(Qt.TabFocusReason);
+        relaxedCrcPending = !relaxedCrcConfigured;
+        if (relaxedCrcPending)
+            relaxedCrcAckTimer.restart();
+    }
+
+    Timer {
+        id: relaxedCrcAckTimer
+        interval: 5000
+        onTriggered: {
+            sheet.relaxedCrcPending = false;
+            sheet.relaxedCrcError = qsTr("The decoder has not confirmed the change. Try again.");
+        }
+    }
+
     Text {
         width: parent.width
         text: qsTr("Site identity") + " · " + metrics.siteProtocol
@@ -165,6 +223,12 @@ ModalSheet {
                 name: "siteDmrBrand",
                 valid: metrics.dmrBrand.length > 0,
                 value: metrics.dmrBrand
+            },
+            {
+                label: qsTr("Access"),
+                name: "siteDmrRas",
+                valid: metrics.dmrRasDetected === true,
+                value: "RAS"
             }
         ]
     }
@@ -283,6 +347,44 @@ ModalSheet {
             }
         ]
     }
+    // What RAS means for decoding, in the terminal notice's words.
+    Text {
+        objectName: "siteDmrRasNote"
+        width: parent.width
+        visible: sheet.rasShown
+        text: metrics.dmrRasNeedsRelaxed !== true ? qsTr("Relaxed CRC is on, so this RAS system's control and data decode.")
+            : sheet.rowKeepsStrict ? qsTr("DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; Relaxed CRC decodes them. This channel sets strict CRC itself; Relaxed CRC applies from the next channel without its own.")
+            : qsTr("DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; Relaxed CRC decodes them.")
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
+    }
+    // What the action changes: the app-wide setting, in the Settings row's words.
+    Text {
+        objectName: "siteRelaxedCrcHelp"
+        width: parent.width
+        visible: sheet.offerRelaxedCrc
+        text: metrics.relaxedCrcRowOverride === true ? qsTr("Relaxed CRC accepts control and data whose CRC check failed, and marks them. Turned on here, it stays on for later sessions until Settings turns it off. This channel sets strict CRC itself, so it applies from the next channel.")
+            : qsTr("Relaxed CRC accepts control and data whose CRC check failed, and marks them. Turned on here, it stays on for later sessions until Settings turns it off.")
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
+    }
+    Text {
+        objectName: "siteRelaxedCrcError"
+        width: parent.width
+        visible: sheet.rasShown && text.length > 0
+        text: sheet.relaxedCrcError
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
+    }
     OutlineButton {
         objectName: "siteNetworkButton"
         width: parent.width
@@ -291,6 +393,27 @@ ModalSheet {
         onClicked: sheet.networkRequested()
     }
     OutlineButton {
+        id: relaxedCrcButton
+        objectName: "siteRelaxedCrcButton"
+        width: parent.width
+        text: qsTr("Turn on Relaxed CRC")
+        visible: sheet.offerRelaxedCrc
+        enabled: metrics.optionsKnown === true && !sheet.relaxedCrcPending
+        onClicked: sheet.turnOnRelaxedCrc()
+        // Disabled or gone by another way (Settings, the terminal, the options
+        // snapshot): keep a keyboard user's place in the sheet.
+        onVisibleChanged: {
+            if (!visible && activeFocus)
+                siteCloseButton.forceActiveFocus(Qt.TabFocusReason);
+        }
+        onEnabledChanged: {
+            if (!enabled && activeFocus)
+                siteCloseButton.forceActiveFocus(Qt.TabFocusReason);
+        }
+    }
+    OutlineButton {
+        id: siteCloseButton
+        objectName: "siteCloseButton"
         width: parent.width
         text: qsTr("Close")
         onClicked: sheet.visible = false

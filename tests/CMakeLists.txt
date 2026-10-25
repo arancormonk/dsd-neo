@@ -1013,6 +1013,32 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_timing_view.h
   CXX
 )
+# The shared Relaxed CRC policy (configured, in force, row override).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_crc_policy_view
+  HEADERS_PUBLIC_APP_CONTROL_CRC_POLICY_VIEW
+  dsd-neo/app_control/crc_policy_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_crc_policy_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_CRC_POLICY_VIEW_CXX
+  dsd-neo/app_control/crc_policy_view.h
+  CXX
+)
+# The DMR RAS indicator (detected, relaxed CRC in force).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_ras_view
+  HEADERS_PUBLIC_APP_CONTROL_DMR_RAS_VIEW
+  dsd-neo/app_control/dmr_ras_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_ras_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_DMR_RAS_VIEW_CXX
+  dsd-neo/app_control/dmr_ras_view.h
+  CXX
+)
 # Issue #521: the shared squelch readout.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_squelch_view
@@ -2591,6 +2617,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -2627,6 +2654,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -3175,6 +3203,8 @@ if(DSD_ENABLE_TERMINAL_UI)
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -4036,6 +4066,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
@@ -6513,6 +6545,7 @@ add_executable(
     dsd-neo_test_engine_protocol_dispatch
     engine/test_engine_protocol_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/protocol_dispatch.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
@@ -7037,13 +7070,16 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -7055,7 +7091,10 @@ target_link_libraries(
 )
 target_sources(
     dsd-neo_test_engine_trunk_retune_regression
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+        ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 add_test(
     NAME ENGINE_TRUNK_RETUNE_REGRESSION
@@ -7135,6 +7174,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -7144,6 +7184,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
     ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
@@ -7779,6 +7820,25 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
+
+# Relaxed CRC is one setting across -F, --strict-crc, the menu toggle and scan rows, and the app-control view of its
+# configured and effective values.
+add_executable(
+    dsd-neo_test_app_control_crc_policy
+    ui/test_app_control_crc_policy.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_crc_policy
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_app_control_crc_policy
+    PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME APP_CONTROL_CRC_POLICY
+    COMMAND dsd-neo_test_app_control_crc_policy
+)
 
 set(_DSD_BOOTSTRAP_FIXTURE_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/runtime_bootstrap_fixtures"
@@ -10455,7 +10515,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_frame_sync_dmr_wav_rate
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
 )
 dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_dmr_wav_rate
   dsd-neo_test_support
@@ -10662,6 +10722,8 @@ add_executable(
     dsd-neo_test_dmr_dburst_profile
     protocol/dmr/test_dmr_dburst_profile.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_dburst.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
     dsd-neo_test_dmr_dburst_profile
@@ -10678,6 +10740,7 @@ add_executable(
     protocol/dmr/test_dmr_data_sync.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
 )
 target_include_directories(
@@ -10850,6 +10913,39 @@ target_link_libraries(
 add_test(NAME DMR_LC_RS_VERDICT COMMAND dsd-neo_test_dmr_lc_rs_verdict)
 
 add_executable(
+    dsd-neo_test_dmr_ras_signature
+    protocol/dmr/test_dmr_ras_signature.c
+    test_support/dmr_bptc_test_encoder.c
+    test_support/dmr_rs_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_ras_signature
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_ras_signature
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_RAS_SIGNATURE COMMAND dsd-neo_test_dmr_ras_signature)
+
+# RAS on the carrier: two signature bursts confirm it, the received identity shows it, and the console says once that
+# -F decodes it.
+add_executable(
+    dsd-neo_test_dmr_ras_detect
+    protocol/dmr/test_dmr_ras_detect.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_ras_detect
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_ras_detect
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_RAS_DETECT COMMAND dsd-neo_test_dmr_ras_detect)
+
+add_executable(
     dsd-neo_test_dmr_lip_carriers
     protocol/dmr/test_dmr_lip_carriers.c
     test_support/dmr_bptc_test_encoder.c
@@ -10869,6 +10965,7 @@ add_executable(
     protocol/dmr/test_dmr_ms_data.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
 )
 target_include_directories(
@@ -11791,6 +11888,22 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_fec_bptc_rs PRIVATE dsd-neo_fec)
 add_test(NAME FEC_BPTC_RS COMMAND dsd-neo_test_fec_bptc_rs)
+
+# BPTC(196,96) failed-column copy-back and the full codeword decoder
+add_executable(
+    dsd-neo_test_fec_bptc_codeword
+    fec/test_fec_bptc_codeword.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_fec_bptc_codeword
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_fec_bptc_codeword
+    PRIVATE dsd-neo_core dsd-neo_test_support
+)
+add_test(NAME FEC_BPTC_CODEWORD COMMAND dsd-neo_test_fec_bptc_codeword)
 
 # BCH(63,16,11) decoder unit tests
 add_executable(dsd-neo_test_fec_bch_63_16_unit fec/test_fec_bch_63_16_unit.cpp)
@@ -14785,15 +14898,16 @@ if(DSD_HAS_RADIO)
         -f1
         "Group Voice Channel User"
     )
-    # The CQPSK fixtures run the front end's CQPSK chain only with -mq after the preset:
-    # -f1 sets C4FM modulation, and the last of -f1 and -mq wins, so "-f1" alone (as these
-    # cases were first registered) and "-mq -f1" both demodulate them on the FSK
-    # discriminator path (REPLAY STREAM cqpsk_symbols=0). Under "-f1 -mq" each reads
-    # about 9,590 CQPSK symbols and no FSK samples. The clean CC decodes the same either
-    # way (18 implicit grants, no irrecoverable header error, against 17 and 1); the voice
-    # capture improves to 8 grants, 51 audio errors and 5 header errors (from 7, 84 and
-    # 147) and the simulcast one to 18 grants and the site identity 41 times (from 3 and
-    # none).
+    # The CQPSK fixtures run the front end's CQPSK chain throughout only with -mq. A -m lock
+    # holds on either side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock
+    # until the presets learned to keep an earlier lock) each read about 9,590 CQPSK symbols
+    # and no FSK samples. "-f1" alone (as these cases were first registered) starts on the FSK
+    # discriminator, and the P25p1 chain comparison moves it to CQPSK only where C4FM misses
+    # frames. The clean CC decodes about the same either way (18 implicit grants, no
+    # irrecoverable header error, against 17 and 1 under "-f1"); the voice capture improves
+    # to 8 grants, 51 audio errors and 5 header errors (from 7, 84 and 147), and the simulcast
+    # one to 18 grants and the site identity 41 times (from 9 and 9; 3 and none before the
+    # comparison).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_CC
         p25p1_cqpsk_cc
@@ -14855,6 +14969,39 @@ if(DSD_HAS_RADIO)
         "-f1 -mq"
         "Group Voice Channel Grant Update - Implicit"
     )
+    # A -m lock is the operator naming the demodulator, on either side of the preset. With the
+    # lock written first, -f1 used to put its own C4FM modulation over it and keep the lock, so
+    # "-mq -f1" read this capture on a locked C4FM chain: 12 TSBKs and no site identity, against
+    # 52 and 41 for "-f1 -mq". Both orders now read it on CQPSK.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_LOCK_FIRST
+        p25p1_cqpsk_cc_simulcast
+        "-mq -f1"
+        "WACN: 92065; SYS: 0D5"
+        ""
+        30
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_LOCK_LAST
+        p25p1_cqpsk_cc_simulcast
+        "-f1 -mq"
+        "WACN: 92065; SYS: 0D5"
+        ""
+        30
+    )
+    # The same simulcast control channel under Auto with no modulation lock. The C4FM chain reads about one TSBK in
+    # six of it, enough to win the modulation probe's binary trial, and that chain's own proofs kept the profile for
+    # the rest of the run: 9 P25p1 syncs, 4 grant updates and no site identity, against 52, 18 and 41 on the CQPSK
+    # chain. The first validated frame now compares the two chains on validated frames for one search pass each and
+    # keeps CQPSK for the rest of the 2 s: 25 syncs, 7 grant updates, the site identity 9 times.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO
+        p25p1_cqpsk_cc_simulcast
+        -fa
+        "WACN: 92065; SYS: 0D5"
+        ""
+        6
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
     # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).
     dsd_neo_add_iq_decode_test(
@@ -14866,19 +15013,20 @@ if(DSD_HAS_RADIO)
     # The sigidwiki DMR recordings are control channels received at inverted polarity. A BS voice sync is an inverted
     # data sync, so -fs used to read every burst as voice and publish a colour code from noise-made EMBs (issue #729).
     # The decoder now proves the polarity from the bursts and decodes them as what they are, without -xr.
+    # Neither of these carriers uses RAS: their control channels must never read as one (the RAS notice below).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_T3_CC
         dmr_t3_cc
         -fs
         "Color Code=01 \\| CSBK"
-        "\\| VC[1-6]"
+        "\\| VC[1-6]|DMR RAS \\(Restricted Access to System\\) detected"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_POLARITY_AUTO
         dmr_voice
         -fs
         "decoding inverted polarity.*Color Code=01 \\| CSBK"
-        "\\| VC[1-6]"
+        "\\| VC[1-6]|DMR RAS \\(Restricted Access to System\\) detected"
     )
     # CSBK-only RAS TSCC (issue #348): the colour-code gate must lock from
     # C_ALOHA traffic alone (no idle bursts, no voice on this channel) and -F
@@ -14897,8 +15045,31 @@ if(DSD_HAS_RADIO)
         "-fs -F"
         "Color Code=00"
     )
+    # Without -F the same carrier is detected as RAS from its CSBKs' signature (reserved bits set, a clean codeword, the
+    # standard CRC failed), and the console says once that -F decodes it; nothing of its content is accepted.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_T3_RAS_CC_DETECT
+        dmr_t3_ras_cc
+        -fs
+        "DMR RAS \\(Restricted Access to System\\) detected: control and data fail the standard CRC; -F decodes them"
+        "C_ALOHA_SYS_PARMS|-RAS "
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
+    # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_DEFAULT nxdn96 "" "RAN 00")
+    # NXDN96 landed on mid-frame after a quarter second of receiver noise (DERIVED_RETUNE): with no preamble ahead, the
+    # first FSW marks the place and the one a frame later acquires (NXDN TS 1-A N1 = 2).
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN nxdn96_after_retune -fn "RAN 00")
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN_AUTO nxdn96_after_retune -fa "RAN 00")
+    # nxdn96 at 8 dB wideband SNR (DERIVED_AWGN): acquiring on the FSW right after the preamble left this call reading
+    # one FSW symbol wrong on every frame and failing every SACCH (0 RANs); acquiring on two FSWs decodes 36.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK nxdn96_weak -fn "RAN 00" "" 30)
+    # The same call at 0 dB, where 85% of real FSWs read within the four-level gate's two bit errors. The gate
+    # decodes 29 RANs here (the matcher before these rules 30, the same over eight sample shifts); held to one bit it
+    # decodes 10.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK_0DB nxdn96_weak_0db -fn "RAN 00" "" 25)
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
     # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel
     # (DERIVED_RETUNE in tools/build_iq_fixtures.py). -fi holds the receiver on NXDN48, so whatever
@@ -15649,6 +15820,22 @@ if(DSD_HAS_RADIO)
         -fa
         "SRC: N0CALL"
     )
+    # A transmission joined mid-stream, after a quarter second of receiver noise: the call starts 1.5263 s into the
+    # m17 capture, inside a frame, with no preamble ahead (DERIVED_RETUNE in tools/build_iq_fixtures.py). Its stream
+    # frames join it on the same sync word three frames running, and its LICH carries it on from there. The old way in
+    # -- an alternating run in the payload and a word within one error -- missed this landing entirely.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_MID_STREAM_JOIN
+        m17_after_retune
+        -fz
+        "SRC: N0CALL"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_MID_STREAM_JOIN_AUTO
+        m17_after_retune
+        -fa
+        "SRC: N0CALL"
+    )
 
     # Issue #388: P25 Phase 1 C4FM on its own profile, which is where AUTO starts -- the hunt
     # performs no rotation on this capture and needs none. What it used to fail on is the
@@ -15690,8 +15877,7 @@ if(DSD_HAS_RADIO)
     # and one-parity-bit LICH let noise reach the frame body often enough that the decoder
     # used to synthesize speech from it -- 89 audio errors under -fn and 49 under -fi on
     # this fixture before the confirmation gate (issue #398). A decoder that ignores the
-    # noise reports none, so the error count is the assertion. -fa is deliberately absent:
-    # dPMR still decodes noise there, which is filed separately.
+    # noise reports none, so the error count is the assertion.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_NOISE_FLOOR_NXDN96_REJECT
         noise_floor
@@ -15717,6 +15903,42 @@ if(DSD_HAS_RADIO)
         -fm
         "Total audio errors: 0"
         "Src=[0-9]"
+    )
+    # Every digital decoder at once (Auto, also the default) on the same noise: NXDN and dPMR stay as quiet as they do
+    # under their own presets.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_AUTO_REJECT
+        noise_floor
+        -fa
+        "Total audio errors: 0"
+        "RAN [0-9]|Src=[0-9]"
+    )
+    # Receiver noise opens no M17 or NXDN96 frame at all. Their sync words are eight and ten sign-sliced symbols, and
+    # M17 used to take any eight-window alternating run as a preamble and NXDN96 any two hits at any distance: this
+    # fixture opened 27 M17 frames under -fz and 20 NXDN96 frames under -fn. M17 now joins a transmission on a
+    # preamble that runs DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows or on the same sync word three 192-symbol frames
+    # running, and NXDN96 acquires on two four-level FSWs a frame apart. -Z prints an NXDN sync whose LICH then fails,
+    # which otherwise prints nothing, so those cannot hide here either.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC
+        noise_floor
+        -fz
+        "Total audio errors: 0"
+        "Sync: [+-]M17"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC
+        noise_floor
+        "-fn -Z"
+        "Total audio errors: 0"
+        "Sync: NXDN96"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC
+        noise_floor
+        "-fa -Z"
+        "Total audio errors: 0"
+        "Sync: [+-]M17|Sync: NXDN96"
     )
 
     # The M17 encoder's VOX on the dynamic squelch (issue #625): ten seconds of receiver noise
@@ -16010,10 +16232,14 @@ if(DSD_HAS_RADIO)
         "Group Voice Channel User"
         PLAYBACK_MATCH
     )
+    # Auto's output layout on the P25 call. The call starts about 1.2 s in, after the first 4800/4 dwell (1.125 s) ends,
+    # and the unlocked hunt reaches 4800/4 again only after the 3 s capture. Unlocked -fa used to catch it because
+    # false M17 and NXDN96 frames on the leading noise stretched that dwell; with those gone (the noise_floor reject
+    # cases), the case holds the C4FM chain (-mc), which keeps the hunt on the profiles timed like 4800/4.
     dsd_neo_add_iq_voice_chain_test(
         DECODE_IQ_VOICE_CHAIN_P25P1_AUTO
         p25p1_c4fm_vc
-        -fa
+        "-fa -mc"
         "Group Voice Channel User"
     )
     dsd_neo_add_iq_voice_chain_test(
@@ -16133,11 +16359,12 @@ if(DSD_HAS_RADIO)
         "Group Voice Channel User"
         1
     )
-    # Stereo FDMA at full level in both ears: float output's mixer halved it.
+    # Stereo FDMA at full level in both ears: float output's mixer halved it. -mc for the reason
+    # DECODE_IQ_VOICE_CHAIN_P25P1_AUTO gives: the call starts after the first 4800/4 dwell.
     dsd_neo_add_iq_float_output_test(
         DECODE_IQ_FLOAT_OUTPUT_P25P1_AUTO
         p25p1_c4fm_vc
-        -fa
+        "-fa -mc"
         "Group Voice Channel User"
         2
         BOTH_EARS

@@ -22,8 +22,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
@@ -168,20 +172,20 @@ test_digital_sink(void) {
     static dsd_opts opts;
     device_session(&opts);
     reset_backend();
-    expect_int("digital ensure", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("digital ensure", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     expect_int("digital sink opened once", g_open_count, 1);
     expect_int("digital rate", g_opened[0].sample_rate, 8000);
     expect_int("digital channels", g_opened[0].channels, 2);
     expect_int("raw sink not needed", opts.audio_raw_out == NULL, 1);
-    expect_int("second digital ensure", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("second digital ensure", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     expect_int("digital idempotent", g_open_count, 1);
 
     /* ProVoice and the -8 source monitor also write the raw sink, as openAudioOutput() opens it for them. */
     opts.frame_provoice = 1;
-    expect_int("provoice ensure", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("provoice ensure", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     expect_int("provoice adds the raw sink", g_open_count, 2);
     expect_int("provoice raw rate", g_opened[1].sample_rate, 48000);
-    expect_int("provoice idempotent", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("provoice idempotent", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     expect_int("provoice opens once", g_open_count, 2);
 }
 
@@ -192,15 +196,15 @@ test_nothing_to_open(void) {
     reset_backend();
     opts.audio_out = 0; /* muted local device: unmuting reopens every device stream the mode needs */
     expect_int("muted analog", dsd_audio_ensure_analog_output(&opts), 0);
-    expect_int("muted digital", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("muted digital", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     opts.audio_out = 1;
     opts.audio_out_type = 9; /* -o null */
     expect_int("null analog", dsd_audio_ensure_analog_output(&opts), 0);
     opts.audio_out_type = 8; /* UDP */
-    expect_int("udp digital", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("udp digital", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     expect_int("no device opened", g_open_count, 0);
     expect_int("null opts", dsd_audio_ensure_analog_output(NULL), -1);
-    expect_int("null opts digital", dsd_audio_ensure_digital_output(NULL), -1);
+    expect_int("null opts digital", dsd_audio_ensure_digital_output(NULL, NULL), -1);
 }
 
 static void
@@ -222,7 +226,7 @@ test_udp_analog_sink(void) {
 
     /* A digital session switched to Analog: the monitor audio goes to port + 2, so that socket opens. */
     udp_session(&opts);
-    expect_int("udp digital ensure", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("udp digital ensure", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     expect_int("digital udp needs no analog socket", g_udp_connects, 0);
     expect_int("udp analog ensure", dsd_audio_ensure_analog_output(&opts), 0);
     expect_int("analog socket opened once", g_udp_connects, 1);
@@ -235,7 +239,7 @@ test_udp_analog_sink(void) {
     udp_session(&opts);
     opts.monitor_input_audio = 1;
     g_udp_connects = 0;
-    expect_int("udp monitor digital ensure", dsd_audio_ensure_digital_output(&opts), 0);
+    expect_int("udp monitor digital ensure", dsd_audio_ensure_digital_output(&opts, NULL), 0);
     expect_int("monitor opens the analog socket", g_udp_connects, 1);
     expect_int("still no audio device", g_open_count, 0);
 
@@ -282,8 +286,8 @@ test_open_failure(void) {
     expect_int("failed analog ensure again", dsd_audio_ensure_analog_output(&opts), -1);
     expect_int("failed analog ensure a third time", dsd_audio_ensure_analog_output(&opts), -1);
     expect_int("a failing raw sink is logged once", g_raw_error_logs, 1);
-    expect_int("failed digital ensure reports", dsd_audio_ensure_digital_output(&opts), -1);
-    expect_int("failed digital ensure again", dsd_audio_ensure_digital_output(&opts), -1);
+    expect_int("failed digital ensure reports", dsd_audio_ensure_digital_output(&opts, NULL), -1);
+    expect_int("failed digital ensure again", dsd_audio_ensure_digital_output(&opts, NULL), -1);
     expect_int("a failing digital sink is logged once", g_digital_error_logs, 1);
     expect_int("the digital failure does not re-log the raw sink", g_raw_error_logs, 1);
     g_fail_opens = 0;
@@ -300,6 +304,75 @@ test_open_failure(void) {
     g_fail_opens = 0;
 }
 
+/* The session's decoder set: @p mode's preset over a fresh state whose EDACS addressing is @p ea_mode (-1: none
+   selected, as initState() leaves it; -fh and the shared EDACS/ProVoice preset select 0). */
+static void
+session_decoders(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode, int ea_mode) {
+    DSD_MEMSET(state, 0, sizeof(*state));
+    expect_int("preset applies", dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state), 0);
+    if (ea_mode != 0) {
+        state->ea_mode = ea_mode;
+    }
+}
+
+/* -fp: ProVoice alone, without the EDACS addressing the shared EDACS/ProVoice preset (-fh/-fe) selects. */
+static void
+provoice_only_decoders(dsd_opts* opts, dsd_state* state) {
+    session_decoders(opts, state, DSDCFG_MODE_EDACS_PV, -1);
+}
+
+/*
+ * Auto enables ProVoice beside every other digital decoder, but a session with no EDACS addressing selected is no
+ * EDACS session: session start opens no raw stream and no UDP socket on port + 2 for it, and a runtime switch onto the
+ * digital family opens none either. Selecting EDACS addressing (-fh -fa, an EDACS-to-Auto switch, Auto with edacs_ea)
+ * makes it one, and the EDACS/ProVoice presets, -fp included, stay one.
+ */
+static void
+test_auto_session_opens_no_edacs_sink(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    device_session(&opts);
+    session_decoders(&opts, &state, DSDCFG_MODE_AUTO, -1);
+    reset_backend();
+    expect_int("auto session start", openAudioOutput(&opts, &state), 0);
+    expect_int("auto opens the digital stream only", g_open_count, 1);
+    expect_int("auto opens no raw stream", opts.audio_raw_out == NULL, 1);
+    expect_int("auto digital ensure", dsd_audio_ensure_digital_output(&opts, &state), 0);
+    expect_int("auto digital ensure opens no raw stream", opts.audio_raw_out == NULL && g_open_count == 1, 1);
+    /* Input Monitor turned on later: its own ensure opens the local analog stream. */
+    opts.monitor_input_audio = 1;
+    expect_int("input monitor ensure", dsd_audio_ensure_analog_output(&opts), 0);
+    expect_int("input monitor opens the raw stream", opts.audio_raw_out != NULL && g_open_count == 2, 1);
+
+    install_udp_hooks();
+    udp_session(&opts);
+    session_decoders(&opts, &state, DSDCFG_MODE_AUTO, -1);
+    expect_int("auto udp digital ensure", dsd_audio_ensure_digital_output(&opts, &state), 0);
+    expect_int("auto udp opens no socket on port + 2", g_udp_connects, 0);
+    opts.monitor_input_audio = 1;
+    expect_int("input monitor udp ensure", dsd_audio_ensure_analog_output(&opts), 0);
+    expect_int("input monitor opens port + 2", g_udp_connects == 1 && opts.udp_sockfdA == (dsd_socket_t)42, 1);
+
+    /* EDACS addressing selected under Auto, the EDACS/ProVoice preset and -fp: the raw stream opens as today. */
+    for (int i = 0; i < 3; i++) {
+        device_session(&opts);
+        if (i == 0) {
+            session_decoders(&opts, &state, DSDCFG_MODE_AUTO, 0);
+        } else if (i == 1) {
+            session_decoders(&opts, &state, DSDCFG_MODE_EDACS_PV, 0);
+        } else {
+            provoice_only_decoders(&opts, &state);
+        }
+        reset_backend();
+        expect_int("edacs session start", openAudioOutput(&opts, &state), 0);
+        expect_int("edacs session opens the raw and digital streams", g_open_count, 2);
+        expect_int("edacs session raw stream", opts.audio_raw_out != NULL, 1);
+        opts.audio_raw_out = NULL;
+        expect_int("edacs digital ensure", dsd_audio_ensure_digital_output(&opts, &state), 0);
+        expect_int("edacs digital ensure reopens the raw stream", opts.audio_raw_out != NULL && g_open_count == 3, 1);
+    }
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_error_logs, NULL);
@@ -308,6 +381,7 @@ main(void) {
     test_nothing_to_open();
     test_udp_analog_sink();
     test_open_failure();
+    test_auto_session_opens_no_edacs_sink();
     if (g_failures) {
         DSD_FPRINTF(stderr, "CORE_AUDIO_ENSURE_OUTPUT: %d failure(s)\n", g_failures);
         return 1;

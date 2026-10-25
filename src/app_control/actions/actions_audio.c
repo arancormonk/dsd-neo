@@ -26,7 +26,7 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     if (opts->audio_out == 1) {
         if (opts->audio_out_type == 0) {
             closeAudioOutput(opts);
-            if (openAudioOutput(opts) != 0) {
+            if (openAudioOutput(opts, state) != 0) {
                 opts->audio_out = 0;
                 msg = "Output: open failed";
             }
@@ -149,11 +149,23 @@ ui_handle_input_warn_db_set(dsd_opts* opts, dsd_state* state, const struct dsd_a
     return 1;
 }
 
+/* Turning the -8 source monitor on opens the sink it writes (the local analog stream, or UDP port + 2): a session
+   started without it opened none. One that cannot open leaves the monitor off and says so. */
 static int
 ui_handle_input_monitor_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     (void)c;
-    opts->monitor_input_audio = opts->monitor_input_audio ? 0 : 1;
+    if (opts->monitor_input_audio) {
+        opts->monitor_input_audio = 0;
+        return 1;
+    }
+    opts->monitor_input_audio = 1;
+    if (dsd_audio_ensure_analog_output(opts) != 0) {
+        opts->monitor_input_audio = 0;
+        if (state) {
+            DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "Input Monitor: output open failed");
+            state->ui_msg_expire = dsd_realtime_time() + 3;
+        }
+    }
     return 1;
 }
 

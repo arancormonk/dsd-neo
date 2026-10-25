@@ -253,9 +253,11 @@ rr_contains_ci(const char* haystack, const char* needle) {
  * p25_has_user_lcn_list(), which would otherwise disable the decoder's own
  * learned SCCB candidates. Conventional P25 does not, because -Y turns trunking
  * off outright and there is no control channel to hunt. Simulcast P25 is -mq
- * alone, not -ft -mq: decode_mode_apply_tdma() rewrites the modulation
- * unconditionally and ignores mod_cli_lock, so the pair only works in that exact
- * order and is not worth the fragility.
+ * alone, as the Qt P25 Simulcast chip carries it (saved_systems_model.cpp):
+ * -mq alone runs the default decoder set, Auto, with Phase 1 and Phase 2; under
+ * its modulation lock the symbol-rate search only steps between the profiles
+ * with the locked timing (4800/4 and 4800/2 at 48 kHz), so the NXDN48, dPMR and
+ * ProVoice profiles Auto adds are never tried there.
  */
 #define RR_ALT_NEVER        0U /* no alternate form */
 #define RR_ALT_ON_SIMULCAST 1U

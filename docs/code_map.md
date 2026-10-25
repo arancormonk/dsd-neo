@@ -933,7 +933,7 @@ suite runs under this compiler.
   `dsd_state::event_crc_invalid` (the decoder-thread scope a dispatcher ORs its bits into and restores),
   `dsd_state::data_header_crc_invalid`, `dsd_call_snapshot::crc_invalid` and `Event_History::crc_invalid` carry:
   `DSD_CRC_FAILED` (1, a check failed; the value P25 and DMR scopes have always ORed in) and `DSD_CRC_RAS_UNVERIFIED`
-  (2, DMR content only the Motorola RAS heuristic accepted under `-F`). The bits accumulate per transmission and are
+  (2, DMR content `-F` accepted only as a RAS signature, `dmr_ras_signature()`). The bits accumulate per transmission and are
   never cleared by another writer. Every gate tests `!= 0` (not verified: `-L` rows, strict publication), so RAS stays
   out of location files; only renderers tell the bits apart, through `dsd_crc_marker()` (`[CRC ERR] ` outranks
   `[RAS] `) and `dsd_crc_is_failed()` (the only bit that raises severity to WARNING). `watchdog_event_mark_crc()` swaps
@@ -1542,20 +1542,50 @@ suite runs under this compiler.
   it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does `trunk_vc_freq[]` name the carrier being decoded,
   and a call observation whose message carries no frequency may stamp it (P25's target-matched `p25_vc_freq[]` differs;
   see Protocols). Tests: `CORE_OPTS_TUNED_FREQ`.
+- Session predicates (EDACS and M17): a decoder-enabled flag is a capability, not a session, since Auto enables
+  ProVoice and M17 beside every other decoder. `dsd_edacs_session(opts, state)` (`<dsd-neo/core/edacs_session.h>`,
+  header-only so the runtime squelch policy reads it without linking core) is a selected EDACS session:
+  `frame_provoice` and either an EDACS addressing mode selected (`state->ea_mode >= 0`: `-fh/-fH/-fe/-fE`, `-fh -fa`,
+  an EDACS-to-Auto switch, a config's `edacs_ea`, the EA toggle) or ProVoice the one digital decoder (`-fp`, which
+  selects no mode). Plain Auto (`ea_mode == -1`, where EDACS only prints the mode-selection hint) is none. Every preset
+  but EDACS/ProVoice and Auto sets `ea_mode = -1` and `esk_mask = 0` (`dsd_stage_decode_mode_preset()`), so EDACS, then
+  another mode, then Auto is plain Auto; a scan row's preset keeps the configured addressing
+  (`scan_scope_apply_row_decoder()`), and a refused switch puts it back: an analog one through its rollback state
+  (`ui_revert_analog_entry()`), a config apply through `ui_cfg_mode_extras`. Startup and
+  configuration policy keys on it: the raw analog stream (`openAudioOutput(opts, state)`,
+  `dsd_audio_ensure_digital_output(opts, state)`, `svc_udp_output_config()`, a same-family `[mode]` apply, a config
+  that makes the session an EDACS one with no decode key, `cfg_commit_mode()`), the UDP
+  analog socket on port + 2 and the `-8` override under `-T` (engine output setup), the EDACS squelch policy
+  (`dsd_squelch_edacs_analog_voice()` and the squelch view, the engine's squelch notices) and the "Pulse Analog Output"
+  line. The `-8` override is one helper, `dsd_edacs_session_trunked_monitor_off()` (trunking on, UDP output, an EDACS
+  session: `-8` off), which engine output setup applies at start and the EA toggle, `DSD_APP_CMD_DECODE_MODE_SET`
+  (`decode_mode_apply_value()`) and `DSD_APP_CMD_CONFIG_APPLY` apply when they make a running session EDACS (false to
+  true); the toggle also ensures the raw sink then. TG lockout and Skip skip only an EDACS call (keyed on the call's
+  protocol, not the session), never a P25, DMR or NXDN one. The capability flag stays on what lets an Auto session
+  select EDACS: the EA/ESK toggles and the EDACS menu rows and toggle lines. `dsd_m17_only_session(opts)` (`opts.h`,
+  over `dsd_opts_digital_decoder_count()`) is `frame_m17` with no other digital decoder (`-fz`): only it retries a
+  refused TCP audio connect (engine setup) or a dropped TCP input (`dsd_symbol.c`) without end. Tests:
+  `RUNTIME_CLI_PARSE`, `CORE_AUDIO_ENSURE_OUTPUT`, `ENGINE_RUN_SETUP`, `APP_COMMAND_QUEUE`, `APP_CONTROL_SQUELCH_VIEW`,
+  `RUNTIME_SQUELCH`, `UI_MENU_SERVICES`, `UI_NCURSES_PRINTER_HELPERS`, `DSP_INPUT_INTERRUPT`.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the digital
-  voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses, when the
-  session plays to an unmuted local device and the sink is not open. With UDP output the raw sink is the analog socket
-  on port + 2 (`udp_sockfdA`), opened through the `connect_analog` member of the runtime UDP audio hook table
+  voice stream, plus the raw stream for an EDACS session and `-8`) with the parameters `openAudioOutput()` uses, when
+  the session plays to an unmuted local device and the sink is not open. With UDP output the raw sink is the analog
+  socket on port + 2 (`udp_sockfdA`), opened through the `connect_analog` member of the runtime UDP audio hook table
   (`<dsd-neo/runtime/udp_audio_hooks.h>`, installed by the engine), muted or not: the mute toggle reopens local
   devices only, so a socket skipped while muted would stay closed. `udp_socket_blasterA()` skips an invalid socket.
   A new UDP target (`svc_udp_output_config()`) closes an open analog socket, which still sends to the old host and
-  port, and reopens it for the new target at once, since the `-8` toggle opens no socket; with none open it opens one
-  only when the current mode writes to it. Idempotent, decoder thread only; a failure is logged once and leaves that
-  family silent. `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import (both through
-  `decode_mode_apply_value()`) call them, and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session
-  between the analog and digital families or lands on a digital mode that writes raw audio (ProVoice, `-8`). Tests:
-  `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
+  port, and reopens it for the new target at once; with none open it opens one only when the current mode writes to
+  it. Idempotent, decoder thread only; a failure is logged once and leaves that family silent.
+  `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import (both through `decode_mode_apply_value()`) call them,
+  and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]` moves the session between the analog and digital families
+  or lands on a digital mode that writes raw audio (an EDACS session, `-8`). Input Monitor turned on
+  (`DSD_APP_CMD_INPUT_MONITOR_TOGGLE`) ensures the analog sink itself and stays off, with a toast, when it cannot
+  open. Which streams open: `openAudioOutput()` and `dsd_audio_ensure_digital_output()` open the raw stream when it
+  has a writer (`dsd_audio_raw_writer()`: `-8` or an EDACS session), while
+  `dsd_audio_reconfigure_output_for_input_policy()`, which closes and reopens for a new async policy, reopens the raw
+  stream when it was open (or `-8` is on), so it keeps an EDACS session's without reading the state. Tests:
+  `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS`, `APP_CONTROL_RR_APPLY`, `UI_MENU_SERVICES`.
 - Runtime input switch (issue #634, `<dsd-neo/core/audio_input_switch.h>`, `src/core/audio/dsd_audio_input_switch.c`):
   `dsd_audio_switch_input()` replaces the running PCM or symbol input with the one a request names (a WAV or headerless
   PCM file, a float symbol stream, a symbol capture, UDP, a connected TCP socket, a Pulse device), on the decoder
@@ -1648,29 +1678,49 @@ suite runs under this compiler.
   held nothing else), so a call's history row, which takes the record only under the epoch it was heard on, keeps that
   identity and is never mixed with the next one. The DMR vendor (`dsd_rxid_note_dmr_vendor()`, the feature set ID of a
   genuinely checked LC or CSBK) is a part of its own, apart from the trunking brand; the terminal header shows its name
-  (Hytera, Tait, Motorola). A tune the user asked for while trunking, which keeps the decoder's trunking state and so is
-  no carrier boundary, forgets the record too (D4: any user move), after the calls it ended took theirs: a frequency
-  entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`, accepted only), a Return to CC, and a
-  channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks the carrier change for the frame
-  sync). A trunking follow keeps it, a lockout's or skip's return to the control channel included (the decoder leaves
-  the call as at its end); every other user retune (a frequency entry on another protocol, tap-to-tune, a `-Y` step, a
-  trunk-scan target, a signal-search visit) is a carrier boundary. Commands that forget or reinterpret a site forget it
-  in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops the DMR trunking parts (keeping the
-  colour code the reset keeps) and the NXDN location, IDAS parts and RAN (`dsd_rxid_forget_system()`); a decode mode
-  change, once the calls it ended froze their identity and once a switch onto the analog monitor the front end has
-  queued is taken (`ui_commit_mode_identity()`: refused where it lands, the session goes back with its identity), an
-  `[edacs]` addressing mode a config apply sets without a `[mode]`, a RadioReference import's EDACS variant and the
-  EDACS addressing mode toggle (after its calls ended, which keep their site) run `dsd_rxid_note_decoder_settings()`,
-  which drops a record of a protocol the settings no longer decode and an EDACS record read under the other addressing
-  mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as well). The no-carrier pass, a SIM no-carrier,
-  the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed, the tuner release and the scan resets change
-  no received identity: the carrier and the reading of its messages stay (a carrier boundary resets the record anyway).
-  Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
-  `ENGINE_PROTOCOL_DISPATCH`, `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's
-  notes, no-carrier step and reads, race-free under the `tsan-debug` preset, and the decoder thread's grant and frame
-  sync release between frames), `DMR_BS_SYNC_TIMES` (a rest channel's retune in one burst, then the reached carrier's
-  bursts in the same loop), and end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a
-  conventional carrier of another system).
+  (Hytera, Tait, Motorola). The DMR RAS part (`DSD_RXID_DMR_RAS`, `dsd_rxid_note_dmr_ras()`) says the carrier uses
+  Motorola RAS: the DMR decoder notes it once two RAS signature bursts on the carrier confirmed it (`dmr_ras.c`, under
+  DMR), and again at every signature after. It is a property of the codewords received, never a decoded field, so the
+  rule above that RAS-accepted content is never noted is unchanged, and noting or dropping it moves no epoch. The
+  evidence is the DMR decoder's (`dsd_state::dmr_ras_signatures`, outside the record), and one reset,
+  `dmr_ras_reset()`, clears it with the part (`dsd_rxid_forget_dmr_ras()`), always where the record may be written:
+  `dsd_engine_carrier_boundary()` beside `dsd_rxid_reset()`; every applied trunk tune, which the record leaves to the
+  engine (`dsd_rxid_apply_trunk_tune()` returns 1 when it applied a drop, `dsd_rxid_request_trunk_tune()` when it
+  applied one at once inside a dispatch): `dsd_engine_rxid_trunk_tune()` on the decoder thread or inside a dispatch,
+  `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan
+  advance, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's thread;
+  `trunk_scan_switch_to()` (which also covers the forced release's own apply) and its rollback, which restores the
+  record without the evidence and so drops the part; a colour-code change on the carrier (the BS confidence relock,
+  the MS/direct slot type and embedded colour code, `dmr_ras_note_color_code()`); the DMR reset command; a user move
+  (`ui_user_move_forgets_identity()`); and the guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so
+  the next transmission proves RAS again. A frame
+  of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
+  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the voice-channel tune that calls it can run on the
+  watchdog's thread, and the trunk tune's apply covers that tune. A tune the user asked for while trunking, which keeps
+  the decoder's trunking state and so is no carrier boundary, forgets the record too (D4: any user move), after the
+  calls it ended took theirs: a frequency entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`,
+  accepted only), a Return to CC, and a channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks
+  the carrier change for the frame sync). A trunking follow keeps it, a lockout's or skip's return to the control
+  channel included (the decoder leaves the call as at its end); every other user retune (a frequency entry on another
+  protocol, tap-to-tune, a `-Y` step, a trunk-scan target, a signal-search visit) is a carrier boundary. Commands that
+  forget or reinterpret a site forget it in the record too: the DMR reset (`DSD_APP_CMD_DMR_RESET`, terminal `D`) drops
+  the DMR trunking parts (keeping the colour code the reset keeps) and the NXDN location, IDAS parts and RAN
+  (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and once a switch
+  onto the analog monitor the front end has queued is taken (`ui_commit_mode_identity()`: refused where it lands, the
+  session goes back with its identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`, a
+  RadioReference import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their
+  site) run `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an
+  EDACS record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as
+  well). The no-carrier pass, a SIM no-carrier, the ESK toggle, inversion and modulation toggles, the P25 Phase 2 seed,
+  the tuner release and the scan resets change no received identity: the carrier and the reading of its messages stay (a
+  carrier boundary resets the record anyway). Tests: `CORE_RECEIVED_IDENTITY`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_PROTOCOL_DISPATCH`, `DMR_RAS_DETECT` (the RAS part's
+  evidence and its reset points with those five, `DMR_DATA_SYNC`, `DMR_MS_DATA` and `APP_COMMAND_QUEUE`),
+  `ENGINE_RXID_WATCHDOG_RACE` (the watchdog's retunes and call ends beside the decoder's notes, no-carrier step and
+  reads, race-free under the `tsan-debug` preset, and the decoder thread's grant and frame sync release between frames),
+  `DMR_BS_SYNC_TIMES` (a rest channel's retune in one burst, then the reached carrier's bursts in the same loop), and
+  end to end `ENGINE_REPLAY_IDENTITY` (a trunked P25 control channel replayed, then a conventional carrier of another
+  system).
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -1956,11 +2006,25 @@ suite runs under this compiler.
     `Golay24.hpp` through the explicit layout mapping (reversed 23 bits; Golay24's encoding of the reversed data rotated
     left by 11) and `RUNTIME_ANALOG_TONES` pins the published reference words, the golden alias table for all 104 codes
     and the two spellings of every signal.
+  - Auto is the default decoder set: `initOpts()` (`src/core/util/dsd_init.c`) installs exactly what
+    `decode_mode_apply_auto()` sets under the CLI profile (every digital decoder but TETRA, C4FM, the stereo layout),
+    so a session that names no `-f` runs `-fa`, `dsd_infer_decode_mode_preset_exact()` answers AUTO for it, a config
+    without a `decode` key keeps it and autosave writes `decode = "auto"` (`RUNTIME_CLI_PARSE`, `RUNTIME_CONFIG_APPLY`).
+    Entry points that name no `-f` inherit it: `-mq` alone (a RadioReference simulcast P25 row) runs Auto under the
+    QPSK lock, whose timing-matched SPS hunt never reaches the 2400/9600 profiles (`RUNTIME_CLI_PARSE`,
+    `FRAME_SYNC_INTERNAL_HELPERS`); the M17 encoders (`-fZ/-fB/-fP/-fU`) run their own loops, `-fZ` on the fixed WIDE
+    front end (`IO_RTL_DEMOD_CONFIG`); signal search applies Auto itself, and scan rows and trunk-scan targets restore
+    the set they captured.
   - Decode presets (`include/dsd-neo/runtime/decode_mode.h`, `src/runtime/decode_mode.c`): the `-f` selector map is
     a table (`k_cli_presets`), and so are the presets (`k_decode_mode_presets`): `dsd_apply_decode_mode_preset()` looks
     the mode up before it changes anything, so a mode no preset implements (`DSDCFG_MODE_UNSET`, which a config's
     `[mode]` without a `decode` key and DECODE_MODE_SET 0 pass) changes nothing, a TETRA session's decoder and state
-    included. A transition that can still be put back stages its preset (`dsd_stage_decode_mode_preset()`: every
+    included. A preset sets its own modulation only when no `-m` lock is in force (`decode_mode_preset_modulation()`;
+    the hand-rolled `-fp/-fh/-fH/-fe/-fE` branches in `args.c` through `cli_preset_modulation()`), so a lock holds on
+    either side of the `-f` selector (`-mq -f1` is `-f1 -mq`; `RUNTIME_CLI_PARSE`,
+    `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_LOCK_FIRST`/`_LAST`); the mid-session path releases the lock first, and a
+    config's `[mode] demod` applies after the preset, while without one the lock stands (`APP_COMMAND_QUEUE`). A
+    transition that can still be put back stages its preset (`dsd_stage_decode_mode_preset()`: every
     setting, `frame_tetra` off for a mode other than TETRA, but the TETRA state extension, `tetra_sync` and `tetra_pub`
     left) and commits once nothing can put it back (`dsd_decode_mode_commit_tetra()`: TETRA is left when the settings
     in force run no TETRA decoder); `dsd_apply_decode_mode_preset()` is both at once. DECODE_MODE_SET commits after a
@@ -2103,6 +2167,8 @@ depending directly on protocol headers. The runtime provides a small hook table 
 `include/dsd-neo/runtime/frame_sync_hooks.h`; the engine installs the concrete implementations at startup in
 `src/engine/frame_sync_hooks_install.c`. `decoder_ticks_due` tells a silent-input wait that decoder-thread trunking
 timers are due (issue #703); the engine's answer reads the state machines under the P25 SM tick guard.
+`p25_probe_in_flight` tells the SPS hunt that a P25-driven control-channel probe is in flight, so it steps only between
+the P25 profiles (see the startup control-channel hunt below); with nothing installed there is no probe.
 
 ### Trunk Scan Hooks (Protocol/App-Control → Runtime ← Engine)
 
@@ -2136,8 +2202,16 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 Recovery ownership lives beside these hooks. `dsd_trunk_p25_recovery_allowed()` / `dsd_trunk_dmr_recovery_allowed()`
 admit a validated owner (`dsd_state::trunk_recovery_protocol`), or, with none yet, a frame set that decodes only that
 protocol's trunk. `dsd_trunk_p25_cold_start_presumed()` names the protocol that runs the startup control-channel hunt
-of a session no protocol has proven yet: P25 for a frame set with P25 and without NXDN48, NXDN96 and ProVoice (`-ft`,
-the default set, `-1`, `-2`); it grants no recovery ownership (issue #703, `RUNTIME_TRUNK_SCAN_HOOKS`).
+of a session no protocol has proven yet: P25 for every frame set with P25 (`-ft`, Auto `-fa`,
+`-1`, `-2`) except a selected EDACS session (`dsd_edacs_session()`: `-fh -fa`, an EDACS-to-Auto switch), whose
+control names no owner the hunt could stop on; it grants no recovery ownership (issue #703,
+`RUNTIME_TRUNK_SCAN_HOOKS`). It also keeps a frequency entry an operator move during that hunt
+(`manual_frequency_selects_p25_cc()`), keeps the decoder ticks due (`engine_decoder_ticks_due()`), and with
+`dsd_trunk_p25_recovery_allowed()` decides the P25 chain of a control-channel tune in `src/engine/trunk_tuning.c`
+(`dsd_engine_cc_is_p25()`): a session P25 drives is P25 from that evidence, not from raw sync history or a GFSK
+`rf_mod` the frame-sync hunt forced. The presumption counts there only while the P25 machine hunts
+(`p25_sm_hunt_probe_in_flight()`, read under the tick guard); another tune of that session (the engine's no-carrier
+return, an IDAS busy-repeater follow before NXDN is confirmed) keeps the sync rule.
 `dsd_trunk_nxdn_recovery_allowed()` admits the NXDN control-channel hunt: trunking on outside `-Y` and trunk scan,
 NXDN48 or NXDN96 decoded (whatever the owner, so a mode change away from NXDN stops it), and an NXDN owner
 (`DSD_TRUNK_RECOVERY_NXDN`, named by a CRC-good CAC or a confirmed Type-D SCCH) or, with none yet, a frame set without
@@ -2319,6 +2393,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   the scan baseline
   (`dsd_scan_mode_configured_view()`), so republishing a typed digital row's profile on an analog session queues that
   profile alone and does not switch the front end in the middle of the row.
+  `DSD_APP_CMD_DECODE_MODE_SET` for the mode already in effect changes nothing (`decode_mode_set_early_verdict()`):
+  the lossy `dsd_infer_decode_mode_preset()` reading for a single preset, the exact one for AUTO, so a session already
+  on the whole Auto set (`-fa`, the default) keeps its calls and modulation on a repeat Auto while a narrowed set Auto
+  only labels still widens (`APP_COMMAND_QUEUE`).
   `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`). Before it changes
   anything it asks a running RTL front end whether it takes the analog profile the mode will publish
   (`svc_check_mode_receive_profile()`, `rtl_stream_check_analog_profile()`: kind, range, `DSD_NEO_CHANNEL_LPF` and the
@@ -2342,8 +2420,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   command).
   `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
   analog and digital families, after the same check when the move is onto the analog family (a refusal leaves the
-  whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that ProVoice
-  (or `-8`) also gets the raw sink it writes to, and that an RTL front end is told the digital modes it now configures
+  whole config unapplied); a digital-to-digital `[mode]` change keeps its earlier behaviour, except that an EDACS
+  session (`dsd_edacs_session()`, or `-8`) also gets the raw sink it writes to, and that an RTL front end is told the
+  digital modes it now configures
   (`svc_note_digital_decode_modes()`, which `svc_publish_symbol_profile()` also calls). Like `DECODE_MODE_SET` it keeps the session's audio output layout
   (`pulse_digi_out_channels`, `pulse_digi_rate_out`) through any `[mode]`: the output streams were opened with it, so
   a digital sink a family change opens gets it too, and a later preset cannot leave the options on another layout
@@ -2784,6 +2863,31 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   target's own `rtl_gain` while it overrides it, the terminal's `Gain... [20] (target: 10)` and Tuner autogain rows,
   the edit toasts, and Qt's `configuredTunerGainDb`/`tunerGainRowOverride` (a `target` badge and `default X` on the
   radio panel). Test: `APP_CONTROL_RTL_GAIN_VIEW`.
+  `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
+  one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
+  scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override`
+  when the row on air carries its own `-F` or `--strict-crc`; `dsd_app_crc_policy_edit_notice()` is the toggle's toast
+  under such a row. The pair it reads, `aggressive_framesync` and `dmr_crc_relaxed_default`, is set only through
+  `dsd_opts_set_relaxed_crc()` (`core/opts.h`;
+  `dsd_opts_relaxed_crc()` reads either field relaxing as on) by `-F`, `--strict-crc`, a row's CRC option and
+  `DSD_APP_CMD_AGGR_SYNC_TOGGLE` (no payload flips it, the terminal's key and row; an `int32_t` payload sets it, the
+  Qt/Android switch, so a frontend acting on a snapshot one command behind cannot turn it the wrong way); the scan
+  scope's capture and restore copy the pair as it is. The terminal's Relaxed CRC row reads the view, and so do Qt's
+  `relaxedCrcConfigured`/`relaxedCrcEffective`/`relaxedCrcRowOverride` (Settings → Decoding → Relaxed CRC, an
+  `AppPrefs::relaxedCrc` preference `session_args.cpp` turns into `-F` for every app-started session unless the
+  Extra decoder arguments name `-F` or `--strict-crc`). Tests: `APP_CONTROL_CRC_POLICY`, `UI_QT_SESSION_ARGS`,
+  `UI_QT_QML_CALL_LISTS` (`tst_settings_relaxed_crc.qml`).
+  `include/dsd-neo/app_control/dmr_ras_view.h` and `src/app_control/dmr_ras_view.c` are the DMR RAS indicator:
+  `dsd_app_dmr_ras_view()` reports `detected` (a DMR record's `DSD_RXID_DMR_RAS`), the Relaxed CRC policy it reads
+  through `dsd_app_crc_policy_view()`, and `needs_relaxed` (detected while relaxed CRC is not in force);
+  `dsd_app_dmr_ras_label()` is the compact label, `RAS` or `RAS (-F decodes)`, and `RAS (channel sets strict CRC)`
+  while `-F` is configured on under a scan row's own `--strict-crc` (pressing F there would turn `-F` off, as Qt's
+  `rowKeepsStrict` says). The terminal's DMR BS and MS headers print it after the colour code (`RAS; `,
+  `RAS (-F decodes); `), and the site identity view shows the compact `RAS`
+  token from the record; a frontend's RAS field and its relaxed-CRC hint read this view (Qt's `dmrRasDetected` and
+  `dmrRasNeedsRelaxed`: the site sheet's **Access RAS** field, its hint and **Turn on Relaxed CRC**). Tests:
+  `APP_CONTROL_CRC_POLICY`, `UI_NCURSES_PRINTER_HELPERS`, `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_QT_METRICS_MODEL`,
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_site.qml`).
   `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into the
   received-tone text (issues #522, #523): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
   (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink the
@@ -3733,6 +3837,161 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
   choose: a CQPSK vote there (a carrier near 0 Hz) took the front end off the monitor path. Tests:
   `FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`.
+- dPMR FS2 acceptance (`frame_sync_try_dpmr()` in `dsd_frame_sync.c`), a decided cost. FS2 (ETSI TS 102 658 6.1.2,
+  5FF77D) is matched as one exact window of 12 sign-sliced symbols, which about one window in 4096 of any carrier's
+  payload or of receiver noise passes: about 0.6-0.8 false FS2s a second on noise and on NXDN48 data alike (8 in the 10
+  s noise_floor fixture under -fm). Each one reads a 372-dibit dPMR frame, about 155 ms, and stands the NXDN48 matcher
+  down for it (`dsd_frame_sync_suppress_nxdn48_sync()`, #374); nothing is published, since the CCH CRC gate (#407) holds
+  every call. A four-level read of FS2 (all twelve symbols outer, within two bit errors) would drop those, but is not
+  used: the closed-eye off-air `dpmr` fixture reads 5-8 bit errors on its FS2s, the same as noise (5-7), so no threshold
+  keeps its syncs (`DECODE_IQ_DPMR_MARGINAL`) and drops noise, and on the scan captures the shorter 2400/4 dwells it
+  leaves move DMR and NXDN48 by as much as a 300-symbol dwell change does.
+- M17 sync acceptance (`frame_sync_try_m17()` in `dsd_frame_sync.c`). The windows are sign-sliced, so the eight-symbol
+  words and the alternating preamble are cheap for receiver noise to reproduce. A preamble candidate needs
+  `DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS` (32) consecutive windows within one error, then the LSF or BERT word within one
+  error (`frame_sync_try_m17_lsf_or_bert()`); a stream or packet frame after an LSF, and a chain with evidence, are
+  taken as before. A transmission joined after its preamble opens on the same exact sync word three frames
+  (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) running (`frame_sync_try_m17_join()`, `dsd_state::m17_join_hits`, cleared
+  with the preamble candidate and with the NXDN96 sync; every exact word is kept, whichever path took its window,
+  since the payload matches some word a few times a frame): the stream word is a stream, the LSF word repeated an
+  inverted stream (a transmission sends one LSF), and the BERT word, or the packet word under an inverted session,
+  BERT. A packet is never joined (its CRC covers every packet frame; the packet word sits a frame apart in NXDN96 data
+  frames' LICH). A join opens one frame and clears the history, so the next frame continues only on M17's evidence
+  (`frame_sync_m17_chain_has_evidence()`, a BERT PRBS lock) or waits for three fresh hits. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_m17_joins_on_a_sync_word_three_frames_running`, `test_an_nxdn96_data_call_stays_nxdn96_under_auto`),
+  `DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC`, `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_M17_MID_STREAM_JOIN`
+  (`m17_after_retune`: noise, then a stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`.
+- NXDN96 sync acceptance (`frame_sync_try_nxdn()`, `frame_sync_nxdn96_accepts()` in `dsd_frame_sync.c`), after the
+  receiver rules of NXDN TS 1-A 5.3 and Table 5.9-3, on the NXDN96 window (`frame_sync_nxdn96_window()`: 4800/4, or a
+  symbol capture with NXDN96 alone on). The sign-sliced FSW match (ten symbols, five variants per polarity) passes about
+  one arbitrary window in a hundred, so acquisition also reads the window's last ten levels as four-level dibits and
+  needs the FSW's 20 bits within two bit errors (`frame_sync_nxdn96_fsw_bit_errors()`, a "clear" hit,
+  `DSD_FRAME_SYNC_NXDN96_CLEAR_HIT`). A clear hit acquires with a clear hit of its polarity one frame
+  (`DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS`, 192) before it, within `DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE` (1) symbol (N1 =
+  N5 = 2). N6 (one FSW alone behind the preamble or RCCH post-field tail) is not used: acquiring on the FSW right after
+  a preamble left weak calls (`nxdn96_weak`, nxdn96 at 8 dB wideband SNR) reading one FSW symbol wrong on every frame
+  and failing every SACCH for the rest of the call. So a transmission's first frame is lost, a trunked voice channel's
+  header included (N2 = 1, which reuses the CC's timing, is not implemented). An accepted FSW is pending
+  (`dsd_state::nxdn96_sync`, `dsd_nxdn96_sync`) until its frame's LICH is read (`dsd_nxdn96_sync_note_lich()` from
+  `nxdn_frame()`): a good LICH makes it the lock, which accepts the FSWs that follow at whole frames from it, the
+  tolerance either way, for up to `DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES` (6) frames -- five missed in a row (N7) -- the
+  next frame's on its signs and later ones only clear (N7's two-bit allowance). As TS 1-A 5.3 has it, a LICH whose
+  parity fails says nothing: the lock stays on the last good frame, so a call rides out the error and an accept on noise
+  never refreshes it. `DSD_NXDN96_SYNC_LICH_WRONG_S1` (S1 = 5) good-parity LICHs in a row that `nxdn_frame()`
+  rejects -- a value no NXDN frame uses, or an inbound LICH on a trunked session -- clear the lock and the hits.
+  Decided limit: the next frame's FSW is taken on its signs, and the sign variants tolerate a misread symbol at 1, 5 or
+  8, so a lock can ride a slicer whose four-level reading is biased for a whole call. Dropping the lock after 2, 3 or
+  4 locked FSWs in a row that read more than two bits on four levels was measured on 72 weak nxdn96 realizations
+  (0-10 dB): mean RAN frames 28.92, 29.14 and 29.18 against 29.24 keeping it, no run rescued, so the lock is kept.
+  Both are also cleared with the M17 join history (`dsd_state_forget_sync_join_histories()`), at an acquisition reset
+  and any carrier change (`dsd_state_note_carrier_change()`, so a tune, a probe or a trunk-scan switch), at every
+  accepted trunk retune of any protocol (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`: an NXDN DISC's
+  return included; one the P25 watchdog makes off the decoder thread is applied by the frame sync's next step,
+  `dsd_frame_sync_apply_off_thread_tunes()`), at a carrier boundary inside an NXDN frame and at the CAC reset. The
+  four-level reading takes the window's level ring, which a symbol capture fills with its dibits' levels
+  (`dsd_symbol_level_from_dibit()`), so it applies there too; only a window holding fewer than ten levels (the unit
+  tests' sign-only windows) skips it, and the sign match then counts as clear. A LICH failure prints its sync under
+  `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_nxdn96_follows_the_receiver_sync_rules`, `test_nxdn96_lock_follows_the_lich`,
+  `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
+  `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
+  `_AUTO` twin, `DECODE_IQ_NXDN96_WEAK`, `DECODE_IQ_NXDN96_WEAK_0DB`, `DECODE_IQ_NXDN96`.
+- P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a P25p1
+  signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
+  (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
+  `p25_p1_mod_probe_active`). The CQPSK chain cannot read DMR, NXDN96, YSF or M17, so when any of them is enabled a
+  trial that has validated nothing by half its dwell -- the hunt counter, symbols the search spent, at half the dwell,
+  which the budget path checks on every symbol once a pass has run (2700 of 5400; handler-read frames do not count) --
+  hands the rest of it back to C4FM with the votes free (`frame_sync_p25p1_cqpsk_trial_half_dwell()`,
+  `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`: `getFrameSync()` rebuilds its window in place
+  and keeps hunting, so neither its no-sync hooks nor the engine's `noCarrier()` after a no-sync return run, since the
+  dwell goes on, from the budget path and from the matchless-pass timeout alike, which can reach the point on the same
+  symbol; a modulation lock applied live ends a probe or a comparison in flight at the next `getFrameSync()` entry,
+  `frame_sync_apply_cli_mod_lock()`, which moves the front end with the decoder, and the handback refuses under a lock
+  and on a trunked voice channel the engine tuned, as a full dwell expiry holds the profile there; an accepted tune, on
+  either thread, retires a probe in flight, and one that fails keeps it; a lock always wins, so reconciling a watchdog
+  tune's notice puts neither the decoder nor the front end on the tune's chain against one); P25p1 alone and a
+  trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep the whole dwell, and the rotation and dwell
+  lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
+  (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore and trunk retunes read). The first
+  NID-decoded frame of an acquisition starts one chain comparison (`frame_sync_p25p1_mod_compare_note()`,
+  `dsd_state::p25_p1_mod_compare`, run on `getFrameSync()` entry): the symbols that chain's validated frames read over
+  one search pass (`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`) are added up. P25p1 frames come back to back, so a search
+  after a validated frame at least as long as that frame, before the next one or the pass's end, is a frame read by
+  nobody (a one-block TSDU reads 134 of its 180-symbol slot, and the search to the next is 46); a pass without one keeps
+  the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that read strictly
+  more keeps the profile and becomes the learned modulation, with a verdict that stops a frame on that chain opening
+  another comparison. The other chain's pass is refunded to the dwell (the counter goes back to its value when that pass
+  began).
+  - The other chain's pass starts at a `getFrameSync()` entry and is one search pass long, so on a carrier that chain
+    cannot sync it runs out on the symbol the matchless-pass timeout fires on. It ends there instead, on whichever runs
+    out first, its symbols read or the call's symbols searched (a read that commits no symbol counts only in the
+    second) (`frame_sync_p25p1_mod_compare_trial_pass_ended()`): `getFrameSync()` rebuilds its window in place and keeps
+    hunting on the chain the comparison chose, as after a CQPSK trial's handback, so neither its no-sync hooks nor the
+    engine's `noCarrier()` run on a carrier the incumbent still decodes (an LSM carrier the C4FM chain is deaf to).
+  - A verdict needs the winner to have validated a frame in its own pass: an incumbent whose only frame opened the
+    comparison (the transmission ended, an isolated NID) ends it with no verdict and nothing learned. A verdict is
+    dropped with the learned modulation (a CQPSK dwell that decodes nothing, an acquisition reset that forgets it), by
+    a 4800/4 dwell on its own chain that decodes nothing (so a C4FM verdict cannot outlive its carrier), and is kept per
+    trunk-scan target (the snapshot records the chain leading so far, `dsd_frame_sync_p25p1_learned_rf_mod()`). A
+    watchdog tune's notice still pending at a switch is reconciled into the target being left before its snapshot is
+    saved (and before the rollback snapshot and the targets' build), so no target's learned modulation takes
+    another's tune.
+  - A comparison ends without a verdict at a carrier boundary (`carrier_seq`; the leading chain is put back), a
+    profile change, a modulation lock or a trunked voice tune (the demodulator is theirs; the learned modulation goes
+    back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves;
+    the expiry still judges the chain the dwell ran on), and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
+    a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
+    incumbent unless the other chain has read more. Each of those boundaries, and a tune on either thread, also
+    consumes the pending NID stamp (`seen_symbolcnt`) with no comparison running, and a stamp read across a
+    `carrier_seq` change or with no frame read since the mark opens none (`seen_carrier_seq`): no comparison opens
+    on the carrier reached from the carrier left's last frame.
+  - Tunes: `dsd_engine_trunk_tune_to_freq_request()` and `dsd_engine_trunk_tune_to_cc_request()` (the latter also
+    under `dsd_engine_return_to_cc_request()`, when it retunes; one that retunes nothing leaves the comparison going
+    and does not apply the control channel's timing under it) end a comparison in flight on the leading chain before
+    they read the modulation (`dsd_frame_sync_p25p1_mod_compare_end_for_tune()`, `frame_sync_p25p1_compare.c`, which
+    the engine tests link), so an FDMA grant, which inherits `rf_mod`, and a control-channel tune, which reads the
+    learned modulation, never land on a chain only because its pass was running. A Phase 2 grant has already put
+    `rf_mod` on CQPSK and named its slot (`p25_p2_active_slot`), and that modulation stays the tune's; only the learned
+    modulation goes back. A tune that fails or is deferred puts the comparison back as it was, with the front end's
+    profile captured before the comparison ended, so the decoder and the front end stay on the same chain.
+  - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard, and a tune the P25
+    watchdog's tick makes on its own thread never touches it. The invariant: an off-thread tune makes one coherent read
+    of the decision the decoder publishes (`dsd_frame_sync_p25p1_read_decision()`: one atomic value, whether a
+    comparison runs and the learned modulation, the leading chain while one runs, published at every comparison step and
+    every write of the learned modulation by `dsd_frame_sync_p25p1_mod_compare_publish()`), taken when its outermost
+    tune request begins (`dsd_engine_tune_decision_begin()`), and uses that one read both for the chain it tunes
+    (`rf_mod`, the control channel's chain) and for the notice it posts (`dsd_frame_sync_note_off_thread_tune()`, which
+    carries the read with the count, in one atomic value). The decoder thread reconciles every notice, whatever the
+    comparison did since (`dsd_frame_sync_apply_off_thread_tunes()`, at `getFrameSync()` entry, in the hunt while a
+    comparison runs, before the NXDN96 and M17 matchers read their histories, and before a decoder-thread tune decides):
+    the learned modulation becomes the chain the latest tune set, a comparison still running (or opened since) ends
+    there without a verdict, a verdict reached since on a comparison the tune captured is dropped (it measured the
+    carrier left, and rewriting it to the tune's chain would claim a measurement no comparison made and stop the new
+    carrier being compared), and the sync join histories go. A run boundary seeds the decision from the new session's
+    state and drops the notices posted so far (`dsd_frame_sync_off_thread_tunes_reset()`, at the run's start before the
+    watchdog starts, and at its end after it stops). The serialization rule: the watchdog tunes under the P25 SM tick
+    guard, and the decoder takes the same guard (`dsd_frame_sync_hook_tick_guard_enter()`, re-entrant, installed by the
+    engine) around every step that changes the comparison or the chain -- opening it, a pass's end and its chain switch,
+    a settle or an abort, a CQPSK trial's handback, a dwell expiry's probe, an acquisition reset, and reconciling a
+    notice -- and reconciles any notice still pending inside the guard before it acts
+    (`frame_sync_p25p1_chain_step_begin()`), standing down when one was. So no tune lands between a step's decision and
+    the chain it installs, and a reconciled notice puts `rf_mod` and the front end back on the tuned chain
+    (`frame_sync_p25p1_set_chain()`), which repairs a state already wrong. The guard is taken only on those steps, which
+    run while a comparison or probe is in flight, at a dwell expiry, or at a reset; the per-call checks are an atomic
+    load and a phase read. The publication stays: not every writer of the learned modulation runs under the guard (a
+    trunk-scan snapshot restore, a decoder-thread tune), so the one coherent read stays a read of the published value.
+  - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
+    gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
+    against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The
+    TSBK/MPDU success count (`p25_p1_fec_ok`) would be finer for control channels, but it says nothing about voice
+    frames (HDU, LDU1/2, TDU), so the NID stays the one check that covers every DUID.
+  Without the comparison, a chain that reads part of an LSM simulcast carrier (C4FM: about half the 769 MHz control
+  channel's TSBKs) kept the profile for as long as the carrier stayed up. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_p25p1_partial_chain_loses_the_comparison`, `test_p25p1_comparison_ends_cleanly`,
+  `test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes`),
+  `ENGINE_TRUNK_RETUNE_REGRESSION` (`test_chain_comparison_in_flight_tunes_on_the_leading_chain`), `ENGINE_TRUNK_SCAN`,
+  `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO`.
 - Channel LPF (`demod_pipeline.cpp`): digital profiles design from their protected edge, capped at 144 taps with the
   63-tap fallback. The analog family (`demod_state::analog_family`, not the WIDE profile, which is also the digital
   fallback and the M17 encoder's) designs from `channel_lpf_width_hz` instead: cutoff width/2 + 600 Hz, the fixed
@@ -4687,6 +4946,14 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Target: `dsd-neo_fec`
 - Responsibilities: BCH, Golay, Hamming, RS, and BPTC helpers. Protocol-specific CRC/FCS helpers live with the
   corresponding protocol modules under `src/protocol/...`.
+- `bptc.c` / `<dsd-neo/fec/bptc.h>`: `BPTC_196x96_Extract_Data()` is the best-effort DMR payload extractor; a column
+  whose Hamming(13,9) decode fails keeps its received bits (the Hamming(15,11) rows correct every syndrome). It copies
+  back data bits only, so a parity-bit error can still fail its second pass; then it takes the full decoder's codeword
+  if that lies within `DSD_BPTC_196x96_UNIQUE_RADIUS` (4) and reports no irrecoverable error.
+  `BPTC_196x96_Decode_Codeword()` instead decodes a copy with full row and column copy-back (parity included, two
+  passes) and succeeds only on a valid product codeword, returning that codeword's payload, R bits and its distance to
+  the received bits. The decode is iterative, not nearest-codeword (some four-error patterns reach a different
+  codeword at distance 5), so callers gate on the distance.
 - Build files: `src/fec/CMakeLists.txt`
 
 ## Crypto
@@ -4797,15 +5064,29 @@ control within the CC grace walks its channel map with the ordinary hunts.
   and a silent UDP input's wait gives way while a machine is due to arm (a session that became eligible after its
   pass's tick, or whose tick found the guard busy). Arming never happens in `p25_sm_tick_ctx()`.
 - Window: armed in `IDLE` (a machine that leaves `IDLE` other than for its startup hunt drops it), it runs from the
-  later of its opening and `dsd_state::dmr_confidence_lock_m` (validated DMR content; raw sync never holds it); the
-  hunt starts when it exceeds the CC grace (P25 `--p25-cc-grace`, DMR 6 s).
+  later of its opening and `dsd_state::dmr_confidence_lock_m` (validated DMR content), and for P25 also
+  `dsd_state::nxdn_confirm_lock_m` (an NXDN frame whose own CRCs confirmed it, so Auto never leaves NXDN traffic); raw
+  sync never holds it, and neither names an owner. The hunt starts when it exceeds the CC grace (P25
+  `--p25-cc-grace`, DMR 6 s).
 - Hunt: `try_next_cc()` (P25) or `dmr_cc_hunt()` (DMR) unchanged, 2 s probes included (too short for the SPS and
-  modulation hunt to reach a CQPSK trial: a simulcast system needs `-mq`, as a RadioReference import writes); a P25
-  startup probe restores `trunk_cc_freq` after each probe tune, as DMR probes do, and records `cold_start_probe_hz`. With no other eligible row, DMR probes the row
-  it last probed again when that tune never completed (a failed or expired probe: only a success retires the failure
-  that gates every frame), and listens on one the radio is on (`dmr_cc_next_mapped_candidate()`).
-- Ending: validated control naming another protocol's owner, or a Hytera XPT site identifying itself, ends the hunt
-  in place (the owner's ordinary recovery follows; a grant either machine followed meanwhile stands, and only the
+  modulation hunt to reach a CQPSK trial: a simulcast system whose C4FM chain decodes nothing needs `-mq`, as a
+  RadioReference import writes; one the C4FM chain reads in part reaches CQPSK through the chain comparison); a P25
+  startup probe restores `trunk_cc_freq` after each probe tune, as DMR probes do, and records `cold_start_probe_hz`.
+  A P25 probe tune takes the P25 chain from the session (`dsd_engine_cc_is_p25()`, above), and while a P25-driven
+  probe is in flight (`p25_sm_hunt_probe_in_flight()`: `HUNTING`, or `ON_CC` on a hunt probe not yet decoded, under a
+  P25 or unknown owner) the frame-sync SPS hunt steps only between 4800/4 and 6000/4
+  (`dsd_frame_sync_hook_p25_probe_in_flight()`, installed in `frame_sync_hooks_install.c` and asked once per step
+  on the decoder thread, holding the tick guard or not: the engine reads the machine under the guard, taking it when
+  free, and the last answer stands while the watchdog holds it; `frame_sync_sps_hunt_p25_probe_next_index()`), the
+  sequence a P25-only rotation runs: from 4800/4 it steps to 6000/4, never to 2400/4 or 9600/2. The trunked 4800/4
+  dwell (1.875 s) ends just inside the 2 s probe, so 6000/4 gets the probe's last ~125 ms, as under a P25-only set.
+  The full rotation resumes when the hunt ends. DMR and NXDN96 control live on 4800/4; NXDN48 control (2400/4) is not
+  found by a P25-driven probe (a decided limit: a dead-start NXDN48 system names `-fi`). With no other eligible row,
+  DMR probes the row it last probed again when that tune never completed (a failed or expired probe: only a success
+  retires the failure that gates every frame), and listens on one the radio is on (`dmr_cc_next_mapped_candidate()`).
+- Ending: validated control naming another protocol's owner (DMR control, an NXDN CAC through
+  `nxdn_cc_hunt_note_control()`, a confirmed Type-D SCCH through `nxdn_cc_hunt_note_type_d()`, after which nothing
+  hunts), or a Hytera XPT site identifying itself, ends the hunt in place (the owner's ordinary recovery follows; a grant either machine followed meanwhile stands, and only the
   startup bookkeeping ends). DMR content that names DMR without confirming a control channel (a data preamble, a
   Capacity Plus status naming a rest LSN the map lacks, a traffic channel) does not end DMR's hunt, which revisits
   only a confirmed anchor, never the alias such content staged (`dmr_cspdu_init_cc_anchor()`); a call followed
@@ -4816,8 +5097,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   waited for, and only a failure is replaced, by a settle tune to the frequency the decoder's tuner options name,
   tracked like a probe (DMR's through `cc_tune_request_id`, so its 5 s deadline fails one the backend never answers, as
   it fails a probe). A settle tune carries no symbol profile (`ted_sps` 0): it keeps the receive profile in force, which
-  a mode change may have chosen. The hunt never disowns or completes a request. Before an owner is proven, `-ft`'s
-  frequency entry stays an operator move even after a raw P25 sync: `manual_frequency_selects_p25_cc()` does not route
+  a mode change may have chosen. The hunt never disowns or completes a request. Before an owner is proven, the
+  frequency entry of a set that presumes P25 (`-ft`, Auto) stays an operator move even after a raw P25 sync: `manual_frequency_selects_p25_cc()` does not route
   it to `p25_sm_select_control_channel()`, whose acquisition no admitted recovery would time out and whose control
   channel nothing has validated. Under `-1`/`-2`, whose P25 recovery is admitted, the entry stays the P25 manual
   control-channel selection: it supersedes the startup hunt, and the ordinary recovery hunts the map if it is dead.
@@ -4828,7 +5109,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   acquisition. Ending a hunt in place on a P25 owner does the same if the probe's tune was still
   unresolved there.
 - Tests: `CORE_TRUNK_COLD_START`, `RUNTIME_TRUNK_SCAN_HOOKS`, `P25_SM_COLD_START`, `P25_MBT_DECODE`,
-  `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`.
+  `ENGINE_DMR_CC_RECOVERY`, `ENGINE_COLD_START_HUNT`, `APP_COMMAND_QUEUE`, `DMR_CONFIDENCE_GATE`,
+  `ENGINE_TRUNK_RETUNE_REGRESSION`, `RUNTIME_FRAME_SYNC_HOOKS`, `FRAME_SYNC_POLICY`, `FRAME_SYNC_INTERNAL_HELPERS`.
 - NXDN (`src/protocol/nxdn/nxdn_cc_hunt.c`, `<dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>`, context in state-ext slot 28
   `DSD_STATE_EXT_PROTO_NXDN_CC_HUNT`): NXDN has no trunk state machine and no other control-channel hunt, so this one
   runs at session start and after a control channel is lost. Eligibility is
@@ -5351,6 +5633,25 @@ Key public headers (selection):
 
 Private per-protocol modules worth knowing about:
 
+- RAS burst signature (`dmr_dburst.c`, `dmr_ras_signature()` in `src/protocol/dmr/dmr_crc_provenance.h`). Motorola
+  RAS computes a burst's CRC (RS(12,9) parity for a voice LC) over the payload and a secret, and sets the BPTC
+  reserved bits R(2..0), which ETSI fixes at zero. A BPTC burst whose extractor R is nonzero and whose standard
+  check failed is a candidate: only then does the handler run `BPTC_196x96_Decode_Codeword()`, and when that reaches a
+  codeword within `DSD_BPTC_196x96_UNIQUE_RADIUS` (4, the guaranteed radius of the minimum-distance-9 product code,
+  so the unique nearest codeword) the codeword's payload, R and check replace the extractor's and are dispatched.
+  The signature is that codeword's R nonzero and check failed, on an eligible type (PI with FID 0x10 only, voice LC
+  header and terminator, CSBK, MBC header, data header, confirmed rate-1/2 block, USBD; never the MBC continuation,
+  rate 3/4, rate 1 or idle) and not Hytera (byte 1 0x68 where it is a FID or MFID: CSBK, MBC header, voice LC
+  header and terminator, proprietary DPF 15 data header; never USBD or an ordinary data header). The context's
+  `ras_signature` is computed with or without `-F`; `is_ras` (accept, `crc_correct = 1`, `-RAS`,
+  `DSD_CRC_RAS_UNVERIFIED`, `DMR_DATA_BLOCK_CRC_RAS`) is a signature under `-F`. A voice LC with R nonzero only gets
+  the syndrome check `CheckFullLinkControlCrc()` and is never RS-corrected; R == 0 bursts keep the extractor and
+  ordinary RS paths and pay nothing. The adopted codeword's check decides even when it is not a signature: one that
+  passes is an ordinary checked burst (dispatched, unmarked, may prove TDMA, with or without `-F`), and one whose R is
+  0 is handled as an R == 0 burst (a voice LC goes through ordinary RS(12,9) correction; a failed check is a plain
+  failure, never RAS). Decided limit: the decoder is iterative, correct-or-reject; a RAS burst with
+  more than 4 errors, or one of the few-error patterns it carries beyond 4, is a failure. Tests: `DMR_RAS_SIGNATURE`,
+  `DMR_DBURST_PROFILE`, `DMR_EVENT_CRC`, `DECODE_IQ_DMR_T3_RAS_CC`.
 - Voice crypto continuity (`dmr_vcrypt.c`, issue #729). Every DMR voice cipher keys a frame by its superframe's IV/MI
   and its position 0..17. Per slot, `dmr_vc_ref_*` holds the symbol-clock position of the voice sync of the superframe
   whose IV is current: a checked PI header or voice-header Hytera LC makes it FIRST (the next voice sync within four
@@ -5589,7 +5890,18 @@ Private per-protocol modules worth knowing about:
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
-  validated content (issue #703).
+  validated content (issue #703). A relock onto another colour code resets the RAS evidence (`dmr_ras_reset()`).
+- `src/protocol/dmr/dmr_ras.c` — RAS on the carrier (`<dsd-neo/protocol/dmr/dmr.h>`). The burst handler notes every
+  burst with the RAS signature, with or without `-F`, before it dispatches (`dmr_ras_note_signature()`; a retune its
+  handler makes then resets the carrier left's evidence); a frame read across a carrier boundary or cut by an input
+  interruption counts for nothing. Two signature bursts on the carrier (`dsd_state::dmr_ras_signatures`, saturating)
+  confirm RAS (`dmr_ras_confirmed()`) and note `DSD_RXID_DMR_RAS`; the burst that confirms it prints, while relaxed CRC
+  is off (`dsd_opts_relaxed_crc()`), the console notice `DMR RAS (Restricted Access to System) detected: control and
+  data fail the standard CRC; -F decodes them` once per confirmation, with `, but this channel sets strict CRC itself`
+  added while `-F` is configured on (`dsd_scan_mode_configured_relaxed_crc()`) under a row's own `--strict-crc`.
+  `dmr_ras_reset()` is the one reset; its call points are listed under the received identity record (Core). Tests:
+  `DMR_RAS_DETECT`, `DECODE_IQ_DMR_T3_RAS_CC_DETECT` (no `-F`: the notice, nothing accepted), and `DECODE_IQ_DMR_T3_CC`
+  and `DECODE_IQ_DMR_POLARITY_AUTO`, whose carriers must never print it.
 - `src/protocol/dmr/dmr_enc_class.c` — per-slot privacy-bit hysteresis, and each slot's vendor late-entry mode
   (`dsd_state::dmr_le_vendor[]`, `DMR_LE_VENDOR_*` in `<dsd-neo/protocol/dmr/dmr.h>`, issue #657). A CRC-verified
   Kirisun PI or LC, or a checksum-verified Hytera Enhanced PI or LC, sets the slot's mode for its call; it is cleared
@@ -7970,6 +8282,13 @@ Preserve each file's existing QML formatting and use focused manual edits. Do no
 run whole-file `qmlformat` during a functional change; no automatic QML formatting
 settings are prescribed. MonitorScreen's existing expanded style is retained.
 Text sizes use `Theme.fontSize(pixels)`, with the platform scale bounded to 1–1.6.
+A binding that mixes an item's own state (`visible`, `enabled`) with `Navigation.allows()` reads the gate first
+(`Accessible.ignored: !navigationAllowed || !visible`): the gate's walk up the parents can settle an ancestor's pending
+`parent:` binding (MonitorScreen's tier groups), and state read before it would change under the running binding, a
+binding loop. A size bound to a `Text` reads its `height`, not `implicitHeight`, whose getter lays out pending text and
+changes itself under the binding reading it. Deferred work in a component that can be torn down with a call in flight
+runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
+tests pin these with `failOnWarning`.
 
 #### Qt scan-list start path
 

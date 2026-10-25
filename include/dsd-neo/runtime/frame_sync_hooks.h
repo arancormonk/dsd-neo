@@ -39,6 +39,9 @@ typedef struct {
     void (*receive_policy_boundary)(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
     void (*replay_retune)(dsd_opts* opts, dsd_state* state);
     int (*decoder_ticks_due)(const dsd_opts* opts, const dsd_state* state);
+    int (*p25_probe_in_flight)(const dsd_opts* opts, const dsd_state* state);
+    int (*tick_guard_enter)(void);
+    void (*tick_guard_leave)(void);
 } dsd_frame_sync_hooks;
 
 /** The engine's conventional NFM lifecycle sees accepted processed blocks even with muted speakers. */
@@ -53,6 +56,21 @@ int dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_sta
  * under way): a frame-sync hunt read that sits on a silent input leaves it for them after a stream pause, as it does
  * for a queued command (issue #703). 0 when nothing is installed. Call on the decoder thread outside the SM guard. */
 int dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state);
+
+/** Whether a P25-driven control-channel probe is in flight: trunking on, the P25 state machine hunting (the startup
+ * hunt, or recovery under a P25 owner) and no other protocol owning the control channel. While one is, the frame-sync
+ * SPS hunt steps only between the P25 profiles (4800/4 -> 6000/4), the sequence a P25-only rotation runs. 0 when
+ * nothing is installed. The hunt asks once per step, on the decoder thread, holding the P25 SM tick guard or not: the
+ * engine's answer reads the machine under the guard, taking it when the caller does not hold it. */
+int dsd_frame_sync_hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state);
+
+/** Take the P25 SM tick guard on the decoder thread for a P25p1 chain step (frame_sync_p25p1_compare.c), unless the
+ * caller already holds it. Returns 1 when it took it, for dsd_frame_sync_hook_tick_guard_leave(); 0 when the caller
+ * held it or nothing is installed (headless and test builds, which run no watchdog). Blocks while the watchdog holds
+ * it, so it is taken only on the rare chain steps, never per symbol or per frame. */
+int dsd_frame_sync_hook_tick_guard_enter(void);
+/** Leave the guard dsd_frame_sync_hook_tick_guard_enter() took (@p taken). */
+void dsd_frame_sync_hook_tick_guard_leave(int taken);
 
 /** Install a copy of @p hooks; NULL clears every slot. */
 void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);

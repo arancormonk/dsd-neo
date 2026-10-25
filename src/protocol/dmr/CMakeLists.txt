@@ -13,6 +13,7 @@ target_sources(
         dmr_csbk_parse.c
         dmr_csbk.c
         dmr_confidence.c
+        dmr_ras.c
         dmr_trunk_sm.c
         dmr_data.c
         dmr_dburst.c

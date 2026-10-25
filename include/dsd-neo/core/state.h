@@ -39,7 +39,92 @@
 /* Buffer size for a human-readable channel label. Sized to hold a trunk-scan
  * target id (dsd_trunk_scan_target.id[64]) unchanged; a channel-map CSV name is
  * truncated to 63 characters plus the terminator. */
-#define DSD_CHANNEL_LABEL_SIZE 64
+#define DSD_CHANNEL_LABEL_SIZE   64
+
+/* Exact sync-word hits a frame sync join rule looks back over (src/dsp/dsd_frame_sync.c). A rule that joins on hits a
+ * frame apart has to remember every hit of the frames it looks back over, not only the latest: before a lock the
+ * matcher reads every window of the payload too, and a real carrier's payload matches a short sign-sliced word several
+ * times per frame (NXDN96 traffic gave about eight). Remembering only the latest hit let each of those overwrite the
+ * frame sync word a frame back, and a transmission joined only when a frame happened to carry none. 64 entries cover
+ * the two frames looked back over at that rate several times over. kind 0 marks an empty slot. */
+#define DSD_SYNC_HIT_HISTORY_LEN 64
+
+typedef struct {
+    uint32_t symbolcnt[DSD_SYNC_HIT_HISTORY_LEN];
+    uint8_t kind[DSD_SYNC_HIT_HISTORY_LEN];
+    uint8_t next; /* the slot the next hit takes */
+} dsd_sync_hit_history;
+
+#ifdef __cplusplus
+static_assert(DSD_SYNC_HIT_HISTORY_LEN <= 255, "dsd_sync_hit_history::next is a uint8_t slot index");
+#else
+_Static_assert(DSD_SYNC_HIT_HISTORY_LEN <= 255, "dsd_sync_hit_history::next is a uint8_t slot index");
+#endif
+
+static inline void
+dsd_sync_hit_history_clear(dsd_sync_hit_history* hits) {
+    for (int i = 0; i < DSD_SYNC_HIT_HISTORY_LEN; i++) {
+        hits->kind[i] = 0U;
+    }
+    hits->next = 0U;
+}
+
+/* NXDN96 frame synchronization (src/dsp/dsd_frame_sync.c, NXDN TS 1-A 5.3): the frame sync word hits lately seen; the
+ * lock a transmission keeps, timed from the last accepted FSW whose frame's LICH was good (lock_type 0 is no lock); the
+ * FSW just accepted, waiting on its frame's LICH (pending_type 0 is none); and how many LICHs in a row passed their
+ * parity but were rejected: a value no NXDN frame uses, or an inbound LICH on a trunked session. */
+typedef struct {
+    dsd_sync_hit_history hits;
+    uint32_t lock_symbolcnt;
+    uint32_t pending_symbolcnt;
+    uint8_t lock_type;
+    uint8_t pending_type;
+    uint8_t lich_wrong;
+} dsd_nxdn96_sync;
+
+/* S1 (TS 1-A 5.3.2, Table 5.9-3): good-parity LICHs in a row that lose frame sync. The specification counts LICHs
+ * naming another RF channel type; this counts the ones nxdn_frame() rejects with good parity
+ * (DSD_NXDN96_LICH_WRONG). */
+#define DSD_NXDN96_SYNC_LICH_WRONG_S1 5U
+
+/* What an NXDN frame's LICH said, for the NXDN96 lock (dsd_nxdn96_sync_note_lich()). */
+typedef enum {
+    DSD_NXDN96_LICH_GOOD = 0,
+    DSD_NXDN96_LICH_PARITY_ERROR = 1, /* says nothing either way (TS 1-A 5.3) */
+    DSD_NXDN96_LICH_WRONG = 2,        /* parity good, but an unknown value or a trunked session's inbound LICH */
+} dsd_nxdn96_lich_result;
+
+static inline void
+dsd_nxdn96_sync_clear(dsd_nxdn96_sync* sync) {
+    dsd_sync_hit_history_clear(&sync->hits);
+    sync->lock_symbolcnt = 0U;
+    sync->pending_symbolcnt = 0U;
+    sync->lock_type = 0U;
+    sync->pending_type = 0U;
+    sync->lich_wrong = 0U;
+}
+
+/* An accepted NXDN96 FSW's frame read its LICH, @p symbolcnt symbols into the stream. The LICH conditions of TS 1-A 5.3
+ * apply only to a LICH whose parity holds: a good one makes the FSW the lock's new timing; one whose parity fails
+ * changes nothing, so a real call's lock rides out the error and a noise accept never refreshes it; S1 good-parity
+ * LICHs in a row that nxdn_frame() rejects (an unknown value, or inbound on a trunked session) drop the lock and the
+ * hits. An FSW the LICH did not follow at
+ * once (another frame read in between) is not this LICH's. */
+static inline void
+dsd_nxdn96_sync_note_lich(dsd_nxdn96_sync* sync, uint32_t symbolcnt, dsd_nxdn96_lich_result result) {
+    const uint8_t type = sync->pending_type;
+    sync->pending_type = 0U;
+    if (type == 0U || (uint32_t)(symbolcnt - sync->pending_symbolcnt) > 32U) {
+        return;
+    }
+    if (result == DSD_NXDN96_LICH_GOOD) {
+        sync->lock_symbolcnt = sync->pending_symbolcnt;
+        sync->lock_type = type;
+        sync->lich_wrong = 0U;
+    } else if (result == DSD_NXDN96_LICH_WRONG && ++sync->lich_wrong >= DSD_NXDN96_SYNC_LICH_WRONG_S1) {
+        dsd_nxdn96_sync_clear(sync);
+    }
+}
 
 /* The TETRA burst capture the frame sync hands to the TETRA decoder (dsd_state::tetra_sync). */
 typedef struct {
@@ -305,6 +390,31 @@ typedef struct {
     char gps_s[2000];
     char text_message[2000];
 } Event_History_Staged;
+
+/* The one comparison of the two P25p1 demodulator chains an acquisition gets (frame sync's
+ * frame_sync_p25p1_mod_compare_note()). The first NID-decoded P25p1 frame on the 4800/4 profile measures
+ * what validated frames read on the chain that carried it over one search pass; a chain that let a frame go
+ * by unread in it gets the other chain measured for as long, and the one that read more keeps the profile.
+ * Zero is "no comparison, no verdict". */
+typedef struct {
+    int phase;                 /* 0 none, 1 measuring the incumbent chain, 2 measuring the other chain */
+    int incumbent_rf_mod;      /* the chain the first frame came on: 0 C4FM, 1 CQPSK */
+    uint32_t incumbent_read;   /* symbols validated frames read in the incumbent's pass */
+    int incumbent_frames;      /* validated frames in that pass after the one that opened it */
+    int incumbent_missed;      /* a search after one of those frames as long as the frame */
+    uint32_t last_frame_end;   /* dsd_state::symbolcnt the incumbent's last validated frame ended at */
+    uint32_t last_frame_read;  /* symbols that frame read */
+    uint32_t trial_read;       /* symbols validated frames read in the other chain's pass */
+    int counter_at_trial;      /* dsd_state::sps_hunt_counter when the other chain's pass began */
+    uint32_t window_start;     /* dsd_state::symbolcnt the current window opened at */
+    uint32_t seen_symbolcnt;   /* the dsd_state::p25_p1_validated_symbolcnt last read, or consumed at a boundary */
+    uint32_t seen_carrier_seq; /* dsd_state::carrier_seq when that stamp was read: one from before opens nothing */
+    uint32_t carrier_seq;      /* dsd_state::carrier_seq the comparison started on */
+    /* What a finished comparison chose, kept with the learned modulation it set: a frame on that chain starts no
+     * new comparison. Dropped wherever p25_p1_validated_rf_mod is forgotten. */
+    int verdict_valid;
+    int verdict_rf_mod;
+} dsd_p25p1_mod_compare;
 
 typedef struct Event_History_I {
     Event_History Event_History_Items[DSD_EVENT_HISTORY_LEN];
@@ -1083,6 +1193,9 @@ struct dsd_state {
      * anything -- entering GFSK needs a single vote, which is a few dozen symbols. */
     int p25_p1_mod_probe_next_qpsk;
     int p25_p1_mod_probe_active;
+    /* The chain comparison the first validated P25p1 frame of an acquisition starts (see
+     * dsd_p25p1_mod_compare). While it runs, p25_p1_mod_probe_active keeps the votes off both windows. */
+    dsd_p25p1_mod_compare p25_p1_mod_compare;
     /* Where the last accepted dPMR FS2 sync sat in dsd_state::symbolcnt, and whether one has
      * been seen at all. dPMR and NXDN48 are the two candidates on the 2400/4 profile, and their
      * matchers are not comparable: FS2 is one exact 12-symbol pattern, while the NXDN matcher
@@ -1095,6 +1208,13 @@ struct dsd_state {
      * modular difference, so a rollover mid-frame stays exact. */
     uint32_t dpmr_fs2_frame_symbolcnt;
     uint8_t dpmr_fs2_frame_valid;
+    /* NXDN96 frame synchronization: the frame sync word hits lately seen (where in dsd_state::symbolcnt, and the
+     * polarity, as the sync type) and the lock a transmission's accepted FSWs keep (src/dsp/dsd_frame_sync.c), moved
+     * by the LICHs their frames read (dsd_nxdn96_sync_note_lich()). Cleared with the M17 join history (no carrier, an
+     * M17 EOT, an acquisition reset, any carrier change: dsd_state_note_carrier_change(), every accepted trunk retune),
+     * by S1 wrong LICHs in a row, and at a carrier boundary inside an NXDN frame. The decoder thread's: a retune made
+     * off it leaves the clear to the frame sync (dsd_frame_sync_apply_off_thread_tunes()). */
+    dsd_nxdn96_sync nxdn96_sync;
     /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
      * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
      * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols
@@ -1274,6 +1394,10 @@ struct dsd_state {
     uint8_t dmr_confidence_voice_open[2];
     uint8_t dmr_confidence_voice_count[2];
     uint8_t dmr_confidence_mismatch_count;
+    /* RAS signature bursts heard on this carrier (dmr_ras.c), saturating at the two that confirm RAS on it; the
+       confirmation shows through the received identity (DSD_RXID_DMR_RAS). Decoder thread only; dmr_ras_reset() clears
+       it at every carrier change. */
+    uint8_t dmr_ras_signatures;
     /* Decode-clock seconds DMR content last passed the colour-code confidence gate (dmr_confidence.c), 0 never. Written
        only from processFrame() under the P25 SM tick guard and never cleared, not even by a carrier boundary: a startup
        control-channel hunt restarts its window from it (issue #703). */
@@ -1283,7 +1407,8 @@ struct dsd_state {
        from it: a voice sync alone, which a rejected burst can carry, never holds the call. */
     double dmr_confidence_voice_m[2];
     /* Decode-clock seconds an NXDN frame's own CRCs last confirmed its transmission (nxdn_confirm_end_frame()), 0
-       never. Decoder thread only, never cleared: the NXDN control-channel hunt restarts its window from it. */
+       never. Decoder thread only, never cleared: the NXDN control-channel hunt and the P25 startup hunt restart their
+       windows from it. */
     double nxdn_confirm_lock_m;
     unsigned int PI;
     unsigned int PI_ok;
@@ -1396,8 +1521,8 @@ struct dsd_state {
     uint8_t cap_plus_block_num[2];             //received block number storage -- per timeslot
     uint8_t cap_plus_csbk_crc_invalid[2];      //DSD_CRC_* flags of every fragment in cap_plus_csbk_bits, by slot
     // Per-block CRC verdict on confirmed data: 1 good, 0 failed, DMR_DATA_BLOCK_CRC_RAS (2) a confirmed block whose
-    // CRC9 failed but the RAS heuristic accepted under -F. Block 0 is the header and only ever holds 0 or 1; blocks
-    // 1..127 follow it (Blocks to Follow is 7 bits, TS 102 361-1 table 9.34).
+    // CRC9 failed but which -F accepted as RAS. Block 0 is the header and only ever holds 0 or 1; blocks 1..127
+    // follow it (Blocks to Follow is 7 bits, TS 102 361-1 table 9.34).
     uint8_t data_block_crc_valid[2][128];
     // Confirmed data sequence tracking (DBSN expected per slot)
     uint8_t data_dbsn_expected[2];
@@ -1639,7 +1764,8 @@ struct dsd_state {
      * System knowledge like p25_cc_is_tdma rather than acquisition state, so
      * dsd_frame_sync_reset_mod_state(), retunes and no-carrier resets leave it alone; only
      * initState(), the trunk-scan per-target snapshot and a CQPSK dwell that decodes nothing
-     * reset it. Freshness is measured in symbols because the hold it feeds only applies on the
+     * reset it. Besides a decoded NID, the end of a chain comparison (p25_p1_mod_compare) sets it
+     * to the chain that validated more. Freshness is measured in symbols because the hold it feeds only applies on the
      * fixed-rate 4800/4-level profile. Ignored whenever opts->mod_cli_lock is set. */
     int p25_p1_validated_rf_mod;
     uint32_t p25_p1_validated_symbolcnt;
@@ -2093,6 +2219,11 @@ struct dsd_state {
     uint8_t m17_pre_run;
     uint8_t m17_pre_candidate;
     uint8_t m17_pre_candidate_ttl;
+    /* M17 joined mid-transmission (src/dsp/dsd_frame_sync.c): the windows that lately held a stream, LSF, packet or BERT
+     * sync word exactly, with the word (kind 1-4) and where (dsd_state::symbolcnt). The same word exactly one and two
+     * 192-symbol frames before a window joins the transmission there, for that frame alone: the history is cleared
+     * when a join is taken, and with the NXDN96 sync above. */
+    dsd_sync_hit_history m17_join_hits;
 
     /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
      * the sync chain is only an alternating symbol run, so the frame body has to prove itself
@@ -2341,11 +2472,20 @@ dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
 
 /* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
    input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
-   (an I/Q replay retune) splits that symbol, which counts as the carrier left's. */
+   (an I/Q replay retune) splits that symbol, which counts as the carrier left's. The sync join histories are the
+   carrier left's evidence too: an NXDN96 lock or FSW, or an M17 word, does not pair with the next carrier's
+   (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
+static inline void
+dsd_state_forget_sync_join_histories(dsd_state* state) {
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
+    dsd_sync_hit_history_clear(&state->m17_join_hits);
+}
+
 static inline void
 dsd_state_note_carrier_change(dsd_state* state) {
     state->carrier_change_symbol_clock = state->symbol_clock + (state->symbol_read_active != 0U ? 1U : 0U);
     state->carrier_change_seen = 1U;
+    dsd_state_forget_sync_join_histories(state);
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word

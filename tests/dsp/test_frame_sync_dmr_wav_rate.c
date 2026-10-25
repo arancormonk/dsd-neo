@@ -9,12 +9,14 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frame_sync_internal.h"
 #include "frame_sync_state_buffers.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -29,6 +31,9 @@ static const char* g_sync_pattern = DMR_BS_DATA_SYNC;
    g_boundary_between, just before its read (an input switch or a menu tune the engine runs between reads). */
 static size_t g_boundary_at = SIZE_MAX;
 static int g_boundary_between;
+static int g_count_symbols;
+/* A read that commits no symbol (a live read whose samples did not make one): the count stays, the hunt goes on. */
+static size_t g_uncounted_at = SIZE_MAX;
 
 static float
 symbol_level_for_dibit(char dibit) {
@@ -52,6 +57,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     float symbol = symbol_level_for_dibit(dibit);
     dsd_symbol_history_push(state, symbol);
     state->symbol_clock++;
+    if (g_count_symbols && g_symbol_index != g_uncounted_at) {
+        state->symbolcnt++; /* as the real reader counts them; the cases that predate this keep it fixed */
+    }
     return symbol;
 }
 
@@ -524,7 +532,9 @@ run_nxdn_two_pass_case(const char* label, const char* pattern, int frame_nxdn48,
 
     g_symbol_index = 0U;
     g_sync_pattern = pattern;
+    const uint32_t first_pass_start = state.symbolcnt;
     int sync = getFrameSync(&opts, &state);
+    const uint32_t first_pass_symbols = state.symbolcnt - first_pass_start;
     int rc = 0;
     if (sync != DSD_SYNC_NONE) {
         DSD_FPRINTF(stderr, "%s first pass returned %d, expected no confirmed sync\n", label, sync);
@@ -536,11 +546,23 @@ run_nxdn_two_pass_case(const char* label, const char* pattern, int frame_nxdn48,
         rc = 1;
     }
 
-    g_symbol_index = 0U;
-    sync = getFrameSync(&opts, &state);
-    if (sync != expected_sync) {
-        DSD_FPRINTF(stderr, "%s second pass returned %d, expected %d\n", label, sync, expected_sync);
-        rc = 1;
+    /* NXDN96's second FSW counts only a frame after the first: the pass reads as far as the first did, so start it
+       where its sync word lands 192 symbols on. */
+    const int passes = 2;
+    for (int pass = 2; pass <= passes; pass++) {
+        g_symbol_index = 0U;
+        if (frame_nxdn96) {
+            const uint8_t last_hit =
+                (uint8_t)((state.nxdn96_sync.hits.next + DSD_SYNC_HIT_HISTORY_LEN - 1U) % DSD_SYNC_HIT_HISTORY_LEN);
+            state.symbolcnt =
+                state.nxdn96_sync.hits.symbolcnt[last_hit] + DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS - first_pass_symbols;
+        }
+        sync = getFrameSync(&opts, &state);
+        const int want = pass == passes ? expected_sync : DSD_SYNC_NONE;
+        if (sync != want) {
+            DSD_FPRINTF(stderr, "%s pass %d returned %d, expected %d\n", label, pass, sync, want);
+            rc = 1;
+        }
     }
     if (state.lastsynctype != expected_sync) {
         DSD_FPRINTF(stderr, "%s second pass lastsynctype %d, expected %d\n", label, state.lastsynctype, expected_sync);
@@ -652,6 +674,258 @@ run_sync_after_carrier_boundary_case(void) {
     return rc;
 }
 
+static int g_no_carrier_calls;
+
+static void
+count_no_carrier(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_no_carrier_calls++;
+}
+
+/* A P25p1 CQPSK trial that has decoded nothing hands the rest of its dwell back to C4FM halfway through it. The dwell
+   goes on: getFrameSync() rebuilds its window and keeps hunting, rather than returning no-sync, which the engine's
+   reception loop answers with noCarrier() (live_scanner_main_loop()) -- ending calls and resetting frame state
+   halfway through a dwell that has not expired. Driven the way that loop drives it: a no-sync return is answered with
+   the installed no_carrier hook, which is what the engine installs noCarrier() as. A DMR carrier a few symbols after
+   the handback is taken on the C4FM chain inside the same call. So too when the handback point falls on the symbol the
+   matchless-pass timeout fires on (@p lead symbols of nothing, the counter that many short of it: a frame whose NID
+   failed left it there), which steps the hunt itself. */
+static int
+run_cqpsk_handback_keeps_hunting_case(int lead) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char pattern[DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 64];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate handback state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    state.sps_hunt_idx = 0;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.rf_mod = 1;
+    state.p25_p1_mod_probe_active = 1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell / 2 - (lead == 40 ? 5 : lead);
+
+    DSD_MEMSET(pattern, '1', (size_t)lead);
+    DSD_MEMCPY(pattern + lead, DMR_BS_DATA_SYNC, strlen(DMR_BS_DATA_SYNC) + 1);
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    g_no_carrier_calls = 0;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.no_carrier = count_no_carrier});
+
+    int sync = getFrameSync(&opts, &state);
+    for (int calls = 1; sync == -1 && calls < 4; calls++) {
+        dsd_frame_sync_hook_no_carrier(&opts, &state); /* the reception loop's noCarrier() after a no-sync return */
+        sync = getFrameSync(&opts, &state);
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+
+    int rc = 0;
+    if (state.p25_p1_mod_probe_active != 0 || state.rf_mod == 1) {
+        DSD_FPRINTF(stderr, "CQPSK handback did not happen: probe=%d rf_mod=%d\n", state.p25_p1_mod_probe_active,
+                    state.rf_mod);
+        rc = 1;
+    }
+    if (g_no_carrier_calls != 0) {
+        DSD_FPRINTF(stderr, "CQPSK handback (lead %d) ran noCarrier() %d time(s) inside the dwell\n", lead,
+                    g_no_carrier_calls);
+        rc = 1;
+    }
+    if (sync != DSD_SYNC_DMR_BS_DATA_POS) {
+        DSD_FPRINTF(stderr, "CQPSK handback: getFrameSync() returned %d, expected the DMR sync\n", sync);
+        rc = 1;
+    }
+    free_state_buffers(&state);
+    return rc;
+}
+
+/* A P25p1 chain comparison whose other chain cannot sync the carrier at all -- an LSM simulcast carrier the C4FM chain
+   is deaf to, against a CQPSK incumbent -- reaches the end of that chain's pass inside one getFrameSync() call, on
+   the same symbol the matchless-pass timeout would fire. The comparison ends there, as a CQPSK trial's handback does:
+   the incumbent gets the profile back, the window is rebuilt in place and the hunt goes on, rather than a no-sync
+   return the engine answers with noCarrier() on a carrier that is still decoding. The incumbent's next frame is taken
+   inside the same call. So too when a read in the pass committed no symbol, and the timeout's count of the symbols
+   searched runs a symbol ahead of the comparison's count of those read (@p uncounted_at). */
+static int
+run_compare_trial_pass_keeps_hunting_case(size_t uncounted_at) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    enum { LEAD = DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 40 };
+
+    static char pattern[LEAD + 32];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate comparison state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.symbolcnt = 50000U;
+    /* CQPSK opened the comparison and read two frames after it with a gap; the C4FM pass starts now. */
+    state.rf_mod = 0;
+    state.p25_p1_mod_probe_active = 1;
+    state.p25_p1_validated_rf_mod = 1;
+    state.p25_p1_validated_symbolcnt = 49000U;
+    dsd_p25p1_mod_compare* cmp = &state.p25_p1_mod_compare;
+    cmp->phase = 2;
+    cmp->incumbent_rf_mod = 1;
+    cmp->incumbent_frames = 2;
+    cmp->incumbent_read = 3U * 134U;
+    cmp->trial_read = 0U;
+    cmp->window_start = state.symbolcnt;
+    cmp->counter_at_trial = state.sps_hunt_counter;
+    cmp->seen_symbolcnt = state.p25_p1_validated_symbolcnt;
+    cmp->carrier_seq = state.carrier_seq;
+
+    DSD_MEMSET(pattern, '1', LEAD);
+    DSD_MEMCPY(pattern + LEAD, P25P1_SYNC, strlen(P25P1_SYNC) + 1);
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    g_no_carrier_calls = 0;
+    g_count_symbols = 1;
+    g_uncounted_at = uncounted_at;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.no_carrier = count_no_carrier});
+
+    int sync = getFrameSync(&opts, &state);
+    for (int calls = 1; sync == -1 && calls < 4; calls++) {
+        dsd_frame_sync_hook_no_carrier(&opts, &state); /* the reception loop's noCarrier() after a no-sync return */
+        sync = getFrameSync(&opts, &state);
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+    g_count_symbols = 0;
+    g_uncounted_at = SIZE_MAX;
+
+    int rc = 0;
+    if (g_no_carrier_calls != 0) {
+        DSD_FPRINTF(stderr, "comparison trial pass (uncounted read %zu) ran noCarrier() %d time(s) on a live carrier\n",
+                    uncounted_at, g_no_carrier_calls);
+        rc = 1;
+    }
+    if (cmp->phase != 0 || state.rf_mod != 1 || state.p25_p1_validated_rf_mod != 1 || !cmp->verdict_valid
+        || cmp->verdict_rf_mod != 1) {
+        DSD_FPRINTF(stderr, "comparison trial pass: phase=%d rf_mod=%d learned=%d verdict=%d/%d, expected CQPSK kept\n",
+                    cmp->phase, state.rf_mod, state.p25_p1_validated_rf_mod, cmp->verdict_valid, cmp->verdict_rf_mod);
+        rc = 1;
+    }
+    if (sync != DSD_SYNC_P25P1_POS || g_symbol_index != (size_t)LEAD + strlen(P25P1_SYNC)) {
+        DSD_FPRINTF(stderr, "comparison trial pass: getFrameSync() returned %d after %zu symbols, expected P25p1\n",
+                    sync, g_symbol_index);
+        rc = 1;
+    }
+    free_state_buffers(&state);
+    return rc;
+}
+
+/* A modulation lock applied live (a config's demod = "qpsk", the UI's modulation chip) while a CQPSK probe, or a chain
+   comparison, is in flight ends it: the lock owns the demodulator, so the trial's handback, which would put the decoder
+   and the front end on C4FM halfway through the dwell, does not run, and neither does the comparison's next pass. */
+static int
+run_lock_ends_probe_case(int comparing) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static char pattern[128];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate lock state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)fake_ctx;
+    state.sps_hunt_idx = 0;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.rf_mod = 1;
+    state.p25_p1_mod_probe_active = 1;
+    if (comparing) {
+        state.p25_p1_mod_compare.phase = 1;
+        state.p25_p1_mod_compare.incumbent_rf_mod = 1;
+        state.p25_p1_mod_compare.carrier_seq = state.carrier_seq;
+        state.p25_p1_validated_rf_mod = 1;
+    }
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell / 2 - 5;
+    /* The lock arrives: -mq. */
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_c4fm = 0;
+
+    DSD_MEMSET(pattern, '1', 40);
+    DSD_MEMCPY(pattern + 40, DMR_BS_DATA_SYNC, strlen(DMR_BS_DATA_SYNC) + 1);
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    (void)getFrameSync(&opts, &state);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+
+    int rc = 0;
+    if (state.rf_mod != 1 || state.p25_p1_mod_probe_active != 0 || state.p25_p1_mod_compare.phase != 0) {
+        DSD_FPRINTF(stderr,
+                    "lock mid-%s: rf_mod=%d probe=%d phase=%d, expected the lock's CQPSK and nothing in flight\n",
+                    comparing ? "comparison" : "probe", state.rf_mod, state.p25_p1_mod_probe_active,
+                    state.p25_p1_mod_compare.phase);
+        rc = 1;
+    }
+    state.rtl_ctx = NULL;
+    free_state_buffers(&state);
+    return rc;
+}
+
+/* A CQPSK probe on a trunked voice channel the engine tuned (standalone Auto trunking: the probe's first validated
+   frame carried the grant) keeps the chain the grant's tune chose: the trial's handback refuses there, as a full dwell
+   expiry does, so 2700 matchless symbols of grace or hangtime do not put the granted CQPSK channel on C4FM. */
+static int
+run_tuned_voice_channel_keeps_its_chain_case(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char pattern[DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 64];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate tuned voice channel state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.sps_hunt_idx = 0;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.rf_mod = 1;
+    state.p25_p1_mod_probe_active = 1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell / 2 - 5;
+    /* Grace or hangtime: nothing to sync on, past the handback point and up to the matchless-pass timeout. */
+    DSD_MEMSET(pattern, '1', DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 50);
+    pattern[DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 50] = '\0';
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    (void)getFrameSync(&opts, &state);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+    int rc = 0;
+    if (state.rf_mod != 1) {
+        DSD_FPRINTF(stderr, "tuned voice channel handed back to C4FM: rf_mod=%d\n", state.rf_mod);
+        rc = 1;
+    }
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -661,6 +935,13 @@ main(void) {
     rc |= run_wav_protocol_extended_sync_matrix();
     rc |= run_nxdn_sync_confirmation_matrix();
     rc |= run_sync_after_carrier_boundary_case();
+    rc |= run_cqpsk_handback_keeps_hunting_case(40);
+    rc |= run_cqpsk_handback_keeps_hunting_case(DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    rc |= run_tuned_voice_channel_keeps_its_chain_case();
+    rc |= run_lock_ends_probe_case(0);
+    rc |= run_lock_ends_probe_case(1);
+    rc |= run_compare_trial_pass_keeps_hunting_case(SIZE_MAX);
+    rc |= run_compare_trial_pass_keeps_hunting_case(100U);
     return rc;
 }
 

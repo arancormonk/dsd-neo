@@ -41,8 +41,10 @@ Item {
     signal systemProfileSaved(string uid)
     // After an Activity restart the reattached session has no saved-system map,
     // but the persisted session label still names what is playing — the header
-    // should agree with the history rows it sits above.
-    property string systemName: system ? system.name : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel : qsTr("Listening")
+    // should agree with the history rows it sits above. A map without a name (a
+    // saved system removed while it plays reads back as an empty map) falls back
+    // the same way rather than binding undefined to the header.
+    property string systemName: system && system.name ? system.name : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel : qsTr("Listening")
 
     // Which slot the hero shows: the earliest active call keeps the headline, then a
     // recently ended one; exact start ties and ended calls prefer the lower slot.
@@ -417,7 +419,7 @@ Item {
                     id: spectrumPill
 
                     objectName: "openSpectrumButton"
-                    activeFocusOnTab: enabled && Navigation.allows(spectrumPill)
+                    activeFocusOnTab: Navigation.allows(spectrumPill) && enabled
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Spectrum")
                     readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
@@ -978,7 +980,7 @@ Item {
         Accessible.name: qsTr("Recent calls")
         Accessible.focusable: false
         readonly property bool navigationAllowed: Navigation.allows(recentList)
-        Accessible.ignored: !visible || !navigationAllowed
+        Accessible.ignored: !navigationAllowed || !visible
         function scrollPage(direction) {
             if (!enabled || !Navigation.allows(recentList))
                 return;
@@ -1236,11 +1238,11 @@ Item {
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, decryptionLabel.implicitHeight + 20)
                 enabled: decoderHost.running
-                activeFocusOnTab: enabled && Navigation.allows(decryptionRow)
+                activeFocusOnTab: Navigation.allows(decryptionRow) && enabled
                 Accessible.role: Accessible.Button
                 Accessible.name: qsTr("Decryption · %1").arg(keySheet.effectiveState)
                 readonly property bool navigationAllowed: Navigation.allows(decryptionRow)
-                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: activate()
                 function activate() {
                     if (enabled && Navigation.allows(decryptionRow))

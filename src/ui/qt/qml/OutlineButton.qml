@@ -30,14 +30,21 @@ Rectangle {
     // default, so a plain button looks and reports as before.
     property bool checkable: false
     property bool checked: false
-    activeFocusOnTab: enabled && inputValid && visible && Navigation.allows(control)
+    // Held while the button has active focus: Qt refuses to drop activeFocusOnTab
+    // from the active focus item (and warns), so a focused button that disables or
+    // hides keeps it until the focus has moved, then the gate applies again.
+    activeFocusOnTab: (Navigation.allows(control) && enabled && inputValid && visible) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.focusable: true
     Accessible.checkable: checkable
     Accessible.checked: checkable && checked
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !visible || !navigationAllowed
+    // The navigation gate is read before visible, here and in activeFocusOnTab:
+    // its walk up the parents can settle an ancestor's pending `parent:` binding
+    // (the monitor's tier groups), and a visibility read before that would be
+    // changed under this binding while it runs, a binding loop.
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
         if (!enabled || !Navigation.allows(control))

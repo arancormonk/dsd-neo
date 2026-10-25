@@ -61,7 +61,8 @@ dsd_audio_ensure_analog_output(dsd_opts* opts) {
 }
 
 int
-dsd_audio_ensure_digital_output(dsd_opts* opts) {
+dsd_audio_ensure_digital_output(dsd_opts* opts, const dsd_state* state) {
+    (void)state;
     (void)opts;
     g_ensure_digital_calls++;
     return 0;

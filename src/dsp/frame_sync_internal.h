@@ -22,6 +22,18 @@ extern "C" {
 /** Unlocked RTL trunk-scan P25 acquisition needs both demodulators within one visit. */
 int frame_sync_trunk_scan_p25p1_trial(const dsd_opts* opts, const dsd_state* state);
 
+/** The unlocked SPS hunt's next profile from @p current while a P25-driven control-channel probe is in flight
+ * (dsd_frame_sync_hook_p25_probe_in_flight()): only the P25 profiles the options enable, 4800/4 -> 6000/4 -> 4800/4,
+ * the sequence a P25-only rotation runs, so a probe steps from 4800/4 to 6000/4 as there. From any other
+ * profile it returns to the first of them. -1 when the options enable neither P25 phase: the ordinary rotation runs. */
+int frame_sync_sps_hunt_p25_probe_next_index(const dsd_opts* opts, int current);
+
+/** Run the P25p1 chain comparison (dsd_p25p1_mod_compare) on what the last frame validated: start one on an
+ * acquisition's first NID-decoded frame on 4800/4, add up what validated frames read in each chain's pass, try the
+ * other chain only when the incumbent let a frame go by unread, and keep the chain that read more.
+ * getFrameSync() calls it on entry, before the hunt re-anchors dsd_state::sps_hunt_symbolcnt_mark. */
+void frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state);
+
 /* How long a P25p1 frame that decoded its NID keeps the modulation heuristics off the
  * demodulator that carried it, in symbols at 4800 sym/s (two seconds). Long enough to span the
  * gaps between frames on a control channel, short enough that a modulation which has gone
@@ -106,14 +118,29 @@ void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* stat
 /**
  * @brief Step the SPS hunt if the active profile has spent its symbol budget.
  *
- * @return 1 when the caller must take a no-sync exit: either the step changed the profile
- *         index or the modulation -- the caller's sync window is then stale and must be
- *         rebuilt -- or the budget expired on a trunked voice channel, where the profile is
- *         deliberately held but the no-sync accounting is still owed (#392, #393). 0 when
- *         the profile still owes symbols, or when spending the budget left the timing and
- *         modulation untouched.
+ * @return FRAME_SYNC_HUNT_NO_SYNC_EXIT (1) when the caller must take a no-sync exit: either the
+ *         step changed the profile index or the modulation -- the caller's sync window is then
+ *         stale and must be rebuilt -- or the budget expired on a trunked voice channel, where the
+ *         profile is deliberately held but the no-sync accounting is still owed (#392, #393).
+ *         FRAME_SYNC_HUNT_CHAIN_HANDBACK (2) when a silent CQPSK trial handed the rest of its dwell
+ *         back to C4FM: the window is stale, but the dwell goes on, so getFrameSync() rebuilds it in
+ *         place and keeps hunting, owing no no-sync accounting and returning nothing the engine
+ *         would answer with noCarrier(). 0 when the profile still owes symbols, or when spending the
+ *         budget left the timing and modulation untouched.
  */
+#define FRAME_SYNC_HUNT_NO_SYNC_EXIT   1
+#define FRAME_SYNC_HUNT_CHAIN_HANDBACK 2
 int frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
+/** @brief Arm (non-zero) or disarm the 2 s CQPSK dwell the 4800/4 profile holds a CQPSK chain for. */
+void frame_sync_qpsk_dwell_set(int armed);
+/** Put the 4800/4 profile, the decoder's modulation and the front end on P25p1 chain @p chain (0 C4FM, 1 CQPSK),
+ * arming the CQPSK dwell with it. A chain step: the caller holds the P25 SM tick guard. */
+void frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain);
+/* The P25p1 chain comparison's shared steps (frame_sync_p25p1_compare.c). */
+/** @brief End a comparison (dsd_p25p1_mod_compare): no phase, and the trial flag that kept the votes off is down. */
+void frame_sync_p25p1_mod_compare_end(dsd_state* state);
+/** @brief The chain the comparison would keep if it ended now: the incumbent, unless the other chain has read more. */
+int frame_sync_p25p1_mod_compare_leader(const dsd_state* state);
 double frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
                                   double mac_hold, double dt, int* left_active, int* right_active);

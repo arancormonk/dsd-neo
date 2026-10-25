@@ -23,6 +23,8 @@ Item {
             return item;
         }
         function init() {
+            // A session map without a name used to bind undefined to the monitor header.
+            failOnWarning(/MonitorScreen.qml.*Unable to assign/);
             testContext.resetCommands();
             testContext.setHostRunning(true);
             testContext.setMetric("leadSlot", 1);
@@ -52,6 +54,25 @@ Item {
             testContext.resetCommands();
         }
         // #718: the tap answers at once, before the service reports STOPPING.
+        // A saved system removed while it plays reads back as an empty map: the
+        // header names the session as it does with no map, never a blank.
+        function test_unnamed_system_map_falls_back() {
+            var saved = monitor.system;
+            var label = callHistory.sessionLabel;
+            try {
+                monitor.system = {};
+                callHistory.sessionLabel = "County P25";
+                compare(monitor.systemName, "County P25");
+                callHistory.sessionLabel = "";
+                compare(monitor.systemName, "Listening");
+                monitor.system = {name: "Fire Dispatch", sourceType: "usb"};
+                compare(monitor.systemName, "Fire Dispatch");
+            } finally {
+                monitor.system = saved;
+                callHistory.sessionLabel = label;
+            }
+        }
+
         function test_stop_shows_stopping_data() {
             return [{tag: "live", file: false, idle: "Stop listening"}, {tag: "replay", file: true, idle: "Stop replay"}];
         }

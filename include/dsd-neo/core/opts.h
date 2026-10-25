@@ -510,6 +510,28 @@ dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
            || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1 || opts->frame_tetra == 1;
 }
 
+/** @brief Number of digital frame decoders enabled (the flags dsd_opts_has_digital_decode_mode() reads). */
+static inline int
+dsd_opts_digital_decoder_count(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return (opts->frame_p25p1 == 1) + (opts->frame_p25p2 == 1) + (opts->frame_provoice == 1) + (opts->frame_dmr == 1)
+           + (opts->frame_nxdn48 == 1) + (opts->frame_nxdn96 == 1) + (opts->frame_x2tdma == 1) + (opts->frame_ysf == 1)
+           + (opts->frame_dstar == 1) + (opts->frame_dpmr == 1) + (opts->frame_m17 == 1) + (opts->frame_tetra == 1);
+}
+
+/**
+ * @brief Return 1 for an M17-only session (`-fz`): M17 the one digital decoder enabled.
+ *
+ * Behaviour written for an M17 session (a TCP audio connect or reconnect that retries until its server answers) keys
+ * on this, not on dsd_opts::frame_m17, which Auto also sets beside every other decoder.
+ */
+static inline int
+dsd_m17_only_session(const dsd_opts* opts) {
+    return (opts && opts->frame_m17 == 1 && dsd_opts_digital_decoder_count(opts) == 1) ? 1 : 0;
+}
+
 /**
  * @brief The modulation the `mod_*` flags select: 0 C4FM, 1 QPSK, 2 GFSK.
  *
@@ -539,6 +561,28 @@ dsd_modulation_from_flags(int c4fm, int qpsk, int gfsk) {
 static inline int
 dsd_opts_modulation(const dsd_opts* opts) {
     return opts ? dsd_modulation_from_flags(opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk) : 0;
+}
+
+/**
+ * @brief Set Relaxed CRC (-F) as one setting: on clears aggressive_framesync (P25 Phase 2, DMR data, M17 and the
+ * other CRC gates that read it) and sets dmr_crc_relaxed_default (DMR's relaxed control heartbeat and data gates);
+ * off does the reverse. -F, --strict-crc, the menu toggle and a scan row's -F or --strict-crc all set it through here,
+ * so the two fields never disagree.
+ */
+static inline void
+dsd_opts_set_relaxed_crc(dsd_opts* opts, int on) {
+    if (!opts) {
+        return;
+    }
+    opts->aggressive_framesync = (short)(on ? 0 : 1);
+    opts->dmr_crc_relaxed_default = (uint8_t)(on ? 1U : 0U);
+}
+
+/** @brief Return 1 when Relaxed CRC is on: either field relaxing a gate counts, so a pair set apart from
+ * dsd_opts_set_relaxed_crc() reads as on and turning it off clears both. */
+static inline int
+dsd_opts_relaxed_crc(const dsd_opts* opts) {
+    return opts && (opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default != 0);
 }
 
 /** @brief Return 1 when an enabled 4800-symbol four-level mode uses the 12.5 kHz channel profile. */

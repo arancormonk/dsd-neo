@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -46,8 +47,11 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
     /* An accepted retune the P25 watchdog made since the last frame drops the carrier's access code before this frame
        notes anything of the carrier it reached. The decoder thread's own retunes, the frame's handler's included
-       (dsd_rxid_request_trunk_tune(), while frame_dispatch_active is set), apply it where they are made. */
-    dsd_rxid_apply_trunk_tune(state);
+       (dsd_rxid_request_trunk_tune(), while frame_dispatch_active is set), apply it where they are made. The carrier
+       left's RAS evidence goes with it. */
+    if (dsd_rxid_apply_trunk_tune(state)) {
+        dmr_ras_reset(state);
+    }
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
         /* A frame of another protocol family replaces the identity the last one left, also when the new protocol

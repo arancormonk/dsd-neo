@@ -585,6 +585,9 @@ nxdn_reset_after_cac_fail(dsd_state* state) {
     state->midx = 0;
     dsd_state_invalidate_minmax_sums(state);
     state->symbolcnt = 0;
+    /* What the sync join rules remembered, the NXDN96 lock and hits and the M17 join words, was stamped on the count
+       just reset: hits from before it would pair with hits after it at a false distance. */
+    dsd_state_forget_sync_join_histories(state);
     state->dibit_buf_p = state->dibit_buf + 200;
     DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * 200);
     state->offset = 0;

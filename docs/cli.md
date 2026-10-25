@@ -10,7 +10,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
-- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM`
+- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
@@ -144,7 +144,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--frontend terminal` Use the terminal UI (`-N` is the supported short alias)
 - `--frontend native` remains accepted and maps to headless mode. The retired native provider was a non-rendering
   scaffold; this keeps existing invocations working without restoring its provider/threading layer.
-- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated.
+- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated, and an NXDN
+  frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints nothing.
   With `--frontend terminal` / `-N`, redirect stderr to capture them:
   `dsd-neo -Z --frontend terminal 2> console_log.txt`. The terminal frontend suppresses stderr when it is a TTY
   to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.
@@ -229,7 +230,9 @@ Windows console runs:
 
 ## Recording & Files
 
-- `-6 <file>` Save raw audio WAV (48k/mono): the input before the monitor's filters, converted to 48 kHz when it runs
+- `-6 <file>` Save raw audio WAV (48k/mono), in every decode mode, with or without a sync (NXDN, dPMR and M17 noise
+  is held back by those protocols' CRC confirmation, not left out of the recording): the input before the monitor's
+  filters, converted to 48 kHz when it runs
   at another rate (see "The analog outputs" under Inputs). On radio input the analog monitor's audio is saved at the
   level a PCM input at the reference has: a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, peaks at -12 dBFS
   at the default RTL `vol` of 2, whatever `-n` is, so open-squelch FM noise can clip. Audio input, and the FSK
@@ -309,14 +312,38 @@ Windows console runs:
   carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
   as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT, USBD and
   encrypted-PDU notices. DMR's separate relaxed-CRC configuration follows the same marking policy.
-  DMR content that only the Motorola RAS heuristic accepted under `-F` (the burst line shows `-RAS`)
-  carries `[RAS]` instead: RAS systems alter the standard CRC on purpose, so it could not be verified,
-  but nothing is known to have failed, and the row keeps its ordinary severity and colour. This covers
-  voice calls (including a call reached through a RAS-accepted grant), data headers, confirmed blocks,
-  MBC/UDT and USBD. A transmission that also fails a check renders `[CRC ERR]`, which outranks `[RAS]`;
-  both markers stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC
-  check failed, not that every decoded field is wrong. Absence of either marker is not a universal
-  verification guarantee for every protocol. Each `-J` line carries the marker its row had when the
+  DMR content that `-F` accepted only as Motorola RAS (Restricted Access to System; the burst line shows
+  `-RAS`) carries `[RAS]` instead: RAS systems alter the standard CRC on purpose, so it could not be
+  verified, but nothing is known to have failed, and the row keeps its ordinary severity and colour. This
+  covers voice calls (including a call reached through a RAS-accepted grant), data headers, confirmed
+  blocks, MBC/UDT and USBD. A burst counts as RAS only when its BPTC block decodes to a valid codeword
+  within 4 bit errors of what was received, the codeword's reserved bits are set (RAS systems in the field
+  send the value 4; any nonzero value counts), and the codeword's standard check fails: the CRC, or the
+  RS(12,9) parity of a voice LC header or terminator. The payload decoded is that codeword's. Eligible
+  bursts are the CSBK, MBC header, data header, voice LC header and terminator, USBD, confirmed rate-1/2
+  data block, and the PI header with Motorola's FID 0x10 only; byte 1 0x68 (Hytera) excludes a CSBK, MBC
+  header, voice LC header or terminator and a proprietary (DPF 15) data header, where byte 1 is a FID or
+  MFID. A RAS burst received with more than 4 bit errors, or one of the rare few-error patterns the BPTC
+  decoder carries further than 4, is not accepted, as no check can vouch for it; it shows `(CRC ERR)`.
+  Without `-F` RAS content is never accepted, and a voice LC header or terminator with its reserved bits
+  set is never RS-corrected, so a RAS LC cannot be "corrected" into a different, valid one. RAS is still
+  detected without `-F`: two bursts with that signature on the same carrier confirm that it uses RAS. The
+  terminal's DMR header then shows `RAS;` after the colour code (`RAS (-F decodes);` while Relaxed CRC is off),
+  the carrier's system identity (the spectrum legend, the Qt/Android site line) shows `RAS`, the Qt/Android site
+  sheet shows **Access RAS** with the same explanation and a **Turn on Relaxed CRC** button, and while Relaxed CRC
+  is off the console prints once per confirmation
+  `DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; -F decodes them`.
+  Under a scan row's own `--strict-crc` with `-F` on, the header shows `RAS (channel sets strict CRC);` and the
+  notice adds `, but this channel sets strict CRC itself`: `-F` already applies to the channels without their own.
+  The detection belongs to the carrier: a retune (a trunk follow or control channel return included), a trunk-scan
+  target switch, another colour code on the carrier, the DMR reset and the gap between transmissions clear it, and
+  the next carrier proves its own. It notes a property of the bursts, never anything they decode. A burst
+  whose reserved bits read set and whose check failed is decoded from the nearest codeword when that lies
+  within 4 bits; if that codeword's own check passes, the burst is an ordinary checked one, with or without
+  `-F`. A transmission that also fails a check renders `[CRC ERR]`, which outranks `[RAS]`; both markers
+  stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC check failed, not
+  that every decoded field is wrong. Absence of either marker is not a universal verification guarantee for
+  every protocol. Each `-J` line carries the marker its row had when the
   line was written. A failure that reaches an already committed row through late detail (an alias or
   position decoded after the row committed) updates history and the API feed but appends nothing to
   `-J`; a reacquired transmission that merges into the row appends its `Reacquired:` continuation with
@@ -364,8 +391,8 @@ does.
   PDUs (LRRP, LOCN, LIP, UDT NMEA), DMR voice-LC embedded GPS, and P25 Phase 1 data PDUs reaching
   the IP/UDP LRRP ports; P25 Harris/APX voice-LC GPS and NXDN are unchanged. Under `-F`, CRC-failed
   data still decodes on screen and reaches history / the `-J` log marked `[CRC ERR]`, with LRRP
-  position tokens shown as suppressed (`CRC ERR`) and no location row appended. Bursts accepted by the
-  RAS heuristic under `-F` are also excluded because their CRC could not be verified; the burst line
+  position tokens shown as suppressed (`CRC ERR`) and no location row appended. Bursts accepted as
+  RAS under `-F` are also excluded because their CRC could not be verified; the burst line
   shows `-RAS`, history marks them `[RAS]`, and a withheld LRRP position reads `suppressed (RAS)`. An
   embedded GPS row names the source of the call it rode on, so under `-F` a checked position can carry
   the source ID of a RAS-accepted voice header.
@@ -498,7 +525,8 @@ Notes
 
 ## Modes & Decoders (`-f`)
 
-- Auto: `-fa`
+- Auto (the default): `-fa`, or no `-f` at all. Every digital mode except TETRA (NXDN48 and NXDN96 included; see
+  the hunt table below)
 - Passive analog monitor: `-fA` (NFM on a radio input; see [Analog reception](#analog-reception--fa--fm) below)
 - Native AM receiver: `-fM` (I/Q radio inputs only; see [Native AM](#native-am--fm) below)
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
@@ -569,8 +597,8 @@ Notes
 
 Notes
 
-- `-fa` enables the complete digital candidate set and hunts these profiles in order, skipping any profile that has no
-  enabled candidate:
+- Auto (`-fa`, and a session that names no `-f`) enables the complete digital candidate set and hunts these profiles
+  in order, skipping any profile that has no enabled candidate:
 
   | Hunt profile | Symbol rate | Levels | Enabled candidates |
   | --- | ---: | ---: | --- |
@@ -626,6 +654,22 @@ Notes
   Giving the channel up is still hangtime's decision, unchanged: when the call ends the tuner returns to the control
   channel and the hunt resumes there. Control channels are not held this way, so Auto still searches and still
   converges on them.
+- On an RTL input with no modulation lock, P25 Phase 1 on the 4800/4 profile can arrive on either demodulator chain:
+  C4FM, or CQPSK for an LSM simulcast system, which the C4FM chain reads only in part. Nothing before a decoded frame
+  can tell them apart, so alternate 4800/4 dwells that expire with nothing decoded try the CQPSK chain. That chain
+  cannot read DMR, NXDN96, YSF or M17, so when any of those is enabled a trial that has decoded nothing by half its
+  dwell gives the rest of the dwell back to C4FM and the other modes. Half is counted in symbols the search spent, the
+  hunt's own measure of a dwell (2700 of 5400 on the usual three-pass dwell; frames a handler read do not count). The
+  first frame whose NID decodes, on either chain, starts one comparison: over the next 1800 symbols (about 0.4 s) the
+  hunt adds up what that chain's decoded frames read. A P25p1 carrier sends its frames back to back, so a chain that found every
+  frame's sync within a frame of the last one's end is reading all of it and keeps it; one that let a frame go by
+  gives the other chain 1800 symbols of its own, and the chain that read more keeps the profile and is remembered, so
+  returning to that carrier after a voice grant starts on it without comparing again. A transmission that ends before
+  either chain has decoded a second frame decides nothing, and a remembered chain is forgotten once a dwell on it
+  decodes nothing. A trunked tune that comes mid-comparison lands on the chain leading so far, except a Phase 2 voice
+  grant, which is CQPSK whatever the control channel's chain. Without this, a C4FM chain reading about half of a
+  simulcast control channel's TSBKs held it for as long as the channel stayed up.
+  `-mq`, `-mc` and the other modulation locks skip all of it, on either side of the `-f` option.
 - D-STAR voice and ProVoice prove a transmission rather than a frame, because neither has a per-frame check worth the
   name. A D-STAR superframe spends 1992 symbols and a ProVoice frame 736, and the vocoder error counts both leave
   behind are soft corrections rather than a verdict. So a CRC-16/X.25 -- the D-STAR RF header, or the header
@@ -659,6 +703,29 @@ Notes
   a sync the CQPSK chain carried closes the span rather than opening one, for the same reason. The span is re-armed
   by every P25p1 sync, so continuous traffic stays covered, and it lapses within a fifth of a second of P25 going
   quiet. It costs a real NXDN96 or M17 signal nothing, since neither produces P25p1 sync matches.
+- M17's sync words are eight symbols and its preamble an alternating run, and the frame sync reads them on the sign
+  of each symbol alone, so receiver noise used to supply both: an eight-window run followed by a word within one
+  error opened a few M17 frames a second on an idle channel. A preamble now has to run for 32 windows (a transmission
+  sends 192 symbols of it) before the LSF or BERT word behind it opens the transmission. A transmission joined after
+  its preamble -- the receiver tuned or rotated onto it mid-stream -- is opened by its own frames instead: every M17
+  frame is 192 symbols, so a stream or BERT sync word read exactly, with the same word exactly one and two frames
+  before it, opens that frame. That costs the frame landed in and the two after it, about 120 ms, and noise almost
+  never offers it. A join opens that one frame: the next continues only on M17's own evidence (the stream's LICH, a
+  BERT PRBS lock). A packet is never joined: its one CRC covers every packet frame, so a packet joined after its
+  first frame cannot pass it.
+- NXDN96 follows the receiver rules of NXDN TS 1-A (5.3, Table 5.9-3). It acquires on two frame sync words a frame
+  (192 symbols, 40 ms) apart, within a symbol either way, each read on four levels within two bit errors -- the
+  ten-symbol word read on its signs alone matches about one window in a hundred, and receiver noise opened about two
+  NXDN96 frames a second on it. A transmission's first frame is not read: the specification also lets a single frame
+  sync word behind the preamble acquire, but on weak calls that start left the decoder reading every later frame's
+  control channel wrong, so it is not used. Once acquired, the frames that follow are timed from the last frame whose
+  link information (LICH) was good, up to five missed in a row (the frame right after a good one on its signs, later
+  ones on four levels too). A lost frame sync word, or a LICH that fails its parity check, usually costs that frame
+  alone; on a weak signal the next frame sync word must then also read within two bit errors, so it can cost more.
+  Five LICHs in a row that pass their parity but are rejected (a value no NXDN frame uses, or inbound on a trunked
+  session) lose the lock. Both rules remember every
+  hit, since a transmission's payload matches these short words several times a frame. A symbol capture replays each
+  symbol at its dibit's level, which the four-level reading reads as it does a live signal.
 - A transmission the hunt has stepped away from is protected the same way, for as long as it may still be running.
   Both spans above cover one frame, which is no help across a profile change: under Auto the hunt can rotate off
   2400/4 while an NXDN48 call is still on air, and by the time the rotation reaches 4800/4 the NXDN96 and M17
@@ -683,6 +750,25 @@ Notes
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
   wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto.
+- Auto is also the default. A session that names no `-f` (as the Qt and Android Auto choice does) starts on the same
+  decoder set, C4FM demodulator and stereo audio layout as `-fa`, a config whose `[mode]` has no `decode` key keeps
+  that set, and such a session autosaves `decode = "auto"`. A modulation flag alone keeps it too: `-mq` (which a
+  RadioReference import of a simulcast P25 site sets) runs Auto on the locked QPSK chain, whose symbol-rate search
+  steps only between profiles of the locked timing (4800/4 and 4800/2 at 48 kHz), never to NXDN48, dPMR or ProVoice.
+  Selecting Auto on a session already running the whole Auto set changes nothing (no call ends, a modulation pick
+  stays); on a narrowed set it widens it back out.
+- EDACS under Auto: Auto enables the EDACS/ProVoice decoder, but EDACS frames are processed only once an EDACS
+  addressing mode is selected: `-fh -fa` (or `-fe -fa`), a switch to Auto from an EDACS/ProVoice preset, a config with
+  `edacs_ea`, or the EA toggle (terminal menu, `ProVoice EA mode`), whose first press under plain Auto selects
+  standard addressing. Until then the session is no EDACS session: no raw analog stream or UDP analog socket
+  (port + 2) opens for it, `-T` keeps `-8` on, the dynamic squelch treats its channels as digital, and talkgroup
+  lockout and Skip work on P25, DMR and NXDN calls. Once EDACS is selected, Auto behaves as the EDACS/ProVoice preset
+  does for those (the analog sink opens then, and on a trunked `-o udp` run `-8` turns off, as under `-fh -T`; so does
+  a switch to EDACS/ProVoice or a config apply that selects EDACS).
+  ProVoice alone (`-fp`) is an EDACS session without an addressing mode. Any other preset clears the addressing, so
+  EDACS, then DMR, then Auto is plain Auto again; a scan row's own class keeps the configured addressing.
+  Only `-fz` (M17 alone) waits for a TCP audio server that refuses or drops the connection; under Auto a refused
+  connect is an error and a dropped one ends the input, as in any other mode.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
@@ -1575,11 +1661,20 @@ setting, shown apart from what is received, and it is off by default: then the o
   each slot keeps its own filter state, which starts over at a new call or protocol. `-v 0` plays the demodulator's
   audio unfiltered.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
-- Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
+  - `-mc`, `-mg` and `-mq` lock the demodulator, and the lock holds on either side of a `-f` preset: `-mq -f1` and
+    `-f1 -mq` both run P25 Phase 1 on the CQPSK chain. A preset sets its own modulation only when no lock is in force.
+- Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT; a DMR burst is accepted as RAS only
+  from a near-clean codeword with its reserved bits set, see the RAS note under `-J`, which also covers the RAS
+  indicator shown with or without `-F`). No effect on NXDN, which always requires
   CRC-verified content (see the NXDN note under "Modes & Decoders" above). A P25 Phase 2 MAC_SIGNAL that failed its CRC
   still acts on its grants, payload and voice, but no system broadcast in it is applied: no WACN/SYSID/NAC, control
   channel, site or LRA, channel identifier (IDEN) table or trust, secondary control channel, neighbour, system services,
   system time or protection parameters come from it. P25 Phase 1 TSBK and trunking MBT always need their CRCs.
+  Relaxed CRC is one setting: `-F`, `--strict-crc`, the terminal's "Relaxed CRC checks" toggle (`F`), the Qt/Android
+  Settings → Decoding → **Relaxed CRC** switch (which adds `-F` to every session the app starts) and a scan row's
+  own `-F` or `--strict-crc` all turn every one of these gates on or off together, DMR's relaxed control-channel
+  heartbeat included. While a scan row sets its own, the row decides until it leaves; the toggle edits the configured
+  value beneath it and says so.
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
   raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
@@ -1615,7 +1710,9 @@ together, so the unit skipped is the conversation; a new call that starts within
 is missed; and if the receiver follows another call on a different carrier for longer than 15 s while the skipped
 call continues, the skipped call is followed again when next seen (tap **Skip** again).
 
-P25 private calls, DMR, NXDN and EDACS skips last 15 s from the press in this version; ProVoice has no skip.
+P25 private calls, DMR and NXDN skips last 15 s from the press in this version; an EDACS or ProVoice call has no
+skip (and no quick lockout), while a P25, DMR or NXDN call is skipped or locked out whatever else is enabled (Auto
+enables ProVoice too).
 Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-target revisits like session avoids,
 subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
 list reload/replacement or decoder stop also clears them.
@@ -1841,24 +1938,37 @@ does.
 
 - The search needs a tuner the decoder controls: an RTL-SDR, rtl_tcp, SoapySDR or Airspy input, or rigctl. An I/Q
   replay never searches.
-- P25 searches under `-1`, `-2`, `-ft` and the default decoder set (`-mq` included); DMR under `-fs` and `-fr`; NXDN
-  under `-fi` and `-fn` (an IDAS or NEXEDGE import). A P25-driven search also finds a DMR control channel: the first
-  validated DMR control message hands the session to DMR. `-fa` does not search at startup.
+- P25 searches under `-1`, `-2`, `-ft` and Auto (`-fa`, or no `-f`), `-mq` included; DMR under `-fs` and
+  `-fr`; NXDN under `-fi` and `-fn` (an IDAS or NEXEDGE import). A P25-driven search also finds a DMR or NXDN96
+  control channel: the first validated DMR control message, NXDN CAC or confirmed IDAS Type-D SCCH ends the P25 search
+  and hands the session to that protocol (an IDAS Type-D site is then never searched, as below).
+- Each P25 probe starts on the P25 chain (4800 symbols/s), whatever noise synced or the symbol-rate search tried before
+  it. While a probe listens, the symbol-rate search steps only between P25's 4800 and 6000 symbols/s profiles: from
+  4800 it steps to 6000 as a P25-only set does, not to an NXDN48 or ProVoice rate. That step comes late in the
+  two-second probe, so a Phase 2 control channel the session has not learned gets little time at 6000 symbols/s, as
+  under a P25-only set. The full Auto rotation resumes once the search ends.
+- Under Auto a P25-driven search does not find an NXDN48 control channel (2400 symbols/s): start a dead NXDN48 system
+  with `-fi`, which a RadioReference import sets. Once NXDN48 control has decoded, NXDN recovery owns the session.
+- An EDACS session never runs the P25 search: EDACS control names no system the search could stop on, so it would leave
+  a working EDACS control channel. That covers `-fh -fa` (or `-fe -fa`) and a switch to Auto from an EDACS/ProVoice
+  preset, which keep the EDACS addressing selected.
 - NXDN has no other control-channel hunt, so the same search also runs after an NXDN control channel is lost: once a
   CAC that passed its CRC (only an outbound control channel sends one) has named the control channel, 6 s without
   validated NXDN content starts it, revisiting that control channel between the other rows, and the next such CAC ends
-  it where it is. Under `-fa` this runs once validated NXDN control has named the system. A call's return to the
+  it where it is. Under Auto this runs once validated NXDN control has named the system. A call's return to the
   control channel restarts the window when its tune completes.
 - An IDAS Type-D site has no dedicated control channel: an SCCH whose CRC repeated (a confirmed transmission) ends a
   startup search where it is, and no search runs after that until a RadioReference apply points the session at another
   system. A Type-D site that is idle and silent at session start is
   searched like a dead one, until a call's confirmed traffic holds the receiver.
-- A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites: each row gets
-  about two seconds, too short for the automatic modulation search to reach CQPSK on a control channel the session has
-  not decoded yet.
-- DMR content that passed the colour-code check (a call on a Hytera XPT repeater, say) restarts the window, so the
-  search never leaves it mid-call; for NXDN, a frame whose own CRCs confirmed the transmission (a call on a traffic
-  channel) does. Sync alone, which noise can produce, never holds the search.
+- A simulcast (LSM/CQPSK) P25 system needs `-mq`, which a RadioReference import sets for such sites, when the C4FM
+  chain decodes nothing of its control channel: each row gets about two seconds, too short for the automatic
+  modulation search to reach CQPSK on a control channel the session has not decoded yet. One the C4FM chain reads in
+  part moves to CQPSK by itself (the chain comparison in the hunt notes above).
+- DMR content that passed the colour-code check (a call on a Hytera XPT repeater, say) restarts the P25 and DMR
+  windows, and an NXDN frame whose own CRCs confirmed the transmission (a call on a traffic channel) restarts the P25
+  and NXDN windows, so a search never leaves a frequency mid-call. Neither names the system. Sync alone, which noise can
+  produce, never holds the search.
 - A frequency entry, **Next channel** (`L`), a radio configuration change, a RadioReference apply or an input switch
   restarts the window on the new frequency.
 - Nothing is shown or used as the control channel until a searched frequency passes the CRC check, and the saved
@@ -1867,7 +1977,7 @@ does.
 - DMR searches until a control channel passes its check, not until DMR is merely recognised: a valid DMR message that
   confirms no control channel (a data preamble, a Capacity Plus status naming a rest channel the map lacks, a Tier III
   or Connect Plus traffic channel) leaves the search running, so the receiver moves on once that frequency goes quiet.
-  Under `-fa` the search starts once validated DMR content names DMR. A Hytera XPT site, which has no control
+  Under Auto the search starts once validated DMR content names DMR. A Hytera XPT site, which has no control
   channel, ends it where it is, and its recovery only ever retunes the frequency it parks on.
 - DMR recovery keeps its six-second loss grace and two-second probe windows even while data syncs continue without
   valid control, including after a Capacity Plus rest channel goes inactive. A probe's window starts when its backend

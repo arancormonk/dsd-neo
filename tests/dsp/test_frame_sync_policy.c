@@ -142,5 +142,30 @@ main(void) {
     assert(dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(NULL, &state) == 0);
     assert(dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(&opts, NULL) == 0);
 
+    /* While a P25-driven control-channel probe is in flight the hunt steps only between the P25 profiles the options
+     * enable, back to 4800/4 from any other; with neither P25 phase the ordinary rotation runs (-1). */
+    reset(&opts, &state);
+    opts.frame_p25p1 = opts.frame_p25p2 = 1;
+    assert(frame_sync_sps_hunt_p25_probe_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(frame_sync_sps_hunt_p25_probe_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    for (int idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4; idx < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; idx++) {
+        if (idx != DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
+            assert(frame_sync_sps_hunt_p25_probe_next_index(&opts, idx) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+        }
+    }
+    opts.frame_p25p2 = 0;
+    assert(frame_sync_sps_hunt_p25_probe_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 1;
+    assert(frame_sync_sps_hunt_p25_probe_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = opts.frame_nxdn48 = 1;
+    assert(frame_sync_sps_hunt_p25_probe_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == -1);
+    assert(frame_sync_sps_hunt_p25_probe_next_index(NULL, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == -1);
+
     return 0;
 }

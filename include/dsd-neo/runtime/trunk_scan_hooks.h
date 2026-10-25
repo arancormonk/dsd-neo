@@ -107,10 +107,14 @@ int dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state)
 int dsd_trunk_nxdn_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 
 /** Whether P25 runs the startup control-channel hunt of a single-system trunked session that no protocol has proven
- * yet (issue #703): trunking on, neither -Y nor --trunk-scan, no validated owner, P25 decoded, and none of NXDN48,
- * NXDN96 or ProVoice (whose control channels a P25-driven hunt would leave too soon). DMR alongside is fine: its first
- * validated control message names DMR the owner. This grants no recovery ownership; only the decoder thread's
- * startup hunt reads it. */
+ * yet (issue #703): trunking on, neither -Y nor --trunk-scan, no validated owner, P25 decoded, and no selected EDACS
+ * session (dsd_edacs_session(): EDACS control names no owner, so a P25 window would hunt away from a valid EDACS
+ * control channel, as under -fh -fa). DMR and NXDN alongside (-ft, Auto) are fine: their validated
+ * control (a DMR control message, an NXDN CAC or confirmed Type-D SCCH) names its owner and ends the hunt, and their
+ * validated traffic holds its window. This grants no recovery ownership; the decoder thread's startup hunt, the
+ * operator-move rule of a frequency entry and the probe profile choice read it. That choice
+ * (dsd_engine_cc_is_p25()) reads it only while the P25 machine hunts (p25_sm_hunt_probe_in_flight()): another
+ * control-channel tune of the session, such as the engine's no-carrier return, keeps the sync rule. */
 int dsd_trunk_p25_cold_start_presumed(const dsd_opts* opts, const dsd_state* state);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 /**
@@ -122,8 +126,8 @@ void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
  * matching conventional type. Only call these with identity that has already
  * cleared the protocol's FEC/CRC gate, and pass the corroborated encryption
  * classification rather than a single frame's raw cipher field. One deliberate
- * exception: under -F a DMR voice LC accepted by the RAS heuristic counts as
- * checked, because RAS systems never let the standard CRC verify and -F opts
+ * exception: under -F a DMR voice LC accepted as RAS counts as checked,
+ * because RAS systems never let the standard CRC verify and -F opts
  * into that acceptance; without it a scanned RAS repeater would never hold.
  * That exception is the scan hold's alone: a signal search hears the protocol's
  * confirmation from every report, but takes its target and source only while

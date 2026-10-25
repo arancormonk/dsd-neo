@@ -38,12 +38,12 @@ Rectangle {
                 width: nav.vertical ? nav.width : nav.width / 3
                 height: nav.vertical ? Math.max(84, Theme.fontSize(11) + 56) : nav.height
 
-                activeFocusOnTab: enabled && Navigation.allows(nav)
+                activeFocusOnTab: Navigation.allows(nav) && enabled
                 Accessible.role: Accessible.PageTab
                 Accessible.name: modelData
                 Accessible.selected: active
                 readonly property bool navigationAllowed: Navigation.allows(nav)
-                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: choose()
                 function choose() {
                     if (!enabled || !Navigation.allows(nav))

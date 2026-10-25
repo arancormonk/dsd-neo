@@ -11,6 +11,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
@@ -364,16 +365,17 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
     }
     opts->audio_out_type = 8;
     /* An open analog socket (port + 2) sends to the previous host and port. Close it and reopen it below for the new
-       target, whether or not the current mode writes to it: the -8 source monitor can be turned back on later, and its
-       toggle opens no socket, so it has to find this one, as it found the old one. With no analog socket open, one is
-       opened below only when the current mode writes to it, and otherwise by the lazy open on a later switch to
-       Analog or ProVoice (dsd_audio_ensure_analog_output()), which opens only an invalid descriptor. */
+       target, whether or not the current mode writes to it, so a writer turned back on later finds it as it found the
+       old one. With no analog socket open, one is opened below only when the current mode writes to it (the -8 monitor
+       or an EDACS session; Auto merely enabling ProVoice writes none), and otherwise by the lazy open of a later
+       writer (dsd_audio_ensure_analog_output(): a switch to Analog or EDACS, Input Monitor turned on), which opens
+       only an invalid descriptor. */
     const int analog_socket_was_open = (opts->udp_sockfdA != DSD_INVALID_SOCKET) ? 1 : 0;
     if (analog_socket_was_open) {
         (void)dsd_socket_close(opts->udp_sockfdA);
         opts->udp_sockfdA = DSD_INVALID_SOCKET;
     }
-    const int analog_writer = (opts->monitor_input_audio == 1 || opts->frame_provoice == 1) ? 1 : 0;
+    const int analog_writer = (opts->monitor_input_audio == 1 || dsd_edacs_session(opts, state)) ? 1 : 0;
     if ((analog_writer || analog_socket_was_open) && udp_socket_connectA(opts, state) < 0) {
         /* udp_socket_connectA() can fail after it created the socket: close that one, and leave the descriptor
            invalid, not 0 (a valid descriptor), since the analog sink is reopened lazily only from invalid. */

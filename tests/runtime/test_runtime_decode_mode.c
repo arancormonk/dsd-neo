@@ -548,9 +548,10 @@ test_symbol_timing_and_inference(void) {
         return 1;
     }
 
-    /* The dsd_init default set matches no preset. The lossy spelling still answers AUTO for the
-       UI's mode label, but the exact one must say UNSET so autosave does not write `decode =
-       "auto"` for it -- reloading that would widen a default session to every decoder. */
+    /* A narrowed set matches no preset: here the pre-Auto default (no NXDN, dPMR, ProVoice or M17;
+       initOpts() now installs the AUTO set, which RUNTIME_CLI_PARSE pins). The lossy spelling still
+       answers AUTO for the UI's mode label, but the exact one must say UNSET so autosave does not
+       write `decode = "auto"` for it -- reloading that would widen the session to every decoder. */
     DSD_MEMSET(&opts, 0, sizeof opts);
     opts.frame_dstar = 1;
     opts.frame_x2tdma = 1;
@@ -559,11 +560,11 @@ test_symbol_timing_and_inference(void) {
     opts.frame_dmr = 1;
     opts.frame_ysf = 1;
     if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AUTO) {
-        DSD_FPRINTF(stderr, "init-default mask should still label as AUTO\n");
+        DSD_FPRINTF(stderr, "narrowed mask should still label as AUTO\n");
         return 1;
     }
     if (dsd_infer_decode_mode_preset_exact(&opts) != DSDCFG_MODE_UNSET) {
-        DSD_FPRINTF(stderr, "init-default mask should not infer an exact preset\n");
+        DSD_FPRINTF(stderr, "narrowed mask should not infer an exact preset\n");
         return 1;
     }
 

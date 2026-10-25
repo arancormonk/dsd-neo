@@ -648,11 +648,16 @@ scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope*
     opts->mod_p25p2_profile_lock = 0;
     const int channels = opts->pulse_digi_out_channels;
     const int rate = opts->pulse_digi_rate_out;
+    /* The configured EDACS addressing is the session's, which a row's preset would clear: the row leaves it be. */
+    const int ea_mode = state->ea_mode;
+    const unsigned short esk_mask = state->esk_mask;
     if (how == SCAN_ROW_COMMITTED) {
         (void)dsd_apply_decode_mode_preset(mode_presets[scope->mode], DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
     } else {
         (void)dsd_stage_decode_mode_preset(mode_presets[scope->mode], DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
     }
+    state->ea_mode = ea_mode;
+    state->esk_mask = esk_mask;
     if (scope->mode == DSD_SCAN_MODE_P25) {
         opts->frame_dmr = 0;
         opts->frame_x2tdma = 0;
@@ -701,8 +706,7 @@ scan_option_apply_force(dsd_opts* opts, dsd_state* state, const dsd_scan_option_
 static void
 scan_option_apply_crc(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
     (void)state;
-    opts->aggressive_framesync = (short)values->strict_crc;
-    opts->dmr_crc_relaxed_default = (uint8_t)!values->strict_crc;
+    dsd_opts_set_relaxed_crc(opts, !values->strict_crc);
 }
 
 static void
@@ -1286,6 +1290,18 @@ dsd_scan_mode_set_configured_tone_policy(dsd_opts* opts, const dsd_state* state,
     opts->analog_tone_filter = mode;
     opts->analog_tone_set = *set;
     return 1;
+}
+
+int
+dsd_scan_mode_configured_relaxed_crc(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (!configured) {
+        return dsd_opts_relaxed_crc(opts) ? 1 : 0;
+    }
+    return (configured->aggressive_framesync == 0 || configured->dmr_crc_relaxed_default != 0) ? 1 : 0;
 }
 
 int

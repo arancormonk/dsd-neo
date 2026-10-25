@@ -856,7 +856,7 @@ Item {
                         Item {
                             id: spectrumStepDownAction
                             objectName: "spectrumStepDown"
-                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumStepDownAction)
+                            activeFocusOnTab: Navigation.allows(spectrumStepDownAction) && spectrum.hasData
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Tune down")
                             Accessible.onPressAction: activate()
@@ -890,7 +890,7 @@ Item {
                         Item {
                             id: spectrumSweepToggleAction
                             objectName: "spectrumSweepToggle"
-                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumSweepToggleAction)
+                            activeFocusOnTab: Navigation.allows(spectrumSweepToggleAction) && spectrum.hasData
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Start or stop frequency sweep")
                             Accessible.onPressAction: activate()
@@ -969,7 +969,7 @@ Item {
                         Item {
                             id: spectrumStepUpAction
                             objectName: "spectrumStepUp"
-                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumStepUpAction)
+                            activeFocusOnTab: Navigation.allows(spectrumStepUpAction) && spectrum.hasData
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Tune up")
                             Accessible.onPressAction: activate()
@@ -1019,7 +1019,7 @@ Item {
                         Item {
                             id: spectrumSignalDownAction
                             objectName: "spectrumSignalDown"
-                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumSignalDownAction)
+                            activeFocusOnTab: Navigation.allows(spectrumSignalDownAction) && spectrum.hasData
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Previous signal")
                             Accessible.onPressAction: activate()
@@ -1065,7 +1065,7 @@ Item {
                         Item {
                             id: spectrumSignalUpAction
                             objectName: "spectrumSignalUp"
-                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumSignalUpAction)
+                            activeFocusOnTab: Navigation.allows(spectrumSignalUpAction) && spectrum.hasData
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Next signal")
                             Accessible.onPressAction: activate()

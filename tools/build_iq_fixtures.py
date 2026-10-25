@@ -307,6 +307,19 @@ DERIVED_ATTENUATED = [
     ("nxdn48_attenuated", "nxdn48", -20.0),
 ]
 
+# A committed capture with complex Gaussian noise added at a set wideband SNR (signal power over the noise across the
+# whole 48 kHz capture), for a weak-signal case. nxdn96_weak pins NXDN96 acquisition on a weak call: acquiring on the
+# FSW right after the preamble (TS 1-A N6) left this realization's slicer reading one FSW symbol wrong on every frame
+# and failing every SACCH, so not one RAN of the call decoded. nxdn96_weak_0db guards the four-level FSW gate itself:
+# at 0 dB the frame sync words read within two bit errors 85% of the time, and a gate held to one bit decodes 10 of
+# its RANs where two bits decode 29 (the matcher before these rules, 30). Deterministic from the seed.
+#
+# name, source fixture, wideband SNR dB, seed
+DERIVED_AWGN = [
+    ("nxdn96_weak", "nxdn96", 8.0, 8007),
+    ("nxdn96_weak_0db", "nxdn96", 0.0, 17),
+]
+
 # Receiver noise with the squelch open -- no signal at all, which is what a scanner sits on
 # between transmissions. Protocols whose sync words are short enough for noise to reproduce
 # used to decode this into RANs and voice (issue #398), so it is committed as a reject
@@ -366,9 +379,16 @@ DERIVED_CLIP = [
 # transfer (issue #626), -fa decodes the call at every lead-in from 1.5 to 9.5 s: the hunt's
 # requests land within a 5.33 ms block, so neither edge of that band exists any more.
 #
-# name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz
+# The M17 and NXDN96 joins land mid-transmission: their call fixture starts call-start seconds in,
+# an offset that is no whole number of 192-symbol frames, so the receiver lands inside a frame
+# with no preamble ahead of it. They pin that a transmission is joined on its own frames' sync
+# words -- three frames running for M17, two for NXDN96 -- after receiver noise that must open nothing.
+#
+# name, lead-in fixture, lead-in s, lead-in centre Hz, call fixture, call centre Hz, call start s
 DERIVED_RETUNE = [
-    ("nxdn48_after_retune", "noise_floor", 7.5, 467087500, "nxdn48", 467756250),
+    ("nxdn48_after_retune", "noise_floor", 7.5, 467087500, "nxdn48", 467756250, 0.0),
+    ("m17_after_retune", "noise_floor", 0.25, 446006250, "m17", 446012500, 1.5263),
+    ("nxdn96_after_retune", "noise_floor", 0.25, 467087500, "nxdn96", 467756250, 0.5137),
 ]
 RETUNE_MUTE_BYTES = 14848
 RESET_MUTE_BYTES = 2400
@@ -1038,8 +1058,9 @@ def build_retune_fixture(
     call_fixture,
     call_center_hz,
     capture_started_utc=RETUNE_CAPTURE_STARTED_UTC,
+    call_start_s=0.0,
 ):
-    """Write name: the first lead_s seconds of lead_fixture, a scan retune, then all of call_fixture.
+    """Write name: the first lead_s seconds of lead_fixture, a scan retune, then call_fixture from call_start_s on.
 
     The sources are committed fixtures read from src_dir; their bytes are concatenated as they
     are, so nothing is requantized. The sidecar starts on lead_center_hz and the RETUNE/RESET
@@ -1050,6 +1071,10 @@ def build_retune_fixture(
         raise ValueError(f"{name}: would overwrite its own source")
     lead = read_committed_capture(src_dir, lead_fixture)
     call = read_committed_capture(src_dir, call_fixture)
+    call_start_bytes = round(call_start_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+    if call_start_bytes < 0 or call_start_bytes >= len(call):
+        raise ValueError(f"{name}: call start {call_start_s} s is outside {call_fixture}")
+    call = call[call_start_bytes:]
     lead_bytes = round(lead_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
     if lead_bytes <= 0 or lead_bytes > len(lead):
         raise ValueError(f"{name}: a {lead_s} s lead-in needs {lead_bytes} bytes and {lead_fixture} has {len(lead)}")
@@ -1083,9 +1108,17 @@ def build_retune_fixture(
 def build_derived_retune(out_dir):
     """Write the scan-retune fixtures (issue #572) from the committed fixtures in out_dir."""
     total = 0
-    for name, lead_fixture, lead_s, lead_center_hz, call_fixture, call_center_hz in DERIVED_RETUNE:
+    for name, lead_fixture, lead_s, lead_center_hz, call_fixture, call_center_hz, call_start_s in DERIVED_RETUNE:
         written = build_retune_fixture(
-            out_dir, out_dir, name, lead_s, lead_fixture, lead_center_hz, call_fixture, call_center_hz
+            out_dir,
+            out_dir,
+            name,
+            lead_s,
+            lead_fixture,
+            lead_center_hz,
+            call_fixture,
+            call_center_hz,
+            call_start_s=call_start_s,
         )
         total += written
         print(f"{name:28s} retune  {written // 1024:6d} KiB")
@@ -1563,6 +1596,21 @@ def build_tetra_synth(out_dir):
             + clock_slow_written + bad_written + bad_impaired_written
             + build_tetra_synth_72k(out_dir))
 
+def build_awgn(out_dir):
+    """Write the committed captures with complex Gaussian noise at a set wideband SNR."""
+    total = 0
+    for name, source, snr_db, seed in DERIVED_AWGN:
+        samples = load_cu8_fixture(os.path.join(out_dir, source + ".iq"))
+        power = np.mean(np.abs(samples) ** 2)
+        sigma = math.sqrt(power / (10.0 ** (snr_db / 10.0)) / 2.0)
+        rng = np.random.default_rng(seed)
+        noisy = samples + rng.normal(0.0, sigma, len(samples)) + 1j * rng.normal(0.0, sigma, len(samples))
+        written = write_fixture(out_dir, name, noisy)
+        total += written
+        print(f"{name:28s} derived {written // 1024:6d} KiB")
+    return total
+
+
 def build_attenuated(out_dir):
     """Write the level-shifted replays of committed fixtures (issue #521)."""
     total = 0
@@ -1763,6 +1811,7 @@ def build_derived(out_dir):
         total += written
         print(f"{name:28s} derived {written // 1024:6d} KiB")
     total += build_attenuated(out_dir)
+    total += build_awgn(out_dir)
     return total
 
 
@@ -1848,6 +1897,7 @@ def derived_fixture_names():
     return (
         [entry[0] for entry in DERIVED_SIMULCAST]
         + [entry[0] for entry in DERIVED_ATTENUATED]
+        + [entry[0] for entry in DERIVED_AWGN]
         + [entry[0] for entry in DERIVED_NOISE]
         + [entry[0] for entry in DERIVED_CLIP]
         + [entry[0] for entry in DERIVED_RETUNE]

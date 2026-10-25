@@ -3,7 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Protocol-internal DMR CRC provenance: where the burst handler's RAS verdict is handed on. */
+/* Protocol-internal DMR CRC provenance: the burst handler's RAS signature and where its verdict is handed on. */
 
 #ifndef DSD_NEO_SRC_PROTOCOL_DMR_DMR_CRC_PROVENANCE_H_
 #define DSD_NEO_SRC_PROTOCOL_DMR_DMR_CRC_PROVENANCE_H_
@@ -14,8 +14,19 @@
 #include <stdint.h>
 
 /*
- * dsd_state::data_block_crc_valid value for a confirmed data block whose CRC9 failed but which the RAS heuristic
- * accepted under -F. Anything other than 1 is not a verified block, so the location gates still refuse it; the event
+ * 1 iff a BPTC burst is a RAS signature: an eligible burst type, nonzero reserved bits, a valid codeword within
+ * DSD_BPTC_196x96_UNIQUE_RADIUS (<dsd-neo/fec/bptc.h>), and a failed standard check of that codeword's payload (@p
+ * standard_check_ok 0; the RS(12,9) syndrome for a voice LC header or terminator), and not Hytera where byte 1 is a
+ * FID/MFID. Eligible: PI 0x00 (FID 0x10 only), voice LC header 0x01, terminator 0x02, CSBK 0x03, MBC header 0x04, data
+ * header 0x06, confirmed rate-1/2 block 0x07 (@p confirmed_data 1) and USBD 0x0B; never the MBC continuation, rate 3/4,
+ * rate 1 or idle bursts. @p payload_bytes are the codeword's 12 payload octets and @p r_bits its R(2..0) value.
+ */
+int dmr_ras_signature(uint8_t databurst, uint8_t confirmed_data, const uint8_t* payload_bytes, uint8_t r_bits,
+                      uint32_t distance, int standard_check_ok);
+
+/*
+ * dsd_state::data_block_crc_valid value for a confirmed data block whose CRC9 failed but which was accepted as RAS
+ * under -F. Anything other than 1 is not a verified block, so the location gates still refuse it; the event
  * marker reads it as RAS rather than as a failure.
  */
 enum { DMR_DATA_BLOCK_CRC_RAS = 2 };

@@ -13,12 +13,12 @@ Rectangle {
     signal clicked
 
     property string accessibleName: text
-    activeFocusOnTab: enabled && visible && Navigation.allows(control)
+    activeFocusOnTab: Navigation.allows(control) && enabled && visible
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.focusable: true
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
         if (!enabled || !Navigation.allows(control))

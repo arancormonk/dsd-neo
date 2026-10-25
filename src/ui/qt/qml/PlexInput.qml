@@ -21,7 +21,7 @@ TextField {
     font.pixelSize: Theme.fontSize(15)
     implicitHeight: Math.max(Theme.minimumTouchSize, contentHeight + topPadding + bottomPadding)
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.ignored: !navigationAllowed || !visible
     FocusFrame {}
     property string label: placeholderText
     Accessible.name: label
