@@ -185,6 +185,23 @@ def native_lifecycle_contract():
     return None
 
 
+def ready_branch_rewrites_status(source):
+    """Whether every `if (isReady()) {` branch writes "Ready: …" as its first statement, past any comment lines.
+
+    A line scan rather than one regex: a comment run in a regex lets `\\s*` and the comment body share `//`, which
+    backtracks exponentially on a long run of slashes."""
+    lines = source.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.strip() == "if (isReady()) {"]
+    if not starts:
+        return False
+    for start in starts:
+        body = (line.strip() for line in lines[start + 1 :])
+        statement = next((line for line in body if line and not line.startswith("//")), "")
+        if not statement.startswith('setStatus("Ready: '):
+            return False
+    return True
+
+
 def usb_broker_contract():
     """UsbSourceManager talks to the platform, so it never compiles here; its use of UsbRequestState is read instead."""
     manager_path = REPO / APP_SOURCES / "UsbSourceManager.kt"
@@ -222,7 +239,7 @@ def usb_broker_contract():
         if f'.put("{key}"' not in status.group(1):
             return f"{where}: deviceStatus() must publish {key}"
     # #647 B4: an access request that finds the receiver ready rewrites the record for it.
-    if not re.search(r'if \(isReady\(\)\) \{(\s*//[^\n]*)*\s*setStatus\("Ready: ', manager):
+    if not ready_branch_rewrites_status(manager):
         return f"{where}: an access request while ready must rewrite \"Ready: <device>\" with no failure kind"
     # #647 B11: every failure kind the broker writes is one the host's record knows; "refused" is no device failure.
     kinds = set(re.findall(r'setStatus\([^\n]*,\s*"(\w+)"\)', manager))
