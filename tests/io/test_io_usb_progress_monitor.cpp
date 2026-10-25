@@ -164,8 +164,10 @@ test_rtl_stop_inside_grace(input_ring_state* ring) {
 }
 
 /* The reader returns by itself (-1, a lost device) while the monitor's silence verdict waits out the grace: the two
- * verdicts overlap, and the session is reported once, with the first verdict's code. The reader returns only once the
- * monitor's verdict is pending, however late the monitor runs. */
+ * verdicts overlap, and the session is reported exactly once. The reader returns only once the monitor's verdict is
+ * pending, however late the monitor runs. Which of the two waits ends first is the scheduler's (a monitor descheduled
+ * past its deadline lets the reader's claim first), so either verdict's code is the session's; which one claims when
+ * both pass their checks together is test_rtl_racing_verdicts_report_once's. */
 void
 test_rtl_reader_exit_inside_monitor_grace(input_ring_state* ring) {
     rtl_device_set_unplug_owner_grace_ms(kLimitMs);
@@ -184,7 +186,10 @@ test_rtl_reader_exit_inside_monitor_grace(input_ring_state* ring) {
     dsd_sleep_ms(2U * kLimitMs);
     assert(rtl_device_test_usb_stream_reader_exited(dev));
     assert(dsd_input_failure_generation() == generation + 1U);
-    expect_receiver_ending(-ETIMEDOUT);
+    dsd_input_failure failure{};
+    dsd_input_failure_get(&failure);
+    assert(failure.native_code == -ETIMEDOUT || failure.native_code == -1);
+    expect_receiver_ending(failure.native_code);
     rtl_device_test_usb_stream_stop(dev);
     assert(dsd_input_failure_generation() == generation + 1U);
     rtl_device_set_unplug_owner_grace_ms(0U);
