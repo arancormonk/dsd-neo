@@ -7844,10 +7844,16 @@ cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, i
     }
     /* A [mode], or an EDACS addressing mode the config set with or without one. */
     ui_commit_mode_identity(opts, state);
-    /* A config that leaves the session an EDACS one it was not (edacs_ea, an EDACS/ProVoice [mode]) gets the -8
-       override startup gives one, as the EA toggle does; read after any rollback put the receive side back. */
+    /* A config that leaves the session an EDACS one it was not (edacs_ea, with or without a decode key, an
+       EDACS/ProVoice [mode]) gets what startup gives one, as the EA toggle does; read after any rollback put the receive
+       side back. */
     if (!old_edacs_session && dsd_edacs_session(opts, state)) {
         (void)dsd_edacs_session_trunked_monitor_off(opts, state);
+        /* And the raw sink (or UDP port + 2) its analog calls play on, which plain Auto did not open at start: a
+           decode key's family change opened the sinks the mode writes already (apply_cfg_receive_family_change()). */
+        if (!cfg->has_mode) {
+            (void)dsd_audio_ensure_digital_output(opts, state);
+        }
     }
 }
 

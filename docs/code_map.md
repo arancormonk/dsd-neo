@@ -1553,7 +1553,8 @@ suite runs under this compiler.
   (`scan_scope_apply_row_decoder()`), and a refused switch puts it back: an analog one through its rollback state
   (`ui_revert_analog_entry()`), a config apply through `ui_cfg_mode_extras`. Startup and
   configuration policy keys on it: the raw analog stream (`openAudioOutput(opts, state)`,
-  `dsd_audio_ensure_digital_output(opts, state)`, `svc_udp_output_config()`, a same-family `[mode]` apply), the UDP
+  `dsd_audio_ensure_digital_output(opts, state)`, `svc_udp_output_config()`, a same-family `[mode]` apply, a config
+  that makes the session an EDACS one with no decode key, `cfg_commit_mode()`), the UDP
   analog socket on port + 2 and the `-8` override under `-T` (engine output setup), the EDACS squelch policy
   (`dsd_squelch_edacs_analog_voice()` and the squelch view, the engine's squelch notices) and the "Pulse Analog Output"
   line. The `-8` override is one helper, `dsd_edacs_session_trunked_monitor_off()` (trunking on, UDP output, an EDACS

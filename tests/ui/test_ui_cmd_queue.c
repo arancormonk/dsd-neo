@@ -9033,6 +9033,29 @@ test_edacs_selection_and_input_monitor_ensure_their_sink(void) {
     rc |= expect_int("an addressing change opens nothing more", g_ensure_analog_calls, 1);
     freeState(&state);
 
+    /* A config that selects EDACS addressing on plain Auto, with or without a [mode] decode key, makes the session an
+       EDACS one, whose raw sink it opens: Auto opened none at start. */
+    for (int has_mode = 0; has_mode <= 1; has_mode++) {
+        init_decode_mode_context(&opts, &state);
+        (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+        opts.monitor_input_audio = 0;
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_mode = has_mode;
+        cfg.decode_mode = DSDCFG_MODE_AUTO;
+        cfg.has_edacs_variant = 1;
+        cfg.edacs_ea = 1;
+        g_ensure_analog_calls = g_ensure_digital_calls = 0;
+        (void)dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_int(has_mode ? "config [mode] + edacs_ea: an EDACS session" : "config edacs_ea: an EDACS session",
+                         dsd_edacs_session(&opts, &state), 1);
+        /* The digital output an EDACS session writes, its raw sink with it (dsd_audio_ensure_digital_output()). */
+        rc |= expect_int(has_mode ? "config [mode] + edacs_ea opens its sinks" : "config edacs_ea opens its sinks",
+                         g_ensure_digital_calls, 1);
+        freeState(&state);
+    }
+
     /* `-fa -T -8 -o udp`: the toggle that makes the session EDACS turns -8 off, as startup does for `-fh -T -8 -o udp`
        (engine output setup); the same session untrunked, or trunked on another output, keeps it, as startup does. */
     static const struct {
