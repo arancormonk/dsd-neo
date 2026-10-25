@@ -9,7 +9,7 @@
 #include <float.h>
 #include <limits.h>
 #include <locale.h>
-#include <math.h>
+#include <math.h> // IWYU pragma: keep (NAN and INFINITY: MSVC defines them here, not in float.h)
 #include <stdio.h>
 #include <string.h>
 

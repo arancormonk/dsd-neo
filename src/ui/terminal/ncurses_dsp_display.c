@@ -20,7 +20,6 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/platform.h"
 #include "ncurses_dsp_status_format.h"
 #include "ui_row.h"
 

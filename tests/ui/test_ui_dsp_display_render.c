@@ -11,7 +11,7 @@
  */
 
 #include <assert.h>
-#include <curses.h>
+#include <curses.h> // IWYU pragma: keep (read before the getmaxyx override below)
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/opts.h>

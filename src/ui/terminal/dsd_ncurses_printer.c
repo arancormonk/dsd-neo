@@ -518,7 +518,7 @@ ui_row_gain_value_field(ui_row* row, int is_auto, int db) {
 }
 
 static void
-ui_row_rtl_gain_field(ui_row* row, dsd_opts* opts) {
+ui_row_rtl_gain_field(ui_row* row, const dsd_opts* opts) {
 #ifndef USE_RADIO
     ui_row_gain_value_field(row, opts->rtl_gain_value == 0, opts->rtl_gain_value);
 #else

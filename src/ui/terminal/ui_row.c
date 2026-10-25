@@ -12,7 +12,6 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include <string.h>
 #include <wchar.h>
 
 /* The cut marker: U+2026 HORIZONTAL ELLIPSIS, or three periods. Arrays, so the choice can be read off the pointer
@@ -245,17 +244,10 @@ ui_row_print_bytes(const char* text, size_t from, size_t to) {
     }
 }
 
-void
-ui_row_end(ui_row* row) {
-    if (!row) {
-        return;
-    }
-    attr_t saved_attrs = 0;
-    short saved_pair = 0;
-    (void)attr_get(&saved_attrs, &saved_pair, NULL);
-
-    /* Blanks a field kept for a reading that is not there draw nothing at the end of a row: drop them before fitting,
-       so they never cost a field that would otherwise fit. */
+/* Blanks a field kept for a reading that is not there draw nothing at the end of a row: drop them before fitting, so
+   they never cost a field that would otherwise fit. */
+static void
+ui_row_trim_trailing_blanks(ui_row* row) {
     while (row->len > 0U && row->text[row->len - 1U] == ' ') {
         row->len--;
     }
@@ -265,34 +257,52 @@ ui_row_end(ui_row* row) {
             row->field_end[i] = row->len;
         }
     }
+}
 
-    size_t cut = row->len;
-    const char* marker = NULL;
+/* Where the row is cut, and the marker after it (NULL when the row fits, or when no marker fits beside any text). */
+static size_t
+ui_row_fit(const ui_row* row, const char** marker) {
+    *marker = NULL;
     if (row->budget <= 0) {
-        cut = 0U;
-    } else if (ui_row_cells(row, row->text, row->len) > row->budget) {
-        const char* text = row->unicode ? k_marker_utf8 : k_marker_ascii;
-        const int marker_cells = row->unicode ? 1 : 3;
-        if (row->budget > marker_cells) {
-            const int room = row->budget - marker_cells;
-            int k = -1;
-            for (int i = 0; i < row->fields; i++) {
-                if (ui_row_cells(row, row->text, row->field_end[i]) > room) {
-                    break;
-                }
-                k = i;
-            }
-            cut = (k >= 0) ? row->field_end[k] : ui_row_code_point_cut(row, room);
-            /* The marker follows the last character shown, not the blanks a padded field kept after it. */
-            while (cut > 0U && row->text[cut - 1U] == ' ') {
-                cut--;
-            }
-            marker = text;
-        } else {
-            /* No room for a marker beside any text: cut without one. */
-            cut = ui_row_code_point_cut(row, row->budget);
-        }
+        return 0U;
     }
+    if (ui_row_cells(row, row->text, row->len) <= row->budget) {
+        return row->len;
+    }
+    const int marker_cells = row->unicode ? 1 : 3;
+    if (row->budget <= marker_cells) {
+        /* No room for a marker beside any text: cut without one. */
+        return ui_row_code_point_cut(row, row->budget);
+    }
+    const int room = row->budget - marker_cells;
+    int k = -1;
+    for (int i = 0; i < row->fields; i++) {
+        if (ui_row_cells(row, row->text, row->field_end[i]) > room) {
+            break;
+        }
+        k = i;
+    }
+    size_t cut = (k >= 0) ? row->field_end[k] : ui_row_code_point_cut(row, room);
+    /* The marker follows the last character shown, not the blanks a padded field kept after it. */
+    while (cut > 0U && row->text[cut - 1U] == ' ') {
+        cut--;
+    }
+    *marker = row->unicode ? k_marker_utf8 : k_marker_ascii;
+    return cut;
+}
+
+void
+ui_row_end(ui_row* row) {
+    if (!row) {
+        return;
+    }
+    attr_t saved_attrs = 0;
+    short saved_pair = 0;
+    (void)attr_get(&saved_attrs, &saved_pair, NULL);
+
+    ui_row_trim_trailing_blanks(row);
+    const char* marker = NULL;
+    const size_t cut = ui_row_fit(row, &marker);
 
     size_t pos = 0U;
     for (int i = 0; i < row->ops_count && row->ops[i].at <= cut; i++) {

@@ -6572,6 +6572,20 @@ stream_open_validate_capture_writer_request(const dsd_opts* opts, RadioSourceKin
     return 0;
 }
 
+/* The tuner gain a capture records. A tuner that reports none (Airspy, a Soapy device without a gain range) records
+   none, never the read's error code as a gain. */
+static void
+capture_fill_tuner_gain(dsd_iq_capture_config* cfg) {
+    int tuner_gain = 0;
+    if (rtl_device_get_tuner_gain(rtl_device_handle, &tuner_gain) == 0) {
+        cfg->tuner_gain_tenth_db = tuner_gain;
+        cfg->tuner_gain_unknown = 0;
+    } else {
+        cfg->tuner_gain_tenth_db = 0;
+        cfg->tuner_gain_unknown = 1;
+    }
+}
+
 static int
 stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind source_kind, int native_format,
                                        dsd_iq_capture_config* cfg, char* err_buf, size_t err_buf_size) {
@@ -6597,15 +6611,7 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     cfg->center_frequency_hz = (uint64_t)opts->rtlsdr_center_freq;
     cfg->capture_center_frequency_hz = (uint64_t)load_dongle_frequency();
     cfg->ppm = load_dongle_ppm_error();
-    /* A tuner that reports no gain (Airspy, a Soapy device without a gain range) records none, never the read's error
-       code as a gain. */
-    int tuner_gain = 0;
-    if (rtl_device_get_tuner_gain(rtl_device_handle, &tuner_gain) == 0) {
-        cfg->tuner_gain_tenth_db = tuner_gain;
-    } else {
-        cfg->tuner_gain_tenth_db = 0;
-        cfg->tuner_gain_unknown = 1;
-    }
+    capture_fill_tuner_gain(cfg);
     cfg->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
     cfg->base_decimation = (uint32_t)((demod.downsample_passes > 0) ? (1U << demod.downsample_passes) : 1U);
     cfg->post_downsample = (uint32_t)((demod.post_downsample > 0) ? demod.post_downsample : 1);
