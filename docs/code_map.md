@@ -3825,6 +3825,15 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
   choose: a CQPSK vote there (a carrier near 0 Hz) took the front end off the monitor path. Tests:
   `FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`.
+- dPMR FS2 acceptance (`frame_sync_try_dpmr()` in `dsd_frame_sync.c`), a decided cost. FS2 (ETSI TS 102 658 6.1.2,
+  5FF77D) is matched as one exact window of 12 sign-sliced symbols, which about one window in 4096 of any carrier's
+  payload or of receiver noise passes: about 0.6-0.8 false FS2s a second on noise and on NXDN48 data alike (8 in the 10
+  s noise_floor fixture under -fm). Each one reads a 372-dibit dPMR frame, about 155 ms, and stands the NXDN48 matcher
+  down for it (`dsd_frame_sync_suppress_nxdn48_sync()`, #374); nothing is published, since the CCH CRC gate (#407) holds
+  every call. A four-level read of FS2 (all twelve symbols outer, within two bit errors) would drop those, but is not
+  used: the closed-eye off-air `dpmr` fixture reads 5-8 bit errors on its FS2s, the same as noise (5-7), so no threshold
+  keeps its syncs (`DECODE_IQ_DPMR_MARGINAL`) and drops noise, and on the scan captures the shorter 2400/4 dwells it
+  leaves move DMR and NXDN48 by as much as a 300-symbol dwell change does.
 - M17 sync acceptance (`frame_sync_try_m17()` in `dsd_frame_sync.c`). The windows are sign-sliced, so the eight-symbol
   words and the alternating preamble are cheap for receiver noise to reproduce. A preamble candidate needs
   `DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS` (32) consecutive windows within one error, then the LSF or BERT word within one
