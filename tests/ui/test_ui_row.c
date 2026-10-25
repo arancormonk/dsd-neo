@@ -43,7 +43,11 @@ static void
 screen_row_text(int y, int cols, char* out, size_t out_size) {
     size_t n = 0;
     out[0] = '\0';
-    for (int x = 0; x < cols && n + 12U < out_size; x++) {
+    int x = 0;
+    while (x < cols && n + 12U < out_size) {
+        /* The cells this character takes: the right half of a wide character reads as the same character, so the next
+           read starts after it. */
+        int step = 1;
         cchar_t cc;
         if (mvin_wch(y, x, &cc) == ERR) {
             break;
@@ -58,10 +62,11 @@ screen_row_text(int y, int cols, char* out, size_t out_size) {
         } else {
             n += (size_t)DSD_SNPRINTF(out + n, out_size - n, "<U+%04X>", (unsigned int)wch[0]);
             if (wcwidth(wch[0]) == 2) {
-                x++; /* the right half of a wide character reads as the same character */
+                step = 2;
             }
         }
         out[n] = '\0';
+        x += step;
     }
     while (n > 0 && out[n - 1] == ' ') {
         out[--n] = '\0';
