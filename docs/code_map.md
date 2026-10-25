@@ -3896,34 +3896,33 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
   `_AUTO` twin, `DECODE_IQ_NXDN96_WEAK`, `DECODE_IQ_NXDN96_WEAK_0DB`, `DECODE_IQ_NXDN96`.
-- P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a
-  P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
+- P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a P25p1
+  signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
   `p25_p1_mod_probe_active`). The CQPSK chain cannot read DMR, NXDN96, YSF or M17, so when any of them is enabled a
   trial that has validated nothing by half its dwell -- the hunt counter, symbols the search spent, at half the dwell,
   which the budget path checks on every symbol once a pass has run (2700 of 5400; handler-read frames do not count) --
   hands the rest of it back to C4FM with the votes free (`frame_sync_p25p1_cqpsk_trial_half_dwell()`,
-  `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`: `getFrameSync()` rebuilds its window in
-  place and keeps hunting, so neither its no-sync hooks nor the engine's `noCarrier()` after a no-sync return run,
-  since the dwell goes on, from the budget path and from the matchless-pass timeout alike, which can reach the point
-  on the same symbol; a modulation lock applied live ends a probe or a comparison in flight at the next
-  `getFrameSync()` entry, `frame_sync_apply_cli_mod_lock()`, which moves the front end with the decoder, and the
-  handback refuses under a lock and on a trunked voice channel the engine tuned, as a full dwell expiry holds the
-  profile there; an accepted tune, on either thread, retires a probe in flight, and one that fails keeps it; a lock always wins, so reconciling a watchdog tune's notice puts neither the decoder
-  nor the front end on the tune's chain against one);
-  P25p1 alone and a trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep
-  the whole dwell, and the rotation and dwell lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`)
-  records the chain that carried it (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore
-  and trunk retunes read). The first
+  `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`: `getFrameSync()` rebuilds its window in place
+  and keeps hunting, so neither its no-sync hooks nor the engine's `noCarrier()` after a no-sync return run, since the
+  dwell goes on, from the budget path and from the matchless-pass timeout alike, which can reach the point on the same
+  symbol; a modulation lock applied live ends a probe or a comparison in flight at the next `getFrameSync()` entry,
+  `frame_sync_apply_cli_mod_lock()`, which moves the front end with the decoder, and the handback refuses under a lock
+  and on a trunked voice channel the engine tuned, as a full dwell expiry holds the profile there; an accepted tune, on
+  either thread, retires a probe in flight, and one that fails keeps it; a lock always wins, so reconciling a watchdog
+  tune's notice puts neither the decoder nor the front end on the tune's chain against one); P25p1 alone and a
+  trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep the whole dwell, and the rotation and dwell
+  lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
+  (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore and trunk retunes read). The first
   NID-decoded frame of an acquisition starts one chain comparison (`frame_sync_p25p1_mod_compare_note()`,
   `dsd_state::p25_p1_mod_compare`, run on `getFrameSync()` entry): the symbols that chain's validated frames read over
   one search pass (`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`) are added up. P25p1 frames come back to back, so a search
   after a validated frame at least as long as that frame, before the next one or the pass's end, is a frame read by
-  nobody (a one-block TSDU reads 134 of its 180-symbol slot, and the search to the next is 46); a pass without one
-  keeps the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that read
-  strictly more keeps the profile and becomes the learned modulation, with a verdict that stops a frame on that chain
-  opening another comparison. The other chain's pass is refunded to the dwell (the counter goes back to its value when
-  that pass began).
+  nobody (a one-block TSDU reads 134 of its 180-symbol slot, and the search to the next is 46); a pass without one keeps
+  the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that read strictly
+  more keeps the profile and becomes the learned modulation, with a verdict that stops a frame on that chain opening
+  another comparison. The other chain's pass is refunded to the dwell (the counter goes back to its value when that pass
+  began).
   - The other chain's pass starts at a `getFrameSync()` entry and is one search pass long, so on a carrier that chain
     cannot sync it runs out on the symbol the matchless-pass timeout fires on. It ends there instead, on whichever runs
     out first, its symbols read or the call's symbols searched (a read that commits no symbol counts only in the
