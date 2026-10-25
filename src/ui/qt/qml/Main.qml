@@ -563,6 +563,11 @@ Window {
                 layer.leave();
         }
         currentTab = 0;
+        // B5: on a brokered host Home keeps its scroll position across a
+        // session, which can leave the notice and the receiver's panel out of
+        // view. The desktop keeps where it was.
+        if (decoderHost && decoderHost.localDeviceBrokered)
+            homeScreen.revealTop();
     }
     onShowFailureChanged: {
         // A host failure can arrive after the session-active notification.
@@ -970,7 +975,9 @@ Window {
                     source: mainRoot.sourceLabel(),
                     canRetry: !decoderHost.sessionActive && !decoderHost.transitioning
                 })
-            usbRelevant: !mainRoot.showFailure || !mainRoot.attemptedSource || mainRoot.attemptedSource.system.sourceType === "usb"
+            // B1: an Airspy is as much a brokered receiver as an RTL-SDR.
+            localDeviceRelevant: !mainRoot.showFailure || !mainRoot.attemptedSource || mainRoot.attemptedSource.system.sourceType === "usb" || mainRoot.attemptedSource.system.sourceType === "airspy"
+            requestedSource: mainRoot.awaitingUsbAccess && mainRoot.pendingStart ? mainRoot.pendingStart.sourceType : decoderHost && decoderHost.localDeviceRequestedSource ? decoderHost.localDeviceRequestedSource : ""
             completionMessage: mainRoot.completionMessage
             onRetryFailure: mainRoot.retrySource()
             onEditFailure: mainRoot.editFailedSource()

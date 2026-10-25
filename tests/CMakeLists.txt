@@ -4690,6 +4690,7 @@ if(DSD_ENABLE_QT_UI)
                 modal_sheet_outside_tap
                 input_commit
                 radio_persistence
+                device_status
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(

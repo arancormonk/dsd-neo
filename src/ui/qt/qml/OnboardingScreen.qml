@@ -12,8 +12,15 @@ Item {
     signal getStarted
     signal networkSource
 
-    readonly property bool dongleFailed: decoderHost && decoderHost.localDeviceFailureKind !== 0
-    readonly property bool dongleReady: decoderHost && (!decoderHost.localDeviceBrokered || (decoderHost.localDeviceReady && !dongleFailed))
+    // B6: where the host brokers USB access the card names the receiver it
+    // reports (RTL-SDR or Airspy) through the shared status; the desktop opens
+    // its receiver itself and keeps its wording.
+    readonly property bool brokered: !!decoderHost && decoderHost.localDeviceBrokered === true
+
+    DeviceStatus {
+        id: deviceStatus
+        host: decoderHost
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -143,8 +150,9 @@ Item {
                         Accessible.name: text
                         readonly property bool navigationAllowed: Navigation.allows(screen)
                         Accessible.ignored: !navigationAllowed || !visible
+                        objectName: "dongleStatusTitle"
                         width: parent.width
-                        text: screen.dongleFailed ? qsTr("RTL-SDR needs attention") : screen.dongleReady ? qsTr("RTL-SDR dongle connected") : qsTr("No dongle detected")
+                        text: screen.brokered ? deviceStatus.headline : qsTr("RTL-SDR dongle connected")
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(15)
@@ -158,7 +166,7 @@ Item {
                         Accessible.ignored: !navigationAllowed || !visible
                         objectName: "dongleStatusText"
                         width: parent.width
-                        text: decoderHost.localDeviceStatus || (screen.dongleReady ? "RTL2832U · USB-OTG · " + qsTr("ready") : qsTr("plug one in, then tap Connect"))
+                        text: screen.brokered ? deviceStatus.detailText : decoderHost.localDeviceStatus || "RTL2832U · USB-OTG · " + qsTr("ready")
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(14)
@@ -166,10 +174,10 @@ Item {
                     }
                     OutlineButton {
                         objectName: "dongleRetry"
-                        visible: !screen.dongleReady && decoderHost && decoderHost.localDeviceBrokered
-                        width: 110
-                        text: screen.dongleFailed ? qsTr("Retry") : qsTr("Connect")
-                        enabled: !decoderHost.sessionActive
+                        visible: screen.brokered && deviceStatus.actionText.length > 0
+                        width: Math.max(110, implicitWidth)
+                        text: deviceStatus.actionText
+                        enabled: deviceStatus.canAct
                         onClicked: decoderHost.requestLocalDeviceAccess()
                     }
                 }

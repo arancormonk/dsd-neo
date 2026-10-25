@@ -8,7 +8,7 @@ Item {
     width: 390
     height: 844
 
-    Ui.HomeScreen { id: home; anchors.fill: parent; usbRelevant: false }
+    Ui.HomeScreen { id: home; anchors.fill: parent; localDeviceRelevant: false }
     SignalSpy { id: systemAdded; target: home; signalName: "addSystem" }
     SignalSpy { id: systemImported; target: home; signalName: "importSystem" }
     SignalSpy { id: scanAdded; target: home; signalName: "addScanList" }
@@ -58,7 +58,7 @@ Item {
             testContext.setRadioReference("available", false);
             home.failure = ({});
             home.completionMessage = "";
-            home.usbRelevant = false;
+            home.localDeviceRelevant = false;
             root.width = 390;
             root.height = 844;
             Ui.Theme.fontScale = 1;

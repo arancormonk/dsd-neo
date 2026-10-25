@@ -240,6 +240,33 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     QString attachedSource;
 
+    // #647: the connected receiver's kind. "usb" until a case sets it, which is
+    // what the base host answers, so cases that only connect an RTL-SDR read as before.
+    QString
+    localDeviceSource() const override {
+        return usbSource;
+    }
+
+    bool
+    localDeviceRequestPending() const override {
+        return usbPending;
+    }
+
+    QString
+    localDeviceRequestedSource() const override {
+        return usbRequestedSource;
+    }
+
+    QVariantMap
+    receiverHealth() const override {
+        return health;
+    }
+
+    QString usbSource = QStringLiteral("usb");
+    bool usbPending = false;
+    QString usbRequestedSource;
+    QVariantMap health = healthyReceiver();
+
     bool usbBrokered = false;
     bool usbReady = false;
     int usbRequests = 0;
@@ -2052,6 +2079,31 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Publish the rest of the brokered USB record (#647): the connected receiver's kind ("" while none is
+     * connected, as Android reports it), whether an access request awaits its answer, and the kind it asked for.
+     */
+    Q_INVOKABLE void
+    setLocalDeviceRecord(const QString& source, bool pending, const QString& requestedSource) {
+        m_lifecycle_host->usbSource = source;
+        m_lifecycle_host->usbPending = pending;
+        m_lifecycle_host->usbRequestedSource = requestedSource;
+        Q_EMIT m_lifecycle_host->localDeviceChanged();
+    }
+
+    /** @brief Report the last session's receiver as "ok", "lost" or "failed", with its kind (#647). */
+    Q_INVOKABLE void
+    setReceiverHealth(const QString& state, const QString& source) {
+        QVariantMap health = dsd_qt::DecoderHost::healthyReceiver();
+        if (state != QStringLiteral("ok")) {
+            health[QStringLiteral("state")] = state;
+            health[QStringLiteral("source")] = source;
+            health[QStringLiteral("session")] = qlonglong(1);
+        }
+        m_lifecycle_host->health = health;
+        Q_EMIT m_lifecycle_host->runResultChanged();
+    }
+
     Q_INVOKABLE int
     dongleRetryRequests() const {
         return m_lifecycle_host->usbRequests;
@@ -2767,6 +2819,9 @@ class Setup : public QObject {
         host[QStringLiteral("locationSupported")] = false;
         host[QStringLiteral("shareSupported")] = false;
         host[QStringLiteral("localDeviceFailureKind")] = 0;
+        host[QStringLiteral("localDeviceRequestPending")] = false;
+        host[QStringLiteral("localDeviceRequestedSource")] = QString();
+        host[QStringLiteral("receiverHealth")] = dsd_qt::DecoderHost::healthyReceiver();
         host[QStringLiteral("sessionState")] = 0;
         host[QStringLiteral("keyboardTop")] = -1;
         m_host = host;
