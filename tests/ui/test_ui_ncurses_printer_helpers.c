@@ -977,7 +977,7 @@ test_dmr_mono_override_terminal_reporting(void) {
     ui_render_audio_decode_section(&opts, &state, 0);
     assert_capture_contains("Relaxed CRC ");
     assert(strstr(g_printw_capture, "CRC/(RAS)") == NULL);
-    const dsd_scan_option_values strict_row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
+    static const dsd_scan_option_values strict_row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
     g_scan_row_options = &strict_row;
     reset_printw_capture();
     ui_render_audio_decode_section(&opts, &state, 0);

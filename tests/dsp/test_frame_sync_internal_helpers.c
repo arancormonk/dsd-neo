@@ -2238,7 +2238,8 @@ static void
 read_symbol_stream(dsd_opts* opts, dsd_state* state, const char* symbols, int count, int* nxdn, int* m17) {
     char window[25];
     int filled = 0;
-    for (int i = 0; i < count; i++) {
+    int i = 0;
+    while (i < count) {
         state->symbolcnt++;
         if (filled == 24) {
             DSD_MEMMOVE(window, window + 1, 23);
@@ -2256,13 +2257,15 @@ read_symbol_stream(dsd_opts* opts, dsd_state* state, const char* symbols, int co
             (*m17)++;
             consumed = 184;
         }
+        int step = 1;
         if (consumed > 0) {
             const int left = count - 1 - i;
             const int skip = consumed < left ? consumed : left;
             state->symbolcnt += (uint32_t)skip;
-            i += skip;
+            step += skip;
             filled = 0;
         }
+        i += step;
     }
 }
 
