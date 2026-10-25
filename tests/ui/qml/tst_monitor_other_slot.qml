@@ -269,8 +269,13 @@ Item {
         }
         function test_hiding_monitor_closes_menu() {
             var menu = openMenu();
+            verify(menu.visible);
             monitor.visible = false;
-            compare(menu.visible, false);
+            // A hidden parent hides the menu whether or not it closed: only showing
+            // the Monitor again tells a closed menu from a hidden one.
+            monitor.visible = true;
+            waitForRendering(monitor);
+            compare(menu.visible, false, "hiding the Monitor closes the menu");
         }
     }
 }
