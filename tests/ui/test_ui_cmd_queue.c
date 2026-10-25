@@ -9145,6 +9145,52 @@ test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off(void) {
     return rc;
 }
 
+/*
+ * Leaving EDACS for another mode leaves its addressing: EDACS (here with -fE's extended addressing and ESK), then DMR,
+ * then Auto is plain Auto, not an EDACS session, and a trunked one presumes P25 for its startup hunt. EDACS straight to
+ * Auto keeps it (above). A scan row's own preset is no such switch: a DMR row on air and left keeps the configured
+ * EDACS addressing.
+ */
+static int
+test_leaving_edacs_clears_its_addressing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.trunk_enable = 1;
+    static const dsdneoUserDecodeMode k_path[] = {DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DMR, DSDCFG_MODE_AUTO};
+    for (size_t i = 0; i < sizeof k_path / sizeof k_path[0]; i++) {
+        rc |= expect_int("mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)k_path[i]),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+        if (k_path[i] == DSDCFG_MODE_EDACS_PV) {
+            state.ea_mode = 1;
+            state.esk_mask = 0xA0;
+        }
+    }
+    rc |= expect_int("EDACS, DMR, Auto: no addressing", state.ea_mode, -1);
+    rc |= expect_int("EDACS, DMR, Auto: no ESK", state.esk_mask, 0);
+    rc |= expect_int("EDACS, DMR, Auto is no EDACS session", dsd_edacs_session(&opts, &state), 0);
+    rc |= expect_int("EDACS, DMR, Auto presumes P25", dsd_trunk_p25_cold_start_presumed(&opts, &state), 1);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    state.ea_mode = 1;
+    state.esk_mask = 0xA0;
+    rc |= expect_int("dmr row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("dmr row runs DMR", opts.frame_dmr, 1);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("dmr row left: EDACS again", opts.frame_provoice, 1);
+    rc |= expect_int("dmr row left: addressing kept", state.ea_mode, 1);
+    rc |= expect_int("dmr row left: ESK kept", state.esk_mask, 0xA0);
+    freeState(&state);
+    return rc;
+}
+
 typedef struct {
     int files;
     int named;
@@ -19809,6 +19855,7 @@ main(void) {
     rc |= test_decode_mode_set_ensures_family_sink();
     rc |= test_edacs_selection_and_input_monitor_ensure_their_sink();
     rc |= test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off();
+    rc |= test_leaving_edacs_clears_its_addressing();
     rc |= test_decode_mode_set_closes_nfm_recording_named();
     rc |= test_provoice_toggle_closes_nfm_recording_named();
     rc |= test_identity_forgetting_commands_clear_the_record();

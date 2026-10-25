@@ -696,6 +696,15 @@ dsd_stage_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         preset->apply(opts, state);
     }
 
+    /* EDACS addressing (and its ESK) belongs to the EDACS session: every preset but EDACS/ProVoice's, which selects
+       standard addressing, and Auto's, which keeps it (dsd_edacs_session()), leaves it. Left selected, EDACS, then DMR,
+       then Auto would be an EDACS session again. A scan row's preset keeps the configured addressing
+       (scan_scope_apply_row_decoder()). */
+    if (mode != DSDCFG_MODE_EDACS_PV && mode != DSDCFG_MODE_AUTO) {
+        state->ea_mode = -1;
+        state->esk_mask = 0;
+    }
+
     /* Analog monitor is a mode like any other, so leaving it is part of choosing a
        different one. With nothing clearing analog_only,
        dsd_infer_decode_mode_preset() answers ANALOG forever: the CLI becomes

@@ -765,7 +765,8 @@ Notes
   lockout and Skip work on P25, DMR and NXDN calls. Once EDACS is selected, Auto behaves as the EDACS/ProVoice preset
   does for those (the analog sink opens then, and on a trunked `-o udp` run `-8` turns off, as under `-fh -T`; so does
   a switch to EDACS/ProVoice or a config apply that selects EDACS).
-  ProVoice alone (`-fp`) is an EDACS session without an addressing mode.
+  ProVoice alone (`-fp`) is an EDACS session without an addressing mode. Any other preset clears the addressing, so
+  EDACS, then DMR, then Auto is plain Auto again; a scan row's own class keeps the configured addressing.
   Only `-fz` (M17 alone) waits for a TCP audio server that refuses or drops the connection; under Auto a refused
   connect is an error and a dropped one ends the input, as in any other mode.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`

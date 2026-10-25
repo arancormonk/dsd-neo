@@ -648,11 +648,16 @@ scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope*
     opts->mod_p25p2_profile_lock = 0;
     const int channels = opts->pulse_digi_out_channels;
     const int rate = opts->pulse_digi_rate_out;
+    /* The configured EDACS addressing is the session's, which a row's preset would clear: the row leaves it be. */
+    const int ea_mode = state->ea_mode;
+    const unsigned short esk_mask = state->esk_mask;
     if (how == SCAN_ROW_COMMITTED) {
         (void)dsd_apply_decode_mode_preset(mode_presets[scope->mode], DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
     } else {
         (void)dsd_stage_decode_mode_preset(mode_presets[scope->mode], DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
     }
+    state->ea_mode = ea_mode;
+    state->esk_mask = esk_mask;
     if (scope->mode == DSD_SCAN_MODE_P25) {
         opts->frame_dmr = 0;
         opts->frame_x2tdma = 0;
