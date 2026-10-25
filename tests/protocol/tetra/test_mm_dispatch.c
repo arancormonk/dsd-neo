@@ -2400,9 +2400,78 @@ test_lu_ciphering_parameters_ksg(void) {
     free(opts);
 }
 
+/* A D-OTAR SCK Provide (EN 300 392-7 table A.16) without acknowledgement, under an individual session key, giving
+ * @p count SCKs whose SCK use bits are @p uses (bit i: SCK i is for direct mode), all associated with KSG @p ksg, for
+ * the serving network (no address extension). Returns its length. */
+static int
+sck_provide_bits(uint8_t* bits, int count, unsigned uses, uint32_t ksg) {
+    int off = 0;
+    pack_bits(bits, off, TETRA_MM_D_OTAR, 4);
+    off += 4;
+    pack_bits(bits, off, 2, 4); /* SCK Provide */
+    off += 4;
+    pack_bits(bits, off, 0, 2); /* no acknowledgement, reserved */
+    off += 2;
+    pack_bits(bits, off, 30, 16); /* max response timer */
+    off += 16;
+    pack_bits(bits, off, 0, 1); /* individual session key: the 80-bit random seed follows */
+    off += 1 + 80;
+    pack_bits(bits, off, (uint32_t)count, 3);
+    off += 3;
+    for (int key = 0; key < count; key++) {
+        pack_bits(bits, off, (uint32_t)key, 5); /* SCKN */
+        off += 5 + 16;                          /* SCK-VN */
+        pack_bits(bits, off, (uses >> key) & 1U, 1);
+        off += 1 + 1 + 120; /* reserved, sealed SCK */
+    }
+    pack_bits(bits, off, ksg, 4);
+    off += 4 + 3;               /* retry interval */
+    pack_bits(bits, off, 0, 1); /* O-bit */
+    return off + 1;
+}
+
+/* An SCK Provide names the trunked network's algorithm only with an SCK for trunked mode (SCK use, table A.101):
+ * SCKs for direct mode alone, or none at all, name the algorithm of no trunked traffic (clause 4.5.2). */
+static void
+test_otar_sck_use_names_trunked_algorithm(void) {
+    uint8_t bits[1200];
+    dsd_state* state = alloc_state();
+    dsd_opts* opts = alloc_opts();
+    tetra_state_t* ts = tetra_st(state);
+    ts->net_known = 1;
+    ts->mcc = 262;
+    ts->mnc = 1001;
+
+    DSD_MEMSET(bits, 0, sizeof bits);
+    int n = sck_provide_bits(bits, 2, 0x3U, 0); /* two DMO SCKs, TEA1 */
+    tetra_mm_pdu pdu;
+    CHECK(tetra_mm_decode(bits, n, &pdu) && pdu.otar.key_count == 2 && pdu.otar.sck_use[1] == 1,
+          "the direct mode SCK Provide decodes");
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1001) == 0U, "SCKs for direct mode alone name no trunked algorithm");
+
+    DSD_MEMSET(bits, 0, sizeof bits);
+    n = sck_provide_bits(bits, 0, 0U, 0);
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1001) == 0U, "an SCK Provide with no SCK names nothing");
+
+    DSD_MEMSET(bits, 0, sizeof bits);
+    n = sck_provide_bits(bits, 2, 0x2U, 1); /* a TMO SCK and a DMO SCK, TEA2 */
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_seen(state, 262, 1001) == 0x0002U, "an SCK for trunked mode names TEA2");
+
+    DSD_MEMSET(bits, 0, sizeof bits);
+    n = sck_provide_bits(bits, 1, 0U, 1);
+    tetra_mm_dispatch(bits, n, 3, opts, state);
+    CHECK(tetra_air_ksg_lookup(state, 262, 1001) == 1, "a trunked mode SCK alone names TEA2 too");
+    free_state(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_carrier_to_dl_hz();
+    test_otar_sck_use_names_trunked_algorithm();
     test_lu_ciphering_parameters_ksg();
     test_security_golden_pdus();
     test_standard_mm_pdus();

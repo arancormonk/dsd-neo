@@ -588,11 +588,28 @@ mm_otar_detail(const tetra_mm_otar_t* o, char* out, size_t cap) {
     DSD_SNPRINTF(out, cap, " count=%u%s%s", (unsigned)o->key_count, alg[0] ? " alg=" : "", alg);
 }
 
+/* 1 when an SCK Provide provides an SCK for trunked mode: each SCK's SCK use says whether it is for trunked or direct
+ * mode operation (EN 300 392-7 table A.101, clause 4.5.2), and the one KSG number of the PDU goes with every SCK. */
+static int
+mm_otar_provides_tmo_sck(const tetra_mm_otar_t* o) {
+    for (uint8_t i = 0; i < o->key_count; i++) {
+        if (o->sck_use[i] == 0u) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* SCK and GCK Provide name the algorithm (table A.73) for the network in their address extension, or for the
- * serving network when they carry none (tables A.12 and A.16, address extension notes). */
+ * serving network when they carry none (tables A.12 and A.16, address extension notes). An SCK Provide names the
+ * network's trunked mode algorithm only with an SCK for trunked mode: SCKs for direct mode alone, or none, name the
+ * algorithm of no trunked traffic. */
 static void
 mm_otar_remember_ksg(const mm_ctx* ctx, const tetra_mm_otar_t* o) {
     if (o->subtype != 2u && o->subtype != 4u) {
+        return;
+    }
+    if (o->subtype == 2u && !mm_otar_provides_tmo_sck(o)) {
         return;
     }
     if (o->address.valid) {
