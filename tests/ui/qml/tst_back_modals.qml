@@ -61,6 +61,9 @@ Item {
             mouseClick(button, button.width / 2, button.height / 2);
         }
         function init() {
+            // A control that opens a modal while it has the focus keeps its tab
+            // stop until the modal takes the focus; Qt warns when it does not.
+            failOnWarning(/activeFocusOnTab/);
             testContext.useLifecycleHost(true);
             oldOnboarding = prefs.onboardingDone;
             oldAutoStart = prefs.autoStartOnAttach;
