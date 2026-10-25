@@ -1685,10 +1685,10 @@ suite runs under this compiler.
   `dsd_engine_carrier_boundary()` beside `dsd_rxid_reset()`; every applied trunk tune, which the record leaves to the
   engine (`dsd_rxid_apply_trunk_tune()` returns 1 when it applied a drop, `dsd_rxid_request_trunk_tune()` when it
   applied one at once inside a dispatch): `dsd_engine_rxid_trunk_tune()` on the decoder thread or inside a dispatch,
-  `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan advance
-  and forced release, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's
-  thread; `trunk_scan_switch_to()` and its rollback, which restores the record without the evidence and so drops the
-  part; a colour-code change on the carrier (the BS confidence relock, the MS/direct slot type and embedded colour
+  `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan
+  advance, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's thread;
+  `trunk_scan_switch_to()` (which also covers the forced release's own apply) and its rollback, which restores the
+  record without the evidence and so drops the part; a colour-code change on the carrier (the BS confidence relock, the MS/direct slot type and embedded colour
   code, `dmr_ras_note_color_code()`); the DMR reset command; a user move (`ui_user_move_forgets_identity()`); and the
   guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so the next transmission proves RAS again. A frame
   of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
