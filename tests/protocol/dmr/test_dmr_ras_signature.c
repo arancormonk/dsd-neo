@@ -232,6 +232,29 @@ test_ras_csbk_distance_gate(void) {
     return failed;
 }
 
+/* The candidate's own gate: a codeword the decoder reaches beyond distance 4 never replaces the extractor's payload.
+   The CSBK here passes its standard CRC with R = 4; with bits 7/14/21/104/170 flipped the extractor returns a wrong
+   payload with an irrecoverable error, and the codeword decoder reaches the original at distance 5. Adopted, that
+   codeword's check would pass and the CSBK would dispatch as an ordinary checked one; kept as extracted it keeps its
+   irrecoverable error (FEC ERR), with or without -F. */
+static int
+test_far_codeword_not_adopted(void) {
+    static const size_t far[5] = {7, 14, 21, 104, 170};
+    int failed = 0;
+    for (int relaxed = 0; relaxed <= 1; relaxed++) {
+        burst_rig rig;
+        if (rig_start(&rig, relaxed, k_csbk, k_r_ras, far, 5U, 0x03) != 0) {
+            return 1;
+        }
+        const char* tag = relaxed ? "far codeword, -F" : "far codeword, strict";
+        CHECK(tag, !has(&rig, "-RAS"));
+        CHECK(tag, has(&rig, "(FEC ERR)"));
+        CHECK(tag, !has(&rig, k_csbk_sites));
+        rig_close(&rig);
+    }
+    return failed;
+}
+
 /* Voice LC A (group 2002, source 1001) sent with the RS(12,9) parity of LC B, which differs from A in one target byte,
    and R = 4 inside a clean BPTC codeword: a RAS LC whose private parity lies one RS symbol from B's ordinary parity.
    Ordinary RS correction would "correct" it into B and report it valid. With R set it is never RS-corrected: without
@@ -436,6 +459,7 @@ main(void) {
     failed |= test_signature_rules();
     failed |= test_noise_csbk_not_ras();
     failed |= test_ras_csbk_distance_gate();
+    failed |= test_far_codeword_not_adopted();
     failed |= test_ras_lc_never_rs_corrected();
     failed |= test_layout_rules();
     failed |= test_nearest_codeword_adoption();
