@@ -2447,8 +2447,15 @@ lifecycle host off and on again republishes it). The same test context feeds the
 facts (`setLocalDeviceRecord()`, `setReceiverHealth()`, `setDeviceRequestPends()`,
 `emitLocalDeviceAttached(kind)`), so these cases run on the desktop build. Every such feature keeps a
 non-brokered case pinning the desktop layout unchanged. Cases whose bindings or focus rules could warn call
-`failOnWarning()` in `init()` (`tst_main_receiver_notice.qml`, `tst_monitor_receiver.qml`): Qt's "Cannot set
-activeFocusOnTab to false once item is the active focus item" was a real defect there, not noise.
+`failOnWarning()` in `init()` (`tst_main_receiver_notice.qml`, `tst_monitor_receiver.qml`, and
+`tst_home_dongle_status.qml`'s `test_pill_keeps_focus_when_the_prompt_opens`): a focus-rule warning such as "Cannot
+set activeFocusOnTab to false once item is the active focus item" is a defect, not noise. The whole QML suite
+(`UI_QT_QML_CALL_LISTS`) runs without a `QWARN`; files whose warnings were real defects pin them the same way:
+`tst_back_modals.qml` (a focused button's tab stop), `tst_main_session_tools.qml` (binding loops in a Main recreated
+mid-session), `tst_history_session_identity.qml` (deferred work on an unloaded screen), `tst_monitor_layout_budget.qml`
+(a history clear cancelling a row the list is still building) and `tst_home_scan_lists.qml` /
+`tst_monitor_call_actions.qml` (an unnamed session's header). Fix a new warning at its cause rather than with
+`ignoreWarning()`, unless the warning is the behaviour a case asserts.
 
 The backup suites (`UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY`, `UI_QT_BACKUP_MODEL`; issue #580) build their
 configurations through the real models in storage that `dsd_test_qt_isolate_paths()`

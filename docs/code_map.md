@@ -7095,7 +7095,9 @@ Qt Quick frontend (`src/ui/qt`):
     ways. `kind`: the connected source when ready; else the receiver of the session that just ended
     (`receiverHealth.source`, so a receiver lost with no request on record is still named); else the requested one
     (`localDeviceRequestedSource`, which Main overrides with the source a start waits on); else the only kind on the bus
-    (`attachedDeviceSource`); else none, named "receiver". `state`, first match: `lost`/`fault` (`receiverHealth` lost
+    (`attachedDeviceSource`); else none, named "receiver". The requested kind outranks the bus: after an RTL-SDR
+    request with only an Airspy plugged in the pill reads `NO RTL-SDR` and Retry answers "No RTL-SDR attached" until
+    an Airspy system is started. `state`, first match: `lost`/`fault` (`receiverHealth` lost
     or failed for this kind), `failed` (failure kind busy, open failed or permission), `ready`, `pending`
     (`localDeviceRequestPending`), `missing` (detached or not found, or the kind not on the bus, even with the other
     kind attached), `available`, `absent`. Pill copy, mono caps: `RTL-SDR READY`, `CONNECT RTL-SDR` (`CONNECT
@@ -7117,7 +7119,7 @@ Qt Quick frontend (`src/ui/qt`):
     `visible`, so hiding Home on another tab keeps its scroll range and position. One guarded `activate()` serves tap,
     Return/Enter/Space and `Accessible.onPressAction`, under `canAct`, `Navigation.allows()` and no open management
     sheet; the role is Button while actionable, else StaticText, and the pill stays a tab stop while shown, so focus
-    stays put when Connect turns into WAITING. The pill shows whichever source another failure is about;
+    stays put when Connect turns into WAITING. The pill stays up whatever source a failure on screen is about;
     `localDeviceRelevant` (`usb` and `airspy`) gates only the details panel (`dongleDetailsPanel`), which gives way to a
     failure card. `revealFailure()` calls `homeScreen.revealTop()`, so a failure card or the panel is in view when a
     session ends; desktop scroll restoration is unchanged.
@@ -7141,7 +7143,8 @@ Qt Quick frontend (`src/ui/qt`):
     list"): saved systems and scan lists on `usb` or `airspy` are eligible, and an attachment starts one only when the
     kind of the receiver that attached equals the target's source (`autoStartKindMatches()` in
     `auto_start_attachment.h`; `DecoderHost::localDeviceAttached` carries `"<kind>:<device name>"`, read by
-    `attachedReceiverKind()` in `UiController::requestAutoStart()` and `qt_ui.cpp`), never because of what else is on
+    `attachedReceiverKind()` in `qt_ui.cpp`'s `wire_attachment()` and matched by `UiController::requestAutoStart()`),
+    never because of what else is on
     the bus; a suppressed attachment is still consumed. An unanswered permission request
     (`localDeviceRequestPending`) joins `autoStartBlocked`; its expiry lifts the block without retrying the old
     attachment.
@@ -7224,6 +7227,8 @@ Qt Quick frontend (`src/ui/qt`):
     reattaching to a running session (the service survived an Activity restart) takes the session the history kept,
     so it sees the calls its predecessor logged in that session.
   - Clear (`clearAll()`) names what it wiped by ring position: push_seq per slot as last read (`callHistory/clear/*`).
+    It removes the rows (one `rowsRemoved`) rather than resetting the model: a list building a row in its cache buffer
+    cancels it by index on a reset, after the model is already empty.
     Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI does not ingest the cleared
     rows again, even if the seen store lost them. The position means something only in its own ring, so the mark also
     names that ring (`Event_History_I::instance`, `callHistory/clear/ring`), and the ring, not the session, is the
@@ -7494,8 +7499,10 @@ Qt Quick frontend (`src/ui/qt`):
   to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`, `headerStacked` and the budget's
   `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to the session menu as in tier 1
   and tier 0 keeps the title-line header; a label change never changes which actions show. A 360 dp phone at 1.0 with
-  Sites and Spectrum therefore keeps both in the session menu even under LIVE (`STOPPING…` would overflow); 411 dp
-  keeps all four. Every gate is `!localDeviceBrokered ||`, so desktop geometry is unchanged. Tests:
+  Sites and Spectrum therefore keeps both in the session menu even under LIVE (`STOPPING…` would overflow); 411 dp at
+  1.0 keeps all four (at 1.6 `STOPPING…` overflows there too). Every gate is `!localDeviceBrokered ||`, so desktop
+  geometry is unchanged; the one desktop change is the LIVE pill's accessible name, which now names the receiver's
+  state there too. Tests:
   `UI_QT_QML_MONITOR_RECEIVER` (`tst_monitor_receiver.qml`), `tst_monitor_scan_target.qml`
   (`test_header_actions_fit_a_tall_phone`, `test_header_geometry_unchanged_off_android`),
   `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier rows).
@@ -8244,7 +8251,9 @@ also carries the broker's request (`pending`, `requestedSource`, `requestedSeria
 refusal) maps to no device failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request
 generations and their 60 s expiry, scoped attachment diagnostics, detach ownership) is described in `android/README.md`
 "USB-OTG". Known limits: `receiverHealth` carries no Airspy serial, so the notice names only the kind and a recreated
-Reconnect asks for access by kind (with two Airspys it may prompt for the other). Tests: `UI_QT_SESSION_STATE`
+Reconnect asks for access by kind (with two Airspys it may prompt for the other); a claim error's serial is the ready
+connection's when the error is first seen, a proxy, so after a swap between two Airspys it can be kept with the wrong
+unit. Tests: `UI_QT_SESSION_STATE`
 (`test_receiver_end_holds_stopping_through_long_running`), `IO_RTL_RUN_RESULT` (causes, sources, the grace),
 `UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`, `check_request_record`), `UI_QT_CONTROLLER`,
 `ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`.

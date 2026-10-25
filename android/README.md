@@ -811,9 +811,12 @@ keeps the mark (`DecoderService.acknowledgeReceiverEnding()`, published as
 again over a receiver that is connected and ready.
 
 Known limits: the notice names only the receiver's kind, so after a recreation
-with two Airspys attached Reconnect may ask for the other one; **Dismiss** hides
-the notice for that Activity only, as it does any failure, so a recreated
-Activity shows a dismissed (but not acknowledged) notice again; a healthy session
+with two Airspys attached Reconnect may ask for the other one; the pill names, and
+Connect asks for, the last requested kind before the kind on the bus, so after an
+RTL-SDR request with only an Airspy plugged in it reads `NO RTL-SDR` and Retry
+answers "No RTL-SDR attached" until an Airspy system is started; **Dismiss** hides
+the notice for that Activity only, as it does any failure, so a recreated Activity
+shows a dismissed (but not acknowledged) notice again; a healthy session
 reattached after a recreation shows LIVE with no receiver sheet (LOST still shows
 if it ends).
 
@@ -836,16 +839,18 @@ connected kind, then the first known receiver on the bus. An attachment replaces
 the card's text only when nothing is connected and either nothing was requested or
 it is the requested receiver (an RTL-SDR plugged in never clears "Requested Airspy
 serial not found"); a request
-that finds its receiver already open rewrites "Ready: <device>". Asking for the
-other kind while a session runs is refused with "Stop the current receiver before
-switching USB devices", which is request feedback, not a device failure.
+that finds its receiver already open rewrites "Ready: <device>". Asking for
+another receiver while a session runs (the other kind, or another Airspy serial)
+is refused with "Stop the current receiver before switching USB devices", which is
+request feedback, not a device failure.
 
-A detach always releases the connection, but it stops the engine only when the
-session uses that receiver: configured or running on a local RTL-SDR or Airspy
-(`nativeSessionUsesLocalReceiver()`), or holding its descriptor
-(`nativeIsUsbFdInUse()`). A detach during a start is handled after configure
-returns, by this same path: configure and the detach broadcast both run on the
-main thread, and by then the native record names the session's receiver.
+A detach of the connected receiver (or one whose device Android does not name)
+releases the connection; unplugging some other device releases nothing. It stops
+the engine only when the session uses that receiver: configured or running on a
+local RTL-SDR or Airspy (`nativeSessionUsesLocalReceiver()`), or holding its
+descriptor (`nativeIsUsbFdInUse()`). A detach during a start is handled after
+configure returns, by this same path: configure and the detach broadcast both run
+on the main thread, and by then the native record names the session's receiver.
 Unplugging a retained receiver no session uses, or one during an rtl_tcp session,
 stops nothing.
 
