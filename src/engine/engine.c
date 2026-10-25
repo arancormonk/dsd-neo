@@ -861,9 +861,7 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
         dsd_engine_setup_update_rtl_spec_with_selected_index(opts);
     }
 
-    if (opts->rtl_volume_multiplier > 3 || opts->rtl_volume_multiplier < 0) {
-        opts->rtl_volume_multiplier = 1;
-    }
+    opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(opts->rtl_volume_multiplier);
     char sql[24];
     dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
     LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,

@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
+#include <string.h>
 
 /**
  * @brief What one stay reason renders as, before the row's own numbers are applied.
@@ -164,6 +165,21 @@ scan_timing_fill_visit(dsd_app_scan_timing* out, const dsd_scan_timing_publicati
         out->visit_live = 1U;
         out->visit_remaining_ms = scan_timing_remaining_ms(pub->visit_deadline_m, now_m);
     }
+}
+
+size_t
+dsd_app_scan_timing_phrase_width(void) {
+    static const char* const variants[] = {"Voice tail", "Qualify"};
+    size_t width = 0U;
+    for (size_t i = 0; i < sizeof k_scan_timing_rows / sizeof k_scan_timing_rows[0]; i++) {
+        const size_t n = k_scan_timing_rows[i].phrase ? strlen(k_scan_timing_rows[i].phrase) : 0U;
+        width = (n > width) ? n : width;
+    }
+    for (size_t i = 0; i < sizeof variants / sizeof variants[0]; i++) {
+        const size_t n = strlen(variants[i]);
+        width = (n > width) ? n : width;
+    }
+    return width;
 }
 
 int

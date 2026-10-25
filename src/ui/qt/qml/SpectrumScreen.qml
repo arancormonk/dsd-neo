@@ -499,9 +499,10 @@ Item {
 
                     Text {
                         id: snrLabel
+                        objectName: "spectrumSnr"
 
                         anchors.verticalCenter: parent.verticalCenter
-                        text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "— dB"
+                        text: metrics.snrValid ? Util.fixed(metrics.snrDb, 1) + " dB" : "— dB"
                         font.family: Theme.mono
                         font.pixelSize: Theme.fontSize(11)
                         color: metrics.snrValid ? Theme.textSecondary : Theme.textSubdued

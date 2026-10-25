@@ -137,6 +137,9 @@ test_format(void) {
     formats_as(&s, "-60.0 dB");
     s = dsd_squelch_setting_of_level(0.001);
     formats_as(&s, "-30.0 dB");
+    /* A level just below full scale (-0.04 dB) rounds to zero: no negative zero (issue #669). */
+    s = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-0.04));
+    formats_as(&s, "0.0 dB");
     s = dsd_squelch_setting_auto(10);
     formats_as(&s, "auto +10 dB");
     s = dsd_squelch_setting_auto(99);

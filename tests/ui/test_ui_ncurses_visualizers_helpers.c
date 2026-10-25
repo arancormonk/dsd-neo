@@ -662,6 +662,19 @@ test_histogram_and_spectrum_helpers(void) {
     assert(strstr(g_render_out, "L3(-)") != NULL);
     assert(strstr(g_render_out, "L3(+)") != NULL);
     assert(strstr(g_render_out, " 8\n") != NULL);
+    /* Readings that round to zero carry no minus sign (issue #669). */
+    render_reset();
+    fsk_hist_draw_bars(bar_bins, -0.00001);
+    assert(strstr(g_render_out, "DC Offset: +0.00%") != NULL);
+    render_reset();
+    eye_print_rows_line(1, 2, 3, 10, 1, -0.04);
+    assert(strstr(g_render_out, "SNR=0.0 dB") != NULL);
+    render_reset();
+    eye_print_rows_line(1, 2, 3, 10, 1, -3.76);
+    assert(strstr(g_render_out, "SNR=-3.8 dB") != NULL);
+    render_reset();
+    eye_print_rows_line(1, 2, 3, 10, 0, -0.04);
+    assert(strstr(g_render_out, "SNR=n/a") != NULL);
 
     g_test_rows = 12;
     g_test_cols = 20;
@@ -699,6 +712,11 @@ test_histogram_and_spectrum_helpers(void) {
     assert(strstr(g_render_out, "FFT: 128") != NULL);
     assert(strstr(g_render_out, "Glyphs: ASCII; colored") != NULL);
     assert(strstr(g_render_out, "Color:") != NULL);
+    render_reset();
+    spectrum_print_legend(&opts, NULL, 48000, 48, 0, -0.01f, -0.04f);
+    assert(strstr(g_render_out, "Scale: top=0.0 dB  floor=0.0 dB") != NULL);
+    /* Control: the span and bin widths are never negative. */
+    assert(strstr(g_render_out, "Span: 48.0 kHz") != NULL);
     g_has_colors = 0;
 
     render_reset();

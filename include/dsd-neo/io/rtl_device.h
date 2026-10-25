@@ -239,11 +239,12 @@ int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db);
 /**
  * @brief Get current tuner gain in tenths of dB as reported by the driver.
  *
- * Returns a non-negative value (e.g., 270 for 27.0 dB) on success, or a
- * negative value on error. When auto-gain is enabled, the returned value may
- * be undefined; prefer checking rtl_device_is_auto_gain().
+ * Writes the gain to @p out_tenth_db (270 for 27.0 dB; negative gains are real: an E4K's lowest is -10, an FC0012's
+ * -99) and returns 0, or returns a negative value on error (DSD_ERR_NOT_SUPPORTED when the device or capture reports
+ * none) and leaves @p out_tenth_db alone. When auto-gain is enabled, the gain may be undefined; prefer checking
+ * rtl_device_is_auto_gain().
  */
-int rtl_device_get_tuner_gain(struct rtl_device* dev);
+int rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db);
 
 /**
  * @brief Return 1 if auto-gain is enabled (requested), 0 if manual.

@@ -1693,6 +1693,12 @@ suite runs under this compiler.
     from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on
     a large share of random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
     It does not own radio I/O, persistence or Qt state.
+  - Readout text (`include/dsd-neo/runtime/number_text.h`, issue #669): `dsd_number_text()` formats with the platform
+    printf and drops the sign of a text whose digits are all zero (`-0.0` → `0.0`, any radix; `nan`/`inf` untouched),
+    so non-zero readings keep native rounding and the rule holds under fast-math; `DSD_NUMBER_TEXT_SATURATE` caps a
+    reading at its width (`>999`, `<-99`). `dsd_count_text()` is a count in six places (`999999`, then `1.0M`...).
+    Runtime, core, app-control, the terminal and Qt's C paths print signed readings through it; QML has the same rule
+    as `Util.fixed()`. Test: `RUNTIME_NUMBER_TEXT`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
@@ -2721,7 +2727,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
   `dsd_state::scan_timing` into the Scan Timing row — the stay phrase, the remaining/total of the window that is
   running, and which of dwell/hold/hang is worth printing (issue #508), including `Carrier` for an analog row's carrier
-  hold (issue #526). The decoder owns every deadline; these views only difference it against the caller's reading of the
+  hold (issue #526). `dsd_app_scan_timing_phrase_width()` is the longest phrase it can set, phase variants included: the
+  room the terminal keeps for the phrase so what follows it holds its column (issue #669). The decoder owns every
+  deadline; these views only difference it against the caller's reading of the
   decode clock's monotonic time, the clock the deadline was stamped on, which is what keeps the terminal row, the Qt
   panel and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
   `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS`.
@@ -2740,7 +2748,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   (`dsd_app_squelch_view::noise_state`): `noise +10 dB (learning)`, `(quieting 23 dB)`, `(off: no band above voice)`,
   `(off: no room above voice)`, `(off on AM audio)`. `dsd_app_squelch_view_dynamic_status()` is that status
   alone (Qt's `squelchAutoStatus`, the line under the reading; the noise squelch's too, below),
-  `dsd_app_squelch_view_configured_text()` the default as the terminal prompt opens on it (`auto+10`, `-60.0`, `off`);
+  `dsd_app_squelch_view_configured_text()` the default as the terminal prompt opens on it (`auto+10`, `-60.0`, `off`;
+  a level whose one-place dB would not read back as itself, within 0.05 dB of full scale or below the parser's -200 dB,
+  as its linear power, `%.6g`, so accepting the prompt unchanged keeps the level, issue #669);
+  `dsd_app_squelch_view_format_ex()` and `dsd_app_squelch_view_dynamic_status_ex()` with
+  `DSD_APP_SQUELCH_VIEW_FIXED` give the terminal's fixed-width text: quieting in four places, a floor in six, padded to
+  the longest status the setting in force can show, so a terminal field after it holds its column while the gate's
+  state or reading changes (Qt keeps the plain text);
   Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins (kept under a level setting) drive the radio
   panel's `dB | Auto` choice, whose buttons step the margin in Auto; dB puts the default back on the level it kept
   (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included;
@@ -4051,6 +4065,12 @@ Key public headers:
 - UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
 - I/Q capture/replay: `include/dsd-neo/io/iq_capture.h`, `include/dsd-neo/io/iq_replay.h`,
   `include/dsd-neo/io/iq_types.h`, `include/dsd-neo/io/iq_wav.h`
+  - Tuner gain (issue #669): `rtl_device_get_tuner_gain(dev, &tenth_db)` returns a status separate from the value,
+    since librtlsdr's gains reach below zero (E4K -1.0 dB, FC0012/FC0013 -9.9 dB); its callers (`rtl_stream_get_gain()`,
+    the autogain latch, the capture metadata, the retune note) all read it that way. A capture whose tuner reports no
+    gain writes `"tuner_gain_known": false` with a gain of 0 (`dsd_iq_capture_config::tuner_gain_unknown`); replay
+    reads it, and a legacy Airspy sidecar without it, as `dsd_iq_replay_config::tuner_gain_unknown`, and then reports
+    no gain. Test: `IO_RTL_REPLAY_EOF_AND_CF32`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is
@@ -6597,6 +6617,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   retained notice hashes and supplements release SBOMs without asserting legal clearance.
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
+  - Status rows that never wrap (issue #669): `ui_row.{h,c}` builds a row from atomic fields and draws it whole, or cut
+    after the last whole field that fits (cols - 1 - start column: the last column wraps) with `…` (`...` without UTF-8
+    or under `DSD_FORCE_ASCII`), trailing blanks dropped, the caller's attributes put back before the marker and the one
+    newline. Widths follow the curses library's model (`wcwidth()` on ncurses, one cell per BMP code point on
+    PDCurses); controls, invalid UTF-8 and undrawable code points print as `?`. The Input Output section's live rows go
+    through it — each input's source row (receiver readings at fixed widths, `FRQ:` last) and channel row (`SQL:` and
+    its reading first, then `Analog:`/`Passband:`), the Airspy identity row, Auto PPM, input level, outputs, M17
+    encoder, Scan Mode, Trunk Scan, Scan Timing, and every DSP panel line — with readings through `dsd_number_text()`
+    at fixed widths and status words in rooms that stay; configuration-only rows (toggles, keys, paths, External RTL
+    Tuning, M17 UDP, Reverse Mute) keep wrapping. Tests: `UI_ROW` (real `newterm`), `UI_NCURSES_PRINTER_HELPERS`
+    (+ `_RADIO`), `UI_DSP_DISPLAY_RENDER`.
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
@@ -6629,7 +6660,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as
     typed; the RTL-SDR submenu's DSP rate row reads `DSP bandwidth...`, and the rtl_tcp adaptive buffering toggle lives
-    in `Auto-PPM & rtl_tcp`. The input status line prints `Analog: NFM 16 kHz (default);` beside `DSP-BW:`
+    in `Auto-PPM & rtl_tcp`. The input's channel row prints `Analog: NFM 16 kHz (default);` after the squelch
     (`(DSP-limited)` when the rate bounds the channel, `(row; default 16 kHz)` while an nfm scan row sets its own width,
     issue #526, `Analog: AM 8.333 kHz (row; default 6 kHz)` for an am row's, and under an analog row on a digital
     session too). The row's label and prompt read the configured width, the one the command edits. Both follow
@@ -6677,11 +6708,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     = -B 12.5 kHz)`). The chooser's title is decided from the snapshot pair it captures, and `scope_capture()` keeps the
     passband the row ran (`peer_width_hz`, for the chooser's kind only, so an AM passband never opens an NFM prompt), so
     `scope_open_width()` opens on the row's own width, else the width in force, else that passband (`-B` included), else
-    the kind's default. The audio input lines (Pulse, TCP, UDP, WAV, stdin) print `ui_print_analog_channel_field()`
-    after the SQL field, ` Passband: NFM 12.5 kHz (-B);` on a peer session whenever the view has a reading (a width
-    offered) and nothing without one, fetching the frontend metrics only on a radio input; `ui_print_rigctl_field()`
-    prints `RIG: <rigctlhostname>:<rigctlportno>; ` on the Pulse, TCP and UDP lines (the Pulse and TCP lines printed
-    the TCP audio host, which a menu reconnect of rigctl or of TCP audio sets apart). Tests: `UI_MENU_TREE_AUDIT` and
+    the kind's default. The audio inputs' channel rows (Pulse, TCP, UDP, WAV, stdin) print
+    `ui_row_analog_channel_field()` after the SQL field, ` Passband: NFM 12.5 kHz (-B);` on a peer session whenever the
+    view has a reading (a width offered) and nothing without one, fetching the frontend metrics only on a radio input;
+    `ui_row_rigctl_field()` prints `RIG: <rigctlhostname>:<rigctlportno>;` last on the Pulse, TCP and UDP source rows
+    (the Pulse and TCP lines printed the TCP audio host, which a menu reconnect of rigctl or of TCP audio sets apart). Tests: `UI_MENU_TREE_AUDIT` and
     `UI_MENU_TREE_AUDIT_NO_RADIO` (the two rows right after `input.sql`, and no width row anywhere else),
     `UI_MENU_ACTIONS`, `UI_MENU_LABELS` (built without `USE_RADIO`: the width label goldens, radio and peer),
     `UI_NCURSES_PRINTER_HELPERS`.

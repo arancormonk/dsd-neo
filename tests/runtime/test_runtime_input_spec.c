@@ -156,7 +156,7 @@ test_soapy_no_args_tuning(void) {
         DSD_FPRINTF(stderr, "allocation failed in %s\n", __func__);
         return 1;
     }
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:935.0125M:44:-3:24:0:5");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:935.0125M:44:-3:24:0:3");
 
     int applied = 0;
     int rc = dsd_normalize_soapy_input_spec(opts, &applied);
@@ -176,7 +176,7 @@ test_soapy_no_args_tuning(void) {
         return 1;
     }
     if (opts->rtlsdr_center_freq != 935012500U || opts->rtl_gain_value != 44 || opts->rtlsdr_ppm_error != -3
-        || opts->rtl_dsp_bw_khz != 24 || opts->rtl_volume_multiplier != 5 || fabs(opts->rtl_squelch_level) > 1e-12) {
+        || opts->rtl_dsp_bw_khz != 24 || opts->rtl_volume_multiplier != 3 || fabs(opts->rtl_squelch_level) > 1e-12) {
         DSD_FPRINTF(stderr, "soapy no-args tuning fields mismatch\n");
         free(opts);
         return 1;
@@ -534,6 +534,61 @@ test_spec_frequency_rounds_to_the_hz(void) {
     return rc;
 }
 
+/* Issue #669 B10: a monitor gain outside 0..3 in an rtl:, rtltcp: or soapy: spec tail reads as the default 1, as the
+   local RTL setup and the menu always read it; 0..3 stay as written. */
+static int
+test_spec_monitor_volume_range(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* spec;
+        int want;
+    } cases[] = {
+        {"rtl:0:162.475M:30:-2:48:off:10", 1},
+        {"rtl:0:162.475M:30:-2:48:off:-1", 1},
+        {"rtl:0:162.475M:30:-2:48:off:0", 0},
+        {"rtl:0:162.475M:30:-2:48:off:3", 3},
+        {"rtltcp:127.0.0.1:1234:162.475M:30:-2:48:off:9", 1},
+        {"rtltcp:127.0.0.1:1234:162.475M:30:-2:48:off:2", 2},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[i].spec);
+        (void)dsd_rtl_input_spec_apply(opts);
+        if (opts->rtl_volume_multiplier != cases[i].want) {
+            DSD_FPRINTF(stderr, "%s: volume %d, want %d\n", cases[i].spec, opts->rtl_volume_multiplier, cases[i].want);
+            rc |= 1;
+        }
+        free(opts);
+    }
+
+    static const struct {
+        const char* spec;
+        int want;
+    } soapy[] = {{"soapy:935.0125M:44:-3:24:0:10", 1}, {"soapy:driver=rtlsdr:935.0125M:44:-3:24:0:2", 2}};
+
+    for (size_t i = 0; i < sizeof soapy / sizeof soapy[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", soapy[i].spec);
+        int applied = 0;
+        (void)dsd_normalize_soapy_input_spec(opts, &applied);
+        if (applied != 1 || opts->rtl_volume_multiplier != soapy[i].want) {
+            DSD_FPRINTF(stderr, "%s: applied %d volume %d, want %d\n", soapy[i].spec, applied,
+                        opts->rtl_volume_multiplier, soapy[i].want);
+            rc |= 1;
+        }
+        free(opts);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -548,5 +603,6 @@ main(void) {
     rc |= test_soapy_numeric_colon_tail_fallback();
     rc |= test_soapy_args_partial_tuning();
     rc |= test_soapy_invalid_tuning_field_fallback();
+    rc |= test_spec_monitor_volume_range();
     return rc;
 }

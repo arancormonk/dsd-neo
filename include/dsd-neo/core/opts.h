@@ -484,6 +484,16 @@ dsd_opts_set_rtl_dsp_bw(dsd_opts* opts, int khz, int source) {
     opts->rtl_dsp_bw_source = source;
 }
 
+/**
+ * @brief A radio input's monitor gain as the decoder runs it: 0..3 (the sample multiplier dsd_symbol.c applies), and
+ * any other value read from an input spec, a config or a request as the default 1, the rule the local RTL setup and the
+ * menu always applied. Every place that stores dsd_opts::rtl_volume_multiplier takes it through this.
+ */
+static inline int
+dsd_opts_rtl_volume_multiplier_or_default(int multiplier) {
+    return (multiplier < 0 || multiplier > 3) ? 1 : multiplier;
+}
+
 enum DSD_ATTR_PACKED {
     DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP =
         (int)(sizeof(((dsd_opts*)0)->input_upsample_buf) / sizeof(((dsd_opts*)0)->input_upsample_buf[0])),

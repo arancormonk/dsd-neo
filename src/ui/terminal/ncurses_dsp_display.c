@@ -14,49 +14,46 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <stdarg.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/platform.h"
 #include "ncurses_dsp_status_format.h"
+#include "ui_row.h"
 
 #ifdef USE_RADIO
 
-/* Small helpers to align key/value fields to a consistent value column. */
-static inline void
-ui_print_label_pad(const char* label) {
-    const int value_col = 14; /* column (from label start) where values begin */
-    int lab_len = (int)strlen(label);
-    if (lab_len < 0) {
-        lab_len = 0;
-    }
-    /* Draw the left border in the primary UI color (teal/cyan) for consistency */
-    ui_print_lborder();
-    addch(' ');
-    addstr(label);
-    addch(':');
-    int need = value_col - (lab_len + 1); /* +1 for ':' */
-    if (need < 1) {
-        need = 1; /* at least one space after ':' */
-    }
-    for (int i = 0; i < need; i++) {
-        addch(' ');
-    }
+/* The panel width a DSP line fits. */
+static int
+dsp_panel_cols(void) {
+    int rows = 0;
+    int cols = 80;
+    getmaxyx(stdscr, rows, cols);
+    (void)rows;
+    return (cols < 1) ? 80 : cols;
 }
 
-static void ui_print_kv_line(const char* label, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
+/* A reading at a fixed width: no negative zero, and never wider (">", "<" past it), so the fields after it hold their
+   columns while it changes (issue #669). */
+static const char*
+dsp_num(char* buf, size_t size, double value, int width, int precision, unsigned flags) {
+    (void)dsd_number_text(buf, size, value, width, precision, flags | DSD_NUMBER_TEXT_SATURATE);
+    return buf;
+}
 
+/* One DSP line: the border in the primary UI color (teal/cyan), then the label padded to the value column (14 from the
+   label's start), then the caller's fields, cut to the panel instead of wrapped (issue #669). */
 static void
-ui_print_kv_line(const char* label, const char* fmt, ...) {
-    ui_print_label_pad(label);
-    va_list ap;
-    va_start(ap, fmt);
-    vw_printw(stdscr, fmt, ap);
-    va_end(ap);
-    addch('\n');
+dsp_row_begin(ui_row* row, const char* label) {
+    enum { value_col = 14 };
+
+    ui_print_lborder();
+    ui_row_begin(row, dsp_panel_cols(), 1);
+    const int lab_len = (int)strlen(label);
+    const int need = value_col - (lab_len + 1) < 1 ? 1 : value_col - (lab_len + 1); /* +1 for ':' */
+    ui_row_field(row, " %s:%*s", label, need, "");
 }
 
 static void
@@ -68,19 +65,28 @@ dsp_status_print_squelch(const dsd_opts* opts, const dsd_state* state) {
     dsd_app_squelch_view view;
     const int view_ok = dsd_app_squelch_view_get(opts, state, &view) == 0;
     const int row_override = view_ok && view.row_override;
+    ui_row row;
     if (view_ok && (view.effective_auto || view.effective_noise)) {
-        /* The dynamic squelch's gate, the channel power and the setting with what it shows (issue #518 follow-up). */
-        char text[72];
-        (void)dsd_app_squelch_view_format(&view, text, sizeof text);
+        /* The dynamic squelch's gate, the channel power and the setting with what it shows (issue #518 follow-up), each
+           at a fixed width. */
+        char text[96];
+        char ch[16];
+        (void)dsd_app_squelch_view_format_ex(&view, DSD_APP_SQUELCH_VIEW_FIXED, text, sizeof text);
         const char* gate =
             view.effective_off ? "Off" : ((view.auto_gate_open || view.noise_gate_open) ? "Open" : "Closed");
-        ui_print_kv_line("Squelch", "%s ch:%.1f dB sql:%s", gate, pwr_to_dB(opts->rtl_pwr), text);
+        dsp_row_begin(&row, "Squelch");
+        ui_row_field(&row, "%-6s", gate);
+        ui_row_field(&row, " ch:%s dB", dsp_num(ch, sizeof ch, pwr_to_dB(opts->rtl_pwr), 6, 1, 0));
+        ui_row_field(&row, " sql:%s", text);
+        ui_row_end(&row);
         return;
     }
     char status[72];
     if (ui_dsp_format_squelch_status(opts->rtl_pwr, opts->rtl_squelch_level, row_override, status, sizeof(status))
         == 0) {
-        ui_print_kv_line("Squelch", "%s", status);
+        dsp_row_begin(&row, "Squelch");
+        ui_row_field(&row, "%s", status);
+        ui_row_end(&row);
     }
 }
 
@@ -119,31 +125,67 @@ dsp_status_capture(dsp_status_snapshot* snap, const dsd_state* state) {
     snap->modlab = dsp_status_mod_label(snap->mod);
 }
 
+static const char*
+dsp_on_off(int on) {
+    return on ? "On" : "Off";
+}
+
 static void
 dsp_status_print_ted(const dsp_status_snapshot* snap) {
-    ui_print_kv_line("CQPSK Timing", "[%s] sps:%d g:%.3f bias:%d", snap->cq_timing ? "On" : "Off",
-                     snap->metrics.ted_sps, snap->metrics.ted_gain, snap->metrics.cqpsk_timing_bias);
+    char num[16];
+    ui_row row;
+    dsp_row_begin(&row, "CQPSK Timing");
+    ui_row_field(&row, "[%-3s]", dsp_on_off(snap->cq_timing));
+    ui_row_field(&row, " sps:%s", dsp_num(num, sizeof num, (double)snap->metrics.ted_sps, 2, 0, 0));
+    ui_row_field(&row, " g:%s", dsp_num(num, sizeof num, (double)snap->metrics.ted_gain, 5, 3, 0));
+    ui_row_field(&row, " bias:%s",
+                 dsp_num(num, sizeof num, (double)snap->metrics.cqpsk_timing_bias, 6, 0, DSD_NUMBER_TEXT_PLUS));
+    ui_row_end(&row);
 }
 
 static void
 dsp_status_print_front_and_path(const dsp_status_snapshot* snap) {
-    ui_print_kv_line("Front", "IQBal:%s  IQ-DC:%s k:%d", snap->iqb ? "On" : "Off", snap->dc_on ? "On" : "Off",
-                     snap->dc_k);
-    ui_print_kv_line("Path", "Mod:%s  CQ:%s", snap->modlab, snap->cq ? "On" : "Off");
+    char num[16];
+    ui_row row;
+    dsp_row_begin(&row, "Front");
+    ui_row_field(&row, "IQBal:%-3s", dsp_on_off(snap->iqb));
+    ui_row_field(&row, "  IQ-DC:%-3s", dsp_on_off(snap->dc_on));
+    ui_row_field(&row, " k:%s", dsp_num(num, sizeof num, (double)snap->dc_k, 2, 0, 0));
+    ui_row_end(&row);
+    dsp_row_begin(&row, "Path");
+    ui_row_field(&row, "Mod:%-5s", snap->modlab);
+    ui_row_field(&row, "  CQ:%-3s", dsp_on_off(snap->cq));
+    ui_row_end(&row);
     dsp_status_print_ted(snap);
     if (snap->mod == 1 || snap->cq) {
-        ui_print_kv_line("CQPSK Path", "[%s]", snap->cq ? "On" : "Off");
+        dsp_row_begin(&row, "CQPSK Path");
+        ui_row_field(&row, "[%s]", dsp_on_off(snap->cq));
+        ui_row_end(&row);
     }
 }
 
 static void
 dsp_status_print_cqpsk_metrics(const dsp_status_snapshot* snap) {
     const dsd_frontend_metrics* metrics = &snap->metrics;
-    ui_print_kv_line("FLL BE", "Freq=%+0.1f Hz", metrics->fll_band_edge_freq_hz);
-    ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  %s", metrics->cfo_hz, metrics->carrier_lock ? "Locked" : "Acq");
-    ui_print_kv_line("Costas/NCO", "ErrS=%d ErrR=%d Conf=%0.2f Fade=%d%% NCO(q15)=%d Fs=%d Hz", metrics->costas_err_q14,
-                     metrics->costas.err_raw_avg_q14, (double)metrics->costas.confidence_avg_q14 / 16384.0,
-                     metrics->costas.zero_conf_pct, metrics->nco_q15, metrics->demod_rate_hz);
+    char num[16];
+    ui_row row;
+    dsp_row_begin(&row, "FLL BE");
+    ui_row_field(&row, "Freq=%s Hz",
+                 dsp_num(num, sizeof num, metrics->fll_band_edge_freq_hz, 8, 1, DSD_NUMBER_TEXT_PLUS));
+    ui_row_end(&row);
+    dsp_row_begin(&row, "Carrier");
+    ui_row_field(&row, "NCO=%s Hz", dsp_num(num, sizeof num, metrics->cfo_hz, 8, 1, DSD_NUMBER_TEXT_PLUS));
+    ui_row_field(&row, "  %s", metrics->carrier_lock ? "Locked" : "Acq");
+    ui_row_end(&row);
+    dsp_row_begin(&row, "Costas/NCO");
+    ui_row_field(&row, "ErrS=%s", dsp_num(num, sizeof num, (double)metrics->costas_err_q14, 6, 0, 0));
+    ui_row_field(&row, " ErrR=%s", dsp_num(num, sizeof num, (double)metrics->costas.err_raw_avg_q14, 6, 0, 0));
+    ui_row_field(&row, " Conf=%s",
+                 dsp_num(num, sizeof num, (double)metrics->costas.confidence_avg_q14 / 16384.0, 4, 2, 0));
+    ui_row_field(&row, " Fade=%s%%", dsp_num(num, sizeof num, (double)metrics->costas.zero_conf_pct, 3, 0, 0));
+    ui_row_field(&row, " NCO(q15)=%s", dsp_num(num, sizeof num, (double)metrics->nco_q15, 6, 0, 0));
+    ui_row_field(&row, " Fs=%s Hz", dsp_num(num, sizeof num, (double)metrics->demod_rate_hz, 6, 0, 0));
+    ui_row_end(&row);
 }
 
 #endif

@@ -47,6 +47,21 @@ Item {
             testContext.setMetric("scanVisitRemainingDs", 0);
         }
 
+        // Readings that round to zero carry no minus sign (issue #669): toFixed keeps it.
+        function test_signal_readings_have_no_negative_zero() {
+            testContext.setMetric("radioInput", true);
+            testContext.setMetric("snrValid", true);
+            testContext.setMetric("snrDb", -0.04);
+            testContext.setMetric("cfoHz", -0.4);
+            tryCompare(findChild(screen, "monitorSnrValue"), "text", "0.0 dB");
+            tryCompare(findChild(screen, "monitorCfo"), "text", "CFO 0 Hz");
+            verify(screen.detailsSummary.plain.indexOf("SNR 0.0 dB") >= 0, screen.detailsSummary.plain);
+            testContext.setMetric("snrDb", -10.04);
+            testContext.setMetric("cfoHz", -1234.4);
+            tryCompare(findChild(screen, "monitorSnrValue"), "text", "-10.0 dB");
+            tryCompare(findChild(screen, "monitorCfo"), "text", "CFO -1234 Hz");
+        }
+
         function test_target_rotation_and_hold() {
             screen.scanTargetName = "Dispatch";
             testContext.setMetric("scanTargetId", "internal-entry-uid");

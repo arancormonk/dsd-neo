@@ -19,6 +19,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -70,6 +71,12 @@ typedef struct {
  * (@c active), 0 when the row should be left blank, and -1 for invalid arguments.
  */
 int dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_scan_timing* out);
+
+/**
+ * @brief The length of the longest @c phrase the view can set, phase variants included: the room a fixed-width
+ * surface keeps for it, so what follows the phrase holds its column when the reason changes (issue #669).
+ */
+size_t dsd_app_scan_timing_phrase_width(void);
 
 #ifdef __cplusplus
 }

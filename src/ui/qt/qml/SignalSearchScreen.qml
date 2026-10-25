@@ -534,7 +534,7 @@ Item {
                             width: strengthSlot.textWidth
                             // Both levels, nothing else: the range is in the status
                             // line and in the accessible description.
-                            text: !screen.receiving ? "" : screen.status.livePowerValid ? (strengthSlot.lines > 1 ? qsTr("Now %1 dBFS\ndetected %2 dBFS") : qsTr("Now %1 · detected %2 dBFS")).arg(Number(screen.status.livePower).toFixed(1)).arg(Number(screen.hit.power || 0).toFixed(1)) : Number(screen.hit.power || 0).toFixed(1) + qsTr(" dBFS")
+                            text: !screen.receiving ? "" : screen.status.livePowerValid ? (strengthSlot.lines > 1 ? qsTr("Now %1 dBFS\ndetected %2 dBFS") : qsTr("Now %1 · detected %2 dBFS")).arg(Util.fixed(screen.status.livePower, 1)).arg(Util.fixed(screen.hit.power || 0, 1)) : Util.fixed(screen.hit.power || 0, 1) + qsTr(" dBFS")
                             color: Theme.textSecondary
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(14)
@@ -855,7 +855,7 @@ Item {
                             id: rowText
                             width: parent.width - rowActions.width - 8
                             spacing: 5
-                            Text { width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Number(modelData.power).toFixed(1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
+                            Text { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
                             Text {
                                 width: parent.width
                                 objectName: "searchHistoryDetail"

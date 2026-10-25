@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -39,6 +40,14 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "ui_key_status.h"
+
+/* A setting's number to @p precision places, without a negative zero (issue #669): `-t -0` and an environment value of
+   -0.0 are accepted settings, and printf would show them as "-0.0". */
+static const char*
+lbl_num(char* buf, size_t size, double value, int precision) {
+    (void)dsd_number_text(buf, size, value, 0, precision, 0);
+    return buf;
+}
 
 static const dsd_scan_settings*
 menu_configured_scan_settings(void) {
@@ -537,7 +546,8 @@ const char*
 lbl_hangtime(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     const double s = (c && c->opts) ? (double)c->opts->trunk_hangtime : 0.0;
-    DSD_SNPRINTF(b, n, "Hangtime... [%.1f s]", s);
+    char num[32];
+    DSD_SNPRINTF(b, n, "Hangtime... [%s s]", lbl_num(num, sizeof num, s, 1));
     return b;
 }
 
@@ -612,49 +622,64 @@ lbl_p25_num(const void* v, const char* env_name, double defv) {
 
 const char*
 lbl_p25_vc_grace(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "VC grace... [%.3f s]", lbl_p25_num(v, "DSD_NEO_P25_VC_GRACE", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "VC grace... [%s s]", lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25_VC_GRACE", 0.0), 3));
     return b;
 }
 
 const char*
 lbl_p25_min_follow(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "Minimum follow dwell... [%.3f s]", lbl_p25_num(v, "DSD_NEO_P25_MIN_FOLLOW_DWELL", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "Minimum follow dwell... [%s s]",
+                 lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25_MIN_FOLLOW_DWELL", 0.0), 3));
     return b;
 }
 
 const char*
 lbl_p25_grant_voice(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "Grant-to-voice timeout... [%.3f s]", lbl_p25_num(v, "DSD_NEO_P25_GRANT_VOICE_TO", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "Grant-to-voice timeout... [%s s]",
+                 lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25_GRANT_VOICE_TO", 0.0), 3));
     return b;
 }
 
 const char*
 lbl_p25_cc_grace(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "CC hunt grace... [%.3f s]", lbl_p25_num(v, "DSD_NEO_P25_CC_GRACE", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "CC hunt grace... [%s s]",
+                 lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25_CC_GRACE", 0.0), 3));
     return b;
 }
 
 const char*
 lbl_p25_force_extra(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "Safety-net extra... [%.3f s]", lbl_p25_num(v, "DSD_NEO_P25_FORCE_RELEASE_EXTRA", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "Safety-net extra... [%s s]",
+                 lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25_FORCE_RELEASE_EXTRA", 0.0), 3));
     return b;
 }
 
 const char*
 lbl_p25_force_margin(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "Safety-net margin... [%.3f s]", lbl_p25_num(v, "DSD_NEO_P25_FORCE_RELEASE_MARGIN", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "Safety-net margin... [%s s]",
+                 lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25_FORCE_RELEASE_MARGIN", 0.0), 3));
     return b;
 }
 
 const char*
 lbl_p25_p1_err_pct(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "Phase 1 error hold... [%.1f%%]", lbl_p25_num(v, "DSD_NEO_P25P1_ERR_HOLD_PCT", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "Phase 1 error hold... [%s%%]",
+                 lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25P1_ERR_HOLD_PCT", 0.0), 1));
     return b;
 }
 
 const char*
 lbl_p25_p1_err_sec(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "Phase 1 error hold time... [%.3f s]", lbl_p25_num(v, "DSD_NEO_P25P1_ERR_HOLD_S", 0.0));
+    char num[32];
+    DSD_SNPRINTF(b, n, "Phase 1 error hold time... [%s s]",
+                 lbl_num(num, sizeof num, lbl_p25_num(v, "DSD_NEO_P25P1_ERR_HOLD_S", 0.0), 3));
     return b;
 }
 
@@ -861,7 +886,8 @@ const char*
 lbl_input_warn(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     double thr = c ? c->opts->input_warn_db : env_get_double("DSD_NEO_INPUT_WARN_DB", -40.0);
-    DSD_SNPRINTF(b, n, "Low-input warning... [%.1f dBFS]", thr);
+    char num[32];
+    DSD_SNPRINTF(b, n, "Low-input warning... [%s dBFS]", lbl_num(num, sizeof num, thr, 1));
     return b;
 }
 
@@ -1364,7 +1390,8 @@ const char*
 lbl_auto_ppm_snr(const void* v, char* b, size_t n) {
     (void)v;
     double d = env_get_double("DSD_NEO_AUTO_PPM_SNR_DB", 6.0);
-    DSD_SNPRINTF(b, n, "Auto-PPM SNR threshold... [%.1f dB]", d);
+    char num[32];
+    DSD_SNPRINTF(b, n, "Auto-PPM SNR threshold... [%s dB]", lbl_num(num, sizeof num, d, 1));
     return b;
 }
 
@@ -1372,7 +1399,8 @@ const char*
 lbl_auto_ppm_pwr(const void* v, char* b, size_t n) {
     (void)v;
     double d = env_get_double("DSD_NEO_AUTO_PPM_PWR_DB", -80.0);
-    DSD_SNPRINTF(b, n, "Auto-PPM minimum power... [%.1f dB]", d);
+    char num[32];
+    DSD_SNPRINTF(b, n, "Auto-PPM minimum power... [%s dB]", lbl_num(num, sizeof num, d, 1));
     return b;
 }
 
@@ -1380,7 +1408,8 @@ const char*
 lbl_auto_ppm_zeroppm(const void* v, char* b, size_t n) {
     (void)v;
     double p = env_get_double("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", 0.6);
-    DSD_SNPRINTF(b, n, "Auto-PPM zero-lock PPM... [%.2f]", p);
+    char num[32];
+    DSD_SNPRINTF(b, n, "Auto-PPM zero-lock PPM... [%s]", lbl_num(num, sizeof num, p, 2));
     return b;
 }
 

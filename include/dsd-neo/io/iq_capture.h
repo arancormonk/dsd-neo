@@ -29,6 +29,9 @@ typedef struct {
     uint64_t capture_center_frequency_hz;
     int ppm;
     int tuner_gain_tenth_db;
+    /** 1 when the tuner did not report its gain (an Airspy, a Soapy device without a gain range): written as
+        "tuner_gain_known": false, and tuner_gain_tenth_db is then 0, not a reading. */
+    int tuner_gain_unknown;
     int rtl_dsp_bw_khz;
     uint32_t base_decimation;
     uint32_t post_downsample;

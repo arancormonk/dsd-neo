@@ -401,6 +401,22 @@ test_advisory_text_selection(void) {
     dsd_input_level_classify(&rf_clip, -40.0);
     assert(dsd_input_level_format_advisory(&rf_clip, msg, sizeof(msg)) == 0);
     assert(strstr(msg, "lower RF gain or add filtering/attenuation") != NULL);
+
+    /* A PCM peak of 32766/32768 is -0.0005 dBFS: it reads "peak 0.0 dBFS", never "-0.0" (issue #669). */
+    dsd_input_level_snapshot pcm_hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -3.0, -0.0005, 0.0, 1);
+    pcm_hot.status = DSD_INPUT_LEVEL_HOT;
+    assert(dsd_input_level_format_advisory(&pcm_hot, msg, sizeof(msg)) == 0);
+    assert(strstr(msg, "peak 0.0 dBFS") != NULL);
+    assert(strstr(msg, "-0.0") == NULL);
+    dsd_input_level_snapshot pcm_quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -0.04, -0.01, 0.0, 1);
+    pcm_quiet.status = DSD_INPUT_LEVEL_LOW;
+    assert(dsd_input_level_format_advisory(&pcm_quiet, msg, sizeof(msg)) == 0);
+    assert(strstr(msg, " 0.0 dBFS") != NULL && strstr(msg, "-0.0") == NULL);
+    /* Control: the clip percentage is never negative, so it keeps printf's text. */
+    dsd_input_level_snapshot pcm_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -3.0, 0.0, 0.04, 1);
+    pcm_clip.status = DSD_INPUT_LEVEL_CLIPPING;
+    assert(dsd_input_level_format_advisory(&pcm_clip, msg, sizeof(msg)) == 0);
+    assert(strstr(msg, " 0.0%") != NULL);
 }
 
 static void

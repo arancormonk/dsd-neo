@@ -19,6 +19,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +62,21 @@ dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, size_t 
     (void)out;
     (void)out_size;
     return -1;
+}
+
+int
+dsd_app_squelch_view_format_ex(const dsd_app_squelch_view* view, unsigned flags, char* out, size_t out_size) {
+    (void)view;
+    (void)flags;
+    (void)out;
+    (void)out_size;
+    return -1;
+}
+
+const char*
+dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
+    (void)unicode_str;
+    return ascii_str;
 }
 
 static int g_metrics_reads;

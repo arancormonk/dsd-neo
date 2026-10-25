@@ -752,6 +752,7 @@ typedef struct {
     unsigned capture_center_frequency_hz : 1;
     unsigned ppm                         : 1;
     unsigned tuner_gain_tenth_db         : 1;
+    unsigned tuner_gain_known            : 1;
     unsigned rtl_dsp_bw_khz              : 1;
     unsigned base_decimation             : 1;
     unsigned post_downsample             : 1;
@@ -1500,6 +1501,13 @@ metadata_parse_field_group_b1(metadata_parse_state* st, const char* key, const j
             st->seen.tuner_gain_tenth_db = 1;
         }
         *handled = 1;
+    } else if (strcmp(key, "tuner_gain_known") == 0) {
+        /* Optional: metadata written before this field existed is still valid (see metadata_finalize()). */
+        int known = 1;
+        rc = token_to_bool(val_tok, &known, err_buf, err_buf_size, "tuner_gain_known");
+        st->cfg.tuner_gain_unknown = known ? 0 : 1;
+        st->seen.tuner_gain_known = 1;
+        *handled = 1;
     } else if (strcmp(key, "rtl_dsp_bw_khz") == 0) {
         rc = metadata_expect_integer(val_tok, "rtl_dsp_bw_khz", err_buf, err_buf_size);
         if (rc == DSD_IQ_OK) {
@@ -1983,6 +1991,12 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
     rc = metadata_finalize(&st, metadata_path, reject_retunes, err_buf, err_buf_size);
     if (rc != DSD_IQ_OK) {
         goto fail;
+    }
+    /* Before "tuner_gain_known" existed, a capture whose tuner reported no gain recorded the read's error code as the
+       gain. An Airspy never reports one, so its legacy captures carry no gain. */
+    if (!st.seen.tuner_gain_known && strcmp(st.cfg.source_backend, "airspy") == 0) {
+        st.cfg.tuner_gain_unknown = 1;
+        st.cfg.tuner_gain_tenth_db = 0;
     }
 
     st.cfg.recorded_dsp_bw_khz = st.cfg.rtl_dsp_bw_khz;
@@ -2796,7 +2810,11 @@ dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_p
     DSD_FPRINTF(out, "  FS/4 shift:          %s\n", cfg->fs4_shift_enabled ? "enabled" : "disabled");
     DSD_FPRINTF(out, "  CU8 transform:       %s\n", cfg->historical_cu8_two_pass ? "historical two-pass" : "combined");
     DSD_FPRINTF(out, "  Offset tuning:       %s\n", cfg->offset_tuning_enabled ? "enabled" : "disabled");
-    DSD_FPRINTF(out, "  Tuner gain:          %.1f dB\n", (double)cfg->tuner_gain_tenth_db / 10.0);
+    if (cfg->tuner_gain_unknown) {
+        DSD_FPRINTF(out, "  Tuner gain:          unknown\n");
+    } else {
+        DSD_FPRINTF(out, "  Tuner gain:          %.1f dB\n", (double)cfg->tuner_gain_tenth_db / 10.0);
+    }
     DSD_FPRINTF(out, "  PPM correction:      %d\n", cfg->ppm);
     DSD_FPRINTF(out, "  DSP bandwidth:       %d kHz\n", cfg->rtl_dsp_bw_khz);
     DSD_FPRINTF(out, "  Data file:           %s\n", cfg->data_path);

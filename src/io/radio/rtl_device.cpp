@@ -6914,8 +6914,33 @@ rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
     return -1;
 }
 
+#ifdef USE_SOAPYSDR
+/* A Soapy device's overall gain in tenths of a dB, or DSD_ERR_NOT_SUPPORTED when it has no gain to report. */
+static int
+rtl_device_get_tuner_gain_soapy(struct rtl_device* dev, int* out_tenth_db) {
+    double gain_db = 0.0;
+    int rc = soapy_call_locked(dev, "getGain", [&]() -> int {
+        std::vector<std::string> names = dev->soapy_dev->listGains(SOAPY_SDR_RX, 0);
+        SoapySDR::Range range = dev->soapy_dev->getGainRange(SOAPY_SDR_RX, 0);
+        if (names.empty() && std::fabs(range.minimum() - range.maximum()) <= 1.0e-9) {
+            return DSD_ERR_NOT_SUPPORTED;
+        }
+        gain_db = dev->soapy_dev->getGain(SOAPY_SDR_RX, 0);
+        return 0;
+    });
+    if (rc != 0) {
+        return rc;
+    }
+    *out_tenth_db = (int)(gain_db * 10.0 + (gain_db >= 0.0 ? 0.5 : -0.5));
+    return 0;
+}
+#endif
+
 int
-rtl_device_get_tuner_gain(struct rtl_device* dev) {
+rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db) {
+    if (!out_tenth_db) {
+        return -1;
+    }
     if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
         return DSD_ERR_NOT_SUPPORTED;
     }
@@ -6926,33 +6951,25 @@ rtl_device_get_tuner_gain(struct rtl_device* dev) {
         if (!dev->dev) {
             return -1;
         }
-        return rtlsdr_get_tuner_gain(dev->dev);
+        /* librtlsdr's gain tables reach below zero (E4K -10, FC0012/FC0013 -99 tenths): the value is the reading, and
+           only the missing device above is an error. */
+        *out_tenth_db = rtlsdr_get_tuner_gain(dev->dev);
+        return 0;
     }
     if (dev->backend == RTL_BACKEND_TCP) {
-        if (dev->agc_mode) {
-            return 0;
-        }
-        return dev->gain;
+        *out_tenth_db = dev->agc_mode ? 0 : dev->gain;
+        return 0;
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return dev->replay_cfg.tuner_gain_tenth_db;
+        if (dev->replay_cfg.tuner_gain_unknown) {
+            return DSD_ERR_NOT_SUPPORTED;
+        }
+        *out_tenth_db = dev->replay_cfg.tuner_gain_tenth_db;
+        return 0;
     }
 #ifdef USE_SOAPYSDR
     if (dev->backend == RTL_BACKEND_SOAPY) {
-        double gain_db = 0.0;
-        int rc = soapy_call_locked(dev, "getGain", [&]() -> int {
-            std::vector<std::string> names = dev->soapy_dev->listGains(SOAPY_SDR_RX, 0);
-            SoapySDR::Range range = dev->soapy_dev->getGainRange(SOAPY_SDR_RX, 0);
-            if (names.empty() && std::fabs(range.minimum() - range.maximum()) <= 1.0e-9) {
-                return DSD_ERR_NOT_SUPPORTED;
-            }
-            gain_db = dev->soapy_dev->getGain(SOAPY_SDR_RX, 0);
-            return 0;
-        });
-        if (rc != 0) {
-            return rc;
-        }
-        return (int)(gain_db * 10.0 + (gain_db >= 0.0 ? 0.5 : -0.5));
+        return rtl_device_get_tuner_gain_soapy(dev, out_tenth_db);
     }
 #endif
     return -1;

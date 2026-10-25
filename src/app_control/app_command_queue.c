@@ -3505,7 +3505,7 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
         opts->rtl_gain_value = cfg->rtl_gain;
     }
     if (cfg->rtl_volume) {
-        opts->rtl_volume_multiplier = cfg->rtl_volume;
+        opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume);
     }
 }
 
@@ -7380,7 +7380,8 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
            the running front end holds the configured width the stream opens on to, changed or not (issue #578). */
         const int bw_khz = cfg_reopen_rtl_bw_khz(opts, cfg);
         const int next_bw_khz = dsd_analog_airspy_dsp_bw_or_default(bw_khz);
-        const int next_volume = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
+        const int next_volume =
+            dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier);
         if (!svc_airspy_settings_reopen(&opts->airspy, &cfg->airspy, opts->rtl_dsp_bw_khz, next_bw_khz,
                                         opts->rtl_volume_multiplier, next_volume)) {
             return CFG_REOPEN_NONE;

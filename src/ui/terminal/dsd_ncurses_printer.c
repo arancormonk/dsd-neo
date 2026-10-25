@@ -49,6 +49,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -71,7 +72,9 @@
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/platform/sockets.h"
 #include "ui_key_status.h"
+#include "ui_row.h"
 #include "ui_snr_readout.h"
 
 #ifdef USE_RADIO
@@ -299,27 +302,61 @@ ui_update_sync_and_edacs_tree(const dsd_state* state) {
     }
 }
 
-/* The shared squelch readout: the setting in force and how it runs, plus "(row; default X)" while a scan row or target
-   overrides it (issue #521); on radio and audio input alike (issue #628). */
+/* The panel width every cut row fits; the helper lives with the panel renderers further down the file. */
+static int ui_get_panel_cols(void);
+
+/* A live reading at a fixed width (issue #669): right-aligned in @p width, no negative zero, and never wider (">999",
+   "<-99" past it), so the fields after it keep their columns while it changes. */
+static const char*
+ui_num(char* buf, size_t size, double value, int width, int precision, unsigned flags) {
+    (void)dsd_number_text(buf, size, value, width, precision, flags | DSD_NUMBER_TEXT_SATURATE);
+    return buf;
+}
+
+/* A row of the Input Output section, cut to the panel instead of wrapped (ui_row.h). */
 static void
-ui_print_squelch_field(const dsd_opts* opts, const dsd_state* state) {
+ui_io_row_begin(ui_row* row) {
+    ui_row_begin(row, ui_get_panel_cols(), 0);
+}
+
+/* The squelch view's fixed-width readout, its trailing padding counted in @p pad rather than kept, so a caller can put
+   the padding after its own separator. */
+static void
+ui_squelch_fixed_text(const dsd_app_squelch_view* view, char* out, size_t out_size, int* pad) {
+    (void)dsd_app_squelch_view_format_ex(view, DSD_APP_SQUELCH_VIEW_FIXED, out, out_size);
+    size_t n = strlen(out);
+    *pad = 0;
+    while (n > 0U && out[n - 1U] == ' ') {
+        out[--n] = '\0';
+        (*pad)++;
+    }
+}
+
+/* The shared squelch readout as a field: the setting in force and how it runs, plus "(row; default X)" while a scan row
+   or target overrides it (issue #521); on radio and audio input alike (issue #628). The view's fixed-width text keeps
+   one length while its reading or its gate's state changes; its padding goes after the semicolon, so the field after
+   it keeps its column (issue #669). Returns 1 when it wrote the field. */
+static int
+ui_row_squelch_field(ui_row* row, const dsd_opts* opts, const dsd_state* state, const char* lead) {
     dsd_app_squelch_view squelch;
     if (dsd_app_squelch_view_get(opts, state, &squelch) != 0) {
-        return;
+        return 0;
     }
-    char sql[72];
-    (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
-    printw(" SQL: %s;", sql);
+    char sql[96];
+    int pad = 0;
+    ui_squelch_fixed_text(&squelch, sql, sizeof sql, &pad);
+    ui_row_field(row, "%sSQL: %s;%*s", lead, sql, pad, "");
+    return 1;
 }
 
 /* The analog channel width in force (issue #525), under the configured analog preset or an analog scan row on air
    ("12.5 kHz (row; default 16 kHz)" for a row's own width, issue #526), as app_control's analog width view decides and
-   spells it for every frontend: on a radio input the channel filter, beside the DSP rate it has to fit ("Analog:"); on
-   audio input with a rigctl peer (-U) the passband the peer is asked for ("Passband: NFM 12.5 kHz (-B)", issue #621),
-   whenever the width controls are offered, a digital session with an explicit width included, as the Qt/Android
-   Passband row shows it. Nothing on other audio input, where no width is in force. */
-static void
-ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
+   spells it for every frontend: on a radio input the channel filter ("Analog:"); on audio input with a rigctl peer (-U)
+   the passband the peer is asked for ("Passband: NFM 12.5 kHz (-B)", issue #621), whenever the width controls are
+   offered, a digital session with an explicit width included, as the Qt/Android Passband row shows it. Nothing on other
+   audio input, where no width is in force. Returns 1 when it wrote the field. */
+static int
+ui_row_analog_channel_field(ui_row* row, const dsd_opts* opts, const dsd_state* state, const char* lead) {
     /* Only a radio input's reading takes the running stream's metrics (its DSP rate, the width its front end reports):
        the audio input lines, which call this every frame, skip the fetch. */
     dsd_frontend_metrics metrics;
@@ -330,36 +367,76 @@ ui_print_analog_channel_field(const dsd_opts* opts, const dsd_state* state) {
     }
     dsd_app_analog_width_view view;
     if (dsd_app_analog_width_view_get(opts, state, running, &view) != 0 || (!view.radio_input && !view.peer_passband)) {
-        return;
+        return 0;
     }
     char width[DSD_APP_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_app_analog_width_view_format(&view, width, sizeof width);
-    if (width[0] != '\0') {
-        printw(" %s: %s %s;", view.peer_passband ? "Passband" : "Analog", dsd_analog_demod_label(view.kind), width);
+    if (width[0] == '\0') {
+        return 0;
+    }
+    ui_row_field(row, "%s%s: %s %s;", lead, view.peer_passband ? "Passband" : "Analog",
+                 dsd_analog_demod_label(view.kind), width);
+    return 1;
+}
+
+/* The channel row under an input's source row (issue #669): the squelch with its live reading first, then the width
+   and its provenance, which change only with configuration or a scan row and are what a narrow terminal cuts first. */
+static void
+ui_render_channel_row(const dsd_opts* opts, const dsd_state* state) {
+    ui_row row;
+    ui_io_row_begin(&row);
+    const int has_sql = ui_row_squelch_field(&row, opts, state, "| ");
+    (void)ui_row_analog_channel_field(&row, opts, state, has_sql ? " " : "| ");
+    if (row.fields > 0) {
+        ui_row_end(&row);
     }
 }
 
 /* The rigctl peer (-U) by the endpoint its connection uses: the rigctl host, which a menu reconnect of rigctl or of
-   TCP audio sets apart from the TCP audio host. */
+   TCP audio sets apart from the TCP audio host. Last on its row: it is configuration, the longest text there. */
 static void
-ui_print_rigctl_field(const dsd_opts* opts) {
+ui_row_rigctl_field(ui_row* row, const dsd_opts* opts) {
     if (opts->use_rigctl == 1) {
-        printw("RIG: %s:%d; ", opts->rigctlhostname, opts->rigctlportno);
+        ui_row_field(row, " RIG: %s:%d;", opts->rigctlhostname, opts->rigctlportno);
+    }
+}
+
+static void
+ui_row_input_volume_field(ui_row* row, const dsd_opts* opts) {
+    ui_row_field(row, " IV: %2dX;", opts->input_volume_multiplier);
+}
+
+/* "Pkts: n; Drops: n;" in six places each (dsd_count_text()), or "[Waiting]" in the same room before the first
+   packet, so the fields after them keep their columns as the counts grow. */
+static void
+ui_row_udp_counters_field(ui_row* row, const dsd_opts* opts) {
+    char pkts[16];
+    char drops[16];
+    (void)dsd_count_text(pkts, sizeof pkts, (unsigned long long)opts->udp_in_packets, 6);
+    (void)dsd_count_text(drops, sizeof drops, (unsigned long long)opts->udp_in_drops, 6);
+    char counters[48];
+    const int span = DSD_SNPRINTF(counters, sizeof counters, "Pkts: %s; Drops: %s;", pkts, drops);
+    if (opts->udp_in_packets == 0ULL) {
+        ui_row_field(row, " %-*s", span, "[Waiting]");
+    } else {
+        ui_row_field(row, " %s", counters);
     }
 }
 
 static void
 ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
+    ui_row row;
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        printw("| Pulse Signal Input:  %i kHz; %i Ch; ", opts->pulse_digi_rate_in / 1000, opts->pulse_digi_in_channels);
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| Pulse Signal Input: %i kHz; %i Ch;", opts->pulse_digi_rate_in / 1000,
+                     opts->pulse_digi_in_channels);
+        ui_row_input_volume_field(&row, opts);
         if (opts->pa_input_idx[0] != 0) {
-            printw(" D: %s;", opts->pa_input_idx);
+            ui_row_field(&row, " D: %s;", opts->pa_input_idx);
         }
-        ui_print_rigctl_field(opts);
-        printw(" IV: %iX;", opts->input_volume_multiplier);
-        ui_print_squelch_field(opts, state);
-        ui_print_analog_channel_field(opts, state);
-        printw("\n");
+        ui_row_rigctl_field(&row, opts);
+        ui_row_end(&row);
+        ui_render_channel_row(opts, state);
     }
 
     if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
@@ -370,105 +447,122 @@ ui_render_basic_input_sources(dsd_opts* opts, const dsd_state* state) {
         printw("| Symbol Float Input: %s \n", opts->audio_in_dev);
     }
 
-    if (opts->m17decoderip == 1 && opts->udp_sockfd) {
+    /* The socket M17 binds for its IP frames (m17.c), invalid until it is open: 0 is a valid descriptor. */
+    if (opts->m17decoderip == 1 && opts->udp_sockfd != DSD_INVALID_SOCKET) {
         printw("| M17 UDP IP Frame Input: %s:%d \n", opts->m17_hostname, opts->m17_portno);
     }
 
     if (opts->audio_in_type == AUDIO_IN_TCP) {
-        printw("| TCP Signal Input: %s:%d; %d kHz; 1 Ch; ", opts->tcp_hostname, opts->tcp_portno,
-               opts->wav_sample_rate / 1000);
-        ui_print_rigctl_field(opts);
-        printw(" IV: %iX;", opts->input_volume_multiplier);
-        ui_print_squelch_field(opts, state);
-        ui_print_analog_channel_field(opts, state);
-        printw("\n");
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| TCP Signal Input: %s:%d;", opts->tcp_hostname, opts->tcp_portno);
+        ui_row_field(&row, " %d kHz; 1 Ch;", opts->wav_sample_rate / 1000);
+        ui_row_input_volume_field(&row, opts);
+        ui_row_rigctl_field(&row, opts);
+        ui_row_end(&row);
+        ui_render_channel_row(opts, state);
     }
 
     if (opts->audio_in_type == AUDIO_IN_UDP) {
         const char* host = (opts->udp_in_bindaddr[0] ? opts->udp_in_bindaddr : "127.0.0.1");
-        printw("| UDP Signal Input: %s:%d; %d kHz; 1 Ch; ", host, opts->udp_in_portno, opts->wav_sample_rate / 1000);
-        ui_print_rigctl_field(opts);
-        if (opts->udp_in_packets == 0ULL) {
-            printw("[Waiting]");
-        } else {
-            printw("Pkts:%llu Drops:%llu", (unsigned long long)opts->udp_in_packets,
-                   (unsigned long long)opts->udp_in_drops);
-        }
-        printw(" IV: %iX;", opts->input_volume_multiplier);
-        ui_print_squelch_field(opts, state);
-        ui_print_analog_channel_field(opts, state);
-        printw("\n");
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| UDP Signal Input: %s:%d;", host, opts->udp_in_portno);
+        ui_row_udp_counters_field(&row, opts);
+        ui_row_field(&row, " %d kHz; 1 Ch;", opts->wav_sample_rate / 1000);
+        ui_row_input_volume_field(&row, opts);
+        ui_row_rigctl_field(&row, opts);
+        ui_row_end(&row);
+        ui_render_channel_row(opts, state);
     }
 
     if (opts->audio_in_type == AUDIO_IN_WAV) {
-        printw("| WAV Audio Input: %s; %d kHz; ", opts->audio_in_dev, opts->wav_sample_rate / 1000);
-        printw(" IV: %iX;", opts->input_volume_multiplier);
-        ui_print_squelch_field(opts, state);
-        ui_print_analog_channel_field(opts, state);
-        printw("\n");
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| WAV Audio Input: %s;", opts->audio_in_dev);
+        ui_row_field(&row, " %d kHz;", opts->wav_sample_rate / 1000);
+        ui_row_input_volume_field(&row, opts);
+        ui_row_end(&row);
+        ui_render_channel_row(opts, state);
     }
 
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
-        printw("| STDIN Standard Input: - Menu Disabled when using STDIN!");
-        ui_print_squelch_field(opts, state);
-        ui_print_analog_channel_field(opts, state);
-        printw("\n");
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| STDIN Standard Input: - Menu Disabled when using STDIN!");
+        ui_row_end(&row);
+        ui_render_channel_row(opts, state);
     }
 }
 
-static void
-ui_print_rtl_gain_field(dsd_opts* opts) {
-#ifndef USE_RADIO
-    if (opts->rtl_gain_value == 0) {
-        printw(" G: AGC;");
-    } else {
-        printw(" G: %idB;", opts->rtl_gain_value);
+#ifdef USE_RADIO
+/* Whole dB, rounded half away from zero, from tenths: by quotient and remainder, so no tenths value can overflow. */
+static int
+ui_tenth_db_to_db(int tenth_db) {
+    int db = tenth_db / 10;
+    const int rem = tenth_db % 10;
+    if (rem >= 5) {
+        db++;
+    } else if (rem <= -5) {
+        db--;
     }
-    return;
+    return db;
+}
+#endif
+
+/* " G: 40dB;" in a fixed room: the gain in three places ("-10", " 49", ">99" past them), or AGC in the same room. */
+static void
+ui_row_gain_value_field(ui_row* row, int is_auto, int db) {
+    if (is_auto) {
+        ui_row_field(row, " G:   AGC;");
+        return;
+    }
+    char value[16];
+    ui_row_field(row, " G: %sdB;", ui_num(value, sizeof value, (double)db, 3, 0, 0));
+}
+
+static void
+ui_row_rtl_gain_field(ui_row* row, const dsd_opts* opts) {
+#ifndef USE_RADIO
+    ui_row_gain_value_field(row, opts->rtl_gain_value == 0, opts->rtl_gain_value);
 #else
     /* Show applied tuner gain when available (actual driver value),
        otherwise fall back to requested value. */
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics(&metrics);
     if (metrics.tuner_gain_valid) {
-        if (metrics.tuner_gain_is_auto) {
-            printw(" G: AGC;");
-        } else {
-            int gdB = (metrics.tuner_gain_tenth_db >= 0) ? (metrics.tuner_gain_tenth_db + 5) / 10
-                                                         : (metrics.tuner_gain_tenth_db - 5) / 10;
-            printw(" G: %idB;", gdB);
-        }
+        ui_row_gain_value_field(row, metrics.tuner_gain_is_auto, ui_tenth_db_to_db(metrics.tuner_gain_tenth_db));
     } else {
-        if (opts->rtl_gain_value == 0) {
-            printw(" G: AGC;");
-        } else {
-            printw(" G: %idB;", opts->rtl_gain_value);
-        }
+        ui_row_gain_value_field(row, opts->rtl_gain_value == 0, opts->rtl_gain_value);
     }
 #endif
 }
 
 static void
-ui_print_rtl_ppm_field(const dsd_opts* opts) {
-    (void)opts;
+ui_row_rtl_ppm_field(ui_row* row) {
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics(&metrics);
-    printw(" PPM: %i;", metrics.requested_ppm); //Adjust manually now with { and }
+    char ppm[16];
+    ui_row_field(row, " PPM: %s;", ui_num(ppm, sizeof ppm, (double)metrics.requested_ppm, 4, 0, 0));
 }
 
+/* The Auto PPM row: its readings at fixed widths (the SNR's -100.0 placeholder included), so the step word, last, stays
+   put. */
 static void
 ui_print_rtl_auto_ppm_status_values(int enabled, int locked, int locked_ppm, double snr_db, double df_hz,
                                     int step_dir) {
+    ui_row row;
+    ui_io_row_begin(&row);
     if (!enabled) {
-        printw("\n| Auto PPM: Off");
+        ui_row_field(&row, "| Auto PPM: Off");
     } else if (locked) {
-        printw("\n| Auto PPM: Locked (PPM: %d)", locked_ppm);
+        char ppm[16];
+        ui_row_field(&row, "| Auto PPM: Locked (PPM: %s)", ui_num(ppm, sizeof ppm, (double)locked_ppm, 4, 0, 0));
     } else {
-        printw("\n| Auto PPM: On; SNR: %.1f dB; df: %.1f Hz; step: %s;", snr_db, df_hz,
-               (step_dir > 0)   ? "+1"
-               : (step_dir < 0) ? "-1"
-                                : "hold");
+        char snr[16];
+        char df[16];
+        ui_row_field(&row, "| Auto PPM: On;");
+        ui_row_field(&row, " SNR: %s dB;", ui_num(snr, sizeof snr, snr_db, 6, 1, 0));
+        ui_row_field(&row, " df: %s Hz;", ui_num(df, sizeof df, df_hz, 8, 1, DSD_NUMBER_TEXT_PLUS));
+        ui_row_field(&row, " step: %s;", (step_dir > 0) ? "+1" : (step_dir < 0) ? "-1" : "hold");
     }
+    ui_row_end(&row);
 }
 
 static void
@@ -484,34 +578,42 @@ ui_print_rtl_auto_ppm_status(void) {
 #endif
 }
 
+/* A radio input's rows (issue #669): the source row with the receiver's readings at fixed widths and the tuned
+   frequency last, then the channel row, then Auto PPM. An Airspy names itself on a row of its own first; a Soapy
+   device's arguments, free-form configuration, go last on the source row. */
 static void
 ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         int soapy_input = ui_audio_in_is_soapy(opts);
+        ui_row row;
+        ui_io_row_begin(&row);
         if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
-            printw("Airspy %s %u samples/s\n", opts->airspy_info.serial, opts->airspy_info.sample_rate);
+            ui_row_field(&row, "| Airspy: %s;", opts->airspy_info.serial);
+            ui_row_field(&row, " %u samples/s;", opts->airspy_info.sample_rate);
+            ui_row_end(&row);
+            ui_io_row_begin(&row);
+            ui_row_field(&row, "|");
         } else if (soapy_input) {
-            if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
-                printw("| SoapySDR: %s;", opts->audio_in_dev + 6);
-            } else {
-                printw("| SoapySDR;");
-            }
+            ui_row_field(&row, "| SoapySDR;");
         } else {
-            printw("| RTL: %d;", opts->rtl_dev_index);
+            ui_row_field(&row, "| RTL: %d;", opts->rtl_dev_index);
         }
-        ui_print_rtl_gain_field(opts);
-        printw(" Mon: %iX;", opts->rtl_volume_multiplier);
-        ui_print_rtl_ppm_field(opts);
-        ui_print_squelch_field(opts, state);
-        printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
-        ui_print_analog_channel_field(opts, state);
-        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575). */
-        printw(" FRQ: %u;", (unsigned int)dsd_opts_tuned_freq_hz(opts));
+        ui_row_rtl_gain_field(&row, opts);
+        ui_row_rtl_ppm_field(&row);
+        ui_row_field(&row, " Mon: %dX;", opts->rtl_volume_multiplier);
+        ui_row_field(&row, " DSP-BW: %2d kHz;", opts->rtl_dsp_bw_khz);
+        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575), in the ten places any
+           32-bit Hz value takes, so a Soapy device's arguments after it hold their column across a retune. */
+        ui_row_field(&row, " FRQ: %10u;", (unsigned int)dsd_opts_tuned_freq_hz(opts));
+        if (soapy_input && strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
+            ui_row_field(&row, " Args: %s;", opts->audio_in_dev + 6);
+        }
+        ui_row_end(&row);
+        ui_render_channel_row(opts, state);
         ui_print_rtl_auto_ppm_status();
         if (!soapy_input && opts->rtl_udp_port != 0) {
-            printw("\n| External RTL Tuning on UDP: %s:%i", opts->rtl_udp_bindaddr, opts->rtl_udp_port);
+            printw("| External RTL Tuning on UDP: %s:%i\n", opts->rtl_udp_bindaddr, opts->rtl_udp_port);
         }
-        printw("\n");
         /* Show compact DSP status directly above audio sections (optional) */
         if (opts->frontend_display.show_dsp_panel) {
             print_dsp_status(opts, state);
@@ -520,6 +622,8 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Input level health: the status word and the three readings at fixed widths, then the advice, which changes only
+   with the status. */
 static void
 ui_render_input_level_status(const dsd_state* state) {
     if (!state || state->input_level.source == DSD_INPUT_LEVEL_SOURCE_UNKNOWN
@@ -527,16 +631,26 @@ ui_render_input_level_status(const dsd_state* state) {
         return;
     }
     const dsd_input_level_snapshot* level = &state->input_level;
-    printw("| %s: %s rms %.1f dBFS peak %.1f dBFS clip %.1f%%", dsd_input_level_display_label(level->source),
-           dsd_input_level_status_label(level->status), level->rms_dbfs, level->peak_dbfs, level->clip_pct);
+    char rms[16];
+    char peak[16];
+    char clip[16];
+    ui_row row;
+    ui_io_row_begin(&row);
+    ui_row_field(&row, "| %s: %-7s", dsd_input_level_display_label(level->source),
+                 dsd_input_level_status_label(level->status));
+    ui_row_field(&row, " rms %s dBFS", ui_num(rms, sizeof rms, level->rms_dbfs, 6, 1, 0));
+    ui_row_field(&row, " peak %s dBFS", ui_num(peak, sizeof peak, level->peak_dbfs, 6, 1, 0));
+    ui_row_field(&row, " clip %s%%", ui_num(clip, sizeof clip, level->clip_pct, 5, 1, 0));
     if (level->status == DSD_INPUT_LEVEL_LOW) {
-        printw(" %s", dsd_input_level_source_is_rf(level->source) ? "raise RF gain if signal is present"
-                                                                  : "raise source/input volume if signal is present");
+        ui_row_field(&row, " %s",
+                     dsd_input_level_source_is_rf(level->source) ? "raise RF gain if signal is present"
+                                                                 : "raise source/input volume if signal is present");
     } else if (level->status == DSD_INPUT_LEVEL_HOT || level->status == DSD_INPUT_LEVEL_CLIPPING) {
-        printw(" %s", dsd_input_level_source_is_rf(level->source) ? "lower RF gain or add filtering/attenuation"
-                                                                  : "lower source/input volume");
+        ui_row_field(&row, " %s",
+                     dsd_input_level_source_is_rf(level->source) ? "lower RF gain or add filtering/attenuation"
+                                                                 : "lower source/input volume");
     }
-    printw("\n");
+    ui_row_end(&row);
 }
 
 static void
@@ -546,97 +660,107 @@ ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
     ui_render_input_level_status(state);
 }
 
+/* A digital output's gains (0..100 %) in three places, then its mode word. */
+static void
+ui_row_digital_gain_fields(ui_row* row, const dsd_opts* opts, const dsd_state* state, const char* keys) {
+    char gain[16];
+    ui_row_field(row, " G: %s%%", ui_num(gain, sizeof gain, (double)state->aout_gain * 2.0, 3, 0, 0));
+    if (opts->pulse_digi_out_channels == 2) {
+        ui_row_field(row, " G: %s%%", ui_num(gain, sizeof gain, (double)state->aout_gainR * 2.0, 3, 0, 0));
+    }
+    ui_row_field(row, " (%s) %s", keys, opts->audio_gain == 0 ? "Auto  " : "Manual");
+    if (opts->use_hpf_d == 1) {
+        ui_row_field(row, " HPF");
+    }
+    if (opts->call_alert == 1) {
+        ui_row_field(row, " *CA!"); //Call Alert
+    }
+}
+
 static void
 ui_render_pulse_digital_output(const dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_out_type == 0 && opts->analog_only == 0) {
-        printw("| Pulse Digital Output: %i kHz; %i Ch; G: %02.0f%%", opts->pulse_digi_rate_out / 1000,
-               opts->pulse_digi_out_channels, state->aout_gain * 2);
-        if (opts->pulse_digi_out_channels == 2) {
-            printw(" G: %02.0f%%", state->aout_gainR * 2);
-        }
-        if (opts->audio_gain == 0) {
-            printw(" (+|-) Auto  ");
-        }
-        if (opts->audio_gain > 0) {
-            printw(" (+|-) Manual");
-        }
-        if (opts->use_hpf_d == 1) {
-            printw(" HPF");
-        }
-        if (opts->call_alert == 1) {
-            printw(" *CA!"); //Call Alert
-        }
+        ui_row row;
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| Pulse Digital Output: %i kHz; %i Ch;", opts->pulse_digi_rate_out / 1000,
+                     opts->pulse_digi_out_channels);
+        ui_row_digital_gain_fields(&row, opts, state, "+|-");
         if (opts->pa_output_idx[0] != 0) {
-            printw(" D: %s;", opts->pa_output_idx);
+            ui_row_field(&row, " D: %s;", opts->pa_output_idx);
         }
-
-        printw(" \n");
+        ui_row_end(&row);
     }
 }
 
 /* The analog monitor's filters: the 960 Hz low-pass and high-pass, then the voice band-pass. */
 static void
-ui_print_analog_filters(const dsd_opts* opts) {
-    printw("F: |%s|%s|%s|", opts->use_lpf == 1 ? "LP" : "  ", opts->use_hpf == 1 ? "HP" : "  ",
-           opts->use_pbf == 1 ? "VB" : "  ");
+ui_row_analog_filters_field(ui_row* row, const dsd_opts* opts) {
+    ui_row_field(row, " F: |%s|%s|%s|", opts->use_lpf == 1 ? "LP" : "  ", opts->use_hpf == 1 ? "HP" : "  ",
+                 opts->use_pbf == 1 ? "VB" : "  ");
 }
 
-/* The analog monitor's gain: auto with what the AGC applies over the reference level, or the fixed -n setting. */
+/* The analog monitor's gain: auto with what the AGC applies over the reference level, or the fixed -n setting, both in
+   the room the auto form takes so the readings after it hold their columns when the mode changes. */
 static void
-ui_print_analog_gain(const dsd_opts* opts, const dsd_state* state) {
+ui_row_analog_gain_field(ui_row* row, const dsd_opts* opts, const dsd_state* state) {
+    static const char k_auto_span[] = "G: Auto (+18.0 dB) (/|*)";
+    char value[16];
+    char text[48];
     if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
-        printw("G: Auto (%+.1f dB) (/|*) ", state ? (double)state->aout_gainA : 0.0);
+        DSD_SNPRINTF(text, sizeof text, "G: Auto (%s dB) (/|*)",
+                     ui_num(value, sizeof value, state ? (double)state->aout_gainA : 0.0, 5, 1, DSD_NUMBER_TEXT_PLUS));
     } else {
-        printw("G: %02.0f%% (/|*) Manual ", opts->audio_gainA);
+        DSD_SNPRINTF(text, sizeof text, "G: %s%% (/|*) Manual",
+                     ui_num(value, sizeof value, (double)opts->audio_gainA, 3, 0, 0));
+    }
+    ui_row_field(row, " %-*s", (int)(sizeof k_auto_span - 1U), text);
+}
+
+/* The measured channel power on audio input, where the analog monitor gates on it. */
+static void
+ui_row_analog_power_field(ui_row* row, const dsd_opts* opts) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        char pwr[16];
+        ui_row_field(row, " PWR: %s dB;", ui_num(pwr, sizeof pwr, pwr_to_dB(opts->rtl_pwr), 6, 1, 0));
     }
 }
 
 static void
 ui_render_pulse_analog_output(const dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_out_type == 0 && (opts->frame_provoice == 1 || opts->monitor_input_audio == 1)) {
-        printw("| Pulse Analog Output: %i kHz; %i Ch; ", opts->pulse_raw_rate_out / 1000, opts->pulse_raw_out_channels);
-        ui_print_analog_gain(opts, state);
-        if (opts->audio_in_type != AUDIO_IN_RTL) {
-            printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
-        }
-        ui_print_analog_filters(opts);
+        ui_row row;
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| Pulse Analog Output: %i kHz; %i Ch;", opts->pulse_raw_rate_out / 1000,
+                     opts->pulse_raw_out_channels);
+        ui_row_analog_gain_field(&row, opts, state);
+        ui_row_analog_power_field(&row, opts);
+        ui_row_analog_filters_field(&row, opts);
         if (opts->pa_output_idx[0] != 0) {
-            printw(" D: %s;", opts->pa_output_idx);
+            ui_row_field(&row, " D: %s;", opts->pa_output_idx);
         }
-        printw(" \n");
+        ui_row_end(&row);
     }
 }
 
 static void
 ui_render_udp_output(const dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_out_type == 8) {
-        printw("| UDP Digital Output: %s:%d; %d kHz %d Ch; %02.0f%%", opts->udp_hostname, opts->udp_portno,
-               opts->pulse_digi_rate_out / 1000, opts->pulse_digi_out_channels, state->aout_gain * 2);
-        if (opts->pulse_digi_out_channels == 2) {
-            printw(" G: %02.0f%%", state->aout_gainR * 2);
-        }
-        if (opts->audio_gain == 0) {
-            printw(" (+/-) Auto  ");
-        }
-        if (opts->audio_gain > 0) {
-            printw(" (+/-) Manual");
-        }
-        if (opts->use_hpf_d == 1) {
-            printw(" HPF");
-        }
-        if (opts->call_alert == 1) {
-            printw(" *CA!"); //Call Alert
-        }
-        printw(" \n");
-        if (opts->udp_sockfdA != 0) //Analog Output on udp port +2
-        {
-            printw("| UDP Analog Output: %s:%d; 48 kHz 1 Ch; ", opts->udp_hostname, opts->udp_portno + 2);
-            ui_print_analog_gain(opts, state);
-            if (opts->audio_in_type != AUDIO_IN_RTL) {
-                printw("PWR: %.1f dB; ", pwr_to_dB(opts->rtl_pwr));
-            }
-            ui_print_analog_filters(opts);
-            printw(" \n");
+        ui_row row;
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| UDP Digital Output: %s:%d;", opts->udp_hostname, opts->udp_portno);
+        ui_row_field(&row, " %d kHz %d Ch;", opts->pulse_digi_rate_out / 1000, opts->pulse_digi_out_channels);
+        ui_row_digital_gain_fields(&row, opts, state, "+/-");
+        ui_row_end(&row);
+        /* Analog output on the UDP port + 2, when its socket is open: unset is DSD_INVALID_SOCKET (-1 on POSIX), and 0
+           is a valid descriptor. */
+        if (opts->udp_sockfdA != DSD_INVALID_SOCKET) {
+            ui_io_row_begin(&row);
+            ui_row_field(&row, "| UDP Analog Output: %s:%d;", opts->udp_hostname, opts->udp_portno + 2);
+            ui_row_field(&row, " 48 kHz 1 Ch;");
+            ui_row_analog_gain_field(&row, opts, state);
+            ui_row_analog_power_field(&row, opts);
+            ui_row_analog_filters_field(&row, opts);
+            ui_row_end(&row);
         }
     }
 }
@@ -651,34 +775,41 @@ ui_render_audio_output_block(const dsd_opts* opts, const dsd_state* state) {
 static void
 ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->m17encoder == 1) {
-        printw("| M17 Encoder:");
+        ui_row row;
+        ui_io_row_begin(&row);
+        ui_row_field(&row, "| M17 Encoder:");
         if (state->m17encoder_tx == 1 && state->m17_vox == 0) {
-            printw(" Toggle TX (\\) On ;");
+            ui_row_field(&row, " Toggle TX (\\) On ;");
         }
         if (state->m17encoder_tx == 0 && state->m17_vox == 0) {
-            printw(" Toggle TX (\\) Off;");
+            ui_row_field(&row, " Toggle TX (\\) Off;");
         }
         if (state->m17_vox == 1) {
-            printw(" Vox Mode;");
+            ui_row_field(&row, " Vox Mode;");
         }
-        if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
-            printw(" Input Gain (/|*): Auto ");
-        } else {
-            printw(" Input Gain (/|*): %02.0f%% ", opts->audio_gainA);
-        }
-
-        ui_print_analog_filters(opts);
         if (opts->audio_in_type != AUDIO_IN_RTL && state->m17_vox == 1) {
             /* Measured power then threshold: the first is always a reading, the
              * second says "off" when it is not gating. A scan row can override the
-             * threshold on this input too, so it reads like the RTL line's SQL. */
+             * threshold on this input too, so it reads like the RTL line's SQL. The
+             * live reading goes ahead of the settings (issue #669). */
             dsd_app_squelch_view vox_view;
-            char vox_sql[72];
+            char vox_sql[96];
+            char pwr[16];
+            int pad = 0;
             (void)dsd_app_squelch_view_get(opts, state, &vox_view);
-            (void)dsd_app_squelch_view_format(&vox_view, vox_sql, sizeof vox_sql);
-            printw(" SQL: %.1f : %s;", pwr_to_dB(opts->rtl_pwr), vox_sql);
+            ui_squelch_fixed_text(&vox_view, vox_sql, sizeof vox_sql, &pad);
+            ui_row_field(&row, " SQL: %s : %s;%*s", ui_num(pwr, sizeof pwr, pwr_to_dB(opts->rtl_pwr), 6, 1, 0), vox_sql,
+                         pad, "");
         }
-        printw("\n");
+        if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
+            ui_row_field(&row, " Input Gain (/|*): Auto");
+        } else {
+            char gain[16];
+            ui_row_field(&row, " Input Gain (/|*): %s%%",
+                         ui_num(gain, sizeof gain, (double)opts->audio_gainA, 3, 0, 0));
+        }
+        ui_row_analog_filters_field(&row, opts);
+        ui_row_end(&row);
     }
 }
 
@@ -989,11 +1120,11 @@ ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     }
 }
 
-/* Voice-gate phase for the -Y and --trunk-scan rows (issue #381). Nothing is printed
-   while the gate is off or the phase is OFF (a trunked --trunk-scan target, which the
-   gate leaves alone), so those rows stay byte-identical to what they always were. */
+/* Voice-gate phase for the -Y and --trunk-scan rows (issue #381), in the room its longest phase takes so what follows
+   keeps its column. Nothing is printed while the gate is off (a configuration), and blanks of that room while the phase
+   is OFF (a trunked --trunk-scan target, which the gate leaves alone). */
 static void
-ui_render_scan_voice_gate(const dsd_opts* opts, const dsd_state* state) {
+ui_row_scan_voice_gate_field(ui_row* row, const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->scan_voice_only != 1) {
         return;
     }
@@ -1002,68 +1133,61 @@ ui_render_scan_voice_gate(const dsd_opts* opts, const dsd_state* state) {
         case DSD_SCAN_VOICE_GATE_QUALIFY: phase = "QUALIFY"; break;
         case DSD_SCAN_VOICE_GATE_VOICE: phase = "VOICE"; break;
         case DSD_SCAN_VOICE_GATE_TAIL: phase = "TAIL"; break;
-        default: return;
+        default: phase = NULL; break;
     }
-    printw(" Voice: %s", phase);
+    if (phase) {
+        ui_row_field(row, " Voice: %-7s", phase);
+    } else {
+        ui_row_field(row, " %14s", "");
+    }
 }
 
-/* Which of the rotating --trunk-scan targets the receiver is parked on. The park
-   frequency has no snapshot field of its own; the protocol header lines already
-   carry the frequency being decoded. */
+/* A status word that appears and disappears with state, in a room that is always there. */
+static void
+ui_row_flag_field(ui_row* row, int on, const char* word) {
+    ui_row_field(row, " %-*s", (int)strlen(word), on ? word : "");
+}
+
+/* How many entries `b` took out of the rotation: a noun count about the list, not a verdict on the channel on air, so it
+   closes the row (PR #463 feedback), after the name; nothing follows it, and it changes only when the operator avoids
+   or clears. Same word as the "Clear avoids" menu row and the Qt SCAN AVOIDS badge. */
+static void
+ui_row_avoids_field(ui_row* row, unsigned int count) {
+    if (count != 0U) {
+        ui_row_field(row, " Avoids: %u", count);
+    }
+}
+
+/* Which of the rotating --trunk-scan targets the receiver is parked on (issue #669 order): the ordinal, the voice gate,
+   HOLD and [avoided] for the target on air, each in a room that is always there, then the target's id, the one field
+   of operator-chosen length, and the list's avoid count. The park frequency has no snapshot field of its own; the
+   protocol header lines already carry the frequency being decoded. */
 static void
 ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_scan_enabled != 1 || state->trunk_scan_active_id[0] == '\0') {
         return;
     }
-    printw("| Trunk Scan:  Target: %s", state->trunk_scan_active_id);
-    if (state->trunk_scan_active_ordinal != 0 && state->trunk_scan_target_count != 0) {
-        printw(" (%u/%u)", (unsigned int)state->trunk_scan_active_ordinal,
-               (unsigned int)state->trunk_scan_target_count);
+    const unsigned int count = (unsigned int)state->trunk_scan_target_count;
+    const unsigned int ordinal = (unsigned int)state->trunk_scan_active_ordinal;
+    char digits[16];
+    const int width = DSD_SNPRINTF(digits, sizeof digits, "%u", count);
+    ui_row row;
+    ui_io_row_begin(&row);
+    if (count == 0U) {
+        ui_row_field(&row, "| Trunk Scan:"); /* half a position is no position */
+    } else if (ordinal != 0U) {
+        ui_row_field(&row, "| Trunk Scan: (%*u/%u)", width, ordinal, count);
+    } else {
+        ui_row_field(&row, "| Trunk Scan: %*s", 2 * width + 3, ""); /* the position's room, before it is published */
     }
-    ui_render_scan_voice_gate(opts, state);
+    ui_row_scan_voice_gate_field(&row, opts, state);
     // The target on air first: an operator hold, or a receiver parked on a target the operator
     // avoided because every alternate failed to retune.
-    if (state->trunk_scan_hold) {
-        printw(" HOLD");
-    }
-    if (state->trunk_scan_active_avoided) {
-        printw(" [avoided]");
-    }
-    // Then the list: how many targets `b` has taken out of the rotation. A noun count, last, so
-    // it is not read as a second verdict on the parked target beside HOLD and [avoided]. Same
-    // word as the "Clear avoids" menu row and the Qt SCAN AVOIDS badge.
-    if (state->trunk_scan_avoided_count != 0) {
-        printw(" Avoids: %u", (unsigned int)state->trunk_scan_avoided_count);
-    }
-    printw("\n");
-}
-
-/* Declared here because the Scan Timing row has to truncate to the panel width, and the
-   width helper lives with the panel renderers much further down the file. */
-static int ui_get_panel_cols(void);
-
-static void ui_scan_timing_appendf(char* buf, size_t buf_sz, size_t* used, const char* fmt, ...)
-    DSD_ATTR_FORMAT(printf, 4, 5);
-
-/* Append one group of the Scan Timing row. Overflow is clamped rather than reported: the
-   row is a status line that a narrow terminal truncates anyway, and a caller that had to
-   check every group would be the thing most likely to get the grammar wrong. */
-static void
-ui_scan_timing_appendf(char* buf, size_t buf_sz, size_t* used, const char* fmt, ...) {
-    if (*used + 1U >= buf_sz) {
-        return;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    int wrote = DSD_VSNPRINTF(buf + *used, buf_sz - *used, fmt, ap);
-    va_end(ap);
-    if (wrote < 0) {
-        return;
-    }
-    *used += (size_t)wrote;
-    if (*used >= buf_sz) {
-        *used = buf_sz - 1U;
-    }
+    ui_row_flag_field(&row, state->trunk_scan_hold, "HOLD");
+    ui_row_flag_field(&row, state->trunk_scan_active_avoided, "[avoided]");
+    ui_row_field(&row, " Target: %s", state->trunk_scan_active_id);
+    ui_row_avoids_field(&row, (unsigned int)state->trunk_scan_avoided_count);
+    ui_row_end(&row);
 }
 
 /* Why the idle dwell is not the thing counting down: suspended means something on the air
@@ -1077,50 +1201,76 @@ ui_scan_timing_dwell_suffix(uint8_t dwell_state) {
     }
 }
 
-/* The Scan Timing row without its newline (issue #508): why the scanner is staying on the
-   row above and how long is left of it, from the shared app-control view so the terminal
-   and the Qt panel cannot drift on what "suspended" or "hold" means. Pure, and taking the
-   clock as an argument, so the goldens can pin the exact bytes. Returns the length
-   written, or 0 when there is no scan timing to show. */
-static int
-ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double now_m, char* buf, size_t buf_sz) {
-    if (!buf || buf_sz == 0U) {
-        return 0;
+/* A countdown or its span in six cells, truncated toward zero so a countdown never shows more time than is left (and
+   the terminal reads as the Qt panel does, issue #669 B6): "  1.8s" and "999.9s" in tenths of a second, then " 48.0h"
+   in tenths of an hour, then " 1193h" in whole hours (UINT32_MAX ms is 1193 h). */
+static void
+ui_scan_timing_time(char* out, size_t out_size, uint32_t ms) {
+    char text[16];
+    const uint32_t ds = ms / 100U;
+    const uint32_t dh = ms / 360000U;
+    if (ds <= 9999U) {
+        DSD_SNPRINTF(text, sizeof text, "%u.%us", ds / 10U, ds % 10U);
+    } else if (dh <= 9999U) {
+        DSD_SNPRINTF(text, sizeof text, "%u.%uh", dh / 10U, dh % 10U);
+    } else {
+        DSD_SNPRINTF(text, sizeof text, "%uh", ms / 3600000U);
     }
-    buf[0] = '\0';
+    DSD_SNPRINTF(out, out_size, "%6s", text);
+}
+
+enum { UI_SCAN_TIME_PAIR_WIDTH = 13 }; /* "  1.8s/  3.0s" */
+
+/* "  1.8s/  3.0s": a countdown and its span, each in six cells. */
+static void
+ui_scan_timing_pair(char* out, size_t out_size, uint32_t remaining_ms, uint32_t span_ms) {
+    char remaining[16];
+    char span[16];
+    ui_scan_timing_time(remaining, sizeof remaining, remaining_ms);
+    ui_scan_timing_time(span, sizeof span, span_ms);
+    DSD_SNPRINTF(out, out_size, "%s/%s", remaining, span);
+}
+
+/* The Scan Timing row (issue #508), from the shared app-control view so the terminal and the Qt panel cannot drift on
+   what "suspended" or "hold" means. Issue #669 fixes its columns: the phrase in the room the longest takes, the
+   window's countdown in a room that stays when no window runs, then the cap on the whole visit (#507), and last the
+   budgets, which come and go with the reason. Pure, and taking the clock as an argument, so the goldens can pin the
+   exact bytes. Returns 1 when there is a row, 0 when there is no scan timing to show. */
+static int
+ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double now_m, ui_row* row) {
     dsd_app_scan_timing view;
     if (dsd_app_scan_timing_view(opts, state, now_m, &view) != 1) {
         return 0;
     }
-    size_t used = 0U;
-    ui_scan_timing_appendf(buf, buf_sz, &used, "| Scan Timing: %s", view.phrase);
+    char pair[32];
+    ui_row_field(row, "| Scan Timing: %-*s", (int)dsd_app_scan_timing_phrase_width(), view.phrase);
     if (view.timer_live) {
-        const uint32_t remaining_ds = view.remaining_ms / 100U;
-        ui_scan_timing_appendf(buf, buf_sz, &used, " %.1fs/%.1fs", (double)remaining_ds / 10.0,
-                               (double)view.span_ms / 1000.0);
+        ui_scan_timing_pair(pair, sizeof pair, view.remaining_ms, view.span_ms);
+        ui_row_field(row, " %s", pair);
+    } else {
+        ui_row_field(row, " %*s", UI_SCAN_TIME_PAIR_WIDTH, "");
     }
-    if (view.show_dwell) {
-        ui_scan_timing_appendf(buf, buf_sz, &used, "  dwell %.1fs%s", (double)view.dwell_ms / 1000.0,
-                               ui_scan_timing_dwell_suffix(view.dwell_state));
-    }
-    if (view.show_hold) {
-        ui_scan_timing_appendf(buf, buf_sz, &used, "  hold %.1fs", (double)view.hold_ms / 1000.0);
-    }
-    if (view.show_hang) {
-        ui_scan_timing_appendf(buf, buf_sz, &used, "  hang %.1fs", (double)view.hang_ms / 1000.0);
-    }
-    /* Last, the ceiling on the whole visit (#507). A word rather than 0.0s when it is not
-       counting: a hold suspends the cap, and a zero countdown would read as a visit that
-       just ran out and a receiver that should already have moved on. */
+    /* A word rather than 0.0s when the cap is not counting: a hold suspends it, and a zero countdown would read as a
+       visit that just ran out and a receiver that should already have moved on. */
     if (view.show_visit) {
         if (view.visit_live) {
-            ui_scan_timing_appendf(buf, buf_sz, &used, "  Visit: %.1fs/%.1fs", (double)view.visit_remaining_ms / 1000.0,
-                                   (double)view.visit_ms / 1000.0);
+            ui_scan_timing_pair(pair, sizeof pair, view.visit_remaining_ms, view.visit_ms);
+            ui_row_field(row, "  Visit: %s", pair);
         } else {
-            ui_scan_timing_appendf(buf, buf_sz, &used, "  Visit: paused");
+            ui_row_field(row, "  Visit: %-*s", UI_SCAN_TIME_PAIR_WIDTH, "paused");
         }
     }
-    return (int)used;
+    if (view.show_dwell) {
+        ui_row_field(row, "  dwell %.1fs%s", (double)view.dwell_ms / 1000.0,
+                     ui_scan_timing_dwell_suffix(view.dwell_state));
+    }
+    if (view.show_hold) {
+        ui_row_field(row, "  hold %.1fs", (double)view.hold_ms / 1000.0);
+    }
+    if (view.show_hang) {
+        ui_row_field(row, "  hang %.1fs", (double)view.hang_ms / 1000.0);
+    }
+    return 1;
 }
 
 /* Cut to the panel width rather than wrapped: this row redraws several times a second as
@@ -1128,60 +1278,61 @@ ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double n
    for as long as the phrase stayed long. */
 static void
 ui_render_scan_timing_row(const dsd_opts* opts, const dsd_state* state) {
-    char line[192];
-    int len = ui_format_scan_timing_row(opts, state, dsd_decode_now_mono_s(), line, sizeof(line));
-    if (len <= 0) {
-        return;
+    ui_row row;
+    ui_io_row_begin(&row);
+    if (ui_format_scan_timing_row(opts, state, dsd_decode_now_mono_s(), &row) == 1) {
+        ui_row_end(&row);
     }
-    int cols = ui_get_panel_cols();
-    if (len >= cols) {
-        /* Writing the final column wraps before the explicit newline. */
-        len = cols - 1;
+}
+
+/* The -Y Scan Mode row (issue #669 order): the frequency on air, the voice gate and HOLD, each in a room that is
+   always there, then the hangtime setting, the row's name, the one field of operator-chosen length, and the list's avoid
+   count. A named channel still fits 80 columns. */
+static void
+ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
+    ui_row row;
+    ui_io_row_begin(&row);
+    ui_row_field(&row, "| Scan Mode:");
+    // lcn_freq_roll is advanced past the entry just tuned, so the displayed slot is roll - 1.
+    // Bound it by lcn_freq_count the way every other scan-list consumer does: a protocol writer
+    // that shrinks the count (nxdn_element.c, p25p2_vpdu.c, dmr_csbk.c) leaves roll pointing
+    // past the end, and slots >= 26 resolve into the heap tail, which is only as long as the
+    // count that reserved it.
+    if (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
+        char mhz[24];
+        ui_row_field(&row, " Frequency: %s MHz",
+                     ui_num(mhz, sizeof mhz,
+                            (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000, 11, 6,
+                            0));
+    } else {
+        ui_row_field(&row, " %*s", (int)strlen("Frequency:  MHz") + 11, "");
     }
-    printw("%.*s\n", len, line);
+    ui_row_scan_voice_gate_field(&row, opts, state);
+    // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.
+    ui_row_flag_field(&row, state->lcn_scan_hold, "HOLD");
+    char hang[32];
+    (void)dsd_number_text(hang, sizeof hang, opts->trunk_hangtime, 0, 2, 0);
+    ui_row_field(&row, " Hangtime: %s sec", hang); // default aligned to OP25 (2.0s) unless overridden
+    // The row's name follows: it is the one field of operator-chosen length. The resolver applies the
+    // placeholder-row rule (a 0 Hz row is stepped over without a retune, so its name would credit the
+    // wrong channel) and yields to an active --trunk-scan target, whose id the Trunk Scan row below and
+    // the Call Info line both carry: one screen, one answer.
+    if (dsd_channel_label_current_source(opts, state) == DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST) {
+        char name[DSD_CHANNEL_LABEL_SIZE];
+        if (dsd_channel_label_current(opts, state, name, sizeof(name)) == 1) {
+            ui_row_field(&row, " Channel: %s", name);
+        }
+    }
+    // Under -Y the channel on air is never an avoided one (the avoid steps off the row in the same
+    // command, and the hangtime step and `L` skip avoided rows).
+    ui_row_avoids_field(&row, (unsigned int)state->lcn_avoid_count);
+    ui_row_end(&row);
 }
 
 static void
 ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
-        printw("| Scan Mode: ");
-        // lcn_freq_roll is advanced past the entry just tuned, so the displayed slot is roll - 1.
-        // Bound it by lcn_freq_count the way every other scan-list consumer does: a protocol writer
-        // that shrinks the count (nxdn_element.c, p25p2_vpdu.c, dmr_csbk.c) leaves roll pointing
-        // past the end, and slots >= 26 resolve into the heap tail, which is only as long as the
-        // count that reserved it.
-        if (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
-            printw(" Frequency: %.06lf MHz",
-                   (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
-        }
-        printw(" Hangtime: %.02lf sec",
-               opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
-        ui_render_scan_voice_gate(opts, state);
-        // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.
-        if (state->lcn_scan_hold) {
-            printw(" HOLD");
-        }
-        // The row's name follows: it is the one field of operator-chosen length, so the fixed
-        // fields keep their columns and a long name is what runs off a narrow terminal. The
-        // resolver applies the placeholder-row rule (a 0 Hz row is stepped over without a retune,
-        // so its name would credit the wrong channel) and yields to an active --trunk-scan target,
-        // whose id the Trunk Scan row below and the Call Info line both carry: one screen, one answer.
-        if (dsd_channel_label_current_source(opts, state) == DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST) {
-            char name[DSD_CHANNEL_LABEL_SIZE];
-            if (dsd_channel_label_current(opts, state, name, sizeof(name)) == 1) {
-                printw(" Channel: %s", name);
-            }
-        }
-        // Last, the list: how many rows `b` has taken out of the rotation. Everything before it
-        // describes the channel on air, and under -Y that channel is never an avoided one (the
-        // avoid steps off the row in the same command, and the hangtime step and `L` skip avoided
-        // rows), so a participle beside HOLD read as a false verdict on the channel being heard
-        // (PR #463 feedback). A noun count after the name cannot. Same word as the "Clear avoids"
-        // menu row and the Qt SCAN AVOIDS badge.
-        if (state->lcn_avoid_count != 0) {
-            printw(" Avoids: %u", (unsigned int)state->lcn_avoid_count);
-        }
-        printw(" \n");
+        ui_render_scan_mode_row(opts, state);
         // The timing row belongs directly under the scanner row that owns the stay. With
         // --trunk-scan running that is the Trunk Scan row below, which publishes the target's
         // own effective dwell and hold, so the -Y row only claims it when trunk scan is off.
@@ -1368,7 +1519,7 @@ ui_render_demod_snr_line(const dsd_opts* opts, const dsd_state* state) {
         if (snr.valid) {
             /* Show current SNR as a compact, colorized meter */
             char snr_value[16];
-            if (DSD_SNPRINTF(snr_value, sizeof(snr_value), "%.1f", snr.snr_db) < 0) {
+            if (dsd_number_text(snr_value, sizeof(snr_value), snr.snr_db, 0, 1, 0) < 0) {
                 snr_value[0] = '\0';
             }
             ui_print_snr_db_field(snr_value);

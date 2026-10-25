@@ -308,7 +308,7 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     if (sql) {
         (void)dsd_squelch_spec_field_apply(opts, sql);
     }
-    opts->rtl_volume_multiplier = vol;
+    opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(vol);
 
     if (arg_tokens > 0) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "soapy:%s", tok[0]);
@@ -481,7 +481,7 @@ rtl_spec_apply_tuning_tokens(dsd_opts* opts, char** saveptr) {
         return 0;
     }
     if (rtl_spec_parse_int(curr, &parsed) == 0) {
-        opts->rtl_volume_multiplier = parsed;
+        opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(parsed);
     }
     return 1;
 }

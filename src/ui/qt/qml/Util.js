@@ -242,6 +242,15 @@ function mhzText(hz) {
     return s.charAt(s.length - 1) === "0" ? s.substring(0, s.length - 1) : s
 }
 
+// A signed reading to `digits` places, without a negative zero: toFixed keeps
+// the sign of a value that rounds to zero ("-0.0", ECMA-262 Number.prototype.
+// toFixed), as C's printf does, so an SNR of -0.04 dB would read "-0.0 dB".
+// Only a text whose digits are all zero loses its sign; NaN reads "NaN".
+function fixed(value, digits) {
+    var s = Number(value).toFixed(digits)
+    return /^-[0.]+$/.test(s) ? s.substring(1) : s
+}
+
 // The same number with its unit: "769.76875 MHz".
 function fmtMhz(hz) {
     return mhzText(hz) + " MHz"

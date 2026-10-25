@@ -15,6 +15,7 @@ target_sources(
         ncurses_p25_display.c
         ncurses_trunk_display.c
         ui_prims.c
+        ui_row.c
         ui_async.c
         menu_core.c
         menu_env.c

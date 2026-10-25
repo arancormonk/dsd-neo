@@ -101,6 +101,25 @@ int dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, siz
  */
 int dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out, size_t out_size);
 
+/** Fixed-width text for a status row (issue #669): see dsd_app_squelch_view_format_ex(). */
+#define DSD_APP_SQUELCH_VIEW_FIXED 1u
+
+/**
+ * @brief dsd_app_squelch_view_format() with @p flags. Under DSD_APP_SQUELCH_VIEW_FIXED the readings take fixed places
+ * (quieting in four, "quieting   23 dB"; a floor in six, "floor  -78.3 dB", ">"/"<" past them) and the text is padded
+ * with trailing spaces to the longest status its dynamic setting can show, so its length holds while the reading or
+ * the gate's state changes (it changes only with the setting or a row override). A level has no status and no padding.
+ * Returns 0, or -1 when @p out is NULL, @p out_size is zero or @p view is NULL.
+ */
+int dsd_app_squelch_view_format_ex(const dsd_app_squelch_view* view, unsigned flags, char* out, size_t out_size);
+
+/**
+ * @brief dsd_app_squelch_view_dynamic_status() with @p flags; DSD_APP_SQUELCH_VIEW_FIXED as in
+ * dsd_app_squelch_view_format_ex(). Returns 0, or -1 on bad arguments.
+ */
+int dsd_app_squelch_view_dynamic_status_ex(const dsd_app_squelch_view* view, unsigned flags, char* out,
+                                           size_t out_size);
+
 /**
  * @brief Render the notice after the configured default was edited.
  *
@@ -110,9 +129,11 @@ int dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* 
 int dsd_app_squelch_view_edit_notice(const dsd_app_squelch_view* view, char* out, size_t out_size);
 
 /**
- * @brief The configured default as its setting reads in an editor: "auto+10", "noise+10", "-60", "off" (the squelch
- * grammar, so it parses back to the same setting, a level within its one-place rounding). Returns 0, or -1 on bad
- * arguments.
+ * @brief The configured default as its setting reads in an editor: "auto+10", "noise+10", "-60.0", "off" (the squelch
+ * grammar, so it parses back to the same setting, a level within its one-place rounding). A level is its own dB to one
+ * place while that reads back (a negative number from -200.0, the parser's floor); a level the dB text cannot carry —
+ * one that rounds to 0.0 dB, which reads as off, or one below -200 dB — is its linear mean power ("0.99", "1e-30").
+ * Returns 0, or -1 on bad arguments.
  */
 int dsd_app_squelch_view_configured_text(const dsd_app_squelch_view* view, char* out, size_t out_size);
 

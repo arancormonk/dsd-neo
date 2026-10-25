@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/number_text.h>
 
 int
 ui_dsp_format_squelch_status(double channel_power, double squelch_power, int row_override, char* out, size_t out_size) {
@@ -19,7 +20,9 @@ ui_dsp_format_squelch_status(double channel_power, double squelch_power, int row
      * says so, while the channel power is always a reading and always a number. */
     char sql[24];
     (void)dsd_squelch_format(squelch_power, " dB", sql, sizeof sql);
-    DSD_SNPRINTF(out, out_size, "%s ch:%.1f dB sql:%s%s", gate, pwr_to_dB(channel_power), sql,
-                 row_override ? " (row)" : "");
+    /* The gate word and the channel power in fixed places (issue #669): the threshold after them holds its column. */
+    char ch[16];
+    (void)dsd_number_text(ch, sizeof ch, pwr_to_dB(channel_power), 6, 1, DSD_NUMBER_TEXT_SATURATE);
+    DSD_SNPRINTF(out, out_size, "%-6s ch:%s dB sql:%s%s", gate, ch, sql, row_override ? " (row)" : "");
     return 0;
 }

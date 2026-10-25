@@ -377,7 +377,7 @@ edit applies live, and under one with its own `--am-bandwidth-hz` it is the conf
 overrides until it leaves (the message says the channel overrides it). **DSP bandwidth...** refuses a DSP bandwidth that
 cannot filter the AM width while AM is the configured mode, or on any session while the scan has an `am` row or target
 without a width of its own (the 6 kHz default needs 8 kHz or more). The status line shows the width in force next to the
-DSP bandwidth: `DSP-BW: 48 kHz; Analog: AM 6 kHz (default);`. On audio input with a rigctl peer the row reads `AM
+DSP bandwidth: `DSP-BW: 48 kHz;` on the source row and `Analog: AM 6 kHz (default);` on the channel row. On audio input with a rigctl peer the row reads `AM
 passband... [default]` and sets the AM passband the peer is asked for instead (below), offered while an `am` scan row is
 on air or an explicit AM width is set. The Auto-PPM switch leads the **Auto-PPM & rtl_tcp** submenu, above the settings
 it governs.
@@ -445,6 +445,36 @@ target is parked its keys replace the globals; leaving restores them. The Import
 underneath a parked row, so a runtime import survives the next hop. The single-key menu rows disarm the keyring, so
 a parked keyed row overrides them again on its next hop.
 
+## Input Output Rows
+
+The Input Output section keeps its layout still while its readings change (issue #669). Each reading takes a fixed
+number of places, so a value that changes, or a status word that comes and goes, moves nothing after it. A reading
+that rounds to zero never shows a minus sign (`0.0 dB`, not `-0.0 dB`). A value too large for its places shows as the
+largest one that fits, marked `>` or `<` (`PPM: <-99`, `NCO= >+9999.9 Hz`), so the field does not grow. Rows that redraw
+with live readings are cut at the screen edge instead of wrapping onto the next line. The cut falls only between whole
+fields, never inside a reading, and is marked with `…` (`...` on a terminal without UTF-8 or with `DSD_FORCE_ASCII`).
+The last screen column is never written, since writing it wraps the line.
+
+Each radio or audio input has two rows. The source row comes first: the device and its receiver readings, with the
+tuned frequency last. The channel row follows: the squelch and its live reading first, then the channel width with
+where it came from. Each row puts its live readings ahead of configuration text, so a narrow terminal cuts the
+configuration first:
+
+```text
+| RTL: 0; G:  40dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ:  146520000;
+| SQL: noise +10 dB (quieting   23 dB);              Analog: NFM 12.5 kHz (row; default 16 kHz);
+| UDP Signal Input: 127.0.0.1:7355; Pkts:    123; Drops:      0; 48 kHz; 1 Ch; IV:  1X; RIG: rig.local:4532;
+| SQL: off; Passband: NFM 12.5 kHz (-B);
+```
+
+The squelch readout keeps the room of the longest status its setting can show, so the width after it holds its column
+from `(learning)` to `(quieting   23 dB)`. The UDP counters take six places each: up to 999999 as digits, then tenths
+of a unit (`1.2M`, `4.2G`). An Airspy names itself on a row of its own (`| Airspy: <serial>; <rate> samples/s;`) above
+its receiver row (`| G: ...`). A SoapySDR device's arguments go last on its source row (`Args: driver=...;`). Auto PPM
+and `External RTL Tuning on UDP` are rows of their own. Rows whose text changes only with configuration or with a scan
+target wrap as before, so a key or a file path is never hidden: the trunking and EDACS toggles, TG HOLD, key rows,
+file outputs, External RTL Tuning, M17 UDP and Reverse Mute.
+
 ## DSP Status
 
 The DSP status panel shows the radio front end's DSP loop state in any build with the radio pipeline, whichever SDR
@@ -454,28 +484,30 @@ timing-recovery state for the active OP25-style chain.
 For RTL-family inputs, the optional DSP panel also shows `Squelch`, which compares post-channel-filter power against the
 configured SQL threshold. This is an advanced squelch diagnostic and is separate from the raw `RF Level` health line.
 Under the [auto squelch](cli.md#auto-squelch---squelch-auto) it shows the gate, the channel power and the setting with
-its floor: `Squelch: Open ch:-58.2 dB sql:auto +10 dB (floor -78.3 dB)` (`Closed` between transmissions, `Off` where
-the auto squelch does not run), and under the [noise squelch](cli.md#noise-squelch---squelch-noise) the same with its
-quieting: `Squelch: Open ch:-58.2 dB sql:noise +10 dB (quieting 23 dB)`.
+its floor: `Squelch: Open   ch: -58.2 dB sql:auto +10 dB (floor  -78.3 dB)` (`Closed` between transmissions, `Off`
+where the auto squelch does not run), and under the [noise squelch](cli.md#noise-squelch---squelch-noise) the same with
+its quieting: `Squelch: Open   ch: -58.2 dB sql:noise +10 dB (quieting   23 dB)`. Every DSP line is one screen row,
+cut between whole fields at the edge, with its readings in fixed places (see Input Output Rows).
 
 ## Input Level Health
 
 The input section shows a persistent advisory line when recent input-level metrics are available:
 
 ```text
-| Input Level: OK rms -23.1 dBFS peak -5.4 dBFS clip 0.0%
-| RF Level: CLIP rms -6.0 dBFS peak 0.0 dBFS clip 0.3% lower RF gain or add filtering/attenuation
+| Input Level: OK      rms  -23.1 dBFS peak   -5.4 dBFS clip   0.0%
+| RF Level: CLIP    rms   -6.0 dBFS peak    0.0 dBFS clip   0.3% lower RF gain or add filtering/attenuation
 ```
 
 `Input Level` is used for PCM-like audio inputs. `RF Level` is used for RTL-SDR, rtl_tcp, and SoapySDR receiver
 samples measured before demodulation. The line is advisory only; DSD-neo never changes input volume, RF gain, AGC, or
 filtering automatically.
 
-The RTL input line and the audio input lines (Pulse, TCP, UDP, WAV and stdin) show the SQL setting, reading `off` when
-the squelch is disabled, but do not duplicate channel power. Under the auto squelch the line shows the margin and what
-the squelch is doing: `SQL: auto +10 dB (floor -78.3 dB)`, `(learning)` until it has a floor, or why it is off here:
-`(off: no radio input)`, `(off on digital)`. Under the noise squelch it shows the quieting it reads: `SQL: noise +10 dB
-(quieting 23 dB)`, `(starting)` before its first window, or `(as auto: floor -78.3 dB)` on an AM or narrow channel,
+The channel row under the RTL input and the audio inputs (Pulse, TCP, UDP, WAV and stdin) shows the SQL setting,
+reading `off` when the squelch is disabled, but does not duplicate channel power. Under the auto squelch the row shows
+the margin and what the squelch is doing: `SQL: auto +10 dB (floor  -78.3 dB)`, `(learning)` until it has a floor, or
+why it is off here: `(off: no radio input)`, `(off on digital)`. Under the noise squelch it shows the quieting it reads:
+`SQL: noise +10 dB (quieting   23 dB)`, `(starting)` before its first window, or `(as auto: floor  -78.3 dB)` on an AM
+or narrow channel,
 where the auto squelch runs it. On audio input the [noise squelch](cli.md#noise-squelch-on-audio-input) reads
 `(learning)` until it has a noise reference, then its quieting; `(off: no band above voice)` when the input carries
 nothing above voice (its audio is low-passed), `(off: no room above voice)` when its rate leaves no band, and `(off on
@@ -487,7 +519,9 @@ row's setting first and the configured default beside it: `SQL: -60.0 dB (row; d
 (floor -81.0 dB; row; default -60.0 dB)`. The `Squelch...` row is labelled with the configured setting
 (`Squelch... [auto +10 dB]`) and its prompt takes a level in dB, `off`, `auto` / `auto+N` (N from 3 to 30 dB over
 the floor) or `noise` / `noise+N` (N from 3 to 30 dB of quieting), opening on the setting in force (`-60.0`, `off`,
-`auto+10`, `noise+10`). On audio input the prompt takes a level, `off` or `noise[+N]`, and refuses `auto` with a toast,
+`auto+10`, `noise+10`). A level whose dB would not read back as itself opens as its linear power instead: one within
+0.05 dB of full scale (`0.0` would read as off) and one below -200 dB (the prompt's lowest), so accepting the prompt
+unchanged never turns the squelch off or moves it. On audio input the prompt takes a level, `off` or `noise[+N]`, and refuses `auto` with a toast,
 since audio input has no channel power to learn a floor from. The AM monitor on its own refuses `noise` with a toast. It
 always edits that configured default; if a
 row is overriding it, the change takes effect when the scanner leaves the row, and the toast says so
@@ -541,8 +575,8 @@ for limits and identifier syntax.
 another value to the nearest of them, the narrower of two as near. On an Airspy it refuses 72 kHz, since no Airspy
 sample rate halves to it.
 
-`DSP-BW:` on the RTL input line is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
-`-fA` (or `-fM`, reading `Analog: AM ...;`) the line also shows the analog channel width in force beside it, `Analog:
+`DSP-BW:` on the RTL source row is the DSP bandwidth, the demodulator's sample rate that `DSP bandwidth...` sets. Under
+`-fA` (or `-fM`, reading `Analog: AM ...;`) the channel row below it shows the analog channel width in force, `Analog:
 NFM 12.5 kHz;`: the width the front end reports while a running stream runs the analog monitor, otherwise the configured
 one, so a scan row running a digital protocol shows the width its leave returns to. The unset default reads `Analog: NFM
 16 kHz (default);`, and `Analog: NFM 12 kHz (DSP-limited);` beside `DSP-BW: 12 kHz;` when the DSP rate rather than the
@@ -579,10 +613,10 @@ passband Hz (5000..20000; 0 = default 6000)`). An edit that changes the passband
 (`Applied: NFM passband -> 12.5 kHz`, or `Applied: NFM passband -> 12.5 kHz (-B)` back on `-B`), and one the peer
 refuses, or whose reply is lost, is put back (`Refused: NFM bandwidth -> 20 kHz: the rigctl peer refused the passband`);
 Trunking > `Rigctl setmod bandwidth...` is asked of the peer the same way while `-B` stands in. The Pulse, TCP, UDP, WAV
-and stdin input lines show that passband after the squelch, `Passband: NFM 12.5 kHz (-B);` (`NFM 20 kHz`,
+and stdin channel rows show that passband after the squelch, `Passband: NFM 12.5 kHz (-B);` (`NFM 20 kHz`,
 `AM 6 kHz (default)`, `NFM peer's own`, or `NFM 12.5 kHz (row; default -B 12.5 kHz)` while a row's own width is on air),
 whenever the rows are offered; on a digital session that offers them for an explicit width, the field reads what every
-tune asks the peer for there, `-B` (`NFM 12.5 kHz (-B)`), not the width set. The Pulse, TCP and UDP lines' `RIG:` field
+tune asks the peer for there, `-B` (`NFM 12.5 kHz (-B)`), not the width set. The Pulse, TCP and UDP source rows' `RIG:` field
 names the rigctl host and port the peer is reached at. The Qt and Android monitor shows the same passband in its
 `PASSBAND` row, whose Edit opens the Passband sheet. Audio input without a rigctl peer takes no width: the rows are
 hidden and the line shows none.
@@ -716,31 +750,36 @@ While scanning, the screen says which channel you are listening to.
 The Input Output section names the `-Y` scan list row the receiver is parked on, at the end of its row:
 
 ```
-| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion
+| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion
 ```
 
 The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
-renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
-frequency and hangtime keep their columns, and on a narrow terminal it is the name that reaches the edge.
+shows none. The name goes last because it is the one field whose length you choose: the frequency and hangtime keep
+their columns, and on a narrow terminal it is the name that reaches the edge.
 
-While `Y` holds the scan, `HOLD` appears ahead of the name with the other facts about the channel on air. While
-`b` has taken rows out of the rotation for the session, `Avoids: N` closes the row: it counts the rows that are
-out of the list, and says nothing about the channel you are hearing, which under `-Y` is never an avoided one.
-With `--scan-voice-only`, `Voice: QUALIFY|VOICE|TAIL` follows the hangtime (and the trunk-scan `(n/m)`): QUALIFY
-while synced without voice, VOICE while voice media is active, TAIL while holding past the last voice frame. A
-trunked `--trunk-scan` target shows no marker, since the gate leaves trunked targets alone.
-
-```
-| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec HOLD Channel: Marion Avoids: 2
-```
-
-With `--trunk-scan` the same section names the target on air and its place in the rotation:
+While `Y` holds the scan, `HOLD` appears after the frequency in a room that stays there when it is gone, so nothing
+moves when the hold starts or ends. While `b` has taken rows out of the rotation for the session, `Avoids: N` closes
+the row: it counts the rows that are out of the list, and says nothing about the channel you are hearing, which under
+`-Y` is never an avoided one. With `--scan-voice-only`, `Voice: QUALIFY|VOICE|TAIL` follows the frequency (and the
+trunk-scan `(n/m)`) in a room of its own: QUALIFY while synced without voice, VOICE while voice media is active, TAIL
+while holding past the last voice frame. A trunked `--trunk-scan` target shows no marker, since the gate leaves trunked
+targets alone.
 
 ```
-| Trunk Scan:  Target: county-p25 (3/6)
+| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion Avoids: 2
 ```
 
-`county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation. The row
+With `--trunk-scan` the same section names its place in the rotation and the target on air:
+
+```
+| Trunk Scan: (3/6)                Target: county-p25
+```
+
+`HOLD` and `[avoided]` follow the position in rooms that stay there when they are gone, then the target's id, then
+the list's `Avoids: N`.
+
+`county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation (right
+aligned to the count's digits, `( 3/12)`). The row
 shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
 Scan Mode row above it shows no name, so the screen never names two channels at once.
 
@@ -751,15 +790,19 @@ Trunk Scan one when both are running — a `Scan Timing` row says why the receiv
 of that is left:
 
 ```
-| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s
-| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s
-| Scan Timing: Voice tail 1.5s/2.0s  dwell 3.0s (suspended)
-| Scan Timing: Manual hold  dwell 3.0s (paused)
-| Scan Timing: Hangtime 1.4s/3.0s
+| Scan Timing: Idle dwell          1.8s/  3.0s  hold 2.0s
+| Scan Timing: Following call                   dwell 3.0s (suspended)  hang 2.0s
+| Scan Timing: Voice tail          1.5s/  2.0s  dwell 3.0s (suspended)
+| Scan Timing: Manual hold                      dwell 3.0s (paused)
+| Scan Timing: Hangtime            1.4s/  3.0s
 ```
 
 The phrase names the reason; the `remaining/total` pair after it, when there is one, is whichever window is actually
-running out.
+running out. The phrase takes the room of the longest one and the pair keeps its room when no window runs, so the
+`Visit:` cap after them holds its column while the reason changes; the budgets that come and go with the reason
+follow it. Each time takes six places: tenths of a second up to `999.9s`, then tenths of an hour (`48.0h`).
+Countdowns are truncated, never rounded up: the row never shows more time than is left, and reads the same as the Qt
+and Android panel.
 
 Under `-Y` without `--scan-voice-only`, `Hangtime` on the upper Scan Mode row is the configured `-t` value.
 The Scan Timing row shows the running window, which uses the scanner's whole-second comparison: this timer permits
@@ -817,9 +860,9 @@ the tail and dwell waits add together. See the [scan timing example](trunk-scan.
 
 The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
 clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the
-last snapshot, which is published while samples flow. A narrow terminal cuts the row at the edge rather than wrapping
-it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each confirmed frame, so the `Hangtime`
-countdown can initially exceed its displayed total. That total is `floor(-t) + 1` seconds, matching the scanner's
+last snapshot, which is published while samples flow. A narrow terminal cuts the row between whole fields at the edge
+rather than wrapping it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each confirmed frame,
+so the `Hangtime` countdown can initially exceed its displayed total. That total is `floor(-t) + 1` seconds, matching the scanner's
 strict whole-second comparison; even `-t 0` waits for the next whole second.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:

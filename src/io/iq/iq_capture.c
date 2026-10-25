@@ -491,6 +491,9 @@ metadata_write_chain_fields(FILE* fp, const dsd_iq_capture_config* cfg) {
     if (write_json_i64_field(fp, "tuner_gain_tenth_db", cfg->tuner_gain_tenth_db, 0) != 0) {
         return -1;
     }
+    if (write_json_bool_field(fp, "tuner_gain_known", cfg->tuner_gain_unknown ? 0 : 1, 0) != 0) {
+        return -1;
+    }
     if (write_json_i64_field(fp, "rtl_dsp_bw_khz", cfg->rtl_dsp_bw_khz, 0) != 0) {
         return -1;
     }

@@ -485,6 +485,19 @@ Item {
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.25});
             compare(strength.text, "Now -47.3 · detected -32.1 dBFS");
             compare(strength.Accessible.description, "Now -47.3 · detected -32.1 dBFS · Local UHF");
+            // Readings that round to zero carry no minus sign (issue #669).
+            model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -0.04,
+                hit: Object.assign({}, model.status.hit, {power: -0.04})});
+            compare(strength.text, "Now 0.0 · detected 0.0 dBFS");
+            model.status = Object.assign({}, model.status, {livePowerValid: false});
+            compare(strength.text, "0.0 dBFS");
+        }
+        function test_history_power_rounding_to_zero_has_no_sign() {
+            model.history = [historyHit({id: "60", power: -0.04})];
+            var reading = findChildren(loader.item, "searchHistoryReading")[0];
+            verify(reading !== undefined, "the history reading is missing");
+            compare(reading.text.replace(/\u00a0/g, " "), "462.575000 MHz · 0.0 dBFS");
+            model.history = [];
         }
         function test_session_and_permanent_avoids_can_be_lifted_while_searching() {
             model.sessionAvoids = [463550000];
