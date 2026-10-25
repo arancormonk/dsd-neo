@@ -158,7 +158,7 @@ Item {
             Accessible.name: deviceStatus.accessibleName
             Accessible.description: deviceStatus.detailText
             Accessible.focusable: true
-            Accessible.ignored: !visible || !navigationAllowed
+            Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
             Keys.onReturnPressed: activate()
             Keys.onEnterPressed: activate()
