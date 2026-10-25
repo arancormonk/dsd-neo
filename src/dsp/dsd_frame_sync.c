@@ -2925,6 +2925,18 @@ typedef struct frame_sync_runtime_ctx {
  * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). The levels are the
  * window's level ring, which live input and symbol captures alike fill (a capture at its dibits' levels). With fewer
  * than ten to read -- a sign-only test window -- there is nothing to count, and the sign match stands. */
+/* A level read on four levels: +3, +1, -1 or -3 against the window's centre and its two mid thresholds. */
+static inline int
+frame_sync_four_level_slice(float x, float center, float umid, float lmid) {
+    return x >= umid ? 3 : (x >= center ? 1 : (x >= lmid ? -1 : -3));
+}
+
+/* A four-level symbol's dibit: the first bit is the sign (1 negative), the second the magnitude (1 outer). */
+static inline int
+frame_sync_four_level_dibit_bits(int level) {
+    return (level < 0 ? 2 : 0) | ((level == 3 || level == -3) ? 1 : 0);
+}
+
 static int
 frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype) {
     static const int fsw_levels[10] = {-3, 1, -3, 3, -3, -3, 3, 3, -1, 3};
@@ -2939,13 +2951,9 @@ frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype) 
     int errors = 0;
     for (int i = 0; i < 10; i++) {
         const int slot = (rt->lidx - 10 + i + 2 * rt->t_max) % rt->t_max;
-        const float x = rt->lbuf[slot];
-        const int got = x >= umid ? 3 : (x >= center ? 1 : (x >= lmid ? -1 : -3));
+        const int got = frame_sync_four_level_slice(rt->lbuf[slot], center, umid, lmid);
         const int want = sign * fsw_levels[i];
-        /* A dibit's first bit is the sign (1 negative), its second the magnitude (1 outer). */
-        const int got_bits = (got < 0 ? 2 : 0) | ((got == 3 || got == -3) ? 1 : 0);
-        const int want_bits = (want < 0 ? 2 : 0) | ((want == 3 || want == -3) ? 1 : 0);
-        const int diff = got_bits ^ want_bits;
+        const int diff = frame_sync_four_level_dibit_bits(got) ^ frame_sync_four_level_dibit_bits(want);
         errors += (diff & 1) + ((diff >> 1) & 1);
     }
     return errors;
@@ -3948,6 +3956,26 @@ dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state) {
  * after one comparison with the other chain (frame_sync_p25p1_mod_compare_note()), because a
  * chain that decodes part of an LSM signal decodes too.
  */
+/* The 4800/4 dwell that just expired on @p expired_dwell_rf_mod decoded nothing: withdraw the evidence that put the
+ * profile on that chain. This judges the dwell that ended, not the one about to start. */
+static void
+frame_sync_p25p1_withdraw_disproved_chain(dsd_state* state, int expired_dwell_idx, int expired_dwell_rf_mod) {
+    if (expired_dwell_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+        return;
+    }
+    /* A learned CQPSK chain producing nothing is disproved, rather than let the restore keep handing the profile back
+     * to it. */
+    if (expired_dwell_rf_mod == 1 && state->p25_p1_validated_rf_mod == 1) {
+        state->p25_p1_validated_rf_mod = -1;
+        state->p25_p1_mod_compare.verdict_valid = 0;
+    }
+    /* A comparison's verdict is withdrawn the same way, whichever chain it chose: a C4FM verdict left standing would
+     * stop a carrier C4FM reads in part from ever being compared again. */
+    if (state->p25_p1_mod_compare.verdict_valid && state->p25_p1_mod_compare.verdict_rf_mod == expired_dwell_rf_mod) {
+        state->p25_p1_mod_compare.verdict_valid = 0;
+    }
+}
+
 static void
 frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int preserve_modulation,
                                    int expired_dwell_idx, int expired_dwell_rf_mod) {
@@ -3957,21 +3985,7 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
-    /* The dwell that just expired decoded nothing. If that dwell was this profile running on
-     * the CQPSK chain then whatever evidence put it there has been disproved, so withdraw it
-     * rather than let the restore keep handing the profile back to a chain producing nothing.
-     * This judges the dwell that ended, not the one about to start. */
-    if (expired_dwell_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && expired_dwell_rf_mod == 1
-        && state->p25_p1_validated_rf_mod == 1) {
-        state->p25_p1_validated_rf_mod = -1;
-        state->p25_p1_mod_compare.verdict_valid = 0;
-    }
-    /* A comparison's verdict is withdrawn the same way, whichever chain it chose: a C4FM verdict left standing would
-     * stop a carrier C4FM reads in part from ever being compared again. */
-    if (expired_dwell_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && state->p25_p1_mod_compare.verdict_valid
-        && state->p25_p1_mod_compare.verdict_rf_mod == expired_dwell_rf_mod) {
-        state->p25_p1_mod_compare.verdict_valid = 0;
-    }
+    frame_sync_p25p1_withdraw_disproved_chain(state, expired_dwell_idx, expired_dwell_rf_mod);
     if (state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
         return;
     }
@@ -4089,6 +4103,73 @@ frame_sync_p25p1_mod_compare_decide(const dsd_opts* opts, dsd_state* state) {
     frame_sync_p25p1_mod_compare_settle(opts, state, winner);
 }
 
+/* A frame whose NID decoded on the chain the demodulator is on opens a comparison, unless that chain is the one a
+ * verdict chose: its chain gets one search pass from the frame's sync, which @p consumed symbols back. */
+static void
+frame_sync_p25p1_mod_compare_open(const dsd_opts* opts, dsd_state* state, uint32_t consumed) {
+    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    if (!frame_sync_p25p1_mod_compare_allowed(opts, state) || (state->rf_mod != 0 && state->rf_mod != 1)
+        || state->p25_p1_validated_rf_mod != state->rf_mod
+        || (cmp->verdict_valid && cmp->verdict_rf_mod == state->rf_mod)) {
+        return;
+    }
+    cmp->phase = 1;
+    cmp->incumbent_rf_mod = state->rf_mod;
+    cmp->incumbent_read = consumed;
+    cmp->incumbent_frames = 0;
+    cmp->incumbent_missed = 0;
+    cmp->last_frame_end = state->symbolcnt;
+    cmp->last_frame_read = consumed;
+    cmp->trial_read = 0;
+    cmp->window_start = state->symbolcnt - consumed;
+    cmp->carrier_seq = state->carrier_seq;
+    cmp->verdict_valid = 0;
+    state->p25_p1_mod_probe_active = 1;
+}
+
+/* A frame validated in the current pass, @p consumed symbols long, counts for that pass's chain if it came on it. The
+ * incumbent's pass also notes a search after a frame at least as long as the frame: a frame went by unread. */
+static void
+frame_sync_p25p1_mod_compare_count_frame(dsd_state* state, uint32_t consumed) {
+    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    const int window_chain = cmp->phase == 1 ? cmp->incumbent_rf_mod : !cmp->incumbent_rf_mod;
+    if (state->p25_p1_validated_rf_mod != window_chain) {
+        return;
+    }
+    if (cmp->phase != 1) {
+        cmp->trial_read += consumed;
+        return;
+    }
+    const uint32_t search = (state->symbolcnt - consumed) - cmp->last_frame_end;
+    if (search <= (uint32_t)INT_MAX && search >= cmp->last_frame_read) {
+        cmp->incumbent_missed = 1;
+    }
+    cmp->last_frame_end = state->symbolcnt;
+    cmp->last_frame_read = consumed;
+    cmp->incumbent_read += consumed;
+    cmp->incumbent_frames++;
+}
+
+/* The incumbent's pass is over: a pass that read the carrier whole keeps its chain, any other puts the other chain on
+ * for a pass of its own. */
+static void
+frame_sync_p25p1_mod_compare_end_incumbent_pass(const dsd_opts* opts, dsd_state* state) {
+    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    /* A pass that let a frame go by unread does not keep it, nor does one that ends a frame's length or more after its
+     * last validated frame. A pass whose only frame is the one that opened the comparison has measured nothing: a long
+     * opening frame (a data PDU) can fill most of it, and the search after it may hold a sync that never validated. */
+    if (cmp->incumbent_frames > 0 && !cmp->incumbent_missed
+        && (uint32_t)(state->symbolcnt - cmp->last_frame_end) < cmp->last_frame_read) {
+        frame_sync_p25p1_mod_compare_settle(opts, state, cmp->incumbent_rf_mod);
+        return;
+    }
+    cmp->phase = 2;
+    cmp->trial_read = 0;
+    cmp->window_start = state->symbolcnt;
+    cmp->counter_at_trial = state->sps_hunt_counter;
+    frame_sync_p25p1_set_chain(opts, state, !cmp->incumbent_rf_mod);
+}
+
 /**
  * @brief Compare the two P25p1 chains once per acquisition, on validated frames.
  *
@@ -4136,29 +4217,11 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
     if (consumed > (uint32_t)INT_MAX) {
         consumed = 0;
     }
-    const uint32_t window = (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
 
     if (cmp->phase == 0) {
-        if (!frame_sync_p25p1_mod_compare_allowed(opts, state) || (state->rf_mod != 0 && state->rf_mod != 1)
-            || state->p25_p1_validated_rf_mod != state->rf_mod
-            || (cmp->verdict_valid && cmp->verdict_rf_mod == state->rf_mod)) {
-            return;
-        }
-        cmp->phase = 1;
-        cmp->incumbent_rf_mod = state->rf_mod;
-        cmp->incumbent_read = consumed;
-        cmp->incumbent_frames = 0;
-        cmp->incumbent_missed = 0;
-        cmp->last_frame_end = state->symbolcnt;
-        cmp->last_frame_read = consumed;
-        cmp->trial_read = 0;
-        cmp->window_start = state->symbolcnt - consumed;
-        cmp->carrier_seq = state->carrier_seq;
-        cmp->verdict_valid = 0;
-        state->p25_p1_mod_probe_active = 1;
+        frame_sync_p25p1_mod_compare_open(opts, state, consumed);
         return;
     }
-
     if (!frame_sync_p25p1_mod_compare_allowed(opts, state)) {
         frame_sync_p25p1_mod_compare_abort(opts, state, 1, 0);
         return;
@@ -4167,38 +4230,14 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
         frame_sync_p25p1_mod_compare_abort(opts, state, 1, 1);
         return;
     }
-    const int window_chain = cmp->phase == 1 ? cmp->incumbent_rf_mod : !cmp->incumbent_rf_mod;
-    if (validated_now && state->p25_p1_validated_rf_mod == window_chain) {
-        if (cmp->phase == 1) {
-            const uint32_t search = (state->symbolcnt - consumed) - cmp->last_frame_end;
-            if (search <= (uint32_t)INT_MAX && search >= cmp->last_frame_read) {
-                cmp->incumbent_missed = 1;
-            }
-            cmp->last_frame_end = state->symbolcnt;
-            cmp->last_frame_read = consumed;
-            cmp->incumbent_read += consumed;
-            cmp->incumbent_frames++;
-        } else {
-            cmp->trial_read += consumed;
-        }
+    if (validated_now) {
+        frame_sync_p25p1_mod_compare_count_frame(state, consumed);
     }
-    if ((uint32_t)(state->symbolcnt - cmp->window_start) < window) {
+    if ((uint32_t)(state->symbolcnt - cmp->window_start) < (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
         return;
     }
     if (cmp->phase == 1) {
-        /* So is a pass that ends a frame's length or more after its last validated frame. A pass whose only frame is
-         * the one that opened the comparison has measured nothing: a long opening frame (a data PDU) can fill most of
-         * it, and the search after it may hold a sync that never validated. */
-        if (cmp->incumbent_frames > 0 && !cmp->incumbent_missed
-            && (uint32_t)(state->symbolcnt - cmp->last_frame_end) < cmp->last_frame_read) {
-            frame_sync_p25p1_mod_compare_settle(opts, state, cmp->incumbent_rf_mod);
-            return;
-        }
-        cmp->phase = 2;
-        cmp->trial_read = 0;
-        cmp->window_start = state->symbolcnt;
-        cmp->counter_at_trial = state->sps_hunt_counter;
-        frame_sync_p25p1_set_chain(opts, state, !cmp->incumbent_rf_mod);
+        frame_sync_p25p1_mod_compare_end_incumbent_pass(opts, state);
         return;
     }
     frame_sync_p25p1_mod_compare_decide(opts, state);
