@@ -114,6 +114,11 @@ read_file_to_buffer(const char* path, char* out, size_t out_size) {
 static int
 parse_args_capture_stderr(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* argc_effective, int* exit_rc,
                           char* out, size_t out_size) {
+    /* Every return leaves @p out a string, a failed capture an empty one, so a caller that checks the parse result and
+       the output together reads no stale bytes. */
+    if (out != NULL && out_size > 0U) {
+        out[0] = '\0';
+    }
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_parse") != 0) {
         return DSD_PARSE_ERROR;
