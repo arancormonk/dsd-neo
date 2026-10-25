@@ -85,6 +85,8 @@ Window {
         return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, then tap Reconnect.")).arg(receiver).arg(session);
     }
     readonly property string receiverNoticeText: receiverEnded ? receiverNotice(false) : ""
+    // Whether the failure on screen is that notice: Reconnect on Listen, the search's own wording there.
+    readonly property bool receiverNoticeShown: receiverNoticeText.length > 0 && failureText === receiverNoticeText
     function retrySource() {
         if (decoderHost.sessionActive || decoderHost.transitioning)
             return;
@@ -1016,7 +1018,7 @@ Window {
                     message: mainRoot.showFailure ? mainRoot.failureMessage() : "",
                     source: mainRoot.sourceLabel(),
                     canRetry: !decoderHost.sessionActive && !decoderHost.transitioning,
-                    retryText: mainRoot.receiverNoticeText.length > 0 && mainRoot.failureText === mainRoot.receiverNoticeText ? qsTr("Reconnect") : qsTr("Retry")
+                    retryText: mainRoot.receiverNoticeShown ? qsTr("Reconnect") : qsTr("Retry")
                 })
             // B1: an Airspy is as much a brokered receiver as an RTL-SDR.
             localDeviceRelevant: !mainRoot.showFailure || !mainRoot.attemptedSource || mainRoot.attemptedSource.system.sourceType === "usb" || mainRoot.attemptedSource.system.sourceType === "airspy"
@@ -1335,7 +1337,7 @@ Window {
         leaving: mainRoot.leavingSearch
         sessionSource: metrics.radioSource || ({})
         // A receiver's ending is worded for this screen: the search starts again from here.
-        failure: mainRoot.receiverNoticeText.length > 0 && mainRoot.failureText === mainRoot.receiverNoticeText ? mainRoot.receiverNotice(true) : mainRoot.failureText
+        failure: mainRoot.receiverNoticeShown ? mainRoot.receiverNotice(true) : mainRoot.failureText
         onBackRequested: mainRoot.requestBack()
         onClosed: {
             mainRoot.abandonSignalSearchStart();

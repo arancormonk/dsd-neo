@@ -53,6 +53,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
 #include "../test_support/qt_test_paths.h"
+#include "auto_start_attachment.h"
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
@@ -516,6 +517,27 @@ test_auto_start_follows_the_attached_kind() {
     check(requested.isEmpty());
 }
 
+// #647 D3a: the attachment the host delivers is "<kind>:<device name>"; only its kind decides, and a payload without
+// one names no receiver.
+static void
+test_attachment_kind() {
+    check(dsd_qt::attachedReceiverKind("usb:/dev/bus/usb/001/002") == "usb");
+    check(dsd_qt::attachedReceiverKind("airspy:/dev/bus/usb/001/003") == "airspy");
+    for (const char* payload : {"", "fixture-usb", ":x", "usb"}) {
+        const QString kind = dsd_qt::attachedReceiverKind(payload);
+        for (const char* source : {"usb", "airspy"}) {
+            check(dsd_qt::autoStartKindMatches(source, kind)
+                  == (QString(payload) == "usb" && QString(source) == "usb"));
+        }
+    }
+    check(dsd_qt::autoStartKindMatches("usb", dsd_qt::attachedReceiverKind("usb:/dev/bus/usb/001/002")));
+    check(dsd_qt::autoStartKindMatches("airspy", dsd_qt::attachedReceiverKind("airspy:/dev/bus/usb/001/003")));
+    check(!dsd_qt::autoStartKindMatches("airspy", dsd_qt::attachedReceiverKind("usb:/dev/bus/usb/001/002")));
+    for (const char* source : {"rtltcp", "udp", "tcp", "file", ""}) {
+        check(!dsd_qt::autoStartKindMatches(source, source));
+    }
+}
+
 // Issue #525: the Radio sheet's NFM width control goes through the real bridge and decoder queue as
 // DSD_APP_CMD_NFM_BANDWIDTH_SET with the width as typed; the decoder applies what it accepts (0 is the default)
 // and refuses the rest with the width unchanged. PCM input keeps the front end out of it.
@@ -833,6 +855,7 @@ main(int argc, char** argv) {
     test_zero_bounds();
     test_auto_start_requests();
     test_auto_start_follows_the_attached_kind();
+    test_attachment_kind();
     test_initial_usb_record();
     test_usb_request_record();
     test_usb_refusal_record();

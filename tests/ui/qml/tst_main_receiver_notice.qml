@@ -88,6 +88,19 @@ Item {
             verify(!app.showFailure, "no notice while the session is still on screen");
             testContext.setLifecyclePhase(phase === undefined ? 0 : phase);
         }
+        // A stream failure ends the run Failed, with the run's own error text, as Android reports it.
+        readonly property string streamFailure: "Decoder run failed (1); the receiver stopped sending samples"
+        function failByReceiver(source) {
+            testContext.setLifecycleFailureKind(7);
+            testContext.setLifecycleFailure(streamFailure);
+            endByReceiver("failed", source, 4);
+        }
+        // Long enough for a card that would come back to have come back.
+        function verifyNoCard(why) {
+            wait(100);
+            verify(!card().visible, why);
+            verify(!app.showFailure, why);
+        }
         function sessionName(kind) {
             return kind === "saved" ? "County P25" : kind === "scan" ? "Night scan" : "Explore";
         }
@@ -227,8 +240,7 @@ Item {
             // A stream failure leaves the session Failed: Reconnect acknowledges
             // it first, then runs the same gate.
             var uid = startTarget("saved", "usb");
-            testContext.setLifecycleFailureKind(7);
-            endByReceiver("failed", "usb", 4);
+            failByReceiver("usb");
             tryCompare(card(), "visible", true);
             compare(card().message, "RTL-SDR stopped sending samples, so County P25 stopped. Check its USB connection, then tap Reconnect.");
             tap(findChild(card(), "failureRetry"));
@@ -239,8 +251,7 @@ Item {
 
         function test_permission_denial_shows_the_access_text() {
             startTarget("saved", "usb");
-            testContext.setLifecycleFailureKind(7);
-            endByReceiver("failed", "usb", 4);
+            failByReceiver("usb");
             tryCompare(card(), "visible", true);
             tap(findChild(card(), "failureRetry"));
             tryCompare(app, "awaitingUsbAccess", true);
@@ -283,6 +294,45 @@ Item {
             tryCompare(panel, "visible", true);
             compare(findChild(home(), "dongleRetry").text, "Retry");
             compare(decoderHost.sessionState, 0);
+        }
+
+        // One ended session, one explanation: acknowledging the notice in any
+        // way retires the session's Failed record with it, so no second,
+        // generic card for the same session comes back.
+        function test_failed_session_dismissed_then_panel_retry() {
+            startTarget("saved", "usb");
+            failByReceiver("usb");
+            tryCompare(card(), "visible", true);
+            card().dismiss();
+            var retry = findChild(home(), "dongleRetry");
+            tryCompare(retry, "visible", true);
+            tap(retry);
+            compare(testContext.dongleRetryRequests() > 0, true);
+            compare(decoderHost.sessionState, 0, "the failure was acknowledged");
+            verifyNoCard("the dismissed notice does not come back as a Retry card");
+        }
+
+        function test_failed_session_pill_tap_with_the_notice_up() {
+            startTarget("saved", "usb");
+            failByReceiver("usb");
+            tryCompare(card(), "visible", true);
+            tap(findChild(home(), "dongleStatusPill"));
+            compare(decoderHost.sessionState, 0, "the failure was acknowledged");
+            verifyNoCard("the notice gives way to the pill, not to a Retry card");
+        }
+
+        function test_recreated_failed_reconnect_leaves_no_dead_retry() {
+            testContext.setLifecycleFailureKind(7);
+            testContext.setLifecycleFailure(streamFailure);
+            testContext.setLifecyclePhase(4);
+            testContext.setReceiverHealth("failed", "usb");
+            compare(app.attemptedSource, null);
+            tryCompare(card(), "visible", true);
+            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Check its USB connection, tap Reconnect, then start it again.");
+            tap(findChild(card(), "failureRetry"));
+            compare(testContext.lastDeviceAccess().count, 1);
+            compare(decoderHost.sessionState, 0);
+            verifyNoCard("no card whose Retry has nothing to retry");
         }
 
         function test_recreated_reconnect_only_asks_for_access() {

@@ -73,6 +73,7 @@
 #include "decryption_profiles_model.h"
 
 #include "app_prefs.h"
+#include "auto_start_attachment.h"
 #include "auto_start_policy.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
@@ -123,16 +124,17 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     bool
     start(const QStringList& argv) override {
         lastArgv = argv;
+        // #647: as Android's, the start replaces the last session's receiver ending before the platform is asked,
+        // so a start the platform then refuses has cleared it too.
+        if (health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
+            health = healthyReceiver();
+            Q_EMIT runResultChanged();
+        }
         if (acceptStart) {
             phase = startRunning ? Running : Starting;
             m_running = true;
             Q_EMIT runningChanged();
             Q_EMIT sessionStateChanged();
-            // #647: as Android's, an accepted start replaces the last session's receiver ending.
-            if (health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
-                health = healthyReceiver();
-                Q_EMIT runResultChanged();
-            }
         }
         return acceptStart;
     }
@@ -241,6 +243,13 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     void
     requestLocalDeviceAccess() override {
         if (!sessionActive() && health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
+            // A Failed session the receiver ended is retired with its notice, the failure first (Android's
+            // acknowledgeReceiverEnding()).
+            if (phase == Failed) {
+                phase = Idle;
+                failure.clear();
+                Q_EMIT sessionStateChanged();
+            }
             health = healthyReceiver();
             Q_EMIT runResultChanged();
         }
@@ -2968,20 +2977,19 @@ class Setup : public QObject {
         auto* controller = new TestUiController(engine);
         auto* scan_lists = new dsd_qt::ScanListsModel(engine);
         // WP-S2: use the production pure policy for host attachment delivery in QML tests.
-        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER; this copies its
-        // #647 D3a target rule, and qt_ui.cpp's reading of the "<kind>:<device name>" attachment.
+        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER; the #647 D3a kind rule
+        // and the reading of the "<kind>:<device name>" attachment are production's own helpers.
         for (ImportOnlyHost* attachmentHost : {m_import_host, static_cast<ImportOnlyHost*>(m_initializing_host)}) {
             QObject::connect(
                 attachmentHost, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString& attachment) {
-                    const QString attachedKind = attachment.section(QLatin1Char(':'), 0, 0);
+                    const QString attachedKind = dsd_qt::attachedReceiverKind(attachment);
                     const QString kind = app_prefs->lastStartedKind();
                     const QString uid = app_prefs->lastStartedUid();
                     const QVariantMap target = kind == QStringLiteral("saved")  ? saved_systems->getByUid(uid)
                                                : kind == QStringLiteral("scan") ? scan_lists->getByUid(uid)
                                                                                 : QVariantMap();
-                    const QString source = target.value(QStringLiteral("sourceType")).toString();
-                    const bool kindMatches = (source == QStringLiteral("usb") || source == QStringLiteral("airspy"))
-                                             && source == attachedKind;
+                    const bool kindMatches = dsd_qt::autoStartKindMatches(
+                        target.value(QStringLiteral("sourceType")).toString(), attachedKind);
                     if (dsd_qt::autoStartAllowed(app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(),
                                                  attachmentHost->sessionState(), controller->autoStartBlocked,
                                                  !target.isEmpty(), kindMatches)) {

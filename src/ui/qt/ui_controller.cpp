@@ -4,6 +4,7 @@
  */
 
 #include <utility>
+#include "auto_start_attachment.h"
 #include "auto_start_policy.h"
 #include "command_bridge.h"
 #include "diagnostics_log.h"
@@ -63,9 +64,7 @@ UiController::requestAutoStart(bool enabled, bool onboardingDone, const QString&
     const bool exists = !uid.isEmpty() && target.value(QStringLiteral("uid")).toString() == uid
                         && (kind == QStringLiteral("saved") || kind == QStringLiteral("scan"));
     // #647 D3a: the receiver that just attached, not whatever else is on the bus, decides.
-    const QString source = target.value(QStringLiteral("sourceType")).toString();
-    const bool kindMatches =
-        (source == QStringLiteral("usb") || source == QStringLiteral("airspy")) && source == attachedKind;
+    const bool kindMatches = autoStartKindMatches(target.value(QStringLiteral("sourceType")).toString(), attachedKind);
     if (m_host
         && autoStartAllowed(enabled, onboardingDone, m_host->sessionState(), m_autoStartBlocked, exists, kindMatches)) {
         Q_EMIT autoStartRequested(kind, uid);

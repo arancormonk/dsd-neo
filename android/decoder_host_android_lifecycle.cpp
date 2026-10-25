@@ -241,7 +241,17 @@ void
 DecoderHostAndroid::acknowledgeReceiverEnding() {
     // Like the WP-D5 claim error: while the ended session still winds down its notice stays (the Monitor's LOST).
     if (!sessionActive() && m_receiver_health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
-        clearReceiverHealth(m_health_session);
+        const uint64_t ended = m_health_session;
+        // A stream failure ends its run Failed, and that failure is this same ending: it is retired with the notice,
+        // as stop() acknowledges a failure, or Listen would show a second card for one session. The failure goes
+        // first, so the notice never gives way to the failure's own text in between.
+        if (m_phase.phase() == kSessionFailed) {
+            const QJsonObject status = readLifecycleStatus();
+            if (static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger()) == ended) {
+                (void)acknowledgeFailure(status);
+            }
+        }
+        clearReceiverHealth(ended);
     }
 }
 

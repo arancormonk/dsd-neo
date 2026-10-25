@@ -644,6 +644,93 @@ check_receiver_health() {
     host.refresh();
     check(health_state(host) == QStringLiteral("ok") && host.sessionState() == DecoderHost::Idle, "and ends healthy");
 
+    /* A stream failure ends its run Failed, with the run's own error text. Acknowledging the receiver's ending, by
+     * any access request, retires that failure too: one ended session is one notice, never a second failure card. */
+    const auto fail_by_receiver = [](int session) {
+        QJsonObject record = lifecycle_record(session, "IDLE", kRunFailed, kEndReceiverFailed, kReceiverRtl);
+        record.insert("lastError", "Decoder run failed (1); the receiver stopped sending samples");
+        return record;
+    };
+    retained_record() = lifecycle_record(87, "RUNNING", kRunPending, kEndReceiverFailed, kReceiverRtl);
+    running = true;
+    host.refresh();
+    retained_record() = fail_by_receiver(87);
+    running = false;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed && !host.failureText().isEmpty()
+              && health_state(host) == QStringLiteral("failed"),
+          "a receiver's stream failure ends Failed, with its notice");
+    const int stopsBeforeAck = serviceStops;
+    for (const bool forSource : {false, true}) {
+        if (forSource) {
+            retained_record() = lifecycle_record(88, "RUNNING", kRunPending, kEndReceiverFailed, kReceiverRtl);
+            running = true;
+            host.refresh();
+            retained_record() = fail_by_receiver(88);
+            running = false;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Failed, "the next stream failure ends Failed");
+        }
+        int phases = 0;
+        bool noticeKept = true;
+        const auto watch = QObject::connect(&host, &DecoderHost::sessionStateChanged, [&]() {
+            ++phases;
+            // The failure is retired while the notice still stands, so its text is never shown alone.
+            noticeKept = noticeKept && health_state(host) != QStringLiteral("ok");
+        });
+        if (forSource) {
+            host.requestLocalDeviceAccessForSource(QStringLiteral("usb"));
+        } else {
+            host.requestLocalDeviceAccess();
+        }
+        QObject::disconnect(watch);
+        check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty()
+                  && health_state(host) == QStringLiteral("ok"),
+              "acknowledging the ending retires the session's failure with it");
+        check(phases == 1 && noticeKept, "the failure goes first, while the notice still stands");
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty()
+                  && health_state(host) == QStringLiteral("ok"),
+              "the retained Failed record stays acknowledged");
+    }
+    check(serviceStops == stopsBeforeAck, "acknowledging stops nothing");
+
+    /* A UI recreated while the session still ran, which then fails: the same holds with no attempt of its own. (A UI
+     * recreated after the failure adopts the record as Idle, so it has no failure to retire.) */
+    retained_record() = lifecycle_record(89, "RUNNING", kRunPending, kEndNone, kReceiverRtl);
+    running = true;
+    host.refresh();
+    {
+        DecoderHostAndroid recreated;
+        recreated.refresh();
+        check(recreated.sessionState() == DecoderHost::Running, "a recreated UI adopts the running session");
+        retained_record() = lifecycle_record(89, "RUNNING", kRunPending, kEndReceiverFailed, kReceiverRtl);
+        recreated.refresh();
+        retained_record() = fail_by_receiver(89);
+        running = false;
+        recreated.refresh();
+        check(recreated.sessionState() == DecoderHost::Failed && health_state(recreated) == QStringLiteral("failed"),
+              "the recreated UI shows the failed session's notice");
+        recreated.requestLocalDeviceAccessForSource(QStringLiteral("usb"));
+        check(recreated.sessionState() == DecoderHost::Idle && recreated.failureText().isEmpty()
+                  && health_state(recreated) == QStringLiteral("ok"),
+              "a recreated Reconnect leaves no second card behind");
+    }
+
+    /* A Failed session its receiver did not end keeps its failure: Retry only asks for access (WP-D5). */
+    retained_record() = lifecycle_record(90, "RUNNING", kRunPending, kEndNone, kReceiverRtl);
+    running = true;
+    host.refresh();
+    QJsonObject openFailed = lifecycle_record(90, "IDLE", kRunFailed, kEndNone, kReceiverRtl);
+    openFailed.insert("lastError", "Radio open failed");
+    retained_record() = openFailed;
+    running = false;
+    host.refresh();
+    host.requestLocalDeviceAccess();
+    check(host.sessionState() == DecoderHost::Failed && host.failureText() == QStringLiteral("Radio open failed")
+              && health_state(host) == QStringLiteral("ok"),
+          "an access request leaves another failure in place");
+
     retained_record() = QJsonObject();
     serviceStops = 0;
     hostDiagnostics = 0;

@@ -22,6 +22,7 @@
 #include <qqml.h>
 
 #include "app_prefs.h"
+#include "auto_start_attachment.h"
 #include "backup_apply.h"
 #include "backup_model.h"
 #include "call_history_filter.h"
@@ -90,7 +91,7 @@ wire_attachment(DecoderHost* host, UiController* controller, const AppPrefs* pre
                 const ScanListsModel* scanLists) {
     // WP-S2: resolve stable identities at the attachment edge; no recency writes here.
     QObject::connect(host, &DecoderHost::localDeviceAttached, controller, [=](const QString& attachment) {
-        const QString attachedKind = attachment.section(QLatin1Char(':'), 0, 0);
+        const QString attachedKind = attachedReceiverKind(attachment);
         const QString kind = prefs->lastStartedKind();
         const QString uid = prefs->lastStartedUid();
         const QVariantMap target = kind == QStringLiteral("saved")  ? systems->getByUid(uid)
