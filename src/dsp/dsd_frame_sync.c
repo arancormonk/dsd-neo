@@ -4272,13 +4272,19 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
  * decoder's frame state halfway through a dwell that has not expired (FRAME_SYNC_HUNT_CHAIN_HANDBACK).
  */
 static int
-frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, int dwell) {
+frame_sync_p25p1_cqpsk_trial_half_dwell_due(const dsd_opts* opts, const dsd_state* state, int dwell) {
     if (!state->p25_p1_mod_probe_active || state->rf_mod != 1 || state->p25_p1_mod_compare.phase != 0
-        || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || state->sps_hunt_counter < dwell / 2) {
+        || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || state->sps_hunt_counter < dwell / 2
+        || state->sps_hunt_counter >= dwell) {
         return 0;
     }
-    if ((opts->frame_dmr != 1 && opts->frame_nxdn96 != 1 && opts->frame_ysf != 1 && opts->frame_m17 != 1)
-        || frame_sync_trunk_scan_p25p1_trial(opts, state)) {
+    return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1)
+           && !frame_sync_trunk_scan_p25p1_trial(opts, state);
+}
+
+static int
+frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, int dwell) {
+    if (!frame_sync_p25p1_cqpsk_trial_half_dwell_due(opts, state, dwell)) {
         return 0;
     }
     state->p25_p1_mod_probe_active = 0;
@@ -4481,6 +4487,10 @@ frame_sync_no_sync_run_hooks(dsd_opts* opts, dsd_state* state, time_t now) {
  * inherited unexplained from upstream DSD, which let an inverted P25p1 sync hold off
  * this exit -- and only this one -- until the sync window's 10200-symbol wrap fired
  * no_carrier and cleared lastsynctype (#389).
+ *
+ * The step this runs can be a CQPSK trial's handback, whose point the pass reached on the same symbol. As in
+ * frame_sync_hunt_budget_exit(), that ends no reception: it is returned as FRAME_SYNC_HUNT_CHAIN_HANDBACK, with none of
+ * the hooks run, for getFrameSync() to rebuild its window and keep hunting. 1: the no-sync accounting ran.
  */
 static int
 frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_sync_runtime_ctx* rt, time_t now) {
@@ -4488,6 +4498,10 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
         return 0;
     }
 
+    if (frame_sync_p25p1_cqpsk_trial_half_dwell_due(opts, state, frame_sync_sps_hunt_dwell_symbols(opts, state))) {
+        (void)frame_sync_no_sync_sps_hunt(opts, state);
+        return FRAME_SYNC_HUNT_CHAIN_HANDBACK;
+    }
     if ((opts->errorbars == 1) && (opts->verbose > 1) && (state->carrier == 1)
         && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
         DSD_FPRINTF(stderr, "Sync: no sync\n");
@@ -4634,7 +4648,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             frame_sync_runtime_init(&rt, opts, state);
             continue;
         }
-        if (frame_sync_handle_no_sync_timeout(opts, state, &rt, now)) {
+        const int timeout_step = frame_sync_handle_no_sync_timeout(opts, state, &rt, now);
+        if (timeout_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
+            frame_sync_runtime_init(&rt, opts, state);
+            continue;
+        }
+        if (timeout_step != 0) {
             frame_sync_sps_hunt_mark_return(state);
             return -1;
         }

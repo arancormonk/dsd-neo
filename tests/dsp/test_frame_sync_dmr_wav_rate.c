@@ -688,12 +688,14 @@ count_no_carrier(dsd_opts* opts, dsd_state* state) {
    reception loop answers with noCarrier() (live_scanner_main_loop()) -- ending calls and resetting frame state
    halfway through a dwell that has not expired. Driven the way that loop drives it: a no-sync return is answered with
    the installed no_carrier hook, which is what the engine installs noCarrier() as. A DMR carrier a few symbols after
-   the handback is taken on the C4FM chain inside the same call. */
+   the handback is taken on the C4FM chain inside the same call. So too when the handback point falls on the symbol the
+   matchless-pass timeout fires on (@p lead symbols of nothing, the counter that many short of it: a frame whose NID
+   failed left it there), which steps the hunt itself. */
 static int
-run_cqpsk_handback_keeps_hunting_case(void) {
+run_cqpsk_handback_keeps_hunting_case(int lead) {
     static dsd_opts opts;
     static dsd_state state;
-    static char pattern[128];
+    static char pattern[DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 64];
     init_common_wav_opts_state(&opts, &state);
     if (!init_state_buffers(&state)) {
         DSD_FPRINTF(stderr, "failed to allocate handback state buffers\n");
@@ -707,10 +709,10 @@ run_cqpsk_handback_keeps_hunting_case(void) {
     state.rf_mod = 1;
     state.p25_p1_mod_probe_active = 1;
     const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
-    state.sps_hunt_counter = dwell / 2 - 5;
+    state.sps_hunt_counter = dwell / 2 - (lead == 40 ? 5 : lead);
 
-    DSD_MEMSET(pattern, '1', 40);
-    DSD_MEMCPY(pattern + 40, DMR_BS_DATA_SYNC, strlen(DMR_BS_DATA_SYNC) + 1);
+    DSD_MEMSET(pattern, '1', (size_t)lead);
+    DSD_MEMCPY(pattern + lead, DMR_BS_DATA_SYNC, strlen(DMR_BS_DATA_SYNC) + 1);
     g_sync_pattern = pattern;
     g_symbol_index = 0U;
     g_no_carrier_calls = 0;
@@ -731,7 +733,8 @@ run_cqpsk_handback_keeps_hunting_case(void) {
         rc = 1;
     }
     if (g_no_carrier_calls != 0) {
-        DSD_FPRINTF(stderr, "CQPSK handback ran noCarrier() %d time(s) inside the dwell\n", g_no_carrier_calls);
+        DSD_FPRINTF(stderr, "CQPSK handback (lead %d) ran noCarrier() %d time(s) inside the dwell\n", lead,
+                    g_no_carrier_calls);
         rc = 1;
     }
     if (sync != DSD_SYNC_DMR_BS_DATA_POS) {
@@ -836,7 +839,8 @@ main(void) {
     rc |= run_wav_protocol_extended_sync_matrix();
     rc |= run_nxdn_sync_confirmation_matrix();
     rc |= run_sync_after_carrier_boundary_case();
-    rc |= run_cqpsk_handback_keeps_hunting_case();
+    rc |= run_cqpsk_handback_keeps_hunting_case(40);
+    rc |= run_cqpsk_handback_keeps_hunting_case(DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
     rc |= run_compare_trial_pass_keeps_hunting_case(SIZE_MAX);
     rc |= run_compare_trial_pass_keeps_hunting_case(100U);
     return rc;
