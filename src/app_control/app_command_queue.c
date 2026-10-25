@@ -5424,6 +5424,24 @@ ui_settle_leave_revert_refused_at_once(dsd_opts* opts, dsd_state* state, const s
  * that request is made (a width of the kind restored changed while the switch was pending, which the rate cannot filter,
  * goes back to the one the front end runs), so the leave's rule only settles what the request, held or not, asked for.
  */
+/* The EDACS addressing that goes back with @p rollback (ui_analog_entry_rollback()): the one from before the switch, or
+   the one the superseded switch onto the kind the front end kept (@p kept) left. A command that set it since the
+   switch stands. */
+static void
+ui_revert_analog_entry_addressing(dsd_state* state, const dsd_scan_settings* rollback,
+                                  const svc_monitor_refusal* kept) {
+    if (state->ea_mode != g_analog_entry.after_edacs.ea_mode
+        || state->esk_mask != g_analog_entry.after_edacs.esk_mask) {
+        return;
+    }
+    const ui_edacs_addressing* edacs = &g_analog_entry.before_edacs;
+    if (rollback != &g_analog_entry.before && kept && dsd_analog_demod_is_valid(kept->kept_kind)) {
+        edacs = &g_analog_entry.between_edacs[kept->kept_kind];
+    }
+    state->ea_mode = edacs->ea_mode;
+    state->esk_mask = edacs->esk_mask;
+}
+
 static int
 ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc_monitor_refusal* kept) {
     if (!g_analog_entry.armed) {
@@ -5438,15 +5456,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     if (reverted) {
         const dsd_scan_settings* rollback = ui_analog_entry_rollback(kept);
         dsd_scan_settings back = *rollback;
-        /* The addressing goes back with the settings, unless a command set it since the switch, which stands. */
-        const ui_edacs_addressing* edacs = rollback == &g_analog_entry.before
-                                               ? &g_analog_entry.before_edacs
-                                               : &g_analog_entry.between_edacs[kept->kept_kind];
-        if (state->ea_mode == g_analog_entry.after_edacs.ea_mode
-            && state->esk_mask == g_analog_entry.after_edacs.esk_mask) {
-            state->ea_mode = edacs->ea_mode;
-            state->esk_mask = edacs->esk_mask;
-        }
+        ui_revert_analog_entry_addressing(state, rollback, kept);
         ui_analog_entry_keep_widths(&back, &now);
         /* What such a command set since the switch stands; what the switch itself set goes back with it. */
         ui_analog_entry_keep_unpublished(&back, &now, &g_analog_entry.after);
