@@ -558,6 +558,14 @@ Notes
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
   type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
   one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.
+  `--tetra-uplink` decodes a trunked mode uplink carrier, the radios' transmissions, instead of a downlink: its control
+  uplink bursts (random access) and its normal uplink bursts. An uplink carries no network identity, so give the one
+  its cell scrambles with as `--tetra-net mcc,mnc,colour` (MCC 0-1023, MNC 0-16383, colour code 0-63 in decimal or
+  `0x` hexadecimal; the downlink's Network row shows all three). `--tetra-net` also lets a downlink session descramble
+  before its first BSCH, whose identity replaces it; it shows on no row until a block descrambled with it passed its
+  CRC. On an uplink the TETRA row shows the uplink's air encryption, from the encrypted flag of its radios' MAC headers,
+  and the algorithm a radio's clear registration proposes (`radios propose TEA1`, see "Which TEA a network uses" under
+  Keys & Privacy).
 
 Notes
 
@@ -2048,8 +2056,9 @@ Out-of-range decimal keys are rejected without changing the installed key.
   key (ECK). Another 80-bit key for the same network replaces it. It decrypts trunked mode speech of calls whose MAC
   signalling is air encrypted; end-to-end encryption and direct mode encryption are never decrypted. A network does
   not broadcast its algorithm, so name it: a key that names `tea1`, `tea2` or `tea3` (either case) always runs that
-  algorithm. A key that names none runs the network's algorithm only once its signalling (a D-OTAR SCK or GCK Provide,
-  or the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT) has named exactly one of TEA1-TEA3, and not
+  algorithm. A key that names none runs the network's algorithm only once its signalling (a D-OTAR SCK Provide of a
+  trunked mode SCK or a GCK Provide, or the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT) has named
+  exactly one of TEA1-TEA3, and not
   while it has named two or more: a network may support several algorithms (EN 300 392-7 clause 6.3.1). TEA4 has no
   key stream generator here.
   The key stream generator takes the ECK that TB5 derives from the cipher key with the carrier number, location area
@@ -2088,6 +2097,32 @@ Out-of-range decimal keys are rejected without changing the installed key.
   received are known, every field the key is bound to, and the Security row names the key that applies there
   (`TEA1 reduced key`, `TEA2 key`).
 - At most 16 TETRA keys of both kinds are held. A refused `--tetra-key` names the grammar, never the key.
+- Which TEA a network uses. A network never broadcasts its algorithm: SYNC and SYSINFO carry none, and security class
+  2 or an SCK says nothing about it (EN 300 392-7 clause 6.3.1: a network's SCK is common to every TEA it runs). Only
+  messages addressed to radios name it, and the TETRA row of Call Info and of the Qt/Android monitor shows what a
+  readable one named:
+  - The network's own word, on the downlink: the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT, or a
+    D-OTAR key provide of trunked mode keys, which names those keys' algorithm (`TMO downlink · encrypted (TEA2)`).
+    On an encrypted network these messages are usually encrypted too, and rare.
+  - With the key: load the 80-bit key without a TEA. Once repeated encrypted signalling proves one of TEA1-TEA3,
+    `-v 2` logs `[TETRA AIR] ... proved by a repeat under TEA1` and the TETRA row names it; that needs signalling the
+    network repeats under that key, so loading the right key alone does not guarantee it. The Security row's
+    `TEA1 key` is the key and algorithm that apply to the carrier, not that proof.
+  - A clue from the uplink: a radio's U-LOCATION UPDATE DEMAND names the algorithm it proposes, which the network
+    accepts or rejects (clause 6.6.2.1), so it is a radio's choice, not the network's confirmation. Received with
+    `--tetra-uplink --tetra-net mcc,mnc,colour` while radios register, it shows as
+    `TMO control uplink · clear · radios propose TEA1`. Only a registration sent in the clear is readable: a radio
+    keeps the encryption state it starts a registration in until the network accepts it (clause 4.4.2.0). In a class 3
+    cell a radio's first registration is clear when it visits from another network, or at home when the cell offers
+    no DCK retrieval or it holds no valid keys (clause 6.6.2.2), and encrypted when it registers with keys it already
+    holds. In a class 2 cell the standard leaves it open, and a radio holding the SCK may register encrypted. Only
+    the first MAC block of a registration is read.
+  - Otherwise the row reads `encrypted (TEA not broadcast)`.
+
+  The uplink frequency is the downlink frequency minus the network's duplex spacing, or plus it under reverse
+  operation (EN 300 392-2 clause 21.4.4.1). The `[TETRA SYSINFO]` line prints the duplex spacing code `ds=`, whose
+  value in MHz for the band is in ETSI TS 100 392-15, and `rev=` (0 subtract, 1 add). Radios transmit at low power,
+  so the uplink is heard near them.
 - Kenwood 15‑bit scrambler (decimal): `-9 <dec>`
 - Anytone 16‑bit BP (hex): `-A <hex>`
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)

@@ -1139,10 +1139,15 @@ suite runs under this compiler.
 - API note: `dsd_state::tetra_pub` (`dsd_tetra_publication` in `<dsd-neo/core/tetra_publication.h>`, which `state.h`
   includes) is what the TETRA decoder shows every frontend. Its working state lives in its state extension, which no
   snapshot copies; at the end of every burst `tetra_publish()` (`src/protocol/tetra/tetra.c`, from
-  `tetra_frame_leave()`) copies into the publication the working mode (TMO downlink, uplink or control uplink, DMO
+  `tetra_frame_leave()`, which then ends the burst for the frontends and the event watchdog with that publication,
+  `tetra_burst_done()`, whatever burst it was; a carrier boundary, `tetra_forget_carrier()`, clears the published uplink
+  air encryption at once) copies into
+  the publication the working mode (TMO downlink, uplink or control uplink, DMO
   direct or through a DM-REP, DM-GATE or both), taken only once a block passed its CRC, the network (MCC, MNC, 6-bit
-  colour code), the air-interface encryption and every algorithm signalling named (`ksg_mask`, bit k for KSG k: the
-  network's KSG evidence in trunked mode, the transmission's DMAC-SYNC KSG in direct mode), the cell's broadcast
+  colour code), the air-interface encryption (on a trunked uplink the encrypted flag of its last MAC-ACCESS or
+  MAC-DATA, `tetra_state_t::ul_enc`) and every algorithm signalling named (`ksg_mask`, bit k for KSG k: the
+  network's KSG evidence in trunked mode, the transmission's DMAC-SYNC KSG in direct mode), apart from it the
+  algorithms radios proposed in clear uplink registrations (`ksg_requested_mask`, trunked mode only), the cell's broadcast
   security (`aie` from the BS service details; `sec_known`, `sec_auth`, `sec_class1`, `sec_class3`, `sec_sckn` from the
   extended services broadcast), its location area, the carrier being received (`tetra_calls_rx_carrier()`) and which
   kind of air key applies there with its TEA (`key_kind`, `key_tea`, from `tetra_air_key_for_carrier()`; never a key),
@@ -2884,7 +2889,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   options run the TETRA preset (`frame_tetra`) and the publication has a working mode, and writes the mode line with
   the air encryption and every algorithm signalling named, whatever the last PDU's encryption (`TMO downlink ·
   encrypted (TEA2)`, `TMO downlink · clear · TEA1/TEA2`, `DMO direct · clear`, a proprietary KSG as `proprietary KSG
-  9`, as many as fit), the network (`MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654`: the colour code through
+  9`, as many as fit; an encrypted trunked carrier whose network named none `encrypted (TEA not broadcast)`, since a
+  network never broadcasts its algorithm), then the algorithms its radios' clear uplink registrations proposed, never
+  as the network's (`TMO control uplink · clear · radios propose TEA1`, with what room the rest left, dropped whole
+  when not one name fits), the network (`MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654`: the colour code through
   `dsd_app_access_code_format()`, in decimal as the call history names one, the location area and the carrier being
   received once known, the fields a TEA1 reduced key is bound to), the security row (`class 2 · SCKN 3 ·
   authentication · TEA1 reduced key`, `classes 1 and 3`, `no air encryption`; the class bits only while the BS service
@@ -5762,6 +5770,22 @@ into the PCM sample domain; scaled, both inner levels would slice as outer ones.
 
 #### Signalling decoders
 
+The uplink is the radios' side, and its PDUs are not the downlink's (EN 300 392-2 clause 21.4.2; uplink MM PDU type 2
+is U-LOCATION UPDATE DEMAND where the downlink's is D-CK CHANGE DEMAND), so no uplink block reaches the downlink
+dispatchers. `src/protocol/tetra/tetra_ul.c` (`tetra_ul.h`) is entered only from a control uplink burst's CRC-passed
+SCH/HU (`tetra_uplink_process_cb()`) and a normal uplink burst's CRC-passed SCH/F (`tetra_nb_signalling()` with the
+NUB's `tetra_nb_ctx::uplink`; its stealing channel half slots and a synchronisation burst's block 2 still go to
+`tetra_mac_parse_block()`, which logs them unread). `tetra_ul_read()` reads the block's first MAC PDU only, a
+MAC-ACCESS (table 21.41) or MAC-DATA (table 21.46), its end the lesser of its length indication and the block (clause
+23.4.3.3) and its fill bits off (`tetra_mac_content_end()`, shared with the downlink); of a clear TM-SDU that is whole
+or a fragment start, the basic link LLC header (a whole FCS variant's FCS checked), the MLE discriminator, an MM PDU's
+type, and of a U-LOCATION UPDATE DEMAND (table 16.18) its leading type 1 elements up to the ciphering parameters.
+`tetra_ul_block()` sets the uplink's air encryption (`ul_enc`, Null PDUs included, clause 21.4.2.1 note 1), prints the
+summary lines (an encrypted PDU's SSI as `esi=`, EN 300 392-7 clause 4.2.6), and notes the KSG a clear demand proposes for the serving network (`tetra_air_ksg_request()`, never the
+address extension's network, the MS's own MNI), apart from the network's KSG evidence: a proposal the SwMI may reject
+(EN 300 392-7 clause 6.6.2.1) never chooses a key's algorithm. Nothing else of the uplink is read: no associated PDU,
+later fragment, MAC-U-BLCK, encrypted TM-SDU or other PDU. Test: `TETRA_UL`.
+
 Each downlink signalling PDU family has a pure decoder that reads one PDU into a struct the caller provides and returns
 1 only when the whole PDU, optional elements included, was there and well formed; it keeps nothing and acts on nothing.
 All are module-private: `tetra_mac_resource_decode()` and `tetra_mac_broadcast_decode()` (the MAC-RESOURCE header with
@@ -5772,7 +5796,8 @@ the SDS-TL header, the text, a concatenation part's control fields but not its r
 (the SN-PDU header; all three in `tetra_mle_pdu.h`), and `tetra_mm_decode()` (the MM PDUs of EN 300 392-2 clause 16 and
 EN 300 392-7 annex A; `tetra_mm_pdu.h`). The dispatchers (`tetra_mac_parse_schd()`, `tetra_mle_dispatch()`,
 `tetra_mm_dispatch()`) decode through the same readers and act only on a complete PDU: the summary line, the call event,
-the notice, the SDS reassembly, the KSG an SCK or GCK Provide names, and the KSG the ciphering parameters of a
+the notice, the SDS reassembly, the KSG an SCK Provide of a trunked mode SCK (SCK use 0, EN 300 392-7 table A.101;
+SCKs for direct mode alone name no trunked algorithm) or a GCK Provide names, and the KSG the ciphering parameters of a
 D-LOCATION UPDATE COMMAND or REJECT name for the serving network (not the MS's network of its address extension). Of
 signalling, `tetra_state_t` keeps only what the decoder reads back: the cell's main carrier, band, offset and location
 area with its broadcast security (the extended services broadcast's security information, EN 300 392-7 table A.104, and
@@ -6377,7 +6402,8 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | Direct mode protection (`dmo_crypt`; the set-up's `dmo_tx_crypt`, `dmo_tx_aie`, `dmo_tx_seed`, and the KSG and key number of the DMAC-SYNC that started it, `dmo_tx_ksg`, `dmo_tx_key_number`, which the call transaction keeps, EN 300 396-6 clause 5.2) and the transmission (`dmo_tx_seq`) | one direct mode transmission | the DMAC-SYNC of its DM-SETUP or DM-CONNECT ACK, or of a DM-OCCUPIED when the set-up went unheard; a set-up of another source or security class, and a DM-2-C DMAC-SYNC in a transmission of another class, start the next; a DM-OCCUPIED that contradicts the set-up and an unread DM-2-A or DM-2-B DMAC-SYNC only seal it | as the colour code (UNKNOWN, sealed) |
 | Direct mode call (`calls.dmo`) and its canonical call | the channel's call | DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, a DM-2-C DMAC-SYNC | its end PDUs, idling out, leaving direct mode, a carrier boundary (the engine ends the canonical call) |
 | Network (`net_known`, `mcc`, `mnc`, `colour`, `lfsr_seed`) | the session; published only on a trunked carrier (`tetra_pub_network()`) | a BSCH, `--tetra-net` | replaced by a BSCH of another identity |
-| KSG evidence (`air_ksg`: per network, the KSG numbers its signalling named) | the session, per network | a complete D-OTAR SCK or GCK Provide, D-LOCATION UPDATE COMMAND or REJECT with cipher control on | a full cache (20 networks) replacing the oldest network no air key is loaded for; never a keyed network's |
+| KSG evidence (`air_ksg`: per network, the KSG numbers its signalling named, `mask`, and apart from them those clear uplink registrations proposed, `requested`) | the session, per network | `mask`: a complete D-OTAR SCK Provide of a trunked mode SCK or GCK Provide, D-LOCATION UPDATE COMMAND or REJECT with cipher control on, a repeat proof; `requested`: a clear U-LOCATION UPDATE DEMAND with cipher control on (`tetra_ul.c`) | a full cache (20 networks) replacing the oldest network no air key is loaded for; never a keyed network's |
+| Uplink air encryption (`ul_enc`) | the carrier | a CRC-passed uplink MAC-ACCESS or MAC-DATA, Null PDUs included (`tetra_ul_block()`) | a carrier boundary (`tetra_forget_carrier()`, which clears its published value at once, the rest of the publication waiting for the next burst), another cell (`bsch_forget_cell()`), entering direct mode (`tetra_enter_dmo()`) |
 | Tuned frequency (`rx_tuned_hz`), which `tetra_calls_rx_carrier()` reads the carrier being received from without options | the receiver | every burst (`tetra_frame_enter()`) | a carrier boundary |
 | Encrypted signalling evidence (`air_evidence`) | the carrier | encrypted TM-SDUs a key could decrypt | `TETRA_AIR_EVIDENCE_S`, eviction, a carrier boundary, another cell or network |
 | Cell key epoch (`air_epoch`, the SCK-VN / CCK-id, SCKN, GCK support and parity seen) | the cell | SYSINFO, encrypted MAC headers | moves at another key announced or a parity switch; another cell, location area or network |

@@ -588,11 +588,28 @@ mm_otar_detail(const tetra_mm_otar_t* o, char* out, size_t cap) {
     DSD_SNPRINTF(out, cap, " count=%u%s%s", (unsigned)o->key_count, alg[0] ? " alg=" : "", alg);
 }
 
+/* 1 when an SCK Provide provides an SCK for trunked mode: each SCK's SCK use says whether it is for trunked or direct
+ * mode operation (EN 300 392-7 table A.101, clause 4.5.2), and the one KSG number of the PDU goes with every SCK. */
+static int
+mm_otar_provides_tmo_sck(const tetra_mm_otar_t* o) {
+    for (uint8_t i = 0; i < o->key_count; i++) {
+        if (o->sck_use[i] == 0u) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* SCK and GCK Provide name the algorithm (table A.73) for the network in their address extension, or for the
- * serving network when they carry none (tables A.12 and A.16, address extension notes). */
+ * serving network when they carry none (tables A.12 and A.16, address extension notes). An SCK Provide names the
+ * network's trunked mode algorithm only with an SCK for trunked mode: SCKs for direct mode alone, or none, name the
+ * algorithm of no trunked traffic. */
 static void
 mm_otar_remember_ksg(const mm_ctx* ctx, const tetra_mm_otar_t* o) {
     if (o->subtype != 2u && o->subtype != 4u) {
+        return;
+    }
+    if (o->subtype == 2u && !mm_otar_provides_tmo_sck(o)) {
         return;
     }
     if (o->address.valid) {
@@ -797,10 +814,8 @@ mm_decode_lu_command(tetra_bit_reader* r, tetra_mm_pdu* pdu) {
     return mm_read_address_tail(r, &c->address);
 }
 
-/* " ksg=TEA2 class=2 sckn=3" for the ciphering parameters (EN 300 392-7 table A.46: KSG number, security class 0 for
- * class 2 and 1 for class 3, then the SCK number of a class 2 cell), "" with cipher control off. */
-static void
-mm_cipher_detail(uint8_t control, uint16_t params, char* out, size_t cap) {
+void
+tetra_mm_cipher_detail(uint8_t control, uint16_t params, char* out, size_t cap) {
     out[0] = '\0';
     if (!control) {
         return;
@@ -833,7 +848,7 @@ static void
 mm_report_lu_command(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     const tetra_mm_lu_command_t* const c = &pdu->lu_command;
     char cipher[40];
-    mm_cipher_detail(c->cipher_control, c->cipher_params, cipher, sizeof cipher);
+    tetra_mm_cipher_detail(c->cipher_control, c->cipher_params, cipher, sizeof cipher);
     DSD_FPRINTF(stderr, "[TETRA MM D-LU-COMMAND] CC=%d group_report=%u cipher=%u%s\n", ctx->cc,
                 (unsigned)c->group_report, (unsigned)c->cipher_control, cipher);
     mm_cipher_remember_ksg(ctx, c->cipher_control, c->cipher_params);
@@ -853,7 +868,7 @@ static void
 mm_report_lu_reject(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     const tetra_mm_lu_reject_t* const rej = &pdu->lu_reject;
     char cipher[40];
-    mm_cipher_detail(rej->cipher_control, rej->cipher_params, cipher, sizeof cipher);
+    tetra_mm_cipher_detail(rej->cipher_control, rej->cipher_params, cipher, sizeof cipher);
     DSD_FPRINTF(stderr, "[TETRA MM D-LU-REJECT] CC=%d type=%u cause=%u cipher=%u%s\n", ctx->cc, (unsigned)rej->type,
                 (unsigned)rej->cause, (unsigned)rej->cipher_control, cipher);
     mm_cipher_remember_ksg(ctx, rej->cipher_control, rej->cipher_params);

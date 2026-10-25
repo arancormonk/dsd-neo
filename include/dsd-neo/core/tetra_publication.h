@@ -95,10 +95,15 @@ typedef struct dsd_tetra_publication {
     uint16_t mcc;           /**< The 10-bit mobile country code. */
     uint16_t mnc;           /**< The 14-bit mobile network code. */
     /** The air interface algorithms signalling named, bit k for KSG number k (EN 300 392-7 table 6.2: 0..3 TEA1..TEA4,
-        8..15 proprietary): in trunked mode every one the network's CRC-passed signalling named (D-OTAR, D-LOCATION
-        UPDATE COMMAND and REJECT), in direct mode the one of the DMAC-SYNC that set up the transmission in progress;
-        0 = none known. A network does not broadcast its algorithm, so this is often 0. */
+        8..15 proprietary): in trunked mode every one the network's CRC-passed signalling named (a D-OTAR SCK Provide
+        of a trunked mode SCK or a GCK Provide, D-LOCATION UPDATE COMMAND and REJECT, a repeat proof), in direct mode
+        the one of the DMAC-SYNC that set up the transmission in progress; 0 = none known. A network does not broadcast
+        its algorithm, so this is often 0. */
     uint16_t ksg_mask;
+    /** Trunked mode only: the algorithms radios proposed in clear U-LOCATION UPDATE DEMANDs on the network's uplink,
+        bit k for KSG number k as @c ksg_mask. A proposal is not the network's confirmation (EN 300 392-7 clause
+        6.6.2.1), so it is kept apart from @c ksg_mask; 0 = none seen, and always 0 in direct mode. */
+    uint16_t ksg_requested_mask;
     uint8_t trunk_state;      /**< dsd_tetra_trunk_state */
     uint8_t cc_known;         /**< 1 once a SYSINFO broadcast named the main (control) carrier. */
     uint8_t traffic_valid;    /**< 1 while a channel allocation names a traffic channel. */

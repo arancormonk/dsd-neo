@@ -31,7 +31,6 @@
 #include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
-#include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -50,6 +49,7 @@
 #include "tetra_log.h"
 #include "tetra_mac_pdu.h"
 #include "tetra_state.h"
+#include "tetra_ul.h"
 #include "tetra_voice_state.h"
 
 enum {
@@ -281,6 +281,7 @@ typedef struct {
     int direct;         /* direct mode: signalling goes to the DMAC logger */
     const char* prefix; /* "", "DNB " or "NUB ": the burst kind shown in the frame subtype */
     int no_traffic;     /* the downlink AACH said the slot carries no TCH or STCH (tetra_ndb_aach()) */
+    int uplink;         /* a normal uplink burst: its full slot signalling goes to the uplink reader (tetra_ul.h) */
 } tetra_nb_ctx;
 
 static void
@@ -308,7 +309,8 @@ tetra_note_proven_cell(dsd_state* state, uint32_t seed) {
 /* A CRC-passed signalling block: the MAC in trunked mode, the DMAC logger in direct mode. It counts as evidence about
    the carrier once it has been acted on, so a grant it carries is judged by the blocks before it. A trunked downlink MAC
    block proves a control channel, an uplink one the carrier for publication only (tetra_confirm.h), and a direct mode
-   one the burst. */
+   one the burst. A normal uplink burst's full slot goes to the uplink reader (tetra_ul.h), never the downlink MAC; its
+   stealing channel half slots are not read. */
 static void
 tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* decoded, int len,
                     const char* kind, int ks_offset) {
@@ -318,7 +320,11 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
         return;
     }
     tetra_note_proven_cell(state, ctx->seed);
-    tetra_mac_parse_block(decoded, len, ctx->cc, ks_offset, opts, state);
+    if (ctx->uplink && len == SCHF_TYPE1) {
+        tetra_ul_block(state, TETRA_UL_SCH_F, decoded, len, ctx->cc);
+    } else {
+        tetra_mac_parse_block(decoded, len, ctx->cc, ks_offset, opts, state);
+    }
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (ts && ts->uplink) {
         tetra_confirm_note_uplink_signalling(state);
@@ -427,7 +433,8 @@ tetra_nb_decode(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const
     }
 }
 
-/* The end of every burst: the frontends and the event watchdog. The engine ticks the trunking state machine. */
+/* The end of every burst, once its publication is made (tetra_frame_leave()): the frontends and the event watchdog.
+   The engine ticks the trunking state machine. */
 static void
 tetra_burst_done(dsd_opts* opts, dsd_state* state) {
     if (dsd_opts_frontend_active(opts)) {
@@ -471,7 +478,7 @@ tetra_dmo_process_ndb(dsd_opts* opts, dsd_state* state) {
     float b2_soft[NB_BLOCK_DIBITS];
     const float* const soft = tetra_read_block2(opts, state, b2_dibits, b2_soft);
 
-    const tetra_nb_ctx ctx = {ts->dmo_dcc_seed, 0, 1, "DNB ", 0};
+    const tetra_nb_ctx ctx = {ts->dmo_dcc_seed, 0, 1, "DNB ", 0, 0};
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA DMO");
 
@@ -488,7 +495,6 @@ tetra_dmo_process_ndb(dsd_opts* opts, dsd_state* state) {
         tetra_nb_decode(opts, state, &ctx, b2_dibits, soft);
     }
     tetra_block1_consumed(state);
-    tetra_burst_done(opts, state);
 }
 
 /* Normal uplink burst (EN 300 392-2 clause 9.4.4.2.4): a downlink NDB's logical channels and colour code, without the
@@ -503,7 +509,7 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
     float b2_soft[NB_BLOCK_DIBITS];
     const float* const soft = tetra_read_block2(opts, state, b2_dibits, b2_soft);
 
-    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "NUB ", 0};
+    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "NUB ", 0, 1};
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA UL");
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     TETRA_LOG_PAYLOAD(ts, " [TETRA NUB  NTS%d  pol=%d rot=%d]", state->tetra_sync.nts2 ? 2 : 1,
@@ -513,7 +519,6 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
         tetra_nb_decode(opts, state, &ctx, b2_dibits, soft);
     }
     tetra_block1_consumed(state);
-    tetra_burst_done(opts, state);
 }
 
 /* Control uplink burst: its 168 bits are one SCH/HU block (EN 300 392-2 clause 8.3.1.4.3). Its extended training
@@ -539,6 +544,7 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA UL");
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "CB SCH/HU");
     if (!tetra_uplink_net_known(ts) || !state->tetra_sync.b1_valid) {
+        tetra_block1_consumed(state);
         return;
     }
     if (!tetra_confirm_burst_current(state)) {
@@ -562,19 +568,7 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     tetra_dmo_leave(opts, state);
     /* Descrambled with the cell's extended colour code: the cell, out of direct mode now. */
     tetra_note_proven_cell(state, ts->lfsr_seed);
-    /* MAC-ACCESS (EN 300 392-2 clause 21.4.2.1): PDU type 0, fill bit, encryption mode, address type and address. */
-    tetra_bit_reader r = tetra_bits_reader(mac, SCHHU_TYPE1, 0);
-    if (tetra_bits_read(&r, 1) != 0) {
-        DSD_FPRINTF(stderr, "[TETRA SCH/HU] MAC-END-HU\n");
-        return;
-    }
-    (void)tetra_bits_skip(&r, 1);
-    const uint32_t encrypted = tetra_bits_read(&r, 1);
-    const uint32_t addr_type = tetra_bits_read(&r, 2);
-    const uint32_t addr = tetra_bits_read(&r, addr_type == 1u ? 10 : 24);
-    if (tetra_bits_ok(&r)) {
-        DSD_FPRINTF(stderr, "[TETRA SCH/HU] MAC-ACCESS enc=%u addr=%u\n", (unsigned)encrypted, (unsigned)addr);
-    }
+    tetra_ul_block(state, TETRA_UL_SCH_HU, mac, SCHHU_TYPE1, tetra_burst_colour(state));
 }
 
 void
@@ -644,7 +638,7 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     /* Frame 18 carries no traffic anyway, and its PDU (table 21.83) says nothing about the downlink. */
     const int no_traffic =
         aach_read && !tetra_tdma_control_frame(ts) && tetra_access_assign_dl_usage(aach, NULL) != TETRA_DL_TRAFFIC;
-    const tetra_nb_ctx ctx = {seed, tetra_burst_colour(state), 0, "", no_traffic};
+    const tetra_nb_ctx ctx = {seed, tetra_burst_colour(state), 0, "", no_traffic, 0};
     tetra_nb_subtype(state, &ctx, state->tetra_sync.nts2 ? "NTS2" : "NTS1");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
     char aach_text[16] = "?";
@@ -660,7 +654,6 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     tetra_calls_on_aach(opts, state, aach_read, aach);
     tetra_nb_decode(opts, state, &ctx, b2_dibits, b2_soft);
     tetra_block1_consumed(state);
-    tetra_burst_done(opts, state);
 }
 
 /* ---------------------------------------------------------------------------------------------------------------
@@ -717,17 +710,18 @@ tetra_dmo_presence(dsd_state* state, tetra_dmo_sync_s_t* s, const uint8_t* sch_s
 
 /* A DSB says the carrier is a direct mode one (EN 300 396-2 clause 9.4.3.3). Entering direct mode from trunked mode,
    what the trunked carrier left goes, as at a BSCH of another cell: its partial TM-SDUs, what its timeslots' speech
-   left with the heard or anonymous canonical call (tetra_calls_forget_trunked_carrier()), and the followed call's proof
-   on the carrier; tetra_dmo_apply_sync() stops the TDMA clock. */
+   left with the heard or anonymous canonical call (tetra_calls_forget_trunked_carrier()), the followed call's proof
+   on the carrier, and the trunked uplink's air encryption; tetra_dmo_apply_sync() stops the TDMA clock. */
 static void
 tetra_enter_dmo(dsd_opts* opts, dsd_state* state) {
-    const tetra_state_t* const ts = tetra_st_peek(state);
+    tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts || ts->dmo) {
         return;
     }
     tetra_mac_forget_fragments(state);
     tetra_calls_forget_trunked_carrier(opts, state);
     tetra_confirm_forget_followed_call(state);
+    ts->ul_enc = TETRA_UL_ENC_UNKNOWN;
 }
 
 /* Direct-mode synchronisation burst whose SCH/S (@p sch_s, CRC passed) carries a DMO system code. Its SCH/H follows
@@ -777,7 +771,6 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA DMO");
-    tetra_burst_done(opts, state);
 }
 
 /* The captured BSCH (or direct-mode SCH/S) block to SB_TYPE2 bits in @p decoded: descramble, deinterleave with
@@ -874,7 +867,7 @@ tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const f
         return;
     }
     uint16_t block[NB_BLOCK_BITS];
-    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "", 0};
+    const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "", 0, 0};
     tetra_expand_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
     /* Block 2 of the slot: an SCH/HD there takes key stream bits 216.. (EN 300 392-7 table 6.4, BSCH+SCH/HD). */
     (void)tetra_nb_half(opts, state, &ctx, block, "BNCH", TETRA_AIR_KSS_SECOND_HALF_BLOCK);
@@ -919,7 +912,6 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "BSCH");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
-    tetra_burst_done(opts, state);
 }
 
 /* The TETRA state this burst works on, with the command-line uplink setting and network identity applied; NULL
@@ -968,9 +960,10 @@ tetra_pub_mode(const dsd_state* state, const tetra_state_t* ts) {
 }
 
 /* Air-interface encryption: in direct mode the security class of the current call (DM-2-A/B/C encrypt the air
- * interface; DM-1, with or without end-to-end encryption, leaves it clear); in trunked mode the encryption mode element
- * of the last addressed MAC-RESOURCE (EN 300 392-7 clause 6.5.1: 0 clear, 2 and 3 encrypted, 1 reserved and so
- * unknown), once one has been decoded. */
+ * interface; DM-1, with or without end-to-end encryption, leaves it clear); on a trunked mode uplink the encrypted flag
+ * of its last MAC-ACCESS or MAC-DATA (tetra_ul.h); on the trunked downlink the encryption mode element of the last
+ * addressed MAC-RESOURCE (EN 300 392-7 clause 6.5.1: 0 clear, 2 and 3 encrypted, 1 reserved and so unknown), once one
+ * has been decoded. */
 static uint8_t
 tetra_pub_air_encryption(const tetra_state_t* ts) {
     if (ts->dmo) {
@@ -979,6 +972,14 @@ tetra_pub_air_encryption(const tetra_state_t* ts) {
             case TETRA_DMO_CRYPT_CLEAR:
             case TETRA_DMO_CRYPT_E2E: return DSD_TETRA_AIR_ENC_CLEAR;
             case TETRA_DMO_CRYPT_UNKNOWN:
+            default: return DSD_TETRA_AIR_ENC_UNKNOWN;
+        }
+    }
+    if (ts->uplink) {
+        /* The uplink's own MAC headers (tetra_ul.h); the downlink's encryption mode is another direction's. */
+        switch (ts->ul_enc) {
+            case TETRA_UL_ENC_ENCRYPTED: return DSD_TETRA_AIR_ENC_ENCRYPTED;
+            case TETRA_UL_ENC_CLEAR: return DSD_TETRA_AIR_ENC_CLEAR;
             default: return DSD_TETRA_AIR_ENC_UNKNOWN;
         }
     }
@@ -1012,7 +1013,7 @@ tetra_pub_dmo_ksg(const tetra_state_t* ts) {
 }
 
 /* The trunked network identity and its air-interface encryption: the algorithms its signalling named
- * (tetra_air_ksg_seen()). A direct mode carrier belongs to no trunked network (EN 300 396-3: its colour code is the
+ * (tetra_air_ksg_seen()) and, apart from them, those its radios proposed on the uplink (tetra_air_ksg_requested()). A direct mode carrier belongs to no trunked network (EN 300 396-3: its colour code is the
  * source's, clause 8.2.4), so the identity the session keeps from the last BSCH or --tetra-net is not published there;
  * its algorithm is the transmission's. */
 static void
@@ -1028,6 +1029,7 @@ tetra_pub_network(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_pub
     } else {
         pub->ksg_mask = trunked ? tetra_air_ksg_seen(state, ts->mcc, ts->mnc) : 0U;
     }
+    pub->ksg_requested_mask = trunked ? tetra_air_ksg_requested(state, ts->mcc, ts->mnc) : 0U;
 }
 
 /* The carrier being received and the air key that applies there (tetra_air_key_for_carrier()): trunked mode only. */
@@ -1131,12 +1133,14 @@ tetra_publish(dsd_state* state) {
 }
 
 /* Tell the frame sync where block 1 of the next normal burst sits: right against the training sequence in direct
- * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show. Returns 1 when the
- * burst decoded a block whose CRC passed. */
+ * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show, and end the burst
+ * for them with that publication (tetra_burst_done()), whichever burst it was and however its decode ended. Returns 1
+ * when the burst decoded a block whose CRC passed. */
 static int
-tetra_frame_leave(dsd_state* state, const tetra_state_t* ts) {
+tetra_frame_leave(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts) {
     state->tetra_sync.block1_follows_training = (uint8_t)((ts->dmo || ts->uplink) ? 1 : 0);
     tetra_publish(state);
+    tetra_burst_done(opts, state);
     return tetra_confirm_burst_end(state);
 }
 
@@ -1161,7 +1165,7 @@ processTetraFrame(dsd_opts* opts, dsd_state* state) {
     }
     tetra_burst_enter(opts, state);
     tetra_process_ndb(opts, state);
-    return tetra_frame_leave(state, ts);
+    return tetra_frame_leave(opts, state, ts);
 }
 
 int
@@ -1172,7 +1176,7 @@ processTetraSBFrame(dsd_opts* opts, dsd_state* state) {
     }
     tetra_burst_enter(opts, state);
     tetra_process_sb(opts, state);
-    return tetra_frame_leave(state, ts);
+    return tetra_frame_leave(opts, state, ts);
 }
 
 void
@@ -1190,7 +1194,13 @@ tetra_forget_carrier(dsd_state* state) {
     tetra_dmo_forget_carrier(state);
     tetra_calls_forget_carrier(state);
     tetra_air_sig_forget_carrier(state);
+    ts->ul_enc = TETRA_UL_ENC_UNKNOWN;
     /* The next carrier is trunked until its own DSB says otherwise: the frame sync finds block 1 of its first normal
      * burst behind AACH half 1 on the downlink, as tetra_frame_leave() would have told it (the uplink is its own). */
     state->tetra_sync.block1_follows_training = 0;
+    /* The uplink's air encryption was the carrier's: the frontends stop showing it now, not at the next burst, which
+     * may never come. The rest of the publication, the working mode included, waits for that burst. */
+    if (ts->uplink) {
+        state->tetra_pub.air_encryption = (uint8_t)DSD_TETRA_AIR_ENC_UNKNOWN;
+    }
 }

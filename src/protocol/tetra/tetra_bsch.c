@@ -27,6 +27,7 @@
 #include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_state.h"
+#include "tetra_ul.h"
 
 #define TETRA_SYNC_PDU_BITS             60
 
@@ -192,6 +193,7 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     tetra_air_sig_forget_cell(state);
     ts->enc_mode = TETRA_ENC_MODE_NONE;
     ts->frames_resource = 0;
+    ts->ul_enc = TETRA_UL_ENC_UNKNOWN;
     if (ts->dl_carrier_hz > 0L && state->trunk_cc_freq == ts->dl_carrier_hz) {
         state->trunk_cc_freq = 0;
     }

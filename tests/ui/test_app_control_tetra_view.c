@@ -99,9 +99,15 @@ test_mode_line(void) {
     pub->air_encryption = DSD_TETRA_AIR_ENC_CLEAR;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.mode_text, "TMO downlink" MID "clear") == 0 && view.encrypted == 0U);
+    /* An encrypted trunked network that named no algorithm says it does not broadcast one; direct mode, whose
+     * DMAC-SYNC would name it, says only that it is encrypted. */
     pub->air_encryption = DSD_TETRA_AIR_ENC_ENCRYPTED;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
-    assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted") == 0 && view.encrypted == 1U);
+    assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA not broadcast)") == 0 && view.encrypted == 1U);
+    pub->mode = DSD_TETRA_MODE_DMO_DIRECT;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "DMO direct" MID "encrypted") == 0);
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
     pub->ksg_mask = 1U << 1;
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA2)") == 0);
@@ -146,6 +152,69 @@ test_mode_line(void) {
     assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
     assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA1/TEA2/TEA3/proprietary KSG 8/proprietary KSG 9)")
            == 0);
+    fixture_close(&f);
+}
+
+/* The algorithms radios proposed in clear uplink registrations come last, as "radios propose", beside whatever the
+ * network named or the encryption says, never in place of it; never in direct mode. They take what room the row has
+ * left, the last name to the exact byte, and drop whole when not one name fits. */
+static void
+test_mode_line_proposed(void) {
+    fixture f = fixture_open();
+    dsd_tetra_publication* const pub = &f.state->tetra_pub;
+    dsd_app_tetra view;
+    pub->mode = DSD_TETRA_MODE_TMO_CONTROL_UPLINK;
+    pub->air_encryption = DSD_TETRA_AIR_ENC_CLEAR;
+    pub->ksg_requested_mask = 1U << 0;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO control uplink" MID "clear" MID "radios propose TEA1") == 0);
+
+    pub->air_encryption = DSD_TETRA_AIR_ENC_ENCRYPTED;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO control uplink" MID "encrypted (TEA not broadcast)" MID "radios propose TEA1")
+           == 0);
+    /* The longest fixed form leaves room for two names and the terminator, in UTF-8 and in ASCII. */
+    pub->ksg_requested_mask = (1U << 0) | (1U << 1);
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(
+        strcmp(view.mode_text, "TMO control uplink" MID "encrypted (TEA not broadcast)" MID "radios propose TEA1/TEA2")
+        == 0);
+    assert(strlen(view.mode_text) + 1U == sizeof view.mode_text);
+    assert(dsd_app_tetra_view(f.opts, f.state, DSD_APP_TETRA_ASCII, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO control uplink - encrypted (TEA not broadcast) - radios propose TEA1/TEA2")
+           == 0);
+    pub->ksg_requested_mask = (1U << 0) | (1U << 1) | (1U << 2);
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(
+        strcmp(view.mode_text, "TMO control uplink" MID "encrypted (TEA not broadcast)" MID "radios propose TEA1/...")
+        == 0);
+
+    /* Beside the network's own algorithm; and the last name fills its room to the byte. */
+    pub->mode = DSD_TETRA_MODE_TMO_UPLINK;
+    pub->ksg_mask = 1U << 1;
+    pub->ksg_requested_mask = 1U << 0;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO uplink" MID "encrypted (TEA2)" MID "radios propose TEA1") == 0);
+    pub->mode = DSD_TETRA_MODE_TMO_CONTROL_UPLINK;
+    pub->ksg_mask = (1U << 0) | (1U << 9);
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(
+        strcmp(view.mode_text, "TMO control uplink" MID "encrypted (TEA1/proprietary KSG 9)" MID "radios propose TEA1")
+        == 0);
+    assert(strlen(view.mode_text) + 1U == sizeof view.mode_text);
+    /* No room for one name: the proposal is left out whole. */
+    pub->mode = DSD_TETRA_MODE_TMO_DOWNLINK;
+    pub->ksg_mask = 0x0307U;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "TMO downlink" MID "encrypted (TEA1/TEA2/TEA3/proprietary KSG 8/proprietary KSG 9)")
+           == 0);
+
+    /* Direct mode belongs to no trunked network's uplink. */
+    pub->mode = DSD_TETRA_MODE_DMO_DIRECT;
+    pub->ksg_mask = 0U;
+    pub->air_encryption = DSD_TETRA_AIR_ENC_CLEAR;
+    assert(dsd_app_tetra_view(f.opts, f.state, 0U, &view) == 1);
+    assert(strcmp(view.mode_text, "DMO direct" MID "clear") == 0);
     fixture_close(&f);
 }
 
@@ -387,6 +456,7 @@ int
 main(void) {
     test_visibility();
     test_mode_line();
+    test_mode_line_proposed();
     test_security();
     test_network();
     test_channels();

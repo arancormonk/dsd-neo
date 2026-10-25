@@ -138,10 +138,8 @@ format_address(const tetra_mac_address* addr, char* out, size_t cap) {
     }
 }
 
-/* Fill bit deletion, clause 23.4.3.2: with the fill bit indication set, the last 1 bit of the PDU and the 0 bits
- * after it are fill. Returns the end of the PDU content, or -1 when no 1 bit follows @p start. */
-static int
-content_end(const uint8_t* bits, int start, int end, uint32_t fill) {
+int
+tetra_mac_content_end(const uint8_t* bits, int start, int end, uint32_t fill) {
     if (fill == 0u) {
         return end;
     }
@@ -639,7 +637,7 @@ resource_parse(mac_block* b, const uint8_t* bits, int nbits, tetra_mac_resource*
         DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
         return h->pdu_bits;
     }
-    const int end = content_end(bits, r.pos, h->pdu_bits, h->fill);
+    const int end = tetra_mac_content_end(bits, r.pos, h->pdu_bits, h->fill);
     if (end < 0) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-RESOURCE] CC=%d  fill bits without a final 1 bit; discarded\n", b->cc);
         DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
@@ -678,7 +676,7 @@ parse_mac_resource(mac_block* b, const uint8_t* bits, int nbits) {
         return resource_parse(b, bits, nbits, &h, NULL);
     }
     tetra_air_sig_note_parity(b->state, h.enc_mode);
-    const int end = content_end(bits, h.body, h.pdu_bits, h.fill);
+    const int end = tetra_mac_content_end(bits, h.body, h.pdu_bits, h.fill);
     if (h.length_ind != MAC_LI_FRAGMENT_START && tetra_enc_mode_encrypted(h.enc_mode)) {
         uint8_t clear[MAC_FULL_SLOT_BITS];
         tetra_air_cand used;
@@ -702,7 +700,7 @@ parse_mac_frag(mac_block* b, const uint8_t* bits, int nbits) {
         return 0;
     }
     tetra_mac_fragment* const f = b->frag;
-    const int end = content_end(bits, r.pos, nbits, fill);
+    const int end = tetra_mac_content_end(bits, r.pos, nbits, fill);
     if (f->enc_mode != TETRA_ENC_MODE_NONE) {
         /* Its TM-SDU fragment is ciphertext under this slot's key stream; the fill bits are clear. */
         if (end < 0) {
@@ -830,7 +828,7 @@ finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint3
     if (f->enc_mode != TETRA_ENC_MODE_NONE) {
         /* The allocation and the last fragment are ciphertext like the rest (EN 300 392-7 clause 6.7.1.2), the fill
          * bits clear. */
-        const int end = content_end(bits, body, pdu_bits, fill);
+        const int end = tetra_mac_content_end(bits, body, pdu_bits, fill);
         if (end < body) {
             f->cipher_lost = 1;
         } else {
@@ -857,7 +855,7 @@ finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint3
         discard_fragment(f);
         return;
     }
-    const int end = content_end(bits, r.pos, pdu_bits, fill);
+    const int end = tetra_mac_content_end(bits, r.pos, pdu_bits, fill);
     if (end < 0 || !fragment_append(f, bits + r.pos, end - r.pos)) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-END] CC=%d  malformed or oversized fragment; TM-SDU dropped\n", b->cc);
         discard_fragment(f);
@@ -1193,7 +1191,7 @@ parse_supplementary(mac_block* b, const uint8_t* bits, int nbits) {
     if (tetra_bits_read(&r, 1) != 0u) {
         (void)tetra_bits_skip(&r, 8); /* basic slot granting element */
     }
-    const int end = tetra_bits_ok(&r) && subtype == 0u ? content_end(bits, r.pos, nbits, fill) : -1;
+    const int end = tetra_bits_ok(&r) && subtype == 0u ? tetra_mac_content_end(bits, r.pos, nbits, fill) : -1;
     if (end < 0) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA MAC-D-BLCK] CC=%d  reserved subtype or malformed PDU\n", b->cc);
         return 0;
