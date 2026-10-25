@@ -4,9 +4,9 @@
  * (-ENOMEM, a lost device's -1, a failed submission's -5, even 0) ends the session as a device failure of the input
  * and wakes the demod waiting on the input ring; a return a stop asked for is left alone. Every return but -ENOMEM
  * also commits the "receiver ended" fact, after the unplug-owner grace: while one is set (Android sets 2000 ms so the
- * USB detach broadcast can own an unplug), a stop inside the grace keeps the return silent. The cause is logged before
- * the failure is reported. And one stop handshake: a stop or destroy that lands before the reader streams still ends
- * it and joins.
+ * USB detach broadcast can own an unplug), a stop or an exit request inside the grace keeps the return silent. The
+ * cause is logged before the failure is reported. And one stop handshake: a stop or destroy that lands before the
+ * reader streams still ends it and joins, and a reader that a stop beat to its run check never streams.
  */
 
 #include <assert.h>
@@ -81,6 +81,17 @@ record_cause_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
     log->logged.store(1, std::memory_order_release);
 }
 
+/* Raise the exit flag after 100 ms, as a session ending for another reason does. */
+DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+__stdcall
+#endif
+raise_exit_flag_later(void*) {
+    dsd_sleep_ms(100U);
+    dsd_exitflag_store(1);
+    DSD_THREAD_RETURN;
+}
+
 void
 reset_session(void) {
     dsd_input_failure_clear();
@@ -88,7 +99,7 @@ reset_session(void) {
 }
 
 int
-run_request(const rtl_device_test_usb_reader_request& request) {
+run_request(rtl_device_test_usb_reader_request& request) {
     return rtl_device_test_usb_reader_exit(&request);
 }
 
@@ -124,7 +135,7 @@ expect_no_report(input_ring_state* ring, int reader_rc, int stop_while_reading, 
 
 /* Run @p request with a demod waiting on the input ring; returns how long the device took from start to join. */
 uint64_t
-run_with_waiter(input_ring_state* ring, const rtl_device_test_usb_reader_request& request, ring_waiter* waiter) {
+run_with_waiter(input_ring_state* ring, rtl_device_test_usb_reader_request& request, ring_waiter* waiter) {
     waiter->ring = ring;
     dsd_thread_t waiter_thread;
     const int created = dsd_thread_create(&waiter_thread, wait_for_ring_wake, waiter);
@@ -163,13 +174,14 @@ expect_report(input_ring_state* ring, int reader_rc, int receiver_ended) {
     return elapsed_ms;
 }
 
-/* The unplug-owner grace: a stop inside it keeps a lost device silent; without one the failure is reported once the
- * grace ran out; an allocation failure is not the receiver's and is reported at once. */
+/* The unplug-owner grace: a stop or an exit request inside it keeps a lost device silent; without either the failure
+ * is reported once the grace ran out; an allocation failure is not the receiver's and is reported at once. */
 void
 test_unplug_owner_grace(input_ring_state* ring) {
     assert(rtl_device_unplug_owner_grace_ms() == 0U);
-    rtl_device_set_unplug_owner_grace_ms(300U);
-    assert(rtl_device_unplug_owner_grace_ms() == 300U);
+    /* Long enough that a stop 100 ms in lands inside it however late the test runs. */
+    rtl_device_set_unplug_owner_grace_ms(1000U);
+    assert(rtl_device_unplug_owner_grace_ms() == 1000U);
 
     /* The device is lost, and the session's own stop (as the detach broadcast's) comes 100 ms later. */
     reset_session();
@@ -181,10 +193,29 @@ test_unplug_owner_grace(input_ring_state* ring) {
     assert(run_request(request) == 0);
     expect_session_untouched(generation, 0);
 
+    /* The device is lost and nothing stops it, but the session starts ending for another reason 100 ms into the grace:
+     * the verdict notices at once rather than at the grace's end, and stays silent. */
+    reset_session();
+    rtl_device_test_usb_reader_request ending{};
+    ending.ring = ring;
+    ending.reader_rc = -1;
+    generation = dsd_input_failure_generation();
+    const unsigned int in_grace = rtl_device_test_verdicts_in_grace();
+    dsd_thread_t raiser;
+    const int raiser_created = dsd_thread_create(&raiser, raise_exit_flag_later, nullptr);
+    assert(raiser_created == 0);
+    const uint64_t ending_started_ms = dsd_realtime_mono_ms();
+    assert(run_request(ending) == 0);
+    assert(dsd_realtime_mono_ms() - ending_started_ms < 800U);
+    dsd_thread_join(raiser);
+    assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
+    expect_session_untouched(generation, 1);
+
     /* No stop: the session ends only once the grace ran out. */
+    rtl_device_set_unplug_owner_grace_ms(300U);
     assert(expect_report(ring, -1, 1) >= 300U);
 
-    /* A session already ending stays silent through the grace too. */
+    /* A session already ending when the reader returns is not reported (the grace is never entered). */
     expect_no_report(ring, -1, 0, 1);
 
     /* An allocation failure does not wait out the grace, however long. */
@@ -197,7 +228,8 @@ test_unplug_owner_grace(input_ring_state* ring) {
 
 /* A stop (or a destroy) that lands while the reader thread is starting: held before the reader announced itself, or
  * after it checked that the session runs but before it streams. Either way the reader ends, the stop joins it within
- * a second, and nothing is reported. */
+ * a second, and nothing is reported. Held before its run check, the reader never streams for the stop that came
+ * first; held after it, it streams until the stop's next cancel. */
 void
 expect_stop_while_starting(input_ring_state* ring, int hold_before_entry, int destroy) {
     reset_session();
@@ -211,6 +243,7 @@ expect_stop_while_starting(input_ring_state* ring, int hold_before_entry, int de
     assert(run_request(request) == 0);
     assert(dsd_realtime_mono_ms() - started_ms < 1000U);
     expect_session_untouched(generation, 0);
+    assert(request.reader_streamed == !hold_before_entry);
 }
 
 /* The reader's cause line is logged before the failure is reported, so it reads ahead of the teardown it starts. */

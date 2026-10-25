@@ -201,12 +201,13 @@ typedef struct {
     int stop_before_reader_entry;
     int stop_before_read_async;
     int destroy_instead_of_stop; /* end the device with rtl_device_destroy() in place of rtl_device_stop_async() */
+    int reader_streamed;         /* out: a held reader went on to stream, however briefly */
 } rtl_device_test_usb_reader_request;
 
 /* Start a USB device's reader (rtl_device_start_async()) whose rtlsdr_read_async() returns @p request->reader_rc, and
  * end it: through rtl_device_stop_async() (or rtl_device_destroy()) when the request asks for a stop, else by joining
  * it once it returned by itself. 0 on success, -1 when the reader could not start. */
-int rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request);
+int rtl_device_test_usb_reader_exit(rtl_device_test_usb_reader_request* request);
 
 /* The USB sample-progress monitor's silence limit and sample period (5000 ms and 100 ms in production); 0 restores
  * the production value. Set while no USB device streams. */
@@ -217,6 +218,9 @@ void rtl_device_test_set_progress_period_ms(uint32_t period_ms);
 void rtl_device_test_pause_next_verdict_ms(uint32_t ms);
 /* While set, the RTL-SDR's progress monitor thread fails to start, as a refused thread creation does. */
 void rtl_device_test_refuse_progress_monitor(int refuse);
+/* How many receiver verdicts began waiting out the unplug-owner grace, ever: a test polls it to know a verdict is
+ * pending. */
+unsigned int rtl_device_test_verdicts_in_grace(void);
 
 struct rtl_device;
 

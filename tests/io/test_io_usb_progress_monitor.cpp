@@ -164,15 +164,20 @@ test_rtl_stop_inside_grace(input_ring_state* ring) {
 }
 
 /* The reader returns by itself (-1, a lost device) while the monitor's silence verdict waits out the grace: the two
- * verdicts overlap, and the session is reported once, with the first verdict's code. */
+ * verdicts overlap, and the session is reported once, with the first verdict's code. The reader returns only once the
+ * monitor's verdict is pending, however late the monitor runs. */
 void
 test_rtl_reader_exit_inside_monitor_grace(input_ring_state* ring) {
     rtl_device_set_unplug_owner_grace_ms(kLimitMs);
     reset_session();
     const unsigned int generation = dsd_input_failure_generation();
+    const unsigned int in_grace = rtl_device_test_verdicts_in_grace();
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    dsd_sleep_ms(kLimitMs + 100U);
+    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == in_grace; ++waited_ms) {
+        dsd_sleep_ms(1);
+    }
+    assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
     expect_running();
     rtl_device_test_usb_stream_return(-1);
     assert(wait_receiver_ended(2000U) != 0U);

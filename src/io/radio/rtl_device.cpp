@@ -2959,6 +2959,8 @@ static std::atomic<int> g_test_refuse_progress_monitor{0};
 /* rtl_device_test_pause_next_verdict_ms(): one verdict, past its checks, waits this long before it claims the
  * report. */
 static std::atomic<uint32_t> g_test_verdict_pause_ms{0U};
+/* rtl_device_test_verdicts_in_grace(): verdicts that began waiting out the unplug-owner grace. */
+static std::atomic<unsigned int> g_test_verdicts_in_grace{0U};
 
 extern "C" void
 rtl_device_test_set_progress_limit_ms(uint32_t limit_ms) {
@@ -2978,6 +2980,11 @@ rtl_device_test_pause_next_verdict_ms(uint32_t ms) {
 extern "C" void
 rtl_device_test_refuse_progress_monitor(int refuse) {
     g_test_refuse_progress_monitor.store(refuse ? 1 : 0, std::memory_order_release);
+}
+
+extern "C" unsigned int
+rtl_device_test_verdicts_in_grace(void) {
+    return g_test_verdicts_in_grace.load(std::memory_order_acquire);
 }
 #endif
 
@@ -3014,6 +3021,7 @@ static std::atomic<int> g_test_usb_reader_hold{RTL_TEST_USB_HOLD_NONE};
 static std::atomic<int> g_test_usb_reader_held{0};
 static std::atomic<int> g_test_usb_reader_cancels{0};
 static std::atomic<int> g_test_usb_reader_streaming{0};
+static std::atomic<int> g_test_usb_reader_streamed{0};
 static std::atomic<int> g_test_usb_reader_cancelled{0};
 static std::atomic<int> g_test_usb_reader_stream{0};
 static std::atomic<int> g_test_usb_reader_stream_return{0};
@@ -3075,6 +3083,7 @@ rtl_usb_read_async(struct rtl_device* s) {
         }
         if (g_test_usb_reader_hold.load(std::memory_order_acquire) != RTL_TEST_USB_HOLD_NONE) {
             /* Stream until a cancel reaches it; 5 s at most. */
+            g_test_usb_reader_streamed.store(1, std::memory_order_release);
             g_test_usb_reader_streaming.store(1, std::memory_order_release);
             for (int waited_ms = 0; waited_ms < 5000 && !g_test_usb_reader_cancelled.load(std::memory_order_acquire);
                  ++waited_ms) {
@@ -3139,6 +3148,9 @@ static int
 rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verdict_progress, const char* cause) {
     const uint32_t grace_ms = rtl_device_unplug_owner_grace_ms();
     if (grace_ms > 0U) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        g_test_verdicts_in_grace.fetch_add(1U, std::memory_order_acq_rel);
+#endif
         const uint64_t deadline_ms = dsd_realtime_mono_ms() + grace_ms;
         while (dsd_realtime_mono_ms() < deadline_ms) {
             if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()
@@ -7797,6 +7809,7 @@ rtl_device_test_usb_reader_arm(const rtl_device_test_usb_reader_request* request
     g_test_usb_reader_held.store(0, std::memory_order_relaxed);
     g_test_usb_reader_cancels.store(0, std::memory_order_relaxed);
     g_test_usb_reader_streaming.store(0, std::memory_order_relaxed);
+    g_test_usb_reader_streamed.store(0, std::memory_order_relaxed);
     g_test_usb_reader_cancelled.store(0, std::memory_order_relaxed);
     g_test_usb_reader_stream.store(0, std::memory_order_relaxed);
     g_test_usb_reader_active.store(1, std::memory_order_release);
@@ -7832,7 +7845,7 @@ rtl_device_test_usb_reader_end(struct rtl_device** dev, const rtl_device_test_us
 }
 
 extern "C" int
-rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request) {
+rtl_device_test_usb_reader_exit(rtl_device_test_usb_reader_request* request) {
     if (!request || !request->ring) {
         return -1;
     }
@@ -7855,6 +7868,7 @@ rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* reques
     if (rc == 0) {
         rc = rtl_device_test_usb_reader_end(&dev, request, hold);
     }
+    request->reader_streamed = g_test_usb_reader_streamed.load(std::memory_order_acquire);
     g_test_usb_reader_active.store(0, std::memory_order_release);
     g_test_usb_reader_hold.store(RTL_TEST_USB_HOLD_NONE, std::memory_order_release);
     rtl_device_destroy(dev);
