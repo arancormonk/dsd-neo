@@ -3937,7 +3937,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves;
     the expiry still judges the chain the dwell ran on), and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
     a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
-    incumbent unless the other chain has read more.
+    incumbent unless the other chain has read more. Each of those boundaries, and a tune on either thread, also
+    consumes the pending NID stamp (`seen_symbolcnt`) with no comparison running, and a stamp read across a
+    `carrier_seq` change or with no frame read since the mark opens none (`seen_carrier_seq`): no comparison opens
+    on the carrier reached from the carrier left's last frame.
   - Tunes: `dsd_engine_trunk_tune_to_freq_request()` and `dsd_engine_trunk_tune_to_cc_request()` (the latter also
     under `dsd_engine_return_to_cc_request()`, when it retunes; one that retunes nothing leaves the comparison going
     and does not apply the control channel's timing under it) end a comparison in flight on the leading chain before

@@ -397,18 +397,19 @@ typedef struct {
  * by unread in it gets the other chain measured for as long, and the one that read more keeps the profile.
  * Zero is "no comparison, no verdict". */
 typedef struct {
-    int phase;                /* 0 none, 1 measuring the incumbent chain, 2 measuring the other chain */
-    int incumbent_rf_mod;     /* the chain the first frame came on: 0 C4FM, 1 CQPSK */
-    uint32_t incumbent_read;  /* symbols validated frames read in the incumbent's pass */
-    int incumbent_frames;     /* validated frames in that pass after the one that opened it */
-    int incumbent_missed;     /* a search after one of those frames as long as the frame */
-    uint32_t last_frame_end;  /* dsd_state::symbolcnt the incumbent's last validated frame ended at */
-    uint32_t last_frame_read; /* symbols that frame read */
-    uint32_t trial_read;      /* symbols validated frames read in the other chain's pass */
-    int counter_at_trial;     /* dsd_state::sps_hunt_counter when the other chain's pass began */
-    uint32_t window_start;    /* dsd_state::symbolcnt the current window opened at */
-    uint32_t seen_symbolcnt;  /* the dsd_state::p25_p1_validated_symbolcnt last read */
-    uint32_t carrier_seq;     /* dsd_state::carrier_seq the comparison started on */
+    int phase;                 /* 0 none, 1 measuring the incumbent chain, 2 measuring the other chain */
+    int incumbent_rf_mod;      /* the chain the first frame came on: 0 C4FM, 1 CQPSK */
+    uint32_t incumbent_read;   /* symbols validated frames read in the incumbent's pass */
+    int incumbent_frames;      /* validated frames in that pass after the one that opened it */
+    int incumbent_missed;      /* a search after one of those frames as long as the frame */
+    uint32_t last_frame_end;   /* dsd_state::symbolcnt the incumbent's last validated frame ended at */
+    uint32_t last_frame_read;  /* symbols that frame read */
+    uint32_t trial_read;       /* symbols validated frames read in the other chain's pass */
+    int counter_at_trial;      /* dsd_state::sps_hunt_counter when the other chain's pass began */
+    uint32_t window_start;     /* dsd_state::symbolcnt the current window opened at */
+    uint32_t seen_symbolcnt;   /* the dsd_state::p25_p1_validated_symbolcnt last read, or consumed at a boundary */
+    uint32_t seen_carrier_seq; /* dsd_state::carrier_seq when that stamp was read: one from before opens nothing */
+    uint32_t carrier_seq;      /* dsd_state::carrier_seq the comparison started on */
     /* What a finished comparison chose, kept with the learned modulation it set: a frame on that chain starts no
      * new comparison. Dropped wherever p25_p1_validated_rf_mod is forgotten. */
     int verdict_valid;

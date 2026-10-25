@@ -184,12 +184,14 @@ dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state) {
         return;
     }
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    /* The tune leaves the carrier: the stamp of its last frame is consumed with or without a comparison, so the hunt
+     * on the carrier reached opens none from it. */
+    cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
     if (cmp->phase == 0) {
         return;
     }
     const int leader = frame_sync_p25p1_mod_compare_leader(state);
     state->p25_p1_validated_rf_mod = leader;
-    cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
     /* The decoder's modulation goes back to the leading chain unless a Phase 2 grant has already claimed it: a TDMA
      * voice channel is CQPSK whatever the control channel's chain, and the grant says so by naming its slot
      * (p25_p2_active_slot) before it asks for the tune. */

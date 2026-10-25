@@ -3891,6 +3891,46 @@ test_p25p1_chain_steps_serialize_with_watchdog_tunes(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/*
+ * A validated frame's stamp belongs to the carrier it came on. A boundary with no comparison running (a trunk-scan
+ * switch's acquisition reset, a decoder-thread tune, a carrier change) consumes it, so the first hunt on the next
+ * carrier, on a learned CQPSK with no verdict, opens no comparison from it: a zero-length opening frame would count
+ * even back-to-back clean TSDUs as missed and push a healthy CQPSK carrier onto C4FM for a trial.
+ */
+static void
+test_p25p1_stale_validation_opens_no_comparison(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int boundary = 0; boundary < 3; boundary++) {
+        compare_setup(&opts, &state, 1);
+        state.p25_p1_validated_rf_mod = 1;
+        /* The outgoing carrier's last frame, stamped by dispatch and not yet read by a hunt. */
+        state.symbolcnt += 134U;
+        state.p25_p1_validated_symbolcnt = state.symbolcnt;
+        if (boundary == 0) {
+            dsd_frame_sync_reset_acquisition(&opts, &state, 0);
+            state.min = -3.0f;
+            state.max = 3.0f;
+        } else if (boundary == 1) {
+            dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+        } else {
+            state.carrier_seq++;
+        }
+        /* The target restored with a learned CQPSK, no verdict; the next hunt. */
+        state.rf_mod = 1;
+        state.p25_p1_validated_rf_mod = 1;
+        state.p25_p1_mod_compare.verdict_valid = 0;
+        /* The hunt's entry, with the outgoing frame's read still on the mark: only the boundary stands between it and
+         * a comparison. */
+        state.sps_hunt_symbolcnt_mark = state.symbolcnt - 134U;
+        frame_sync_p25p1_mod_compare_note(&opts, &state);
+        assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_probe_active == 0);
+        /* A frame of the carrier reached opens one as ever. */
+        compare_frame(&opts, &state, 46U, 134U);
+        assert(state.p25_p1_mod_compare.phase == 1);
+    }
+}
+
 /* The P25 SM tick guard as the engine installs it (re-entrant), on a test mutex. */
 static dsd_mutex_t g_test_guard;
 static _Thread_local int g_test_guard_held;
@@ -4902,6 +4942,7 @@ main(void) {
     test_p25p1_partial_chain_loses_the_comparison();
     test_p25p1_comparison_ends_cleanly();
     test_p25p1_chain_steps_serialize_with_watchdog_tunes();
+    test_p25p1_stale_validation_opens_no_comparison();
     test_p25p1_chain_steps_race_watchdog_tunes();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();

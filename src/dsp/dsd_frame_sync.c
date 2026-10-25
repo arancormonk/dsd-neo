@@ -4094,6 +4094,9 @@ frame_sync_p25p1_mod_compare_refund(dsd_state* state) {
 static void
 frame_sync_p25p1_mod_compare_abort(const dsd_opts* opts, dsd_state* state, int restore_learned, int restore_chain) {
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    /* The stamp is consumed with or without a comparison: a boundary (an acquisition reset, a profile change) leaves
+     * none for the next carrier's hunt to open one from. */
+    cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
     if (cmp->phase == 0) {
         return;
     }
@@ -4223,7 +4226,10 @@ static void
 frame_sync_p25p1_mod_compare_step(const dsd_opts* opts, dsd_state* state, int validated_now, uint32_t consumed) {
     const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
     if (cmp->phase == 0) {
-        frame_sync_p25p1_mod_compare_open(opts, state, consumed);
+        /* Only a frame read whole opens one: a stamp with nothing read since the mark is no frame of this hunt. */
+        if (validated_now && consumed > 0U) {
+            frame_sync_p25p1_mod_compare_open(opts, state, consumed);
+        }
         return;
     }
     if (!frame_sync_p25p1_mod_compare_allowed(opts, state)) {
@@ -4284,8 +4290,14 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    const int validated_now = state->p25_p1_validated_symbolcnt != cmp->seen_symbolcnt;
+    int validated_now = state->p25_p1_validated_symbolcnt != cmp->seen_symbolcnt;
     cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
+    /* A stamp read across a carrier boundary may be the carrier left's: it opens nothing (a comparison running ends at
+     * the boundary below). The next frame of the carrier reached opens one. */
+    if (cmp->seen_carrier_seq != state->carrier_seq) {
+        cmp->seen_carrier_seq = state->carrier_seq;
+        validated_now = 0;
+    }
     if (cmp->phase == 0 && !validated_now) {
         return;
     }
@@ -4296,7 +4308,7 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
     }
 
     /* Nothing to do on most frames: no comparison, and none this frame opens. */
-    if (cmp->phase == 0 && !frame_sync_p25p1_mod_compare_open_due(opts, state)) {
+    if (cmp->phase == 0 && (consumed == 0U || !frame_sync_p25p1_mod_compare_open_due(opts, state))) {
         return;
     }
     int taken = 0;
