@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * The RTL-SDR USB reader's return code: a reader that could not allocate its USB transfers (-ENOMEM), or on a
- * desktop build lost its device (-1), ends the session as a device failure of the input and wakes the demod waiting on
- * the input ring, unless a stop already asked the reader to end. (On Android a lost device stays with the USB detach
- * broadcast; this host test covers the desktop rule.)
+ * The RTL-SDR USB reader's return code: any return while the session still runs and no stop asked the reader to end
+ * (-ENOMEM, a lost device's -1, a failed submission's -5, even 0) ends the session as a device failure of the input
+ * and wakes the demod waiting on the input ring; a return a stop asked for is left alone. Every return but -ENOMEM
+ * also commits the "receiver ended" fact, after the unplug-owner grace: while one is set (Android sets 2000 ms so the
+ * USB detach broadcast can own an unplug), a stop inside the grace keeps the return silent. And one stop handshake: a
+ * stop or destroy that lands before the reader streams still ends it and joins.
  */
 
 #include <assert.h>
 #include <atomic>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
@@ -61,52 +65,129 @@ reset_session(void) {
 }
 
 int
+run_request(const rtl_device_test_usb_reader_request& request) {
+    return rtl_device_test_usb_reader_exit(&request);
+}
+
+int
 run_reader(input_ring_state* ring, int reader_rc, int stop_while_reading) {
     rtl_device_test_usb_reader_request request{};
     request.ring = ring;
     request.reader_rc = reader_rc;
     request.stop_while_reading = stop_while_reading;
-    return rtl_device_test_usb_reader_exit(&request);
+    return run_request(request);
 }
 
-/* A reader whose return must leave the session alone: nothing reported, the exit flag as it was. */
+/* Nothing reported, the exit flag as it was, and no receiver ending committed. */
+void
+expect_session_untouched(unsigned int generation, int exit_flag_before) {
+    assert(dsd_input_failure_generation() == generation);
+    dsd_input_failure failure{};
+    dsd_input_failure_get(&failure);
+    assert(failure.kind == DSD_INPUT_FAILURE_NONE);
+    assert(dsd_exitflag_load() == exit_flag_before);
+    assert(dsd_input_failure_receiver_ended() == 0);
+}
+
+/* A reader whose return must leave the session alone. */
 void
 expect_no_report(input_ring_state* ring, int reader_rc, int stop_while_reading, int exit_flag_before) {
     reset_session();
     dsd_exitflag_store((uint8_t)exit_flag_before);
     const unsigned int generation = dsd_input_failure_generation();
     assert(run_reader(ring, reader_rc, stop_while_reading) == 0);
-    assert(dsd_input_failure_generation() == generation);
-    dsd_input_failure failure{};
-    dsd_input_failure_get(&failure);
-    assert(failure.kind == DSD_INPUT_FAILURE_NONE);
-    assert(dsd_exitflag_load() == exit_flag_before);
+    expect_session_untouched(generation, exit_flag_before);
 }
 
-/* A reader whose return is a device failure: reported with its code, the session ended, and a demod waiting on the
- * input ring woken. */
-void
-expect_report(input_ring_state* ring, int reader_rc) {
-    reset_session();
-    ring_waiter waiter;
-    waiter.ring = ring;
+/* Run @p request with a demod waiting on the input ring; returns how long the device took from start to join. */
+uint64_t
+run_with_waiter(input_ring_state* ring, const rtl_device_test_usb_reader_request& request, ring_waiter* waiter) {
+    waiter->ring = ring;
     dsd_thread_t waiter_thread;
-    const int created = dsd_thread_create(&waiter_thread, wait_for_ring_wake, &waiter);
+    const int created = dsd_thread_create(&waiter_thread, wait_for_ring_wake, waiter);
     assert(created == 0);
-    while (!waiter.waiting.load(std::memory_order_acquire)) {
+    while (!waiter->waiting.load(std::memory_order_acquire)) {
         dsd_sleep_ms(1);
     }
     /* The waiter holds the lock until its wait releases it. */
     dsd_mutex_lock(&ring->ready_m);
     dsd_mutex_unlock(&ring->ready_m);
-    assert(run_reader(ring, reader_rc, 0) == 0);
+    const uint64_t started_ms = dsd_realtime_mono_ms();
+    assert(run_request(request) == 0);
+    const uint64_t elapsed_ms = dsd_realtime_mono_ms() - started_ms;
     dsd_thread_join(waiter_thread);
+    return elapsed_ms;
+}
+
+/* A reader whose return is a device failure: reported with its code, the session ended, a demod waiting on the input
+ * ring woken, and the receiver ending committed unless @p receiver_ended says the return was not the receiver's.
+ * Returns how long the device took from start to join. */
+uint64_t
+expect_report(input_ring_state* ring, int reader_rc, int receiver_ended) {
+    reset_session();
+    rtl_device_test_usb_reader_request request{};
+    request.ring = ring;
+    request.reader_rc = reader_rc;
+    ring_waiter waiter;
+    const uint64_t elapsed_ms = run_with_waiter(ring, request, &waiter);
     dsd_input_failure failure{};
     dsd_input_failure_get(&failure);
     assert(failure.kind == DSD_INPUT_FAILURE_DEVICE);
     assert(failure.native_code == reader_rc);
     assert(dsd_exitflag_load() == 1);
     assert(waiter.woken.load(std::memory_order_acquire) == 1);
+    assert(dsd_input_failure_receiver_ended() == receiver_ended);
+    return elapsed_ms;
+}
+
+/* The unplug-owner grace: a stop inside it keeps a lost device silent; without one the failure is reported once the
+ * grace ran out; an allocation failure is not the receiver's and is reported at once. */
+void
+test_unplug_owner_grace(input_ring_state* ring) {
+    assert(rtl_device_unplug_owner_grace_ms() == 0U);
+    rtl_device_set_unplug_owner_grace_ms(300U);
+    assert(rtl_device_unplug_owner_grace_ms() == 300U);
+
+    /* The device is lost, and the session's own stop (as the detach broadcast's) comes 100 ms later. */
+    reset_session();
+    rtl_device_test_usb_reader_request request{};
+    request.ring = ring;
+    request.reader_rc = -1;
+    request.stop_after_ms = 100;
+    unsigned int generation = dsd_input_failure_generation();
+    assert(run_request(request) == 0);
+    expect_session_untouched(generation, 0);
+
+    /* No stop: the session ends only once the grace ran out. */
+    assert(expect_report(ring, -1, 1) >= 300U);
+
+    /* A session already ending stays silent through the grace too. */
+    expect_no_report(ring, -1, 0, 1);
+
+    /* An allocation failure does not wait out the grace, however long. */
+    rtl_device_set_unplug_owner_grace_ms(3000U);
+    assert(expect_report(ring, -ENOMEM, 0) < 1500U);
+
+    rtl_device_set_unplug_owner_grace_ms(0U);
+    assert(rtl_device_unplug_owner_grace_ms() == 0U);
+}
+
+/* A stop (or a destroy) that lands while the reader thread is starting: held before the reader announced itself, or
+ * after it checked that the session runs but before it streams. Either way the reader ends, the stop joins it within
+ * a second, and nothing is reported. */
+void
+expect_stop_while_starting(input_ring_state* ring, int hold_before_entry, int destroy) {
+    reset_session();
+    rtl_device_test_usb_reader_request request{};
+    request.ring = ring;
+    request.stop_before_reader_entry = hold_before_entry;
+    request.stop_before_read_async = !hold_before_entry;
+    request.destroy_instead_of_stop = destroy;
+    const unsigned int generation = dsd_input_failure_generation();
+    const uint64_t started_ms = dsd_realtime_mono_ms();
+    assert(run_request(request) == 0);
+    assert(dsd_realtime_mono_ms() - started_ms < 1000U);
+    expect_session_untouched(generation, 0);
 }
 
 } // namespace
@@ -116,18 +197,31 @@ main(void) {
     auto ring = std::make_unique<input_ring_state>();
     assert(input_ring_init(ring.get(), 4096U) == 0);
 
-    /* Transfers that could not be allocated, or a lost device on a desktop build, with no stop requested: a device
-     * failure that ends the session and wakes the demod. */
-    expect_report(ring.get(), -ENOMEM);
-    expect_report(ring.get(), -1);
+    /* Transfers that could not be allocated, a lost device, a failed submission, or a reader that returned with
+     * nothing asking it to: a device failure that ends the session and wakes the demod. Only an allocation failure,
+     * which is the host's, leaves the receiver ending uncommitted. */
+    expect_report(ring.get(), -ENOMEM, 0);
+    expect_report(ring.get(), -1, 1);
+    expect_report(ring.get(), -5, 1);
+    expect_report(ring.get(), 0, 1);
 
-    /* The same failure once a stop asked the reader to end, or once the session is already ending: nothing new. */
+    /* The same returns once a stop asked the reader to end, or once the session is already ending: nothing new. */
     expect_no_report(ring.get(), -ENOMEM, 1, 0);
     expect_no_report(ring.get(), -ENOMEM, 0, 1);
     expect_no_report(ring.get(), -1, 1, 0);
+    expect_no_report(ring.get(), -5, 1, 0);
+    expect_no_report(ring.get(), -1, 0, 1);
 
     /* A cancelled reader is not reported. */
     expect_no_report(ring.get(), 0, 1, 0);
+
+    test_unplug_owner_grace(ring.get());
+
+    /* A stop, or a destroy, between the reader thread's start and its streaming. */
+    expect_stop_while_starting(ring.get(), 1, 0);
+    expect_stop_while_starting(ring.get(), 0, 0);
+    expect_stop_while_starting(ring.get(), 1, 1);
+    expect_stop_while_starting(ring.get(), 0, 1);
 
     reset_session();
     input_ring_destroy(ring.get());

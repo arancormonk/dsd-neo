@@ -14292,8 +14292,9 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
 
-    # The USB reader's return code: an allocation failure, or a lost device on a
-    # desktop build, ends the session as a device failure; a stop in flight does not.
+    # The USB reader's return code: any return nobody asked for ends the session as a
+    # device failure (after the unplug-owner grace); a stop in flight does not, and a
+    # stop or destroy while the reader starts still ends and joins it.
     add_executable(
         dsd-neo_test_io_rtl_reader_exit
         io/test_io_rtl_reader_exit.cpp

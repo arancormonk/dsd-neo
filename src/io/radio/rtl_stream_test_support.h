@@ -192,11 +192,20 @@ typedef struct {
     struct input_ring_state* ring; /* the ring the demod reads; its waiters see the reader's exit */
     int reader_rc;                 /* what the reader returns, in place of rtlsdr_read_async()'s result */
     int stop_while_reading;        /* the reader returns only after rtl_device_stop_async() asked it to end */
+    int stop_after_ms;             /* > 0: the reader returns at once; rtl_device_stop_async() follows this long after
+                                      the start (a stop that lands inside the unplug-owner grace) */
+    /* A stop that lands while the reader thread is starting: the reader is held, before it publishes that it entered
+     * (stop_before_reader_entry) or after its run check just before rtlsdr_read_async() (stop_before_read_async),
+     * until the stop's first rtlsdr_cancel_async(), which finds nothing streaming yet. Released, it streams as
+     * librtlsdr does, until a cancel reaches it (at most 5 s, so a lost stop fails the test rather than hanging it). */
+    int stop_before_reader_entry;
+    int stop_before_read_async;
+    int destroy_instead_of_stop; /* end the device with rtl_device_destroy() in place of rtl_device_stop_async() */
 } rtl_device_test_usb_reader_request;
 
 /* Start a USB device's reader (rtl_device_start_async()) whose rtlsdr_read_async() returns @p request->reader_rc, and
- * join it: through rtl_device_stop_async() when @p request->stop_while_reading is set, else once it returned by
- * itself. 0 on success, -1 when the reader could not start. */
+ * end it: through rtl_device_stop_async() (or rtl_device_destroy()) when the request asks for a stop, else by joining
+ * it once it returned by itself. 0 on success, -1 when the reader could not start. */
 int rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request);
 
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);

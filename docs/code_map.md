@@ -2121,7 +2121,12 @@ suite runs under this compiler.
     `dsd_engine_run_with_lifecycle()` reads at the end to return 1 after a device failure. A mutex guards it, since
     device threads report. `dsd_input_failure_generation()` counts its writes, a clear included, so a caller can tell
     that something wrote the latch even when the write repeats the failure latched (the rollback restart,
-    `svc_rtl_restart_recovery_locked()`). Test: `RUNTIME_INPUT_FAILURE`.
+    `svc_rtl_restart_recovery_locked()`). Beside the latch, the committed receiver ending
+    (`dsd_input_failure_commit_receiver_end()`, `dsd_input_failure_receiver_ended()`; cleared only by
+    `dsd_input_failure_clear()`, and not counted by the generation): set only by the radio path that ends a session for
+    its USB receiver, when it raises the exit flag. The latch alone is not that fact, since a path that recovers may
+    write and restore it (an Airspy reconfigure that fails, rolls back and keeps streaming). Tests:
+    `RUNTIME_INPUT_FAILURE`, `IO_RTL_READER_EXIT`.
 - Build files: `src/runtime/CMakeLists.txt`
 - Config docs: `docs/config-system.md`, `docs/radioreference-import.md`
 
@@ -4308,15 +4313,22 @@ Key public headers:
   Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
-  - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): `rtlsdr_read_async()` returns `-ENOMEM` when
-    librtlsdr could not allocate its USB transfers and submitted none (the vendored Android librtlsdr does since
-    `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`). With no stop in flight (the
-    device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) that is logged, latched
-    as `DSD_INPUT_FAILURE_DEVICE` with that code, and ends the session (exit flag, input ring waiters woken). A lost
-    device (-1: unplugged, or librtlsdr gave up after repeated transfer errors) is handled the same way on desktop
-    builds, where it used to leave the session waiting for samples that never came. On Android it is left to the USB
-    detach broadcast, which owns an unplug's outcome whichever side notices first. Tests: `IO_RTL_READER_EXIT`, and
-    `VENDORED_LIBRTLSDR_ASYNC_ALLOC` for the vendored allocation path.
+  - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in
+    flight (the device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) is a device
+    failure, whatever its code: -1 for a lost device (unplugged, or librtlsdr gave up after repeated transfer errors),
+    a failed submission or event poll, even 0. It goes through `rtl_device_end_for_receiver()`, the one path that ends
+    a session for its receiver: after the unplug-owner grace (`rtl_device_set_unplug_owner_grace_ms()`, process-wide,
+    default 0; the Android host sets 2000 ms so its USB detach broadcast can own an unplug, and a stop or exit request
+    inside the grace keeps the failure silent), it latches `DSD_INPUT_FAILURE_DEVICE` with that code, commits the
+    receiver ending (`dsd_input_failure_receiver_ended()`) and ends the session (exit flag, input ring waiters woken).
+    `-ENOMEM` (librtlsdr could not allocate its USB transfers and submitted none; the vendored Android librtlsdr
+    returns it since `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`) is the host's:
+    reported at once, without the grace or the committed ending. Stop handshake (`rtl_usb_reader_stop()`, shared by
+    `rtl_device_stop_async()` and `rtl_device_destroy()`): clear `run`, then retry `rtlsdr_cancel_async()` every
+    1 ms until the reader published `reader_exited`, then join. librtlsdr refuses a cancel until the reader streams,
+    so a single cancel lost a stop that landed while the reader was starting and the join hung; the reader checks
+    `run` after publishing `reader_entered` and before it calls `rtlsdr_read_async()`. Tests: `IO_RTL_READER_EXIT`,
+    and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` for the vendored allocation path.
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
   `include/dsd-neo/io/m17_udp.h`
 - UDP control API: `include/dsd-neo/io/udp_control.h`

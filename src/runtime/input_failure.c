@@ -14,6 +14,8 @@ static dsd_input_failure failure;
 /* Writes to failure (dsd_input_failure_generation()), under failure_mutex: every write goes through
    dsd_input_failure_report(). */
 static unsigned int failure_generation;
+/* dsd_input_failure_commit_receiver_end(), under failure_mutex; cleared with the latch. */
+static int receiver_ended;
 
 static void
 lock_failure(void) {
@@ -40,7 +42,27 @@ dsd_input_failure_report(dsd_input_failure_kind kind, int code) {
 
 void
 dsd_input_failure_clear(void) {
-    dsd_input_failure_report(DSD_INPUT_FAILURE_NONE, 0);
+    lock_failure();
+    failure.kind = DSD_INPUT_FAILURE_NONE;
+    failure.native_code = 0;
+    ++failure_generation;
+    receiver_ended = 0;
+    dsd_mutex_unlock(&failure_mutex);
+}
+
+void
+dsd_input_failure_commit_receiver_end(void) {
+    lock_failure();
+    receiver_ended = 1;
+    dsd_mutex_unlock(&failure_mutex);
+}
+
+int
+dsd_input_failure_receiver_ended(void) {
+    lock_failure();
+    const int ended = receiver_ended;
+    dsd_mutex_unlock(&failure_mutex);
+    return ended;
 }
 
 void
