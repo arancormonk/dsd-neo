@@ -15916,8 +15916,8 @@ if(DSD_HAS_RADIO)
     # M17 used to take any eight-window alternating run as a preamble and NXDN96 any two hits at any distance: this
     # fixture opened 27 M17 frames under -fz and 20 NXDN96 frames under -fn. M17 now joins a transmission on a
     # preamble that runs DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows or on the same sync word three 192-symbol frames
-    # running, and NXDN96 acquires on two four-level FSWs a frame apart or one behind the preamble tail. -Z prints an
-    # NXDN sync whose LICH then fails, which otherwise prints nothing, so those cannot hide here either.
+    # running, and NXDN96 acquires on two four-level FSWs a frame apart. -Z prints an NXDN sync whose LICH then fails,
+    # which otherwise prints nothing, so those cannot hide here either.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC
         noise_floor

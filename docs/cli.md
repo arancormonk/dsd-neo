@@ -718,8 +718,9 @@ Notes
   sync word behind the preamble acquire, but on weak calls that start left the decoder reading every later frame's
   control channel wrong, so it is not used. Once acquired, the frames that follow are timed from the last frame whose
   link information (LICH) was good, up to five missed in a row (the frame right after a good one on its signs, later
-  ones on four levels too). A lost frame sync word, or a LICH that fails its parity check, costs that frame alone;
-  five LICHs in a row that pass their parity but are rejected (a value no NXDN frame uses, or inbound on a trunked
+  ones on four levels too). A lost frame sync word, or a LICH that fails its parity check, usually costs that frame
+  alone; on a weak signal the next frame sync word must then also read within two bit errors, so it can cost more.
+  Five LICHs in a row that pass their parity but are rejected (a value no NXDN frame uses, or inbound on a trunked
   session) lose the lock. Both rules remember every
   hit, since a transmission's payload matches these short words several times a frame. A symbol capture replays each
   symbol at its dibit's level, which the four-level reading reads as it does a live signal.
