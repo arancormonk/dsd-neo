@@ -4313,33 +4313,37 @@ Key public headers:
   Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
-  - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in
-    flight (the device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) is a device
-    failure, whatever its code: -1 for a lost device (unplugged, or librtlsdr gave up after repeated transfer errors),
-    a failed submission or event poll, even 0. It goes through `rtl_device_end_for_receiver()`, the one path that ends
-    a session for its receiver: after the unplug-owner grace (`rtl_device_set_unplug_owner_grace_ms()`, process-wide,
-    default 0; the Android host sets 2000 ms so its USB detach broadcast can own an unplug, and a stop or exit request
-    inside the grace keeps the failure silent), it latches `DSD_INPUT_FAILURE_DEVICE` with that code, commits the
-    receiver ending (`dsd_input_failure_receiver_ended()`) and ends the session (exit flag, input ring waiters woken).
-    `-ENOMEM` (librtlsdr could not allocate its USB transfers and submitted none; the vendored Android librtlsdr
-    returns it since `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`) is the host's:
-    reported at once, without the grace or the committed ending. Stop handshake (`rtl_usb_reader_stop()`, shared by
-    `rtl_device_stop_async()` and `rtl_device_destroy()`): clear `run`, then retry `rtlsdr_cancel_async()` every
-    1 ms until the reader published `reader_exited`, then join. librtlsdr refuses a cancel until the reader streams,
-    so a single cancel lost a stop that landed while the reader was starting and the join hung; the reader checks
-    `run` after publishing `reader_entered` and before it calls `rtlsdr_read_async()`. Tests: `IO_RTL_READER_EXIT`,
-    and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` for the vendored allocation path.
-  - USB sample-progress monitor (RTL-SDR and Airspy only; replay, rtl_tcp and SoapySDR have none): a receiver can
-    stay enumerated and stop delivering with nothing returning (librtlsdr drops a transfer for good on each error
-    status and waits forever once none is left; a device that stops completing transfers, which have no timeout,
-    leaves either SDK waiting). `rtlsdr_callback()` and the Airspy source's receive callback count progress as their
-    first statement (one relaxed increment, no clock read: `rtl_device::progress`, `airspy_source_progress()`). A
-    monitor samples it every 100 ms on `dsd_realtime_mono_ms()`: for the RTL-SDR its own thread, started by
-    `rtl_device_start_async()` after the reader and stopped and joined in `rtl_usb_reader_stop()` before the cancel
-    loop; for the Airspy the device thread, `airspy_monitor()`. Silence accrues by the time between samples while the
-    stream is up (the RTL reader inside `rtlsdr_read_async()`; the Airspy not inside a retune or rate change,
-    `airspy_source_reconfiguring()`, and the time a sample waits on the source's lock is not counted), does not reset
-    when the stream restarts (`airspy_source_generation()` counts restarts, for the log only), and only observed
+  - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in flight
+    (the device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) is a device failure,
+    whatever its code: -1 for a lost device (unplugged, or librtlsdr gave up after repeated transfer errors; the
+    vendored Android librtlsdr also when no transfer is left, since
+    `android/third_party/patches/0003-librtlsdr-account-for-every-transfer.patch`), a failed submission or event poll,
+    even 0. It goes through `rtl_device_end_for_receiver()`, the one path that ends a session for its receiver: after
+    the unplug-owner grace (`rtl_device_set_unplug_owner_grace_ms()`, process-wide, default 0; the Android host sets
+    2000 ms so its USB detach broadcast can own an unplug, and a stop or exit request inside the grace keeps the failure
+    silent), it latches `DSD_INPUT_FAILURE_DEVICE` with that code, commits the receiver ending
+    (`dsd_input_failure_receiver_ended()`) and ends the session (exit flag, input ring waiters woken). `-ENOMEM`
+    (librtlsdr could not allocate its USB transfers and submitted none; the vendored Android librtlsdr returns it since
+    `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`) is the host's: reported at once,
+    without the grace or the committed ending. Stop handshake (`rtl_usb_reader_stop()`, shared by
+    `rtl_device_stop_async()` and `rtl_device_destroy()`): clear `run`, then retry `rtlsdr_cancel_async()` every 1 ms
+    until the reader published `reader_exited`, then join. librtlsdr refuses a cancel until the reader streams, so a
+    single cancel lost a stop that landed while the reader was starting and the join hung; the reader checks `run` after
+    publishing `reader_entered` and before it calls `rtlsdr_read_async()`. The vendored librtlsdr's own teardown (0003)
+    cancels and keeps handling events until libusb has called back every transfer before it frees them; system librtlsdr
+    keeps upstream's teardown. Tests: `IO_RTL_READER_EXIT`, `VENDORED_LIBRTLSDR_ASYNC_ALLOC` for the vendored allocation
+    path, and `VENDORED_LIBRTLSDR_TRANSFERS` for its transfer accounting and teardown.
+  - USB sample-progress monitor (RTL-SDR and Airspy only; replay, rtl_tcp and SoapySDR have none): a receiver can stay
+    enumerated and stop delivering with nothing returning (system librtlsdr drops a transfer for good on each error
+    status and waits forever once none is left, where the vendored copy returns -1; a device that stops completing
+    transfers, which have no timeout, leaves either SDK waiting). `rtlsdr_callback()` and the Airspy source's receive
+    callback count progress as their first statement (one relaxed increment, no clock read: `rtl_device::progress`,
+    `airspy_source_progress()`). A monitor samples it every 100 ms on `dsd_realtime_mono_ms()`: for the RTL-SDR its own
+    thread, started by `rtl_device_start_async()` after the reader and stopped and joined in `rtl_usb_reader_stop()`
+    before the cancel loop; for the Airspy the device thread, `airspy_monitor()`. Silence accrues by the time between
+    samples while the stream is up (the RTL reader inside `rtlsdr_read_async()`; the Airspy not inside a retune or rate
+    change, `airspy_source_reconfiguring()`, and the time a sample waits on the source's lock is not counted), does not
+    reset when the stream restarts (`airspy_source_generation()` counts restarts, for the log only), and only observed
     progress ends it. 5000 ms of it ends the session with `-ETIMEDOUT` through `rtl_device_end_for_receiver()`, so the
     grace applies, and cancels the RTL reader. The Airspy's "stream stopped" verdict (`-1`) takes the same path. Every
     verdict carries the progress count it was made at; during the grace only progress since then drops it, never a

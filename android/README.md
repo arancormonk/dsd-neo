@@ -1035,6 +1035,15 @@ when the snapshot is refreshed.
   every transfer and buffer allocation: a failure frees what was obtained and
   `rtlsdr_read_async()` returns `-ENOMEM` instead of submitting NULL transfers.
   `VENDORED_LIBRTLSDR_ASYNC_ALLOC` (a desktop test) fails each allocation in turn.
+- `0003-librtlsdr-account-for-every-transfer.patch` makes the async reader count
+  the transfers libusb owns. A transfer lost to a failed completion or
+  resubmission no longer leaves the reader waiting forever: once none is left it
+  marks the device lost and `rtlsdr_read_async()` returns `-1`. Every exit
+  (cancel, lost device, event error, failed submission) cancels the transfers and
+  keeps handling events until each has been called back, and only then frees
+  transfers and buffers; the first error is the return value.
+  `VENDORED_LIBRTLSDR_TRANSFERS` (a desktop test) completes, fails and cancels
+  transfers from a second thread.
 
 To move to a newer librtlsdr:
 

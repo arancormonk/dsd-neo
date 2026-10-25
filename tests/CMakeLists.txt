@@ -14432,6 +14432,36 @@ if(
         NAME VENDORED_LIBRTLSDR_ASYNC_ALLOC
         COMMAND dsd-neo_test_vendored_librtlsdr_async_alloc
     )
+
+    # The same reader accounting for every USB transfer: a stub libusb whose
+    # transfers a second thread completes, fails and cancels.
+    add_executable(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        io/test_vendored_librtlsdr_transfers.c
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        SYSTEM
+        PRIVATE
+            ${_DSD_NEO_VENDORED_RTLSDR}/include
+            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    )
+    target_compile_definitions(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        PRIVATE rtlsdr_STATIC
+    )
+    target_link_libraries(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        PRIVATE
+            dsd-neo_test_vendored_rtlsdr_tuners
+            Threads::Threads
+            ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME VENDORED_LIBRTLSDR_TRANSFERS
+        COMMAND dsd-neo_test_vendored_librtlsdr_transfers
+    )
+    set_tests_properties(VENDORED_LIBRTLSDR_TRANSFERS PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(
