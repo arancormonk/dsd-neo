@@ -3194,8 +3194,19 @@ test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes(void) {
         assert(state.rf_mod == 1 && state.p25_p1_mod_probe_active == 1);
         reset_fake_profile_capture();
         state.sps_hunt_counter = dwell / 2;
-        /* A step: the demodulator changed under the caller's sync window. */
-        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+        /* A step: the demodulator changed under the caller's sync window, which getFrameSync() leaves to rebuild it --
+         * but not a no-sync exit. The dwell goes on, so the P25 SM's accounting and noCarrier() are not owed: running
+         * them would end calls and reset the decoder's frame state halfway through a dwell that has not expired. */
+        g_vc_no_sync_hook_calls = 0;
+        g_no_carrier_hook_calls = 0;
+        dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
+            .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+            .no_carrier = fake_no_carrier,
+        });
+        assert(dsd_frame_sync_test_hunt_budget_exit(&opts, &state) == 1);
+        dsd_frame_sync_hooks_set(NULL);
+        assert(g_no_carrier_hook_calls == 0);
+        assert(g_vc_no_sync_hook_calls == 0);
         assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
         assert(state.rf_mod == 0 && state.p25_p1_mod_probe_active == 0);
         assert(g_profile_cqpsk == 0);

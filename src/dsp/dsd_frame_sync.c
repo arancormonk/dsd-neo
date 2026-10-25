@@ -4203,7 +4203,9 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
  * target's (frame_sync_trunk_scan_p25p1_trial()), whose schedule budgets each demodulator a dwell of its own. A chain
  * comparison is not a trial: it runs on evidence and ends on its own.
  *
- * A step for the caller, like any change of demodulator under its sync window.
+ * A step for the caller's sync window, like any change of demodulator under it, but not a no-sync exit: the dwell goes
+ * on, so the P25 SM's no-sync accounting and noCarrier() are not owed. Running them here would end calls and reset the
+ * decoder's frame state halfway through a dwell that has not expired (FRAME_SYNC_HUNT_CHAIN_HANDBACK).
  */
 static int
 frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, int dwell) {
@@ -4217,7 +4219,7 @@ frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, 
     }
     state->p25_p1_mod_probe_active = 0;
     frame_sync_p25p1_set_chain(opts, state, 0);
-    return 1;
+    return FRAME_SYNC_HUNT_CHAIN_HANDBACK;
 }
 
 /* The unlocked hunt's next profile. While a P25-driven control-channel probe is in flight (the startup hunt, or P25
@@ -4398,7 +4400,34 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
     return 1;
 }
 
+/**
+ * @brief Step the hunt once its budget has run a pass, and say whether getFrameSync() returns no-sync.
+ *
+ * A step the dwell ends with is a no-sync exit and owes the P25 SM its accounting and noCarrier(), in that order. A
+ * CQPSK trial's handback is not: it changes the demodulator under the window halfway through a dwell that goes on, so
+ * it owes only the window rebuild the caller's return gives it.
+ */
+static int
+frame_sync_hunt_budget_exit(dsd_opts* opts, dsd_state* state, time_t now) {
+    if (state->sps_hunt_counter < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+        return 0;
+    }
+    const int step = frame_sync_no_sync_sps_hunt(opts, state);
+    if (step == 0) {
+        return 0;
+    }
+    if (step == FRAME_SYNC_HUNT_NO_SYNC_EXIT) {
+        frame_sync_no_sync_run_hooks(opts, state, now);
+    }
+    return 1;
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_hunt_budget_exit(dsd_opts* opts, dsd_state* state) {
+    return frame_sync_hunt_budget_exit(opts, state, dsd_decode_time());
+}
+
 int
 dsd_frame_sync_test_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, int synctest_pos) {
     frame_sync_runtime_ctx rt = {0};
@@ -4518,10 +4547,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
          * out of the per-symbol path.
          *
          * This is a no-sync exit like the timeout above and owes the P25 SM the same
-         * accounting, in the same order. */
-        if (state->sps_hunt_counter >= DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS
-            && frame_sync_no_sync_sps_hunt(opts, state)) {
-            frame_sync_no_sync_run_hooks(opts, state, now);
+         * accounting, in the same order (frame_sync_hunt_budget_exit()). */
+        if (frame_sync_hunt_budget_exit(opts, state, now)) {
             frame_sync_sps_hunt_mark_return(state);
             return -1;
         }

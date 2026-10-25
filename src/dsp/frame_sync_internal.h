@@ -118,13 +118,17 @@ void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* stat
 /**
  * @brief Step the SPS hunt if the active profile has spent its symbol budget.
  *
- * @return 1 when the caller must take a no-sync exit: either the step changed the profile
- *         index or the modulation -- the caller's sync window is then stale and must be
- *         rebuilt -- or the budget expired on a trunked voice channel, where the profile is
- *         deliberately held but the no-sync accounting is still owed (#392, #393). 0 when
- *         the profile still owes symbols, or when spending the budget left the timing and
- *         modulation untouched.
+ * @return FRAME_SYNC_HUNT_NO_SYNC_EXIT (1) when the caller must take a no-sync exit: either the
+ *         step changed the profile index or the modulation -- the caller's sync window is then
+ *         stale and must be rebuilt -- or the budget expired on a trunked voice channel, where the
+ *         profile is deliberately held but the no-sync accounting is still owed (#392, #393).
+ *         FRAME_SYNC_HUNT_CHAIN_HANDBACK (2) when a silent CQPSK trial handed the rest of its dwell
+ *         back to C4FM: the window is stale, but the dwell goes on, so no no-sync accounting is
+ *         owed. 0 when the profile still owes symbols, or when spending the budget left the timing
+ *         and modulation untouched.
  */
+#define FRAME_SYNC_HUNT_NO_SYNC_EXIT   1
+#define FRAME_SYNC_HUNT_CHAIN_HANDBACK 2
 int frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
 /** @brief Arm (non-zero) or disarm the 2 s CQPSK dwell the 4800/4 profile holds a CQPSK chain for. */
 void frame_sync_qpsk_dwell_set(int armed);
