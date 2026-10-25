@@ -20,7 +20,8 @@ Item {
     SignalSpy {
         id: historyCleared
         target: callHistory
-        signalName: "modelReset"
+        // A clear removes every row; nothing else in these cases removes one.
+        signalName: "rowsRemoved"
     }
     SignalSpy {
         id: confirmed

@@ -104,6 +104,9 @@ Item {
             tc.monitor.prefsStore = fakePrefs;
         }
         function init() {
+            // The history clear below lands while the list may still be building a
+            // row ahead of the viewport; the clear must not leave it a stale cancel.
+            failOnWarning(/DelegateModel::cancel/);
             testContext.resetCommands();
             testContext.setHostRunning(true);
             m("radioInput", true);

@@ -1269,7 +1269,13 @@ CallHistoryModel::pruneSeen() {
 
 void
 CallHistoryModel::clearAll() {
-    beginResetModel();
+    // Removed rather than reset: a ListView that is still building a row ahead of the
+    // viewport (its cache buffer) cancels that row by index on a reset, after the model
+    // is already empty, and the cancel misses; a removal it applies in step.
+    const bool had_rows = !m_rows.isEmpty();
+    if (had_rows) {
+        beginRemoveRows(QModelIndex(), 0, static_cast<int>(m_rows.size()) - 1);
+    }
     m_rows.clear();
     // m_seen deliberately survives: the ring still holds the rows just cleared, and
     // forgetting the keys would let the next tick re-ingest every one of them.
@@ -1287,7 +1293,9 @@ CallHistoryModel::clearAll() {
     m_clear.pushSeq[1] = m_ringRead ? m_ringPushSeq[1] : 0U;
     m_clear.ring = m_ringRead ? m_ringPushSeqRing : 0U;
     saveClear();
-    endResetModel();
+    if (had_rows) {
+        endRemoveRows();
+    }
     Q_EMIT countChanged();
     // The mark above is what makes the clear durable (QSettings writes it
     // through); the emptied stores can follow on the worker without a stall here.

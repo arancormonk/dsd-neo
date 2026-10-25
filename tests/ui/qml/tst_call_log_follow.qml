@@ -160,7 +160,9 @@ Item {
             historyView.filterKind = 2 // encrypted only: hides the clear call
 
             tryCompare(tc.list, "count", 0)
-            verify(detail.parent.visible, "the empty state is not showing")
+            // On the binding, as below: the clear removes rows, and the view
+            // announces the empty count on its next layout pass.
+            tryVerify(function () { return detail.parent.visible }, 5000, "the empty state is not showing")
             compare(detail.text.indexOf("(s)"), -1, detail.text)
             compare(detail.text.indexOf("1 logged call is hidden"), 0, detail.text)
 

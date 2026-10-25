@@ -1593,9 +1593,12 @@ class CallLogStore : public QAbstractListModel {
 
     Q_INVOKABLE void
     clearAll() {
-        beginResetModel();
-        m_rows.clear();
-        endResetModel();
+        // Removed, not reset, as CallHistoryModel::clearAll() does.
+        if (!m_rows.isEmpty()) {
+            beginRemoveRows(QModelIndex(), 0, static_cast<int>(m_rows.size()) - 1);
+            m_rows.clear();
+            endRemoveRows();
+        }
         Q_EMIT countChanged();
     }
 
