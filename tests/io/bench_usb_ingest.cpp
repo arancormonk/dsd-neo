@@ -10,6 +10,7 @@
  * double) at a fixed sample rate, while a consumer drains the input ring as the demod does. The device runs as in a
  * session, its USB sample-progress monitor included. Measure the process under perf stat:
  *
+ *   cmake --preset dev-release -DBUILD_TESTING=ON
  *   cmake --build --preset dev-release --target dsd-neo_bench_usb_ingest -j
  *   perf stat -e task-clock build/dev-release/tests/dsd-neo_bench_usb_ingest --backend rtl --rate 2400000 \
  *       --buf 16384 --seconds 60

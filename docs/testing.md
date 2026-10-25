@@ -162,8 +162,9 @@ directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCA
 that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
-RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty; it also reads which local
-receiver a session's `-i` selects (`rtl`/`rtl:…` and `airspy`/`airspy:…`, never rtl_tcp; the last `-i` wins).
+RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a
+session's input selects (`rtl`/`rtl:…` and `airspy`/`airspy:…`, never rtl_tcp or a network input) is native and
+covered by `IO_RTL_RUN_RESULT`.
 `ANDROID_USB_BROKER_JVM` (the `usb` suite) runs `UsbRequestState.kt`, the USB broker's request and permission-prompt
 bookkeeping, with `UsbAttachmentTracker.kt` and no stubs, on an injected clock: a reply to an older prompt, for another
 device or replayed is ignored; the serial search's hop to the next Airspy keeps the request's generation and restarts
