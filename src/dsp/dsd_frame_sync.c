@@ -2116,9 +2116,11 @@ frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
     const int clear = frame_sync_nxdn96_fsw_bit_errors(ctx, synctype) <= 2;
     int accepts = 0;
     if (sync->lock_type == kind) {
+        /* The next frame's FSW is held to the sign match; one after missed frames, which noise is as likely to
+         * supply as the transmission, to the two-bit allowance N7 states as well. */
         const uint32_t since = now - sync->lock_symbolcnt;
         for (uint32_t k = 1U; k <= DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES && !accepts; k++) {
-            accepts = frame_sync_nxdn96_frames_apart(since, k);
+            accepts = frame_sync_nxdn96_frames_apart(since, k) && (k == 1U || clear);
         }
     }
     for (uint32_t d = 0U; d <= 2U * DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE && clear && !accepts; d++) {
@@ -2130,8 +2132,9 @@ frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
     }
     frame_sync_hit_history_note(&sync->hits, now, clear ? clear_kind : kind);
     if (accepts) {
-        sync->lock_symbolcnt = now;
-        sync->lock_type = kind;
+        /* The lock moves only once this frame's LICH holds (dsd_nxdn96_sync_note_lich()). */
+        sync->pending_symbolcnt = now;
+        sync->pending_type = kind;
     }
     return accepts;
 }
@@ -2923,9 +2926,9 @@ typedef struct frame_sync_runtime_ctx {
 } frame_sync_runtime_ctx;
 
 /* Bit errors between the window's last ten symbols, read on four levels, and the NXDN frame sync word of @p synctype's
- * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). With fewer than ten
- * levels to read -- a test window, a symbol capture's sign-only history -- there is nothing to count, and the sign
- * match stands. */
+ * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). The levels are the
+ * window's level ring, which live input and symbol captures alike fill (a capture at its dibits' levels). With fewer
+ * than ten to read -- a sign-only test window -- there is nothing to count, and the sign match stands. */
 static int
 frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype) {
     static const int fsw_levels[10] = {-3, 1, -3, 3, -3, -3, 3, 3, -1, 3};

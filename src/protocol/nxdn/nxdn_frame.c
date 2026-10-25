@@ -172,9 +172,6 @@ static const nxdn_lich_profile k_nxdn_lich_profiles[] = {
 static void
 nxdn_mark_bad_sync(dsd_state* state) {
     state->lastsynctype = DSD_SYNC_NONE;
-    /* NXDN96 acquires by its own rule (dsd_nxdn96_sync), which this has to reach as well: the frame its lock and hits
-       accepted did not hold a LICH. */
-    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
 }
 
 static void
@@ -720,11 +717,17 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_collect_lich(opts, state, &ctx);
 
     nxdn_prepare_lich_parity(&ctx);
-    if (!nxdn_validate_lich_parity(state, &ctx) || !nxdn_validate_lich_direction(opts, state, &ctx)
-        || !nxdn_apply_lich_profile(state, &ctx)) {
+    if (!nxdn_validate_lich_parity(state, &ctx)) {
+        dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt, DSD_NXDN96_LICH_PARITY_ERROR);
         nxdn_report_lich_reject(opts, state, &ctx);
         goto END;
     }
+    if (!nxdn_validate_lich_direction(opts, state, &ctx) || !nxdn_apply_lich_profile(state, &ctx)) {
+        dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt, DSD_NXDN96_LICH_WRONG);
+        nxdn_report_lich_reject(opts, state, &ctx);
+        goto END;
+    }
+    dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt, DSD_NXDN96_LICH_GOOD);
 
     state->carrier = 1;
     nxdn_print_sync_banner(opts, state, &ctx);
@@ -743,6 +746,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         nxdn_mark_bad_sync(state);
+        dsd_nxdn96_sync_clear(&state->nxdn96_sync);
         DSD_FPRINTF(stderr, "\n");
         goto END;
     }

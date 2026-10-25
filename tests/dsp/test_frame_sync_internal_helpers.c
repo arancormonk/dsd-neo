@@ -1976,62 +1976,89 @@ nxdn96_sync_setup(dsd_opts* opts, dsd_state* state) {
     state->symbolcnt = 5000;
 }
 
+/* Four-level readings of the NXDN FSW (TS 1-A 4.4.4): clean, and with every magnitude swapped -- the signs right and
+ * nothing else, which is what a window of noise matching on signs reads as. */
+static const float k_nxdn_fsw_clean[10] = {-3.0f, 1.0f, -3.0f, 3.0f, -3.0f, -3.0f, 3.0f, 3.0f, -1.0f, 3.0f};
+static const float k_nxdn_fsw_swapped[10] = {-1.0f, 3.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -3.0f, 1.0f};
+
+/* One NXDN96 FSW at the current count, read on four levels (@p swapped: the noise-like reading) at @p polarity, and,
+ * when the matcher takes it, its frame's LICH reported as nxdn_frame() reports it, eight symbols on. */
+static int
+nxdn96_fsw(dsd_opts* opts, dsd_state* state, int polarity, int swapped, dsd_nxdn96_lich_result lich) {
+    float levels[10];
+    for (int i = 0; i < 10; i++) {
+        levels[i] = (float)polarity * (swapped ? k_nxdn_fsw_swapped[i] : k_nxdn_fsw_clean[i]);
+    }
+    const int sync = dsd_frame_sync_test_eval_window(opts, state, polarity > 0 ? NXDN_FSW : INV_NXDN_FSW, levels, 10);
+    if (DSD_SYNC_IS_NXDN(sync)) {
+        dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt + 8U, lich);
+    }
+    return sync;
+}
+
 static void
 test_nxdn96_follows_the_receiver_sync_rules(void) {
     static dsd_opts opts;
     static dsd_state state;
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
 
     nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
     /* A second hit that is not a frame later only marks a new place (N1 = 2: two FSWs a frame apart). */
     state.symbolcnt += 100;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
     /* A transmission's frames follow on. */
     state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
     /* A locked transmission rides out missed FSWs: five in a row (N7), each next one a symbol off the frame grid. */
     state.symbolcnt += 6U * 192U + 1U;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
     state.symbolcnt += 2U * 192U - 1U;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
-    /* Six missed lose the lock, and so does a hit two symbols off, or one of the other polarity. */
-    state.symbolcnt += 7U * 192U;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
-    state.symbolcnt += 192U + 2U;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* The next frame's FSW is held to its signs, as ever; one after a missed frame to N7's two bit errors as well. */
     state.symbolcnt += 192U;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, INV_NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 2U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
+    /* Six missed lose the lock, and so does a hit two symbols off, or one of the other polarity. */
+    state.symbolcnt += 5U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192U + 2U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192U;
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
 
-    /* Acquisition takes the second FSW within a symbol of a frame on, either way. */
+    /* Acquisition takes the second FSW within a symbol of a frame on, either way, at either polarity. */
     nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 193;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
     nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, INV_NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 191;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, INV_NXDN_FSW, 10) == DSD_SYNC_NXDN_NEG);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NXDN_NEG);
 
     /* Payload hits in between, of either polarity, do not hide the FSW a frame back. */
     nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 40;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, INV_NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 60;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 92;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
     /* A hit a frame after one of the other polarity is not that frame's FSW. */
     nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, INV_NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
 
     /* One FSW that the preamble or the RCCH post field leads into counts alone (N6), at either polarity, so a
-     * transmission's first frame is read; the tail one symbol off is not the tail. */
+     * transmission's first frame is read; the tail one symbol off is not the tail. These windows carry no levels: a
+     * symbol capture's history is signs alone, and on it the sign match stands. */
     nxdn96_sync_setup(&opts, &state);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, "11" NXDN_PREAMBLE_TAIL NXDN_FSW, 24)
            == DSD_SYNC_NXDN_POS);
@@ -2044,6 +2071,56 @@ test_nxdn96_follows_the_receiver_sync_rules(void) {
 }
 
 /*
+ * The lock follows the LICH as TS 1-A 5.3 has it: the LICH conditions apply only when the LICH's parity holds, and frame
+ * sync is lost after S1 = 5 good-parity LICHs in a row that name no frame of the channel (5.3.2, Table 5.9-3). A real
+ * call's frame whose LICH fails its parity does not drop the lock; an accept on noise, whose LICH fails, does not
+ * refresh it either, so a lock still lapses N7 frames after the call.
+ */
+static void
+test_nxdn96_lock_follows_the_lich(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
+    const dsd_nxdn96_lich_result parity = DSD_NXDN96_LICH_PARITY_ERROR;
+    const dsd_nxdn96_lich_result wrong = DSD_NXDN96_LICH_WRONG;
+
+    /* A call: acquired, then a frame whose LICH parity fails. The next frame is still taken. */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, parity) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+
+    /* After the call: an accept whose LICH fails is not the call, and the lock keeps the call's last good frame. A hit
+     * seven frames after that frame is past N7, though it is only four after the failed accept. */
+    const uint32_t last_good = state.symbolcnt;
+    state.symbolcnt = last_good + 3U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, parity) == DSD_SYNC_NXDN_POS);
+    state.symbolcnt = last_good + 7U * 192U;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+
+    /* Four good-parity LICHs naming something else are borne; the fifth in a row loses frame sync (S1). */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    for (int i = 0; i < 4; i++) {
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, wrong) == DSD_SYNC_NXDN_POS);
+    }
+    assert(state.nxdn96_sync.lock_type == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, wrong) == DSD_SYNC_NXDN_POS);
+    assert(state.nxdn96_sync.lock_type == 0U);
+    /* ... and the hits with it: the next FSW acquires afresh. */
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
+}
+
+/*
  * The FSW the specification detects is 20 bits, 10 four-level symbols, within two bit errors; the sign-sliced window
  * here is ten bits, which one arbitrary window in a hundred matches. Acquisition reads the window's levels too: hits
  * whose levels name the wrong magnitudes -- what receiver noise that happens to have the signs offers -- do not
@@ -2053,27 +2130,25 @@ static void
 test_nxdn96_acquires_on_the_four_level_fsw(void) {
     static dsd_opts opts;
     static dsd_state state;
-    static const float clean[10] = {-3.0f, 1.0f, -3.0f, 3.0f, -3.0f, -3.0f, 3.0f, 3.0f, -1.0f, 3.0f};
-    /* The FSW's signs with every magnitude swapped: outer for inner and inner for outer. */
-    static const float swapped[10] = {-1.0f, 3.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -3.0f, 1.0f};
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
 
     nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_eval_window(&opts, &state, NXDN_FSW, swapped, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
     state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_eval_window(&opts, &state, NXDN_FSW, swapped, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
     state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_eval_window(&opts, &state, NXDN_FSW, clean, 10) == DSD_SYNC_NONE);
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_eval_window(&opts, &state, NXDN_FSW, clean, 10) == DSD_SYNC_NXDN_POS);
-    /* Once locked, the frames that follow are timed by the lock, as the receiver's flywheel does. */
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* Once locked, the next frame is timed by the lock, as the receiver's flywheel does. */
     state.symbolcnt += 192;
-    assert(dsd_frame_sync_test_eval_window(&opts, &state, NXDN_FSW, swapped, 10) == DSD_SYNC_NXDN_POS);
+    assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NXDN_POS);
 }
 
 /* One NXDN96 frame: the FSW, the LICH of a trunked outbound data frame (0101111, scrambled), and payload. Its LICH puts
  * the exact M17 packet word in the window ending at the frame's 15th symbol (review of the M17/NXDN96 joins). */
 static void
-nxdn96_udch_frame(char* frame, int fsw_lost) {
+nxdn96_udch_frame(char* frame, int fsw_lost, int inverted) {
     static const char head[] = NXDN_FSW "13333113";
     DSD_MEMCPY(frame, head, 18);
     if (fsw_lost) {
@@ -2082,6 +2157,11 @@ nxdn96_udch_frame(char* frame, int fsw_lost) {
     }
     for (int i = 18; i < 192; i++) {
         frame[i] = "3311"[(i - 18) % 4];
+    }
+    if (inverted) {
+        for (int i = 0; i < 192; i++) {
+            frame[i] = frame[i] == '1' ? '3' : '1';
+        }
     }
 }
 
@@ -2104,6 +2184,7 @@ read_symbol_stream(dsd_opts* opts, dsd_state* state, const char* symbols, int co
         if (DSD_SYNC_IS_NXDN(sync)) {
             (*nxdn)++;
             consumed = 182;
+            dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt + 8U, DSD_NXDN96_LICH_GOOD);
         } else if (sync != DSD_SYNC_NONE) {
             (*m17)++;
             consumed = 184;
@@ -2130,7 +2211,7 @@ test_an_nxdn96_data_call_stays_nxdn96_under_auto(void) {
     static dsd_state state;
     static char stream[12 * 192];
     for (int f = 0; f < 12; f++) {
-        nxdn96_udch_frame(stream + f * 192, f == 5);
+        nxdn96_udch_frame(stream + f * 192, f == 5, 0);
     }
 
     reset(&opts, &state);
@@ -2157,6 +2238,24 @@ test_an_nxdn96_data_call_stays_nxdn96_under_auto(void) {
     m17 = 0;
     read_symbol_stream(&opts, &state, stream, (int)sizeof(stream), &nxdn, &m17);
     assert(m17 == 0 && nxdn == 0);
+
+    /* Inverted, the same LICH holds the exact BERT word instead, which M17 does join. The call stays NXDN96 under Auto
+     * all the same: the lock rides out the lost FSW, so M17 never sees the word three frames running. */
+    for (int f = 0; f < 12; f++) {
+        nxdn96_udch_frame(stream + f * 192, f == 5, 1);
+    }
+    reset(&opts, &state);
+    opts.frame_nxdn96 = 1;
+    opts.frame_m17 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 9000;
+    nxdn = 0;
+    m17 = 0;
+    read_symbol_stream(&opts, &state, stream, (int)sizeof(stream), &nxdn, &m17);
+    assert(m17 == 0);
+    assert(nxdn == 10);
 }
 
 static void
@@ -4537,6 +4636,7 @@ main(void) {
     test_a_p25p1_frame_suppresses_m17_candidates();
     test_m17_joins_on_a_sync_word_three_frames_running();
     test_nxdn96_follows_the_receiver_sync_rules();
+    test_nxdn96_lock_follows_the_lich();
     test_nxdn96_acquires_on_the_four_level_fsw();
     test_an_nxdn96_data_call_stays_nxdn96_under_auto();
     test_nxdn48_keeps_two_hits_at_any_distance();
