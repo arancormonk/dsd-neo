@@ -602,8 +602,9 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_row_rtl_ppm_field(&row);
         ui_row_field(&row, " Mon: %dX;", opts->rtl_volume_multiplier);
         ui_row_field(&row, " DSP-BW: %2d kHz;", opts->rtl_dsp_bw_khz);
-        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575). */
-        ui_row_field(&row, " FRQ: %u;", (unsigned int)dsd_opts_tuned_freq_hz(opts));
+        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575), in the ten places any
+           32-bit Hz value takes, so a Soapy device's arguments after it hold their column across a retune. */
+        ui_row_field(&row, " FRQ: %10u;", (unsigned int)dsd_opts_tuned_freq_hz(opts));
         if (soapy_input && strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
             ui_row_field(&row, " Args: %s;", opts->audio_in_dev + 6);
         }

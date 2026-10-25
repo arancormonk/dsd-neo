@@ -461,7 +461,7 @@ where it came from. Each row puts its live readings ahead of configuration text,
 configuration first:
 
 ```text
-| RTL: 0; G:  40dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ: 146520000;
+| RTL: 0; G:  40dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ:  146520000;
 | SQL: noise +10 dB (quieting   23 dB);              Analog: NFM 12.5 kHz (row; default 16 kHz);
 | UDP Signal Input: 127.0.0.1:7355; Pkts:    123; Drops:      0; 48 kHz; 1 Ch; IV:  1X; RIG: rig.local:4532;
 | SQL: off; Passband: NFM 12.5 kHz (-B);

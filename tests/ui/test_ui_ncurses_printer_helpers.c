@@ -1211,7 +1211,7 @@ test_rtl_and_soapy_input_source_rendering(void) {
     ui_render_rtl_input_source(&opts, &state);
     /* Issue #669: the receiver's readings at fixed widths on the source row, the tuned frequency last; the squelch on
        the channel row below; Auto PPM and the External RTL Tuning endpoint on rows of their own. */
-    assert_capture_equals("| RTL: 2; G:  21dB; PPM:   -7; Mon: 3X; DSP-BW: 24 kHz; FRQ: 851012500;\n"
+    assert_capture_equals("| RTL: 2; G:  21dB; PPM:   -7; Mon: 3X; DSP-BW: 24 kHz; FRQ:  851012500;\n"
                           "| SQL: -47.5 dB;\n"
                           "| Auto PPM: Off\n"
                           "| External RTL Tuning on UDP: 127.0.0.1:5555\n");
@@ -1222,11 +1222,11 @@ test_rtl_and_soapy_input_source_rendering(void) {
     opts.iq_replay_center_freq = 851500000U;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" FRQ: 851500000;");
+    assert_capture_contains(" FRQ:  851500000;");
     opts.iq_replay_center_freq = 0U;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" FRQ: 851012500;");
+    assert_capture_contains(" FRQ:  851012500;");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
 
     /* Squelch off is the default every documented example uses. Printed as a
@@ -1306,6 +1306,16 @@ test_rtl_and_soapy_input_source_rendering(void) {
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains(
         "| SoapySDR; G:   AGC; PPM:   -7; Mon: 0X; DSP-BW: 12 kHz; FRQ: 2400000000; Args: driver=rtlsdr;\n");
+    /* The arguments keep their column across a retune: the frequency takes ten places whatever its digits. */
+    const int args_col = capture_column_of(" Args:");
+    const uint32_t retunes[] = {95000000U, 462012500U, 0U, 4294967295U};
+    for (size_t i = 0; i < sizeof retunes / sizeof retunes[0]; i++) {
+        opts.rtlsdr_center_freq = retunes[i];
+        reset_printw_capture();
+        ui_render_rtl_input_source(&opts, &state);
+        assert(capture_column_of(" Args:") == args_col);
+    }
+    opts.rtlsdr_center_freq = 2400000000U;
     g_stub_max_x = 80;
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy");
@@ -1470,14 +1480,14 @@ test_receiver_rows_fixed_width(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_starts_with("| Airspy: 0123456789abcdef; 3000000 samples/s;\n"
-                               "| G:  21dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ: 146520000;\n"
+                               "| G:  21dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ:  146520000;\n"
                                "| SQL: off;");
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
     opts.rtl_dev_index = 0;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_starts_with("| RTL: 0; G:  21dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ: 146520000;\n");
+    assert_capture_starts_with("| RTL: 0; G:  21dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ:  146520000;\n");
     const int mon_col = capture_column_of(" Mon:");
     const int frq_col = capture_column_of(" FRQ:");
     /* PPM across its live range and past it (an I/Q replay's int32): Mon and FRQ hold. */
