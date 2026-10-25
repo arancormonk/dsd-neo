@@ -31,6 +31,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -297,6 +298,23 @@ void
 p25_sm_tick_guard_leave(void) {
     assert(g_tick_guard_held);
     g_tick_guard_held = 0;
+}
+
+/* Whether the P25 machine hunts a control channel (a startup or recovery probe): read under the tick guard. */
+static int g_p25_hunt_in_flight = 0;
+
+p25_sm_ctx_t*
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_get_ctx(void) {
+    return NULL;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_hunt_probe_in_flight(const p25_sm_ctx_t* ctx) {
+    (void)ctx;
+    assert(g_tick_guard_held);
+    return g_p25_hunt_in_flight;
 }
 
 void
@@ -2150,6 +2168,7 @@ auto_probe_session(dsd_opts* opts, dsd_state* state) {
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
     state->sps_hunt_counter = 17;
     g_setfreq_result = true;
+    g_p25_hunt_in_flight = 1; // the P25 startup hunt's probe
 }
 
 /*
@@ -2179,6 +2198,22 @@ test_p25_probe_chain_from_validated_evidence(dsd_opts* opts, dsd_state* state) {
     auto_probe_session(opts, state);
     state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_NXDN;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 17);
+
+    // The presumption is the P25 hunt's, not every tune's: with no P25 probe in flight (an IDAS Type-D busy-repeater tune
+    // under Auto -T, before its SCCH run confirmed NXDN) the engine's return to the control channel keeps the NXDN chain.
+    auto_probe_session(opts, state);
+    g_p25_hunt_in_flight = 0;
+    state->p25_cc_freq = 451000000;
+    opts->trunk_is_tuned = 1;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 17);
+    assert(state->rf_mod == 2);
+    auto_probe_session(opts, state);
+    g_p25_hunt_in_flight = 0;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     assert(state->sps_hunt_counter == 17);
 

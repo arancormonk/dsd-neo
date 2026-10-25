@@ -2205,7 +2205,9 @@ control names no owner the hunt could stop on; it grants no recovery ownership (
 (`manual_frequency_selects_p25_cc()`), keeps the decoder ticks due (`engine_decoder_ticks_due()`), and with
 `dsd_trunk_p25_recovery_allowed()` decides the P25 chain of a control-channel tune in `src/engine/trunk_tuning.c`
 (`dsd_engine_cc_is_p25()`): a session P25 drives is P25 from that evidence, not from raw sync history or a GFSK
-`rf_mod` the frame-sync hunt forced.
+`rf_mod` the frame-sync hunt forced. The presumption counts there only while the P25 machine hunts
+(`p25_sm_hunt_probe_in_flight()`, read under the tick guard); another tune of that session (the engine's no-carrier
+return, an IDAS busy-repeater follow before NXDN is confirmed) keeps the sync rule.
 `dsd_trunk_nxdn_recovery_allowed()` admits the NXDN control-channel hunt: trunking on outside `-Y` and trunk scan,
 NXDN48 or NXDN96 decoded (whatever the owner, so a mode change away from NXDN stops it), and an NXDN owner
 (`DSD_TRUNK_RECOVERY_NXDN`, named by a CRC-good CAC or a confirmed Type-D SCCH) or, with none yet, a frame set without

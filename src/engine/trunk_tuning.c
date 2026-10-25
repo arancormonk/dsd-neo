@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
@@ -92,12 +93,29 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
  * looked at: its rf_mod is the QPSK family's, which on its own would read as P25 CQPSK.
  *
  * Past TETRA, a session P25 drives -- recovery under a validated P25 owner, or the startup hunt of
- * a set that presumes P25 (dsd_trunk_p25_cold_start_presumed()) -- is P25 from that evidence, never
- * from sync history or modulation: under Auto a dead frequency yields noise NXDN syncs, and the
- * frame-sync hunt forces the GFSK rf_mod on its 2400/4 and 9600/2 dwells, either of which would
- * send a probe to the wrong chain. Other sessions (a DMR or NXDN owner, EDACS) keep the sync rule
- * below. A TETRA sync only arises with the TETRA decoder on, which no frame set runs beside P25.
+ * a set that presumes P25 (dsd_trunk_p25_cold_start_presumed()) while its probe is in flight -- is
+ * P25 from that evidence, never from sync history or modulation: under Auto a dead frequency yields
+ * noise NXDN syncs, and the frame-sync hunt forces the GFSK rf_mod on its 2400/4 and 9600/2 dwells,
+ * either of which would send a probe to the wrong chain. Other sessions (a DMR or NXDN owner, EDACS)
+ * and the presumption's other tunes (another protocol's grant, the engine's no-carrier return to a
+ * control channel no protocol has proven) keep the sync rule below. A TETRA sync only arises with
+ * the TETRA decoder on, which no frame set runs beside P25.
  */
+/* Whether the P25 machine hunts a control channel now (p25_sm_hunt_probe_in_flight()), read under the tick guard: the
+   caller's hold, or one taken for the read. */
+static int
+dsd_engine_p25_hunt_in_flight(void) {
+    const int take_guard = !p25_sm_tick_guard_held_by_caller();
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    const int in_flight = p25_sm_hunt_probe_in_flight(p25_sm_get_ctx());
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
+    return in_flight;
+}
+
 static int
 dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_engine_trunk_scan_active_is_p25_class(state)) {
@@ -112,7 +130,8 @@ dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (DSD_SYNC_IS_TETRA(state->synctype) || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
         return 0;
     }
-    if (dsd_trunk_p25_recovery_allowed(opts, state) || dsd_trunk_p25_cold_start_presumed(opts, state)) {
+    if (dsd_trunk_p25_recovery_allowed(opts, state)
+        || (dsd_trunk_p25_cold_start_presumed(opts, state) && dsd_engine_p25_hunt_in_flight())) {
         return 1;
     }
     if (state->rf_mod == 2) {

@@ -112,7 +112,9 @@ int dsd_trunk_nxdn_recovery_allowed(const dsd_opts* opts, const dsd_state* state
  * control channel, as under -fh -fa). DMR and NXDN alongside (-ft, Auto) are fine: their validated
  * control (a DMR control message, an NXDN CAC or confirmed Type-D SCCH) names its owner and ends the hunt, and their
  * validated traffic holds its window. This grants no recovery ownership; the decoder thread's startup hunt, the
- * operator-move rule of a frequency entry and the probe profile choice read it. */
+ * operator-move rule of a frequency entry and the probe profile choice read it. That choice
+ * (dsd_engine_cc_is_p25()) reads it only while the P25 machine hunts (p25_sm_hunt_probe_in_flight()): another
+ * control-channel tune of the session, such as the engine's no-carrier return, keeps the sync rule. */
 int dsd_trunk_p25_cold_start_presumed(const dsd_opts* opts, const dsd_state* state);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 /**
