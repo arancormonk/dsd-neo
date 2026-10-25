@@ -46,6 +46,146 @@ expect_auto_status(const dsd_app_squelch_view* view, const char* status) {
     assert(strcmp(out, status) == 0);
 }
 
+static void
+expect_fixed(const dsd_app_squelch_view* view, const char* readout, const char* status) {
+    char out[96];
+    assert(dsd_app_squelch_view_format_ex(view, DSD_APP_SQUELCH_VIEW_FIXED, out, sizeof out) == 0);
+    if (strcmp(out, readout) != 0) {
+        DSD_FPRINTF(stderr, "fixed readout '%s', want '%s'\n", out, readout);
+        assert(0);
+    }
+    assert(dsd_app_squelch_view_dynamic_status_ex(view, DSD_APP_SQUELCH_VIEW_FIXED, out, sizeof out) == 0);
+    if (strcmp(out, status) != 0) {
+        DSD_FPRINTF(stderr, "fixed status '%s', want '%s'\n", out, status);
+        assert(0);
+    }
+}
+
+/* Issue #669: readings that round to zero print without a sign, and the fixed-width text keeps one length while the
+   reading changes, so a terminal field after it never moves. */
+static void
+test_negative_zero_and_fixed_width(void) {
+    dsd_app_squelch_view view;
+    DSD_MEMSET(&view, 0, sizeof view);
+    view.effective_noise = 1;
+    view.configured_noise = 1;
+    view.effective_margin_db = 12;
+    view.configured_margin_db = 12;
+    view.auto_resolution = DSD_SQUELCH_RESOLVED_AS_SET;
+    view.noise_running = 1;
+    view.noise_measured = 1;
+    /* -0.01 dB and -0.49 dB both round to zero. */
+    view.noise_quieting_db = -0.01;
+    expect_text(&view, "noise +12 dB (quieting 0 dB)", "Applied: squelch -> noise +12 dB");
+    view.noise_quieting_db = -0.49;
+    expect_text(&view, "noise +12 dB (quieting 0 dB)", "Applied: squelch -> noise +12 dB");
+    view.noise_quieting_db = -0.51;
+    expect_text(&view, "noise +12 dB (quieting -1 dB)", "Applied: squelch -> noise +12 dB");
+
+    /* Fixed width: the reading right-aligned in four places, the readout padded to the longest text NOISE can show
+       ("as auto: off: no channel plan", 29), so learning and measuring take the same room. */
+    const char* pad13 = "             ";
+    char want[96];
+    view.noise_quieting_db = 23.49;
+    DSD_SNPRINTF(want, sizeof want, "noise +12 dB (quieting   23 dB)%s", pad13);
+    expect_fixed(&view, want, "quieting   23 dB             ");
+    view.noise_quieting_db = -0.49;
+    DSD_SNPRINTF(want, sizeof want, "noise +12 dB (quieting    0 dB)%s", pad13);
+    expect_fixed(&view, want, "quieting    0 dB             ");
+    view.noise_quieting_db = 200.0;
+    DSD_SNPRINTF(want, sizeof want, "noise +12 dB (quieting  200 dB)%s", pad13);
+    expect_fixed(&view, want, "quieting  200 dB             ");
+    view.noise_quieting_db = -200.0;
+    DSD_SNPRINTF(want, sizeof want, "noise +12 dB (quieting -200 dB)%s", pad13);
+    expect_fixed(&view, want, "quieting -200 dB             ");
+    view.noise_measured = 0;
+    expect_fixed(&view, "noise +12 dB (starting)                     ", "starting                     ");
+    view.noise_state = DSD_SQUELCH_NOISE_STATE_LEARNING;
+    expect_fixed(&view, "noise +12 dB (learning)                     ", "learning                     ");
+    view.noise_state = DSD_SQUELCH_NOISE_STATE_NONE;
+    view.noise_as_auto = 1;
+    view.auto_running = 1;
+    view.auto_plan_valid = 0;
+    expect_fixed(&view, "noise +12 dB (as auto: off: no channel plan)", "as auto: off: no channel plan");
+
+    /* AUTO: the floor in six places, padded to "off: no channel plan" (20). */
+    DSD_MEMSET(&view, 0, sizeof view);
+    view.effective_auto = 1;
+    view.configured_auto = 1;
+    view.effective_margin_db = 10;
+    view.configured_margin_db = 10;
+    view.auto_resolution = DSD_SQUELCH_RESOLVED_AS_SET;
+    view.auto_running = 1;
+    view.auto_plan_valid = 1;
+    view.auto_floor_db = -0.04;
+    expect_text(&view, "auto +10 dB (floor 0.0 dB)", "Applied: squelch -> auto +10 dB");
+    expect_fixed(&view, "auto +10 dB (floor    0.0 dB)     ", "floor    0.0 dB     ");
+    view.auto_floor_db = -140.0;
+    expect_fixed(&view, "auto +10 dB (floor -140.0 dB)     ", "floor -140.0 dB     ");
+    view.auto_floor_db = -1400.0;
+    expect_fixed(&view, "auto +10 dB (floor <-99.9 dB)     ", "floor <-99.9 dB     ");
+    view.auto_learning = 1;
+    expect_fixed(&view, "auto +10 dB (learning)            ", "learning            ");
+    view.auto_resolution = DSD_SQUELCH_RESOLVED_NO_RADIO;
+    expect_fixed(&view, "auto +10 dB (off: no radio input) ", "off: no radio input ");
+
+    /* A level has no reading, so nothing to pad. */
+    DSD_MEMSET(&view, 0, sizeof view);
+    view.effective_level = dsd_squelch_level_from_sql(-60.0);
+    view.configured_level = view.effective_level;
+    expect_fixed(&view, "-60.0 dB", "");
+    char out[8];
+    assert(dsd_app_squelch_view_format_ex(NULL, DSD_APP_SQUELCH_VIEW_FIXED, out, sizeof out) == -1 && out[0] == '\0');
+    assert(dsd_app_squelch_view_dynamic_status_ex(&view, DSD_APP_SQUELCH_VIEW_FIXED, NULL, 4) == -1);
+}
+
+/* The editor text parses back to the same enabled level (B5): accepting the prompt unchanged must not turn the
+   squelch off or move it. */
+static void
+expect_round_trip(double level) {
+    dsd_app_squelch_view view;
+    DSD_MEMSET(&view, 0, sizeof view);
+    view.configured_level = level;
+    view.effective_level = level;
+    char text[32];
+    assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0);
+    dsd_squelch_setting back;
+    if (dsd_squelch_setting_parse(text, &back, NULL, 0U) != 0 || back.mode != DSD_SQUELCH_MODE_LEVEL
+        || dsd_squelch_is_off(back.level)) {
+        DSD_FPRINTF(stderr, "level %.17g wrote '%s', which does not read back as an enabled level\n", level, text);
+        assert(0);
+    }
+    /* Within the one-place dB rounding: 0.05 dB is a ratio of about 1.16 %; compare by ratio, not absolutely. */
+    const double ratio = back.level / level;
+    if (!(fabs(10.0 * log10(ratio)) <= 0.0501)) {
+        DSD_FPRINTF(stderr, "level %.17g wrote '%s', read back %.17g\n", level, text, back.level);
+        assert(0);
+    }
+}
+
+static void
+test_configured_text_round_trip(void) {
+    expect_round_trip(1.0);
+    expect_round_trip(0.99);
+    expect_round_trip(0.9886);
+    expect_round_trip(dsd_squelch_level_from_sql(-0.06));
+    expect_round_trip(dsd_squelch_level_from_sql(-0.04));
+    expect_round_trip(dsd_squelch_level_from_sql(-60.0));
+    expect_round_trip(dsd_squelch_level_from_sql(-120.0));
+    expect_round_trip(dsd_squelch_level_from_sql(-200.0));
+    expect_round_trip(pow(10.0, -200.04 / 10.0));
+    expect_round_trip(pow(10.0, -250.0 / 10.0));
+    expect_round_trip(1e-30);
+    expect_round_trip(4.0);
+    dsd_app_squelch_view view;
+    DSD_MEMSET(&view, 0, sizeof view);
+    view.configured_level = dsd_squelch_level_from_sql(-80.0);
+    char text[32];
+    assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "-80.0") == 0);
+    view.configured_level = 1e-30;
+    assert(dsd_app_squelch_view_configured_text(&view, text, sizeof text) == 0 && strcmp(text, "1e-30") == 0);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -350,6 +490,9 @@ main(void) {
     dsd_state_ext_free_all(est);
     free(est);
     free(enc);
+
+    test_negative_zero_and_fixed_width();
+    test_configured_text_round_trip();
 
     char out[8];
     assert(dsd_app_squelch_view_get(NULL, state, &view) == -1 && !view.row_override);

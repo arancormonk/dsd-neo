@@ -750,6 +750,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_number_text
+  HEADERS_PUBLIC_RUNTIME_NUMBER_TEXT
+  dsd-neo/runtime/number_text.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_analog_tones
   HEADERS_PUBLIC_RUNTIME_ANALOG_TONES
   dsd-neo/runtime/analog_tones.h
@@ -1806,6 +1812,7 @@ add_executable(
     protocol/ysf/test_ysf_frame.c
     ${PROJECT_SOURCE_DIR}/src/protocol/ysf/ysf_frame.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_misc.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
 )
 target_include_directories(
     dsd-neo_test_ysf_frame
@@ -2591,6 +2598,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels
@@ -2626,6 +2634,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels_radio
@@ -2829,6 +2838,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_visualizers_helpers
@@ -3161,6 +3171,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         add_executable(
             ${_target}
             ui/test_ui_ncurses_printer_helpers.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
@@ -3216,6 +3227,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_callbacks
@@ -3246,6 +3258,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_actions
@@ -3361,6 +3374,29 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     add_test(NAME UI_NCURSES_INIT COMMAND dsd-neo_test_ui_ncurses_init)
 
+    # The status row writer on a real ncurses screen (issue #669): cut between whole fields, never the last column,
+    # attributes restored, wcwidth() cells.
+    add_executable(
+        dsd-neo_test_ui_row
+        ui/test_ui_row.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_row
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_row
+        PRIVATE dsd-neo_runtime ${CURSES_LIBRARIES}
+    )
+    if(MSVC)
+        target_compile_definitions(dsd-neo_test_ui_row PRIVATE CURSES_LIBRARY)
+    endif()
+    add_test(NAME UI_ROW COMMAND dsd-neo_test_ui_row)
+
     add_executable(
         dsd-neo_test_ui_dsp_squelch_status
         ui/test_ui_dsp_squelch_status.c
@@ -3386,6 +3422,8 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_dsp_display_radio_compile.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_display.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_prims.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_dsp_display_radio_compile
@@ -3406,6 +3444,40 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_test(
         NAME UI_DSP_DISPLAY_RADIO_COMPILE
         COMMAND dsd-neo_test_ui_dsp_display_radio_compile
+    )
+
+    # The DSP panel as drawn (issue #669): one row per line, fixed-width readings, whole-field cuts. Includes the panel
+    # and the row writer behind capture stubs; the formatter, the number text and the shared policy come as sources.
+    add_executable(
+        dsd-neo_test_ui_dsp_display_render
+        ui/test_ui_dsp_display_render.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_status_format.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_dsp_display_render
+        PRIVATE USE_RADIO
+    )
+    target_include_directories(
+        dsd-neo_test_ui_dsp_display_render
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_dsp_display_render
+        PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+    )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_dsp_display_render
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
+    add_test(
+        NAME UI_DSP_DISPLAY_RENDER
+        COMMAND dsd-neo_test_ui_dsp_display_render
     )
 
     add_executable(
@@ -4770,6 +4842,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
+
+# Readout text without a negative zero, fixed-width saturation and counts (issue #669).
+add_executable(
+    dsd-neo_test_runtime_number_text
+    runtime/test_runtime_number_text.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_number_text
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_number_text PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_NUMBER_TEXT COMMAND dsd-neo_test_runtime_number_text)
 
 # The CTCSS and DCS tables and their text (issues #522, #523), shared by the detectors, the
 # views and the policy: the tone table, the DCS codes, their Golay words against the published

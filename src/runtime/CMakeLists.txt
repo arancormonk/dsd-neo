@@ -30,6 +30,7 @@ target_sources(
         airspy_config.c
         input_level.c
         input_failure.c
+        number_text.c
         path_policy.c
         frame_sync_hooks.c
         trunk_scan_hooks.c

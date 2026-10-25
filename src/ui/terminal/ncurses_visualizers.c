@@ -10,6 +10,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/ui_prims.h>
@@ -855,6 +856,19 @@ eye_print_legend(const eye_style* style) {
     }
 }
 
+/* The eye's row positions, SPS and C4FM SNR (n/a without a usable estimate). */
+static void
+eye_print_rows_line(int yq1, int yq2, int yq3, int sps, int has_snr, double snr_db) {
+    ui_print_lborder();
+    if (has_snr) {
+        char snr_text[32];
+        (void)dsd_number_text(snr_text, sizeof snr_text, snr_db, 0, 1, 0);
+        printw(" Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=%s dB\n", yq1, yq2, yq3, sps, snr_text);
+    } else {
+        printw(" Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=n/a\n", yq1, yq2, yq3, sps);
+    }
+}
+
 static int
 eye_snr_in_window(int phase, int c1, int c2, int win) {
     return (abs(phase - c1) <= win) || (abs(phase - c2) <= win);
@@ -1115,13 +1129,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     if (is_c4fm && snr_db < -20.0) {
         snr_db = eye_estimate_snr_fallback(buf, n, sps, two_sps, q1, q2, q3, snr_db);
     }
-    if (is_c4fm && snr_db > -50.0) {
-        ui_print_lborder();
-        printw(" Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=%.1f dB\n", yq1, yq2, yq3, sps, snr_db);
-    } else {
-        ui_print_lborder();
-        printw(" Rows: Q1=%d  Median=%d  Q3=%d   SPS=%d  SNR=n/a\n", yq1, yq2, yq3, sps);
-    }
+    eye_print_rows_line(yq1, yq2, yq3, sps, is_c4fm && snr_db > -50.0, snr_db);
     attron(COLOR_PAIR(4));
     ui_print_hr();
     attroff(COLOR_PAIR(4));
@@ -1238,8 +1246,10 @@ fsk_hist_draw_bars(const int64_t bin[4], double dc_norm) {
             maxc = bin[i];
         }
     }
+    char dc_text[32];
+    (void)dsd_number_text(dc_text, sizeof dc_text, dc_norm * 100.0, 0, 2, DSD_NUMBER_TEXT_PLUS);
     ui_print_lborder();
-    printw(" DC Offset: %+0.2f%% of full-scale\n", dc_norm * 100.0);
+    printw(" DC Offset: %s%% of full-scale\n", dc_text);
     for (int i = 0; i < 4; i++) {
         int w = (int)((double)bin[i] / (double)maxc * (double)bar_width + 0.5);
         w = clamp_int_local(w, 0, bar_width);
@@ -1551,8 +1561,12 @@ spectrum_print_legend(const dsd_opts* opts, const dsd_state* state, int rate, in
            (opts && opts->frontend_terminal_display.eye_color && has_colors()) ? "; colored" : "");
     ui_print_lborder();
     printw(" Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
+    char top_text[32];
+    char floor_text[32];
+    (void)dsd_number_text(top_text, sizeof top_text, vmax, 0, 1, 0);
+    (void)dsd_number_text(floor_text, sizeof floor_text, vmin, 0, 1, 0);
     ui_print_lborder();
-    printw(" Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
+    printw(" Scale: top=%s dB  floor=%s dB (relative)\n", top_text, floor_text);
     spectrum_print_system_line(state);
 #ifdef PRETTY_COLORS
     if (opts && opts->frontend_terminal_display.eye_color && has_colors()) {

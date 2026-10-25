@@ -435,6 +435,9 @@ test_trunking_labels(void) {
     rc |= expect_str("tg hold set", lbl_tg_hold(&ctx, b, sizeof(b)), "Talkgroup hold... [4242]");
     opts.trunk_hangtime = 2.75f;
     rc |= expect_str("hangtime", lbl_hangtime(&ctx, b, sizeof(b)), "Hangtime... [2.8 s]");
+    opts.trunk_hangtime = -0.0f;
+    rc |= expect_str("hangtime -0", lbl_hangtime(&ctx, b, sizeof(b)), "Hangtime... [0.0 s]");
+    opts.trunk_hangtime = 2.75f;
     rc |= expect_str("voice-only null ctx", lbl_scan_voice_only(NULL, b, sizeof(b)), "Voice-only scan [Off]");
     opts.scan_voice_only = 0;
     rc |= expect_str("voice-only off", lbl_scan_voice_only(&ctx, b, sizeof(b)), "Voice-only scan [Off]");
@@ -964,6 +967,27 @@ test_display_and_advanced_labels(void) {
                      "Auto-PPM zero-lock PPM... [0.75]");
     g_env_int_has_value = 1;
     g_env_int_value = 75;
+    /* Settings that round to zero read without a sign (issue #669): -t -0 passes the hangtime check, and the
+       environment accepts -0.0 and small negatives. */
+    g_env_double_value = -0.0;
+    rc |=
+        expect_str("auto ppm zeroppm -0", lbl_auto_ppm_zeroppm(NULL, b, sizeof(b)), "Auto-PPM zero-lock PPM... [0.00]");
+    g_env_double_value = -0.04;
+    rc |= expect_str("auto ppm snr -0", lbl_auto_ppm_snr(NULL, b, sizeof(b)), "Auto-PPM SNR threshold... [0.0 dB]");
+    rc |= expect_str("auto ppm pwr -0", lbl_auto_ppm_pwr(NULL, b, sizeof(b)), "Auto-PPM minimum power... [0.0 dB]");
+    rc |= expect_str("input warn -0", lbl_input_warn(NULL, b, sizeof(b)), "Low-input warning... [0.0 dBFS]");
+    rc |= expect_str("p1 error hold -0", lbl_p25_p1_err_pct(NULL, b, sizeof(b)), "Phase 1 error hold... [0.0%]");
+    g_env_double_value = -0.0001;
+    rc |= expect_str("vc grace -0", lbl_p25_vc_grace(NULL, b, sizeof(b)), "VC grace... [0.000 s]");
+    rc |= expect_str("min dwell -0", lbl_p25_min_follow(NULL, b, sizeof(b)), "Minimum follow dwell... [0.000 s]");
+    rc |=
+        expect_str("grant timeout -0", lbl_p25_grant_voice(NULL, b, sizeof(b)), "Grant-to-voice timeout... [0.000 s]");
+    rc |= expect_str("cc grace -0", lbl_p25_cc_grace(NULL, b, sizeof(b)), "CC hunt grace... [0.000 s]");
+    rc |= expect_str("force extra -0", lbl_p25_force_extra(NULL, b, sizeof(b)), "Safety-net extra... [0.000 s]");
+    rc |= expect_str("force margin -0", lbl_p25_force_margin(NULL, b, sizeof(b)), "Safety-net margin... [0.000 s]");
+    rc |= expect_str("p1 error hold time -0", lbl_p25_p1_err_sec(NULL, b, sizeof(b)),
+                     "Phase 1 error hold time... [0.000 s]");
+    g_env_double_value = 0.75;
     rc |= expect_str("auto ppm zerohz env", lbl_auto_ppm_zerohz(NULL, b, sizeof(b)), "Auto-PPM zero-lock Hz... [75]");
     rc |= expect_str("tcp prebuffer env", lbl_tcp_prebuf(NULL, b, sizeof(b)), "rtl_tcp prebuffer... [75 ms]");
     rc |= expect_str("tcp rcvbuf env", lbl_tcp_rcvbuf(NULL, b, sizeof(b)), "rtl_tcp SO_RCVBUF... [75 bytes]");

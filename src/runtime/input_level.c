@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <math.h>
 
 enum {
@@ -482,11 +483,15 @@ dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* 
     if (snapshot->status == DSD_INPUT_LEVEL_LOW) {
         advice = dsd_input_level_source_is_rf(snapshot->source) ? "raise RF gain if signal is present"
                                                                 : "raise source/input volume if signal is present";
-        DSD_SNPRINTF(out, out_size, "%s %s %.1f dBFS: %s", label, status, snapshot->rms_dbfs, advice);
+        char rms[32];
+        (void)dsd_number_text(rms, sizeof rms, snapshot->rms_dbfs, 0, 1, 0);
+        DSD_SNPRINTF(out, out_size, "%s %s %s dBFS: %s", label, status, rms, advice);
         return 0;
     }
     if (snapshot->status == DSD_INPUT_LEVEL_HOT) {
-        DSD_SNPRINTF(out, out_size, "%s %s peak %.1f dBFS: %s", label, status, snapshot->peak_dbfs, advice);
+        char peak[32];
+        (void)dsd_number_text(peak, sizeof peak, snapshot->peak_dbfs, 0, 1, 0);
+        DSD_SNPRINTF(out, out_size, "%s %s peak %s dBFS: %s", label, status, peak, advice);
         return 0;
     }
     if (snapshot->status == DSD_INPUT_LEVEL_CLIPPING) {

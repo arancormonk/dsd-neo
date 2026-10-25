@@ -267,4 +267,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_wizard_encryption.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_key_sheet.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_backup.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_util_fixed.qml"
 )

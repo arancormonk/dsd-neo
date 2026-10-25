@@ -8,6 +8,7 @@
 
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <math.h>
 #include <stddef.h>
 
@@ -30,6 +31,8 @@ dsd_squelch_format(double mean_power, const char* unit, char* out,
         DSD_SNPRINTF(out, out_size, "%s", "off");
         return 0;
     }
-    DSD_SNPRINTF(out, out_size, "%.1f%s", pwr_to_dB(mean_power), unit ? unit : "");
+    char db[32];
+    (void)dsd_number_text(db, sizeof db, pwr_to_dB(mean_power), 0, 1, 0);
+    DSD_SNPRINTF(out, out_size, "%s%s", db, unit ? unit : "");
     return 0;
 }

@@ -67,6 +67,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "edacs_internal.h"
 
+#include <dsd-neo/runtime/number_text.h>
 #include <math.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
@@ -787,7 +788,9 @@ edacs_print_analog_status(const dsd_opts* opts, dsd_state* state, int afs, unsig
     } else {
         (void)dsd_squelch_format(sql, " dB", sql_text, sizeof sql_text);
     }
-    DSD_FPRINTF(stderr, " Analog PWR: %.1f dB SQL: %s", pwr_to_dB(pwr), sql_text);
+    char pwr_text[32];
+    (void)dsd_number_text(pwr_text, sizeof pwr_text, pwr_to_dB(pwr), 0, 1, 0);
+    DSD_FPRINTF(stderr, " Analog PWR: %s dB SQL: %s", pwr_text, sql_text);
 
     if (state->ea_mode == 0) {
         int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;

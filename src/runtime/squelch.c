@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
@@ -281,7 +282,9 @@ dsd_squelch_setting_format(const dsd_squelch_setting* s, char* out, size_t out_s
     if (db < -120.0) {
         db = -120.0;
     }
-    DSD_SNPRINTF(out, out_size, "%.1f dB", db);
+    char num[32];
+    (void)dsd_number_text(num, sizeof num, db, 0, 1, 0);
+    DSD_SNPRINTF(out, out_size, "%s dB", num);
     return 0;
 }
 

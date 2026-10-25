@@ -11,10 +11,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <math.h>
 #include <stddef.h>
+#include <string.h>
 
 /* Why a dynamic setting in force runs as it does here (dsd_squelch_resolution): the policy every surface shares. The M17
    encoder's monitor and EDACS analog voice are analog channels (issue #625), with no dynamic squelch on audio input. */
@@ -132,16 +135,53 @@ squelch_view_setting_text(int mode, int margin_db, double level, char* out, size
     (void)dsd_squelch_format(level, " dB", out, out_size);
 }
 
-/* What the floor tracker shows: its floor, "learning", or "off: no channel plan". */
+/* What the floor tracker shows: its floor, "learning", or "off: no channel plan". Fixed: the floor in six places. */
 static void
-squelch_view_tracker_status(const dsd_app_squelch_view* view, char* out, size_t out_size) {
+squelch_view_tracker_status(const dsd_app_squelch_view* view, unsigned flags, char* out, size_t out_size) {
     if (view->auto_running && !view->auto_plan_valid) {
         DSD_SNPRINTF(out, out_size, "%s", "off: no channel plan");
     } else if (!view->auto_running || view->auto_learning) {
         DSD_SNPRINTF(out, out_size, "%s", "learning");
     } else {
-        DSD_SNPRINTF(out, out_size, "floor %.1f dB", view->auto_floor_db);
+        char floor_db[32];
+        if (flags & DSD_APP_SQUELCH_VIEW_FIXED) {
+            (void)dsd_number_text(floor_db, sizeof floor_db, view->auto_floor_db, 6, 1, DSD_NUMBER_TEXT_SATURATE);
+        } else {
+            (void)dsd_number_text(floor_db, sizeof floor_db, view->auto_floor_db, 0, 1, 0);
+        }
+        DSD_SNPRINTF(out, out_size, "floor %s dB", floor_db);
     }
+}
+
+/* The longest status a dynamic setting in force can show, as fixed-width text: what its padding fills to. AUTO shows
+   an off reason, the EDACS idle text or the tracker's state; NOISE adds its own states and "as auto: " before the
+   tracker's. The literals are the texts the functions here print (the floor and quieting at their fixed widths). */
+static size_t
+squelch_view_status_span(const dsd_app_squelch_view* view) {
+    static const char* const tracker[] = {"off: no channel plan", "learning", "floor -999.9 dB"};
+    static const char* const auto_texts[] = {"off: no radio input", "off on digital", "EDACS analog calls"};
+    static const char* const noise_texts[] = {"off: no radio input",
+                                              "off on digital",
+                                              "off on AM audio",
+                                              "off: no band above voice",
+                                              "off: no room above voice",
+                                              "EDACS analog calls, as auto",
+                                              "learning",
+                                              "starting",
+                                              "quieting -200 dB"};
+    size_t span = 0;
+    for (size_t i = 0; i < sizeof tracker / sizeof tracker[0]; i++) {
+        const size_t n = strlen(tracker[i]) + (view->effective_noise ? strlen("as auto: ") : 0U);
+        span = (n > span) ? n : span;
+    }
+    const char* const* texts = view->effective_noise ? noise_texts : auto_texts;
+    const size_t count =
+        view->effective_noise ? sizeof noise_texts / sizeof noise_texts[0] : sizeof auto_texts / sizeof auto_texts[0];
+    for (size_t i = 0; i < count; i++) {
+        const size_t n = strlen(texts[i]);
+        span = (n > span) ? n : span;
+    }
+    return span;
 }
 
 /* Why the dynamic squelch the view shows is off, or NULL while it runs. */
@@ -178,8 +218,49 @@ squelch_view_fixed_status(const dsd_app_squelch_view* view) {
     return NULL;
 }
 
+/* The status itself, unpadded. */
+static void
+squelch_view_status_text(const dsd_app_squelch_view* view, unsigned flags, char* out, size_t out_size) {
+    const char* fixed = squelch_view_fixed_status(view);
+    if (fixed) {
+        DSD_SNPRINTF(out, out_size, "%s", fixed);
+    } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING
+               || (view->noise_state != DSD_SQUELCH_NOISE_STATE_NONE && !view->noise_measured)) {
+        DSD_SNPRINTF(out, out_size, "%s", "learning");
+    } else if (view->noise_as_auto) {
+        char tracker[32];
+        squelch_view_tracker_status(view, flags, tracker, sizeof tracker);
+        DSD_SNPRINTF(out, out_size, "as auto: %s", tracker);
+    } else if (view->effective_noise) {
+        if (view->noise_measured) {
+            char quieting[32];
+            if (flags & DSD_APP_SQUELCH_VIEW_FIXED) {
+                (void)dsd_number_text(quieting, sizeof quieting, view->noise_quieting_db, 4, 0,
+                                      DSD_NUMBER_TEXT_SATURATE);
+            } else {
+                (void)dsd_number_text(quieting, sizeof quieting, view->noise_quieting_db, 0, 0, 0);
+            }
+            DSD_SNPRINTF(out, out_size, "quieting %s dB", quieting);
+        } else {
+            DSD_SNPRINTF(out, out_size, "%s", "starting");
+        }
+    } else {
+        squelch_view_tracker_status(view, flags, out, out_size);
+    }
+}
+
+/* How many spaces fixed-width text adds after a status of @p len characters. */
+static int
+squelch_view_status_pad(const dsd_app_squelch_view* view, unsigned flags, size_t len) {
+    if (!(flags & DSD_APP_SQUELCH_VIEW_FIXED) || (!view->effective_auto && !view->effective_noise)) {
+        return 0;
+    }
+    const size_t span = squelch_view_status_span(view);
+    return (span > len) ? (int)(span - len) : 0;
+}
+
 int
-dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out, size_t out_size) {
+dsd_app_squelch_view_dynamic_status_ex(const dsd_app_squelch_view* view, unsigned flags, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;
     }
@@ -190,30 +271,19 @@ dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out,
     if (!view->effective_auto && !view->effective_noise) {
         return 0;
     }
-    const char* fixed = squelch_view_fixed_status(view);
-    if (fixed) {
-        DSD_SNPRINTF(out, out_size, "%s", fixed);
-    } else if (view->noise_state == DSD_SQUELCH_NOISE_STATE_LEARNING
-               || (view->noise_state != DSD_SQUELCH_NOISE_STATE_NONE && !view->noise_measured)) {
-        DSD_SNPRINTF(out, out_size, "%s", "learning");
-    } else if (view->noise_as_auto) {
-        char tracker[24];
-        squelch_view_tracker_status(view, tracker, sizeof tracker);
-        DSD_SNPRINTF(out, out_size, "as auto: %s", tracker);
-    } else if (view->effective_noise) {
-        if (view->noise_measured) {
-            DSD_SNPRINTF(out, out_size, "quieting %.0f dB", view->noise_quieting_db);
-        } else {
-            DSD_SNPRINTF(out, out_size, "%s", "starting");
-        }
-    } else {
-        squelch_view_tracker_status(view, out, out_size);
-    }
+    char status[48];
+    squelch_view_status_text(view, flags, status, sizeof status);
+    DSD_SNPRINTF(out, out_size, "%s%*s", status, squelch_view_status_pad(view, flags, strlen(status)), "");
     return 0;
 }
 
 int
-dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, size_t out_size) {
+dsd_app_squelch_view_dynamic_status(const dsd_app_squelch_view* view, char* out, size_t out_size) {
+    return dsd_app_squelch_view_dynamic_status_ex(view, 0U, out, out_size);
+}
+
+int
+dsd_app_squelch_view_format_ex(const dsd_app_squelch_view* view, unsigned flags, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
         return -1;
     }
@@ -224,11 +294,15 @@ dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, size_t 
     char effective[24];
     squelch_view_setting_text(squelch_view_mode(view->effective_auto, view->effective_noise), view->effective_margin_db,
                               view->effective_level, effective, sizeof effective);
-    char detail[40];
-    (void)dsd_app_squelch_view_dynamic_status(view, detail, sizeof detail);
+    char detail[48];
+    detail[0] = '\0';
+    if (view->effective_auto || view->effective_noise) {
+        squelch_view_status_text(view, flags, detail, sizeof detail);
+    }
+    const int pad = squelch_view_status_pad(view, flags, strlen(detail));
     if (!view->row_override) {
         if (detail[0] != '\0') {
-            DSD_SNPRINTF(out, out_size, "%s (%s)", effective, detail);
+            DSD_SNPRINTF(out, out_size, "%s (%s)%*s", effective, detail, pad, "");
         } else {
             DSD_SNPRINTF(out, out_size, "%s", effective);
         }
@@ -237,9 +311,14 @@ dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, size_t 
     char configured[24];
     squelch_view_setting_text(squelch_view_mode(view->configured_auto, view->configured_noise),
                               view->configured_margin_db, view->configured_level, configured, sizeof configured);
-    DSD_SNPRINTF(out, out_size, "%s (%s%srow; default %s)", effective, detail, detail[0] != '\0' ? "; " : "",
-                 configured);
+    DSD_SNPRINTF(out, out_size, "%s (%s%srow; default %s)%*s", effective, detail, detail[0] != '\0' ? "; " : "",
+                 configured, pad, "");
     return 0;
+}
+
+int
+dsd_app_squelch_view_format(const dsd_app_squelch_view* view, char* out, size_t out_size) {
+    return dsd_app_squelch_view_format_ex(view, 0U, out, out_size);
 }
 
 int
@@ -280,7 +359,17 @@ dsd_app_squelch_view_configured_text(const dsd_app_squelch_view* view, char* out
     } else if (view->configured_off) {
         DSD_SNPRINTF(out, out_size, "%s", "off");
     } else {
-        DSD_SNPRINTF(out, out_size, "%.1f", pwr_to_dB(view->configured_level));
+        /* The level's own dB, unclamped, while the parser reads it back as a level: a negative number (0.0 reads as
+           off) from -200.0 (dsd_squelch_level_from_sql()'s floor). Past either end, the linear mean power, which the
+           parser keeps as written. */
+        const double db = 10.0 * log10(view->configured_level);
+        char text[32];
+        (void)dsd_number_text(text, sizeof text, db, 0, 1, 0);
+        if (text[0] == '-' && db >= -200.0) {
+            DSD_SNPRINTF(out, out_size, "%s", text);
+        } else {
+            DSD_SNPRINTF(out, out_size, "%.6g", view->configured_level);
+        }
     }
     return 0;
 }

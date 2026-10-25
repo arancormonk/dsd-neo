@@ -789,6 +789,19 @@ Item {
             testContext.setMetric("syncedHere",false)
         }
 
+        // An SNR that rounds to zero reads "0.0 dB", never "-0.0 dB" (issue #669).
+        function test_snr_rounding_to_zero_has_no_sign() {
+            var snr = findChild(screenLoader.item, "spectrumSnr")
+            verify(snr !== null, "the SNR label is missing")
+            testContext.setMetric("snrValid", true)
+            testContext.setMetric("snrDb", -0.04)
+            tryCompare(snr, "text", "0.0 dB")
+            testContext.setMetric("snrDb", -3.26)
+            tryCompare(snr, "text", "-3.3 dB")
+            testContext.setMetric("snrValid", false)
+            testContext.setMetric("snrDb", 0.0)
+        }
+
         function setIdentity(protocol, tokens, text, live) {
             testContext.setMetric("carrierIdentityProtocol", protocol)
             testContext.setMetric("carrierIdentityTokens", tokens)

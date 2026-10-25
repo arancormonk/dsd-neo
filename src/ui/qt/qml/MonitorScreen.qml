@@ -252,7 +252,7 @@ Item {
     readonly property var detailsSummary: {
         var tokens = [];
         if (metrics.radioInput && metrics.snrValid)
-            tokens.push({text: qsTr("SNR %1 dB").arg(metrics.snrDb.toFixed(1)), color: ""});
+            tokens.push({text: qsTr("SNR %1 dB").arg(Util.fixed(metrics.snrDb, 1)), color: ""});
         if (metrics.tetraVisible && metrics.tetraCodecFault && metrics.tetraCodecText.length > 0)
             tokens.push({text: qsTr("CODEC") + " " + metrics.tetraCodecText, color: String(Theme.alert)});
         if (metrics.qualityValid) {
@@ -1333,7 +1333,8 @@ Item {
                     }
 
                     Text {
-                        text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "—"
+                        objectName: "monitorSnrValue"
+                        text: metrics.snrValid ? Util.fixed(metrics.snrDb, 1) + " dB" : "—"
                         font.family: Theme.mono
                         font.pixelSize: Theme.fontSize(11)
                         color: metrics.snrValid ? Theme.cyan : Theme.textSubdued
@@ -1360,7 +1361,8 @@ Item {
                 }
 
                 Text {
-                    text: "CFO " + metrics.cfoHz.toFixed(0) + " Hz"
+                    objectName: "monitorCfo"
+                    text: "CFO " + Util.fixed(metrics.cfoHz, 0) + " Hz"
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued

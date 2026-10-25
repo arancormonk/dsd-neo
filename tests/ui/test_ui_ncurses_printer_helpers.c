@@ -33,6 +33,7 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -46,6 +47,7 @@
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -122,13 +124,19 @@ append_printw_capture(const char* fmt, va_list ap) {
 static void
 assert_capture_contains(const char* needle) {
     assert(needle != NULL);
-    assert(strstr(g_printw_capture, needle) != NULL);
+    if (strstr(g_printw_capture, needle) == NULL) {
+        DSD_FPRINTF(stderr, "capture:\n%s\nlacks: '%s'\n", g_printw_capture, needle);
+        assert(0);
+    }
 }
 
 static void
 assert_capture_equals(const char* expected) {
     assert(expected != NULL);
-    assert(strcmp(g_printw_capture, expected) == 0);
+    if (strcmp(g_printw_capture, expected) != 0) {
+        DSD_FPRINTF(stderr, "capture:\n'%s'\nwant:\n'%s'\n", g_printw_capture, expected);
+        assert(0);
+    }
 }
 
 static void
@@ -429,20 +437,28 @@ dsd_squelch_format(double mean_power, const char* unit, char* out,
         DSD_SNPRINTF(out, out_size, "off");
         return 0;
     }
-    DSD_SNPRINTF(out, out_size, "%.1f%s", pwr_to_dB(mean_power), unit ? unit : "");
+    char db[32];
+    (void)dsd_number_text(db, sizeof db, pwr_to_dB(mean_power), 0, 1, 0);
+    DSD_SNPRINTF(out, out_size, "%s%s", db, unit ? unit : "");
     return 0;
 }
 
+/* The real labels (runtime/input_level.c), so the level row's goldens and widths run against what ships. */
 const char*
 dsd_input_level_status_label(dsd_input_level_status status) { // NOLINT(misc-use-internal-linkage)
-    (void)status;
-    return "ok";
+    switch (status) {
+        case DSD_INPUT_LEVEL_OK: return "OK";
+        case DSD_INPUT_LEVEL_LOW: return "LOW";
+        case DSD_INPUT_LEVEL_HOT: return "HOT";
+        case DSD_INPUT_LEVEL_CLIPPING: return "CLIP";
+        case DSD_INPUT_LEVEL_UNKNOWN:
+        default: return "UNKNOWN";
+    }
 }
 
 const char*
 dsd_input_level_display_label(dsd_input_level_source source) { // NOLINT(misc-use-internal-linkage)
-    (void)source;
-    return "Input";
+    return source == DSD_INPUT_LEVEL_SOURCE_PCM ? "Input Level" : "RF Level";
 }
 
 int
@@ -720,6 +736,10 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
 #include "ui_snr_readout.h"
 
 static int g_requested_ppm;
+/* The applied tuner gain the front end reports. */
+static int g_tuner_gain_valid;
+static int g_tuner_gain_is_auto;
+static int g_tuner_gain_tenth_db;
 /* The channel the front end reports (issue #525): its width, whether the DSP rate limits it, its output, and whether
    a stream runs at all (the mirror behind the width outlives the stream). */
 static int g_channel_bandwidth_hz;
@@ -737,6 +757,9 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-int
     g_metrics_calls++;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->requested_ppm = g_requested_ppm;
+    out->tuner_gain_valid = g_tuner_gain_valid;
+    out->tuner_gain_is_auto = g_tuner_gain_is_auto;
+    out->tuner_gain_tenth_db = g_tuner_gain_tenth_db;
     out->output_kind = g_output_kind;
     out->channel_bandwidth_hz = g_channel_bandwidth_hz;
     out->channel_bandwidth_dsp_limited = g_channel_bandwidth_dsp_limited;
@@ -891,12 +914,21 @@ test_dmr_mono_override_terminal_reporting(void) {
     ncurses_last_synctype = DSD_SYNC_NONE;
 }
 
+/* The column a field starts at in the first row of the capture, or -1. */
+static int
+capture_column_of(const char* needle) {
+    const char* hit = strstr(g_printw_capture, needle);
+    return hit ? (int)(hit - g_printw_capture) : -1;
+}
+
 static void
 test_basic_input_source_rendering(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    /* Wide enough that nothing is cut; the 80-column cases below say what a narrow panel keeps. */
+    g_stub_max_x = 200;
 
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.pulse_digi_rate_in = 48000;
@@ -909,12 +941,17 @@ test_basic_input_source_rendering(void) {
     DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "audio.local");
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| Pulse Signal Input:  48 kHz; 2 Ch;");
-    assert_capture_contains(" D: pulse-device;");
-    assert_capture_contains("RIG: radio.local:4532;");
-    assert_capture_contains(" IV: 3X;");
-    /* Audio input shows the squelch as a radio input does (issue #628). */
-    assert_capture_contains(" SQL: off;");
+    /* The source row, then the channel row: audio input shows the squelch as a radio input does (issue #628). The
+       device and the rigctl peer, configuration, go last; one space after every separator (B4). */
+    assert_capture_equals("| Pulse Signal Input: 48 kHz; 2 Ch; IV:  3X; D: pulse-device; RIG: radio.local:4532;\n"
+                          "| SQL: off;\n");
+    /* At 80 columns the row is cut after its last whole field, and says so. */
+    g_stub_max_x = 80;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_equals("| Pulse Signal Input: 48 kHz; 2 Ch; IV:  3X; D: pulse-device;...\n"
+                          "| SQL: off;\n");
+    g_stub_max_x = 200;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_TCP;
@@ -924,10 +961,11 @@ test_basic_input_source_rendering(void) {
     DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "10.0.0.5");
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| TCP Signal Input: 10.0.0.5:7355; 48 kHz; 1 Ch;");
-    assert_capture_contains(" IV: 4X;");
+    assert_capture_equals("| TCP Signal Input: 10.0.0.5:7355; 48 kHz; 1 Ch; IV:  4X;\n"
+                          "| SQL: off;\n");
 
-    /* The PCM noise squelch on an FM monitor: learning, then its quieting, then no band above voice. */
+    /* The PCM noise squelch on an FM monitor: learning, then its quieting, then no band above voice. The readout keeps
+       one length while it changes, so a field after it holds its column. */
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
     opts.rtl_squelch_margin_db = 12;
     opts.analog_only = 1;
@@ -937,17 +975,22 @@ test_basic_input_source_rendering(void) {
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_LEARNING;
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains(" SQL: noise +12 dB (learning);");
+    assert_capture_contains("\n| SQL: noise +12 dB (learning);\n");
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_KNOWN;
     state.squelch_noise_measured = 1;
     state.squelch_noise_quieting_cdb = 2300;
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains(" SQL: noise +12 dB (quieting 23 dB);");
+    assert_capture_contains("\n| SQL: noise +12 dB (quieting   23 dB);\n");
+    /* A reading that rounds to zero has no sign (issue #669). */
+    state.squelch_noise_quieting_cdb = -49;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains("\n| SQL: noise +12 dB (quieting    0 dB);\n");
     state.squelch_noise_state = DSD_SQUELCH_NOISE_STATE_NO_BAND;
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains(" SQL: noise +12 dB (off: no band above voice);");
+    assert_capture_contains("\n| SQL: noise +12 dB (off: no band above voice);\n");
     DSD_MEMSET(&state, 0, sizeof(state));
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -957,16 +1000,34 @@ test_basic_input_source_rendering(void) {
     opts.input_volume_multiplier = 5;
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| UDP Signal Input: 127.0.0.1:23456; 96 kHz; 1 Ch;");
-    assert_capture_contains("[Waiting]");
+    /* Before the first packet "[Waiting]" takes the counters' room, so nothing moves when they appear. */
+    assert_capture_equals("| UDP Signal Input: 127.0.0.1:23456; [Waiting]                    96 kHz; 1 Ch; IV:  5X;\n"
+                          "| SQL: off;\n");
+    const int rate_col = capture_column_of(" 96 kHz;");
 
     opts.udp_in_packets = 42ULL;
     opts.udp_in_drops = 3ULL;
     DSD_SNPRINTF(opts.udp_in_bindaddr, sizeof(opts.udp_in_bindaddr), "0.0.0.0");
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| UDP Signal Input: 0.0.0.0:23456; 96 kHz; 1 Ch;");
-    assert_capture_contains("Pkts:42 Drops:3");
+    assert_capture_equals("| UDP Signal Input: 0.0.0.0:23456; Pkts:     42; Drops:      3; 96 kHz; 1 Ch; IV:  5X;\n"
+                          "| SQL: off;\n");
+    DSD_SNPRINTF(opts.udp_in_bindaddr, sizeof(opts.udp_in_bindaddr), "%s", "127.0.0.1");
+    /* The counts grow in place: Drops and the rate keep their columns from 9 to 10 and past a million. */
+    const unsigned long long counts[] = {1ULL, 9ULL, 10ULL, 999999ULL, 1000000ULL, 4294967295ULL, ULLONG_MAX};
+    for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
+        opts.udp_in_packets = counts[i];
+        opts.udp_in_drops = counts[i];
+        reset_printw_capture();
+        ui_render_basic_input_sources(&opts, &state);
+        assert(capture_column_of(" 96 kHz;") == rate_col);
+        assert(capture_column_of(" Drops:") == capture_column_of(" Pkts:") + 14);
+    }
+    opts.udp_in_packets = 1000000ULL;
+    opts.udp_in_drops = 4294967295ULL;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains(" Pkts:   1.0M; Drops:   4.2G;");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_WAV;
@@ -976,14 +1037,16 @@ test_basic_input_source_rendering(void) {
     opts.rtl_squelch_level = dsd_squelch_level_from_sql(-50.0);
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| WAV Audio Input: capture.wav; 48 kHz;");
-    assert_capture_contains(" IV: 2X; SQL: -50.0 dB;");
+    assert_capture_equals("| WAV Audio Input: capture.wav; 48 kHz; IV:  2X;\n"
+                          "| SQL: -50.0 dB;\n");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_STDIN;
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| STDIN Standard Input: - Menu Disabled when using STDIN! SQL: off;");
+    assert_capture_equals("| STDIN Standard Input: - Menu Disabled when using STDIN!\n"
+                          "| SQL: off;\n");
+    g_stub_max_x = 80;
 }
 
 /*
@@ -1010,12 +1073,14 @@ test_peer_passband_status_rendering(void) {
     opts.setmod_bw = 12500;
     opts.analog_only = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    g_stub_max_x = 200;
 
     reset_printw_capture();
     g_metrics_calls = 0;
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| TCP Signal Input: audio.local:7355; 48 kHz; 1 Ch; RIG: rig.local:4532;");
-    assert_capture_contains(" SQL: off; Passband: NFM 12.5 kHz (-B);");
+    /* The passband leads nothing: the squelch reading comes first on the channel row (issue #669). */
+    assert_capture_equals("| TCP Signal Input: audio.local:7355; 48 kHz; 1 Ch; IV:  1X; RIG: rig.local:4532;\n"
+                          "| SQL: off; Passband: NFM 12.5 kHz (-B);\n");
     assert(strstr(g_printw_capture, "Analog:") == NULL);
     /* The peer's passband needs no stream metrics, and the audio line, drawn every frame, fetches none. */
     assert(g_metrics_calls == 0);
@@ -1042,7 +1107,8 @@ test_peer_passband_status_rendering(void) {
     opts.udp_in_portno = 23456;
     reset_printw_capture();
     ui_render_basic_input_sources(&opts, &state);
-    assert_capture_contains("| UDP Signal Input: 127.0.0.1:23456; 48 kHz; 1 Ch; RIG: rig.local:4532;");
+    assert_capture_contains("| UDP Signal Input: 127.0.0.1:23456;");
+    assert_capture_contains(" 48 kHz; 1 Ch; IV:  1X; RIG: rig.local:4532;\n");
     assert_capture_contains(" Passband: NFM 12.5 kHz (-B);");
     opts.audio_in_type = AUDIO_IN_PULSE;
     opts.pulse_digi_rate_in = 48000;
@@ -1106,10 +1172,12 @@ test_peer_passband_status_rendering(void) {
     reset_printw_capture();
     g_metrics_calls = 0;
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz (default);");
+    assert_capture_contains(" DSP-BW: 48 kHz;");
+    assert_capture_contains(" Analog: NFM 16 kHz (default);");
     assert(strstr(g_printw_capture, "Passband:") == NULL);
     assert(g_metrics_calls > 0);
     g_stream_active = 0;
+    g_stub_max_x = 80;
 }
 
 static void
@@ -1134,15 +1202,12 @@ test_rtl_and_soapy_input_source_rendering(void) {
     DSD_SNPRINTF(opts.rtl_udp_bindaddr, sizeof(opts.rtl_udp_bindaddr), "127.0.0.1");
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains("| RTL: 2;");
-    assert_capture_contains(" G: 21dB;");
-    assert_capture_contains(" Mon: 3X;");
-    assert_capture_contains(" PPM: -7;");
-    assert_capture_contains(" SQL: -47.5 dB;");
-    assert_capture_contains(" DSP-BW: 24 kHz;");
-    assert_capture_contains(" FRQ: 851012500;");
-    assert_capture_contains("| Auto PPM: Off");
-    assert_capture_contains("| External RTL Tuning on UDP: 127.0.0.1:5555");
+    /* Issue #669: the receiver's readings at fixed widths on the source row, the tuned frequency last; the squelch on
+       the channel row below; Auto PPM and the External RTL Tuning endpoint on rows of their own. */
+    assert_capture_equals("| RTL: 2; G:  21dB; PPM:   -7; Mon: 3X; DSP-BW: 24 kHz; FRQ: 851012500;\n"
+                          "| SQL: -47.5 dB;\n"
+                          "| Auto PPM: Off\n"
+                          "| External RTL Tuning on UDP: 127.0.0.1:5555\n");
 
     /* Issue #575: an I/Q replay's recorded RETUNEs leave rtlsdr_center_freq on the capture's opening centre; the field
      * reads the centre the samples being decoded were captured on, and the tuned centre again once there is none. */
@@ -1207,13 +1272,16 @@ test_rtl_and_soapy_input_source_rendering(void) {
     vox_opts.rtl_squelch_level = dsd_squelch_level_from_sql(-60.0);
     reset_printw_capture();
     ui_render_m17_encoder_status(&vox_opts, &vox_state);
-    assert_capture_contains(" SQL: -70.0 : -60.0 dB (row; default -80.0 dB);");
+    /* At 80 columns the live reading stays and the gain setting is what the cut takes (issue #669). */
+    assert_capture_equals("| M17 Encoder: Vox Mode; SQL:  -70.0 : -60.0 dB (row; default -80.0 dB);...\n");
     g_scan_row_options = NULL;
     g_scan_configured = NULL;
     vox_opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    g_stub_max_x = 200;
     reset_printw_capture();
     ui_render_m17_encoder_status(&vox_opts, &vox_state);
-    assert_capture_contains(" SQL: -70.0 : -80.0 dB;");
+    assert_capture_equals("| M17 Encoder: Vox Mode; SQL:  -70.0 : -80.0 dB; Input Gain (/|*): Auto F: |  |  |  |\n");
+    g_stub_max_x = 80;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_RTL;
@@ -1224,10 +1292,14 @@ test_rtl_and_soapy_input_source_rendering(void) {
     opts.rtlsdr_center_freq = 2400000000U;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains("| SoapySDR: driver=rtlsdr;");
-    assert_capture_contains(" G: AGC;");
-    assert_capture_contains(" DSP-BW: 12 kHz;");
-    assert_capture_contains(" FRQ: 2400000000;");
+    /* The device arguments, free-form configuration, go last; AGC takes the room a gain does. */
+    assert_capture_contains("| SoapySDR; G:   AGC; PPM:   -7; Mon: 0X; DSP-BW: 12 kHz; FRQ: 2400000000;...\n");
+    g_stub_max_x = 200;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(
+        "| SoapySDR; G:   AGC; PPM:   -7; Mon: 0X; DSP-BW: 12 kHz; FRQ: 2400000000; Args: driver=rtlsdr;\n");
+    g_stub_max_x = 80;
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy");
     reset_printw_capture();
@@ -1264,7 +1336,8 @@ test_analog_channel_status_rendering(void) {
     g_channel_bandwidth_hz = 0;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 48 kHz; Analog: NFM 16 kHz (default);");
+    assert_capture_contains(" DSP-BW: 48 kHz;");
+    assert_capture_contains(" Analog: NFM 16 kHz (default);");
 
     opts.analog_nfm_bandwidth_hz = 12500;
     g_channel_bandwidth_hz = 20000;
@@ -1300,7 +1373,8 @@ test_analog_channel_status_rendering(void) {
     g_demod_rate_hz = 12000;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    assert_capture_contains(" DSP-BW: 12 kHz;");
+    assert_capture_contains(" Analog: NFM 12 kHz (DSP-limited);");
     opts.rtl_dsp_bw_khz = 48;
     g_demod_rate_hz = 0;
 
@@ -1341,7 +1415,8 @@ test_analog_channel_status_rendering(void) {
     g_channel_bandwidth_dsp_limited = 1;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    assert_capture_contains(" DSP-BW: 12 kHz;");
+    assert_capture_contains(" Analog: NFM 12 kHz (DSP-limited);");
     /* ...and with the stream stopped (an rtl_tcp disconnect, a failed restart), from the options alone: the 12 kHz DSP
        bandwidth is the rate the next start runs the default at, so the line reads what that start publishes, not the
        default's 16 kHz. */
@@ -1350,7 +1425,8 @@ test_analog_channel_status_rendering(void) {
     g_channel_bandwidth_dsp_limited = 0;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 12 kHz; Analog: NFM 12 kHz (DSP-limited);");
+    assert_capture_contains(" DSP-BW: 12 kHz;");
+    assert_capture_contains(" Analog: NFM 12 kHz (DSP-limited);");
     g_stream_active = 1;
 
     /* The M17 encoder shares the monitor output without being the analog receiver. */
@@ -1364,6 +1440,212 @@ test_analog_channel_status_rendering(void) {
     g_stream_active = 0;
 }
 
+/* Issue #669: the receiver rows. An Airspy names itself on a bordered row of its own (B1); every reading on the source
+   row keeps one width, so the fields after it hold their columns; a gain past its field saturates instead of widening
+   it, and a replay's gain near INT_MAX rounds without overflow (B7). */
+static void
+test_receiver_rows_fixed_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_volume_multiplier = 2;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtlsdr_center_freq = 146520000;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "airspy:0123456789abcdef");
+    DSD_SNPRINTF(opts.airspy_info.serial, sizeof(opts.airspy_info.serial), "0123456789abcdef");
+    opts.airspy_info.sample_rate = 3000000U;
+    opts.rtl_gain_value = 21;
+    g_requested_ppm = 0;
+    g_stub_max_x = 200;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_starts_with("| Airspy: 0123456789abcdef; 3000000 samples/s;\n"
+                               "| G:  21dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ: 146520000;\n"
+                               "| SQL: off;");
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+    opts.rtl_dev_index = 0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_starts_with("| RTL: 0; G:  21dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ: 146520000;\n");
+    const int mon_col = capture_column_of(" Mon:");
+    const int frq_col = capture_column_of(" FRQ:");
+    /* PPM across its live range and past it (an I/Q replay's int32): Mon and FRQ hold. */
+    const int ppms[] = {0, 5, -5, 99, -99, 200, -200, 1000, -1000, INT_MAX, INT_MIN};
+    for (size_t i = 0; i < sizeof ppms / sizeof ppms[0]; i++) {
+        g_requested_ppm = ppms[i];
+        reset_printw_capture();
+        ui_render_rtl_input_source(&opts, &state);
+        assert(capture_column_of(" Mon:") == mon_col);
+    }
+    assert_capture_contains(" PPM: <-99;");
+    g_requested_ppm = 0;
+    /* The requested gain, AGC in the same room, and the DSP width from 4 to 72 kHz. */
+    const int gains[] = {0, 1, 9, 10, 49};
+    for (size_t i = 0; i < sizeof gains / sizeof gains[0]; i++) {
+        opts.rtl_gain_value = gains[i];
+        opts.rtl_dsp_bw_khz = (i % 2U) ? 4 : 72;
+        reset_printw_capture();
+        ui_render_rtl_input_source(&opts, &state);
+        assert(capture_column_of(" Mon:") == mon_col);
+        assert(capture_column_of(" FRQ:") == frq_col);
+    }
+    opts.rtl_gain_value = 0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" G:   AGC;");
+
+#ifdef USE_RADIO
+    /* The gain the front end applied: tenths rounded half away from zero, negative gains (E4K -1.0 dB, FC0012 -9.9 dB)
+       included, and an absurd replay value saturated rather than overflowed or widened. */
+    g_tuner_gain_valid = 1;
+    const int tenths[] = {496, 495, 494, -10, -99, -95, -94, 0, INT_MAX, INT_MIN, INT_MAX - 4};
+    const char* const want[] = {" G:  50dB;", " G:  50dB;", " G:  49dB;", " G:  -1dB;", " G: -10dB;", " G: -10dB;",
+                                " G:  -9dB;", " G:   0dB;", " G: >99dB;", " G: <-9dB;", " G: >99dB;"};
+    for (size_t i = 0; i < sizeof tenths / sizeof tenths[0]; i++) {
+        g_tuner_gain_tenth_db = tenths[i];
+        reset_printw_capture();
+        ui_render_rtl_input_source(&opts, &state);
+        assert_capture_contains(want[i]);
+        assert(capture_column_of(" PPM:") == capture_column_of(" G:") + 10);
+    }
+    g_tuner_gain_is_auto = 1;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" G:   AGC;");
+    g_tuner_gain_valid = 0;
+    g_tuner_gain_is_auto = 0;
+    g_tuner_gain_tenth_db = 0;
+#endif
+    g_stub_max_x = 80;
+}
+
+/* Issue #669: the input level row keeps its columns while the status word and the readings change, and a reading that
+   rounds to zero has no sign. */
+static void
+test_input_level_row_fixed_width(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.input_level.source = DSD_INPUT_LEVEL_SOURCE_PCM;
+    state.input_level.sample_count = 100U;
+    state.input_level.status = DSD_INPUT_LEVEL_OK;
+    state.input_level.rms_dbfs = -23.44;
+    state.input_level.peak_dbfs = -0.04;
+    state.input_level.clip_pct = 0.0;
+    g_stub_max_x = 200;
+    reset_printw_capture();
+    ui_render_input_level_status(&state);
+    assert_capture_equals("| Input Level: OK      rms  -23.4 dBFS peak    0.0 dBFS clip   0.0%\n");
+    const int rms_col = capture_column_of(" rms");
+    const int peak_col = capture_column_of(" peak");
+    const int clip_col = capture_column_of(" clip");
+    const dsd_input_level_status statuses[] = {DSD_INPUT_LEVEL_LOW, DSD_INPUT_LEVEL_HOT, DSD_INPUT_LEVEL_CLIPPING,
+                                               DSD_INPUT_LEVEL_UNKNOWN, DSD_INPUT_LEVEL_OK};
+    const double levels[] = {-120.0, -0.0, -9.95, -100.0, -5.0};
+    for (size_t i = 0; i < sizeof statuses / sizeof statuses[0]; i++) {
+        state.input_level.status = statuses[i];
+        state.input_level.rms_dbfs = levels[i];
+        state.input_level.peak_dbfs = levels[(i + 1U) % 5U];
+        state.input_level.clip_pct = (i == 2U) ? 100.0 : 1.25;
+        reset_printw_capture();
+        ui_render_input_level_status(&state);
+        assert(capture_column_of(" rms") == rms_col);
+        assert(capture_column_of(" peak") == peak_col);
+        assert(capture_column_of(" clip") == clip_col);
+        assert(strstr(g_printw_capture, "-0.0") == NULL);
+    }
+    state.input_level.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+    state.input_level.status = DSD_INPUT_LEVEL_CLIPPING;
+    state.input_level.rms_dbfs = -3.0;
+    state.input_level.peak_dbfs = 0.0;
+    state.input_level.clip_pct = 100.0;
+    reset_printw_capture();
+    ui_render_input_level_status(&state);
+    assert_capture_equals("| RF Level: CLIP    rms   -3.0 dBFS peak    0.0 dBFS clip 100.0% lower RF gain or add "
+                          "filtering/attenuation\n");
+    g_stub_max_x = 80;
+}
+
+/* Issue #669: the output rows keep their columns while a gain moves from 99 % to 100 %, and when the analog gain
+   switches between auto and manual. The UDP analog output and the M17 UDP input appear only while their sockets are
+   open: invalid is DSD_INVALID_SOCKET, and 0 is a valid descriptor (B8). */
+static void
+test_output_rows_fixed_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    g_stub_max_x = 200;
+    opts.audio_out_type = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.pulse_digi_out_channels = 2;
+    state.aout_gain = 4.5f;
+    state.aout_gainR = 50.0f;
+    reset_printw_capture();
+    ui_render_pulse_digital_output(&opts, &state);
+    assert_capture_equals("| Pulse Digital Output: 8 kHz; 2 Ch; G:   9% G: 100% (+|-) Auto\n");
+    const int mode_col = capture_column_of(" (+|-)");
+    state.aout_gain = 50.0f;
+    state.aout_gainR = 0.0f;
+    reset_printw_capture();
+    ui_render_pulse_digital_output(&opts, &state);
+    assert(capture_column_of(" (+|-)") == mode_col);
+
+    opts.frame_provoice = 1;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.pulse_raw_rate_out = 48000;
+    opts.pulse_raw_out_channels = 1;
+    opts.audio_gainA = 0.0f;
+    state.aout_gainA = -0.04f;
+    opts.rtl_pwr = dsd_squelch_level_from_sql(-70.0);
+    reset_printw_capture();
+    ui_render_pulse_analog_output(&opts, &state);
+    assert_capture_equals(
+        "| Pulse Analog Output: 48 kHz; 1 Ch; G: Auto ( +0.0 dB) (/|*) PWR:  -70.0 dB; F: |  |  |  |\n");
+    const int pwr_col = capture_column_of(" PWR:");
+    opts.audio_gainA = 100.0f;
+    reset_printw_capture();
+    ui_render_pulse_analog_output(&opts, &state);
+    assert_capture_contains(" G: 100% (/|*) Manual     PWR:");
+    assert(capture_column_of(" PWR:") == pwr_col);
+    opts.audio_gainA = 0.0f;
+    state.aout_gainA = 18.0f;
+    reset_printw_capture();
+    ui_render_pulse_analog_output(&opts, &state);
+    assert(capture_column_of(" PWR:") == pwr_col);
+    opts.frame_provoice = 0;
+
+    opts.audio_out_type = 8;
+    opts.udp_portno = 23456;
+    DSD_SNPRINTF(opts.udp_hostname, sizeof(opts.udp_hostname), "127.0.0.1");
+    opts.udp_sockfdA = DSD_INVALID_SOCKET;
+    reset_printw_capture();
+    ui_render_udp_output(&opts, &state);
+    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456; 8 kHz 2 Ch; G: 100% G:   0% (+/-) Auto\n");
+    assert(strstr(g_printw_capture, "UDP Analog Output") == NULL);
+    opts.udp_sockfdA = (dsd_socket_t)0;
+    reset_printw_capture();
+    ui_render_udp_output(&opts, &state);
+    assert_capture_contains("| UDP Analog Output: 127.0.0.1:23458; 48 kHz 1 Ch; G: Auto (+18.0 dB) (/|*) PWR:");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.m17decoderip = 1;
+    opts.m17_portno = 17000;
+    DSD_SNPRINTF(opts.m17_hostname, sizeof(opts.m17_hostname), "127.0.0.1");
+    opts.udp_sockfd = DSD_INVALID_SOCKET;
+    opts.audio_in_type = AUDIO_IN_NULL;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert(strstr(g_printw_capture, "M17 UDP IP Frame Input") == NULL);
+    opts.udp_sockfd = (dsd_socket_t)0;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts, &state);
+    assert_capture_contains("| M17 UDP IP Frame Input: 127.0.0.1:17000 \n");
+    g_stub_max_x = 80;
+}
+
 static void
 test_rtl_auto_ppm_status_rendering(void) {
     reset_printw_capture();
@@ -1372,15 +1654,29 @@ test_rtl_auto_ppm_status_rendering(void) {
 
     reset_printw_capture();
     ui_print_rtl_auto_ppm_status_values(1, 0, 0, 18.2, -122.5, 1);
-    assert_capture_contains("| Auto PPM: On; SNR: 18.2 dB; df: -122.5 Hz; step: +1;");
+    assert_capture_contains("| Auto PPM: On; SNR:   18.2 dB; df:   -122.5 Hz; step: +1;");
 
     reset_printw_capture();
     ui_print_rtl_auto_ppm_status_values(1, 0, 0, 20.0, 0.0, 0);
-    assert_capture_contains("| Auto PPM: On; SNR: 20.0 dB; df: 0.0 Hz; step: hold;");
+    assert_capture_contains("| Auto PPM: On; SNR:   20.0 dB; df:     +0.0 Hz; step: hold;");
+
+    /* Issue #669: the step word keeps its column from the -100.0 placeholder to a reading and across offsets, an offset
+       that rounds to zero reads +0.0, and one past the field saturates instead of widening it. */
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(1, 0, 0, -100.0, -0.04, 0);
+    assert_capture_contains("| Auto PPM: On; SNR: -100.0 dB; df:     +0.0 Hz; step: hold;");
+    const int step_col = capture_column_of(" step:");
+    const double offsets[] = {-0.04, 3.5, -122.5, 11459.2, -11459.2, 250000.0};
+    for (size_t i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+        reset_printw_capture();
+        ui_print_rtl_auto_ppm_status_values(1, 0, 0, (i % 2U) ? 7.5 : -100.0, offsets[i], (int)(i % 3U) - 1);
+        assert(capture_column_of(" step:") == step_col);
+    }
+    assert_capture_contains(" df: >+9999.9 Hz;");
 
     reset_printw_capture();
     ui_print_rtl_auto_ppm_status_values(1, 1, -12, 25.0, 10.0, -1);
-    assert_capture_contains("| Auto PPM: Locked (PPM: -12)");
+    assert_capture_contains("| Auto PPM: Locked (PPM:  -12)");
 }
 
 /* Issue #524: under the AM preset the field names AM and the width in force, as app-control's analog width view spells
@@ -1404,7 +1700,8 @@ test_am_channel_field_rendering(void) {
 
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 48 kHz; Analog: AM 6 kHz (default);");
+    assert_capture_contains(" DSP-BW: 48 kHz;");
+    assert_capture_contains(" Analog: AM 6 kHz (default);");
 
     opts.analog_am_bandwidth_hz = 8333;
     reset_printw_capture();
@@ -1431,7 +1728,8 @@ test_am_channel_field_rendering(void) {
     opts.rtl_dsp_bw_khz = 12;
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
-    assert_capture_contains(" DSP-BW: 12 kHz; Analog: AM 6 kHz (default);");
+    assert_capture_contains(" DSP-BW: 12 kHz;");
+    assert_capture_contains(" Analog: AM 6 kHz (default);");
 
     /* Issue #526: an am row with its own width, on a digital session. The row's width is in force, and the line names
        the configured AM width -- the 6 kHz default here -- that the row's leave returns to, as for an nfm row. */
@@ -1616,18 +1914,19 @@ test_scanner_status_row_rendering(void) {
     state.lcn_freq_roll = 1;
     state.trunk_lcn_freq[0] = 462012500;
     state.trunk_lcn_freq[1] = 462037500;
+    g_stub_max_x = 200;
 
     /* An unnamed row keeps the row byte-identical to what it has always been. */
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec\n");
 
     /* A named row spells the name out after the fixed fields, so the frequency and hangtime keep
        their columns and only the operator-length name reaches a narrow terminal's edge. */
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion\n");
 
     /* HOLD is a state of the channel on air, so it sits with the channel's fixed fields. The
        avoid count is a property of the list, not of this channel, so it trails the name: a
@@ -1636,22 +1935,23 @@ test_scanner_status_row_rendering(void) {
     state.lcn_scan_hold = 1;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec HOLD Channel: Marion \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion\n");
     state.lcn_avoid_count = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals(
-        "| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec HOLD Channel: Marion Avoids: 2 \n");
+        "| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion Avoids: 2\n");
     state.lcn_scan_hold = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion Avoids: 2 \n");
+    assert_capture_equals(
+        "| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion Avoids: 2\n");
 
     /* An unnamed row on air: the count still closes the row, after the fixed fields. */
     reset_lcn_name_stub();
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Avoids: 2 \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Avoids: 2\n");
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     state.lcn_avoid_count = 0;
 
@@ -1661,7 +1961,7 @@ test_scanner_status_row_rendering(void) {
     state.lcn_freq_roll = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Hangtime: 2.00 sec Channel: Delaware \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.037500 MHz      Hangtime: 2.00 sec Channel: Delaware\n");
 
     /* A row the importer kept for its numbering but could not use: the scanner parks on the
        frequency it is already on rather than tuning this one, so its name would credit the wrong
@@ -1669,21 +1969,21 @@ test_scanner_status_row_rendering(void) {
     state.trunk_lcn_freq[1] = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 0.000000 MHz Hangtime: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode: Frequency:    0.000000 MHz      Hangtime: 2.00 sec\n");
     state.trunk_lcn_freq[1] = 462037500;
 
     /* Before the first tune there is no row on air, so neither field prints. */
     state.lcn_freq_roll = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Hangtime: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:                                 Hangtime: 2.00 sec\n");
 
     /* A roll left past a shrunken count must not reach into the stale tail. */
     DSD_SNPRINTF(g_lcn_name_stub[2], sizeof(g_lcn_name_stub[2]), "Ghost");
     state.lcn_freq_roll = 3;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Hangtime: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:                                 Hangtime: 2.00 sec\n");
 
     /* No -Y list, no row at all. */
     opts.scanner_mode = 0;
@@ -1691,6 +1991,29 @@ test_scanner_status_row_rendering(void) {
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("");
+
+    /* Issue #669: at 80 columns a named row fits whole, HOLD included; the fields after the name are what a cut takes.
+       The frequency and the hangtime keep their columns whatever the channel. */
+    g_stub_max_x = 80;
+    opts.scanner_mode = 1;
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    state.lcn_scan_hold = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion\n");
+    const int hang_col = capture_column_of(" Hangtime:");
+    state.lcn_avoid_count = 2;
+    state.lcn_scan_hold = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    /* The count makes the row one field too long for 80 columns beside the marker; the cut takes whole fields. */
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec...\n");
+    assert(capture_column_of(" Hangtime:") == hang_col);
+    state.lcn_freq_roll = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert(capture_column_of(" Hangtime:") == hang_col);
+    state.lcn_avoid_count = 0;
 
     reset_lcn_name_stub();
 }
@@ -1707,10 +2030,11 @@ test_trunk_scan_status_row_rendering(void) {
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
     state.trunk_scan_active_ordinal = 3;
     state.trunk_scan_target_count = 6;
+    g_stub_max_x = 200;
 
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+    assert_capture_equals("| Trunk Scan: (3/6)                Target: county-p25\n");
 
     /* HOLD and the parked-on-avoided fallback describe the target on air and follow its
        position; the list-wide avoid count comes last and under a different word, so the two
@@ -1718,27 +2042,27 @@ test_trunk_scan_status_row_rendering(void) {
     state.trunk_scan_hold = 1;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) HOLD\n");
+    assert_capture_equals("| Trunk Scan: (3/6) HOLD           Target: county-p25\n");
     state.trunk_scan_active_avoided = 1;
     state.trunk_scan_avoided_count = 2;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) HOLD [avoided] Avoids: 2\n");
+    assert_capture_equals("| Trunk Scan: (3/6) HOLD [avoided] Target: county-p25 Avoids: 2\n");
     state.trunk_scan_hold = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) [avoided] Avoids: 2\n");
+    assert_capture_equals("| Trunk Scan: (3/6)      [avoided] Target: county-p25 Avoids: 2\n");
     state.trunk_scan_active_avoided = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Avoids: 2\n");
+    assert_capture_equals("| Trunk Scan: (3/6)                Target: county-p25 Avoids: 2\n");
     state.trunk_scan_avoided_count = 0;
 
     /* No position published yet: name the target without inventing an "n of m". */
     state.trunk_scan_active_ordinal = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
+    assert_capture_equals("| Trunk Scan:                      Target: county-p25\n");
 
     /* Half a position is no position: an ordinal with no rotation length behind it prints
        no suffix either. */
@@ -1746,7 +2070,7 @@ test_trunk_scan_status_row_rendering(void) {
     state.trunk_scan_target_count = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
+    assert_capture_equals("| Trunk Scan:                Target: county-p25\n");
     state.trunk_scan_target_count = 6;
 
     /* A stale id from an earlier run must not show once scanning is off. */
@@ -1774,14 +2098,36 @@ test_trunk_scan_status_row_rendering(void) {
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n"
-                          "| Trunk Scan:  Target: county-p25 (3/6)\n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec\n"
+                          "| Trunk Scan: (3/6)                Target: county-p25\n");
 
     /* Between targets the -Y row's name is the answer again. */
     DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof(state.trunk_scan_active_id));
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion\n");
+
+    /* Issue #669: the target's id keeps its column from 1 of 12 to 12 of 12, and HOLD and [avoided] take their room
+       whether or not they are shown. */
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    opts.scanner_mode = 0;
+    state.trunk_scan_target_count = 12;
+    int target_col = -1;
+    for (unsigned int ordinal = 1; ordinal <= 12U; ordinal++) {
+        state.trunk_scan_active_ordinal = (uint16_t)ordinal;
+        state.trunk_scan_hold = (uint8_t)(ordinal % 2U);
+        state.trunk_scan_active_avoided = (uint8_t)(ordinal % 3U == 0U);
+        reset_printw_capture();
+        ui_render_trunk_scan_status(&opts, &state);
+        if (target_col < 0) {
+            target_col = capture_column_of(" Target:");
+        }
+        assert(capture_column_of(" Target:") == target_col);
+    }
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (12/12)      [avoided] Target: county-p25\n");
+    g_stub_max_x = 80;
 
     reset_lcn_name_stub();
 }
@@ -3083,27 +3429,27 @@ test_scan_voice_gate_status_rendering(void) {
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec\n");
 
     /* Gate on: each phase names itself after the fixed fields. */
     opts.scan_voice_only = 1;
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Voice: QUALIFY \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz Voice: QUALIFY      Hangtime: 2.00 sec\n");
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Voice: VOICE \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz Voice: VOICE        Hangtime: 2.00 sec\n");
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Voice: TAIL \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz Voice: TAIL         Hangtime: 2.00 sec\n");
     /* Gate on but the phase not yet published (OFF): nothing is printed. */
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz                     Hangtime: 2.00 sec\n");
 
     /* The trunk-scan row carries the same suffix, ahead of HOLD. */
     opts.scanner_mode = 0;
@@ -3117,26 +3463,26 @@ test_scan_voice_gate_status_rendering(void) {
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+    assert_capture_equals("| Trunk Scan: (3/6)                Target: county-p25\n");
 
     opts.scan_voice_only = 1;
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: QUALIFY\n");
+    assert_capture_equals("| Trunk Scan: (3/6) Voice: QUALIFY                Target: county-p25\n");
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: VOICE\n");
+    assert_capture_equals("| Trunk Scan: (3/6) Voice: VOICE                  Target: county-p25\n");
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: TAIL\n");
+    assert_capture_equals("| Trunk Scan: (3/6) Voice: TAIL                   Target: county-p25\n");
     /* A trunked target leaves the phase OFF: gate on, but no marker. */
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+    assert_capture_equals("| Trunk Scan: (3/6)                               Target: county-p25\n");
 
     opts.scan_voice_only = 0;
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
@@ -3237,14 +3583,31 @@ seed_visit(dsd_state* state, uint32_t limit_ms, double visit_deadline_m) {
     state->scan_timing.visit_deadline_m = visit_deadline_m;
 }
 
+/* The Scan Timing row at monotonic 100 s, drawn through the row writer on a panel @p cols wide: 1 and the bytes in
+   the capture when there is a row, 0 and nothing drawn when there is none. */
+static int
+render_scan_timing_at(const dsd_opts* opts, const dsd_state* state, int cols) {
+    ui_row row;
+    ui_row_begin(&row, cols, 0);
+    reset_printw_capture();
+    if (ui_format_scan_timing_row(opts, state, 100.0, &row) != 1) {
+        return 0;
+    }
+    ui_row_end(&row);
+    return 1;
+}
+
 /* The formatter is pure and takes the clock, so a golden can be the exact bytes rather
    than a substring: the Qt panel renders the same grammar from the same view. */
 static void
 assert_scan_timing_row(const dsd_opts* opts, const dsd_state* state, const char* expected) {
-    char line[192];
-    int len = ui_format_scan_timing_row(opts, state, 100.0, line, sizeof(line));
-    assert(len == (int)strlen(expected));
-    assert(strcmp(line, expected) == 0);
+    assert(render_scan_timing_at(opts, state, 400) == 1);
+    char want[256];
+    DSD_SNPRINTF(want, sizeof want, "%s\n", expected);
+    if (strcmp(g_printw_capture, want) != 0) {
+        DSD_FPRINTF(stderr, "scan timing '%s', want '%s'\n", g_printw_capture, want);
+        assert(0);
+    }
 }
 
 static void
@@ -3259,47 +3622,49 @@ test_scan_timing_row_phrases(void) {
 
     /* Trunked rows carry no conventional activity hold, so none is printed beside them. */
     seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_RETRY, 0U, 102.0, 2000U, 3000U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune retry 2.0s/2.0s  dwell 3.0s (suspended)");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune retry        2.0s/  2.0s  dwell 3.0s (suspended)");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_CC_ACQUIRE, 0U, -1.0, 0U, 3000U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Acquiring control  dwell 3.0s (suspended)");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Acquiring control                dwell 3.0s (suspended)");
 
     /* -t is what ends a followed call, so it is the budget named beside the dwell. */
     seed_scan_timing(&state, DSD_SCAN_STAY_CALL_FOLLOW, 0U, -1.0, 0U, 3000U, 0U);
     state.scan_timing.hang_ms = 2000U;
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s");
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: Following call                   dwell 3.0s (suspended)  hang 2.0s");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_MANUAL_HOLD, 0U, -1.0, 0U, 3000U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Manual hold  dwell 3.0s (paused)");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Manual hold                      dwell 3.0s (paused)");
 
     /* Conventional rows add the effective activity hold, except where that hold is
        already the window counting down. */
     seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune pending  dwell 3.0s (suspended)  hold 1.2s");
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: Retune pending                   dwell 3.0s (suspended)  hold 1.2s");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell          1.8s/  3.0s  hold 2.0s");
     /* The same 1855 ms fixture as Qt: both surfaces truncate to tenths. */
     state.scan_timing.deadline_m = 101.855;
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell          1.8s/  3.0s  hold 2.0s");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_VOICE, 1U, 101.2, 2000U, 3000U, 2000U);
     state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_VOICE;
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Voice 1.2s/2.0s  dwell 3.0s (suspended)");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Voice               1.2s/  2.0s  dwell 3.0s (suspended)");
 
     /* Both voice-gate variants: the same reason reads differently once the gate says
        where in a transmission the hold is. */
     seed_scan_timing(&state, DSD_SCAN_STAY_ACTIVITY_HOLD, 1U, 101.5, 2000U, 3000U, 2000U);
     state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Activity hold 1.5s/2.0s  dwell 3.0s (suspended)");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Activity hold       1.5s/  2.0s  dwell 3.0s (suspended)");
     state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_TAIL;
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Voice tail 1.5s/2.0s  dwell 3.0s (suspended)");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Voice tail          1.5s/  2.0s  dwell 3.0s (suspended)");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 100.6, 1000U, 1000U, 2000U);
     state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 0.6s/1.0s  hold 2.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell          0.6s/  1.0s  hold 2.0s");
     state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_QUALIFY;
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Qualify 0.6s/1.0s  hold 2.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Qualify             0.6s/  1.0s  hold 2.0s");
 
     /* The -Y legacy rule: -t since the last sync is the whole stay, with no dwell or hold
        of its own to state. */
@@ -3308,11 +3673,11 @@ test_scan_timing_row_phrases(void) {
     opts.trunk_hangtime = 2.0f;
     state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
     seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 3000U, 0U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 1.4s/3.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime            1.4s/  3.0s");
     seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 172901.0, 172801000U, 0U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 172801.0s/172801.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime           48.0h/ 48.0h");
     seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 1.0e9, UINT32_MAX, 0U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 4294967.2s/4294967.3s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime           1193h/ 1193h");
 
     /* Nothing has synced on this row yet: the reason holds, the countdown has no anchor
        to run from, and an unanchored timer is left off rather than shown as zero. */
@@ -3322,11 +3687,11 @@ test_scan_timing_row_phrases(void) {
     /* Issue #526: an analog row's carrier holds it. On -Y it restarts the hangtime window; on a
        trunk-scan nfm-conventional target it restarts the activity hold and suspends the dwell. */
     seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.9, 2000U, 0U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.9s/2.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier             1.9s/  2.0s");
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.2, 1200U, 3000U, 1200U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier 1.2s/1.2s  dwell 3.0s (suspended)");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier             1.2s/  1.2s  dwell 3.0s (suspended)");
     /* Issue #527: the same carrier while the tone policy is still checking it: no activity, so no window of its own,
        and no budget reads as suspended beneath it. */
     seed_scan_timing(&state, DSD_SCAN_STAY_TONE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
@@ -3345,7 +3710,7 @@ test_scan_timing_row_clamps_expired_timers(void) {
 
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 95.0, 3000U, 3000U, 2000U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 0.0s/3.0s  hold 2.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell          0.0s/  3.0s  hold 2.0s");
 }
 
 /* The per-visit cap closes the row (issue #507): the widest budget, and the only one that
@@ -3362,50 +3727,53 @@ test_scan_timing_row_visit_cap(void) {
 
     /* No cap configured: the row is byte-for-byte the one #510 pinned. */
     seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s");
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell          1.8s/  3.0s  hold 2.0s");
 
     /* A cap counting down against the same clock as the window above it. */
     seed_visit(&state, 20000U, 112.3);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s  Visit: 12.3s/20.0s");
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: Idle dwell          1.8s/  3.0s  Visit:  12.3s/ 20.0s  hold 2.0s");
 
     /* A poll that lands after the cap floors at zero rather than wrapping, the same rule
        the window countdown follows. */
     seed_visit(&state, 20000U, 97.5);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s  Visit: 0.0s/20.0s");
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: Idle dwell          1.8s/  3.0s  Visit:   0.0s/ 20.0s  hold 2.0s");
 
     /* A hold suspends the cap: there is no deadline to count from, and printing 0.0s would
        read as a visit that just ran out. */
     seed_scan_timing(&state, DSD_SCAN_STAY_MANUAL_HOLD, 1U, -1.0, 0U, 3000U, 0U);
     seed_visit(&state, 20000U, -1.0);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Manual hold  dwell 3.0s (paused)  Visit: paused");
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: Manual hold                      Visit: paused         dwell 3.0s (paused)");
 
     /* The cap appears beside the published effective protocol hangtime too. */
     seed_scan_timing(&state, DSD_SCAN_STAY_CALL_FOLLOW, 0U, -1.0, 0U, 3000U, 0U);
     state.scan_timing.hang_ms = 2000U;
     seed_visit(&state, 45000U, 130.0);
-    assert_scan_timing_row(&opts, &state,
-                           "| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s  Visit: 30.0s/45.0s");
+    assert_scan_timing_row(
+        &opts, &state,
+        "| Scan Timing: Following call                   Visit:  30.0s/ 45.0s  dwell 3.0s (suspended)  hang 2.0s");
 }
 
 static void
 test_scan_timing_row_is_silent_without_a_scan(void) {
     static dsd_opts opts;
     static dsd_state state;
-    char line[192];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
     /* No scanner is running: a publication left over from an earlier session says nothing
        about a receiver now parked by hand. */
     seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
-    assert(ui_format_scan_timing_row(&opts, &state, 100.0, line, sizeof(line)) == 0);
-    assert(line[0] == '\0');
+    assert(render_scan_timing_at(&opts, &state, 400) == 0);
+    assert(g_printw_capture[0] == '\0');
 
     /* Scanning, but nothing holds the row and nothing is published for it. */
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_NONE, 1U, -1.0, 0U, 0U, 0U);
-    assert(ui_format_scan_timing_row(&opts, &state, 100.0, line, sizeof(line)) == 0);
-    assert(line[0] == '\0');
+    assert(render_scan_timing_at(&opts, &state, 400) == 0);
+    assert(g_printw_capture[0] == '\0');
 }
 
 /* The row sits directly under whichever scanner row is on screen, and there is only ever
@@ -3429,8 +3797,8 @@ test_scan_timing_row_placement(void) {
     state.trunk_lcn_freq[0] = 462012500;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n"
-                          "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec\n"
+                          "| Scan Timing: Manual hold                      dwell 3.0s (paused)\n");
 
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
@@ -3439,15 +3807,15 @@ test_scan_timing_row_placement(void) {
     state.trunk_scan_target_count = 6;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n"
-                          "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
+    assert_capture_equals("| Trunk Scan: (3/6)                Target: county-p25\n"
+                          "| Scan Timing: Manual hold                      dwell 3.0s (paused)\n");
 
     opts.scanner_mode = 1;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n"
-                          "| Trunk Scan:  Target: county-p25 (3/6)\n"
-                          "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec\n"
+                          "| Trunk Scan: (3/6)                Target: county-p25\n"
+                          "| Scan Timing: Manual hold                      dwell 3.0s (paused)\n");
 }
 
 /* A narrow terminal cuts the row instead of wrapping it: this line redraws several times
@@ -3462,15 +3830,21 @@ test_scan_timing_row_truncates_to_panel_width(void) {
 
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune pending  dwell 3.0s (suspended)  hold 1.2s");
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: Retune pending                   dwell 3.0s (suspended)  hold 1.2s");
 
     g_stub_max_x = 40;
     reset_printw_capture();
     ui_render_scan_timing_row(&opts, &state);
     g_stub_max_x = 80;
-    assert_capture_equals("| Scan Timing: Retune pending  dwell 3.\n");
-    assert(strlen(g_printw_capture) == 40U);
-    assert(strchr(g_printw_capture, '\n') == g_printw_capture + 39);
+    /* Cut after the last whole field that fits beside the marker; the phrase's padding is not shown before it. */
+    assert_capture_equals("| Scan Timing: Retune pending...\n");
+    assert(strlen(g_printw_capture) <= 40U);
+    /* At 80 columns the room kept for the countdown leaves the dwell group whole and cuts the hold group. */
+    g_stub_max_x = 80;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    assert_capture_equals("| Scan Timing: Retune pending                   dwell 3.0s (suspended)...\n");
 }
 
 #if defined(NCURSES_VERSION)
@@ -3482,9 +3856,9 @@ test_scan_timing_row_real_cursor(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
-    char line[192];
-    const int len = ui_format_scan_timing_row(&opts, &state, 100.0, line, sizeof(line));
-    const int widths[] = {1, 40, len, 80};
+    assert(render_scan_timing_at(&opts, &state, 400) == 1);
+    const int len = (int)strlen(g_printw_capture) - 1;
+    const int widths[] = {1, 40, len, len + 1, 80};
     FILE* input = tmpfile();
     FILE* output = tmpfile();
     assert(input && output);
@@ -3878,6 +4252,9 @@ main(void) {
     test_rtl_and_soapy_input_source_rendering();
     test_analog_channel_status_rendering();
     test_rtl_auto_ppm_status_rendering();
+    test_receiver_rows_fixed_width();
+    test_input_level_row_fixed_width();
+    test_output_rows_fixed_width();
     test_am_channel_field_rendering();
     test_demod_symbol_rate_helpers();
     test_input_level_policy();

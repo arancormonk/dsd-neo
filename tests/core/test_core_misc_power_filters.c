@@ -104,6 +104,9 @@ test_squelch_contract_helpers(void) {
     assert(strcmp(out, "-47.0 dB") == 0);
     assert(dsd_squelch_format(1.0, " dB", out, sizeof out) == 0);
     assert(strcmp(out, "0.0 dB") == 0);
+    /* 0.995 is -0.02 dB, which rounds to zero: no negative zero (issue #669). */
+    assert(dsd_squelch_format(0.995, " dB", out, sizeof out) == 0);
+    assert(strcmp(out, "0.0 dB") == 0);
 
     /* A threshold so low that pwr_to_dB() floors it is still a threshold, and still
      * prints as a number: only "gates nothing" reads as off. */

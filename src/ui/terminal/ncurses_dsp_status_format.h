@@ -8,7 +8,7 @@
 
 #include <stddef.h>
 
-/* "Closed ch:-70.0 dB sql:-60.0 dB": the gate, the channel power and the threshold in force.
+/* "Closed ch: -70.0 dB sql:-60.0 dB": the gate, the channel power and the threshold in force.
  * @p row_override appends " (row)" while a scan row or target sets that threshold (issue #521),
  * as the RTL input line's SQL readout says it. */
 int ui_dsp_format_squelch_status(double channel_power, double squelch_power, int row_override, char* out,

@@ -790,7 +790,8 @@ is refused before anything is torn down, and the running input stays. On PCM inp
 width is only stored (with a rigctl peer, the passband the peer is asked for, below), and a switch to Analog there goes
 ahead, as a PCM start with the same width does; a switch from PCM to a radio input is held to the width.
 
-The terminal shows the width in force on the input status line beside `DSP-BW:`: `Analog: NFM 12.5 kHz;` for an explicit
+The terminal shows the width in force on the input's channel row, after the squelch (the source row above it carries
+`DSP-BW:`): `Analog: NFM 12.5 kHz;` for an explicit
 width, `Analog: NFM 16 kHz (default);` for the unset default, and `Analog: NFM 12 kHz (DSP-limited);` when the rate
 bounds it; under AM, `Analog: AM 6 kHz (default);` and so on. With the stream stopped, an RTL-SDR or rtl_tcp input shows
 what the next start runs at its DSP bandwidth, and while a scan row runs a digital protocol the line shows what the
@@ -813,7 +814,7 @@ input* and the controls are disabled. On PCM input with a rigctl peer (`-U`), wh
 width is the passband the peer is asked for while the monitor of its kind runs (`-B` under [Trunking &
 Scanning](#trunking--scanning) has the rule), and no DSP rate bounds it or is checked: the terminal rows read `NFM
 passband... [12.5 kHz]` and `AM passband... [default]`, an unset NFM width reading as `-B`, which stands in for it
-(`[-B 12.5 kHz]`, or `[peer's own]` without `-B`), and the input line shows the passband after the squelch (`Passband:
+(`[-B 12.5 kHz]`, or `[peer's own]` without `-B`), and the input's channel row shows the passband after the squelch (`Passband:
 NFM 12.5 kHz (-B);`, `Passband: AM 6 kHz (default);`) whenever a width is offered, on a digital session with an
 explicit width the `-B` every tune asks for there. The Qt and Android monitor has a `PASSBAND` row reading the same,
 whose Edit opens the Passband sheet: `NFM passband` and `AM passband` steppers over the same widths with no DSP bound,
@@ -921,7 +922,7 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
 
   On audio input the auto squelch runs for neither: the encoder's VOX has no squelch there (the engine warns; use a
   level), and an EDACS call ends on its release marker or the watchdog.
-- What it shows: the terminal input line reads `SQL: auto +10 dB (floor -78.3 dB)`, `(learning)`, `(off: no radio
+- What it shows: the terminal channel row reads `SQL: auto +10 dB (floor  -78.3 dB)`, `(learning)`, `(off: no radio
   input)`, `(off on digital)`, or in the rare front end it has no plan for `(off: no channel plan)`. On EDACS it reads
   `(EDACS analog calls)` between calls and the tracker's reading during one. The startup banner shows `SQ=auto+10dB`,
   and the DSP panel and the Qt/Android radio panel show the same.
@@ -1110,8 +1111,8 @@ of the setup wizard): the analog monitor with an AM envelope detector in place o
   width applies when the scanner returns to a blank row. An `am` row runs the AM monitor on any session, at its own
   `--am-bandwidth-hz`, which an edit leaves in force until the row leaves, or at the configured AM width, which an edit
   reaches live. While an `nfm` row is on air the terminal and the Radio sheet read its NFM width, and the AM width keeps
-  its own control. The terminal status line shows the width in force
-  (`Analog: AM 6 kHz (default);`) next to `DSP-BW`, and the Radio sheet shows the same reading.
+  its own control. The terminal's channel row shows the width in force
+  (`Analog: AM 6 kHz (default);`) after the squelch, and the Radio sheet shows the same reading.
 
 ### Received tone (CTCSS) on the analog monitor
 
@@ -2185,7 +2186,8 @@ RTL-family FSK digital decode selects its own symbol timing and normalization in
 from the active SPS hunt profile rather than from the front end's published symbol rate. CQPSK uses the OP25-style
 Gardner/Costas/FLL-band-edge symbol chain.
 
-- `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override
+- `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override, 0.01 to 0.5 (the menu's range; a value
+  outside it is taken as the nearest end, and one that is not a number is ignored)
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
 - `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
 
