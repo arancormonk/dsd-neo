@@ -3128,14 +3128,15 @@ rtl_device_receiver_progressed_since(const struct rtl_device* s, uint64_t verdic
 }
 
 /* The one path that ends a session for its receiver: a USB receiver stopped delivering, and unless a stop or an exit
- * request comes first, the session ends as a device failure of the input (@p native_code kept for diagnostics), the
- * receiver's ending is committed and the demod waiting on the input ring is woken. While an unplug owner's grace is
+ * request comes first, @p cause is logged, the session ends as a device failure of the input (@p native_code kept for
+ * diagnostics), the receiver's ending is committed and the demod waiting on the input ring is woken. The cause comes
+ * first, so the teardown that the report starts on other threads logs after it. While an unplug owner's grace is
  * set (rtl_device_set_unplug_owner_grace_ms()), the verdict first waits it out, polling the session: a stop inside it
  * (an unplug the owner handled) or samples since the verdict, made when the receiver's progress stood at
  * @p verdict_progress, keep it silent, and observing the session does not restart the deadline. Of verdicts that race
  * (a reader exit and the progress monitor), only the first reports. Returns 1 when it reported. */
 static int
-rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verdict_progress) {
+rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verdict_progress, const char* cause) {
     const uint32_t grace_ms = rtl_device_unplug_owner_grace_ms();
     if (grace_ms > 0U) {
         const uint64_t deadline_ms = dsd_realtime_mono_ms() + grace_ms;
@@ -3161,6 +3162,7 @@ rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verd
     if (s->receiver_end_claimed.exchange(1, std::memory_order_acq_rel) != 0) {
         return 0;
     }
+    LOG_ERROR("%s\n", cause);
     dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, native_code);
     dsd_input_failure_commit_receiver_end();
     dsd_exitflag_store(1);
@@ -3187,13 +3189,10 @@ rtl_usb_reader_finished(struct rtl_device* s, int rc) {
         replay_signal_input_waiters(s);
         return;
     }
-    if (rtl_device_end_for_receiver(s, rc, rtl_device_sample_progress(s))) {
-        if (rc == -1) {
-            LOG_ERROR("RTL-SDR: the USB device was lost; the stream stops (rc=%d)\n", rc);
-        } else {
-            LOG_ERROR("RTL-SDR: the USB reader stopped unexpectedly; the stream stops (rc=%d)\n", rc);
-        }
-    }
+    char cause[96];
+    DSD_SNPRINTF(cause, sizeof cause, "RTL-SDR: the USB %s; the stream stops (rc=%d)",
+                 rc == -1 ? "device was lost" : "reader stopped unexpectedly", rc);
+    (void)rtl_device_end_for_receiver(s, rc, rtl_device_sample_progress(s), cause);
 }
 
 /**
@@ -3370,8 +3369,10 @@ static DSD_THREAD_RETURN_TYPE
         if (!rtl_progress_watch_step(&watch, s->progress.load(std::memory_order_relaxed), streaming)) {
             continue;
         }
-        if (rtl_device_end_for_receiver(s, -ETIMEDOUT, watch.progress)) {
-            LOG_ERROR("RTL-SDR: the receiver sent no samples for %" PRIu64 " ms; the stream stops\n", watch.silence_ms);
+        char cause[96];
+        DSD_SNPRINTF(cause, sizeof cause, "RTL-SDR: the receiver sent no samples for %" PRIu64 " ms; the stream stops",
+                     watch.silence_ms);
+        if (rtl_device_end_for_receiver(s, -ETIMEDOUT, watch.progress, cause)) {
             (void)rtl_usb_cancel_async(s);
             break;
         }
@@ -4395,16 +4396,20 @@ static DSD_THREAD_RETURN_TYPE
         watch.sampled_ms = dsd_realtime_mono_ms();
         if (!running) {
             /* The SDK lost the stream, or a failed change left it stopped. */
-            if (rtl_device_end_for_receiver(dev, -1, progress)) {
-                DSD_FPRINTF(stderr, "Airspy stream stopped unexpectedly.\n");
+            if (rtl_device_end_for_receiver(dev, -1, progress, "Airspy stream stopped unexpectedly.")) {
                 break;
             }
             continue;
         }
-        if (silent && rtl_device_end_for_receiver(dev, -ETIMEDOUT, watch.progress)) {
-            LOG_ERROR("Airspy: the receiver sent no samples for %" PRIu64 " ms (%" PRIu64
-                      " stream restarts); the stream stops\n",
-                      watch.silence_ms, airspy_source_generation(dev->airspy) - silence_generation);
+        if (!silent) {
+            continue;
+        }
+        char cause[128];
+        DSD_SNPRINTF(cause, sizeof cause,
+                     "Airspy: the receiver sent no samples for %" PRIu64 " ms (%" PRIu64
+                     " stream restarts); the stream stops",
+                     watch.silence_ms, airspy_source_generation(dev->airspy) - silence_generation);
+        if (rtl_device_end_for_receiver(dev, -ETIMEDOUT, watch.progress, cause)) {
             break;
         }
     }

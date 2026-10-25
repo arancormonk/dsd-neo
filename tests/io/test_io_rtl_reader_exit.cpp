@@ -4,8 +4,9 @@
  * (-ENOMEM, a lost device's -1, a failed submission's -5, even 0) ends the session as a device failure of the input
  * and wakes the demod waiting on the input ring; a return a stop asked for is left alone. Every return but -ENOMEM
  * also commits the "receiver ended" fact, after the unplug-owner grace: while one is set (Android sets 2000 ms so the
- * USB detach broadcast can own an unplug), a stop inside the grace keeps the return silent. And one stop handshake: a
- * stop or destroy that lands before the reader streams still ends it and joins.
+ * USB detach broadcast can own an unplug), a stop inside the grace keeps the return silent. The cause is logged before
+ * the failure is reported. And one stop handshake: a stop or destroy that lands before the reader streams still ends
+ * it and joins.
  */
 
 #include <assert.h>
@@ -18,9 +19,11 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <memory>
 #include <stdint.h>
+#include <string.h>
 #include "rtl_stream_test_support.h"
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
@@ -56,6 +59,26 @@ wait_for_ring_wake(void* arg) {
     }
     dsd_mutex_unlock(&waiter->ring->ready_m);
     DSD_THREAD_RETURN;
+}
+
+/* What the session looked like when the reader's "device was lost" line was logged. */
+struct cause_log {
+    std::atomic<int> logged{0};
+    std::atomic<unsigned int> generation{0U};
+    std::atomic<int> exit_flag{0};
+};
+
+cause_log g_cause_log;
+
+void
+record_cause_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    auto* log = static_cast<cause_log*>(ctx);
+    if (level != LOG_LEVEL_ERROR || !text || !strstr(text, "the USB device was lost")) {
+        return;
+    }
+    log->generation.store(dsd_input_failure_generation(), std::memory_order_relaxed);
+    log->exit_flag.store(dsd_exitflag_load(), std::memory_order_relaxed);
+    log->logged.store(1, std::memory_order_release);
 }
 
 void
@@ -190,12 +213,30 @@ expect_stop_while_starting(input_ring_state* ring, int hold_before_entry, int de
     expect_session_untouched(generation, 0);
 }
 
+/* The reader's cause line is logged before the failure is reported, so it reads ahead of the teardown it starts. */
+void
+test_cause_logged_before_report(input_ring_state* ring) {
+    g_cause_log.logged.store(0, std::memory_order_relaxed);
+    reset_session();
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device_test_usb_reader_request request{};
+    request.ring = ring;
+    request.reader_rc = -1;
+    assert(run_request(request) == 0);
+    assert(dsd_input_failure_receiver_ended() == 1);
+    assert(g_cause_log.logged.load(std::memory_order_acquire) == 1);
+    assert(g_cause_log.generation.load(std::memory_order_relaxed) == generation);
+    assert(g_cause_log.exit_flag.load(std::memory_order_relaxed) == 0);
+    assert(dsd_input_failure_generation() == generation + 1U);
+}
+
 } // namespace
 
 int
 main(void) {
     auto ring = std::make_unique<input_ring_state>();
     assert(input_ring_init(ring.get(), 4096U) == 0);
+    dsd_neo_log_set_tap(record_cause_log, &g_cause_log);
 
     /* Transfers that could not be allocated, a lost device, a failed submission, or a reader that returned with
      * nothing asking it to: a device failure that ends the session and wakes the demod. Only an allocation failure,
@@ -216,6 +257,7 @@ main(void) {
     expect_no_report(ring.get(), 0, 1, 0);
 
     test_unplug_owner_grace(ring.get());
+    test_cause_logged_before_report(ring.get());
 
     /* A stop, or a destroy, between the reader thread's start and its streaming. */
     expect_stop_while_starting(ring.get(), 1, 0);
