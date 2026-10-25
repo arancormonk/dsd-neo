@@ -233,7 +233,9 @@ Item {
         widths.push(sessionOptionsButton.width);
         if (metrics.radioInput)
             widths.push(spectrumPill.width);
-        widths.push(livePill.width - liveLabel.implicitWidth + liveLabelProbe.implicitWidth);
+        // The pill's padding, dot and gap are constants: its Row only resizes on
+        // polish, after the label has already changed.
+        widths.push(24 + 8 + liveRow.spacing + liveLabelProbe.implicitWidth);
         var total = (widths.length - 1) * headerActions.spacing;
         for (var w of widths)
             total += w;
@@ -246,7 +248,8 @@ Item {
     Text {
         id: liveLabelProbe
         visible: false
-        text: ["LIVE", "LOST", "STARTING…", "STOPPING…", screen.liveLabel].join("\n")
+        // The transition words are the host's, upper-cased; LIVE and LOST are ours.
+        text: [qsTr("LIVE"), qsTr("LOST"), "STARTING…", "STOPPING…", screen.liveLabel].join("\n")
         textFormat: Text.PlainText
         font: liveLabel.font
     }
@@ -527,9 +530,9 @@ Item {
                         if (acts && Navigation.allows(livePill))
                             screen.openReceiverSheet();
                     }
-                    // Kept while focused, so a session ending under the focus never
-                    // drops it mid-way.
-                    activeFocusOnTab: acts || activeFocus
+                    // Not a tab stop behind a sheet; kept while focused, so a change
+                    // under the focus never drops it mid-way.
+                    activeFocusOnTab: (acts && navigationAllowed) || activeFocus
                     Accessible.role: acts ? Accessible.Button : Accessible.StaticText
                     Accessible.name: screen.receiverLost ? receiverStatus.accessibleName : liveLabel.text
                     Accessible.description: acts ? qsTr("Shows the receiver") : ""
@@ -2315,7 +2318,7 @@ Item {
                 if (visible && enabled && Navigation.allows(lostLine))
                     screen.openReceiverSheet();
             }
-            activeFocusOnTab: true
+            activeFocusOnTab: (lostLineHost.shown && navigationAllowed) || activeFocus
             Accessible.role: Accessible.Button
             Accessible.name: receiverStatus.accessibleName
             Accessible.description: qsTr("The session is finishing")

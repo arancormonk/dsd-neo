@@ -142,6 +142,7 @@ Item {
             Ui.Theme.resetFontScale();
             item("monitorReceiverSheet").visible = false;
             tc.monitor.system = null;
+            tc.monitor.sitesAvailable = false;
             decoderHost.receiverHealth = {state: "ok", source: "", session: 0};
             decoderHost.localDeviceBrokered = false;
             testContext.setHostRunning(false);
@@ -198,6 +199,7 @@ Item {
             var sheet = item("monitorReceiverSheet");
             tryCompare(sheet, "visible", true);
             compare(sheet.confirmText, "Stop now");
+            verify(!line.activeFocusOnTab, "no tab stop behind its sheet");
             sheet.cancel();
             tryCompare(sheet, "visible", false);
         }
@@ -217,12 +219,24 @@ Item {
                     }
                 }
             }
+            // #647 B16: a brokered host with Sites and Spectrum, where the header
+            // actions do not fit a 360 dp row and tier 0 keeps the title-line header.
+            for (var broker of [[360, 690, 1], [360, 690, 1.6], [411, 914, 1], [411, 914, 1.6]]) {
+                rows.push({tag: broker[0] + "x" + broker[1] + "@" + broker[2] + "+brokered", width: broker[0], height: broker[1],
+                           scale: broker[2], slot: false, scan: false, brokered: true});
+            }
             return rows;
+        }
+        // Brokered (Android) with Sites and Spectrum in play: the width rule in force.
+        function useBrokered(on) {
+            decoderHost.localDeviceBrokered = on;
+            tc.monitor.sitesAvailable = on;
         }
         // The chosen tier is the first whose measured call space holds two rows, and
         // the screen as laid out agrees with the measurement: at the list's start,
         // the viewport less the list header is the call space the tier promised.
         function test_tier_budget(data) {
+            useBrokered(data.brokered === true);
             root.width = data.width;
             root.height = data.height;
             Ui.Theme.fontScale = data.scale;
@@ -249,6 +263,18 @@ Item {
             } else {
                 verify(tc.monitor.callSpaceFor(4) < row, "tier 5 only when tier 4 leaves less than a row");
             }
+            // The header the budget measured is the one drawn: it ends where its
+            // title lines or its actions end, stacked or not.
+            var header = item("monitorHeader");
+            var heading = item("monitorHeaderTitle").parent;
+            var pill = item("monitorLiveStatus");
+            verify(waitForPolish(pill.parent));
+            var drawn = Math.max(heading.mapToItem(header, 0, heading.height).y, pill.mapToItem(header, 0, pill.height).y);
+            verify(Math.abs(drawn - header.height) < 0.5, "header " + header.height + " vs drawn " + drawn);
+            if (data.brokered && !tc.monitor.headerActionsFit) {
+                verify(!tc.monitor.headerStacked, "nothing to stack");
+                verify(!item("runningSiteChooserButton").visible && !item("openSpectrumButton").visible);
+            }
             // The table for the record.
             console.log("TIER", data.tag, "tier", tier, "row", row,
                         "hero", item("monitorHero").height, "header", item("monitorHeader").height,
@@ -265,10 +291,13 @@ Item {
             for (var combo of [[false, false], [true, false], [false, true], [true, true]]) {
                 rows.push({tag: "360x690" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 360, height: 690, slot: combo[0], scan: combo[1], tier: -1});
                 rows.push({tag: "411x914" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 411, height: 914, slot: combo[0], scan: combo[1], tier: 0});
+                rows.push({tag: "360x690+brokered" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 360, height: 690, slot: combo[0], scan: combo[1], tier: -1, brokered: true});
+                rows.push({tag: "411x914+brokered" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 411, height: 914, slot: combo[0], scan: combo[1], tier: 0, brokered: true});
             }
             return rows;
         }
         function test_phone_portrait_guarantees(data) {
+            useBrokered(data.brokered === true);
             root.width = data.width;
             root.height = data.height;
             setCall(1, 2);

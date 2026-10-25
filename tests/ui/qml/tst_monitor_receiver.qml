@@ -186,6 +186,7 @@ Item {
                 p.Accessible.pressAction();
             tryCompare(sheet(), "visible", true);
             verify(p.Accessible.ignored, "the pill is behind its sheet");
+            verify(!p.activeFocusOnTab, "no tab stop behind its sheet");
             p.Accessible.pressAction();
             compare(stops(), 0);
             sheet().cancel();
@@ -243,14 +244,21 @@ Item {
             compare(sheet().confirmText, "Stop now");
         }
 
-        // Leaving the Monitor closes the sheet with the others.
+        // Leaving the Monitor closes the sheet with the others, so the next
+        // session's Monitor never comes back with the last one's Stop now. A
+        // hidden Monitor already hides the sheet, so only showing it again tells.
         function test_hidden_monitor_closes_the_sheet() {
             startSession("usb", true);
             loseReceiver("lost", "usb");
             tap(pill());
             tryCompare(sheet(), "visible", true);
             tc.monitor.visible = false;
-            verify(!sheet().visible);
+            // The next start clears the ending while the Monitor is away.
+            testContext.setReceiverHealth("ok", "");
+            testContext.setLifecyclePhase(2);
+            tc.monitor.visible = true;
+            verify(!sheet().visible, "the last session's sheet came back");
+            compare(stops(), 0);
         }
     }
 }
