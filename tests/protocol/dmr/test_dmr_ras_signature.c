@@ -161,10 +161,10 @@ static const size_t k_scattered[5] = {4, 20, 36, 52, 68};
    distance 5. None of them is RAS, and the CSBK is not dispatched. */
 static int
 test_noise_csbk_not_ras(void) {
-    static const size_t far[4] = {1, 12, 31, 42};
+    static const size_t far_bits[4] = {1, 12, 31, 42};
     static const size_t none[4] = {1, 12, 136, 162};
     static const size_t wrong[4] = {1, 2, 16, 17};
-    const size_t* patterns[3] = {far, none, wrong};
+    const size_t* patterns[3] = {far_bits, none, wrong};
     static const char* tags[3] = {"noise 1/12/31/42", "noise 1/12/136/162", "noise 1/2/16/17"};
     int failed = 0;
     for (size_t p = 0; p < 3; p++) {
@@ -239,11 +239,11 @@ test_ras_csbk_distance_gate(void) {
    irrecoverable error (FEC ERR), with or without -F. */
 static int
 test_far_codeword_not_adopted(void) {
-    static const size_t far[5] = {7, 14, 21, 104, 170};
+    static const size_t far_bits[5] = {7, 14, 21, 104, 170};
     int failed = 0;
     for (int relaxed = 0; relaxed <= 1; relaxed++) {
         burst_rig rig;
-        if (rig_start(&rig, relaxed, k_csbk, k_r_ras, far, 5U, 0x03) != 0) {
+        if (rig_start(&rig, relaxed, k_csbk, k_r_ras, far_bits, 5U, 0x03) != 0) {
             return 1;
         }
         const char* tag = relaxed ? "far codeword, -F" : "far codeword, strict";
