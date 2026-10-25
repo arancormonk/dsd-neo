@@ -2062,10 +2062,10 @@ test_nxdn96_follows_the_receiver_sync_rules(void) {
 }
 
 /*
- * The lock follows the LICH as TS 1-A 5.3 has it: the LICH conditions apply only when the LICH's parity holds, and frame
- * sync is lost after S1 = 5 good-parity LICHs in a row that name no frame of the channel (5.3.2, Table 5.9-3). A real
- * call's frame whose LICH fails its parity does not drop the lock; an accept on noise, whose LICH fails, does not
- * refresh it either, so a lock still lapses N7 frames after the call.
+ * The lock follows the LICH as TS 1-A 5.3 has it: the LICH conditions apply only when the LICH's parity holds, and
+ * frame sync is lost after S1 = 5 good-parity LICHs in a row that name no frame of the channel (5.3.2, Table 5.9-3).
+ * A real call's frame whose LICH fails its parity does not drop the lock; an accept on noise, whose LICH fails, does
+ * not refresh it either, so a lock still lapses N7 frames after the call.
  */
 static void
 test_nxdn96_lock_follows_the_lich(void) {
