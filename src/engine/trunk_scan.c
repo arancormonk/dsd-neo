@@ -2539,6 +2539,8 @@ trunk_scan_load_profile(dsd_trunk_scan_target_runtime* rt, char* error, size_t e
 static int
 trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd_state* state,
                                 const dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
+    /* A watchdog tune still pending is the session's before the scan: reconciled now, it reaches no target. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_trunk_scan_snapshot* empty_snapshot = &coord->scratch_snapshot;
     trunk_scan_seed_empty_snapshot(empty_snapshot, opts, state);
     double now_m = trunk_scan_now_m();
@@ -2937,6 +2939,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     if (!coord || next >= coord->count) {
         return -1;
     }
+    /* A P25 watchdog tune's notice still pending belongs to the target it tuned, the one being left: reconciled into
+       that target's state before its snapshot is saved, it never reaches the next target's
+       (dsd_frame_sync_apply_off_thread_tunes()). */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_scan_key_change key_change = {0};
     if (trunk_scan_prepare_switch(opts, state, &coord->targets[next].keys, &key_change)) {
         return TRUNK_SCAN_PREPARE_FAILED;
@@ -3041,6 +3047,8 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
         return 0;
     }
     double now_m = trunk_scan_now_m();
+    /* The rollback snapshot is the original target's whole, a watchdog tune still pending reconciled into it. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_trunk_scan_snapshot* original_snapshot = &coord->scratch_snapshot;
     trunk_scan_save_snapshot(state, original_snapshot);
     if (dsd_rxid_apply_trunk_tune(state)) {

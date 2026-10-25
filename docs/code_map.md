@@ -3933,7 +3933,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     comparison (the transmission ended, an isolated NID) ends it with no verdict and nothing learned. A verdict is
     dropped with the learned modulation (a CQPSK dwell that decodes nothing, an acquisition reset that forgets it), by
     a 4800/4 dwell on its own chain that decodes nothing (so a C4FM verdict cannot outlive its carrier), and is kept per
-    trunk-scan target (the snapshot records the chain leading so far, `dsd_frame_sync_p25p1_learned_rf_mod()`).
+    trunk-scan target (the snapshot records the chain leading so far, `dsd_frame_sync_p25p1_learned_rf_mod()`). A
+    watchdog tune's notice still pending at a switch is reconciled into the target being left before its snapshot is
+    saved (and before the rollback snapshot and the targets' build), so no target's learned modulation takes
+    another's tune.
   - A comparison ends without a verdict at a carrier boundary (`carrier_seq`; the leading chain is put back), a
     profile change, a modulation lock or a trunked voice tune (the demodulator is theirs; the learned modulation goes
     back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves;

@@ -4494,6 +4494,65 @@ test_p25p1_mod_verdict_isolated_per_target(void) {
     return test_rc;
 }
 
+/* A P25 watchdog tune's notice belongs to the target it tuned: one still pending when the scan leaves that target is
+ * reconciled into the target's own state before its snapshot is saved, not into the next target's, whose learned
+ * modulation the next control-channel tune reads. */
+static int
+test_p25p1_watchdog_notice_stays_with_its_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "watchdog notice scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    /* B learns CQPSK on a first visit. */
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    state.p25_p1_validated_rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(&state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    /* Back on A, which learned C4FM; the watchdog tunes it and its notice is still pending when the scan moves on. */
+    state.p25_p1_validated_rf_mod = 0;
+    dsd_frame_sync_p25p1_mod_compare_publish(&state);
+    dsd_p25p1_decision read;
+    dsd_frame_sync_p25p1_read_decision(&read);
+    dsd_frame_sync_note_off_thread_tune(&read);
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_p1_validated_rf_mod != 1
+        || dsd_frame_sync_off_thread_tune_pending()) {
+        DSD_FPRINTF(stderr, "target b took target a's watchdog tune: active=%zu learned=%d pending=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.p25_p1_validated_rf_mod,
+                    dsd_frame_sync_off_thread_tune_pending());
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(1.04);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_p1_validated_rf_mod != 0) {
+        DSD_FPRINTF(stderr, "target a lost its own tune: learned=%d\n", state.p25_p1_validated_rf_mod);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_nxdn_state_isolated_per_target(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -14017,6 +14076,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_nxdn_state_survives_failed_switch_rollback);
     rc |= run_with_default_tune_hook(test_p25p1_mod_verdict_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_p25p1_watchdog_notice_stays_with_its_target);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_diag_isolated_per_target);
     rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
     rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);
@@ -14194,8 +14254,9 @@ frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
 
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
-    (void)opts;
     (void)forget;
+    /* As the real reset's chain step does: a watchdog tune's notice still pending is reconciled first. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     state->profile_proof_valid = 0;
     state->sps_hunt_counter = 0;
     /* As the real reset does: a P25p1 chain comparison in flight ends, with no verdict and nothing restored. */
