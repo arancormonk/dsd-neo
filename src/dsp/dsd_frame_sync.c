@@ -4095,8 +4095,9 @@ frame_sync_p25p1_mod_compare_settle(const dsd_opts* opts, dsd_state* state, int 
  * own pass; an incumbent whose only frame opened the comparison ends it with nothing decided. A carrier boundary, a
  * profile change, a lock, a trunked tune, a dwell expiry or an acquisition reset ends a comparison without a verdict,
  * and every engine tune ends one first on the chain leading so far (dsd_frame_sync_p25p1_mod_compare_end_for_tune()).
- * Runs on getFrameSync() entry, before the hunt's own accounting re-anchors the consumption mark: nothing per
- * symbol.
+ * Runs on getFrameSync() entry, before the hunt's own accounting re-anchors the consumption mark, and where the
+ * other chain's pass runs out inside a call (frame_sync_p25p1_mod_compare_trial_pass_ended()): per symbol, one
+ * phase check.
  */
 void
 frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
@@ -4220,6 +4221,27 @@ frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, 
     state->p25_p1_mod_probe_active = 0;
     frame_sync_p25p1_set_chain(opts, state, 0);
     return FRAME_SYNC_HUNT_CHAIN_HANDBACK;
+}
+
+/**
+ * @brief End a chain comparison whose other chain's pass ran out inside getFrameSync().
+ *
+ * The pass is one search pass long and starts at a getFrameSync() entry, so a chain that syncs nothing on the carrier
+ * (the C4FM chain on an LSM simulcast carrier a CQPSK incumbent reads) reaches its end on the symbol the matchless-pass
+ * timeout fires on. Ended here the comparison decides as it does on entry, and the caller rebuilds its window in place
+ * and keeps hunting, as it does after a CQPSK trial's handback: a no-sync exit would end calls and reset frame state on
+ * a carrier the incumbent is still decoding. If the carrier really ended, the next pass on the restored chain times
+ * out as usual. 1 when it ended the comparison.
+ */
+static int
+frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* state) {
+    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    if (cmp->phase != 2
+        || (uint32_t)(state->symbolcnt - cmp->window_start) < (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+        return 0;
+    }
+    frame_sync_p25p1_mod_compare_note(opts, state);
+    return 1;
 }
 
 /* The unlocked hunt's next profile. While a P25-driven control-channel probe is in flight (the startup hunt, or P25
@@ -4531,6 +4553,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         frame_sync_advance_sync_window(opts, state, &rt);
+        if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state)) {
+            frame_sync_runtime_init(&rt, opts, state);
+            continue;
+        }
         if (frame_sync_handle_no_sync_timeout(opts, state, &rt, now)) {
             frame_sync_sps_hunt_mark_return(state);
             return -1;

@@ -31,6 +31,7 @@ static const char* g_sync_pattern = DMR_BS_DATA_SYNC;
    g_boundary_between, just before its read (an input switch or a menu tune the engine runs between reads). */
 static size_t g_boundary_at = SIZE_MAX;
 static int g_boundary_between;
+static int g_count_symbols;
 
 static float
 symbol_level_for_dibit(char dibit) {
@@ -54,6 +55,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     float symbol = symbol_level_for_dibit(dibit);
     dsd_symbol_history_push(state, symbol);
     state->symbol_clock++;
+    if (g_count_symbols) {
+        state->symbolcnt++; /* as the real reader counts them; the cases that predate this keep it fixed */
+    }
     return symbol;
 }
 
@@ -736,6 +740,87 @@ run_cqpsk_handback_keeps_hunting_case(void) {
     return rc;
 }
 
+/* A P25p1 chain comparison whose other chain cannot sync the carrier at all -- an LSM simulcast carrier the C4FM chain
+   is deaf to, against a CQPSK incumbent -- reaches the end of that chain's pass inside one getFrameSync() call, on
+   the same symbol the matchless-pass timeout would fire. The comparison ends there, as a CQPSK trial's handback does:
+   the incumbent gets the profile back, the window is rebuilt in place and the hunt goes on, rather than a no-sync
+   return the engine answers with noCarrier() on a carrier that is still decoding. The incumbent's next frame is taken
+   inside the same call. */
+static int
+run_compare_trial_pass_keeps_hunting_case(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    enum { LEAD = DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 40 };
+
+    static char pattern[LEAD + 32];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate comparison state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.symbolcnt = 50000U;
+    /* CQPSK opened the comparison and read two frames after it with a gap; the C4FM pass starts now. */
+    state.rf_mod = 0;
+    state.p25_p1_mod_probe_active = 1;
+    state.p25_p1_validated_rf_mod = 1;
+    state.p25_p1_validated_symbolcnt = 49000U;
+    dsd_p25p1_mod_compare* cmp = &state.p25_p1_mod_compare;
+    cmp->phase = 2;
+    cmp->incumbent_rf_mod = 1;
+    cmp->incumbent_frames = 2;
+    cmp->incumbent_read = 3U * 134U;
+    cmp->trial_read = 0U;
+    cmp->window_start = state.symbolcnt;
+    cmp->counter_at_trial = state.sps_hunt_counter;
+    cmp->seen_symbolcnt = state.p25_p1_validated_symbolcnt;
+    cmp->carrier_seq = state.carrier_seq;
+
+    DSD_MEMSET(pattern, '1', LEAD);
+    DSD_MEMCPY(pattern + LEAD, P25P1_SYNC, strlen(P25P1_SYNC) + 1);
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    g_no_carrier_calls = 0;
+    g_count_symbols = 1;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.no_carrier = count_no_carrier});
+
+    int sync = getFrameSync(&opts, &state);
+    for (int calls = 1; sync == -1 && calls < 4; calls++) {
+        dsd_frame_sync_hook_no_carrier(&opts, &state); /* the reception loop's noCarrier() after a no-sync return */
+        sync = getFrameSync(&opts, &state);
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+    g_count_symbols = 0;
+
+    int rc = 0;
+    if (g_no_carrier_calls != 0) {
+        DSD_FPRINTF(stderr, "comparison trial pass ran noCarrier() %d time(s) on a live carrier\n", g_no_carrier_calls);
+        rc = 1;
+    }
+    if (cmp->phase != 0 || state.rf_mod != 1 || state.p25_p1_validated_rf_mod != 1 || !cmp->verdict_valid
+        || cmp->verdict_rf_mod != 1) {
+        DSD_FPRINTF(stderr, "comparison trial pass: phase=%d rf_mod=%d learned=%d verdict=%d/%d, expected CQPSK kept\n",
+                    cmp->phase, state.rf_mod, state.p25_p1_validated_rf_mod, cmp->verdict_valid, cmp->verdict_rf_mod);
+        rc = 1;
+    }
+    if (sync != DSD_SYNC_P25P1_POS || g_symbol_index != (size_t)LEAD + strlen(P25P1_SYNC)) {
+        DSD_FPRINTF(stderr, "comparison trial pass: getFrameSync() returned %d after %zu symbols, expected P25p1\n",
+                    sync, g_symbol_index);
+        rc = 1;
+    }
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -746,6 +831,7 @@ main(void) {
     rc |= run_nxdn_sync_confirmation_matrix();
     rc |= run_sync_after_carrier_boundary_case();
     rc |= run_cqpsk_handback_keeps_hunting_case();
+    rc |= run_compare_trial_pass_keeps_hunting_case();
     return rc;
 }
 
