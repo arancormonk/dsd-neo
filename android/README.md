@@ -1169,7 +1169,8 @@ when the snapshot is refreshed.
   marks the device lost and `rtlsdr_read_async()` returns `-1`. Every exit
   (cancel, lost device, event error, failed submission) cancels the transfers and
   keeps handling events until each has been called back, and only then frees
-  transfers and buffers; the first error is the return value.
+  transfers and buffers; the first error is the return value, even when the
+  device is lost while the reader drains.
   `VENDORED_LIBRTLSDR_TRANSFERS` (a desktop test) completes, fails and cancels
   transfers from a second thread.
 

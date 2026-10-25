@@ -2116,10 +2116,16 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 
 	dev->async_status = RTLSDR_INACTIVE;
 
+	/* The first error says why the stream ended; a device lost while
+	 * draining (its transfers coming back NO_DEVICE) does not replace
+	 * it. */
+	if (ret)
+		return ret;
+
 	if (dev->dev_lost)
 		return -1;
 
-	return ret;
+	return 0;
 }
 
 int rtlsdr_cancel_async(rtlsdr_dev_t *dev)

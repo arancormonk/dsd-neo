@@ -31,8 +31,10 @@ zero, with no timeout, since libusb guarantees each callback; each pass
 cancels again in case a callback on another thread resubmitted just before
 it saw CANCELING; a poll that keeps failing backs off 1 ms instead of
 spinning. Transfers and buffers (ordinary or zero-copy) are freed only then.
-The first error (a failed submission or event poll) is the return value, -1
-when the device was lost; the reader always ends inactive.
+The first error (a failed submission or event poll) is the return value,
+even when the device is lost while the reader drains (its transfers coming
+back NO_DEVICE); with no error, -1 when the device was lost. The reader
+always ends inactive.
 
 Only the count and the phase flag are atomic. async_status, dev_lost and
 xfer_errors stay plain fields as upstream has them, written by
@@ -43,7 +45,7 @@ repeated cancel covers a resubmit made on a stale RUNNING.
 Applies on top of 0002-librtlsdr-check-async-buffer-allocation.patch.
 
 diff --git a/src/librtlsdr.c b/src/librtlsdr.c
-index 9b7f44c..9590332 100644
+index 9b7f44c..6ebb584 100644
 --- a/src/librtlsdr.c
 +++ b/src/librtlsdr.c
 @@ -119,6 +119,13 @@ struct rtlsdr_dev {
@@ -115,7 +117,7 @@ index 9b7f44c..9590332 100644
  	for(i = 0; i < dev->xfer_buf_num; ++i) {
  		libusb_fill_bulk_transfer(dev->xfer[i],
  					  dev->devh,
-@@ -2025,73 +2047,79 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
+@@ -2025,73 +2047,85 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
  					"following command:\n"
  					"echo 0 > /sys/module/usbcore"
  					"/parameters/usbfs_memory_mb\n", i);
@@ -226,12 +228,18 @@ index 9b7f44c..9590332 100644
  
 -	dev->async_status = next_status;
 +	dev->async_status = RTLSDR_INACTIVE;
++
++	/* The first error says why the stream ended; a device lost while
++	 * draining (its transfers coming back NO_DEVICE) does not replace
++	 * it. */
++	if (ret)
++		return ret;
  
  	if (dev->dev_lost)
  		return -1;
  
 -	return r;
-+	return ret;
++	return 0;
  }
  
  int rtlsdr_cancel_async(rtlsdr_dev_t *dev)

@@ -207,6 +207,7 @@ struct scenario {
     int first_fails_during_submit; /* transfer 0 completes with ERROR before the second submission */
     int cancel_after_samples;      /* the sample callback calls rtlsdr_cancel_async() at this count; 0: never */
     int zerocopy;                  /* libusb_dev_mem_alloc() hands out buffers; otherwise it refuses */
+    int cancelled_as_no_device;    /* a cancelled transfer comes back NO_DEVICE, as on a device unplugged meanwhile */
 };
 
 enum { kBufLen = 512, kEventsErrorAfterSamples = 20 };
@@ -321,7 +322,9 @@ completer_main(void* arg) {
             g_queue[i] = g_queue[i + 1];
         }
         g_queued--;
-        const enum libusb_transfer_status status = cancelled ? LIBUSB_TRANSFER_CANCELLED : completion_status_locked();
+        const enum libusb_transfer_status status =
+            cancelled ? (g_sc->cancelled_as_no_device ? LIBUSB_TRANSFER_NO_DEVICE : LIBUSB_TRANSFER_CANCELLED)
+                      : completion_status_locked();
         if (cancelled) {
             g_cancelled_callbacks++;
         }
@@ -835,6 +838,23 @@ partial_initial_submit(void) {
     expect_clean_exit(sc.name, &out);
 }
 
+/* The third submission is refused, and the device is unplugged meanwhile: the two in flight come back NO_DEVICE
+ * during the drain, which marks the device lost, but the reader still returns the submission's error, the first. */
+static void
+partial_initial_submit_then_unplug(void) {
+    struct scenario sc = base_scenario("partial_initial_submit_then_unplug", 8);
+    sc.refuse_submit_index = 2;
+    sc.hold_completions = 1;
+    sc.cancel_delay_ms = 20;
+    sc.cancelled_as_no_device = 1;
+    const struct outcome out = run_case(&sc);
+    expect(sc.name, out.rc == LIBUSB_ERROR_NO_MEM, "rc == LIBUSB_ERROR_NO_MEM", &out);
+    expect(sc.name, out.dev_lost == 1, "device lost while draining", &out);
+    expect(sc.name, out.submits == 3, "submission stopped at the refused one", &out);
+    expect(sc.name, out.cancelled_callbacks == 2, "both submitted transfers called back", &out);
+    expect_clean_exit(sc.name, &out);
+}
+
 /* A stop while streaming: the stream stops with it, so each transfer still out comes back only as cancelled, 50 ms
  * after its cancel. */
 static void
@@ -908,6 +928,7 @@ main(void) {
     completions_then_all_fail();
     failed_resubmit_counts();
     partial_initial_submit();
+    partial_initial_submit_then_unplug();
     deferred_cancellation(0);
     deferred_cancellation(1);
     unplug_drains();
