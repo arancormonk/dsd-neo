@@ -235,7 +235,7 @@ Item {
             widths.push(spectrumPill.width);
         // The pill's padding, dot and gap are constants: its Row only resizes on
         // polish, after the label has already changed.
-        widths.push(24 + 8 + liveRow.spacing + liveLabelProbe.implicitWidth);
+        widths.push(livePill.chromeWidth + livePill.dotWidth + liveRow.spacing + liveLabelProbe.implicitWidth);
         var total = (widths.length - 1) * headerActions.spacing;
         for (var w of widths)
             total += w;
@@ -524,6 +524,9 @@ Item {
                     id: livePill
 
                     objectName: "monitorLiveStatus"
+                    // Its padding and dot, also read by headerActionsWidth.
+                    readonly property int chromeWidth: 24
+                    readonly property int dotWidth: 8
                     readonly property bool acts: screen.sessionReceiver.length > 0
                     readonly property bool navigationAllowed: Navigation.allows(livePill)
                     function activate() {
@@ -542,7 +545,7 @@ Item {
                     Keys.onEnterPressed: activate()
                     Keys.onSpacePressed: activate()
                     FocusFrame {}
-                    width: liveRow.implicitWidth + 24
+                    width: liveRow.implicitWidth + chromeWidth
                     height: screen.pillHeight
                     radius: Theme.radiusButton
                     color: liveTap.pressed && acts ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
@@ -561,8 +564,8 @@ Item {
                         spacing: 7
 
                         Item {
-                            width: 8
-                            height: 8
+                            width: livePill.dotWidth
+                            height: livePill.dotWidth
                             anchors.verticalCenter: parent.verticalCenter
 
                             Rectangle {
@@ -577,9 +580,9 @@ Item {
                             Rectangle {
                                 objectName: "monitorLiveDot"
                                 anchors.centerIn: parent
-                                width: 8
-                                height: 8
-                                radius: 4
+                                width: livePill.dotWidth
+                                height: livePill.dotWidth
+                                radius: livePill.dotWidth / 2
                                 color: screen.receiverLost ? Theme.alert : decoderHost.running ? Theme.cyan : Theme.textSubdued
                             }
                         }
@@ -2322,7 +2325,7 @@ Item {
             Accessible.role: Accessible.Button
             Accessible.name: receiverStatus.accessibleName
             Accessible.description: qsTr("The session is finishing")
-            Accessible.ignored: !visible || !navigationAllowed
+            Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
             Keys.onReturnPressed: activate()
             Keys.onEnterPressed: activate()
