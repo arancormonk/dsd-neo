@@ -349,6 +349,9 @@ wrong on every frame and failing every SACCH, so not one RAN decoded, where acqu
 36. Over 72 realizations (0-10 dB, six seeds, with and without a two-ray echo) the four-level FSW reading read real
 FSWs within two bit errors in 94% of hits at 6-10 dB and 85% at 0-4 dB. Allowing three bit errors gained 0.4 RAN frames
 a call on average, mostly at 2 dB, and let receiver noise acquire on LowVHF, faNXDN and faNXDNScan.
+`nxdn96_weak_0db` (seed 17, 0 dB, 192 kB) guards the gate itself (`DECODE_IQ_NXDN96_WEAK_0DB`, at least 25 RANs): it
+decodes 29 with the two-bit gate and 30 with the matcher before these rules, the same over eight sample shifts, and 10
+with the gate held to one bit.
 
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify

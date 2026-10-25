@@ -310,11 +310,14 @@ DERIVED_ATTENUATED = [
 # A committed capture with complex Gaussian noise added at a set wideband SNR (signal power over the noise across the
 # whole 48 kHz capture), for a weak-signal case. nxdn96_weak pins NXDN96 acquisition on a weak call: acquiring on the
 # FSW right after the preamble (TS 1-A N6) left this realization's slicer reading one FSW symbol wrong on every frame
-# and failing every SACCH, so not one RAN of the call decoded. Deterministic from the seed.
+# and failing every SACCH, so not one RAN of the call decoded. nxdn96_weak_0db guards the four-level FSW gate itself:
+# at 0 dB the frame sync words read within two bit errors 85% of the time, and a gate held to one bit decodes 10 of
+# its RANs where two bits decode 29 (the matcher before these rules, 30). Deterministic from the seed.
 #
 # name, source fixture, wideband SNR dB, seed
 DERIVED_AWGN = [
     ("nxdn96_weak", "nxdn96", 8.0, 8007),
+    ("nxdn96_weak_0db", "nxdn96", 0.0, 17),
 ]
 
 # Receiver noise with the squelch open -- no signal at all, which is what a scanner sits on
