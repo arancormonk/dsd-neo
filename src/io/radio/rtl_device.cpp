@@ -2956,7 +2956,8 @@ static std::atomic<uint32_t> g_test_progress_limit_ms{0U};
 static std::atomic<uint32_t> g_test_progress_period_ms{0U};
 /* rtl_device_test_refuse_progress_monitor(): the RTL monitor's thread creation fails as a refused one does. */
 static std::atomic<int> g_test_refuse_progress_monitor{0};
-/* rtl_device_test_pause_next_verdict_ms(): one verdict, past its checks, waits this long before it claims the report. */
+/* rtl_device_test_pause_next_verdict_ms(): one verdict, past its checks, waits this long before it claims the
+ * report. */
 static std::atomic<uint32_t> g_test_verdict_pause_ms{0U};
 
 extern "C" void
@@ -2980,7 +2981,8 @@ rtl_device_test_refuse_progress_monitor(int refuse) {
 }
 #endif
 
-/* rtl_device_set_unplug_owner_grace_ms(): set once by the Android host at startup, read whenever a failure is raised. */
+/* rtl_device_set_unplug_owner_grace_ms(): set once by the Android host at startup, read whenever a failure is
+ * raised. */
 static std::atomic<uint32_t> g_unplug_owner_grace_ms{0U};
 
 void
@@ -7645,6 +7647,54 @@ rtl_device_reset_buffer(struct rtl_device* dev) {
     }
 }
 
+/* Start the Airspy stream and its monitor thread, which also watches its sample progress. Nonzero when either did not
+ * start; the stream is stopped again then. */
+static int
+rtl_airspy_start_stream(struct rtl_device* dev) {
+    if (rtl_monitor_sync_init(dev) != 0) {
+        return -1;
+    }
+    dev->receiver_end_claimed.store(0, std::memory_order_relaxed);
+    dev->progress_monitor_run.store(1, std::memory_order_relaxed);
+    dev->run.store(1, std::memory_order_release);
+    int r = airspy_source_start(dev->airspy);
+    if (r == 0) {
+        r = dsd_thread_create(&dev->thread, airspy_monitor, dev);
+    }
+    if (r != 0) {
+        (void)airspy_source_stop(dev->airspy);
+    }
+    return r;
+}
+
+/* Start the RTL-SDR's USB reader thread and its sample-progress monitor. Nonzero when either did not start; a reader
+ * that started is stopped and joined again then. */
+static int
+rtl_usb_start_reader(struct rtl_device* dev) {
+    if (!rtl_usb_reader_available(dev) || rtl_monitor_sync_init(dev) != 0) {
+        return -1;
+    }
+    dev->reader_entered.store(0, std::memory_order_relaxed);
+    dev->reader_exited.store(0, std::memory_order_relaxed);
+    dev->receiver_end_claimed.store(0, std::memory_order_relaxed);
+    dev->progress_monitor_run.store(1, std::memory_order_relaxed);
+    /* Cleared by a stop request, before it cancels the reader. */
+    dev->run.store(1, std::memory_order_release);
+    int r = dsd_thread_create(&dev->thread, dongle_thread_fn, dev);
+    if (r != 0) {
+        return r;
+    }
+    r = rtl_usb_progress_monitor_create(dev);
+    if (r != 0) {
+        /* Without its monitor a stalled receiver would go unnoticed; the start fails. */
+        LOG_ERROR("RTL-SDR: could not start the sample-progress monitor (rc=%d); the stream does not start\n", r);
+        rtl_usb_reader_stop(dev);
+        return r;
+    }
+    dev->progress_monitor_started = 1;
+    return 0;
+}
+
 /**
  * @brief Start asynchronous reading from the device.
  *
@@ -7662,47 +7712,9 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
     dev->thread_started = 1;
     int r = 0;
     if (dev->backend == RTL_BACKEND_AIRSPY) {
-        if (rtl_monitor_sync_init(dev) != 0) {
-            dev->thread_started = 0;
-            return -1;
-        }
-        dev->receiver_end_claimed.store(0, std::memory_order_relaxed);
-        dev->progress_monitor_run.store(1, std::memory_order_relaxed);
-        dev->run.store(1, std::memory_order_release);
-        r = airspy_source_start(dev->airspy);
-        if (r == 0) {
-            r = dsd_thread_create(&dev->thread, airspy_monitor, dev);
-        }
-        if (r != 0) {
-            (void)airspy_source_stop(dev->airspy);
-        }
+        r = rtl_airspy_start_stream(dev);
     } else if (dev->backend == RTL_BACKEND_USB) {
-        if (!rtl_usb_reader_available(dev)) {
-            dev->thread_started = 0;
-            return -1;
-        }
-        if (rtl_monitor_sync_init(dev) != 0) {
-            dev->thread_started = 0;
-            return -1;
-        }
-        dev->reader_entered.store(0, std::memory_order_relaxed);
-        dev->reader_exited.store(0, std::memory_order_relaxed);
-        dev->receiver_end_claimed.store(0, std::memory_order_relaxed);
-        dev->progress_monitor_run.store(1, std::memory_order_relaxed);
-        /* Cleared by a stop request, before it cancels the reader. */
-        dev->run.store(1, std::memory_order_release);
-        r = dsd_thread_create(&dev->thread, dongle_thread_fn, dev);
-        if (r == 0) {
-            r = rtl_usb_progress_monitor_create(dev);
-            if (r == 0) {
-                dev->progress_monitor_started = 1;
-            } else {
-                /* Without its monitor a stalled receiver would go unnoticed; the start fails. */
-                LOG_ERROR("RTL-SDR: could not start the sample-progress monitor (rc=%d); the stream does not start\n",
-                          r);
-                rtl_usb_reader_stop(dev);
-            }
-        }
+        r = rtl_usb_start_reader(dev);
     } else if (dev->backend == RTL_BACKEND_TCP) {
         dev->run.store(1);
         r = dsd_thread_create(&dev->thread, tcp_thread_fn, dev);
@@ -7771,6 +7783,49 @@ rtl_device_stop_async(struct rtl_device* dev) {
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* Arm the USB reader seam for @p request, its reader held at @p hold while it starts. */
+static void
+rtl_device_test_usb_reader_arm(const rtl_device_test_usb_reader_request* request, int hold) {
+    g_test_usb_reader_rc.store(request->reader_rc, std::memory_order_relaxed);
+    g_test_usb_reader_wait_stop.store(request->stop_while_reading ? 1 : 0, std::memory_order_relaxed);
+    g_test_usb_reader_hold.store(hold, std::memory_order_relaxed);
+    g_test_usb_reader_held.store(0, std::memory_order_relaxed);
+    g_test_usb_reader_cancels.store(0, std::memory_order_relaxed);
+    g_test_usb_reader_streaming.store(0, std::memory_order_relaxed);
+    g_test_usb_reader_cancelled.store(0, std::memory_order_relaxed);
+    g_test_usb_reader_stream.store(0, std::memory_order_relaxed);
+    g_test_usb_reader_active.store(1, std::memory_order_release);
+}
+
+/* End the started reader of @p dev as @p request asks: once it is held where the test asked and the stop delay passed,
+ * stop it (or destroy the device, which clears @p dev); with no stop asked, join the reader that returns by itself. */
+static int
+rtl_device_test_usb_reader_end(struct rtl_device** dev, const rtl_device_test_usb_reader_request* request, int hold) {
+    if (hold != RTL_TEST_USB_HOLD_NONE) {
+        /* Stop only once the reader is held where the test asked. */
+        for (int waited_ms = 0; waited_ms < 2000 && !g_test_usb_reader_held.load(std::memory_order_acquire);
+             ++waited_ms) {
+            dsd_sleep_ms(1);
+        }
+    }
+    if (request->stop_after_ms > 0) {
+        dsd_sleep_ms((unsigned int)request->stop_after_ms);
+    }
+    if (!request->stop_while_reading && request->stop_after_ms <= 0 && hold == RTL_TEST_USB_HOLD_NONE) {
+        /* The reader returns by itself; the session's stop comes after it. */
+        dsd_thread_join((*dev)->thread);
+        rtl_usb_progress_monitor_stop(*dev);
+        (*dev)->thread_started = 0;
+        return 0;
+    }
+    if (request->destroy_instead_of_stop) {
+        rtl_device_destroy(*dev);
+        *dev = nullptr;
+        return 0;
+    }
+    return rtl_device_stop_async(*dev);
+}
+
 extern "C" int
 rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request) {
     if (!request || !request->ring) {
@@ -7790,39 +7845,10 @@ rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* reques
     } else if (request->stop_before_read_async) {
         hold = RTL_TEST_USB_HOLD_BEFORE_READ;
     }
-    g_test_usb_reader_rc.store(request->reader_rc, std::memory_order_relaxed);
-    g_test_usb_reader_wait_stop.store(request->stop_while_reading ? 1 : 0, std::memory_order_relaxed);
-    g_test_usb_reader_hold.store(hold, std::memory_order_relaxed);
-    g_test_usb_reader_held.store(0, std::memory_order_relaxed);
-    g_test_usb_reader_cancels.store(0, std::memory_order_relaxed);
-    g_test_usb_reader_streaming.store(0, std::memory_order_relaxed);
-    g_test_usb_reader_cancelled.store(0, std::memory_order_relaxed);
-    g_test_usb_reader_stream.store(0, std::memory_order_relaxed);
-    g_test_usb_reader_active.store(1, std::memory_order_release);
+    rtl_device_test_usb_reader_arm(request, hold);
     int rc = rtl_device_start_async(dev, 16U * 32U * 512U);
     if (rc == 0) {
-        const int stop = request->stop_while_reading || request->stop_after_ms > 0 || hold != RTL_TEST_USB_HOLD_NONE;
-        if (hold != RTL_TEST_USB_HOLD_NONE) {
-            /* Stop only once the reader is held where the test asked. */
-            for (int waited_ms = 0; waited_ms < 2000 && !g_test_usb_reader_held.load(std::memory_order_acquire);
-                 ++waited_ms) {
-                dsd_sleep_ms(1);
-            }
-        }
-        if (request->stop_after_ms > 0) {
-            dsd_sleep_ms((unsigned int)request->stop_after_ms);
-        }
-        if (!stop) {
-            /* The reader returns by itself; the session's stop comes after it. */
-            dsd_thread_join(dev->thread);
-            rtl_usb_progress_monitor_stop(dev);
-            dev->thread_started = 0;
-        } else if (request->destroy_instead_of_stop) {
-            rtl_device_destroy(dev);
-            dev = nullptr;
-        } else {
-            rc = rtl_device_stop_async(dev);
-        }
+        rc = rtl_device_test_usb_reader_end(&dev, request, hold);
     }
     g_test_usb_reader_active.store(0, std::memory_order_release);
     g_test_usb_reader_hold.store(RTL_TEST_USB_HOLD_NONE, std::memory_order_release);
