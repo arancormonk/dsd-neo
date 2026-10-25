@@ -3840,7 +3840,7 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   error (`frame_sync_try_m17_lsf_or_bert()`); a stream or packet frame after an LSF, and a chain with evidence, are
   taken as before. A transmission joined after its preamble opens on the same exact sync word three frames
   (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) running (`frame_sync_try_m17_join()`, `dsd_state::m17_join_hits`, cleared
-  with the preamble candidate; every exact word is kept, whichever path took its window, since the payload matches
+  with the preamble candidate and with the NXDN96 sync; every exact word is kept, whichever path took its window, since the payload matches
   some word a few times a frame): the stream word is a stream, the LSF word repeated an inverted stream (a transmission
   sends one LSF), and the BERT word, or the packet word under an inverted session, BERT. A packet is never joined (its
   CRC covers every packet frame; the packet word sits a frame apart in NXDN96 data frames' LICH). A join opens one
@@ -3871,8 +3871,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   8, so a lock can ride a slicer whose four-level reading is biased for a whole call. Dropping the lock after 2, 3 or
   4 locked FSWs in a row that read more than two bits on four levels was measured on 72 weak nxdn96 realizations
   (0-10 dB): mean RAN frames 28.92, 29.14 and 29.18 against 29.24 keeping it, no run rescued, so the lock is kept.
-  Both are also cleared with the M17 join history, at a carrier boundary inside an NXDN frame, on an NXDN trunked
-  tune and at the CAC reset. The four-level reading takes the window's level ring, which
+  Both are also cleared with the M17 join history, at an acquisition reset and any carrier change
+  (`dsd_state_note_carrier_change()`, so a tune, a probe or a trunk-scan switch), at a carrier boundary inside an NXDN
+  frame, on an NXDN trunked tune and at the CAC reset. The four-level reading takes the window's level ring, which
   a symbol capture fills with its dibits' levels (`dsd_symbol_level_from_dibit()`), so it applies there too; only a
   window holding fewer than ten levels (the unit tests' sign-only windows) skips it, and the sign match then counts as
   clear. A LICH failure prints its sync under `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests:

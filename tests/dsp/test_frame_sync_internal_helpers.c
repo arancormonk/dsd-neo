@@ -2121,6 +2121,55 @@ test_nxdn96_lock_follows_the_lich(void) {
     assert(nxdn96_fsw(&opts, &state, 1, 1, good) == DSD_SYNC_NONE);
 }
 
+static int
+sync_hits_empty(const dsd_sync_hit_history* history) {
+    for (int i = 0; i < DSD_SYNC_HIT_HISTORY_LEN; i++) {
+        if (history->kind[i] != 0U) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/*
+ * The NXDN96 lock and hits, and the M17 join history, are evidence of one carrier and one acquisition, as the windows
+ * are: an acquisition reset or a carrier change (a tune, a probe, a trunk-scan switch) forgets them, so a lock does not
+ * carry its flywheel over to the next carrier and an FSW the carrier left sent does not pair with the next one's. The
+ * next carrier acquires on two FSWs of its own.
+ */
+static void
+test_nxdn96_and_m17_histories_end_with_the_carrier(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
+
+    for (int boundary = 0; boundary < 2; boundary++) {
+        nxdn96_sync_setup(&opts, &state);
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+        assert(state.nxdn96_sync.lock_type == DSD_SYNC_NXDN_POS);
+        state.m17_join_hits.kind[0] = 1U;
+        state.m17_join_hits.symbolcnt[0] = state.symbolcnt;
+        state.m17_join_hits.next = 1U;
+        if (boundary) {
+            dsd_state_note_carrier_change(&state);
+            state.symbol_clock += 1000U; /* the next carrier's windows are whole */
+        } else {
+            dsd_frame_sync_reset_acquisition(&opts, &state, 0);
+            state.min = -3.0f; /* the slicer the next carrier warms */
+            state.max = 3.0f;
+        }
+        assert(state.nxdn96_sync.lock_type == 0U && state.nxdn96_sync.pending_type == 0U);
+        assert(sync_hits_empty(&state.nxdn96_sync.hits));
+        assert(sync_hits_empty(&state.m17_join_hits) && state.m17_join_hits.next == 0U);
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+        state.symbolcnt += 192;
+        assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    }
+}
+
 /*
  * The FSW the specification detects is 20 bits, 10 four-level symbols, within two bit errors; the sign-sliced window
  * here is ten bits, which one arbitrary window in a hundred matches. Acquisition reads the window's levels too: hits
@@ -4649,6 +4698,7 @@ main(void) {
     test_m17_joins_on_a_sync_word_three_frames_running();
     test_nxdn96_follows_the_receiver_sync_rules();
     test_nxdn96_lock_follows_the_lich();
+    test_nxdn96_and_m17_histories_end_with_the_carrier();
     test_nxdn96_acquires_on_the_four_level_fsw();
     test_an_nxdn96_data_call_stays_nxdn96_under_auto();
     test_nxdn48_keeps_two_hits_at_any_distance();

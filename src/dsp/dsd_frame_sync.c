@@ -519,6 +519,9 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->rtl_fsk_sps_accum = 0;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
+    /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it. */
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
+    dsd_sync_hit_history_clear(&state->m17_join_hits);
     /* Nothing decoded since says the carrier is two-slot TDMA: a decoded frame of the next acquisition does. */
     state->tdma_carrier = 0U;
     /* Nor does an X2-TDMA superframe read before it chain to the next one. */

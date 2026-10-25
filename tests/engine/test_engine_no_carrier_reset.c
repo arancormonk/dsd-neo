@@ -4505,7 +4505,14 @@ test_received_identity_lifetime(void) {
     const uint32_t epoch = state->rx_id.epoch;
     state->symbol_clock = 5000U;
     rc |= expect_true("rx-id: no carrier left yet", !dsd_state_carrier_settling(state, 144U));
+    state->nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_POS;
+    state->nxdn96_sync.hits.kind[0] = (uint8_t)DSD_SYNC_NXDN_POS;
+    state->m17_join_hits.kind[0] = 1U;
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    /* The sync join histories are the carrier left's evidence: no NXDN96 lock or hit, nor M17 word, pairs across it. */
+    rc |= expect_true("rx-id: the boundary forgets the sync join histories",
+                      state->nxdn96_sync.lock_type == 0U && state->nxdn96_sync.hits.kind[0] == 0U
+                          && state->m17_join_hits.kind[0] == 0U);
     rc |= expect_true("rx-id: a carrier boundary forgets the record",
                       state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE && state->rx_id.valid == 0U
                           && state->rx_id.epoch != epoch);
