@@ -21,6 +21,7 @@ Item {
             passbandSheet.visible = false;
             historyDetail.visible = false;
             otherSlotMenu.visible = false;
+            receiverSheet.visible = false;
         }
     }
 
@@ -114,6 +115,25 @@ Item {
     readonly property bool holding: metrics ? metrics.heldTg > 0 : false
     readonly property bool scanHeld: metrics ? metrics.scanHold : false
 
+    // #647 D1a: the session's USB receiver, where the host brokers it (Android).
+    // LOST as soon as the host says the session's receiver was unplugged or
+    // stopped sending, while the engine still winds down (running stays true
+    // through its cleanup). The desktop opens its receiver itself and shows
+    // none of this.
+    DeviceStatus {
+        id: receiverStatus
+        host: decoderHost
+    }
+    readonly property bool receiverLost: decoderHost.localDeviceBrokered === true && (receiverStatus.state === "lost" || receiverStatus.state === "fault")
+    // The local receiver the session runs on: the saved system's, or the lost
+    // one's own after an Activity recreation, which leaves no system map. Empty
+    // for rtl_tcp, network audio and files, whose pill stays an indicator.
+    readonly property string sessionReceiver: decoderHost.localDeviceBrokered !== true ? "" : receiverLost ? receiverStatus.kind : system && (system.sourceType === "usb" || system.sourceType === "airspy") ? system.sourceType : ""
+    readonly property string liveLabel: receiverLost ? qsTr("LOST") : decoderHost.running ? (system && system.sourceType === "file" ? qsTr("PLAYING") : qsTr("LIVE")) : decoderHost.statusText.toUpperCase()
+    function openReceiverSheet() {
+        receiverSheet.openFor(receiverLost);
+    }
+
     onHeroHeadlineChanged: heroText.requestPaint()
     onHeroCompactChanged: heroText.requestPaint()
 
@@ -146,9 +166,12 @@ Item {
         }
         return callSpaceFor(4) < callRowHeight ? 5 : 4;
     }
-    // Wide screens fit every header action beside the title in any tier.
-    readonly property bool headerStacked: tier === 0 && width < 500
-    readonly property bool wideHeaderActions: tier === 0 || width >= 500
+    // Wide screens fit every header action beside the title in any tier. Where
+    // the host brokers a USB receiver (#647 B16), the actions must also fit the
+    // row, measured with the pill at its widest label; else Sites and Spectrum
+    // are left to the session menu, as past tier 0, and nothing is stacked.
+    readonly property bool headerStacked: tier === 0 && width < 500 && headerActionsFit
+    readonly property bool wideHeaderActions: (tier === 0 || width >= 500) && headerActionsFit
     readonly property bool heroCompact: tier >= 2
     readonly property bool stripInList: tier >= 3
     readonly property bool labelShown: tier < 4
@@ -178,7 +201,7 @@ Item {
         return parts.length > 0 ? total + (parts.length - 1) * Theme.gap : 0;
     }
     function headerBarHeight(t) {
-        var stacked = t === 0 && width < 500;
+        var stacked = t === 0 && width < 500 && headerActionsFit;
         return stacked ? heading.implicitHeight + 8 + pillHeight : Math.max(heading.implicitHeight, pillHeight);
     }
     function heroHeight(t) {
@@ -198,7 +221,35 @@ Item {
         return viewport - columnHeight(header);
     }
 
+    // #647 B16: Sites, the session menu, Spectrum and the pill, each as the
+    // session would show it, with the pill at the widest label it can show
+    // (LIVE, LOST, STARTING…, STOPPING…, or what it says now), so the row never
+    // changes make-up as the label changes. Beside the title the row keeps the
+    // title's 12 px.
+    readonly property real headerActionsWidth: {
+        var widths = [];
+        if (sitesAvailable)
+            widths.push(siteChooserButton.width);
+        widths.push(sessionOptionsButton.width);
+        if (metrics.radioInput)
+            widths.push(spectrumPill.width);
+        widths.push(livePill.width - liveLabel.implicitWidth + liveLabelProbe.implicitWidth);
+        var total = (widths.length - 1) * headerActions.spacing;
+        for (var w of widths)
+            total += w;
+        return total;
+    }
+    readonly property bool headerActionsFit: !decoderHost.localDeviceBrokered || headerActionsWidth <= width - 2 * Theme.screenPadding - (width < 500 ? 0 : 12)
+
     // Probes for the budget: never shown, only measured.
+    // One line per label: a plain text's width is its widest line.
+    Text {
+        id: liveLabelProbe
+        visible: false
+        text: ["LIVE", "LOST", "STARTING…", "STOPPING…", screen.liveLabel].join("\n")
+        textFormat: Text.PlainText
+        font: liveLabel.font
+    }
     Text {
         id: rowNameProbe
         visible: false
@@ -398,6 +449,7 @@ Item {
                 // On a phone past tier 0, Sites and Spectrum are in the session menu,
                 // which carries both on the same conditions.
                 OutlineButton {
+                    id: siteChooserButton
                     objectName: "runningSiteChooserButton"
                     visible: screen.sitesAvailable && screen.wideHeaderActions
                     // One height for the whole row, which the budget measures.
@@ -407,6 +459,7 @@ Item {
                 }
 
                 IconButton {
+                    id: sessionOptionsButton
                     objectName: "sessionOptionsButton"
                     icon: "more"
                     accessibleName: qsTr("Session options")
@@ -462,16 +515,42 @@ Item {
                     }
                 }
 
+                // For a USB receiver session on a brokering host, a button that
+                // opens the receiver sheet; otherwise only an indicator.
                 Rectangle {
                     id: livePill
 
                     objectName: "monitorLiveStatus"
+                    readonly property bool acts: screen.sessionReceiver.length > 0
+                    readonly property bool navigationAllowed: Navigation.allows(livePill)
+                    function activate() {
+                        if (acts && Navigation.allows(livePill))
+                            screen.openReceiverSheet();
+                    }
+                    // Kept while focused, so a session ending under the focus never
+                    // drops it mid-way.
+                    activeFocusOnTab: acts || activeFocus
+                    Accessible.role: acts ? Accessible.Button : Accessible.StaticText
+                    Accessible.name: screen.receiverLost ? receiverStatus.accessibleName : liveLabel.text
+                    Accessible.description: acts ? qsTr("Shows the receiver") : ""
+                    Accessible.ignored: !navigationAllowed
+                    Accessible.onPressAction: activate()
+                    Keys.onReturnPressed: activate()
+                    Keys.onEnterPressed: activate()
+                    Keys.onSpacePressed: activate()
+                    FocusFrame {}
                     width: liveRow.implicitWidth + 24
                     height: screen.pillHeight
                     radius: Theme.radiusButton
-                    color: Theme.panel
+                    color: liveTap.pressed && acts ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
                     border.width: 1
                     border.color: Theme.panelBorder
+
+                    Behavior on color {
+                        ColorAnimation {
+                            duration: 120
+                        }
+                    }
 
                     Row {
                         id: liveRow
@@ -488,26 +567,35 @@ Item {
                                 width: 18
                                 height: 18
                                 radius: 9
-                                visible: Theme.dark && decoderHost.running
+                                visible: Theme.dark && decoderHost.running && !screen.receiverLost
                                 color: Qt.alpha(Theme.cyan, 0.25)
                             }
 
                             Rectangle {
+                                objectName: "monitorLiveDot"
                                 anchors.centerIn: parent
                                 width: 8
                                 height: 8
                                 radius: 4
-                                color: decoderHost.running ? Theme.cyan : Theme.textSubdued
+                                color: screen.receiverLost ? Theme.alert : decoderHost.running ? Theme.cyan : Theme.textSubdued
                             }
                         }
 
                         Text {
-                            text: decoderHost.running ? (screen.system && screen.system.sourceType === "file" ? qsTr("PLAYING") : qsTr("LIVE")) : decoderHost.statusText.toUpperCase()
+                            id: liveLabel
+                            objectName: "monitorLiveLabel"
+                            text: screen.liveLabel
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(11)
                             font.letterSpacing: 1.4
                             color: Theme.textPrimary
                         }
+                    }
+
+                    TapHandler {
+                        id: liveTap
+                        enabled: livePill.acts
+                        onTapped: livePill.activate()
                     }
                 }
             }
@@ -943,7 +1031,7 @@ Item {
         id: actionsHost
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: stopButton.top
+        anchors.bottom: lostLineHost.top
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         anchors.bottomMargin: screen.scrollAll ? 0 : 8
@@ -2201,6 +2289,106 @@ Item {
         }
     }
 
+    // #647 D1a: in tier 5 the header, and the pill with it, scrolls with the
+    // calls, so a lost receiver is also said here, fixed above Stop, and opens
+    // the pill's sheet. Outside the budget: it shows only where the budget has
+    // already left Stop alone in place, so the tier never moves with it, and
+    // it takes no room while hidden.
+    Item {
+        id: lostLineHost
+        readonly property bool shown: screen.scrollAll && screen.receiverLost
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: stopButton.top
+        anchors.leftMargin: Theme.screenPadding
+        anchors.rightMargin: Theme.screenPadding
+        anchors.bottomMargin: shown ? 8 : 0
+        height: shown ? lostLine.height : 0
+
+        Rectangle {
+            id: lostLine
+            objectName: "monitorReceiverLostLine"
+            visible: lostLineHost.shown
+            enabled: !keySheet.visible
+            readonly property bool navigationAllowed: Navigation.allows(lostLine)
+            function activate() {
+                if (visible && enabled && Navigation.allows(lostLine))
+                    screen.openReceiverSheet();
+            }
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Button
+            Accessible.name: receiverStatus.accessibleName
+            Accessible.description: qsTr("The session is finishing")
+            Accessible.ignored: !visible || !navigationAllowed
+            Accessible.onPressAction: activate()
+            Keys.onReturnPressed: activate()
+            Keys.onEnterPressed: activate()
+            Keys.onSpacePressed: activate()
+            FocusFrame {}
+            width: parent.width
+            height: Math.max(screen.pillHeight, lostLineLabel.implicitHeight + 16)
+            radius: Theme.radiusButton
+            color: lostLineTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
+            border.width: 1
+            border.color: Theme.panelBorder
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: 120
+                }
+            }
+
+            Rectangle {
+                x: 12
+                anchors.verticalCenter: parent.verticalCenter
+                width: 8
+                height: 8
+                radius: 4
+                color: Theme.alert
+            }
+
+            Text {
+                id: lostLineLabel
+                x: 12 + 8 + 7
+                anchors.verticalCenter: parent.verticalCenter
+                text: receiverStatus.pillText
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(11)
+                font.letterSpacing: 1.4
+                color: Theme.textPrimary
+            }
+
+            Text {
+                anchors.left: lostLineLabel.right
+                anchors.leftMargin: 10
+                anchors.right: lostLineChevron.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Session finishing")
+                elide: Text.ElideRight
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.textSubdued
+            }
+
+            Text {
+                id: lostLineChevron
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                text: "›"
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(17)
+                color: Theme.textSubdued
+            }
+
+            TapHandler {
+                id: lostLineTap
+                onTapped: lostLine.activate()
+            }
+        }
+    }
+
     GradientButton {
         id: stopButton
         objectName: "stopListeningButton"
@@ -2216,6 +2404,37 @@ Item {
         enabled: !decoderHost.transitioning && !keySheet.visible
         onClicked: decoderHost.stop()
     }
+    // #647 D1a: the session's receiver. Healthy: its name and status. Lost:
+    // what happened, and Stop now, the user's Stop, which also drops uploads
+    // still waiting (#718 D4) while Stop itself waits on the cleanup. It
+    // answers for the state it opened in: a change while it is up closes it,
+    // so OK never turns into Stop now under a finger.
+    ConfirmDialog {
+        id: receiverSheet
+        objectName: "monitorReceiverSheet"
+        z: 10
+        property bool lostView: false
+        title: receiverStatus.headline
+        message: lostView ? qsTr("The session is finishing: its last calls are still being saved and uploaded. Stop now ends it at once and drops any uploads still waiting.") : receiverStatus.hostText || receiverStatus.detailText
+        confirmText: lostView ? qsTr("Stop now") : qsTr("OK")
+        showCancel: lostView
+        destructive: lostView
+        function openFor(lost) {
+            lostView = lost;
+            open();
+        }
+        onConfirmed: {
+            if (lostView)
+                decoderHost.stop();
+        }
+        Connections {
+            target: screen
+            function onReceiverLostChanged() {
+                receiverSheet.cancel();
+            }
+        }
+    }
+
     // WP-F1: owned by Monitor, above its scrolling list and stop control.
     SiteSheet {
         id: siteSheet

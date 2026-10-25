@@ -4692,6 +4692,7 @@ if(DSD_ENABLE_QT_UI)
                 radio_persistence
                 device_status
                 main_receiver_notice
+                monitor_receiver
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(

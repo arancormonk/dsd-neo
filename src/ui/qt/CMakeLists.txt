@@ -271,4 +271,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_util_fixed.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_device_status.qml" # #647
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_main_receiver_notice.qml" # #647
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_receiver.qml" # #647
 )

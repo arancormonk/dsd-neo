@@ -140,7 +140,66 @@ Item {
             m("tetraCodecText", "");
             testContext.setPrefs("monitorDetailsExpanded", false);
             Ui.Theme.resetFontScale();
+            item("monitorReceiverSheet").visible = false;
+            tc.monitor.system = null;
+            decoderHost.receiverHealth = {state: "ok", source: "", session: 0};
+            decoderHost.localDeviceBrokered = false;
             testContext.setHostRunning(false);
+        }
+
+        // ---- #647: a lost receiver in tier 5 ----
+
+        // Where the header scrolls with the calls, a lost receiver also shows as
+        // one fixed line above Stop, on screen with the header scrolled away, and
+        // it opens the pill's sheet. Elsewhere the pill is in view and there is no
+        // line. Losing the receiver never changes the tier.
+        function test_lost_line_data() {
+            return [{tag: "640x360@1.6", width: 640, height: 360, scale: 1.6, line: true},
+                    {tag: "640x360@1", width: 640, height: 360, scale: 1, line: true},
+                    {tag: "360x690@1.6", width: 360, height: 690, scale: 1.6, line: false},
+                    {tag: "411x914@1", width: 411, height: 914, scale: 1, line: false}];
+        }
+        function test_lost_line(data) {
+            decoderHost.localDeviceBrokered = true;
+            tc.monitor.system = {name: "County P25", sourceType: "usb"};
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            setCall(1, 2);
+            settle();
+            var tier = tc.monitor.tier;
+            compare(tier === 5, data.line, "tier " + tier);
+            var line = item("monitorReceiverLostLine");
+            verify(!line.visible, "no line while the receiver is healthy");
+            var listBottom = tc.list.mapToItem(tc.monitor, 0, tc.list.height).y;
+            decoderHost.receiverHealth = {state: "lost", source: "usb", session: 1};
+            tryCompare(item("monitorLiveLabel"), "text", "LOST");
+            settle();
+            compare(tc.monitor.tier, tier, "the tier held");
+            compare(line.visible, data.line);
+            if (!data.line) {
+                compare(tc.list.mapToItem(tc.monitor, 0, tc.list.height).y, listBottom, "the list kept its place");
+                return;
+            }
+            // The header, and the pill with it, scrolled out of view.
+            tc.list.contentY = tc.list.originY + tc.list.contentHeight - tc.list.height;
+            settle();
+            var pill = item("monitorLiveStatus");
+            verify(pill.mapToItem(tc.list, 0, pill.height).y <= 0.5, "the pill scrolled away");
+            var at = line.mapToItem(tc.monitor, 0, 0);
+            var stop = item("stopListeningButton");
+            verify(at.x >= -0.5 && at.y >= -0.5 && at.x + line.width <= tc.monitor.width + 0.5, "the line is inside the screen");
+            verify(at.y + line.height <= stop.mapToItem(tc.monitor, 0, 0).y + 0.5, "the line sits above Stop");
+            verify(tc.list.mapToItem(tc.monitor, 0, tc.list.height).y <= at.y + 0.5, "the list ends above the line");
+            verify(line.height >= Ui.Theme.minimumTouchSize);
+            compare(line.Accessible.name, "RTL-SDR lost");
+            compare(line.Accessible.role, Accessible.Button);
+            mouseClick(line, line.width / 2, line.height / 2);
+            var sheet = item("monitorReceiverSheet");
+            tryCompare(sheet, "visible", true);
+            compare(sheet.confirmText, "Stop now");
+            sheet.cancel();
+            tryCompare(sheet, "visible", false);
         }
 
         // ---- The budget ----

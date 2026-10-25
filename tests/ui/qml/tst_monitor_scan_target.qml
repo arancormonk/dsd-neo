@@ -20,6 +20,11 @@ Item {
         function cleanup() {
             screen.sitesAvailable = false;
             screen.scanTargetName = "";
+            screen.system = null;
+            decoderHost.localDeviceBrokered = false;
+            decoderHost.receiverHealth = {state: "ok", source: "", session: 0};
+            decoderHost.statusText = "idle";
+            testContext.setHostRunning(false);
             Ui.Theme.resetFontScale();
             root.width = 420; root.height = 900;
             testContext.setMetric("radioInput", false);
@@ -252,6 +257,116 @@ Item {
                     verify(ap.x + a.width <= bp.x || bp.x + b.width <= ap.x
                            || ap.y + a.height <= bp.y || bp.y + b.height <= ap.y,
                            shown[i] + " overlaps " + shown[j]);
+                }
+            }
+        }
+
+        // ---- #647: the header actions' width (B16) ----
+
+        readonly property var actionNames: ["runningSiteChooserButton", "sessionOptionsButton", "openSpectrumButton", "monitorLiveStatus"]
+        // What the pill can say in a USB session: live, its receiver lost (the
+        // engine still running), and the host's transition words once it is not.
+        function setPillLabel(label) {
+            decoderHost.receiverHealth = label === "LOST" ? {state: "lost", source: "usb", session: 1} : {state: "ok", source: "", session: 0};
+            decoderHost.statusText = label === "STARTING…" ? "Starting…" : label === "STOPPING…" ? "Stopping…" : "idle";
+            testContext.setHostRunning(label === "LIVE" || label === "LOST");
+            tryCompare(findChild(screen, "monitorLiveLabel"), "text", label);
+            settleActions();
+        }
+        // Rows place their items on polish: the pill's own row sizes the pill,
+        // then the actions' row places it.
+        function settleActions() {
+            verify(waitForPolish(findChild(screen, "monitorLiveLabel").parent));
+            verify(waitForPolish(findChild(screen, "monitorLiveStatus").parent));
+        }
+        function visibleActions() {
+            return actionNames.filter(function (name) { return findChild(screen, name).visible; });
+        }
+        function actionRects() {
+            return visibleActions().map(function (name) {
+                var action = findChild(screen, name);
+                var at = action.mapToItem(screen, 0, 0);
+                return {name: name, x: at.x, y: at.y, width: action.width, height: action.height};
+            });
+        }
+        function useTallPhone(width, scale) {
+            root.width = width; root.height = 1400;
+            Ui.Theme.fontScale = scale;
+            screen.system = {name: "County P25", sourceType: "usb"};
+            screen.sitesAvailable = true;
+            testContext.setMetric("radioInput", true);
+        }
+
+        // Brokered hosts: the actions are measured with the pill at the widest
+        // label the session can show, so every action stays on the screen at any
+        // label, and which actions show never changes with the label. When they
+        // do not fit, Sites and Spectrum are left to the session menu, as past
+        // tier 0.
+        function test_header_actions_fit_a_tall_phone_data() {
+            var rows = [];
+            for (var width of [320, 360, 411])
+                for (var scale of [1, 1.6, 2])
+                    rows.push({tag: width + "@" + scale, width: width, scale: scale});
+            return rows;
+        }
+        function test_header_actions_fit_a_tall_phone(data) {
+            failOnWarning(/.*/);
+            decoderHost.localDeviceBrokered = true;
+            useTallPhone(data.width, data.scale);
+            var shown = null;
+            for (var label of ["LIVE", "LOST", "STARTING…", "STOPPING…"]) {
+                setPillLabel(label);
+                compare(screen.tier, 0, "a tall phone is tier 0");
+                var rects = actionRects();
+                var names = rects.map(function (rect) { return rect.name; }).join();
+                if (shown === null)
+                    shown = names;
+                compare(names, shown, label + " changed which actions show");
+                for (var rect of rects)
+                    verify(rect.x >= Ui.Theme.screenPadding - 0.5 && rect.x + rect.width <= screen.width - Ui.Theme.screenPadding + 0.5, rect.name + " leaves the row at " + label);
+            }
+            compare(findChild(screen, "runningSiteChooserButton").visible, screen.wideHeaderActions);
+            compare(findChild(screen, "openSpectrumButton").visible, screen.wideHeaderActions);
+            // Measured with Sites and Spectrum in, whether they show or not.
+            verify(screen.headerActionsWidth > findChild(screen, "monitorLiveStatus").width + 48 + 2 * 8);
+        }
+
+        // The desktop's header is exactly as it was: Sites and Spectrum follow the
+        // tier and the width alone, and the actions sit right-aligned, 8 px apart.
+        // Where the measured actions fit, Android lays them out identically.
+        function test_header_geometry_unchanged_off_android_data() {
+            var rows = [];
+            for (var width of [320, 360, 411, 540])
+                for (var scale of [1, 1.6, 2])
+                    rows.push({tag: width + "@" + scale, width: width, scale: scale});
+            return rows;
+        }
+        function test_header_geometry_unchanged_off_android(data) {
+            failOnWarning(/.*/);
+            useTallPhone(data.width, data.scale);
+            var header = findChild(screen, "monitorHeader");
+            for (var label of ["LIVE", "STARTING…", "STOPPING…"]) {
+                decoderHost.localDeviceBrokered = false;
+                setPillLabel(label);
+                compare(screen.wideHeaderActions, screen.tier === 0 || screen.width >= 500);
+                compare(screen.headerStacked, screen.tier === 0 && screen.width < 500);
+                var rects = actionRects();
+                compare(rects.length, screen.wideHeaderActions ? 4 : 2, label);
+                var right = header.mapToItem(screen, header.width, 0).x;
+                compare(rects[rects.length - 1].x + rects[rects.length - 1].width, right, "the pill ends the row");
+                for (var i = 0; i + 1 < rects.length; ++i) {
+                    compare(rects[i].x + rects[i].width + 8, rects[i + 1].x, rects[i].name + " to " + rects[i + 1].name);
+                    compare(rects[i].y, rects[i + 1].y);
+                }
+                decoderHost.localDeviceBrokered = true;
+                settleActions();
+                if (visibleActions().length !== rects.length)
+                    continue;
+                var brokered = actionRects();
+                for (var j = 0; j < rects.length; ++j) {
+                    compare(brokered[j].x, rects[j].x, rects[j].name + " x at " + label);
+                    compare(brokered[j].width, rects[j].width, rects[j].name + " width at " + label);
+                    compare(brokered[j].y, rects[j].y, rects[j].name + " y at " + label);
                 }
             }
         }
