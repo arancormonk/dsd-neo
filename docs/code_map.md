@@ -3948,10 +3948,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     modulation, as the decoder publishes them at every step and every stamp
     (`dsd_frame_sync_p25p1_mod_compare_publish()`, one atomic value read through
     `dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()` and `dsd_frame_sync_p25p1_published_learned_rf_mod()`), puts
-    `rf_mod` on the leading chain as the end would, and an accepted tune notes itself
-    (`dsd_frame_sync_note_off_thread_tune()`); the decoder thread ends the comparison on that chain at `getFrameSync()`
-    entry, or in the hunt while one runs (`dsd_frame_sync_apply_off_thread_tunes()`), leaving the demodulator to the
-    tune.
+    `rf_mod` on the leading chain as the end would, and an accepted tune notes itself with that chain, count and chain
+    in one atomic value (`dsd_frame_sync_note_off_thread_tune()`); the decoder thread ends the comparison on the latest
+    such tune's chain, though frames it counted since put the other chain in front, at `getFrameSync()` entry or in the
+    hunt while one runs (`dsd_frame_sync_apply_off_thread_tunes()`), leaving the demodulator to the tune.
   - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
     gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The

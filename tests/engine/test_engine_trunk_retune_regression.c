@@ -1058,6 +1058,40 @@ test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(dsd_opts* opts, dsd
     assert(dsd_frame_sync_p25p1_mod_compare_leading_rf_mod() == -1 && !dsd_frame_sync_off_thread_tune_pending());
     dsd_engine_set_decoder_thread(0);
 
+    /* The decoder's comparison moves on while the tune was made: a C4FM trial frame since puts C4FM in front. The
+     * comparison ends on the chain the tune chose all the same, which the front end now runs, so the CQPSK hold the
+     * learned modulation keeps is the tune's. */
+    seed_chain_comparison_in_trial(opts, state, 1, 268, 268);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    state->p25_p1_mod_compare.trial_read += 134U;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    assert(dsd_frame_sync_p25p1_mod_compare_leading_rf_mod() == 0);
+    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_validated_rf_mod == 1);
+    assert(dsd_frame_sync_p25p1_published_learned_rf_mod() == 1);
+    /* Two tunes before the decoder's next step: the later one's chain. */
+    dsd_engine_set_decoder_thread(0);
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    state->p25_p1_mod_compare.incumbent_read = 0U;
+    state->p25_p1_mod_compare.trial_read = 1206U;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852012500, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 0 && state->rf_mod == 0);
+    rtl_stream_clear_pending_retune_profile();
+    dsd_engine_set_decoder_thread(1);
+    state->p25_p1_mod_compare.incumbent_read = 1206U;
+    state->p25_p1_mod_compare.trial_read = 0U;
+    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(state->p25_p1_validated_rf_mod == 0);
+    dsd_engine_set_decoder_thread(0);
+
     /* A voice-channel tune from that thread lands on the leading chain too. */
     seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
     before = state->p25_p1_mod_compare;
@@ -3422,7 +3456,6 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
-    opts->mod_qpsk = 0;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 851000000;
     state->trunk_cc_freq = 851000000;
@@ -3455,7 +3488,6 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
-    opts->mod_qpsk = 0;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 851000000;
     state->trunk_cc_freq = 851000000;
@@ -3480,7 +3512,6 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
-    opts->mod_qpsk = 0;
     opts->mod_cli_lock = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 851000000;

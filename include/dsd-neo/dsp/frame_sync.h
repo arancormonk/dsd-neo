@@ -241,11 +241,13 @@ int dsd_frame_sync_p25p1_published_learned_rf_mod(void);
 int dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(void);
 
 /**
- * @brief Note an accepted tune made off the decoder thread (the P25 watchdog's). The decoder thread applies it at its
- * next frame sync step (dsd_frame_sync_apply_off_thread_tunes()): it ends a chain comparison in flight, as the decoder
- * thread's own tunes do, and forgets the sync join histories. Safe from any thread.
+ * @brief Note an accepted tune made off the decoder thread (the P25 watchdog's), which landed a P25p1 chain comparison
+ * in flight on @p chain (the leading chain it read, dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(); -1 when it found
+ * none). The decoder thread applies it at its next frame sync step (dsd_frame_sync_apply_off_thread_tunes()): it ends
+ * the comparison on the latest such tune's chain, as the decoder thread's own tunes end one, and forgets the sync join
+ * histories. Safe from any thread.
  */
-void dsd_frame_sync_note_off_thread_tune(void);
+void dsd_frame_sync_note_off_thread_tune(int chain);
 
 /** @brief Whether a tune off the decoder thread awaits dsd_frame_sync_apply_off_thread_tunes(). Decoder thread. */
 int dsd_frame_sync_off_thread_tune_pending(void);
