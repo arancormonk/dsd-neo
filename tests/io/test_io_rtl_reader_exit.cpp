@@ -81,13 +81,25 @@ record_cause_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
     log->logged.store(1, std::memory_order_release);
 }
 
-/* Raise the exit flag after 100 ms, as a session ending for another reason does. */
+/* Raises the exit flag, as a session ending for another reason does, once a verdict is waiting out the grace. */
+struct exit_raiser {
+    unsigned int in_grace_before = 0U;
+    std::atomic<uint64_t> raised_ms{0U};
+};
+
+/* Waits (5 s at most, so a verdict that never enters the grace fails the test rather than hanging it) until the
+ * verdict count passes @p in_grace_before, then raises the exit flag and notes when. */
 DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
 __stdcall
 #endif
-raise_exit_flag_later(void*) {
-    dsd_sleep_ms(100U);
+raise_exit_flag_in_grace(void* arg) {
+    auto* raiser = static_cast<exit_raiser*>(arg);
+    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == raiser->in_grace_before;
+         ++waited_ms) {
+        dsd_sleep_ms(1);
+    }
+    raiser->raised_ms.store(dsd_realtime_mono_ms(), std::memory_order_release);
     dsd_exitflag_store(1);
     DSD_THREAD_RETURN;
 }
@@ -193,22 +205,25 @@ test_unplug_owner_grace(input_ring_state* ring) {
     assert(run_request(request) == 0);
     expect_session_untouched(generation, 0);
 
-    /* The device is lost and nothing stops it, but the session starts ending for another reason 100 ms into the grace:
-     * the verdict notices at once rather than at the grace's end, and stays silent. */
+    /* The device is lost and nothing stops it, but the session starts ending for another reason while the verdict waits
+     * out the grace: the verdict notices at once rather than at the grace's end, and stays silent. */
     reset_session();
     rtl_device_test_usb_reader_request ending{};
     ending.ring = ring;
     ending.reader_rc = -1;
     generation = dsd_input_failure_generation();
-    const unsigned int in_grace = rtl_device_test_verdicts_in_grace();
+    exit_raiser raise{};
+    raise.in_grace_before = rtl_device_test_verdicts_in_grace();
     dsd_thread_t raiser;
-    const int raiser_created = dsd_thread_create(&raiser, raise_exit_flag_later, nullptr);
+    const int raiser_created = dsd_thread_create(&raiser, raise_exit_flag_in_grace, &raise);
     assert(raiser_created == 0);
-    const uint64_t ending_started_ms = dsd_realtime_mono_ms();
     assert(run_request(ending) == 0);
-    assert(dsd_realtime_mono_ms() - ending_started_ms < 800U);
+    const uint64_t ended_ms = dsd_realtime_mono_ms();
     dsd_thread_join(raiser);
-    assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
+    assert(rtl_device_test_verdicts_in_grace() == raise.in_grace_before + 1U);
+    /* Back within a few polls of the flag, well before the 1 s grace could have run out. */
+    const uint64_t raised_ms = raise.raised_ms.load(std::memory_order_acquire);
+    assert(raised_ms != 0U && ended_ms - raised_ms < 800U);
     expect_session_untouched(generation, 1);
 
     /* No stop: the session ends only once the grace ran out. */

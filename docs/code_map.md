@@ -8233,30 +8233,29 @@ configure discards leaves no cause. Each `nativeLifecycleStatus` poll, and the r
 path's committed receiver ending (`dsd_input_failure_receiver_ended()`; never the raw failure latch, which an Airspy
 reconfigure writes, rolls back and keeps streaming) as "receiver failed". The first cause accepted is kept: a user Stop
 then an unplug during cleanup stays a user stop (no notice); an unplug then Stop now stays an unplug.
-`nativeSessionUsesLocalReceiver()` answers from the same record; configure and the USB detach broadcast both run on
-the main thread, so a detach during a start is answered by it once configure returned. `nativeInit` installs the 2000 ms unplug-owner grace
-(`install_receiver_policy()`). `DecoderHostAndroid` turns the record's `endCause`/`receiverSource` into
-`receiverHealth` (`{state: ok|lost|failed, source: usb|airspy, session}`; the base host always answers ok, so desktop
-UIs never see an ending): a detach reads lost, a committed ending failed, an ending with no local receiver ok. Such an
-ending publishes Stopping at once, and `SessionPhaseTracker::note_receiver_end()` holds it as an acknowledged stop
-until that session's terminal record, with no `kStopGraceMs` expiry, however long the upload drain runs. An accepted
-`start()` clears the health; an access request clears it only once no session is active (during the hold the Monitor's
-LOST stays) and, for a session that ended Failed by that same ending, acknowledges the failure first, so Listen shows
-one card. Each acknowledgement is also handed to `DecoderService.acknowledgeReceiverEnding()`, and a host takes the
-service's `endingAcknowledged` mark from every record, so a recreated Activity's host starts from it. A native claim
-error is kept with the receiver of the session it came from (source, and the ready
-connection's serial when the error is first seen) and shown only while that receiver is the ready one. The USB record
-also carries the broker's request (`pending`, `requestedSource`, `requestedSerial`, empty before the first request;
-`LocalDeviceState`), published as `localDeviceRequestPending`/`localDeviceRequestedSource`; kind `refused` (the switch
-refusal) maps to no device failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request
-generations and their 60 s expiry, scoped attachment diagnostics, detach ownership) is described in `android/README.md`
-"USB-OTG". Known limits: `receiverHealth` carries no Airspy serial, so the notice names only the kind and a recreated
-Reconnect asks for access by kind (with two Airspys it may prompt for the other); a claim error's serial is the ready
-connection's when the error is first seen, a proxy, so after a swap between two Airspys it can be kept with the wrong
-unit. Tests: `UI_QT_SESSION_STATE`
-(`test_receiver_end_holds_stopping_through_long_running`), `IO_RTL_RUN_RESULT` (causes, sources, the grace),
-`UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`, `check_request_record`), `UI_QT_CONTROLLER`,
-`ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`.
+`nativeSessionUsesLocalReceiver()` answers from the same record; configure and the USB detach broadcast both run on the
+main thread, so a detach during a start is answered by it once configure returned. `nativeInit` installs the 2000 ms
+unplug-owner grace (`install_receiver_policy()`). `DecoderHostAndroid` turns the record's `endCause`/`receiverSource`
+into `receiverHealth` (`{state: ok|lost|failed, source: usb|airspy, session}`; the base host always answers ok, so
+desktop UIs never see an ending): a detach reads lost, a committed ending failed, an ending with no local receiver ok.
+Such an ending publishes Stopping at once, and `SessionPhaseTracker::note_receiver_end()` holds it as an acknowledged
+stop until that session's terminal record, with no `kStopGraceMs` expiry, however long the upload drain runs. An
+accepted `start()` clears the health; an access request clears it only once no session is active (during the hold the
+Monitor's LOST stays) and, for a session that ended Failed by that same ending, acknowledges the failure first, so
+Listen shows one card. Each acknowledgement is also handed to `DecoderService.acknowledgeReceiverEnding()`, and a host
+takes the service's `endingAcknowledged` mark from every record, so a recreated Activity's host starts from it. A native
+claim error is kept with the receiver of the session it came from (source, and the ready connection's serial when the
+error is first seen) and shown only while that receiver is the ready one. The USB record also carries the broker's
+request (`pending`, `requestedSource`, `requestedSerial`, empty before the first request; `LocalDeviceState`), published
+as `localDeviceRequestPending`/`localDeviceRequestedSource`; kind `refused` (the switch refusal) maps to no device
+failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request generations and their 60 s
+expiry, scoped attachment diagnostics, detach ownership) is described in `android/README.md` "USB-OTG". Known limits:
+`receiverHealth` carries no Airspy serial, so the notice names only the kind and a recreated Reconnect asks for access
+by kind (with two Airspys it may prompt for the other); a claim error's serial is the ready connection's when the error
+is first seen, a proxy, so after a swap between two Airspys it can be kept with the wrong unit. Tests:
+`UI_QT_SESSION_STATE` (`test_receiver_end_holds_stopping_through_long_running`), `IO_RTL_RUN_RESULT` (causes, sources,
+the grace), `UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`, `check_request_record`),
+`UI_QT_CONTROLLER`, `ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`.
 
 Stop delivery (PR #723 follow-up): `DecoderService.stopDecoder()` also calls `requestEngineStop()` synchronously
 under the service lock, before posting the intent, for RUNNING and STOPPING. The JNI stop only raises atomics; the
