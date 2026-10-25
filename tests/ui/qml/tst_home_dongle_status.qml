@@ -32,6 +32,7 @@ Item {
             var sheet = findChild(home, "addSystemMenu");
             if (sheet && sheet.visible)
                 sheet.requestDismiss();
+            testContext.setDeviceRequestPends(false);
             testContext.setDongleStatus(false, 0, "");
             testContext.setLocalDeviceRecord("usb", false, "");
             testContext.setReceiverHealth("ok", "");
@@ -285,13 +286,79 @@ Item {
             compare(requestsAfter(function () {
                 pill.Accessible.pressAction();
             }), 0, "accessibility press");
+            // The header is disabled under the sheet, so the pill cannot take
+            // focus; Return and the tap below are belt-and-braces checks.
             pill.forceActiveFocus();
+            verify(!pill.activeFocus, "the pill takes no focus behind the sheet");
             compare(requestsAfter(function () {
                 keyClick(Qt.Key_Return);
             }), 0, "Return");
             compare(requestsAfter(function () {
                 mouseClick(pill);
             }), 0, "tap");
+        }
+
+        function test_pill_keeps_focus_when_the_prompt_opens() {
+            // Android leaves the permission prompt pending after the press, so
+            // the focused pill turns inert under the keyboard user. It keeps
+            // focus and its tab stop, quietly, like the other controls.
+            failOnWarning(/activeFocusOnTab/);
+            testContext.setDeviceRequestPends(true);
+            testContext.setAttachedDeviceSource("usb");
+            var pill = findChild(home, "dongleStatusPill");
+            var label = findChild(home, "dongleStatusLabel");
+            tryCompare(label, "text", "CONNECT RTL-SDR");
+            pill.forceActiveFocus();
+            verify(pill.activeFocus);
+            compare(requestsAfter(function () {
+                keyClick(Qt.Key_Return);
+            }), 1, "Return asks once");
+            tryCompare(label, "text", "RTL-SDR WAITING");
+            verify(!pill.actionable);
+            compare(pill.Accessible.role, Accessible.StaticText);
+            verify(pill.activeFocus, "focus stays where the user left it");
+            verify(pill.activeFocusOnTab);
+            compare(requestsAfter(function () {
+                keyClick(Qt.Key_Return);
+            }), 0, "the waiting pill asks nothing");
+            // The prompt expires: the same focused pill acts again.
+            testContext.setLocalDeviceRecord("", false, "usb");
+            tryCompare(label, "text", "CONNECT RTL-SDR");
+            compare(requestsAfter(function () {
+                keyClick(Qt.Key_Return);
+            }), 1);
+        }
+
+        function test_scroll_kept_across_tabs() {
+            // Main hides Home on the other tabs; nothing on it may collapse
+            // then, or the body loses the place the user scrolled to.
+            root.width = 360;
+            root.height = 400;
+            testContext.setAttachedDeviceSource("usb");
+            var body = findChild(home, "dongleScrollBody");
+            var header = findChild(home, "listenHeader");
+            tryCompare(findChild(home, "dongleRetry"), "visible", true);
+            verify(waitForPolish(home));
+            var headerHeight = header.height;
+            verify(headerHeight > 0);
+            // A body that scrolls by less than the details panel is tall, so
+            // the panel collapsing would leave nothing to scroll.
+            root.height += body.contentHeight - body.height - 60;
+            verify(waitForPolish(home));
+            var panel = findChild(home, "dongleDetailsPanel");
+            var panelHeight = panel.height;
+            verify(panelHeight > 60);
+            for (var scrolled of [40, body.contentHeight - body.height]) {
+                verify(scrolled > 0 && scrolled <= body.contentHeight - body.height);
+                body.contentY = scrolled;
+                home.visible = false;
+                compare(header.height, headerHeight, "the hidden header keeps its height");
+                compare(panel.height, panelHeight, "the hidden details panel keeps its height");
+                compare(body.contentHeight - body.height >= scrolled, true, "the hidden body still scrolls that far");
+                home.visible = true;
+                verify(waitForPolish(home));
+                compare(body.contentY, scrolled, "scroll position after a tab switch");
+            }
         }
 
         function test_reflow_data() {
@@ -340,12 +407,15 @@ Item {
                 }
                 tryCompare(action, "text", word);
                 verify(waitForPolish(home));
+                var found = 0;
                 for (var child of action.children) {
                     if (child.text === word) {
+                        ++found;
                         compare(child.lineCount, 1, word + " wraps");
                         verify(!child.truncated, word + " elided");
                     }
                 }
+                compare(found, 1, "the button's label is where the check looks");
             }
         }
 
@@ -398,10 +468,14 @@ Item {
                 // Its whole word at the largest text size.
                 Ui.Theme.fontScale = 2.0;
                 verify(waitForPolish(onboarding));
+                var found = 0;
                 for (var child of retry.children) {
-                    if (child.text === data.button)
+                    if (child.text === data.button) {
+                        ++found;
                         compare(child.lineCount, 1, data.button + " wraps");
+                    }
                 }
+                compare(found, 1, "the button's label is where the check looks");
             }
         }
 

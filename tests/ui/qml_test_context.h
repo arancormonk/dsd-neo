@@ -216,7 +216,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     void
     requestLocalDeviceAccess() override {
         ++usbRequests;
+        // As Android does: the permission prompt is up until it is answered.
+        if (requestPends) {
+            usbPending = true;
+            Q_EMIT localDeviceChanged();
+        }
     }
+
+    bool requestPends = false;
 
     // WP-D5: rendering fixture; native error propagation has its own test.
     QString
@@ -2089,6 +2096,12 @@ class Setup : public QObject {
         m_lifecycle_host->usbPending = pending;
         m_lifecycle_host->usbRequestedSource = requestedSource;
         Q_EMIT m_lifecycle_host->localDeviceChanged();
+    }
+
+    /** @brief Make an access request leave a permission prompt pending, as Android's does (#647). */
+    Q_INVOKABLE void
+    setDeviceRequestPends(bool pends) {
+        m_lifecycle_host->requestPends = pends;
     }
 
     /** @brief Report the last session's receiver as "ok", "lost" or "failed", with its kind (#647). */

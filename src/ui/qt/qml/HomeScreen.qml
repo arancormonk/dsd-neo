@@ -84,6 +84,7 @@ Item {
     // and keeps the title in the body, as before.
     readonly property bool pinnedHeader: !!decoderHost && decoderHost.localDeviceBrokered === true
     readonly property bool dongleReady: pinnedHeader && deviceStatus.state === "ready"
+    readonly property bool showDeviceDetails: pinnedHeader && localDeviceRelevant && !dongleReady && !(failure.message || "").length
     // The content column, which the pinned header lines up with.
     readonly property real columnWidth: supportingPane ? width - 280 - 3 * Theme.screenPadding : Math.min(Theme.formWidth, width - 2 * Theme.screenPadding)
     readonly property real columnX: supportingPane ? Theme.screenPadding : (width - columnWidth) / 2
@@ -128,7 +129,9 @@ Item {
         // spaces rather than eliding.
         readonly property bool stacked: headerTitle.implicitWidth + Theme.gap + dongleStatusPill.implicitWidth > width
         readonly property real titleHeight: Math.max(44, headerTitle.implicitHeight)
-        height: !visible ? 0 : stacked ? titleHeight + 4 + dongleStatusPill.height : Math.max(titleHeight, dongleStatusPill.height)
+        // Keyed on the host, not on `visible`: Main hides Home on the other
+        // tabs, and a collapsing header would move the body's scroll position.
+        height: !screen.pinnedHeader ? 0 : stacked ? titleHeight + 4 + dongleStatusPill.height : Math.max(titleHeight, dongleStatusPill.height)
 
         ListenTitle {
             id: headerTitle
@@ -147,11 +150,14 @@ Item {
                     return;
                 decoderHost.requestLocalDeviceAccess();
             }
-            activeFocusOnTab: actionable && navigationAllowed
+            // A tab stop whatever its state: pressing it opens Android's prompt,
+            // which makes it inert under the user's focus, and focus stays put
+            // as on any control. The role and activate() say whether it acts.
+            activeFocusOnTab: visible && navigationAllowed
             Accessible.role: deviceStatus.canAct ? Accessible.Button : Accessible.StaticText
             Accessible.name: deviceStatus.accessibleName
             Accessible.description: deviceStatus.detailText
-            Accessible.focusable: deviceStatus.canAct
+            Accessible.focusable: true
             Accessible.ignored: !visible || !navigationAllowed
             Accessible.onPressAction: activate()
             Keys.onReturnPressed: activate()
@@ -260,9 +266,12 @@ Item {
 
             // WP-D5: keep the complete USB diagnostic next to the dongle pill.
             UiPanel {
+                objectName: "dongleDetailsPanel"
                 width: parent.width
-                visible: screen.pinnedHeader && screen.localDeviceRelevant && !screen.dongleReady && !(screen.failure.message || "").length
-                height: visible ? dongleDetails.implicitHeight + 2 * Theme.cardPadding : 0
+                visible: screen.showDeviceDetails
+                // Keyed on its own condition, not on `visible`, which also goes
+                // false while Main shows another tab and would collapse the body.
+                height: screen.showDeviceDetails ? dongleDetails.implicitHeight + 2 * Theme.cardPadding : 0
                 Column {
                     id: dongleDetails
                     x: Theme.cardPadding
