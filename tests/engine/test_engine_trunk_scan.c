@@ -61,6 +61,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "analog_tone_policy.h"
+#include "frame_sync_internal.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -14178,9 +14179,7 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
    The received-tone reset is mirrored from the real function (issue #522), so a switch that
    stopped calling it, or restored a target's tone after it, shows up here. */
 /* dsd_frame_sync_p25p1_learned_rf_mod() is the real one (src/dsp/frame_sync_p25p1_compare.c), which arms the CQPSK
- * dwell through this when a tune ends a comparison. */
-void frame_sync_qpsk_dwell_set(int armed);
-
+ * dwell through this (frame_sync_internal.h) when a tune ends a comparison. */
 void
 frame_sync_qpsk_dwell_set(int armed) {
     (void)armed;

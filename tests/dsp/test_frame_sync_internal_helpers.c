@@ -2261,7 +2261,7 @@ test_an_nxdn96_data_call_stays_nxdn96_under_auto(void) {
     static dsd_state state;
     static char stream[12 * 192];
     for (int f = 0; f < 12; f++) {
-        nxdn96_udch_frame(stream + f * 192, f == 5, 0);
+        nxdn96_udch_frame(stream + (size_t)f * 192U, f == 5, 0);
     }
 
     reset(&opts, &state);
@@ -2292,7 +2292,7 @@ test_an_nxdn96_data_call_stays_nxdn96_under_auto(void) {
     /* Inverted, the same LICH holds the exact BERT word instead, which M17 does join. The call stays NXDN96 under Auto
      * all the same: the lock rides out the lost FSW, so M17 never sees the word three frames running. */
     for (int f = 0; f < 12; f++) {
-        nxdn96_udch_frame(stream + f * 192, f == 5, 1);
+        nxdn96_udch_frame(stream + (size_t)f * 192U, f == 5, 1);
     }
     reset(&opts, &state);
     opts.frame_nxdn96 = 1;
