@@ -989,6 +989,18 @@ test_chain_comparison_in_flight_tunes_on_the_leading_chain(dsd_opts* opts, dsd_s
     seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
     assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->p25_p1_mod_compare.phase == 2 && state->rf_mod == 1);
+    /* So does one with trunking off and a control channel known, and the control channel's timing is not applied
+       under it: that would put rf_mod on the CQPSK incumbent the learned modulation still names while the front end
+       stays on the C4FM trial, and restart the dwell the comparison refunds. */
+    seed_chain_comparison_in_trial(opts, state, 1, 1206, 0);
+    opts->trunk_enable = 0;
+    state->p25_cc_freq = 851000000;
+    state->p25_p1_validated_rf_mod = 1;
+    state->sps_hunt_counter = 1234;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->p25_p1_mod_compare.phase == 2);
+    assert(state->rf_mod == 0);
+    assert(state->sps_hunt_counter == 1234);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 }
 

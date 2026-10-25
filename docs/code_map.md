@@ -3920,7 +3920,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
     incumbent unless the other chain has read more.
   - Tunes: `dsd_engine_trunk_tune_to_freq_request()` and `dsd_engine_trunk_tune_to_cc_request()` (the latter also
-    under `dsd_engine_return_to_cc_request()`, when it retunes) end a comparison in flight on the leading chain before
+    under `dsd_engine_return_to_cc_request()`, when it retunes; one that retunes nothing leaves the comparison going
+    and does not apply the control channel's timing under it) end a comparison in flight on the leading chain before
     they read the modulation (`dsd_frame_sync_p25p1_mod_compare_end_for_tune()`, `frame_sync_p25p1_compare.c`, which
     the engine tests link), so an FDMA grant, which inherits `rf_mod`, and a control-channel tune, which reads the
     learned modulation, never land on a chain only because its pass was running. A Phase 2 grant has already put

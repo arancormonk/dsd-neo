@@ -972,7 +972,8 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
     // pipeline at DC and delay CC hunting.
     const long int cc = dsd_engine_resolve_cc_freq(state);
     const int trunk_enabled = (opts->trunk_enable == 1);
-    if (trunk_enabled && cc != 0) {
+    const int retunes = trunk_enabled && cc != 0;
+    if (retunes) {
         const int cc_sps = dsd_engine_compute_cc_sps(opts, state);
         tune_result = dsd_engine_trunk_tune_to_cc_request(opts, state, cc, cc_sps, request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
@@ -982,8 +983,12 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
 
     dsd_engine_release_tuned_call_state(opts, state);
 
-    /* Keep symbol timing aligned with the current control-channel mode. */
-    dsd_engine_apply_cc_symbol_timing(opts, state);
+    /* Keep symbol timing aligned with the current control-channel mode. A return that retuned nothing leaves a chain
+       comparison going on the carrier it is on, and the comparison owns the chain and the dwell there: the control
+       channel's timing would set rf_mod without the front end and restart the dwell the comparison refunds. */
+    if (retunes || state->p25_p1_mod_compare.phase == 0) {
+        dsd_engine_apply_cc_symbol_timing(opts, state);
+    }
     return tune_result;
 }
 
