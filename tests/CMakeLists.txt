@@ -15065,8 +15065,9 @@ if(DSD_HAS_RADIO)
     # nxdn96 at 8 dB wideband SNR (DERIVED_AWGN): acquiring on the FSW right after the preamble left this call reading
     # one FSW symbol wrong on every frame and failing every SACCH (0 RANs); acquiring on two FSWs decodes 36.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK nxdn96_weak -fn "RAN 00" "" 30)
-    # The same call at 0 dB, where 85% of real FSWs read within the four-level gate's two bit errors. The gate decodes 29
-    # RANs here (the matcher before these rules 30, the same over eight sample shifts); held to one bit it decodes 10.
+    # The same call at 0 dB, where 85% of real FSWs read within the four-level gate's two bit errors. The gate
+    # decodes 29 RANs here (the matcher before these rules 30, the same over eight sample shifts); held to one bit it
+    # decodes 10.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK_0DB nxdn96_weak_0db -fn "RAN 00" "" 25)
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
     # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel

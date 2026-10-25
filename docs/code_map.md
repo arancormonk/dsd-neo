@@ -3870,8 +3870,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   Decided limit: the next frame's FSW is taken on its signs, and the sign variants tolerate a misread symbol at 1, 5 or
   8, so a lock can ride a slicer whose four-level reading is biased for a whole call. Dropping the lock after 2, 3 or
   4 locked FSWs in a row that read more than two bits on four levels was measured on 72 weak nxdn96 realizations
-  (0-10 dB): mean RAN frames 28.92, 29.14 and 29.18 against 29.24 keeping it, no run rescued, so the lock is kept. Both are also cleared with the M17 join history, at a carrier boundary inside an
-  NXDN frame, on an NXDN trunked tune and at the CAC reset. The four-level reading takes the window's level ring, which
+  (0-10 dB): mean RAN frames 28.92, 29.14 and 29.18 against 29.24 keeping it, no run rescued, so the lock is kept.
+  Both are also cleared with the M17 join history, at a carrier boundary inside an NXDN frame, on an NXDN trunked
+  tune and at the CAC reset. The four-level reading takes the window's level ring, which
   a symbol capture fills with its dibits' levels (`dsd_symbol_level_from_dibit()`), so it applies there too; only a
   window holding fewer than ten levels (the unit tests' sign-only windows) skips it, and the sign match then counts as
   clear. A LICH failure prints its sync under `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests:
@@ -3889,8 +3890,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`: `getFrameSync()` rebuilds its window in
   place and keeps hunting, so neither its no-sync hooks nor the engine's `noCarrier()` after a no-sync return run,
   since the dwell goes on); P25p1 alone and a trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep
-  the whole dwell, and the rotation and dwell lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
-  (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore and trunk retunes read). The first
+  the whole dwell, and the rotation and dwell lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`)
+  records the chain that carried it (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore
+  and trunk retunes read). The first
   NID-decoded frame of an acquisition starts one chain comparison (`frame_sync_p25p1_mod_compare_note()`,
   `dsd_state::p25_p1_mod_compare`, run on `getFrameSync()` entry): the symbols that chain's validated frames read over
   one search pass (`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`) are added up. P25p1 frames come back to back, so a search

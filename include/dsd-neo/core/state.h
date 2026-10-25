@@ -83,7 +83,8 @@ typedef struct {
 } dsd_nxdn96_sync;
 
 /* S1 (TS 1-A 5.3.2, Table 5.9-3): good-parity LICHs in a row that lose frame sync. The specification counts LICHs
- * naming another RF channel type; this counts the ones nxdn_frame() rejects with good parity (DSD_NXDN96_LICH_WRONG). */
+ * naming another RF channel type; this counts the ones nxdn_frame() rejects with good parity
+ * (DSD_NXDN96_LICH_WRONG). */
 #define DSD_NXDN96_SYNC_LICH_WRONG_S1 5U
 
 /* What an NXDN frame's LICH said, for the NXDN96 lock (dsd_nxdn96_sync_note_lich()). */
