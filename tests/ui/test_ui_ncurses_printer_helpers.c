@@ -555,6 +555,21 @@ dsd_scan_mode_configured_analog_width(const dsd_opts* opts, const dsd_state* sta
     return width_hz > 0 ? width_hz : 0;
 }
 
+/* The configured Relaxed CRC the CRC policy view reads, as scan_mode.c reads it: the stubbed configured view while one
+ * is set, dsd_opts otherwise. */
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_scan_mode_configured_relaxed_crc(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (!configured) {
+        return dsd_opts_relaxed_crc(opts) ? 1 : 0;
+    }
+    return (configured->aggressive_framesync == 0 || configured->dmr_crc_relaxed_default != 0) ? 1 : 0;
+}
+
 /* Issue #527: the configured tone policy the rx tone view names beside a row's own, as scan_mode.c reads it: the
  * stubbed configured view while one is set, dsd_opts otherwise. */
 void

@@ -3255,7 +3255,7 @@ ui_print_dmr_dcc(const char* mode, const dsd_state* state) {
 }
 
 /* "RAS; " beside the colour code once the carrier is confirmed to use RAS, "RAS (-F decodes); " while relaxed CRC is
-   off (dmr_ras_view.h). */
+   off, "RAS (channel sets strict CRC); " while a scan row's own --strict-crc runs over -F (dmr_ras_view.h). */
 static void
 ui_print_dmr_ras(const dsd_opts* opts, const dsd_state* state) {
     dsd_app_dmr_ras ras;

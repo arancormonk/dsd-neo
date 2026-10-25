@@ -993,7 +993,9 @@ no old identity. A part not received yet prints dashes in its column:
   Capacity Plus rest LSN as received (the rest LSN's frequency is the channel map's); a Tier III system code alone shows
   as `SYS: 0A3F;`. A carrier that uses Motorola RAS (Restricted Access to System) shows `RAS;` after the colour code
   once two of its bursts carried the RAS signature, `RAS (-F decodes);` while Relaxed CRC is off, as it is by default:
-  its control and data fail the standard CRC, so only `-F` (or the `F` toggle) decodes them. The detection is the
+  its control and data fail the standard CRC, so only `-F` (or the `F` toggle) decodes them. With `-F` on, a scan
+  row's own `--strict-crc` shows `RAS (channel sets strict CRC);` instead: that channel keeps strict CRC, and pressing
+  `F` would turn `-F` off for the others. The detection is the
   carrier's, so every change of carrier, a trunk follow included, a colour-code change and the DMR reset (`D`) clear
   it, and so does the gap between transmissions.
 

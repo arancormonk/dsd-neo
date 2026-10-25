@@ -1288,6 +1288,18 @@ dsd_scan_mode_set_configured_tone_policy(dsd_opts* opts, const dsd_state* state,
 }
 
 int
+dsd_scan_mode_configured_relaxed_crc(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return 0;
+    }
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (!configured) {
+        return dsd_opts_relaxed_crc(opts) ? 1 : 0;
+    }
+    return (configured->aggressive_framesync == 0 || configured->dmr_crc_relaxed_default != 0) ? 1 : 0;
+}
+
+int
 dsd_scan_mode_configured_fm_monitor(const dsd_opts* opts, const dsd_state* state) {
     if (!opts) {
         return 0;

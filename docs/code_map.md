@@ -2855,8 +2855,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   the edit toasts, and Qt's `configuredTunerGainDb`/`tunerGainRowOverride` (a `target` badge and `default X` on the
   radio panel). Test: `APP_CONTROL_RTL_GAIN_VIEW`.
   `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
-  one setting: `dsd_app_crc_policy_view()` gives the configured value (the scope's configured baseline while a scan
-  scope is live, else `dsd_opts`), the value in force, and `row_override` when the row on air carries its own `-F` or
+  one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
+  scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override` when the row on air carries its own `-F` or
   `--strict-crc`; `dsd_app_crc_policy_edit_notice()` is the toggle's toast under such a row. The pair it reads,
   `aggressive_framesync` and `dmr_crc_relaxed_default`, is set only through `dsd_opts_set_relaxed_crc()` (`core/opts.h`;
   `dsd_opts_relaxed_crc()` reads either field relaxing as on) by `-F`, `--strict-crc`, a row's CRC option and
@@ -2870,8 +2870,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `include/dsd-neo/app_control/dmr_ras_view.h` and `src/app_control/dmr_ras_view.c` are the DMR RAS indicator:
   `dsd_app_dmr_ras_view()` reports `detected` (a DMR record's `DSD_RXID_DMR_RAS`), the Relaxed CRC policy it reads
   through `dsd_app_crc_policy_view()`, and `needs_relaxed` (detected while relaxed CRC is not in force);
-  `dsd_app_dmr_ras_label()` is the compact label, `RAS` or `RAS (-F decodes)`. The terminal's DMR BS and MS headers
-  print it after the colour code (`RAS; `, `RAS (-F decodes); `), and the site identity view shows the compact `RAS`
+  `dsd_app_dmr_ras_label()` is the compact label, `RAS` or `RAS (-F decodes)`, and `RAS (channel sets strict CRC)`
+  while `-F` is configured on under a scan row's own `--strict-crc` (pressing F there would turn `-F` off, as Qt's
+  `rowKeepsStrict` says). The terminal's DMR BS and MS headers print it after the colour code (`RAS; `,
+  `RAS (-F decodes); `), and the site identity view shows the compact `RAS`
   token from the record; a frontend's RAS field and its relaxed-CRC hint read this view (Qt's `dmrRasDetected` and
   `dmrRasNeedsRelaxed`: the site sheet's **Access RAS** field, its hint and **Turn on Relaxed CRC**). Tests:
   `APP_CONTROL_CRC_POLICY`, `UI_NCURSES_PRINTER_HELPERS`, `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_QT_METRICS_MODEL`,
@@ -5845,7 +5847,8 @@ Private per-protocol modules worth knowing about:
   interruption counts for nothing. Two signature bursts on the carrier (`dsd_state::dmr_ras_signatures`, saturating)
   confirm RAS (`dmr_ras_confirmed()`) and note `DSD_RXID_DMR_RAS`; the burst that confirms it prints, while relaxed CRC
   is off (`dsd_opts_relaxed_crc()`), the console notice `DMR RAS (Restricted Access to System) detected: control and
-  data fail the standard CRC; -F decodes them` once per confirmation. `dmr_ras_reset()` is the one reset; its call
+  data fail the standard CRC; -F decodes them` once per confirmation, with `, but this channel sets strict CRC itself`
+  added while `-F` is configured on (`dsd_scan_mode_configured_relaxed_crc()`) under a row's own `--strict-crc`. `dmr_ras_reset()` is the one reset; its call
   points are listed under the received identity record (Core). Tests: `DMR_RAS_DETECT`,
   `DECODE_IQ_DMR_T3_RAS_CC_DETECT` (no `-F`: the notice, nothing accepted), and `DECODE_IQ_DMR_T3_CC` and
   `DECODE_IQ_DMR_POLARITY_AUTO`, whose carriers must never print it.

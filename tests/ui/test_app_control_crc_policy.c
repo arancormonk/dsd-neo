@@ -444,7 +444,8 @@ expect_ras(const char* when, const dsd_opts* opts, const dsd_state* state, int d
 }
 
 /* The DMR RAS indicator: detected from the received identity's DSD_RXID_DMR_RAS of a DMR record only, labelled "RAS"
-   while relaxed CRC is in force and "RAS (-F decodes)" while it is not, a scan row's own policy included. */
+   while relaxed CRC is in force and "RAS (-F decodes)" while it is not, a scan row's own policy included, except
+   "RAS (channel sets strict CRC)" while a row's own --strict-crc runs over a configured -F. */
 static int
 test_dmr_ras_view(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -465,10 +466,17 @@ test_dmr_ras_view(void) {
     const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
     rc |= enter_dmr_row(opts, state, &row);
     dsd_rxid_note_dmr_ras(state);
-    rc |= expect_ras("ras, a strict row over -F", opts, state, 1, 1, "RAS (-F decodes)");
+    /* -F is on already: pressing F would turn it off and change nothing on this channel. */
+    rc |= expect_ras("ras, a strict row over -F", opts, state, 1, 1, "RAS (channel sets strict CRC)");
     dsd_scan_mode_leave(opts, state);
     dsd_rxid_note_dmr_ras(state);
     rc |= expect_ras("ras, the row left", opts, state, 1, 0, "RAS");
+    /* Over the strict default, -F still decodes the channels after this one. */
+    dsd_opts_set_relaxed_crc(opts, 0);
+    rc |= enter_dmr_row(opts, state, &row);
+    dsd_rxid_note_dmr_ras(state);
+    rc |= expect_ras("ras, a strict row over the default", opts, state, 1, 1, "RAS (-F decodes)");
+    dsd_scan_mode_leave(opts, state);
     dsd_rxid_forget_dmr_ras(state);
     rc |= expect_ras("ras forgotten", opts, state, 0, 0, "");
     rc |= expect_ras("NULL state", opts, NULL, 0, 0, "");

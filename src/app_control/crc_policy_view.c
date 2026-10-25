@@ -29,13 +29,8 @@ dsd_app_crc_policy_view(const dsd_opts* opts, const dsd_state* state, dsd_app_cr
         return;
     }
     /* The live scope's baseline holds the configured pair; without a scope, or while a command has it suspended,
-       dsd_opts does. Read as dsd_opts_relaxed_crc() reads the pair. */
-    const dsd_scan_settings* configured = state ? dsd_scan_mode_configured_view(state) : NULL;
-    if (configured) {
-        out->configured = (configured->aggressive_framesync == 0 || configured->dmr_crc_relaxed_default != 0) ? 1U : 0U;
-    } else {
-        out->configured = dsd_opts_relaxed_crc(opts) ? 1U : 0U;
-    }
+       dsd_opts does. */
+    out->configured = dsd_scan_mode_configured_relaxed_crc(opts, state) ? 1U : 0U;
     /* dsd_opts holds the pair in force, except while suspended: then the row's own decides once it resumes. */
     const dsd_scan_option_values* row = crc_policy_row(state);
     out->row_override = row ? 1U : 0U;

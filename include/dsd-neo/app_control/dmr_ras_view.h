@@ -42,8 +42,9 @@ typedef struct {
 void dsd_app_dmr_ras_view(const dsd_opts* opts, const dsd_state* state, dsd_app_dmr_ras* out);
 
 /**
- * @brief The compact label: "RAS" while relaxed CRC is in force, "RAS (-F decodes)" while it is not, "" when RAS is
- * not detected (or @p view is NULL).
+ * @brief The compact label: "RAS" while relaxed CRC is in force, "RAS (-F decodes)" while it is not, except
+ * "RAS (channel sets strict CRC)" while -F is configured on and the scan row on air keeps strict CRC itself; "" when
+ * RAS is not detected (or @p view is NULL).
  */
 const char* dsd_app_dmr_ras_label(const dsd_app_dmr_ras* view);
 

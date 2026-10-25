@@ -16,6 +16,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -316,6 +317,13 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_reset_blocks_calls++;
+}
+
+/* No scan scope here: the configured Relaxed CRC is the pair in dsd_opts. */
+int
+dsd_scan_mode_configured_relaxed_crc(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    return dsd_opts_relaxed_crc(opts);
 }
 
 void

@@ -20,6 +20,8 @@
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +44,9 @@ check(int ok, const char* expression, const char* tag, int line) {
 
 static const char k_notice[] =
     "DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; -F decodes them";
+/* With -F configured, under a scan row's own --strict-crc: pressing F there would turn -F off. */
+static const char k_notice_row_strict[] = "DMR RAS (Restricted Access to System) detected: control and data fail the "
+                                          "standard CRC; -F decodes them, but this channel sets strict CRC itself";
 
 /* Connect Plus adjacent-sites CSBK from the dmr_t3_cc fixture: its CRC passes with R = 0. */
 static const uint8_t k_csbk[12] = {0x81, 0x06, 0x04, 0x05, 0x07, 0x0C, 0x0D, 0x00, 0x00, 0x02, 0xA7, 0xC7};
@@ -221,6 +226,52 @@ test_relaxed_confirms_without_notice(void) {
     CHECK("-F accepts them as RAS", count(both, "-RAS") == 2U && count(both, k_csbk_sites) == 2U);
     CHECK("-F prints no notice", count(both, k_notice) == 0U);
     rig_close(&rig);
+    return failed;
+}
+
+/* A scan row's own --strict-crc over a configured -F: the notice says the channel keeps strict CRC rather than that -F
+   decodes, since -F is on already. Over the strict default -F would still decode the next channel, so the hint
+   stands. */
+static int
+test_strict_row_notice(void) {
+    int failed = 0;
+    for (int configured = 0; configured <= 1; configured++) {
+        burst_rig rig;
+        if (rig_open(&rig, configured) != 0) {
+            return 1;
+        }
+        rig.opts->audio_in_type = AUDIO_IN_WAV;
+        rig.opts->wav_sample_rate = 48000;
+        const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
+        if (dsd_scan_mode_enter(rig.opts, rig.state, DSD_SCAN_MODE_DMR) != 0
+            || dsd_scan_mode_options(rig.opts, rig.state, &row) != 0) {
+            rig_close(&rig);
+            return 1;
+        }
+        rig.state->dmr_stereo = 1;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        CHECK("the row keeps strict CRC", !dsd_opts_relaxed_crc(rig.opts));
+        char both[16384];
+        both[0] = '\0';
+        for (int i = 0; i < 2; i++) {
+            if (send_ras(&rig) != 0) {
+                rig_close(&rig);
+                return 1;
+            }
+            DSD_SNPRINTF(both + strlen(both), sizeof both - strlen(both), "%s", rig.out);
+        }
+        char plain[192];
+        char row_strict[192];
+        DSD_SNPRINTF(plain, sizeof plain, "%s%s", k_notice, KNRM);
+        DSD_SNPRINTF(row_strict, sizeof row_strict, "%s%s", k_notice_row_strict, KNRM);
+        const char* tag = configured ? "strict row over -F" : "strict row over the default";
+        CHECK(tag, dmr_ras_confirmed(rig.state));
+        CHECK(tag, count(both, configured ? row_strict : plain) == 1U);
+        CHECK(tag, count(both, configured ? plain : row_strict) == 0U);
+        CHECK("not accepted under the strict row", !strstr(both, k_csbk_sites));
+        dsd_scan_mode_leave(rig.opts, rig.state);
+        rig_close(&rig);
+    }
     return failed;
 }
 
@@ -441,6 +492,7 @@ main(void) {
     }
     failed |= test_two_signatures_confirm();
     failed |= test_relaxed_confirms_without_notice();
+    failed |= test_strict_row_notice();
     failed |= test_non_signatures_never_confirm();
     failed |= test_bursts_of_no_carrier_do_not_count();
     failed |= test_reset_forgets_the_evidence();

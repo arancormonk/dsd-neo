@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -70,9 +71,10 @@ typedef struct {
 
     uint8_t r[3];
     uint8_t bptc_reserved_bits;
-    uint8_t ras_signature; // dmr_ras_signature() holds for the burst, with or without -F
-    uint8_t is_ras;        // accepted as RAS: a signature under -F
-    uint8_t ras_announce;  // this signature confirmed RAS on the carrier while relaxed CRC is off
+    uint8_t ras_signature;  // dmr_ras_signature() holds for the burst, with or without -F
+    uint8_t is_ras;         // accepted as RAS: a signature under -F
+    uint8_t ras_announce;   // this signature confirmed RAS on the carrier while relaxed CRC is off
+    uint8_t ras_row_strict; // ...with -F configured on and the scan row on air setting strict CRC itself
     uint32_t crc_original_validity;
     uint8_t crc_flags; // DSD_CRC_* bits for this burst, set once its CRC and RAS verdicts are final
 
@@ -941,7 +943,8 @@ dmr_dburst_proves_tdma_carrier(const dmr_data_burst_ctx* ctx) {
 
 /* The carrier's RAS evidence (dmr_ras.c), noted before the burst dispatches: a retune its handler makes resets it with
    the carrier left. The second signature confirms RAS; without relaxed CRC the operator is told once that -F decodes
-   what this carrier sends. */
+   what this carrier sends, or, with -F configured under a scan row's own --strict-crc, that the channel keeps strict
+   CRC. */
 static void
 dmr_dburst_note_ras_signature(dmr_data_burst_ctx* ctx) {
     if (!ctx->ras_signature) {
@@ -950,6 +953,7 @@ dmr_dburst_note_ras_signature(dmr_data_burst_ctx* ctx) {
     const int was_confirmed = dmr_ras_confirmed(ctx->state);
     dmr_ras_note_signature(ctx->state);
     ctx->ras_announce = (uint8_t)(!was_confirmed && dmr_ras_confirmed(ctx->state) && !dsd_opts_relaxed_crc(ctx->opts));
+    ctx->ras_row_strict = (uint8_t)(ctx->ras_announce && dsd_scan_mode_configured_relaxed_crc(ctx->opts, ctx->state));
 }
 
 static void
@@ -957,8 +961,8 @@ dmr_dburst_announce_ras(const dmr_data_burst_ctx* ctx) {
     if (ctx->ras_announce) {
         DSD_FPRINTF(stderr,
                     "\n%sDMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; "
-                    "-F decodes them%s",
-                    KYEL, KNRM);
+                    "-F decodes them%s%s",
+                    KYEL, ctx->ras_row_strict ? ", but this channel sets strict CRC itself" : "", KNRM);
     }
 }
 

@@ -289,6 +289,11 @@ void dsd_scan_mode_configured_tone_policy(const dsd_opts* opts, const dsd_state*
  * force in dsd_opts, 0 when a row's own policy shadows it, -1 without opts or @p set. Same thread and snapshot rules as
  * dsd_scan_mode_set_configured_squelch(). */
 int dsd_scan_mode_set_configured_tone_policy(dsd_opts* opts, const dsd_state* state, int mode, const dsd_tone_set* set);
+/** Whether Relaxed CRC (-F) is configured on: what the menu toggle edits and a row's leave returns to. The configured
+ * pair while a scope is live, since a row's own -F or --strict-crc runs over dsd_opts meanwhile, else dsd_opts' pair,
+ * either field read as dsd_opts_relaxed_crc() reads it. Works on the live state (decoder thread) and on a frontend
+ * snapshot pair alike. 0 for NULL opts. */
+int dsd_scan_mode_configured_relaxed_crc(const dsd_opts* opts, const dsd_state* state);
 /** Whether the configured decode mode is the analog FM monitor (-fA, the FM analog kind): the one decode mode in which
  * received-tone detection, and so the tone policy, runs (issue #527). The configured one while a scope is live, since a
  * scan row's own mode runs over dsd_opts meanwhile, else dsd_opts'. Unlike dsd_analog_tone_detection_active() it does

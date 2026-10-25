@@ -32,5 +32,9 @@ dsd_app_dmr_ras_label(const dsd_app_dmr_ras* view) {
     if (!view || !view->detected) {
         return "";
     }
-    return view->needs_relaxed ? "RAS (-F decodes)" : "RAS";
+    if (!view->needs_relaxed) {
+        return "RAS";
+    }
+    /* -F is configured on and a scan row's own --strict-crc runs over it: F would turn -F off, not decode. */
+    return (view->crc.row_override && view->crc.configured) ? "RAS (channel sets strict CRC)" : "RAS (-F decodes)";
 }

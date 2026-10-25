@@ -333,6 +333,8 @@ Windows console runs:
   sheet shows **Access RAS** with the same explanation and a **Turn on Relaxed CRC** button, and while Relaxed CRC
   is off the console prints once per confirmation
   `DMR RAS (Restricted Access to System) detected: control and data fail the standard CRC; -F decodes them`.
+  Under a scan row's own `--strict-crc` with `-F` on, the header shows `RAS (channel sets strict CRC);` and the
+  notice adds `, but this channel sets strict CRC itself`: `-F` already applies to the channels without their own.
   The detection belongs to the carrier: a retune (a trunk follow or control channel return included), a trunk-scan
   target switch, another colour code on the carrier, the DMR reset and the gap between transmissions clear it, and
   the next carrier proves its own. It notes a property of the bursts, never anything they decode. Whatever the
