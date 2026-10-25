@@ -8235,15 +8235,16 @@ ending publishes Stopping at once, and `SessionPhaseTracker::note_receiver_end()
 until that session's terminal record, with no `kStopGraceMs` expiry, however long the upload drain runs. An accepted
 `start()` clears the health; an access request clears it only once no session is active (during the hold the Monitor's
 LOST stays) and, for a session that ended Failed by that same ending, acknowledges the failure first, so Listen shows
-one card. A native claim error is kept with the receiver of the session it came from (source, and the ready
+one card. Each acknowledgement is also handed to `DecoderService.acknowledgeReceiverEnding()`, and a host takes the
+service's `endingAcknowledged` mark from every record, so a recreated Activity's host starts from it. A native claim
+error is kept with the receiver of the session it came from (source, and the ready
 connection's serial when the error is first seen) and shown only while that receiver is the ready one. The USB record
 also carries the broker's request (`pending`, `requestedSource`, `requestedSerial`, empty before the first request;
 `LocalDeviceState`), published as `localDeviceRequestPending`/`localDeviceRequestedSource`; kind `refused` (the switch
 refusal) maps to no device failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request
 generations and their 60 s expiry, scoped attachment diagnostics, detach ownership) is described in `android/README.md`
 "USB-OTG". Known limits: `receiverHealth` carries no Airspy serial, so the notice names only the kind and a recreated
-Reconnect asks for access by kind (with two Airspys it may prompt for the other); a recreated Activity's host shows a
-retained ending again even when the previous Activity had acknowledged it. Tests: `UI_QT_SESSION_STATE`
+Reconnect asks for access by kind (with two Airspys it may prompt for the other). Tests: `UI_QT_SESSION_STATE`
 (`test_receiver_end_holds_stopping_through_long_running`), `IO_RTL_RUN_RESULT` (causes, sources, the grace),
 `UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`, `check_request_record`), `UI_QT_CONTROLLER`,
 `ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`.

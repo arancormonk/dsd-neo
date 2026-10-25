@@ -181,6 +181,14 @@ DecoderHostAndroid::platformRequestAccessForSource(const QString&, const QString
     ++accessRequests;
 }
 
+/* The service keeps the mark in the record it publishes, as DecoderService.lifecycleStatus() does. */
+void
+DecoderHostAndroid::platformAcknowledgeReceiverEnding(uint64_t session) {
+    QJsonObject& record = retained_record();
+    record.insert(QStringLiteral("endingAcknowledged"),
+                  qMax(static_cast<qint64>(session), record.value(QStringLiteral("endingAcknowledged")).toInteger()));
+}
+
 void
 DecoderHostAndroid::noteStartAttempt(const QString&) {}
 
@@ -567,6 +575,15 @@ check_receiver_health() {
           "an access request after the session ended clears the notice");
     host.refresh();
     check(health_state(host) == QStringLiteral("ok") && results == 1, "the retained record stays acknowledged");
+
+    /* The acknowledgement outlives the Activity: a host recreated over the same retained record starts from it, so the
+     * Listen pill does not read LOST over a receiver that is connected again. */
+    {
+        DecoderHostAndroid recreated;
+        recreated.refresh();
+        check(health_state(recreated) == QStringLiteral("ok") && recreated.sessionState() == DecoderHost::Idle,
+              "a recreated UI does not show an ending the previous one acknowledged");
+    }
 
     /* An Airspy's stream failure in session 82; start() clears it, and the old record stays cleared. */
     retained_record() = lifecycle_record(82, "RUNNING", kRunPending, kEndReceiverFailed, kReceiverAirspy);

@@ -133,6 +133,12 @@ private fun theLifecycleRecordCarriesTheReceiverEnding() = withRunningService { 
         DsdNative.lifecycle = longArrayOf(session, 1, DsdNative.RUN_PENDING.toLong(), 0, 0, 0, 0)
         record = JSONObject(DecoderService.lifecycleStatus())
         check(record.optLong("endCause") == 0L) { "a record without the fields has no ending" }
+        // The UI's acknowledgement of an ending outlives its host; only a newer session moves it.
+        val before = record.optLong("endingAcknowledged")
+        DecoderService.acknowledgeReceiverEnding(session)
+        DecoderService.acknowledgeReceiverEnding(session - 1)
+        record = JSONObject(DecoderService.lifecycleStatus())
+        check(record.optLong("endingAcknowledged") == maxOf(before, session)) { "the acknowledgement is kept: $record" }
     } finally {
         DsdNative.lifecycle = null
     }

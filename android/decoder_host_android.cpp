@@ -337,6 +337,11 @@ DecoderHostAndroid::platformRequestAccessForSource(const QString& source, const 
 }
 
 void
+DecoderHostAndroid::platformAcknowledgeReceiverEnding(uint64_t session) {
+    QJniObject::callStaticMethod<void>(kServiceClass, "acknowledgeReceiverEnding", "(J)V", static_cast<jlong>(session));
+}
+
+void
 DecoderHostAndroid::setScreenPolicy(int mode, int delaySeconds) {
     /* ScreenSupport owns the screen state and touches the Activity's window, so it
      * runs on the Android main thread, not the Qt one. */

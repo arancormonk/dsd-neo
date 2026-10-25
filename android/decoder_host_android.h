@@ -249,6 +249,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief UsbSourceManager.requestAccess() / requestAccessForSource(); the answer arrives through refresh(). */
     static void platformRequestAccess();
     static void platformRequestAccessForSource(const QString& source, const QString& serial);
+    /** @brief DecoderService.acknowledgeReceiverEnding(): endings up to @p session stay acknowledged past this host. */
+    static void platformAcknowledgeReceiverEnding(uint64_t session);
     QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);
@@ -296,7 +298,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     int m_input_error = 0;
     int m_terminal_reason = 0;
     // #647: the last record's ending (RunEndCause) and receiver (ReceiverSource); endings of sessions up to
-    // m_health_cleared_session were acknowledged by a start or an access request.
+    // m_health_cleared_session were acknowledged by a start or an access request, here or by a host before this one
+    // (the service keeps the mark, as endingAcknowledged, across Activity recreation).
     uint64_t m_health_session = 0;
     int m_end_cause = 0;
     int m_receiver_source = 0;

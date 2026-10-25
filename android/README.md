@@ -804,11 +804,18 @@ end is detected natively — see `docs/code_map.md` "USB reader exit" and "USB
 sample-progress monitor" — with a 2 s grace that lets the detach broadcast own an
 unplug, so an unplug reads "unplugged" rather than "stopped sending samples".
 
+An ending acknowledged by a new start, or by an access request (Reconnect, the
+pill) once its session ended, stays acknowledged after a recreation: the service
+keeps the mark (`DecoderService.acknowledgeReceiverEnding()`, published as
+`endingAcknowledged` in its lifecycle record), so the pill does not read `LOST`
+again over a receiver that is connected and ready.
+
 Known limits: the notice names only the receiver's kind, so after a recreation
-with two Airspys attached Reconnect may ask for the other one; a recreated
-Activity shows a retained notice again even if it was dismissed before; a healthy
-session reattached after a recreation shows LIVE with no receiver sheet (LOST
-still shows if it ends).
+with two Airspys attached Reconnect may ask for the other one; **Dismiss** hides
+the notice for that Activity only, as it does any failure, so a recreated
+Activity shows a dismissed (but not acknowledged) notice again; a healthy session
+reattached after a recreation shows LIVE with no receiver sheet (LOST still shows
+if it ends).
 
 ### Permission requests and detaches
 

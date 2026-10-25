@@ -153,6 +153,10 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
         m_health_session = session;
         m_end_cause = end_cause;
         m_receiver_source = receiver_source;
+        // An ending a previous host (an Activity since recreated) acknowledged stays acknowledged here.
+        m_health_cleared_session =
+            qMax(m_health_cleared_session,
+                 static_cast<uint64_t>(status.value(QStringLiteral("endingAcknowledged")).toInteger()));
     }
     const bool health_changed = updateReceiverHealth();
     if (m_input_failure != input_failure || m_input_error != input_error || m_terminal_reason != reason
@@ -231,7 +235,10 @@ DecoderHostAndroid::updateReceiverHealth() {
 
 void
 DecoderHostAndroid::clearReceiverHealth(uint64_t session) {
-    m_health_cleared_session = qMax(m_health_cleared_session, session);
+    if (session > m_health_cleared_session) {
+        m_health_cleared_session = session;
+        platformAcknowledgeReceiverEnding(session);
+    }
     if (updateReceiverHealth()) {
         Q_EMIT runResultChanged();
     }
