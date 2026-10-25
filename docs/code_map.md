@@ -3904,8 +3904,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   opening another comparison. The other chain's pass is refunded to the dwell (the counter goes back to its value when
   that pass began).
   - The other chain's pass starts at a `getFrameSync()` entry and is one search pass long, so on a carrier that chain
-    cannot sync it runs out on the symbol the matchless-pass timeout fires on. It ends there instead
-    (`frame_sync_p25p1_mod_compare_trial_pass_ended()`): `getFrameSync()` rebuilds its window in place and keeps
+    cannot sync it runs out on the symbol the matchless-pass timeout fires on. It ends there instead, on whichever runs
+    out first, its symbols read or the call's symbols searched (a read that commits no symbol counts only in the
+    second) (`frame_sync_p25p1_mod_compare_trial_pass_ended()`): `getFrameSync()` rebuilds its window in place and keeps
     hunting on the chain the comparison chose, as after a CQPSK trial's handback, so neither its no-sync hooks nor the
     engine's `noCarrier()` run on a carrier the incumbent still decodes (an LSM carrier the C4FM chain is deaf to).
   - A verdict needs the winner to have validated a frame in its own pass: an incumbent whose only frame opened the

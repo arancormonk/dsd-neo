@@ -4073,6 +4073,22 @@ frame_sync_p25p1_mod_compare_settle(const dsd_opts* opts, dsd_state* state, int 
     frame_sync_p25p1_mod_compare_end(state);
 }
 
+/* The other chain's pass is over: refund it to the dwell and settle on the chain that read more. */
+static void
+frame_sync_p25p1_mod_compare_decide(const dsd_opts* opts, dsd_state* state) {
+    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    frame_sync_p25p1_mod_compare_refund(state);
+    const int winner = frame_sync_p25p1_mod_compare_leader(state);
+    /* A verdict needs the winner to have validated something in its own pass: the other chain wins only by reading
+     * more than the incumbent, but an incumbent whose only frame was the one that opened the comparison -- the
+     * transmission ended, or one isolated NID decoded -- proved nothing against a pass over silence. */
+    if (winner == cmp->incumbent_rf_mod && cmp->incumbent_frames == 0) {
+        frame_sync_p25p1_mod_compare_abort(opts, state, 1, 1);
+        return;
+    }
+    frame_sync_p25p1_mod_compare_settle(opts, state, winner);
+}
+
 /**
  * @brief Compare the two P25p1 chains once per acquisition, on validated frames.
  *
@@ -4185,16 +4201,7 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
         frame_sync_p25p1_set_chain(opts, state, !cmp->incumbent_rf_mod);
         return;
     }
-    frame_sync_p25p1_mod_compare_refund(state);
-    const int winner = frame_sync_p25p1_mod_compare_leader(state);
-    /* A verdict needs the winner to have validated something in its own pass: the other chain wins only by reading
-     * more than the incumbent, but an incumbent whose only frame was the one that opened the comparison -- the
-     * transmission ended, or one isolated NID decoded -- proved nothing against a pass over silence. */
-    if (winner == cmp->incumbent_rf_mod && cmp->incumbent_frames == 0) {
-        frame_sync_p25p1_mod_compare_abort(opts, state, 1, 1);
-        return;
-    }
-    frame_sync_p25p1_mod_compare_settle(opts, state, winner);
+    frame_sync_p25p1_mod_compare_decide(opts, state);
 }
 
 /**
@@ -4236,16 +4243,20 @@ frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, 
  * timeout fires on. Ended here the comparison decides as it does on entry, and the caller rebuilds its window in place
  * and keeps hunting, as it does after a CQPSK trial's handback: a no-sync exit would end calls and reset frame state on
  * a carrier the incumbent is still decoding. If the carrier really ended, the next pass on the restored chain times
- * out as usual. 1 when it ended the comparison.
+ * out as usual. The pass ends on whichever count runs out first, the symbols it read or the call's symbols searched
+ * (@p searched): a read that commits no symbol advances only the second. 1 when it ended the comparison.
  */
 static int
-frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* state) {
+frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* state, int searched) {
     const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    if (cmp->phase != 2
-        || (uint32_t)(state->symbolcnt - cmp->window_start) < (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+    const uint32_t window = (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    if (cmp->phase != 2 || ((uint32_t)(state->symbolcnt - cmp->window_start) < window && searched < (int)window)) {
         return 0;
     }
     frame_sync_p25p1_mod_compare_note(opts, state);
+    if (cmp->phase == 2) {
+        frame_sync_p25p1_mod_compare_decide(opts, state);
+    }
     return 1;
 }
 
@@ -4558,7 +4569,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         frame_sync_advance_sync_window(opts, state, &rt);
-        if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state)) {
+        if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state, rt.synctest_pos)) {
             frame_sync_runtime_init(&rt, opts, state);
             continue;
         }

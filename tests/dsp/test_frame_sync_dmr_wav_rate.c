@@ -32,6 +32,8 @@ static const char* g_sync_pattern = DMR_BS_DATA_SYNC;
 static size_t g_boundary_at = SIZE_MAX;
 static int g_boundary_between;
 static int g_count_symbols;
+/* A read that commits no symbol (a live read whose samples did not make one): the count stays, the hunt goes on. */
+static size_t g_uncounted_at = SIZE_MAX;
 
 static float
 symbol_level_for_dibit(char dibit) {
@@ -55,7 +57,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     float symbol = symbol_level_for_dibit(dibit);
     dsd_symbol_history_push(state, symbol);
     state->symbol_clock++;
-    if (g_count_symbols) {
+    if (g_count_symbols && g_symbol_index != g_uncounted_at) {
         state->symbolcnt++; /* as the real reader counts them; the cases that predate this keep it fixed */
     }
     return symbol;
@@ -745,9 +747,10 @@ run_cqpsk_handback_keeps_hunting_case(void) {
    the same symbol the matchless-pass timeout would fire. The comparison ends there, as a CQPSK trial's handback does:
    the incumbent gets the profile back, the window is rebuilt in place and the hunt goes on, rather than a no-sync
    return the engine answers with noCarrier() on a carrier that is still decoding. The incumbent's next frame is taken
-   inside the same call. */
+   inside the same call. So too when a read in the pass committed no symbol, and the timeout's count of the symbols
+   searched runs a symbol ahead of the comparison's count of those read (@p uncounted_at). */
 static int
-run_compare_trial_pass_keeps_hunting_case(void) {
+run_compare_trial_pass_keeps_hunting_case(size_t uncounted_at) {
     static dsd_opts opts;
     static dsd_state state;
     static int fake_rtl_context;
@@ -790,6 +793,7 @@ run_compare_trial_pass_keeps_hunting_case(void) {
     g_symbol_index = 0U;
     g_no_carrier_calls = 0;
     g_count_symbols = 1;
+    g_uncounted_at = uncounted_at;
     dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.no_carrier = count_no_carrier});
 
     int sync = getFrameSync(&opts, &state);
@@ -800,10 +804,12 @@ run_compare_trial_pass_keeps_hunting_case(void) {
     dsd_frame_sync_hooks_set(NULL);
     g_sync_pattern = DMR_BS_DATA_SYNC;
     g_count_symbols = 0;
+    g_uncounted_at = SIZE_MAX;
 
     int rc = 0;
     if (g_no_carrier_calls != 0) {
-        DSD_FPRINTF(stderr, "comparison trial pass ran noCarrier() %d time(s) on a live carrier\n", g_no_carrier_calls);
+        DSD_FPRINTF(stderr, "comparison trial pass (uncounted read %zu) ran noCarrier() %d time(s) on a live carrier\n",
+                    uncounted_at, g_no_carrier_calls);
         rc = 1;
     }
     if (cmp->phase != 0 || state.rf_mod != 1 || state.p25_p1_validated_rf_mod != 1 || !cmp->verdict_valid
@@ -831,7 +837,8 @@ main(void) {
     rc |= run_nxdn_sync_confirmation_matrix();
     rc |= run_sync_after_carrier_boundary_case();
     rc |= run_cqpsk_handback_keeps_hunting_case();
-    rc |= run_compare_trial_pass_keeps_hunting_case();
+    rc |= run_compare_trial_pass_keeps_hunting_case(SIZE_MAX);
+    rc |= run_compare_trial_pass_keeps_hunting_case(100U);
     return rc;
 }
 
