@@ -2068,16 +2068,6 @@ frame_sync_nxdn96_window(const frame_sync_match_ctx* ctx) {
 
 static int frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype);
 
-/* Whether the twelve symbols before the FSW in the window are the tail the preamble and the RCCH post field share. */
-static int
-frame_sync_nxdn_preceded_by_tail(const frame_sync_match_ctx* ctx, int synctype) {
-    if (!frame_sync_match_window_ready(ctx, 24)) {
-        return 0;
-    }
-    const char* tail = synctype == DSD_SYNC_NXDN_POS ? NXDN_PREAMBLE_TAIL : INV_NXDN_PREAMBLE_TAIL;
-    return strncmp(ctx->synctest + 2, tail, 12) == 0;
-}
-
 /* Whether a hit sits one frame (DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS times @p frames) from @p since, within the timing
  * tolerance. */
 static int
@@ -2096,13 +2086,17 @@ frame_sync_nxdn96_frames_apart(uint32_t since, uint32_t frames) {
  * 5.9-3) are what a hit has to meet:
  *
  * - acquisition: an FSW of the same polarity one frame before, within the timing tolerance (N1 = N5 = 2);
- * - an FSW the preamble or the RCCH post field leads into counts alone (N6 = 1), so a transmission's first frame and a
- *   short transmission are reachable;
  * - once a hit counts, the lock it sets accepts the FSWs that follow at whole frames from it, the timing tolerance
  *   either way, for up to N7 = 5 missed in a row.
  *
  * Every hit is remembered (dsd_sync_hit_history): before a lock the payload is read too and matches the word several
  * times a frame, and none of those may hide the FSW a frame back.
+ *
+ * N6 -- one FSW counts alone behind the preamble or the RCCH post field, which the specification allows ("can") -- is
+ * not used. Acquiring on the FSW right after a preamble left a weak call's slicer timing and thresholds in a state that
+ * read one FSW symbol wrong on every frame and failed every SACCH for the rest of the call: on nxdn96 with complex
+ * Gaussian noise at 6-8 dB (wideband), 9 of 48 calls fell under 30 RAN frames of 36 with it and none without it, which
+ * also decodes no fewer than the matcher before these rules did. What it bought is the first frame of a clean call.
  */
 static int
 frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
@@ -2126,9 +2120,6 @@ frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
     for (uint32_t d = 0U; d <= 2U * DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE && clear && !accepts; d++) {
         const uint32_t back = DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS - DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE + d;
         accepts = frame_sync_hit_history_holds(&sync->hits, now - back, clear_kind);
-    }
-    if (clear && !accepts) {
-        accepts = frame_sync_nxdn_preceded_by_tail(ctx, synctype);
     }
     frame_sync_hit_history_note(&sync->hits, now, clear ? clear_kind : kind);
     if (accepts) {

@@ -15061,6 +15061,9 @@ if(DSD_HAS_RADIO)
     # NXDN96 landed on mid-frame after a quarter second of receiver noise (DERIVED_RETUNE): with no preamble ahead, the
     # first FSW marks the place and the one a frame later acquires (NXDN TS 1-A N1 = 2).
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN nxdn96_after_retune -fn "RAN 00")
+    # nxdn96 at 8 dB wideband SNR (DERIVED_AWGN): acquiring on the FSW right after the preamble left this call reading
+    # one FSW symbol wrong on every frame and failing every SACCH (0 RANs); acquiring on two FSWs decodes 36.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK nxdn96_weak -fn "RAN 00" "" 30)
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_MID_FRAME_JOIN_AUTO nxdn96_after_retune -fa "RAN 00")
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
     # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel

@@ -342,6 +342,14 @@ registration; re-measure it there if the fixture or the channel filter changes. 
 `scan_mode_replay` host installs row zero's options and takes a configured squelch default from
 `DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB`, because I/Q replay has no other way to set one.
 
+`nxdn96_weak` is `nxdn96` with complex Gaussian noise added at 8 dB wideband SNR (signal power over noise across the
+whole 48 kHz capture; seed 8007, `DERIVED_AWGN`), 192 kB. It pins NXDN96 acquisition on a weak call
+(`DECODE_IQ_NXDN96_WEAK`): acquiring on the FSW right after the preamble left this realization reading one FSW symbol
+wrong on every frame and failing every SACCH, so not one RAN decoded, where acquiring on two FSWs a frame apart decodes
+36. Over 72 realizations (0-10 dB, six seeds, with and without a two-ray echo) the four-level FSW reading read real
+FSWs within two bit errors in 93% of hits at 6-10 dB and 82% at 0-4 dB; the losses at low SNR were in the payload, not
+the sync.
+
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
 its decode margin (the original set still passed with ±45 counts of added

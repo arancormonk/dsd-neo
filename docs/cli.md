@@ -713,10 +713,9 @@ Notes
 - NXDN96 follows the receiver rules of NXDN TS 1-A (5.3, Table 5.9-3). It acquires on two frame sync words a frame
   (192 symbols, 40 ms) apart, within a symbol either way, each read on four levels within two bit errors -- the
   ten-symbol word read on its signs alone matches about one window in a hundred, and receiver noise opened about two
-  NXDN96 frames a second on it. One frame sync word the preamble or the control channel's post field leads into
-  counts alone, so a conventional transmission's first frame is read, and a control channel's are. A transmission
-  joined mid-call, and a trunked voice channel tuned to (no preamble there, and the control channel's timing is not
-  carried over), costs its first frame. Once acquired, the frames that follow are timed from the last frame whose
+  NXDN96 frames a second on it. A transmission's first frame is not read: the specification also lets a single frame
+  sync word behind the preamble acquire, but on weak calls that start left the decoder reading every later frame's
+  control channel wrong, so it is not used. Once acquired, the frames that follow are timed from the last frame whose
   link information (LICH) was good, up to five missed in a row (the frame right after a good one on its signs, later
   ones on four levels too). A lost frame sync word, or a LICH that fails its parity check, costs that frame alone;
   five LICHs in a row that pass their parity but name another kind of channel lose the lock. Both rules remember every

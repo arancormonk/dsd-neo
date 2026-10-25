@@ -1962,8 +1962,8 @@ test_m17_joins_on_a_sync_word_three_frames_running(void) {
  * a hundred matches, and the matcher's two hits could be any distance apart: receiver noise opened 20 NXDN96 frames in
  * the noise_floor fixture's 10 s under -fn. An NXDN frame is 384 bits, 192 symbols at 9600 bps (NXDN TS 1-A 4.4: one
  * frame per 40 ms), and every frame opens with the FSW. The receiver rules (TS 1-A 5.3, Table 5.9-3) acquire on two
- * FSWs a frame apart, or one behind the preamble or the RCCH post field, and hold the lock through five missed FSWs.
- * The 2400/4 matcher (NXDN48) keeps its two hits at any distance.
+ * FSWs a frame apart and hold the lock through five missed FSWs. The 2400/4 matcher (NXDN48) keeps its two hits at
+ * any distance.
  */
 static void
 nxdn96_sync_setup(dsd_opts* opts, dsd_state* state) {
@@ -2056,18 +2056,9 @@ test_nxdn96_follows_the_receiver_sync_rules(void) {
     state.symbolcnt += 192;
     assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
 
-    /* One FSW that the preamble or the RCCH post field leads into counts alone (N6), at either polarity, so a
-     * transmission's first frame is read; the tail one symbol off is not the tail. These windows carry no levels: a
-     * symbol capture's history is signs alone, and on it the sign match stands. */
+    /* One FSW behind the preamble's tail (N6) does not acquire alone: see frame_sync_nxdn96_accepts(). */
     nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, "11" NXDN_PREAMBLE_TAIL NXDN_FSW, 24)
-           == DSD_SYNC_NXDN_POS);
-    nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, "33" INV_NXDN_PREAMBLE_TAIL INV_NXDN_FSW, 24)
-           == DSD_SYNC_NXDN_NEG);
-    nxdn96_sync_setup(&opts, &state);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, "1" NXDN_PREAMBLE_TAIL "1" NXDN_FSW, 24)
-           == DSD_SYNC_NONE);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, "11111313113331" NXDN_FSW, 24) == DSD_SYNC_NONE);
 }
 
 /*

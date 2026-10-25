@@ -3842,30 +3842,30 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   (`m17_after_retune`: noise, then a stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`.
 - NXDN96 sync acceptance (`frame_sync_try_nxdn()`, `frame_sync_nxdn96_accepts()` in `dsd_frame_sync.c`), after the
   receiver rules of NXDN TS 1-A 5.3 and Table 5.9-3, on the NXDN96 window (`frame_sync_nxdn96_window()`: 4800/4, or a
-  symbol capture with NXDN96 alone on). The sign-sliced FSW match (ten symbols, five variants per polarity) passes
-  about one arbitrary window in a hundred, so acquisition also reads the window's last ten levels as four-level dibits
-  and needs the FSW's 20 bits within two bit errors (`frame_sync_nxdn96_fsw_bit_errors()`, a "clear" hit,
+  symbol capture with NXDN96 alone on). The sign-sliced FSW match (ten symbols, five variants per polarity) passes about
+  one arbitrary window in a hundred, so acquisition also reads the window's last ten levels as four-level dibits and
+  needs the FSW's 20 bits within two bit errors (`frame_sync_nxdn96_fsw_bit_errors()`, a "clear" hit,
   `DSD_FRAME_SYNC_NXDN96_CLEAR_HIT`). A clear hit acquires with a clear hit of its polarity one frame
   (`DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS`, 192) before it, within `DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE` (1) symbol (N1 =
-  N5 = 2), or alone behind the twelve symbols that end the preamble and the RCCH post field (N6 = 1,
-  `NXDN_PREAMBLE_TAIL`; the tail is held exact on its signs and the FSW to two bit errors, where N6 allows three over
-  both). An accepted FSW is pending (`dsd_state::nxdn96_sync`, `dsd_nxdn96_sync`) until its frame's LICH is read
-  (`dsd_nxdn96_sync_note_lich()` from `nxdn_frame()`): a good LICH makes it the lock, which accepts the FSWs that follow
-  at whole frames from it, the tolerance either way, for up to `DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES` (6) frames --
-  five missed in a row (N7) -- the next frame's on its signs and later ones only clear (N7's two-bit allowance). As TS
-  1-A 5.3 has it, a LICH whose parity fails says nothing: the lock stays on the last good frame, so a call rides out
-  the error and an accept on noise never refreshes it. `DSD_NXDN96_SYNC_LICH_WRONG_S1` (S1 = 5) good-parity LICHs in a
-  row that name no frame of the channel clear the lock and the hits. Both are also cleared with the M17 join history,
-  at a carrier boundary inside an NXDN frame, on an NXDN trunked tune and at the CAC reset. The four-level reading takes
-  the window's level ring, which a symbol capture fills with its dibits' levels (`dsd_symbol_level_from_dibit()`), so
-  it applies there too; only a window holding fewer than ten levels (`frame_sync_nxdn96_fsw_bit_errors()`: the unit
-  tests' sign-only windows) skips it, and the sign match then counts as clear. A LICH failure prints its sync under `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. A trunked voice
-  channel's first frame (its header) has no tail and the CC's timing is not reused (N2 = 1 is not implemented), so it is
-  lost. Tests: `FRAME_SYNC_INTERNAL_HELPERS` (`test_nxdn96_follows_the_receiver_sync_rules`,
-  `test_nxdn96_lock_follows_the_lich`, `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`,
-  `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
+  N5 = 2). N6 (one FSW alone behind the preamble or RCCH post-field tail) is not used: acquiring on the FSW right after
+  a preamble left weak calls (`nxdn96_weak`, nxdn96 at 8 dB wideband SNR) reading one FSW symbol wrong on every frame
+  and failing every SACCH for the rest of the call. So a transmission's first frame is lost, a trunked voice channel's
+  header included (N2 = 1, which reuses the CC's timing, is not implemented). An accepted FSW is pending
+  (`dsd_state::nxdn96_sync`, `dsd_nxdn96_sync`) until its frame's LICH is read (`dsd_nxdn96_sync_note_lich()` from
+  `nxdn_frame()`): a good LICH makes it the lock, which accepts the FSWs that follow at whole frames from it, the
+  tolerance either way, for up to `DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES` (6) frames -- five missed in a row (N7) -- the
+  next frame's on its signs and later ones only clear (N7's two-bit allowance). As TS 1-A 5.3 has it, a LICH whose
+  parity fails says nothing: the lock stays on the last good frame, so a call rides out the error and an accept on noise
+  never refreshes it. `DSD_NXDN96_SYNC_LICH_WRONG_S1` (S1 = 5) good-parity LICHs in a row that name no frame of the
+  channel clear the lock and the hits. Both are also cleared with the M17 join history, at a carrier boundary inside an
+  NXDN frame, on an NXDN trunked tune and at the CAC reset. The four-level reading takes the window's level ring, which
+  a symbol capture fills with its dibits' levels (`dsd_symbol_level_from_dibit()`), so it applies there too; only a
+  window holding fewer than ten levels (the unit tests' sign-only windows) skips it, and the sign match then counts as
+  clear. A LICH failure prints its sync under `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests:
+  `FRAME_SYNC_INTERNAL_HELPERS` (`test_nxdn96_follows_the_receiver_sync_rules`, `test_nxdn96_lock_follows_the_lich`,
+  `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
-  `_AUTO` twin, `DECODE_IQ_NXDN96`.
+  `_AUTO` twin, `DECODE_IQ_NXDN96_WEAK`, `DECODE_IQ_NXDN96`.
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a
   P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by

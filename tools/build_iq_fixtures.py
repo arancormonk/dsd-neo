@@ -307,6 +307,16 @@ DERIVED_ATTENUATED = [
     ("nxdn48_attenuated", "nxdn48", -20.0),
 ]
 
+# A committed capture with complex Gaussian noise added at a set wideband SNR (signal power over the noise across the
+# whole 48 kHz capture), for a weak-signal case. nxdn96_weak pins NXDN96 acquisition on a weak call: acquiring on the
+# FSW right after the preamble (TS 1-A N6) left this realization's slicer reading one FSW symbol wrong on every frame
+# and failing every SACCH, so not one RAN of the call decoded. Deterministic from the seed.
+#
+# name, source fixture, wideband SNR dB, seed
+DERIVED_AWGN = [
+    ("nxdn96_weak", "nxdn96", 8.0, 8007),
+]
+
 # Receiver noise with the squelch open -- no signal at all, which is what a scanner sits on
 # between transmissions. Protocols whose sync words are short enough for noise to reproduce
 # used to decode this into RANs and voice (issue #398), so it is committed as a reject
@@ -1583,6 +1593,21 @@ def build_tetra_synth(out_dir):
             + clock_slow_written + bad_written + bad_impaired_written
             + build_tetra_synth_72k(out_dir))
 
+def build_awgn(out_dir):
+    """Write the committed captures with complex Gaussian noise at a set wideband SNR."""
+    total = 0
+    for name, source, snr_db, seed in DERIVED_AWGN:
+        samples = load_cu8_fixture(os.path.join(out_dir, source + ".iq"))
+        power = np.mean(np.abs(samples) ** 2)
+        sigma = math.sqrt(power / (10.0 ** (snr_db / 10.0)) / 2.0)
+        rng = np.random.default_rng(seed)
+        noisy = samples + rng.normal(0.0, sigma, len(samples)) + 1j * rng.normal(0.0, sigma, len(samples))
+        written = write_fixture(out_dir, name, noisy)
+        total += written
+        print(f"{name:28s} derived {written // 1024:6d} KiB")
+    return total
+
+
 def build_attenuated(out_dir):
     """Write the level-shifted replays of committed fixtures (issue #521)."""
     total = 0
@@ -1783,6 +1808,7 @@ def build_derived(out_dir):
         total += written
         print(f"{name:28s} derived {written // 1024:6d} KiB")
     total += build_attenuated(out_dir)
+    total += build_awgn(out_dir)
     return total
 
 
@@ -1868,6 +1894,7 @@ def derived_fixture_names():
     return (
         [entry[0] for entry in DERIVED_SIMULCAST]
         + [entry[0] for entry in DERIVED_ATTENUATED]
+        + [entry[0] for entry in DERIVED_AWGN]
         + [entry[0] for entry in DERIVED_NOISE]
         + [entry[0] for entry in DERIVED_CLIP]
         + [entry[0] for entry in DERIVED_RETUNE]
