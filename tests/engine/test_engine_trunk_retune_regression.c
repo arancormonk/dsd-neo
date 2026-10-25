@@ -252,13 +252,10 @@ frame_sync_qpsk_dwell_set(int armed) {
 
 /* The frame sync's chain step (dsd_frame_sync.c), which a reconciled notice runs to put the decoder back on the chain
  * the tune set: the decoder's modulation, as the real one sets it with the front end. */
-static int g_set_chain_calls;
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
     (void)opts;
-    g_set_chain_calls++;
     state->rf_mod = chain;
 }
 
