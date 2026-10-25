@@ -9146,6 +9146,44 @@ test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off(void) {
 }
 
 /*
+ * A -m lock holds across a config apply whose [mode] names a decode set and no demod: the preset keeps the lock's
+ * modulation (`-mq` then `decode = "p25p1"` runs P25p1 on the QPSK lock, as `-mq -f1` does). A [mode] demod applies
+ * after the preset and decides the modulation itself.
+ */
+static int
+test_config_mode_without_demod_keeps_the_modulation_lock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "config p25p1 without demod");
+    rc |= expect_int("config p25p1 without demod: P25p1", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_P25P1, 1);
+    rc |= expect_int("config p25p1 without demod: lock kept", opts.mod_cli_lock, 1);
+    rc |= expect_int("config p25p1 without demod: QPSK kept", opts.mod_qpsk == 1 && opts.mod_c4fm == 0, 1);
+    rc |= expect_int("config p25p1 without demod: rf_mod QPSK", state.rf_mod, 1);
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_P25P1;
+    cfg.has_demod = 1;
+    cfg.demod_path = DSDCFG_DEMOD_C4FM;
+    rc |= expect_int("config p25p1 with demod queued",
+                     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config p25p1 with demod drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("config p25p1 with demod: C4FM", opts.mod_c4fm == 1 && opts.mod_qpsk == 0, 1);
+    rc |= expect_int("config p25p1 with demod: rf_mod C4FM", state.rf_mod, 0);
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Leaving EDACS for another mode leaves its addressing: EDACS (here with -fE's extended addressing and ESK), then DMR,
  * then Auto is plain Auto, not an EDACS session, and a trunked one presumes P25 for its startup hunt. EDACS straight to
  * Auto keeps it (above). A scan row's own preset is no such switch: a DMR row on air and left keeps the configured
@@ -19856,6 +19894,7 @@ main(void) {
     rc |= test_edacs_selection_and_input_monitor_ensure_their_sink();
     rc |= test_mode_and_config_edacs_entry_turn_trunked_udp_monitor_off();
     rc |= test_leaving_edacs_clears_its_addressing();
+    rc |= test_config_mode_without_demod_keeps_the_modulation_lock();
     rc |= test_decode_mode_set_closes_nfm_recording_named();
     rc |= test_provoice_toggle_closes_nfm_recording_named();
     rc |= test_identity_forgetting_commands_clear_the_record();

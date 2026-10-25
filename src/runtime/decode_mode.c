@@ -167,8 +167,8 @@ dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_inp
 
 /* A preset's own modulation, unless a -m lock already names one. The lock is the operator naming the demodulator, "no
  * auto override", and it holds whichever side of the preset it is written on: `-mq -f1` is `-f1 -mq`. The mid-session
- * path releases the lock before it applies a preset (decode_mode_stage_preset()), and the config path applies [mode]
- * demod after the preset, so neither is affected. */
+ * path releases the lock before it applies a preset (decode_mode_stage_preset()). A config's [mode] demod applies after
+ * the preset; without one the lock stands, so `-mq` then a config `decode = "p25p1"` runs P25p1 on QPSK. */
 static void
 decode_mode_preset_modulation(dsd_opts* o, dsd_state* s, int rf_mod) {
     if (o->mod_cli_lock) {
