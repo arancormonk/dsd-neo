@@ -10514,7 +10514,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_frame_sync_dmr_wav_rate
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
 )
 dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_dmr_wav_rate
   dsd-neo_test_support

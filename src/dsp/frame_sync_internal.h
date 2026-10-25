@@ -123,8 +123,9 @@ void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* stat
  *         stale and must be rebuilt -- or the budget expired on a trunked voice channel, where the
  *         profile is deliberately held but the no-sync accounting is still owed (#392, #393).
  *         FRAME_SYNC_HUNT_CHAIN_HANDBACK (2) when a silent CQPSK trial handed the rest of its dwell
- *         back to C4FM: the window is stale, but the dwell goes on, so no no-sync accounting is
- *         owed. 0 when the profile still owes symbols, or when spending the budget left the timing
+ *         back to C4FM: the window is stale, but the dwell goes on, so getFrameSync() rebuilds it in
+ *         place and keeps hunting, owing no no-sync accounting and returning nothing the engine
+ *         would answer with noCarrier(). 0 when the profile still owes symbols, or when spending the budget left the timing
  *         and modulation untouched.
  */
 #define FRAME_SYNC_HUNT_NO_SYNC_EXIT   1

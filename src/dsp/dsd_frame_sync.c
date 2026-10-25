@@ -4401,11 +4401,13 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
 }
 
 /**
- * @brief Step the hunt once its budget has run a pass, and say whether getFrameSync() returns no-sync.
+ * @brief Step the hunt once its budget has run a pass, and say what getFrameSync() does next.
  *
- * A step the dwell ends with is a no-sync exit and owes the P25 SM its accounting and noCarrier(), in that order. A
- * CQPSK trial's handback is not: it changes the demodulator under the window halfway through a dwell that goes on, so
- * it owes only the window rebuild the caller's return gives it.
+ * A step the dwell ends with is a no-sync exit (FRAME_SYNC_HUNT_NO_SYNC_EXIT): it owes the P25 SM its accounting and
+ * noCarrier(), in that order, and getFrameSync() returns no-sync, after which the engine runs noCarrier() too. A CQPSK
+ * trial's handback (FRAME_SYNC_HUNT_CHAIN_HANDBACK) is not: it changes the demodulator under the window halfway through
+ * a dwell that goes on, so getFrameSync() rebuilds its window in place and keeps hunting, and nothing that ends a call
+ * or resets frame state runs. 0: the profile still owes symbols.
  */
 static int
 frame_sync_hunt_budget_exit(dsd_opts* opts, dsd_state* state, time_t now) {
@@ -4413,13 +4415,10 @@ frame_sync_hunt_budget_exit(dsd_opts* opts, dsd_state* state, time_t now) {
         return 0;
     }
     const int step = frame_sync_no_sync_sps_hunt(opts, state);
-    if (step == 0) {
-        return 0;
-    }
     if (step == FRAME_SYNC_HUNT_NO_SYNC_EXIT) {
         frame_sync_no_sync_run_hooks(opts, state, now);
     }
-    return 1;
+    return step;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -4547,8 +4546,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
          * out of the per-symbol path.
          *
          * This is a no-sync exit like the timeout above and owes the P25 SM the same
-         * accounting, in the same order (frame_sync_hunt_budget_exit()). */
-        if (frame_sync_hunt_budget_exit(opts, state, now)) {
+         * accounting, in the same order (frame_sync_hunt_budget_exit()). A CQPSK trial's
+         * handback is not an exit: the window is rebuilt in place, as a new call would build it,
+         * and the hunt goes on in the same dwell. */
+        const int budget_step = frame_sync_hunt_budget_exit(opts, state, now);
+        if (budget_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
+            frame_sync_runtime_init(&rt, opts, state);
+            continue;
+        }
+        if (budget_step != 0) {
             frame_sync_sps_hunt_mark_return(state);
             return -1;
         }

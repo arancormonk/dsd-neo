@@ -3203,7 +3203,7 @@ test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes(void) {
             .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
             .no_carrier = fake_no_carrier,
         });
-        assert(dsd_frame_sync_test_hunt_budget_exit(&opts, &state) == 1);
+        assert(dsd_frame_sync_test_hunt_budget_exit(&opts, &state) == FRAME_SYNC_HUNT_CHAIN_HANDBACK);
         dsd_frame_sync_hooks_set(NULL);
         assert(g_no_carrier_hook_calls == 0);
         assert(g_vc_no_sync_hook_calls == 0);

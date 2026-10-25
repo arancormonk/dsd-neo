@@ -9,12 +9,14 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frame_sync_internal.h"
 #include "frame_sync_state_buffers.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -666,6 +668,74 @@ run_sync_after_carrier_boundary_case(void) {
     return rc;
 }
 
+static int g_no_carrier_calls;
+
+static void
+count_no_carrier(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_no_carrier_calls++;
+}
+
+/* A P25p1 CQPSK trial that has decoded nothing hands the rest of its dwell back to C4FM halfway through it. The dwell
+   goes on: getFrameSync() rebuilds its window and keeps hunting, rather than returning no-sync, which the engine's
+   reception loop answers with noCarrier() (live_scanner_main_loop()) -- ending calls and resetting frame state
+   halfway through a dwell that has not expired. Driven the way that loop drives it: a no-sync return is answered with
+   the installed no_carrier hook, which is what the engine installs noCarrier() as. A DMR carrier a few symbols after
+   the handback is taken on the C4FM chain inside the same call. */
+static int
+run_cqpsk_handback_keeps_hunting_case(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char pattern[128];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate handback state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    state.sps_hunt_idx = 0;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.rf_mod = 1;
+    state.p25_p1_mod_probe_active = 1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell / 2 - 5;
+
+    DSD_MEMSET(pattern, '1', 40);
+    DSD_MEMCPY(pattern + 40, DMR_BS_DATA_SYNC, strlen(DMR_BS_DATA_SYNC) + 1);
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    g_no_carrier_calls = 0;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.no_carrier = count_no_carrier});
+
+    int sync = getFrameSync(&opts, &state);
+    for (int calls = 1; sync == -1 && calls < 4; calls++) {
+        dsd_frame_sync_hook_no_carrier(&opts, &state); /* the reception loop's noCarrier() after a no-sync return */
+        sync = getFrameSync(&opts, &state);
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+
+    int rc = 0;
+    if (state.p25_p1_mod_probe_active != 0 || state.rf_mod == 1) {
+        DSD_FPRINTF(stderr, "CQPSK handback did not happen: probe=%d rf_mod=%d\n", state.p25_p1_mod_probe_active,
+                    state.rf_mod);
+        rc = 1;
+    }
+    if (g_no_carrier_calls != 0) {
+        DSD_FPRINTF(stderr, "CQPSK handback ran noCarrier() %d time(s) inside the dwell\n", g_no_carrier_calls);
+        rc = 1;
+    }
+    if (sync != DSD_SYNC_DMR_BS_DATA_POS) {
+        DSD_FPRINTF(stderr, "CQPSK handback: getFrameSync() returned %d, expected the DMR sync\n", sync);
+        rc = 1;
+    }
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -675,6 +745,7 @@ main(void) {
     rc |= run_wav_protocol_extended_sync_matrix();
     rc |= run_nxdn_sync_confirmation_matrix();
     rc |= run_sync_after_carrier_boundary_case();
+    rc |= run_cqpsk_handback_keeps_hunting_case();
     return rc;
 }
 
