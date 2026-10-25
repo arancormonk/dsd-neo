@@ -58,6 +58,7 @@
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/decode_clock.h"
+#include "ui_row.h"
 
 #if defined(NCURSES_VERSION)
 /* Read the real cursor before replacing ncurses accessors with helper-test stubs. */

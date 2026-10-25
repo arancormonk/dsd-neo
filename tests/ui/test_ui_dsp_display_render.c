@@ -19,11 +19,17 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/number_text.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/ui/ui_prims.h"
 
 static char g_out[8192];
 static size_t g_out_len;

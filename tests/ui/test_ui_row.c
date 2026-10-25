@@ -15,6 +15,7 @@
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
 #include <locale.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
