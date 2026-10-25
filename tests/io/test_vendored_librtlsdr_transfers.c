@@ -203,7 +203,8 @@ struct scenario {
     int refuse_submit_index;       /* this submission (0-based) is refused with LIBUSB_ERROR_NO_MEM; -1: none */
     int hold_completions;          /* from the start, a transfer comes back only when cancelled */
     int cancel_delay_ms;           /* a cancelled transfer's callback comes this much later */
-    int events_error;              /* one event poll fails (LIBUSB_ERROR_IO), and the next (LIBUSB_ERROR_OTHER) */
+    int events_error;              /* one event poll fails with this code, the next with LIBUSB_ERROR_OTHER; 0: none */
+    int no_device_at;              /* this completion (0-based) is NO_DEVICE, and the rest are held; -1: none */
     int first_fails_during_submit; /* transfer 0 completes with ERROR before the second submission */
     int cancel_after_samples;      /* the sample callback calls rtlsdr_cancel_async() at this count; 0: never */
     int zerocopy;                  /* libusb_dev_mem_alloc() hands out buffers; otherwise it refuses */
@@ -217,7 +218,14 @@ enum { kBufLen = 512, kEventsErrorAfterSamples = 20 };
 enum { kIdlePollsBeforeCancel = 2000, kIdlePollsBeforeAbort = 10000 };
 
 /* Between cases the completing thread reads this stand-in, never a finished case's scenario. */
-static const struct scenario g_idle = {"idle", 1, 0, -1, -1, -1, 0, 0, 0, 0, 0, 0};
+static const struct scenario g_idle = {
+    .name = "idle",
+    .buf_num = 1,
+    .fail_after = -1,
+    .refuse_resubmit_after = -1,
+    .refuse_submit_index = -1,
+    .no_device_at = -1,
+};
 static const struct scenario* g_sc = &g_idle;
 static rtlsdr_dev_t* g_dev;
 static pthread_t g_completer;
@@ -238,6 +246,7 @@ static int g_forced_cancel;
 /* Transfers come back only when cancelled: from the start when the case holds them, and once a stop or an event error
  * ends the stream, so that the reader's drain has cancellations to wait for. */
 static int g_holding;
+static int g_submits_at_cancel; /* submissions when the sample callback cancelled; -1: it did not */
 
 /* The status of the next completion that is not a cancellation. */
 static enum libusb_transfer_status
@@ -245,6 +254,11 @@ completion_status_locked(void) {
     const int k = g_completions++;
     if (g_sc->first_fails_during_submit && k == 0) {
         return LIBUSB_TRANSFER_ERROR;
+    }
+    if (g_sc->no_device_at == k) {
+        /* Unplugged: what is still out comes back only through its cancel. */
+        g_holding = 1;
+        return LIBUSB_TRANSFER_NO_DEVICE;
     }
     if (g_sc->fail_every > 0 && (k + 1) % g_sc->fail_every == 0) {
         static const enum libusb_transfer_status kRotation[] = {
@@ -416,7 +430,7 @@ libusb_handle_events_timeout_completed(libusb_context* ctx, struct timeval* tv, 
     int r = 0;
     pthread_mutex_lock(&g_mu);
     if (g_sc->events_error && g_samples >= kEventsErrorAfterSamples && g_events_errors_sent < 2) {
-        r = g_events_errors_sent++ == 0 ? LIBUSB_ERROR_IO : LIBUSB_ERROR_OTHER;
+        r = g_events_errors_sent++ == 0 ? g_sc->events_error : LIBUSB_ERROR_OTHER;
         g_holding = 1;
     }
     if (g_deliveries == g_last_deliveries) {
@@ -625,6 +639,7 @@ on_samples(unsigned char* buf, uint32_t len, void* ctx) {
     const int cancel = g_sc->cancel_after_samples > 0 && samples == g_sc->cancel_after_samples;
     if (cancel) {
         g_holding = 1;
+        g_submits_at_cancel = g_submits;
     }
     pthread_mutex_unlock(&g_mu);
     if (cancel) {
@@ -643,6 +658,7 @@ struct outcome {
     int early_buffer_frees;
     int forced_cancel;
     int submits;
+    int submits_at_cancel;
     int refused_resubmits;
     int completions;
     int cancelled_callbacks;
@@ -673,6 +689,7 @@ run_case(const struct scenario* sc) {
     g_first_failed = 0;
     g_samples = 0;
     g_events_errors_sent = 0;
+    g_submits_at_cancel = -1;
     g_idle_polls = 0;
     g_last_deliveries = 0;
     g_forced_cancel = 0;
@@ -703,6 +720,7 @@ run_case(const struct scenario* sc) {
     out.early_buffer_frees = g_early_buffer_frees;
     out.forced_cancel = g_forced_cancel;
     out.submits = g_submits;
+    out.submits_at_cancel = g_submits_at_cancel;
     out.refused_resubmits = g_refused_resubmits;
     out.completions = g_completions;
     out.cancelled_callbacks = g_cancelled_callbacks;
@@ -732,10 +750,11 @@ expect(const char* name, int ok, const char* what, const struct outcome* out) {
     g_failures++;
     DSD_FPRINTF(stderr,
                 "FAIL %s: %s (rc=%d dev_lost=%d status=%d live=%d left_in_flight=%d early_frees=%d/%d forced_cancel=%d "
-                "submits=%d refused_resubmits=%d completions=%d cancelled=%d samples=%d zerocopy=%d)\n",
+                "submits=%d (at stop %d) refused_resubmits=%d completions=%d cancelled=%d samples=%d zerocopy=%d)\n",
                 name, what, out->rc, out->dev_lost, out->status, out->live, out->left_in_flight,
                 out->early_transfer_frees, out->early_buffer_frees, out->forced_cancel, out->submits,
-                out->refused_resubmits, out->completions, out->cancelled_callbacks, out->samples, out->use_zerocopy);
+                out->submits_at_cancel, out->refused_resubmits, out->completions, out->cancelled_callbacks,
+                out->samples, out->use_zerocopy);
 }
 
 /* What every case needs: the reader went back to inactive and released everything, after libusb had returned every
@@ -760,6 +779,7 @@ base_scenario(const char* name, uint32_t buf_num) {
     sc.fail_after = -1;
     sc.refuse_resubmit_after = -1;
     sc.refuse_submit_index = -1;
+    sc.no_device_at = -1;
     return sc;
 }
 
@@ -830,17 +850,35 @@ deferred_cancellation(int zerocopy) {
     expect(sc.name, out.dev_lost == 0, "device not lost", &out);
     expect(sc.name, out.use_zerocopy == zerocopy, "buffer kind as set up", &out);
     expect(sc.name, out.cancelled_callbacks > 0, "transfers called back as cancelled", &out);
+    /* The transfer whose callback stopped the stream is not resubmitted, nor is any after it. */
+    expect(sc.name, out.submits == out.submits_at_cancel, "no submission after the stop", &out);
     expect_clean_exit(sc.name, &out);
 }
 
-/* An event poll fails while streaming; the reader drains (another poll failing on the way) and returns the first. */
+/* An unplug while streaming: one transfer completes with NO_DEVICE, which marks the device lost, and the other seven
+ * come back only as cancelled, 50 ms after their cancels. The reader must wait for them before it frees anything. */
 static void
-events_error_keeps_first_error(void) {
-    struct scenario sc = base_scenario("events_error_keeps_first_error", 8);
-    sc.events_error = 1;
+unplug_drains(void) {
+    struct scenario sc = base_scenario("unplug_drains", 8);
+    sc.no_device_at = 30;
+    sc.cancel_delay_ms = 50;
+    const struct outcome out = run_case(&sc);
+    expect(sc.name, out.rc == -1, "rc == -1", &out);
+    expect(sc.name, out.dev_lost == 1, "device lost", &out);
+    expect(sc.name, out.cancelled_callbacks == 7, "the seven transfers still out called back as cancelled", &out);
+    expect_clean_exit(sc.name, &out);
+}
+
+/* An event poll fails while streaming; the reader drains (another poll failing on the way) and returns the first. The
+ * brief's LIBUSB_ERROR_IO equals -1, a lost device's return, so a second run fails with LIBUSB_ERROR_PIPE. */
+static void
+events_error_keeps_first_error(int error) {
+    struct scenario sc = base_scenario(
+        error == LIBUSB_ERROR_IO ? "events_error_keeps_first_error (IO)" : "events_error_keeps_first_error (PIPE)", 8);
+    sc.events_error = error;
     sc.cancel_delay_ms = 20;
     const struct outcome out = run_case(&sc);
-    expect(sc.name, out.rc == LIBUSB_ERROR_IO, "rc == LIBUSB_ERROR_IO", &out);
+    expect(sc.name, out.rc == error, "rc == the first event error", &out);
     expect(sc.name, out.dev_lost == 0, "device not lost", &out);
     expect(sc.name, out.cancelled_callbacks > 0, "transfers called back as cancelled", &out);
     expect_clean_exit(sc.name, &out);
@@ -873,7 +911,9 @@ main(void) {
     partial_initial_submit();
     deferred_cancellation(0);
     deferred_cancellation(1);
-    events_error_keeps_first_error();
+    unplug_drains();
+    events_error_keeps_first_error(LIBUSB_ERROR_IO);
+    events_error_keeps_first_error(LIBUSB_ERROR_PIPE);
     error_during_initial_submission_on_other_thread();
 
     pthread_mutex_lock(&g_mu);

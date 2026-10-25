@@ -120,7 +120,9 @@ struct rtlsdr_dev {
 	int driver_active;
 	unsigned int xfer_errors;
 	/* transfers libusb still owns (submitted, not called back for
-	 * good), and whether the first batch is still being submitted;
+	 * good), and whether the first batch is still being submitted (a
+	 * zero then is not conclusive; only the reader checks today, after
+	 * the batch, so the flag guards any later check from elsewhere);
 	 * a callback may run on any thread that handles events */
 	int xfer_outstanding;
 	int xfer_submitting;
@@ -2102,7 +2104,12 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 #ifdef _WIN32
 		Sleep(1);
 #endif
-		libusb_handle_events_timeout_completed(dev->ctx, &tv, NULL);
+		r = libusb_handle_events_timeout_completed(dev->ctx, &tv, NULL);
+#ifndef _WIN32
+		/* a poll that keeps failing must not spin */
+		if (r < 0)
+			usleep(1000);
+#endif
 	}
 
 	_rtlsdr_free_async_buffers(dev);

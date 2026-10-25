@@ -29,29 +29,38 @@ Every exit (cancel, lost device, handle_events error, failed initial
 submission) cancels the transfers and handles events until the count is
 zero, with no timeout, since libusb guarantees each callback; each pass
 cancels again in case a callback on another thread resubmitted just before
-it saw CANCELING. Transfers and buffers (ordinary or zero-copy) are freed
-only then. The first error (a failed submission or event poll) is the return
-value, -1 when the device was lost; the reader always ends inactive.
+it saw CANCELING; a poll that keeps failing backs off 1 ms instead of
+spinning. Transfers and buffers (ordinary or zero-copy) are freed only then.
+The first error (a failed submission or event poll) is the return value, -1
+when the device was lost; the reader always ends inactive.
+
+Only the count and the phase flag are atomic. async_status, dev_lost and
+xfer_errors stay plain fields as upstream has them, written by
+rtlsdr_cancel_async() and by callbacks that may run on another thread; the
+callback's new RUNNING check reads async_status the same way, and the
+repeated cancel covers a resubmit made on a stale RUNNING.
 
 Applies on top of 0002-librtlsdr-check-async-buffer-allocation.patch.
 
 diff --git a/src/librtlsdr.c b/src/librtlsdr.c
-index 9b7f44c..6e97304 100644
+index 9b7f44c..9590332 100644
 --- a/src/librtlsdr.c
 +++ b/src/librtlsdr.c
-@@ -119,6 +119,11 @@ struct rtlsdr_dev {
+@@ -119,6 +119,13 @@ struct rtlsdr_dev {
  	int dev_lost;
  	int driver_active;
  	unsigned int xfer_errors;
 +	/* transfers libusb still owns (submitted, not called back for
-+	 * good), and whether the first batch is still being submitted;
++	 * good), and whether the first batch is still being submitted (a
++	 * zero then is not conclusive; only the reader checks today, after
++	 * the batch, so the flag guards any later check from elsewhere);
 +	 * a callback may run on any thread that handles events */
 +	int xfer_outstanding;
 +	int xfer_submitting;
  	char manufact[256];
  	char product[256];
  };
-@@ -1804,12 +1809,15 @@ int rtlsdr_read_sync(rtlsdr_dev_t *dev, void *buf, int len, int *n_read)
+@@ -1804,12 +1811,15 @@ int rtlsdr_read_sync(rtlsdr_dev_t *dev, void *buf, int len, int *n_read)
  static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
  {
  	rtlsdr_dev_t *dev = (rtlsdr_dev_t *)xfer->user_data;
@@ -68,7 +77,7 @@ index 9b7f44c..6e97304 100644
  		dev->xfer_errors = 0;
  	} else if (LIBUSB_TRANSFER_CANCELLED != xfer->status) {
  #ifndef _WIN32
-@@ -1826,6 +1834,12 @@ static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
+@@ -1826,6 +1836,12 @@ static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
  		}
  #endif
  	}
@@ -81,7 +90,7 @@ index 9b7f44c..6e97304 100644
  }
  
  int rtlsdr_wait_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx)
-@@ -1972,9 +1986,8 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
+@@ -1972,9 +1988,8 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
  {
  	unsigned int i;
  	int r = 0;
@@ -92,7 +101,7 @@ index 9b7f44c..6e97304 100644
  
  	if (!dev)
  		return -1;
-@@ -2007,6 +2020,13 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
+@@ -2007,6 +2022,13 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
  		return r;
  	}
  
@@ -106,7 +115,7 @@ index 9b7f44c..6e97304 100644
  	for(i = 0; i < dev->xfer_buf_num; ++i) {
  		libusb_fill_bulk_transfer(dev->xfer[i],
  					  dev->devh,
-@@ -2025,73 +2045,74 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
+@@ -2025,73 +2047,79 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
  					"following command:\n"
  					"echo 0 > /sys/module/usbcore"
  					"/parameters/usbfs_memory_mb\n", i);
@@ -186,6 +195,12 @@ index 9b7f44c..6e97304 100644
  #ifdef _WIN32
 -					Sleep(1);
 +		Sleep(1);
++#endif
++		r = libusb_handle_events_timeout_completed(dev->ctx, &tv, NULL);
++#ifndef _WIN32
++		/* a poll that keeps failing must not spin */
++		if (r < 0)
++			usleep(1000);
  #endif
 -					libusb_handle_events_timeout_completed(dev->ctx,
 -									       &zerotv, NULL);
@@ -205,7 +220,6 @@ index 9b7f44c..6e97304 100644
 -				break;
 -			}
 -		}
-+		libusb_handle_events_timeout_completed(dev->ctx, &tv, NULL);
  	}
  
  	_rtlsdr_free_async_buffers(dev);
