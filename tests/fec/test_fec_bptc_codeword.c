@@ -88,6 +88,7 @@ build_word(const uint8_t bytes[12], const uint8_t reserved[3], uint8_t payload[9
 /* Decodes and checks that the call left the input alone. */
 static int
 decode(const uint8_t word[196], uint8_t out[96], uint8_t r[3], uint32_t* distance) {
+    assert(word != NULL);
     uint8_t before[196];
     DSD_MEMCPY(before, word, sizeof before);
     int ok = BPTC_196x96_Decode_Codeword(word, out, r, distance);
