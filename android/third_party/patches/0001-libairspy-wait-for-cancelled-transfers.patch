@@ -1,0 +1,215 @@
+libairspy: wait for cancelled transfers before freeing or reusing them
+
+A stop cancelled the transfers, joined the transfer and consumer threads, and
+handled events once with a zero timeout. libusb calls a cancelled transfer back
+later with LIBUSB_TRANSFER_CANCELLED and owns it and its buffer until then, so
+transfers were usually still in flight when airspy_stop_rx() returned.
+airspy_close() then freed them, a restart (airspy_start_rx() after a stop, as a
+retune does) resubmitted them, and airspy_set_packing() cancelled and freed
+them back to back: freeing a transfer libusb still owns is undefined
+behaviour, and libusb refuses to submit one as busy. A failed submission at
+start left the transfers already submitted the same way.
+
+The device now counts the transfers libusb owns (__atomic, since a callback
+runs on whichever thread handles events). A start reserves the whole batch
+before the first submission, and a failed submission gives back its own slot
+and those of the transfers never submitted. The callback keeps the slot when
+it resubmits; any other outcome (stopping, a failed status or resubmission)
+gives it back as its last touch of the device. The stop's single poll is
+replaced by a wait: cancel the transfers and handle events until the count is
+zero, with no timeout, since libusb guarantees each callback. Each pass
+cancels again, in case a callback on another thread resubmitted before it saw
+the stop; a poll that keeps failing backs off 1 ms instead of spinning.
+
+A stream that ended by itself (a failed transfer or event poll, or the sample
+callback asking to stop) left its threads unjoined and its other transfers in
+flight. airspy_start_rx() and a packing change now reap it first, as a stop
+would, before they reset the converters, resubmit or free anything.
+
+streaming and stop_requested become C11 atomics. The caller's stop, the
+transfer thread, the consumer thread and the callbacks all read and write
+them, which was a data race on plain volatile fields; ThreadSanitizer reports
+it as soon as a test drives the library's own threads.
+
+The vendored copy builds with clang for Android; the __atomic builtins and
+_Atomic are GCC/clang C11 and are not meant for upstream's MSVC build.
+
+Generated against airspyone_host bd15be38e91ebaa3e0bebb1e320255bde4ccf059
+(libairspy/src/airspy.c; apply with patch -p1 inside libairspy/src).
+
+diff --git a/airspy.c b/airspy.c
+index a2caf38..6ee8b35 100644
+--- a/airspy.c
++++ b/airspy.c
+@@ -33,6 +33,9 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
+ #endif
+ 
+ #include <pthread.h>
++#ifndef _WIN32
++#include <unistd.h>
++#endif
+ 
+ #include "airspy.h"
+ #include "iqconverter_float.h"
+@@ -82,8 +85,8 @@ typedef struct airspy_device
+ 	libusb_device_handle* usb_device;
+ 	struct libusb_transfer** transfers;
+ 	airspy_sample_block_cb_fn callback;
+-	volatile bool streaming;
+-	volatile bool stop_requested;
++	_Atomic bool streaming;
++	_Atomic bool stop_requested;
+ 	pthread_t transfer_thread;
+ 	pthread_t consumer_thread;
+ 	bool transfer_thread_running;
+@@ -94,6 +97,9 @@ typedef struct airspy_device
+ 	uint32_t *supported_samplerates;
+ 	uint32_t transfer_count;
+ 	uint32_t buffer_size;
++	/* transfers libusb still owns (submitted, not called back for good);
++	 * a callback runs on whichever thread handles events */
++	int transfers_outstanding;
+ 	uint32_t dropped_buffers;
+ 	uint32_t dropped_buffers_queue[RAW_BUFFER_COUNT];
+ 	uint16_t *received_samples_queue[RAW_BUFFER_COUNT];
+@@ -277,6 +283,10 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
+ 	uint32_t transfer_index;
+ 	if (device->transfers != NULL)
+ 	{
++		/* Every transfer takes its slot before it is submitted, so the count
++		 * cannot reach zero while the rest are still going out. */
++		__atomic_store_n(&device->transfers_outstanding, (int)device->transfer_count, __ATOMIC_RELEASE);
++
+ 		for (transfer_index = 0; transfer_index<device->transfer_count; transfer_index++)
+ 		{
+ 			device->transfers[transfer_index]->endpoint = endpoint_address;
+@@ -285,6 +295,9 @@ static int prepare_transfers(airspy_device_t* device, const uint_fast8_t endpoin
+ 			error = libusb_submit_transfer(device->transfers[transfer_index]);
+ 			if (error != 0)
+ 			{
++				/* this transfer and the ones never submitted give their
++				 * slots back */
++				__atomic_sub_fetch(&device->transfers_outstanding, (int)(device->transfer_count - transfer_index), __ATOMIC_ACQ_REL);
+ 				return AIRSPY_ERROR_LIBUSB;
+ 			}
+ 		}
+@@ -444,6 +457,14 @@ static void* consumer_threadproc(void *arg)
+ 	return NULL;
+ }
+ 
++/* A transfer is back for good: called back and not resubmitted. This must be
++ * the callback's last touch of the device, since at zero a stop may go on to
++ * free the transfers. */
++static void transfer_returned(airspy_device_t* device)
++{
++	__atomic_sub_fetch(&device->transfers_outstanding, 1, __ATOMIC_ACQ_REL);
++}
++
+ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
+ {
+ 	uint16_t *temp;
+@@ -451,6 +472,7 @@ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer
+ 
+ 	if (!device->streaming || device->stop_requested)
+ 	{
++		transfer_returned(device);
+ 		return;
+ 	}
+ 
+@@ -482,11 +504,13 @@ static void airspy_libusb_transfer_callback(struct libusb_transfer* usb_transfer
+ 		if (libusb_submit_transfer(usb_transfer) != 0)
+ 		{
+ 			device->streaming = false;
++			transfer_returned(device);
+ 		}
+ 	}
+ 	else
+ 	{
+ 		device->streaming = false;
++		transfer_returned(device);
+ 	}
+ }
+ 
+@@ -517,10 +541,33 @@ static void* transfer_threadproc(void* arg)
+ 	return NULL;
+ }
+ 
+-static int kill_io_threads(airspy_device_t* device)
++/* libusb calls a cancelled transfer back later, and owns it and its buffer
++ * until then: wait for every callback before anything frees or resubmits a
++ * transfer. There is no timeout, since each callback is guaranteed. Each pass
++ * cancels again, in case a callback on another thread resubmitted before it
++ * saw the stop; a transfer that is not in flight only returns
++ * LIBUSB_ERROR_NOT_FOUND. */
++static void wait_for_transfers(airspy_device_t* device)
+ {
+-	struct timeval timeout = { 0, 0 };
++	struct timeval timeout = { 0, 500000 };
+ 
++	while (__atomic_load_n(&device->transfers_outstanding, __ATOMIC_ACQUIRE) > 0)
++	{
++		cancel_transfers(device);
++		if (libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL) < 0)
++		{
++			/* a poll that keeps failing must not spin */
++#ifdef _WIN32
++			Sleep(1);
++#else
++			usleep(1000);
++#endif
++		}
++	}
++}
++
++static int kill_io_threads(airspy_device_t* device)
++{
+ 	if (device->stop_requested)
+ 	{
+ 		device->stop_requested = false;
+@@ -540,12 +587,21 @@ static int kill_io_threads(airspy_device_t* device)
+ 		    device->consumer_thread_running = false;
+ 		}
+ 
+-		libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL);
++		wait_for_transfers(device);
+ 	}
+ 
+ 	return AIRSPY_SUCCESS;
+ }
+ 
++/* A stream that ended by itself (a failed transfer or event poll, or the
++ * sample callback asking to stop) leaves its threads to join, and transfers
++ * that may still be in flight: reap it as a stop would. */
++static void reap_ended_stream(airspy_device_t* device)
++{
++	device->stop_requested = true;
++	kill_io_threads(device);
++}
++
+ static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn callback)
+ {
+ 	int result;
+@@ -1193,6 +1249,14 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 	{
+ 		int result;
+ 
++		/* A stream that ended by itself is reaped first: its consumer may
++		 * still use the converters reset below, and its transfers may
++		 * still be in flight. */
++		if (!device->streaming && !device->stop_requested)
++		{
++			reap_ended_stream(device);
++		}
++
+ 		iqconverter_float_reset(device->cnv_f);
+ 		iqconverter_int16_reset(device->cnv_i);
+ 
+@@ -1928,7 +1992,7 @@ int airspy_list_devices(uint64_t *serials, int count)
+ 		packing_enabled = value ? true : false;
+ 		if (packing_enabled != device->packing_enabled)
+ 		{
+-			cancel_transfers(device);
++			reap_ended_stream(device);
+ 			free_transfers(device);
+ 
+ 			device->packing_enabled = packing_enabled;

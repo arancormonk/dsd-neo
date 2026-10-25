@@ -14462,6 +14462,30 @@ if(
         COMMAND dsd-neo_test_vendored_librtlsdr_transfers
     )
     set_tests_properties(VENDORED_LIBRTLSDR_TRANSFERS PROPERTIES TIMEOUT 120)
+
+    # The vendored libairspy's stop, close, restart and packing change waiting
+    # for cancelled USB transfers: airspy.c against the same kind of stub libusb,
+    # its own transfer thread polling for events.
+    add_executable(
+        dsd-neo_test_vendored_libairspy_transfers
+        io/test_vendored_libairspy_transfers.c
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_libairspy_transfers
+        SYSTEM
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/android/third_party/libairspy
+            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    )
+    target_link_libraries(
+        dsd-neo_test_vendored_libairspy_transfers
+        PRIVATE Threads::Threads
+    )
+    add_test(
+        NAME VENDORED_LIBAIRSPY_TRANSFERS
+        COMMAND dsd-neo_test_vendored_libairspy_transfers
+    )
+    set_tests_properties(VENDORED_LIBAIRSPY_TRANSFERS PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(

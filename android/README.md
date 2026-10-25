@@ -1004,7 +1004,7 @@ device, with a source that has known calls (an I/Q replay works):
 
 ## Vendored third-party code
 
-`third_party/` carries trimmed snapshots of two upstream projects. They are **not**
+`third_party/` carries trimmed snapshots of three upstream projects. They are **not**
 under `src/third_party/`: that perimeter has repo-wide guardrails, and these build
 privately for the Android app only.
 
@@ -1012,10 +1012,12 @@ privately for the Android app only.
 | --- | --- | --- | --- |
 | libusb | v1.0.30 | `87a55632db62c9bdc58cd31d3ccfa673f1bb017f` | The exact source list upstream's own `android/jni/libusb.mk` builds — the `linux_usbfs` backend plus the POSIX event/thread shims — with upstream's `android/config.h` |
 | librtlsdr | v2.0.3 (osmocom) | `797f8143266d983c56d8f35d2d442527529dd8a5` | The library only: `librtlsdr.c`, the five tuner drivers and `include/`; the `rtl_*` command-line tools and their helpers are dropped |
+| libairspy | 1.0.12 (airspyone_host) | `bd15be38e91ebaa3e0bebb1e320255bde4ccf059` | The library only: `libairspy/src` (`airspy.c`, the IQ converters and their headers); the `airspy_*` command-line tools are dropped |
 
 librtlsdr is GPL-2.0-or-later and libusb is LGPL-2.1-or-later; both upstream
 license texts travel with the snapshots (`*/COPYING`) and both are listed in the
-repository's `THIRD_PARTY.md`.
+repository's `THIRD_PARTY.md`. libairspy (BSD-3-Clause and MIT) keeps its notice
+in `libairspy/LICENSE`, also listed there.
 
 These trees keep upstream formatting and are excluded from every repo tool
 (`.clang-format-ignore`, `tools/format.sh`, `.githooks/pre-push`), so do not
@@ -1024,8 +1026,8 @@ they came from.
 
 ### The librtlsdr patches
 
-The patches in `third_party/patches/` are already applied to the vendored copy, in
-order; they are kept as files so the delta stays reviewable and can be re-applied
+The `*-librtlsdr-*` patches in `third_party/patches/` are already applied to the
+vendored copy, in order; they are kept as files so the delta stays reviewable and can be re-applied
 when the snapshot is refreshed.
 
 - `0001-librtlsdr-add-rtlsdr_open_fd.patch` adds `rtlsdr_open_fd()` and splits the
@@ -1050,9 +1052,35 @@ To move to a newer librtlsdr:
 ```sh
 git clone https://gitea.osmocom.org/sdr/rtl-sdr.git /tmp/rtlsdr
 git -C /tmp/rtlsdr checkout <new-tag>
-cd /tmp/rtlsdr && for p in <repo>/android/third_party/patches/*.patch; do patch -p1 < "$p"; done
+cd /tmp/rtlsdr && for p in <repo>/android/third_party/patches/*-librtlsdr-*.patch; do patch -p1 < "$p"; done
 # then copy src/librtlsdr.c, src/tuner_*.c and include/* over the vendored tree,
 # regenerate the patches against the new baseline, and update the table above
+```
+
+### The libairspy patch
+
+`0001-libairspy-wait-for-cancelled-transfers.patch` is already applied to the
+vendored copy, like the librtlsdr ones.
+
+- It makes the device count the transfers libusb owns. A stop cancels them and
+  keeps handling events until each has been called back, so `airspy_close()`
+  never frees, and a restart (a retune's stop and start) never resubmits, a
+  transfer libusb still owns. A start whose submission fails gives back the slots
+  of the transfers it never submitted, and the stop after it waits for the rest.
+  A stream that ended by itself is reaped the same way before a start or a
+  packing change reuses its transfers. `streaming` and `stop_requested` become
+  C11 atomics, since the library's own threads share them.
+  `VENDORED_LIBAIRSPY_TRANSFERS` (a desktop test) drives the library's threads
+  against a stub libusb whose cancellations call back late.
+
+To move to a newer libairspy:
+
+```sh
+git clone https://github.com/airspy/airspyone_host.git /tmp/airspy
+git -C /tmp/airspy checkout <new-commit>
+cd /tmp/airspy/libairspy/src && for p in <repo>/android/third_party/patches/*-libairspy-*.patch; do patch -p1 < "$p"; done
+# then copy the library sources over the vendored tree, regenerate the patches
+# against the new baseline, and update the table above and README.dsd-neo
 ```
 
 ## Codec2, libcurl and expat

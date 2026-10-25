@@ -405,6 +405,7 @@
       "name": "libairspy",
       "paths": [
         "android/third_party/libairspy/",
+        "android/third_party/patches/0001-libairspy-wait-for-cancelled-transfers.patch",
         "vcpkg-ports/airspy/"
       ],
       "distribution": [
@@ -421,7 +422,7 @@
       "notices": [
         "android/third_party/libairspy/LICENSE"
       ],
-      "assessment": "Pinned library with complete source-header copyrights and both upstream licenses.",
+      "assessment": "Pinned library with complete source-header copyrights and both upstream licenses; the Android copy carries a transfer-teardown patch.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",

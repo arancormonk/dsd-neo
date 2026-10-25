@@ -4311,6 +4311,9 @@ Key public headers:
 - Native Airspy adapter: `src/io/radio/airspy_source.cpp` owns SDK calls and USB lifecycle;
   `rtl_device.cpp` connects its CF32 callbacks to the shared generation-checked input ring.
   Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
+  The vendored Android libairspy's stop (0001-libairspy) waits until libusb has called back every cancelled transfer,
+  so `airspy_close()` and the restart after a retune never free or resubmit one still in flight; system libairspy
+  keeps upstream's single poll. Test: `VENDORED_LIBAIRSPY_TRANSFERS`.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
   - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in
