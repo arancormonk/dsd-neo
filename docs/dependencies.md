@@ -170,7 +170,10 @@ Native Airspy R2/Mini support is optional (`DSD_ENABLE_AIRSPY`, `DSD_REQUIRE_AIR
 
 `cmake/Pffft.cmake` uses CMake 3.20-compatible FetchContent to acquire the fixed
 commit archive with TLS and SHA-256 verification. Only `pffft.c` and
-`pffft_common.c` are compiled; the fork's top-level project and FFTPACK reference
+`pffft_common.c` are compiled (with MSVC on x64 also `pffft_wide_tu.c`, the
+fork's 8-lane AVX2 backend as a translation unit of its own, built with
+`/arch:AVX2 /GL-` and run only after PFFFT's CPU check; GCC and Clang build that
+backend inside `pffft.c`); the fork's top-level project and FFTPACK reference
 implementation are not built. The first configure needs HTTPS access to
 codeload.github.com. PFFFT stays embedded, with no additional runtime package.
 

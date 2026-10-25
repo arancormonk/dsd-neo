@@ -61,8 +61,17 @@ set(PFFFT_INCLUDE_DIR "${DSD_PFFFT_SOURCE_DIR}/include/pffft")
 set(_pffft_notice_sources
     src/pffft.c
     src/pffft_priv_impl.h
+    src/pffft_passes_impl.h
     src/pffft_cplx_impl.h
     src/pffft_real_impl.h
+    src/pffft_internal.h
+    src/pffft_setup.h
+    src/pffft_cpu_x86.h
+    src/pffft_wide_impl.h
+    src/pffft_wide_select.h
+    src/pffft_wide_sizes.h
+    src/pffft_wide_api.h
+    src/pffft_wide_tu.c
     include/pffft/pffft.h
     include/pffft/pffft_double.h
     src/simd/pf_float.h
@@ -132,6 +141,35 @@ if(DSD_PFFFT_ENABLE_SIMD)
         dsd-neo_pffft
         PRIVATE PFFFT_ENABLE_NEON PFFFT_ENABLE_WASM_SIMD
     )
+    # The 8-lane AVX2 FFT backend: GCC and Clang build it inside pffft.c;
+    # MSVC (not clang-cl) needs it as a translation unit of its own, compiled
+    # with /arch:AVX2 (PFFFT's README, "MSVC and the 8-lane code"). pffft.c
+    # only calls it after its CPU check; /GL- keeps link-time code generation
+    # from inlining AVX2 code into code that runs first.
+    if(MSVC AND NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        include(CheckCSourceCompiles)
+        check_c_source_compiles(
+            [=[
+            #if !defined(_M_X64) || defined(_M_ARM64EC)
+            #error not an x64 target
+            #endif
+            int main(void) { return 0; }
+          ]=]
+            DSD_PFFFT_MSVC_X64
+        )
+        if(DSD_PFFFT_MSVC_X64)
+            set(_dsd_pffft_wide_tu
+                "${DSD_PFFFT_SOURCE_DIR}/src/pffft_wide_tu.c"
+            )
+            target_sources(dsd-neo_pffft PRIVATE "${_dsd_pffft_wide_tu}")
+            set_source_files_properties(
+                "${_dsd_pffft_wide_tu}"
+                PROPERTIES COMPILE_OPTIONS "/arch:AVX2;/GL-"
+            )
+            target_compile_definitions(dsd-neo_pffft PRIVATE PFFFT_WIDE_TU=1)
+            unset(_dsd_pffft_wide_tu)
+        endif()
+    endif()
 else()
     target_compile_definitions(dsd-neo_pffft PRIVATE PFFFT_SIMD_DISABLE)
 endif()
