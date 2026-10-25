@@ -426,6 +426,31 @@ test_notice_and_null_arguments(void) {
     return rc;
 }
 
+/* A scope baseline holding the pair apart from the setter (aggressive_framesync and dmr_crc_relaxed_default both 1)
+   reads configured on, as dsd_opts_relaxed_crc() reads the pair, under a strict row too. */
+static int
+test_half_pair_baseline(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    scan_context_init(opts, state);
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 1;
+    const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_CRC, .strict_crc = 1};
+    int rc = enter_dmr_row(opts, state, &row);
+    rc |= expect_int("half pair baseline: scope captured it", dsd_scan_mode_configured_view(state) != NULL, 1);
+    rc |= expect_view("half pair baseline, strict row", opts, state, 1, 0, 1);
+    dsd_scan_mode_leave(opts, state);
+    context_free(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 expect_ras(const char* when, const dsd_opts* opts, const dsd_state* state, int detected, int needs_relaxed,
            const char* label) {
@@ -498,6 +523,7 @@ main(void) {
     rc |= test_strict_row_over_relaxed_baseline();
     rc |= test_relaxed_row_over_strict_baseline();
     rc |= test_notice_and_null_arguments();
+    rc |= test_half_pair_baseline();
     rc |= test_dmr_ras_view();
     if (rc == 0) {
         printf("APP_CONTROL_CRC_POLICY: OK\n");
