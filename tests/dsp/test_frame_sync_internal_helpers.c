@@ -3931,6 +3931,60 @@ test_p25p1_stale_validation_opens_no_comparison(void) {
     }
 }
 
+/*
+ * A modulation lock always wins over a watchdog tune's notice, whichever comes first, either lock: the notice's
+ * reconcile still forgets the histories, ends the comparison and drops the verdict, but puts neither the decoder nor
+ * the front end on its chain against the lock; and the lock's application puts the front end on the locked chain with
+ * the decoder.
+ */
+static void
+test_p25p1_lock_wins_over_a_watchdog_notice(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    for (int lock_qpsk = 0; lock_qpsk <= 1; lock_qpsk++) {
+        for (int notice_first = 0; notice_first <= 1; notice_first++) {
+            /* The tune captured a comparison led by the chain the lock is not. */
+            compare_setup(&opts, &state, !lock_qpsk);
+            compare_frame(&opts, &state, 0, 134);
+            if (notice_first) {
+                post_watchdog_tune_of(&state);
+            }
+            opts.mod_cli_lock = 1;
+            opts.mod_qpsk = lock_qpsk;
+            opts.mod_c4fm = !lock_qpsk;
+            reset_fake_profile_capture();
+            dsd_frame_sync_test_apply_cli_mod_lock(&opts, &state);
+            assert(state.rf_mod == lock_qpsk && state.p25_p1_mod_compare.phase == 0);
+            assert(g_profile_set_calls >= 1 && g_profile_cqpsk == lock_qpsk);
+            if (!notice_first) {
+                state.p25_p1_mod_compare.phase = 1; /* as the decoder's comparison stood when the watchdog read it */
+                state.p25_p1_mod_compare.incumbent_rf_mod = !lock_qpsk;
+                post_watchdog_tune_of(&state);
+                state.p25_p1_mod_compare.phase = 0;
+            }
+            /* A notice posted first is reconciled by the lock's own step (a chain step re-checks inside the guard); one
+             * posted after it, by the next one. */
+            state.p25_p1_mod_compare.verdict_valid = 1;
+            reset_fake_profile_capture();
+            const int reconciled = dsd_frame_sync_apply_off_thread_tunes(&opts, &state);
+            assert(reconciled == !notice_first && !dsd_frame_sync_off_thread_tune_pending());
+            assert(state.rf_mod == lock_qpsk && g_profile_set_calls == 0 && state.p25_p1_mod_compare.phase == 0);
+            if (reconciled) {
+                assert(state.p25_p1_mod_compare.verdict_valid == 0);
+            }
+            dsd_frame_sync_test_apply_cli_mod_lock(&opts, &state);
+            assert(state.rf_mod == lock_qpsk && g_profile_set_calls == 0);
+        }
+    }
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /* The P25 SM tick guard as the engine installs it (re-entrant), on a test mutex. */
 static dsd_mutex_t g_test_guard;
 static _Thread_local int g_test_guard_held;
@@ -4943,6 +4997,7 @@ main(void) {
     test_p25p1_comparison_ends_cleanly();
     test_p25p1_chain_steps_serialize_with_watchdog_tunes();
     test_p25p1_stale_validation_opens_no_comparison();
+    test_p25p1_lock_wins_over_a_watchdog_notice();
     test_p25p1_chain_steps_race_watchdog_tunes();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();

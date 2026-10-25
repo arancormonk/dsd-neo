@@ -2384,8 +2384,15 @@ frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
             state->p25_p1_mod_probe_active = 0;
             frame_sync_p25p1_chain_step_end(taken);
         }
-        int forced = opts->mod_qpsk ? 1 : (opts->mod_gfsk ? 2 : 0);
-        state->rf_mod = forced;
+        /* The front end goes with the decoder: a lock that moves the modulation moves the demodulator profile too
+           (a notice reconciled, or a step, before the lock may have left the other chain on the front end). */
+        const int forced = opts->mod_qpsk ? 1 : (opts->mod_gfsk ? 2 : 0);
+        if (state->rf_mod != forced) {
+            state->rf_mod = forced;
+#ifdef USE_RADIO
+            rtl_maybe_apply_active_demod_profile(opts, state);
+#endif
+        }
     }
 }
 
@@ -2684,6 +2691,11 @@ dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk)
     atomic_store(&g_ham_c4fm_recent, ham_c4fm);
     atomic_store(&g_ham_qpsk_recent, ham_qpsk);
     atomic_store(&g_ham_gfsk_recent, ham_gfsk);
+}
+
+void
+dsd_frame_sync_test_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
+    frame_sync_apply_cli_mod_lock(opts, state);
 }
 
 int

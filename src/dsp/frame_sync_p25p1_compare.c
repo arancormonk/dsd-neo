@@ -6,6 +6,7 @@
 /* The P25p1 chain comparison's ending and the learned modulation it reports (dsd_p25p1_mod_compare). Kept apart from
  * dsd_frame_sync.c so the engine's tune tests link the real functions rather than copies of them. */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -138,7 +139,10 @@ dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state) {
         cmp->phase = 0;
         state->p25_p1_mod_probe_active = 0;
     }
-    if ((tunes & DECISION_RUNNING) && chain >= 0 && state->p25_p2_active_slot == -1) {
+    /* A modulation lock always wins: one applied since the tune owns the demodulator, so neither the decoder's
+     * modulation nor the front end goes back to the tune's chain against it. */
+    const int locked = opts && opts->mod_cli_lock;
+    if (!locked && (tunes & DECISION_RUNNING) && chain >= 0 && state->p25_p2_active_slot == -1) {
         /* The tune put the decoder's modulation and the front end on its chain: they are put there again if a step
          * since moved them, which makes this idempotent and repairs a state already wrong; the CQPSK dwell follows
          * the chain. */
