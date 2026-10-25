@@ -3865,8 +3865,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   tolerance either way, for up to `DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES` (6) frames -- five missed in a row (N7) -- the
   next frame's on its signs and later ones only clear (N7's two-bit allowance). As TS 1-A 5.3 has it, a LICH whose
   parity fails says nothing: the lock stays on the last good frame, so a call rides out the error and an accept on noise
-  never refreshes it. `DSD_NXDN96_SYNC_LICH_WRONG_S1` (S1 = 5) good-parity LICHs in a row that name no frame of the
-  channel clear the lock and the hits. Both are also cleared with the M17 join history, at a carrier boundary inside an
+  never refreshes it. `DSD_NXDN96_SYNC_LICH_WRONG_S1` (S1 = 5) good-parity LICHs in a row that `nxdn_frame()`
+  rejects -- a value no NXDN frame uses, or an inbound LICH on a trunked session -- clear the lock and the hits.
+  Decided limit: the next frame's FSW is taken on its signs, and the sign variants tolerate a misread symbol at 1, 5 or
+  8, so a lock can ride a slicer whose four-level reading is biased for a whole call. Dropping the lock after 2, 3 or
+  4 locked FSWs in a row that read more than two bits on four levels was measured on 72 weak nxdn96 realizations
+  (0-10 dB): mean RAN frames 28.92, 29.14 and 29.18 against 29.24 keeping it, no run rescued, so the lock is kept. Both are also cleared with the M17 join history, at a carrier boundary inside an
   NXDN frame, on an NXDN trunked tune and at the CAC reset. The four-level reading takes the window's level ring, which
   a symbol capture fills with its dibits' levels (`dsd_symbol_level_from_dibit()`), so it applies there too; only a
   window holding fewer than ten levels (the unit tests' sign-only windows) skips it, and the sign match then counts as

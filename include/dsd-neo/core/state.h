@@ -71,8 +71,8 @@ dsd_sync_hit_history_clear(dsd_sync_hit_history* history) {
 
 /* NXDN96 frame synchronization (src/dsp/dsd_frame_sync.c, NXDN TS 1-A 5.3): the frame sync word hits lately seen; the
  * lock a transmission keeps, timed from the last accepted FSW whose frame's LICH was good (lock_type 0 is no lock); the
- * FSW just accepted, waiting on its frame's LICH (pending_type 0 is none); and how many LICHs in a row since the lock
- * passed their parity but named something the lock does not hold. */
+ * FSW just accepted, waiting on its frame's LICH (pending_type 0 is none); and how many LICHs in a row passed their
+ * parity but were rejected: a value no NXDN frame uses, or an inbound LICH on a trunked session. */
 typedef struct {
     dsd_sync_hit_history hits;
     uint32_t lock_symbolcnt;
@@ -82,14 +82,15 @@ typedef struct {
     uint8_t lich_wrong;
 } dsd_nxdn96_sync;
 
-/* S1 (TS 1-A 5.3.2, Table 5.9-3): LICHs in a row naming another RF channel, parity good, that lose frame sync. */
+/* S1 (TS 1-A 5.3.2, Table 5.9-3): good-parity LICHs in a row that lose frame sync. The specification counts LICHs
+ * naming another RF channel type; this counts the ones nxdn_frame() rejects with good parity (DSD_NXDN96_LICH_WRONG). */
 #define DSD_NXDN96_SYNC_LICH_WRONG_S1 5U
 
 /* What an NXDN frame's LICH said, for the NXDN96 lock (dsd_nxdn96_sync_note_lich()). */
 typedef enum {
     DSD_NXDN96_LICH_GOOD = 0,
     DSD_NXDN96_LICH_PARITY_ERROR = 1, /* says nothing either way (TS 1-A 5.3) */
-    DSD_NXDN96_LICH_WRONG = 2,        /* parity good, but no frame of this channel */
+    DSD_NXDN96_LICH_WRONG = 2,        /* parity good, but an unknown value or a trunked session's inbound LICH */
 } dsd_nxdn96_lich_result;
 
 static inline void
@@ -105,7 +106,8 @@ dsd_nxdn96_sync_clear(dsd_nxdn96_sync* sync) {
 /* An accepted NXDN96 FSW's frame read its LICH, @p symbolcnt symbols into the stream. The LICH conditions of TS 1-A 5.3
  * apply only to a LICH whose parity holds: a good one makes the FSW the lock's new timing; one whose parity fails
  * changes nothing, so a real call's lock rides out the error and a noise accept never refreshes it; S1 good-parity
- * LICHs in a row that name no frame of this channel drop the lock and the hits. An FSW the LICH did not follow at
+ * LICHs in a row that nxdn_frame() rejects (an unknown value, or inbound on a trunked session) drop the lock and the
+ * hits. An FSW the LICH did not follow at
  * once (another frame read in between) is not this LICH's. */
 static inline void
 dsd_nxdn96_sync_note_lich(dsd_nxdn96_sync* sync, uint32_t symbolcnt, dsd_nxdn96_lich_result result) {
