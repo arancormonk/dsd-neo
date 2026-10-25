@@ -337,13 +337,13 @@ Windows console runs:
   notice adds `, but this channel sets strict CRC itself`: `-F` already applies to the channels without their own.
   The detection belongs to the carrier: a retune (a trunk follow or control channel return included), a trunk-scan
   target switch, another colour code on the carrier, the DMR reset and the gap between transmissions clear it, and
-  the next carrier proves its own. It notes a property of the bursts, never anything they decode. Whatever the
-  reserved bits say, a burst whose reserved bits read set and whose check failed is decoded from the
-  nearest codeword when that lies within 4 bits; if that codeword's own check passes it is an ordinary
-  checked burst, with or without `-F`. A transmission that also fails a check renders `[CRC ERR]`, which
-  outranks `[RAS]`; both markers stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC
-  check failed, not that every decoded field is wrong. Absence of either marker is not a universal
-  verification guarantee for every protocol. Each `-J` line carries the marker its row had when the
+  the next carrier proves its own. It notes a property of the bursts, never anything they decode. A burst
+  whose reserved bits read set and whose check failed is decoded from the nearest codeword when that lies
+  within 4 bits; if that codeword's own check passes, the burst is an ordinary checked one, with or without
+  `-F`. A transmission that also fails a check renders `[CRC ERR]`, which outranks `[RAS]`; both markers
+  stay on a voice row through delayed commits and reacquisition. `[CRC ERR]` means a CRC check failed, not
+  that every decoded field is wrong. Absence of either marker is not a universal verification guarantee for
+  every protocol. Each `-J` line carries the marker its row had when the
   line was written. A failure that reaches an already committed row through late detail (an alias or
   position decoded after the row committed) updates history and the API feed but appends nothing to
   `-J`; a reacquired transmission that merges into the row appends its `Reacquired:` continuation with
