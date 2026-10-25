@@ -3,9 +3,10 @@
  * The USB sample-progress monitor: a receiver that stays enumerated but stops delivering samples ends the session as a
  * device failure (-ETIMEDOUT), and commits the receiver's ending, once its silence reaches the limit (5000 ms; 300 ms
  * here, sampled every 20 ms). Only samples end a silence. RTL-SDR: a reader that never calls back, or stops calling
- * back, trips it; a steady stream never does, and a stop inside the unplug-owner grace keeps it silent. Airspy: retunes
+ * back, trips it; a steady stream never does, a stop inside the unplug-owner grace keeps it silent, a reader exit that
+ * overlaps the monitor's verdict, or races it, is reported once, and a monitor that cannot start fails the start. Airspy: retunes
  * that deliver nothing still accrue silence, while a stream that keeps delivering never trips, however often it is
- * retuned, however long a retune takes, or when a retune fails and rolls back. The "stream stopped" verdict waits out
+ * retuned, however long a retune or a control change takes, or when a retune fails and rolls back. The "stream stopped" verdict waits out
  * the grace and is dropped only by samples, not by a restart alone.
  */
 
@@ -159,6 +160,62 @@ test_rtl_stop_inside_grace(input_ring_state* ring) {
     rtl_device_set_unplug_owner_grace_ms(0U);
 }
 
+/* The reader returns by itself (-1, a lost device) while the monitor's silence verdict waits out the grace: the two
+ * verdicts overlap, and the session is reported once, with the first verdict's code. */
+void
+test_rtl_reader_exit_inside_monitor_grace(input_ring_state* ring) {
+    rtl_device_set_unplug_owner_grace_ms(kLimitMs);
+    reset_session();
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device* dev = rtl_device_test_usb_stream_start(ring);
+    assert(dev);
+    dsd_sleep_ms(kLimitMs + 100U);
+    expect_running();
+    rtl_device_test_usb_stream_return(-1);
+    assert(wait_receiver_ended(2000U) != 0U);
+    dsd_sleep_ms(2U * kLimitMs);
+    assert(rtl_device_test_usb_stream_reader_exited(dev));
+    assert(dsd_input_failure_generation() == generation + 1U);
+    expect_receiver_ending(-ETIMEDOUT);
+    rtl_device_test_usb_stream_stop(dev);
+    assert(dsd_input_failure_generation() == generation + 1U);
+    rtl_device_set_unplug_owner_grace_ms(0U);
+}
+
+/* The monitor's verdict and a reader exit (-1) both pass their checks together: the monitor's is held between its
+ * checks and the report while the reader returns. Only the first to claim it, the reader's, reports. */
+void
+test_rtl_racing_verdicts_report_once(input_ring_state* ring) {
+    reset_session();
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device_test_pause_next_verdict_ms(kLimitMs);
+    rtl_device* dev = rtl_device_test_usb_stream_start(ring);
+    assert(dev);
+    dsd_sleep_ms(kLimitMs + 100U);
+    expect_running();
+    rtl_device_test_usb_stream_return(-1);
+    assert(wait_receiver_ended(2000U) != 0U);
+    dsd_sleep_ms(kLimitMs);
+    assert(dsd_input_failure_generation() == generation + 1U);
+    expect_receiver_ending(-1);
+    rtl_device_test_usb_stream_stop(dev);
+    assert(dsd_input_failure_generation() == generation + 1U);
+}
+
+/* A monitor thread that cannot start fails the start: the reader is stopped and joined, and nothing is reported. */
+void
+test_rtl_monitor_start_refused(input_ring_state* ring) {
+    reset_session();
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device_test_refuse_progress_monitor(1);
+    const uint64_t started_ms = dsd_realtime_mono_ms();
+    assert(rtl_device_test_usb_stream_start(ring) == nullptr);
+    assert(dsd_realtime_mono_ms() - started_ms < 1000U);
+    rtl_device_test_refuse_progress_monitor(0);
+    expect_running();
+    assert(dsd_input_failure_generation() == generation);
+}
+
 #ifdef DSD_TEST_USB_PROGRESS_AIRSPY
 /* ---- Airspy ---- */
 
@@ -269,6 +326,30 @@ test_airspy_restarts_without_samples_trip(input_ring_state* ring) {
     rtl_device_set_unplug_owner_grace_ms(0U);
 }
 
+/* A control change (gains, bias tee) holds the adapter's lock for twice the limit, without the retune flag, while no
+ * samples come; they resume a little after it. The monitor waits on the lock meanwhile, and that wait is the change's
+ * time, not silence: nothing trips. */
+void
+test_airspy_control_change_is_not_silence(input_ring_state* ring) {
+    rtl_device* dev = start_airspy(ring);
+    airspy_feeder feeder;
+    start_feeder(&feeder);
+    dsd_sleep_ms(100U);
+    feeder.feeding.store(0, std::memory_order_release);
+    dsd_airspy_config cfg;
+    dsd_airspy_config_defaults(&cfg);
+    airspy_double::control_delay_ms = (int)(2U * kLimitMs);
+    assert(rtl_device_airspy_controls(dev, &cfg) == 0);
+    airspy_double::control_delay_ms = 0;
+    dsd_sleep_ms(kLimitMs / 2U);
+    expect_running();
+    feeder.feeding.store(1, std::memory_order_release);
+    dsd_sleep_ms(100U);
+    expect_running();
+    stop_feeder(&feeder);
+    end_airspy(dev);
+}
+
 /* Retunes that fail and roll back the frequency while samples flow keep the stream: nothing is committed (the raw
  * input-failure latch belongs to whoever reports the retune's failure). */
 void
@@ -339,10 +420,14 @@ main(void) {
     test_rtl_silence_after_progress(ring.get());
     test_rtl_steady_stream_never_trips(ring.get());
     test_rtl_stop_inside_grace(ring.get());
+    test_rtl_reader_exit_inside_monitor_grace(ring.get());
+    test_rtl_racing_verdicts_report_once(ring.get());
+    test_rtl_monitor_start_refused(ring.get());
 
 #ifdef DSD_TEST_USB_PROGRESS_AIRSPY
     test_airspy_retune_storm_healthy(ring.get());
     test_airspy_restarts_without_samples_trip(ring.get());
+    test_airspy_control_change_is_not_silence(ring.get());
     test_airspy_rollback_keeps_running(ring.get());
     test_airspy_stopped_verdict_grace(ring.get(), 0);
     test_airspy_stopped_verdict_grace(ring.get(), 1);

@@ -37,6 +37,7 @@ int mixer_agc;
 int bias;
 uint32_t rates[2] = {10000000, 2500000};
 int start_delay_ms;
+int control_delay_ms;
 
 /* Held by a delivery and by start/stop, as libairspy's consumer thread is joined by its stop. */
 static std::mutex consumer;
@@ -205,6 +206,9 @@ airspy_set_mixer_agc(airspy_device*, uint8_t value) {
 
 int
 airspy_set_rf_bias(airspy_device*, uint8_t value) {
+    if (control_delay_ms > 0) {
+        dsd_sleep_ms((unsigned int)control_delay_ms);
+    }
     bias = value;
     return 0;
 }

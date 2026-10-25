@@ -72,6 +72,8 @@ extern int bias;
 extern uint32_t rates[2];
 /* How long airspy_start_rx() takes before the stream is up (a slow restart). */
 extern int start_delay_ms;
+/* How long airspy_set_rf_bias() takes (a slow control change, which holds the adapter's lock). */
+extern int control_delay_ms;
 
 /* One transfer of @p pairs complex samples into the receive callback, if the stream is up; returns
    whether it was delivered. */

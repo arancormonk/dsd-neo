@@ -2954,6 +2954,10 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
 /* rtl_device_test_set_progress_limit_ms() / _period_ms(); 0 keeps the production value. */
 static std::atomic<uint32_t> g_test_progress_limit_ms{0U};
 static std::atomic<uint32_t> g_test_progress_period_ms{0U};
+/* rtl_device_test_refuse_progress_monitor(): the RTL monitor's thread creation fails as a refused one does. */
+static std::atomic<int> g_test_refuse_progress_monitor{0};
+/* rtl_device_test_pause_next_verdict_ms(): one verdict, past its checks, waits this long before it claims the report. */
+static std::atomic<uint32_t> g_test_verdict_pause_ms{0U};
 
 extern "C" void
 rtl_device_test_set_progress_limit_ms(uint32_t limit_ms) {
@@ -2963,6 +2967,16 @@ rtl_device_test_set_progress_limit_ms(uint32_t limit_ms) {
 extern "C" void
 rtl_device_test_set_progress_period_ms(uint32_t period_ms) {
     g_test_progress_period_ms.store(period_ms, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_pause_next_verdict_ms(uint32_t ms) {
+    g_test_verdict_pause_ms.store(ms, std::memory_order_release);
+}
+
+extern "C" void
+rtl_device_test_refuse_progress_monitor(int refuse) {
+    g_test_refuse_progress_monitor.store(refuse ? 1 : 0, std::memory_order_release);
 }
 #endif
 
@@ -3000,6 +3014,7 @@ static std::atomic<int> g_test_usb_reader_cancels{0};
 static std::atomic<int> g_test_usb_reader_streaming{0};
 static std::atomic<int> g_test_usb_reader_cancelled{0};
 static std::atomic<int> g_test_usb_reader_stream{0};
+static std::atomic<int> g_test_usb_reader_stream_return{0};
 
 /* Whether the seam stands in for librtlsdr's async state (its streaming and cancel). */
 static int
@@ -3044,13 +3059,17 @@ rtl_usb_read_async(struct rtl_device* s) {
     if (g_test_usb_reader_active.load(std::memory_order_acquire)) {
         rtl_usb_test_hold_reader(RTL_TEST_USB_HOLD_BEFORE_READ);
         if (g_test_usb_reader_stream.load(std::memory_order_acquire)) {
-            /* Stream until a cancel reaches it, however long; the test delivers the callbacks. */
+            /* Stream until a cancel reaches it, however long, or until the test makes it return by itself; the test
+             * delivers the callbacks. */
             g_test_usb_reader_streaming.store(1, std::memory_order_release);
-            while (!g_test_usb_reader_cancelled.load(std::memory_order_acquire)) {
+            while (!g_test_usb_reader_cancelled.load(std::memory_order_acquire)
+                   && !g_test_usb_reader_stream_return.load(std::memory_order_acquire)) {
                 dsd_sleep_ms(1);
             }
             g_test_usb_reader_streaming.store(0, std::memory_order_release);
-            return 0;
+            return g_test_usb_reader_cancelled.load(std::memory_order_acquire)
+                       ? 0
+                       : g_test_usb_reader_rc.load(std::memory_order_acquire);
         }
         if (g_test_usb_reader_hold.load(std::memory_order_acquire) != RTL_TEST_USB_HOLD_NONE) {
             /* Stream until a cancel reaches it; 5 s at most. */
@@ -3127,8 +3146,17 @@ rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verd
         }
     }
     if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()
-        || rtl_device_receiver_progressed_since(s, verdict_progress)
-        || s->receiver_end_claimed.exchange(1, std::memory_order_acq_rel) != 0) {
+        || rtl_device_receiver_progressed_since(s, verdict_progress)) {
+        return 0;
+    }
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    const uint32_t pause_ms = g_test_verdict_pause_ms.exchange(0U, std::memory_order_acq_rel);
+    if (pause_ms > 0U) {
+        dsd_sleep_ms(pause_ms);
+    }
+#endif
+    /* Two verdicts can both get this far (a reader exit and the monitor's, together); the first one reports. */
+    if (s->receiver_end_claimed.exchange(1, std::memory_order_acq_rel) != 0) {
         return 0;
     }
     dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, native_code);
@@ -3347,6 +3375,17 @@ static DSD_THREAD_RETURN_TYPE
         }
     }
     DSD_THREAD_RETURN;
+}
+
+/* Start the RTL-SDR's progress monitor thread; a test can refuse it as a failed thread create does. */
+static int
+rtl_usb_progress_monitor_create(struct rtl_device* dev) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_refuse_progress_monitor.load(std::memory_order_acquire)) {
+        return EAGAIN;
+    }
+#endif
+    return dsd_thread_create(&dev->progress_monitor, rtl_usb_progress_monitor, dev);
 }
 
 /* Stop and join the RTL-SDR's progress monitor, if it runs. One waiting out the unplug-owner grace returns once run
@@ -7654,11 +7693,13 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
         dev->run.store(1, std::memory_order_release);
         r = dsd_thread_create(&dev->thread, dongle_thread_fn, dev);
         if (r == 0) {
-            r = dsd_thread_create(&dev->progress_monitor, rtl_usb_progress_monitor, dev);
+            r = rtl_usb_progress_monitor_create(dev);
             if (r == 0) {
                 dev->progress_monitor_started = 1;
             } else {
                 /* Without its monitor a stalled receiver would go unnoticed; the start fails. */
+                LOG_ERROR("RTL-SDR: could not start the sample-progress monitor (rc=%d); the stream does not start\n",
+                          r);
                 rtl_usb_reader_stop(dev);
             }
         }
@@ -7810,6 +7851,7 @@ rtl_device_test_usb_stream_start(struct input_ring_state* ring) {
     g_test_usb_reader_streaming.store(0, std::memory_order_relaxed);
     g_test_usb_reader_cancelled.store(0, std::memory_order_relaxed);
     g_test_usb_reader_stream.store(1, std::memory_order_relaxed);
+    g_test_usb_reader_stream_return.store(0, std::memory_order_relaxed);
     g_test_usb_reader_active.store(1, std::memory_order_release);
     if (rtl_device_start_async(dev, 16U * 32U * 512U) != 0) {
         g_test_usb_reader_active.store(0, std::memory_order_release);
@@ -7823,6 +7865,12 @@ rtl_device_test_usb_stream_start(struct input_ring_state* ring) {
 extern "C" void
 rtl_device_test_usb_stream_deliver(struct rtl_device* dev, unsigned char* buf, uint32_t len) {
     rtlsdr_callback(buf, len, dev);
+}
+
+extern "C" void
+rtl_device_test_usb_stream_return(int rc) {
+    g_test_usb_reader_rc.store(rc, std::memory_order_relaxed);
+    g_test_usb_reader_stream_return.store(1, std::memory_order_release);
 }
 
 extern "C" int

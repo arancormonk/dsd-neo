@@ -212,6 +212,11 @@ int rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* re
  * the production value. Set while no USB device streams. */
 void rtl_device_test_set_progress_limit_ms(uint32_t limit_ms);
 void rtl_device_test_set_progress_period_ms(uint32_t period_ms);
+/* The next receiver verdict that passed its checks waits @p ms before it claims the report, so that a racing verdict
+ * passes its own checks meanwhile. One-shot. */
+void rtl_device_test_pause_next_verdict_ms(uint32_t ms);
+/* While set, the RTL-SDR's progress monitor thread fails to start, as a refused thread creation does. */
+void rtl_device_test_refuse_progress_monitor(int refuse);
 
 struct rtl_device;
 
@@ -222,7 +227,9 @@ struct rtl_device;
 struct rtl_device* rtl_device_test_usb_stream_start(struct input_ring_state* ring);
 /* One librtlsdr callback of @p len bytes of cu8 I/Q into the production callback, as the reader would deliver it. */
 void rtl_device_test_usb_stream_deliver(struct rtl_device* dev, unsigned char* buf, uint32_t len);
-/* Whether the device's reader has returned: a cancel reached it. */
+/* Make the streaming reader return @p rc by itself, as rtlsdr_read_async() does for a lost device (-1). */
+void rtl_device_test_usb_stream_return(int rc);
+/* Whether the device's reader has returned: a cancel reached it, or it returned by itself. */
 int rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev);
 /* Stop the device (rtl_device_stop_async()) and destroy it. */
 void rtl_device_test_usb_stream_stop(struct rtl_device* dev);
