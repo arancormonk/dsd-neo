@@ -886,6 +886,46 @@ run_lock_ends_probe_case(int comparing) {
     return rc;
 }
 
+/* A CQPSK probe on a trunked voice channel the engine tuned (standalone Auto trunking: the probe's first validated
+   frame carried the grant) keeps the chain the grant's tune chose: the trial's handback refuses there, as a full dwell
+   expiry does, so 2700 matchless symbols of grace or hangtime do not put the granted CQPSK channel on C4FM. */
+static int
+run_tuned_voice_channel_keeps_its_chain_case(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char pattern[DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 64];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate tuned voice channel state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.sps_hunt_idx = 0;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.rf_mod = 1;
+    state.p25_p1_mod_probe_active = 1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell / 2 - 5;
+    /* Grace or hangtime: nothing to sync on, past the handback point and up to the matchless-pass timeout. */
+    DSD_MEMSET(pattern, '1', DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 50);
+    pattern[DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 50] = '\0';
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    (void)getFrameSync(&opts, &state);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+    int rc = 0;
+    if (state.rf_mod != 1) {
+        DSD_FPRINTF(stderr, "tuned voice channel handed back to C4FM: rf_mod=%d\n", state.rf_mod);
+        rc = 1;
+    }
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -897,6 +937,7 @@ main(void) {
     rc |= run_sync_after_carrier_boundary_case();
     rc |= run_cqpsk_handback_keeps_hunting_case(40);
     rc |= run_cqpsk_handback_keeps_hunting_case(DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    rc |= run_tuned_voice_channel_keeps_its_chain_case();
     rc |= run_lock_ends_probe_case(0);
     rc |= run_lock_ends_probe_case(1);
     rc |= run_compare_trial_pass_keeps_hunting_case(SIZE_MAX);

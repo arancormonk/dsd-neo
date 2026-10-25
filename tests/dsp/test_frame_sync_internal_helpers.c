@@ -3985,6 +3985,26 @@ test_p25p1_lock_wins_over_a_watchdog_notice(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* An accepted tune retires a CQPSK probe in flight, with no comparison running: a tune on the decoder thread
+ * (dsd_frame_sync_p25p1_mod_compare_end_for_tune()) and a watchdog tune's reconciled notice alike. The chain the tune
+ * chose is the receiver's from there, and the trial's handback, whose dwell the tune left, must not switch it. */
+static void
+test_p25p1_tunes_retire_a_probe(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    compare_setup(&opts, &state, 1);
+    state.p25_p1_mod_probe_active = 1;
+    dsd_frame_sync_p25p1_mod_compare_end_for_tune(&state);
+    assert(state.p25_p1_mod_probe_active == 0 && state.rf_mod == 1);
+
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    compare_setup(&opts, &state, 1);
+    state.p25_p1_mod_probe_active = 1;
+    post_watchdog_tune_of(&state);
+    assert(dsd_frame_sync_apply_off_thread_tunes(&opts, &state) == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+}
+
 /* The P25 SM tick guard as the engine installs it (re-entrant), on a test mutex. */
 static dsd_mutex_t g_test_guard;
 static _Thread_local int g_test_guard_held;
@@ -4997,6 +5017,7 @@ main(void) {
     test_p25p1_comparison_ends_cleanly();
     test_p25p1_chain_steps_serialize_with_watchdog_tunes();
     test_p25p1_stale_validation_opens_no_comparison();
+    test_p25p1_tunes_retire_a_probe();
     test_p25p1_lock_wins_over_a_watchdog_notice();
     test_p25p1_chain_steps_race_watchdog_tunes();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();

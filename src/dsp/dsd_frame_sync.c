@@ -4351,9 +4351,12 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
  */
 static int
 frame_sync_p25p1_cqpsk_trial_half_dwell_due(const dsd_opts* opts, const dsd_state* state, int dwell) {
-    if (opts->mod_cli_lock || !state->p25_p1_mod_probe_active || state->rf_mod != 1
-        || state->p25_p1_mod_compare.phase != 0 || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
-        || state->sps_hunt_counter < dwell / 2 || state->sps_hunt_counter >= dwell) {
+    /* Nor on a trunked voice channel the engine tuned, whose chain the grant's tune chose, as a full dwell expiry
+     * holds the profile there (frame_sync_no_sync_sps_hunt_expire()). */
+    if (opts->mod_cli_lock || (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) || !state->p25_p1_mod_probe_active
+        || state->rf_mod != 1 || state->p25_p1_mod_compare.phase != 0
+        || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || state->sps_hunt_counter < dwell / 2
+        || state->sps_hunt_counter >= dwell) {
         return 0;
     }
     return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1)

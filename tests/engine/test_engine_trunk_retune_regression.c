@@ -1039,6 +1039,26 @@ test_chain_comparison_in_flight_tunes_on_the_leading_chain(dsd_opts* opts, dsd_s
     assert(g_rtl_cqpsk_enable == 1);
     rtl_stream_clear_pending_retune_profile();
 
+    /* A CQPSK probe with no comparison running: an accepted grant tune retires it, so the trial's handback cannot
+     * switch the voice channel the grant chose; a tune that fails moves nothing and keeps it. */
+    seed_chain_comparison_in_trial(opts, state, 1, 0, 0);
+    state->p25_p1_mod_compare.phase = 0;
+    state->rf_mod = 1;
+    state->p25_p1_validated_rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->p25_p1_mod_probe_active == 0 && state->rf_mod == 1);
+    rtl_stream_clear_pending_retune_profile();
+    seed_chain_comparison_in_trial(opts, state, 1, 0, 0);
+    state->p25_p1_mod_compare.phase = 0;
+    state->rf_mod = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->p25_p1_mod_probe_active == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rtl_stream_clear_pending_retune_profile();
+
     /* A return with no control channel to go to retunes nothing, so the comparison goes on too. */
     seed_chain_comparison_in_trial(opts, state, 0, 1206, 268);
     assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);

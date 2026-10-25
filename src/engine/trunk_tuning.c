@@ -954,6 +954,8 @@ dsd_engine_restore_p25p1_compare(dsd_state* state, const dsd_engine_p25p1_compar
         return;
     }
     if (snapshot->compare.phase == 0) {
+        /* A probe the tune retired comes back with a tune that moved nothing. */
+        state->p25_p1_mod_probe_active = snapshot->probe_active;
         return;
     }
     state->p25_p1_mod_compare = snapshot->compare;

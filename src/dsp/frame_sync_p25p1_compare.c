@@ -137,8 +137,9 @@ dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state) {
         /* Still running (or opened since): it ends there without a verdict, as the decoder thread's own tunes end
          * one. */
         cmp->phase = 0;
-        state->p25_p1_mod_probe_active = 0;
     }
+    /* A comparison's, or a CQPSK probe's: the tune chose the chain, and no trial's handback switches it. */
+    state->p25_p1_mod_probe_active = 0;
     /* A modulation lock always wins: one applied since the tune owns the demodulator, so neither the decoder's
      * modulation nor the front end goes back to the tune's chain against it. */
     const int locked = opts && opts->mod_cli_lock;
@@ -192,6 +193,9 @@ dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state) {
      * on the carrier reached opens none from it. */
     cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
     if (cmp->phase == 0) {
+        /* A CQPSK probe in flight is retired too: the tune chooses the chain from here, and the trial's handback,
+         * whose dwell it leaves, must not switch the channel it reaches. */
+        state->p25_p1_mod_probe_active = 0;
         return;
     }
     const int leader = frame_sync_p25p1_mod_compare_leader(state);
