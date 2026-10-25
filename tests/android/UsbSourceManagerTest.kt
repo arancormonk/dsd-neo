@@ -224,18 +224,19 @@ private fun aRefusedSwitchIsFeedbackAndReadyIsRewritten() {
 }
 
 // #647 B8: a detach of the held connection stops the engine only for a session that uses it, and always releases.
+// "session" is also the order a detach during a start takes: configure and the detach broadcast both run on the main
+// thread, so the detach is handled once configure returned and the native record names the session's receiver.
 private fun aDetachStopsOnlyTheSessionThatUsesTheReceiver(owner: String) {
     val rig = Rig()
     val device = rtl()
     rig.connect(device)
     DsdNative.sessionUsesLocalReceiver = owner == "session"
     DsdNative.fdInUse = owner == "descriptor"
-    DecoderService.configuringLocalReceiver = owner == "configuring"
     rig.unplug(device)
     DsdNative.fdInUse = false
+    DsdNative.sessionUsesLocalReceiver = false
     val stops = if (owner == "none") emptyList() else listOf("detached")
     check(DsdNative.stopCauses == stops) { "$owner: stops ${DsdNative.stopCauses}" }
-    check(DecoderService.detachesNoted == if (owner == "configuring") 1 else 0) { "$owner: the configuring session hears of it" }
     check(!rig.record().optBoolean("ready") && DsdNative.usbFd == -1) { "$owner: the connection is released either way" }
     check(rig.text() == "Device detached" && rig.kind() == "detached")
 }
@@ -265,7 +266,6 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "detach_unused" to { aDetachStopsOnlyTheSessionThatUsesTheReceiver("none") },
     "detach_session" to { aDetachStopsOnlyTheSessionThatUsesTheReceiver("session") },
     "detach_descriptor" to { aDetachStopsOnlyTheSessionThatUsesTheReceiver("descriptor") },
-    "detach_configuring" to { aDetachStopsOnlyTheSessionThatUsesTheReceiver("configuring") },
     "detach_unrelated" to ::anUnrelatedDetachChangesNothing,
 )
 

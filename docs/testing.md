@@ -179,8 +179,8 @@ with no new prompt; unplugging the requested device says so and lets a re-plug p
 to the next Airspy under the same request code; an attach replaces the diagnostic (and clears its kind) only for the
 awaited receiver, never over a live connection, while the attachment is still recorded with its kind; a plain Connect
 keeps the request's kind and serial; a switch while running reads `refused` and the next ready request rewrites
-"Ready: <device>"; and a detach of the connection stops the engine only for a session that uses the receiver, holds its
-descriptor or is being configured for it, releasing the connection either way. A source check first reads
+"Ready: <device>"; and a detach of the connection stops the engine only for a session that uses the receiver or holds
+its descriptor, releasing the connection either way. A source check first reads
 `UsbSourceManager.kt` for the same wiring (the generation as every permission `PendingIntent`'s request code, no
 `FLAG_UPDATE_CURRENT`, the detach's ownership test, the poll's expiry, the ready rewrite), and checks that every failure
 kind the broker writes is one `android/local_device_state.h` maps (`refused` to no device failure).
@@ -196,9 +196,7 @@ unplug-owner grace (`dsd_android::install_receiver_policy()`).
 The same suite also runs `DecoderService.kt` itself with controlled native-run and intent-delivery boundaries:
 cancellation before callbacks, rejected dispatch and missing Activity context, notification cancellation before
 notification work, task removal without Activity destruction, a user Stop during a lifecycle drain (each stop passing
-its own cause), the lifecycle record carrying its own session's ending and receiver, the service saying while
-configure runs (and only then) whether the session takes a local RTL-SDR or Airspy and stopping it as an unplug once
-configure returns when the receiver was detached meanwhile, a refused native
+its own cause), the lifecycle record carrying its own session's ending and receiver, a refused native
 stop remaining retryable, a delayed stop after a subsequent start, and ordered cancellation during configure or before
 start delivery. Worker completion cases hold `stopSelf(id)` while the next run starts, and finish the old run while
 an arriving START is promoting its notification; both check the old id stays attached to the completed run.

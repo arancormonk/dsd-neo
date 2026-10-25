@@ -23,15 +23,3 @@ object DsdNative {
     fun nativeHostDiagnostic(line: String) { diagnostics += line }
     fun nativeArmStartupDiagnostics() {}
 }
-
-// The service's side of a detach while it configures a local-receiver session (the real one runs in engine_stop).
-class DecoderService {
-    companion object {
-        @Volatile var configuringLocalReceiver = false
-        @Volatile var detachesNoted = 0
-        fun detachWhileConfiguring(): Boolean {
-            if (configuringLocalReceiver) detachesNoted += 1
-            return configuringLocalReceiver
-        }
-    }
-}

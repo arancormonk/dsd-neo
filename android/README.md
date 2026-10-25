@@ -835,11 +835,12 @@ switching USB devices", which is request feedback, not a device failure.
 
 A detach always releases the connection, but it stops the engine only when the
 session uses that receiver: configured or running on a local RTL-SDR or Airspy
-(`nativeSessionUsesLocalReceiver()`), holding its descriptor
-(`nativeIsUsbFdInUse()`), or being configured for one right now
-(`DecoderService.detachWhileConfiguring()`; a detach noted during configure stops
-the run as an unplug once configure returns). Unplugging a retained receiver no
-session uses, or one during an rtl_tcp session, stops nothing.
+(`nativeSessionUsesLocalReceiver()`), or holding its descriptor
+(`nativeIsUsbFdInUse()`). A detach during a start is handled after configure
+returns, by this same path: configure and the detach broadcast both run on the
+main thread, and by then the native record names the session's receiver.
+Unplugging a retained receiver no session uses, or one during an rtl_tcp session,
+stops nothing.
 
 `ANDROID_USB_BROKER_JVM` runs `UsbRequestState.kt` and the real
 `UsbSourceManager.kt` on the JVM against stubs of the USB service and its prompts.

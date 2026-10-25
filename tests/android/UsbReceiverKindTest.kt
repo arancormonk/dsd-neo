@@ -52,20 +52,6 @@ private fun aLabelBelongsToItsKindOfReceiver() {
     check(UsbReceiverKind.labelFor("usb", "usb", null) == null) { "nothing opened yet, no label" }
 }
 
-// #647: the receiver a session's arguments select, as the native classifier reads `-i` (the last one wins).
-private fun aSessionsInputNamesItsReceiver() {
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "rtl:0:851M")) == UsbReceiverKind.RTL) { "rtl:<spec> is an RTL-SDR" }
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "rtl")) == UsbReceiverKind.RTL) { "a bare rtl is an RTL-SDR" }
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "airspy")) == UsbReceiverKind.AIRSPY)
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "airspy:1:851M")) == UsbReceiverKind.AIRSPY)
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "rtltcp:10.0.2.2:1234")) == "") { "rtl_tcp is not a local receiver" }
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "rtlx")) == "")
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "airspyhf")) == "")
-    check(UsbReceiverKind.sessionInput(arrayOf("-i", "rtl:0", "-i", "udp:0.0.0.0:7355")) == "") { "the last -i wins" }
-    check(UsbReceiverKind.sessionInput(arrayOf("rtl:0", "-i")) == "") { "a value needs its -i" }
-    check(UsbReceiverKind.sessionInput(emptyArray()) == "")
-}
-
 fun main() {
     airspyBesideUnrelatedDevicesIsAirspy()
     twoRtlDonglesAreUsb()
@@ -73,6 +59,5 @@ fun main() {
     nothingKnownIsEmpty()
     classificationMatchesTheAccessRequest()
     aLabelBelongsToItsKindOfReceiver()
-    aSessionsInputNamesItsReceiver()
     println("UsbReceiverKindTest: OK")
 }

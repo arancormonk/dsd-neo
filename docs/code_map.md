@@ -8226,7 +8226,8 @@ configure discards leaves no cause. Each `nativeLifecycleStatus` poll, and the r
 path's committed receiver ending (`dsd_input_failure_receiver_ended()`; never the raw failure latch, which an Airspy
 reconfigure writes, rolls back and keeps streaming) as "receiver failed". The first cause accepted is kept: a user Stop
 then an unplug during cleanup stays a user stop (no notice); an unplug then Stop now stays an unplug.
-`nativeSessionUsesLocalReceiver()` answers from the same record. `nativeInit` installs the 2000 ms unplug-owner grace
+`nativeSessionUsesLocalReceiver()` answers from the same record; configure and the USB detach broadcast both run on
+the main thread, so a detach during a start is answered by it once configure returned. `nativeInit` installs the 2000 ms unplug-owner grace
 (`install_receiver_policy()`). `DecoderHostAndroid` turns the record's `endCause`/`receiverSource` into
 `receiverHealth` (`{state: ok|lost|failed, source: usb|airspy, session}`; the base host always answers ok, so desktop
 UIs never see an ending): a detach reads lost, a committed ending failed, an ending with no local receiver ok. Such an

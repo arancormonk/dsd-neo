@@ -207,15 +207,12 @@ def usb_broker_contract():
         return f"{where}: a permission reply must be matched to its request by generation"
     # #647 B8: a detach stops the engine only for a session that uses the local receiver, and always releases.
     detach = re.search(r"UsbManager\.ACTION_USB_DEVICE_DETACHED ->(.*?)UsbManager\.ACTION_USB_DEVICE_ATTACHED ->", manager, re.S)
-    owner = (
-        r"ownsSession = DsdNative\.nativeSessionUsesLocalReceiver\(\) \|\|\s*DsdNative\.nativeIsUsbFdInUse\(\) \|\|"
-        r"\s*DecoderService\.detachWhileConfiguring\(\)"
-    )
+    owner = r"ownsSession = DsdNative\.nativeSessionUsesLocalReceiver\(\) \|\|\s*DsdNative\.nativeIsUsbFdInUse\(\)\n"
     stop = r"if \(ownsSession\) \{[^}]*EngineStop\.request\(StopCause\.DEVICE_DETACHED,[^}]*\}(\s*else \{[^}]*\})?\s*release\(\)"
     if not detach or not re.search(owner, detach.group(1)) or not re.search(stop, detach.group(1)):
         return (
-            f"{where}: a detach must stop the engine only when nativeSessionUsesLocalReceiver(), nativeIsUsbFdInUse() "
-            "or a configuring local-receiver session says the session uses it, and release the connection either way"
+            f"{where}: a detach must stop the engine only when nativeSessionUsesLocalReceiver() or nativeIsUsbFdInUse() "
+            "says the session uses it, and release the connection either way"
         )
     # #647 WP4: the host polls deviceStatus(), which retires an unanswered request and publishes the request.
     status = re.search(r"fun deviceStatus\(\): String \{(.*?)\n    \}", manager, re.S)
@@ -330,7 +327,7 @@ SUITES = {
         builds=(
             Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),
             Build(
-                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt", "UsbReceiverKind.kt"),
+                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt"),
                 tests=("DecoderServiceStopTest.kt",),
                 stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),

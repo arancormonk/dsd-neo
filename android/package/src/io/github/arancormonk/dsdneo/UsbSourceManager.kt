@@ -112,11 +112,11 @@ object UsbSourceManager {
                     // rtl_tcp, UDP or file session that never touched USB at all.
                     if (attached != null && (device == null || device.deviceName == attached)) {
                         // A connection outlives the sessions that used it, so holding one is not enough: the
-                        // session must actually use the local receiver, or the engine have the descriptor wrapped,
-                        // or a local-receiver session be mid-configure (#647 B8).
+                        // session must actually use the local receiver, or the engine have the descriptor wrapped
+                        // (#647 B8). A session being configured is not asked about: configure runs on this main
+                        // thread too, so the detach lands after it, once the native record names the receiver.
                         val ownsSession = DsdNative.nativeSessionUsesLocalReceiver() ||
-                            DsdNative.nativeIsUsbFdInUse() ||
-                            DecoderService.detachWhileConfiguring()
+                            DsdNative.nativeIsUsbFdInUse()
                         if (ownsSession) {
                             Log.i(TAG, "SDR detached; stopping the engine")
                             // The engine is mid-transfer on a descriptor that just went
