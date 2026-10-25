@@ -209,7 +209,7 @@ def usb_broker_contract():
     detach = re.search(r"UsbManager\.ACTION_USB_DEVICE_DETACHED ->(.*?)UsbManager\.ACTION_USB_DEVICE_ATTACHED ->", manager, re.S)
     owner = (
         r"ownsSession = DsdNative\.nativeSessionUsesLocalReceiver\(\) \|\|\s*DsdNative\.nativeIsUsbFdInUse\(\) \|\|"
-        r"\s*DecoderService\.configuringLocalReceiver\(\)"
+        r"\s*DecoderService\.detachWhileConfiguring\(\)"
     )
     stop = r"if \(ownsSession\) \{[^}]*EngineStop\.request\(StopCause\.DEVICE_DETACHED,[^}]*\}(\s*else \{[^}]*\})?\s*release\(\)"
     if not detach or not re.search(owner, detach.group(1)) or not re.search(stop, detach.group(1)):
@@ -291,13 +291,33 @@ SUITES = {
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
     "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
-    # The USB broker's permission requests, detach and attach bookkeeping, and the attachment's kind. Plain Kotlin with
-    # no Android imports, so no stubs; the source check pins how UsbSourceManager drives it.
+    # The USB broker's permission requests, detach and attach bookkeeping, and the attachment's kind: the plain-Kotlin
+    # state with no stubs, then UsbSourceManager itself against stubs of the USB service, prompts and engine.
     "usb": Suite(
         builds=(
             Build(
                 sources=("UsbRequestState.kt", "UsbAttachmentTracker.kt", "UsbReceiverKind.kt"),
                 tests=("UsbRequestStateTest.kt",),
+            ),
+            # The production manager itself, against a scripted bus, prompt and engine.
+            Build(
+                sources=(
+                    "UsbSourceManager.kt",
+                    "UsbRequestState.kt",
+                    "UsbAttachmentTracker.kt",
+                    "UsbReceiverKind.kt",
+                    "EngineStop.kt",
+                ),
+                tests=("UsbSourceManagerTest.kt",),
+                stubs=(
+                    "UsbContext.kt",
+                    "UsbHardware.kt",
+                    "UsbPendingIntent.kt",
+                    "UsbOs.kt",
+                    "UsbNative.kt",
+                    "Log.kt",
+                    "JSONObject.kt",
+                ),
             ),
         ),
         checks=(usb_broker_contract,),

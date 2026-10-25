@@ -42,6 +42,8 @@ object UsbSourceManager {
     private const val RELEASE_TIMEOUT_MS = 10000L
     private const val RELEASE_POLL_MS = 50L
 
+    private const val NO_ANSWER = "No answer to the permission request"
+
     private val lock = Any()
     private var connection: UsbDeviceConnection? = null
     private var attachedName: String? = null
@@ -94,17 +96,15 @@ object UsbSourceManager {
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = usbDeviceExtra(intent)
                     val (attached, requestedGone) = synchronized(lock) {
-                        var requested = false
+                        // The requested device going before it was opened retires its prompt, so Connect prompts
+                        // again at once after a re-plug instead of waiting out the old one (B9).
+                        val unopened = device != null && requests.device == device.deviceName && attachedName != device.deviceName
                         if (device != null) {
                             UsbAttachmentTracker.detach(identity(device))
-                            // The requested device going before it was opened retires its prompt, so Connect
-                            // prompts again at once after a re-plug instead of waiting out the old one (B9).
-                            val aimed = requests.device == device.deviceName && attachedName != device.deviceName
                             requests.onDetach(device.deviceName)
-                            requested = aimed
                         }
                         UsbAttachmentTracker.reconcile(currentDevices(context))
-                        attachedName to requested
+                        attachedName to unopened
                     }
                     // The filter sees every device on the bus, so an unresolvable
                     // EXTRA_DEVICE counts as ours only when there is an "ours" to lose.
@@ -116,7 +116,7 @@ object UsbSourceManager {
                         // or a local-receiver session be mid-configure (#647 B8).
                         val ownsSession = DsdNative.nativeSessionUsesLocalReceiver() ||
                             DsdNative.nativeIsUsbFdInUse() ||
-                            DecoderService.configuringLocalReceiver()
+                            DecoderService.detachWhileConfiguring()
                         if (ownsSession) {
                             Log.i(TAG, "SDR detached; stopping the engine")
                             // The engine is mid-transfer on a descriptor that just went
@@ -171,16 +171,22 @@ object UsbSourceManager {
     @JvmStatic
     fun deviceStatus(): String {
         // The host polls this every 250 ms, so a prompt whose answer never came is retired here, with no new request
-        // and without prompting again: Connect comes back instead (#647 B9).
-        if (synchronized(lock) { requests.expireIfStale() }) {
-            setStatus("No answer to the permission request")
-        }
-        return synchronized(lock) {
+        // and without prompting again: Connect comes back instead (#647 B9). Retired and written in one locked step,
+        // so a detach's diagnostic cannot land between the two and be overwritten; logged after.
+        var expired = false
+        val record = synchronized(lock) {
+            if (requests.expireIfStale()) {
+                expired = true
+                status = NO_ANSWER
+                failureKind = ""
+            }
             JSONObject().put("ready", connection != null).put("text", status)
                 .put("kind", failureKind).put("name", deviceLabel).put("source", connectedSource).put("serial", connectedSerial)
                 .put("pending", requests.pending).put("requestedSource", requests.requestedSource)
                 .put("requestedSerial", requests.requestedSerial).toString()
         }
+        if (expired) logStatus(NO_ANSWER)
+        return record
     }
 
     /**
@@ -293,6 +299,8 @@ object UsbSourceManager {
         val generation = synchronized(lock) {
             requests.expireIfStale()
             when {
+                // A Connect may already have prompted for this device between the granted reply and here.
+                hop && requests.pending && requests.device == device.deviceName -> return
                 hop -> requests.hop(device.deviceName)
                 requests.pending -> return
                 else -> requests.begin(source, serial, device.deviceName)
@@ -532,6 +540,10 @@ object UsbSourceManager {
             status = text
             failureKind = kind
         }
+        logStatus(text)
+    }
+
+    private fun logStatus(text: String) {
         Log.i(TAG, "usb: $text")
         DsdNative.nativeHostDiagnostic("usb: $text")
     }
