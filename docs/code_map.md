@@ -3870,11 +3870,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   P25p1 signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
   `p25_p1_mod_probe_active`). The CQPSK chain cannot read DMR, NXDN96, YSF or M17, so when any of them is enabled a
-  trial that has validated nothing by half its dwell hands the rest of it back to C4FM with the votes free
-  (`frame_sync_p25p1_cqpsk_trial_half_dwell()`, `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`:
-  `frame_sync_hunt_budget_exit()` rebuilds the window but owes no no-sync accounting or `noCarrier()`, since the dwell
-  goes on); P25p1 alone and a trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep the whole dwell, and the rotation and dwell
-  lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
+  trial that has validated nothing by half its dwell -- the hunt counter, symbols the search spent, at half the dwell,
+  which the budget path checks on every symbol once a pass has run (2700 of 5400; handler-read frames do not count) --
+  hands the rest of it back to C4FM with the votes free (`frame_sync_p25p1_cqpsk_trial_half_dwell()`,
+  `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`: `frame_sync_hunt_budget_exit()` rebuilds the
+  window but owes no no-sync accounting or `noCarrier()`, since the dwell goes on); P25p1 alone and a trunk-scan
+  target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep the whole dwell, and the rotation and dwell lengths are
+  unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`) records the chain that carried it
   (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore and trunk retunes read). The first
   NID-decoded frame of an acquisition starts one chain comparison (`frame_sync_p25p1_mod_compare_note()`,
   `dsd_state::p25_p1_mod_compare`, run on `getFrameSync()` entry): the symbols that chain's validated frames read over
