@@ -16,7 +16,9 @@ endif()
 if(DSD_NEO_CLI_SMOKE_MODE STREQUAL "help")
     set(_args "-h")
     set(_want_rc 0)
-    set(_want_stdout_regex "Usage: dsd-neo \\[options\\].*Decoder options:")
+    set(_want_stdout_regex
+        "Usage: dsd-neo \\[options\\].*Decoder options:.*--tetra-uplink.*--tetra-net <mcc,mnc,colour>.*--tetra-key"
+    )
     set(_want_stderr_regex "")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "invalid-option")
     # The CLI words these errors itself: each C library's getopt says something
