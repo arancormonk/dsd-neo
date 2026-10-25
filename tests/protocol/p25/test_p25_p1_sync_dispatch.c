@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -100,6 +101,12 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
 void
 printFrameInfo(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    (void)state;
+}
+
+/* The frame sync publishes the learned modulation a decoded NID stamps, for the P25 watchdog's tunes. */
+void
+dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state) {
     (void)state;
 }
 

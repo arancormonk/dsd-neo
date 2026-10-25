@@ -11,6 +11,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/platform/platform.h>
@@ -438,6 +439,7 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     if (duid != P25P1_DUID_INVALID && !opts->mod_cli_lock && (state->rf_mod == 0 || state->rf_mod == 1)) {
         state->p25_p1_validated_rf_mod = state->rf_mod;
         state->p25_p1_validated_symbolcnt = state->symbolcnt;
+        dsd_frame_sync_p25p1_mod_compare_publish(state); /* for a tune the P25 watchdog makes */
     }
     /* The same decode, read for what it says about the symbol profile rather than the
      * demodulator: nothing but P25p1 on this profile produces a NID the BCH accepts. No gate

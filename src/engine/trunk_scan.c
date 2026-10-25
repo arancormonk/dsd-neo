@@ -1709,6 +1709,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
        switch's dsd_frame_sync_reset_acquisition() ends it. */
     state->p25_p1_mod_compare.verdict_valid = snapshot->p25_p1_mod_verdict_valid;
     state->p25_p1_mod_compare.verdict_rf_mod = snapshot->p25_p1_mod_verdict_rf_mod;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
     state->p25_sm_mode = snapshot->p25_sm_mode;
     state->nac = snapshot->nac;
     state->samplesPerSymbol = snapshot->samplesPerSymbol;

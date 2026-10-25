@@ -219,6 +219,44 @@ void dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state);
 int dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state);
 
 /**
+ * @brief Publish @p state's P25p1 chain comparison and learned modulation for a tune made on another thread
+ * (dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(), dsd_frame_sync_p25p1_published_learned_rf_mod()).
+ *
+ * The decoder thread owns both, and every step of the comparison publishes; a caller that writes either itself (a
+ * decoded NID's stamp, a tune's rollback, a trunk-scan target's restore) publishes after it.
+ */
+void dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state);
+
+/**
+ * @brief The learned P25p1 modulation as last published (dsd_frame_sync_p25p1_learned_rf_mod()): 0 C4FM, 1 CQPSK,
+ * -1 nothing learned. Safe from any thread; a tune off the decoder thread reads it in place of the state.
+ */
+int dsd_frame_sync_p25p1_published_learned_rf_mod(void);
+
+/**
+ * @brief The chain a P25p1 chain comparison in flight leads on, 0 C4FM or 1 CQPSK, or -1 when none runs. Safe from any
+ * thread: a tune off the decoder thread reads it in place of the comparison and the learned modulation, which the
+ * comparison's other chain overwrites during its pass.
+ */
+int dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(void);
+
+/**
+ * @brief Note an accepted tune made off the decoder thread (the P25 watchdog's). The decoder thread applies it at its
+ * next frame sync step (dsd_frame_sync_apply_off_thread_tunes()): it ends a chain comparison in flight, as the decoder
+ * thread's own tunes do. Safe from any thread.
+ */
+void dsd_frame_sync_note_off_thread_tune(void);
+
+/** @brief Whether a tune off the decoder thread awaits dsd_frame_sync_apply_off_thread_tunes(). Decoder thread. */
+int dsd_frame_sync_off_thread_tune_pending(void);
+
+/**
+ * @brief On the decoder thread, apply the tunes made off it since the last call: end a chain comparison in flight on
+ * the chain it leads on, leaving the demodulator to the tune. 1 when one was applied.
+ */
+int dsd_frame_sync_apply_off_thread_tunes(dsd_state* state);
+
+/**
  * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.
  *
  * The decoder's own timing authority on RTL-family FSK input: the front end applies

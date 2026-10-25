@@ -503,6 +503,7 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
         state->p25_p1_validated_rf_mod = -1;
         state->p25_p1_mod_compare.verdict_valid = 0;
     }
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
     state->symbol_history_count = 0;
     state->symbol_history_head = 0;
     state->sidx = 0;
@@ -3968,6 +3969,7 @@ frame_sync_p25p1_withdraw_disproved_chain(dsd_state* state, int expired_dwell_id
     if (expired_dwell_rf_mod == 1 && state->p25_p1_validated_rf_mod == 1) {
         state->p25_p1_validated_rf_mod = -1;
         state->p25_p1_mod_compare.verdict_valid = 0;
+        dsd_frame_sync_p25p1_mod_compare_publish(state);
     }
     /* A comparison's verdict is withdrawn the same way, whichever chain it chose: a C4FM verdict left standing would
      * stop a carrier C4FM reads in part from ever being compared again. */
@@ -4125,6 +4127,7 @@ frame_sync_p25p1_mod_compare_open(const dsd_opts* opts, dsd_state* state, uint32
     cmp->carrier_seq = state->carrier_seq;
     cmp->verdict_valid = 0;
     state->p25_p1_mod_probe_active = 1;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
 }
 
 /* A frame validated in the current pass, @p consumed symbols long, counts for that pass's chain if it came on it. The
@@ -4138,6 +4141,7 @@ frame_sync_p25p1_mod_compare_count_frame(dsd_state* state, uint32_t consumed) {
     }
     if (cmp->phase != 1) {
         cmp->trial_read += consumed;
+        dsd_frame_sync_p25p1_mod_compare_publish(state);
         return;
     }
     const uint32_t search = (state->symbolcnt - consumed) - cmp->last_frame_end;
@@ -4168,6 +4172,7 @@ frame_sync_p25p1_mod_compare_end_incumbent_pass(const dsd_opts* opts, dsd_state*
     cmp->window_start = state->symbolcnt;
     cmp->counter_at_trial = state->sps_hunt_counter;
     frame_sync_p25p1_set_chain(opts, state, !cmp->incumbent_rf_mod);
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
 }
 
 /**
@@ -4289,6 +4294,15 @@ static int
 frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* state, int searched) {
     const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
     const uint32_t window = (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    if (cmp->phase == 0) {
+        return 0;
+    }
+    /* A tune another thread made since ends the comparison here (dsd_frame_sync_apply_off_thread_tunes()); the tune
+     * set the demodulator, so the window is not rebuilt for it. */
+    if (dsd_frame_sync_off_thread_tune_pending()) {
+        (void)dsd_frame_sync_apply_off_thread_tunes(state);
+        return 0;
+    }
     if (cmp->phase != 2 || ((uint32_t)(state->symbolcnt - cmp->window_start) < window && searched < (int)window)) {
         return 0;
     }
@@ -4556,6 +4570,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_decode_now_mono_s();
     frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
     frame_sync_apply_cli_mod_lock(opts, state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(state);
     frame_sync_p25p1_mod_compare_note(opts, state);
     frame_sync_sps_hunt_note_handler_consumption(state);
     frame_sync_ensure_enabled_sps_profile(opts, state);

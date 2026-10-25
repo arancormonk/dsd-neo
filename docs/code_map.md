@@ -3939,6 +3939,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     `rf_mod` on CQPSK and named its slot (`p25_p2_active_slot`), and that modulation stays the tune's; only the learned
     modulation goes back. A tune that fails or is deferred puts the comparison back as it was, with the front end's
     profile captured before the comparison ended, so the decoder and the front end stay on the same chain.
+  - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard. A tune the P25
+    watchdog's tick makes on its own thread leaves it alone. It reads the chain the comparison leads on, and the learned
+    modulation, as the decoder publishes them at every step and every stamp
+    (`dsd_frame_sync_p25p1_mod_compare_publish()`, one atomic value read through `dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()` and
+    `dsd_frame_sync_p25p1_published_learned_rf_mod()`), puts `rf_mod` on the leading chain as the end would, and an
+    accepted tune notes itself (`dsd_frame_sync_note_off_thread_tune()`); the decoder thread ends the comparison on that
+    chain at `getFrameSync()` entry, or in the hunt while one runs (`dsd_frame_sync_apply_off_thread_tunes()`), leaving
+    the demodulator to the tune.
   - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
     gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The
