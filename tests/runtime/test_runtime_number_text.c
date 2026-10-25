@@ -21,8 +21,8 @@ expect_text(double value, int width, int precision, unsigned flags, const char* 
     char out[96];
     const int n = dsd_number_text(out, sizeof out, value, width, precision, flags);
     if (n < 0 || strcmp(out, want) != 0 || (size_t)n != strlen(want)) {
-        fprintf(stderr, "value %.17g width %d precision %d flags %u: got \"%s\" (%d), want \"%s\"\n", value, width,
-                precision, flags, out, n, want);
+        DSD_FPRINTF(stderr, "value %.17g width %d precision %d flags %u: got \"%s\" (%d), want \"%s\"\n", value, width,
+                    precision, flags, out, n, want);
         assert(0);
     }
 }
@@ -56,8 +56,8 @@ expect_normalized(const char* in, unsigned flags, const char* want, int want_rc)
     DSD_SNPRINTF(text, sizeof text, "%s", in);
     const int rc = dsd_number_text_drop_negative_zero(text, flags);
     if (rc != want_rc || strcmp(text, want) != 0) {
-        fprintf(stderr, "normalize \"%s\" flags %u: got \"%s\" (%d), want \"%s\" (%d)\n", in, flags, text, rc, want,
-                want_rc);
+        DSD_FPRINTF(stderr, "normalize \"%s\" flags %u: got \"%s\" (%d), want \"%s\" (%d)\n", in, flags, text, rc, want,
+                    want_rc);
         assert(0);
     }
 }
@@ -162,7 +162,7 @@ test_locale_radix(const char* locale) {
     char saved[128];
     DSD_SNPRINTF(saved, sizeof saved, "%s", old ? old : "C");
     if (setlocale(LC_NUMERIC, locale) == NULL) {
-        fprintf(stderr, "locale %s not installed; skipping its radix case\n", locale);
+        DSD_FPRINTF(stderr, "locale %s not installed; skipping its radix case\n", locale);
         return;
     }
     char want[32];

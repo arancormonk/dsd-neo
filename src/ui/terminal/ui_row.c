@@ -83,11 +83,15 @@ ui_row_code_point_cells(const ui_row* row, uint32_t cp) {
 #endif
 }
 
-/* Whether the C library decodes UTF-8 here: the locale dsd_unicode_init_locale() set before initscr(). */
+/* Whether text reaches the screen as UTF-8: on ncurses, the locale dsd_unicode_init_locale() set before initscr(); on
+   PDCurses, a build with its wide-character API (as the SNR meter requires, ncurses_snr.c). */
 static int
 ui_row_locale_is_utf8(void) {
-#if defined(DSD_USE_PDCURSES)
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
     return 1;
+#elif defined(DSD_USE_PDCURSES)
+    /* A narrow PDCurses writes each byte of a UTF-8 sequence as a character of its own: ASCII only. */
+    return 0;
 #else
     mbstate_t st;
     DSD_MEMSET(&st, 0, sizeof st);

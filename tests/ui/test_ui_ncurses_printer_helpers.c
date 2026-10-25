@@ -923,6 +923,9 @@ capture_column_of(const char* needle) {
 
 static void
 test_basic_input_source_rendering(void) {
+    /* The cut goldens name the ASCII marker ("..."): the writer draws "…" only where the terminal takes UTF-8, which
+       depends on the platform the test runs on, so they select ASCII. */
+    g_unicode_stub = 0;
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1047,6 +1050,7 @@ test_basic_input_source_rendering(void) {
     assert_capture_equals("| STDIN Standard Input: - Menu Disabled when using STDIN!\n"
                           "| SQL: off;\n");
     g_stub_max_x = 80;
+    g_unicode_stub = 1;
 }
 
 /*
@@ -1182,6 +1186,9 @@ test_peer_passband_status_rendering(void) {
 
 static void
 test_rtl_and_soapy_input_source_rendering(void) {
+    /* The cut goldens name the ASCII marker ("..."): the writer draws "…" only where the terminal takes UTF-8, which
+       depends on the platform the test runs on, so they select ASCII. */
+    g_unicode_stub = 0;
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1305,6 +1312,7 @@ test_rtl_and_soapy_input_source_rendering(void) {
     reset_printw_capture();
     ui_render_rtl_input_source(&opts, &state);
     assert_capture_contains("| SoapySDR;");
+    g_unicode_stub = 1;
 }
 
 /*
@@ -1902,6 +1910,9 @@ test_compact_status_section_rendering(void) {
 
 static void
 test_scanner_status_row_rendering(void) {
+    /* The cut goldens name the ASCII marker ("..."): the writer draws "…" only where the terminal takes UTF-8, which
+       depends on the platform the test runs on, so they select ASCII. */
+    g_unicode_stub = 0;
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -2016,6 +2027,7 @@ test_scanner_status_row_rendering(void) {
     state.lcn_avoid_count = 0;
 
     reset_lcn_name_stub();
+    g_unicode_stub = 1;
 }
 
 static void
@@ -3823,6 +3835,9 @@ test_scan_timing_row_placement(void) {
    by one for as long as the phrase stayed long. */
 static void
 test_scan_timing_row_truncates_to_panel_width(void) {
+    /* The cut goldens name the ASCII marker ("..."): the writer draws "…" only where the terminal takes UTF-8, which
+       depends on the platform the test runs on, so they select ASCII. */
+    g_unicode_stub = 0;
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -3845,6 +3860,7 @@ test_scan_timing_row_truncates_to_panel_width(void) {
     reset_printw_capture();
     ui_render_scan_timing_row(&opts, &state);
     assert_capture_equals("| Scan Timing: Retune pending                   dwell 3.0s (suspended)...\n");
+    g_unicode_stub = 1;
 }
 
 #if defined(NCURSES_VERSION)

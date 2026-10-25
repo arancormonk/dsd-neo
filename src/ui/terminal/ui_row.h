@@ -11,8 +11,9 @@
  *
  * Widths follow the curses library's own model, so the writer and the virtual cursor agree: on ncurses each code point
  * takes wcwidth() cells in the UTF-8 locale dsd_unicode_init_locale() set; on PDCurses, which has no width handling,
- * one cell per code point of the Basic Multilingual Plane. Control characters, invalid UTF-8, code points the library
- * cannot draw, and any non-ASCII text without UTF-8 output are drawn as '?'.
+ * one cell per code point of the Basic Multilingual Plane, and ASCII alone on a build without its wide-character API.
+ * Control characters, invalid UTF-8, code points the library cannot draw, and any non-ASCII text without UTF-8 output
+ * are drawn as '?'.
  */
 
 #ifndef DSD_NEO_SRC_UI_TERMINAL_UI_ROW_H_
