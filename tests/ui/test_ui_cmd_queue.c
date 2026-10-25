@@ -15285,6 +15285,68 @@ test_refused_switch_onto_analog_keeps_the_tetra_session(void) {
     return rc;
 }
 
+/*
+ * An EDACS session's switch onto Analog or AM that the front end refuses, by its request or where it lands, goes back
+ * to the EDACS session with its addressing: the analog preset leaves EDACS addressing (ea_mode, esk_mask), which no
+ * receive setting carries, so the switch's rollback keeps it, and without it the EDACS decoder reads no control
+ * channel message. A switch that stands leaves it.
+ */
+static int
+test_refused_switch_onto_analog_keeps_edacs_addressing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static const int kinds[] = {DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
+    char tag[96];
+    int rc = 0;
+    for (int k = 0; k < 2; k++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.0M:0:0:48");
+        opts.rtl_dsp_bw_khz = 48;
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_EDACS_PV);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        state.ea_mode = 1; /* -fE: extended addressing with the ESK */
+        state.esk_mask = 0xA0;
+        reset_rx_family_wrap();
+        g_fake_cqpsk = 0;
+        g_fake_analog_family = 0;
+
+        g_analog_req_result = -1;
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)kinds[k]);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        g_analog_req_result = 0;
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d refused at once: back on EDACS with its addressing", k);
+        rc |= expect_true(tag, opts.analog_only == 0 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_EDACS_PV
+                                   && state.ea_mode == 1 && state.esk_mask == 0xA0);
+
+        reset_rx_family_wrap();
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)kinds[k]);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d pending: on the analog monitor", k);
+        rc |= expect_true(tag, opts.analog_only == 1);
+        demod_thread_refuses_analog_keeping_kind(0, DSD_ANALOG_DEMOD_FM, 0);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d refused where it landed: back on EDACS with its addressing", k);
+        rc |= expect_true(tag, opts.analog_only == 0 && dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_EDACS_PV
+                                   && state.ea_mode == 1 && state.esk_mask == 0xA0);
+
+        reset_rx_family_wrap();
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)kinds[k]);
+        (void)dsd_app_drain_cmds(&opts, &state);
+        demod_thread_lands(0);
+        g_fake_analog_family = 1;
+        (void)dsd_app_drain_cmds(&opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "edacs -> %d taken: the addressing left", k);
+        rc |= expect_true(tag, opts.analog_only == 1 && state.ea_mode == -1 && state.esk_mask == 0);
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    reset_rx_family_wrap();
+    return rc;
+}
+
 /* A mode change ends the outgoing calls before it forgets the received identity of a protocol it stops decoding: a
    SYSID received after the call's last render still reaches its history row. And a switch onto the analog monitor the
    front end has queued forgets nothing until it is taken: refused where it lands, the digital session it goes back to
@@ -19982,6 +20044,7 @@ main(void) {
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
+    rc |= test_refused_switch_onto_analog_keeps_edacs_addressing();
     rc |= test_queued_switch_off_tetra_commits_once_taken();
     rc |= test_mode_change_forgets_identity_once_it_stands();
     rc |= test_refused_switch_off_tetra_keeps_the_follow();

@@ -5002,6 +5002,22 @@ typedef struct {
 
 static ui_follow_state g_analog_entry_staged_follow;
 
+/* The EDACS addressing (dsd_state::ea_mode, esk_mask), which every preset but EDACS/ProVoice's and Auto's leaves
+   (dsd_stage_decode_mode_preset()) and no receive setting carries: a refused switch off an EDACS session puts it back
+   with the settings, or the EDACS decoder reads no control channel message. */
+typedef struct {
+    int ea_mode;
+    unsigned short esk_mask;
+} ui_edacs_addressing;
+
+static ui_edacs_addressing g_analog_entry_staged_edacs;
+
+static ui_edacs_addressing
+ui_edacs_addressing_of(const dsd_state* state) {
+    const ui_edacs_addressing a = {state->ea_mode, state->esk_mask};
+    return a;
+}
+
 static struct {
     int armed;
     int kind; /* the dsd_analog_demod the switch is onto */
@@ -5011,10 +5027,13 @@ static struct {
        (ui_commit_mode_identity()). */
     int commit_identity;
     dsd_scan_settings before;
-    ui_follow_state before_follow; /* the follow state before the switch, as `before` is its settings */
+    ui_follow_state before_follow;    /* the follow state before the switch, as `before` is its settings */
+    ui_edacs_addressing before_edacs; /* and the EDACS addressing */
     dsd_scan_settings after;
-    int has_between[2];           /* by dsd_analog_demod */
-    dsd_scan_settings between[2]; /* the settings the last superseded switch onto that kind left */
+    ui_edacs_addressing after_edacs;
+    int has_between[2];                   /* by dsd_analog_demod */
+    dsd_scan_settings between[2];         /* the settings the last superseded switch onto that kind left */
+    ui_edacs_addressing between_edacs[2]; /* and the addressing */
 } g_analog_entry;
 
 static void
@@ -5024,6 +5043,7 @@ ui_stage_analog_entry(const dsd_opts* opts, const dsd_state* state) {
     f->trunk_is_tuned = opts->trunk_is_tuned;
     DSD_MEMCPY(f->p25_vc_freq, state->p25_vc_freq, sizeof f->p25_vc_freq);
     DSD_MEMCPY(f->trunk_vc_freq, state->trunk_vc_freq, sizeof f->trunk_vc_freq);
+    g_analog_entry_staged_edacs = ui_edacs_addressing_of(state);
 }
 
 /*
@@ -5179,14 +5199,17 @@ ui_arm_analog_entry(const dsd_opts* opts, const dsd_state* state, int was_analog
     const int supersedes = g_analog_entry.armed && dsd_scan_settings_equal(&g_analog_entry_staged, &armed_after, 0);
     if (supersedes && dsd_analog_demod_is_valid(g_analog_entry.kind)) {
         g_analog_entry.between[g_analog_entry.kind] = g_analog_entry.after;
+        g_analog_entry.between_edacs[g_analog_entry.kind] = g_analog_entry.after_edacs;
         g_analog_entry.has_between[g_analog_entry.kind] = 1;
     } else if (!supersedes) {
         g_analog_entry.before = g_analog_entry_staged;
         g_analog_entry.before_follow = g_analog_entry_staged_follow;
+        g_analog_entry.before_edacs = g_analog_entry_staged_edacs;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_FM] = 0;
         g_analog_entry.has_between[DSD_ANALOG_DEMOD_AM] = 0;
     }
     dsd_scan_settings_capture(opts, state, &g_analog_entry.after);
+    g_analog_entry.after_edacs = ui_edacs_addressing_of(state);
     g_analog_entry.kind = opts->analog_demod;
     g_analog_entry.armed = 1;
 }
@@ -5413,7 +5436,17 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
     /* A width set after the switch does not mean the settings moved on, and the revert keeps it. */
     const int reverted = ui_analog_entry_unmoved(&now);
     if (reverted) {
-        dsd_scan_settings back = *ui_analog_entry_rollback(kept);
+        const dsd_scan_settings* rollback = ui_analog_entry_rollback(kept);
+        dsd_scan_settings back = *rollback;
+        /* The addressing goes back with the settings, unless a command set it since the switch, which stands. */
+        const ui_edacs_addressing* edacs = rollback == &g_analog_entry.before
+                                               ? &g_analog_entry.before_edacs
+                                               : &g_analog_entry.between_edacs[kept->kept_kind];
+        if (state->ea_mode == g_analog_entry.after_edacs.ea_mode
+            && state->esk_mask == g_analog_entry.after_edacs.esk_mask) {
+            state->ea_mode = edacs->ea_mode;
+            state->esk_mask = edacs->esk_mask;
+        }
         ui_analog_entry_keep_widths(&back, &now);
         /* What such a command set since the switch stands; what the switch itself set goes back with it. */
         ui_analog_entry_keep_unpublished(&back, &now, &g_analog_entry.after);

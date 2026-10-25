@@ -1550,7 +1550,8 @@ suite runs under this compiler.
   selects no mode). Plain Auto (`ea_mode == -1`, where EDACS only prints the mode-selection hint) is none. Every preset
   but EDACS/ProVoice and Auto sets `ea_mode = -1` and `esk_mask = 0` (`dsd_stage_decode_mode_preset()`), so EDACS, then
   another mode, then Auto is plain Auto; a scan row's preset keeps the configured addressing
-  (`scan_scope_apply_row_decoder()`). Startup and
+  (`scan_scope_apply_row_decoder()`), and a refused switch puts it back: an analog one through its rollback state
+  (`ui_revert_analog_entry()`), a config apply through `ui_cfg_mode_extras`. Startup and
   configuration policy keys on it: the raw analog stream (`openAudioOutput(opts, state)`,
   `dsd_audio_ensure_digital_output(opts, state)`, `svc_udp_output_config()`, a same-family `[mode]` apply), the UDP
   analog socket on port + 2 and the `-8` override under `-T` (engine output setup), the EDACS squelch policy
