@@ -66,6 +66,16 @@ static QString lastHostDiagnostic;
 // Every host refresh reads the lifecycle record and refreshes presentation and the local device.
 static int lifecycleReads;
 static int hostRefreshes;
+// The platform's start intents and USB access requests the host dispatched.
+static int startDispatches;
+static int accessRequests;
+
+// UsbSourceManager.deviceStatus(), which the host's local-device refresh applies.
+static QJsonObject&
+usb_record() {
+    static QJsonObject value;
+    return value;
+}
 
 // Only platform transport is replaced. The real Android host's refresh, stop,
 // phase publication and failureText getter are compiled by this desktop target.
@@ -126,6 +136,7 @@ DecoderHostAndroid::refreshLocation() {}
 void
 DecoderHostAndroid::refreshLocalDevice() {
     ++hostRefreshes;
+    m_usb.apply(*this, usb_record());
 }
 
 void
@@ -146,10 +157,14 @@ DecoderHostAndroid::hostDiagnostic(const QString& line) {
 void
 DecoderHostAndroid::shareDiagnostics(const QString&, const QString&) {}
 
-bool
-DecoderHostAndroid::start(const QStringList&) {
-    return false;
+QString
+DecoderHostAndroid::platformStartDecoder(const QStringList&) {
+    ++startDispatches;
+    return {};
 }
+
+void
+DecoderHostAndroid::noteAttempt(const QString&, dsd_qt::DiagnosticsLog::AttemptStage) {}
 
 bool
 DecoderHostAndroid::moveToBackground() {
@@ -157,14 +172,14 @@ DecoderHostAndroid::moveToBackground() {
 }
 
 void
-DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, const QString& serial) {
-    (void)serial;
-    (void)source;
-    requestLocalDeviceAccess();
+DecoderHostAndroid::platformRequestAccess() {
+    ++accessRequests;
 }
 
 void
-DecoderHostAndroid::requestLocalDeviceAccess() {}
+DecoderHostAndroid::platformRequestAccessForSource(const QString&, const QString&) {
+    ++accessRequests;
+}
 
 void
 DecoderHostAndroid::noteStartAttempt(const QString&) {}
@@ -456,6 +471,237 @@ check_stop_publishes_stopping() {
     serviceStops = 0;
 }
 
+static QString
+health_state(const dsd_android::DecoderHostAndroid& host) {
+    return host.receiverHealth().value(QStringLiteral("state")).toString();
+}
+
+/* A lifecycle record of @p session as DecoderService.lifecycleStatus() writes it. */
+static QJsonObject
+lifecycle_record(int session, const char* state, int reason, int end_cause, int receiver_source) {
+    return {{"sessionId", session},
+            {"state", state},
+            {"reason", reason},
+            {"endCause", end_cause},
+            {"receiverSource", receiver_source}};
+}
+
+/* #647: why a session's receiver ended, scoped to that session. A receiver ending moves the phase to Stopping at once
+ * and holds it through the session's cleanup (the rdio upload drain), however long, until its terminal record. */
+static void
+check_receiver_health() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    int results = 0;
+    QObject::connect(&host, &DecoderHost::runResultChanged, [&results]() { ++results; });
+    hostDiagnostics = 0;
+    accessRequests = 0;
+    startDispatches = 0;
+    nowMs = 50000;
+    retained_record() = {{"sessionId", 80}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(health_state(host) == QStringLiteral("ok")
+              && host.property("receiverHealth").toMap().value(QStringLiteral("state")) == QStringLiteral("ok"),
+          "a host with no ending reads healthy, and QML reads it");
+
+    /* An unplug in session 81: the detach broadcast's stop latched "detached" while the engine still drains. */
+    retained_record() = lifecycle_record(81, "RUNNING", kRunPending, kEndNone, kReceiverRtl);
+    running = true;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running && health_state(host) == QStringLiteral("ok"),
+          "a healthy session runs");
+    results = 0;
+    retained_record() = lifecycle_record(81, "RUNNING", kRunPending, kEndDetached, kReceiverRtl);
+    host.refresh();
+    const QVariantMap lost = host.receiverHealth();
+    check(lost.value(QStringLiteral("state")) == QStringLiteral("lost")
+              && lost.value(QStringLiteral("source")) == QStringLiteral("usb")
+              && lost.value(QStringLiteral("session")).toLongLong() == 81,
+          "a detach reads lost, with the session's receiver and id");
+    check(results == 1, "the ending is published once");
+    check(host.sessionState() == DecoderHost::Stopping, "the ending moves the phase to Stopping at once");
+    for (int poll = 1; poll <= 120 && host.sessionState() == DecoderHost::Stopping; ++poll) {
+        nowMs = 50000 + 250 * poll;
+        host.refresh();
+    }
+    check(host.sessionState() == DecoderHost::Stopping && hostDiagnostics == 0,
+          "30 s of cleanup hold Stopping, with no stop expiry");
+    check(results == 1, "polls of the same ending publish nothing new");
+
+    /* Stop now while it drains: the native latch keeps the first cause, so the record still says detached. */
+    host.stop();
+    check(health_state(host) == QStringLiteral("lost") && host.sessionState() == DecoderHost::Stopping,
+          "Stop now keeps the receiver notice");
+    retained_record() = lifecycle_record(81, "IDLE", kRunCancelled, kEndDetached, kReceiverRtl);
+    running = false;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && health_state(host) == QStringLiteral("lost"),
+          "the terminal record ends the hold and keeps the notice");
+
+    /* After an Activity recreation a fresh host still shows the retained session's ending. */
+    {
+        DecoderHostAndroid recreated;
+        recreated.refresh();
+        check(health_state(recreated) == QStringLiteral("lost") && recreated.sessionState() == DecoderHost::Idle,
+              "a recreated UI shows the ended session's notice");
+    }
+
+    /* A new access request acknowledges it, and the same retained record stays acknowledged. */
+    results = 0;
+    host.requestLocalDeviceAccessForSource(QStringLiteral("usb"));
+    check(health_state(host) == QStringLiteral("ok") && accessRequests == 1 && results == 1,
+          "an access request clears the notice");
+    host.refresh();
+    check(health_state(host) == QStringLiteral("ok") && results == 1, "the retained record stays acknowledged");
+
+    /* An Airspy's stream failure in session 82; start() clears it, and the old record stays cleared. */
+    retained_record() = lifecycle_record(82, "RUNNING", kRunPending, kEndReceiverFailed, kReceiverAirspy);
+    running = true;
+    host.refresh();
+    const QVariantMap failed = host.receiverHealth();
+    check(failed.value(QStringLiteral("state")) == QStringLiteral("failed")
+              && failed.value(QStringLiteral("source")) == QStringLiteral("airspy")
+              && failed.value(QStringLiteral("session")).toLongLong() == 82,
+          "a committed receiver failure reads failed");
+    check(host.sessionState() == DecoderHost::Stopping, "a receiver failure holds Stopping too");
+
+    /* A start refused while the session still stops keeps the notice. */
+    check(!host.start({}) && health_state(host) == QStringLiteral("failed") && startDispatches == 0,
+          "a refused start keeps the notice");
+    retained_record() = lifecycle_record(82, "IDLE", kRunCompleted, kEndReceiverFailed, kReceiverAirspy);
+    running = false;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && health_state(host) == QStringLiteral("failed"),
+          "the failed receiver's notice survives the terminal record");
+    check(host.start({}) && startDispatches == 1, "a start is dispatched");
+    check(health_state(host) == QStringLiteral("ok"), "start() clears the notice");
+    host.refresh();
+    check(health_state(host) == QStringLiteral("ok") && host.sessionState() == DecoderHost::Starting,
+          "the previous session's record stays cleared while the start is in flight");
+
+    /* The user's Stop, then an unplug during cleanup: the native latch keeps the user's cause, so no notice. */
+    retained_record() = lifecycle_record(83, "RUNNING", kRunPending, kEndNone, kReceiverRtl);
+    running = true;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "the next session runs");
+    host.stop();
+    for (const char* state : {"RUNNING", "STOPPING"}) {
+        retained_record() = lifecycle_record(83, state, kRunPending, kEndUser, kReceiverRtl);
+        host.refresh();
+        check(health_state(host) == QStringLiteral("ok") && host.sessionState() == DecoderHost::Stopping,
+              "a user stop shows no receiver notice");
+    }
+    retained_record() = lifecycle_record(83, "IDLE", kRunCancelled, kEndUser, kReceiverRtl);
+    running = false;
+    host.refresh();
+    check(health_state(host) == QStringLiteral("ok") && host.sessionState() == DecoderHost::Idle,
+          "a user stop ends Idle and healthy");
+    retained_record() = lifecycle_record(84, "IDLE", kRunCancelled, kEndLifecycle, kReceiverRtl);
+    host.refresh();
+    check(health_state(host) == QStringLiteral("ok"), "a lifecycle stop shows no receiver notice");
+
+    /* An access request while a session runs healthy acknowledges nothing it has not shown. */
+    const int before = accessRequests;
+    retained_record() = lifecycle_record(85, "RUNNING", kRunPending, kEndNone, kReceiverRtl);
+    running = true;
+    host.refresh();
+    host.requestLocalDeviceAccess();
+    check(accessRequests == before + 1, "the access request is dispatched");
+    retained_record() = lifecycle_record(85, "RUNNING", kRunPending, kEndDetached, kReceiverRtl);
+    host.refresh();
+    check(health_state(host) == QStringLiteral("lost") && host.sessionState() == DecoderHost::Stopping,
+          "a later unplug of that session still shows");
+    retained_record() = lifecycle_record(85, "IDLE", kRunCancelled, kEndDetached, kReceiverRtl);
+    running = false;
+    host.refresh();
+
+    retained_record() = QJsonObject();
+    serviceStops = 0;
+    hostDiagnostics = 0;
+}
+
+/* B11: a native claim error belongs to the receiver its session used, and shows only while that receiver is ready. */
+static void
+check_claim_error_scope() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const QJsonObject airspy{
+        {"ready", true}, {"source", "airspy"}, {"serial", "A1"}, {"name", "Airspy"}, {"text", "Ready: Airspy"}};
+    DecoderHostAndroid host;
+    usb_record() = airspy;
+    retained_record() = {{"sessionId", 90}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    retained_record() = lifecycle_record(91, "RUNNING", kRunPending, kEndNone, kReceiverAirspy);
+    running = true;
+    host.refresh();
+    QJsonObject failed = lifecycle_record(91, "IDLE", kRunFailed, kEndNone, kReceiverAirspy);
+    failed.insert("deviceError", -6);
+    failed.insert("lastError", "Decoder run failed (1); USB open/claim error -6");
+    retained_record() = failed;
+    running = false;
+    host.refresh();
+    check(host.localDeviceFailureKind() == DecoderHost::DeviceBusy
+              && host.localDeviceStatus().contains(QStringLiteral("could not claim Airspy")),
+          "an Airspy session's claim error shows for that Airspy");
+
+    usb_record() = {
+        {"ready", true}, {"source", "usb"}, {"serial", "R1"}, {"name", "RTL-SDR"}, {"text", "Ready: RTL-SDR"}};
+    host.refresh();
+    check(host.localDeviceFailureKind() == DecoderHost::NoDeviceFailure
+              && host.localDeviceStatus() == QStringLiteral("Ready: RTL-SDR"),
+          "an Airspy session's claim error never shows for a later RTL-SDR");
+    QJsonObject other = airspy;
+    other.insert("serial", "A2");
+    usb_record() = other;
+    host.refresh();
+    check(host.localDeviceFailureKind() == DecoderHost::NoDeviceFailure
+              && host.localDeviceStatus() == QStringLiteral("Ready: Airspy"),
+          "nor for another Airspy");
+    usb_record() = airspy;
+    host.refresh();
+    check(host.localDeviceFailureKind() == DecoderHost::DeviceBusy, "the claim error shows again for its own Airspy");
+
+    usb_record() = QJsonObject();
+    retained_record() = QJsonObject();
+}
+
+/* The USB record's outstanding access request reaches QML through the host (#647 WP3). */
+static void
+check_request_record() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    int changes = 0;
+    QObject::connect(&host, &DecoderHost::localDeviceChanged, [&changes]() { ++changes; });
+    host.refresh();
+    check(!host.localDeviceRequestPending() && host.localDeviceRequestedSource().isEmpty(),
+          "no request before the record names one");
+    usb_record() = {{"ready", false},
+                    {"text", "Waiting for permission"},
+                    {"pending", true},
+                    {"requestedSource", "airspy"},
+                    {"requestedSerial", "A1"}};
+    changes = 0;
+    host.refresh();
+    check(host.localDeviceRequestPending() && host.localDeviceRequestedSource() == QStringLiteral("airspy")
+              && changes == 1,
+          "a pending request is published once");
+    check(host.property("localDeviceRequestPending").toBool()
+              && host.property("localDeviceRequestedSource").toString() == QStringLiteral("airspy"),
+          "QML reads the pending request");
+    host.refresh();
+    check(changes == 1, "the same record publishes nothing new");
+    usb_record().insert("pending", false);
+    host.refresh();
+    check(!host.localDeviceRequestPending() && changes == 2, "the answered request is published");
+    usb_record() = QJsonObject();
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -463,6 +709,9 @@ main(int argc, char** argv) {
     check_engine_busy();
     check_document_dispatch();
     check_stop_publishes_stopping();
+    check_receiver_health();
+    check_claim_error_scope();
+    check_request_record();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

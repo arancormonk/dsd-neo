@@ -956,7 +956,10 @@ class DecoderService : Service() {
                 .put("initialized", matches && fields[1] != 0L)
                 .put("reason", reason).put("deviceError", usbError).put("lastError", error)
                 .put("inputFailure", if (matches && fields.size >= 7) fields[5].toInt() else 0)
-                .put("inputError", if (matches && fields.size >= 7) fields[6].toInt() else 0).toString()
+                .put("inputError", if (matches && fields.size >= 7) fields[6].toInt() else 0)
+                // #647: why the session ended and its receiver, published while its cleanup still runs.
+                .put("endCause", if (matches && fields.size >= 9) fields[7].toInt() else 0)
+                .put("receiverSource", if (matches && fields.size >= 9) fields[8].toInt() else 0).toString()
         }
 
         /** Service-side view of the lifecycle, for UI status text. */

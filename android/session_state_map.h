@@ -101,6 +101,7 @@ class SessionPhaseTracker {
         m_grace = kStartGraceTicks;
         m_phase = kSessionStarting;
         clear_stop_request();
+        m_receiver_end = false;
     }
 
     /** Ignore the previous session's retained result while an intent is in flight. */
@@ -131,7 +132,11 @@ class SessionPhaseTracker {
      */
     SessionPhase
     update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason, uint64_t now_ms = 0) {
-        return hold_stop(service_state, fold_record(service_state, engine_running, session_id, reason), now_ms);
+        if (m_receiver_end && session_id > m_receiver_end_session) {
+            m_receiver_end = false; // a later session's record: the ended one is long gone
+        }
+        return hold_receiver_end(
+            hold_stop(service_state, fold_record(service_state, engine_running, session_id, reason), now_ms));
     }
 
     /**
@@ -142,7 +147,7 @@ class SessionPhaseTracker {
      */
     SessionPhase
     update(const char* service_state, bool engine_running, uint64_t now_ms = 0) {
-        return hold_stop(service_state, fold_state(service_state, engine_running), now_ms);
+        return hold_receiver_end(hold_stop(service_state, fold_state(service_state, engine_running), now_ms));
     }
 
     /**
@@ -171,6 +176,29 @@ class SessionPhaseTracker {
         return true;
     }
 
+    /**
+     * @brief Note that the radio layer ended @p session's receiver (#647): an unplug or a stream that stopped.
+     *
+     * The session is over and winding down, so Stopping is published at once and held as an acknowledged stop until
+     * that session's terminal record. Its cleanup can keep the service RUNNING for minutes (the rdio upload drain), so
+     * kStopGraceMs never applies, and a user Stop standing beside it no longer expires either. Taken only for the
+     * session this tracker follows while it starts, runs or stops; repeating it is harmless.
+     *
+     * @return true when the ending was taken (the phase is now Stopping).
+     */
+    bool
+    note_receiver_end(uint64_t session) {
+        if (session == 0 || session != m_last_session || m_waiting_for_session
+            || (m_phase != kSessionStarting && m_phase != kSessionRunning && m_phase != kSessionStopping)) {
+            return false;
+        }
+        m_receiver_end = true;
+        m_receiver_end_session = session;
+        m_stop_delivered = m_stop_requested;
+        m_phase = kSessionStopping;
+        return true;
+    }
+
     /** @brief Whether a stop request was just dropped by the grace (true once per drop), for one diagnostics line. */
     bool
     take_stop_expired() {
@@ -193,6 +221,7 @@ class SessionPhaseTracker {
         m_grace = 0;
         m_phase = kSessionFailed;
         clear_stop_request();
+        m_receiver_end = false;
     }
 
     /** Explicit dismissal adopts only a confirmed inactive service's retained result. */
@@ -316,6 +345,20 @@ class SessionPhaseTracker {
         return m_phase;
     }
 
+    /** @brief Hold Stopping over @p folded while a receiver ending stands; the terminal record (Idle or Failed) ends it. */
+    SessionPhase
+    hold_receiver_end(SessionPhase folded) {
+        if (!m_receiver_end) {
+            return folded;
+        }
+        if (folded == kSessionIdle || folded == kSessionFailed) {
+            m_receiver_end = false;
+            return folded;
+        }
+        m_phase = kSessionStopping;
+        return m_phase;
+    }
+
     void
     clear_stop_request() {
         m_stop_requested = false;
@@ -386,6 +429,9 @@ class SessionPhaseTracker {
     bool m_stop_running = false;
     uint64_t m_stop_running_since_ms = 0;
     bool m_stop_expired = false;
+    // note_receiver_end() holds Stopping for m_receiver_end_session until its terminal record.
+    bool m_receiver_end = false;
+    uint64_t m_receiver_end_session = 0;
 };
 
 } // namespace dsd_android

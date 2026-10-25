@@ -131,7 +131,11 @@ folded into that one phase by `session_state_map.h`, which is deliberately free 
 Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host. Each accepted start
 has a monotonically increasing session id. `nativeLifecycleStatus` retains the
 post-initialization edge and terminal reason (pending/completed/cancelled/failed),
-run return code, and native USB open/claim error after cleanup. The service folds
+run return code, and native USB open/claim error after cleanup. It also carries why
+the run ended (the first cause accepted: the user's Stop, a USB detach, the receiver's
+committed ending, a teardown) and the session's configured receiver, published while
+the run's cleanup still goes, so a lost receiver moves the UI to Stopping at once and
+holds it there until that session ends. The service folds
 these into one `lifecycleStatus` record, including `lastError`; the existing UI
 tick reads it without consuming a decoder snapshot. Failures remain visible even
 when the run ends between polls or fails well after startup. While a native terminal

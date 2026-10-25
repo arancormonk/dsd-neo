@@ -146,6 +146,37 @@ test_initial_usb_record() {
     }
 }
 
+// #647 WP3: the record's outstanding access request is kept with the rest of it; a record without one has none.
+static void
+test_usb_request_record() {
+    Host host;
+    dsd_android::LocalDeviceState usb;
+    int properties = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::localDeviceChanged, [&]() { ++properties; });
+    usb.apply(host, QJsonObject{{"ready", false}, {"text", "Plug in an RTL-SDR"}});
+    check(properties == 1 && !usb.pending && usb.requestedSource.isEmpty() && usb.requestedSerial.isEmpty());
+    const QJsonObject pending{{"ready", false},
+                              {"text", "Plug in an RTL-SDR"},
+                              {"pending", true},
+                              {"requestedSource", "airspy"},
+                              {"requestedSerial", "26a464dc"}};
+    usb.apply(host, pending);
+    check(properties == 2 && usb.pending && usb.requestedSource == "airspy" && usb.requestedSerial == "26a464dc");
+    usb.apply(host, pending);
+    check(properties == 2);
+    QJsonObject serial = pending;
+    serial.insert("requestedSerial", "");
+    usb.apply(host, serial);
+    check(properties == 3 && usb.requestedSerial.isEmpty() && usb.requestedSource == "airspy");
+    serial.insert("pending", false);
+    usb.apply(host, serial);
+    check(properties == 4 && !usb.pending);
+    // Desktop hosts broker nothing: no request, and every session's receiver reads healthy.
+    check(!host.property("localDeviceRequestPending").toBool());
+    check(host.property("localDeviceRequestedSource").toString().isEmpty());
+    check(host.property("receiverHealth").toMap().value("state").toString() == "ok");
+}
+
 static void
 test_history_receives_effective_scan_options() {
     static dsd_opts opts;
@@ -738,6 +769,7 @@ main(int argc, char** argv) {
     test_zero_bounds();
     test_auto_start_requests();
     test_initial_usb_record();
+    test_usb_request_record();
     test_spaced_direct_profile_applies_live();
     static dsd_opts opts;
     static dsd_state state;

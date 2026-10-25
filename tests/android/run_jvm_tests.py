@@ -154,6 +154,30 @@ def stop_callers_carry_their_cause():
     return None
 
 
+def native_lifecycle_contract():
+    """DsdNative.kt never compiles here (it loads the app library), so its JNI pairing is read from the sources."""
+    kotlin_path = REPO / APP_SOURCES / "DsdNative.kt"
+    jni_paths = sorted((REPO / "android").glob("*.cpp"))
+    try:
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        jni = "\n".join(path.read_text(encoding="utf-8") for path in jni_paths)
+    except OSError as error:
+        return f"cannot read the JNI sources: {error}"
+    for name in re.findall(r"external fun (native\w+)\(", kotlin):
+        if not re.search(rf"\bJava_io_github_arancormonk_dsdneo_DsdNative_{name}\(", jni):
+            return f"{APP_SOURCES / 'DsdNative.kt'}: {name} has no JNI definition under android/"
+    # #647: the first accepted cause of a session's ending is latched natively, so every stop passes its own.
+    if not re.search(r"external fun nativeStop\(userRequested: Boolean, cause: String\): Int", kotlin):
+        return f"{APP_SOURCES / 'DsdNative.kt'}: nativeStop must take (userRequested: Boolean, cause: String)"
+    if not re.search(r"DsdNative_nativeStop\(JNIEnv\* env, jclass clazz, jboolean user_requested,\s*jstring cause\)", jni):
+        return "android/dsdneo_jni.cpp: nativeStop must take the jstring cause after user_requested"
+    # Android owns an unplug through the detach broadcast for the grace (#647); without it the reader's -1 races it.
+    init = re.search(r"DsdNative_nativeInit\(.*?\n\}", jni, re.S)
+    if not init or "dsd_android::install_receiver_policy();" not in init.group(0):
+        return "android/dsdneo_jni.cpp: nativeInit must call dsd_android::install_receiver_policy()"
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -220,7 +244,7 @@ SUITES = {
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),
             ),
         ),
-        checks=(stop_callers_carry_their_cause,),
+        checks=(stop_callers_carry_their_cause, native_lifecycle_contract),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure

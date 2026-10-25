@@ -40,6 +40,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -415,6 +416,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
     set_env_from_jstring(env, "XDG_CONFIG_HOME", config_dir);
     set_env_from_jstring(env, "DSD_NEO_CACHE_DIR", cache_dir);
     (void)setenv("DSD_NEO_NO_SIGNAL_HANDLERS", "1", 1);
+    /* #647: before any session can be configured. Without the unplug-owner grace the reader's own -1 ends a session
+     * at once, racing the detach broadcast that names the unplug. */
+    dsd_android::install_receiver_policy();
 
     std::lock_guard<std::mutex> guard(g_lock);
     if (g_opts != nullptr || g_state != nullptr) {
@@ -450,6 +454,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
 
     {
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        /* The last run's committed receiver ending stays latched until the bootstrap clears it; cleared here with
+         * the new record, under the same lock, so no poll can read it into this session. */
+        dsd_input_failure_clear();
         g_run_status.begin(static_cast<uint64_t>(session_id));
     }
 #ifdef USE_RADIO
@@ -475,6 +482,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
 
     if (rc == DSD_BOOTSTRAP_CONTINUE) {
         g_configured = true;
+        std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        g_run_status.note_configured(dsd_android::receiver_source_for_input(g_opts->audio_in_dev));
         return kStatusOk;
     }
 
@@ -538,6 +547,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeLifecycleStatus(JNIEnv* env, j
     dsd_android::RunStatus status;
     {
         std::lock_guard<std::mutex> guard(g_lifecycle_lock);
+        // #647: a committed receiver ending is published while the run still goes, not after its cleanup.
+        dsd_android::note_receiver_fact(g_run_status);
         status = g_run_status;
     }
     const jlong fields[] = {static_cast<jlong>(status.session_id),
@@ -546,13 +557,16 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeLifecycleStatus(JNIEnv* env, j
                             status.run_code,
                             status.device_error,
                             status.input_failure.kind,
-                            status.input_failure.native_code};
-    jlongArray out = env->NewLongArray(7);
+                            status.input_failure.native_code,
+                            static_cast<jlong>(status.end_cause),
+                            static_cast<jlong>(status.receiver_source)};
+    constexpr jsize kFieldCount = static_cast<jsize>(sizeof(fields) / sizeof(fields[0]));
+    jlongArray out = env->NewLongArray(kFieldCount);
     if (!out) {
         clear_pending_exception(env);
         return nullptr;
     }
-    env->SetLongArrayRegion(out, 0, 7, fields);
+    env->SetLongArrayRegion(out, 0, kFieldCount, fields);
     if (clear_pending_exception(env)) {
         env->DeleteLocalRef(out);
         return nullptr;
@@ -561,11 +575,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeLifecycleStatus(JNIEnv* env, j
 }
 
 JNIEXPORT jint JNICALL
-Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz, jboolean user_requested) {
-    (void)env;
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz, jboolean user_requested,
+                                                       jstring cause) {
     (void)clazz;
 
-    /* Deliberately lock-free. This is called from the main thread on a USB detach
+    /* Never takes g_lock. This is called from the main thread on a USB detach
      * broadcast, and nativeConfigure holds g_lock across the whole bootstrap, which
      * can block on an rtl_tcp connect — waiting for it here would be an ANR. There
      * is nothing to protect: dsd_request_shutdown() ignores both arguments and only
@@ -574,16 +588,40 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz
     if (!g_initialized.load()) {
         return kStatusBadState;
     }
+    /* #647: the session's first accepted ending is latched before the exit flag rises, so a user Stop that crosses a
+     * receiver report reads as the user's, and an unplug followed by Stop now stays an unplug. g_lifecycle_lock is
+     * only ever held for a copy or a latch, never across a device open. */
+    bool converted = false;
+    const std::string wire = jstring_to_utf8(env, cause, &converted);
+    {
+        std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        dsd_android::note_stop_cause(g_run_status,
+                                     dsd_android::end_cause_from_wire(converted ? wire.c_str() : nullptr));
+    }
     /* Latched as well as raised: a stop arriving before the engine loop starts would
      * otherwise be lost to the engine's own shutdown-flag reset. See g_stop_requested. */
     g_stop_requested.store(true);
     /* #718 D4: the user's Stop does not wait for the rdio upload backlog. Device detach and lifecycle teardowns pass
-     * false and drain, so a normal end still uploads its last calls. Lock-free like the rest of this function. */
+     * false and drain, so a normal end still uploads its last calls. Takes no lock. */
     if (user_requested == JNI_TRUE) {
         dsd_rdio_upload_cancel();
     }
     dsd_request_shutdown(nullptr, nullptr);
     return kStatusOk;
+}
+
+/**
+ * @brief Whether the session is configured or running with a local RTL-SDR (not rtl_tcp) or Airspy (#647).
+ *
+ * A USB detach stops the engine only for such a session: a retained connection outlives the sessions that used it.
+ * Called from the detach broadcast on the main thread, so it takes only the short lifecycle-status lock.
+ */
+JNIEXPORT jboolean JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeSessionUsesLocalReceiver(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    std::lock_guard<std::mutex> guard(g_lifecycle_lock);
+    return g_run_status.uses_local_receiver() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jint JNICALL

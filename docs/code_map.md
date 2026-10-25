@@ -2094,7 +2094,7 @@ suite runs under this compiler.
     still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
     D4): every QML `decoderHost.stop()` caller (Stop listening, switching systems, retry after a failure, leaving
     Signal search or its Stop, Back or closing the window with background listening off, "Dismiss failure and choose a
-    site") and the notification's Stop action, as `StopCause.USER` through `nativeStop(userRequested)`: a lock-free flag the worker loop (no further jobs), the retry
+    site") and the notification's Stop action, as `StopCause.USER` through `nativeStop(userRequested, cause)`: a lock-free flag the worker loop (no further jobs), the retry
     loop (between attempts) and the transfer's xferinfo callback (aborts the transfer in flight) poll. Shutdown still
     owns the join, logs once how many uploads were not sent, and clears the flag; uploads queued after the cancel (the
     final call cleanup closes) are not sent either. Files are deleted only after a successful upload, so abandoned

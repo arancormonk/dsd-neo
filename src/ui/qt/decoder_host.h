@@ -45,12 +45,15 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool locationSupported READ locationSupported CONSTANT)
     Q_PROPERTY(bool shareSupported READ shareSupported CONSTANT)
     Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
+    Q_PROPERTY(bool localDeviceRequestPending READ localDeviceRequestPending NOTIFY localDeviceChanged)
+    Q_PROPERTY(QString localDeviceRequestedSource READ localDeviceRequestedSource NOTIFY localDeviceChanged)
     Q_PROPERTY(bool usesPlatformFontScaling READ usesPlatformFontScaling CONSTANT)
     Q_PROPERTY(qreal keyboardTop READ keyboardTop NOTIFY keyboardChanged)
     Q_PROPERTY(int fontRevision READ fontRevision NOTIFY typographyChanged)
     Q_PROPERTY(int inputFailureKind READ inputFailureKind NOTIFY runResultChanged)
     Q_PROPERTY(int inputFailureCode READ inputFailureCode NOTIFY runResultChanged)
     Q_PROPERTY(int terminalReason READ terminalReason NOTIFY runResultChanged)
+    Q_PROPERTY(QVariantMap receiverHealth READ receiverHealth NOTIFY runResultChanged)
     Q_PROPERTY(QString audioRoute READ audioRoute NOTIFY audioRouteChanged)
     Q_PROPERTY(bool notificationPermissionNeeded READ notificationPermissionNeeded NOTIFY notificationPermissionChanged)
 
@@ -193,6 +196,27 @@ class DecoderHost : public QObject {
         return 0;
     }
 
+    /**
+     * @brief Why the current or last session's receiver ended, scoped to that session (#647).
+     *
+     * {state, source, session}: @c state is "ok", "lost" (the receiver was unplugged) or "failed" (it stopped
+     * delivering samples); @c source names the session's receiver ("usb" for an RTL-SDR, "airspy") and @c session
+     * the service run, both empty (and 0) while the state is "ok". A host that reports it clears it to "ok" on a new
+     * start and on a new access request. Hosts with no brokered receiver always answer healthyReceiver().
+     */
+    virtual QVariantMap
+    receiverHealth() const {
+        return healthyReceiver();
+    }
+
+    /** @brief The receiverHealth() of a session whose receiver did not end. */
+    static QVariantMap
+    healthyReceiver() {
+        return {{QStringLiteral("state"), QStringLiteral("ok")},
+                {QStringLiteral("source"), QString()},
+                {QStringLiteral("session"), qlonglong(0)}};
+    }
+
     virtual QString
     audioRoute() const {
         return QStringLiteral("System default");
@@ -311,6 +335,18 @@ class DecoderHost : public QObject {
     virtual int
     localDeviceFailureKind() const {
         return NoDeviceFailure;
+    }
+
+    /** @brief Whether an access request for a brokered receiver is waiting for its answer (#647). */
+    virtual bool
+    localDeviceRequestPending() const {
+        return false;
+    }
+
+    /** @brief The source ("usb", "airspy") the last access request asked for; empty before any request. */
+    virtual QString
+    localDeviceRequestedSource() const {
+        return {};
     }
 
   public Q_SLOTS:

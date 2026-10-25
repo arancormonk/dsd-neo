@@ -167,10 +167,13 @@ RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known r
 `nativeStop` `userRequested = true` (abandoning pending rdio uploads), and a stop intent with a missing or unknown cause
 drains. Its source check first pins the cause every production caller passes: each `nativeStop` call goes through
 `EngineStop.request`, a USB detach and the Activity and service teardowns drain, and both `ACTION_STOP` senders (the Qt
-host's Stop listening and the notification's Stop action) say `USER`.
+host's Stop listening and the notification's Stop action) say `USER`. A second source check reads `DsdNative.kt` against
+`android/*.cpp` (the binding never compiles on the JVM): every `external fun` has its JNI definition, `nativeStop` takes
+the cause's wire value, and `nativeInit` installs the unplug-owner grace (`dsd_android::install_receiver_policy()`).
 The same suite also runs `DecoderService.kt` itself with controlled native-run and intent-delivery boundaries:
 cancellation before callbacks, rejected dispatch and missing Activity context, notification cancellation before
-notification work, task removal without Activity destruction, a user Stop during a lifecycle drain, a refused native
+notification work, task removal without Activity destruction, a user Stop during a lifecycle drain (each stop passing
+its own cause), the lifecycle record carrying its own session's ending and receiver, a refused native
 stop remaining retryable, a delayed stop after a subsequent start, and ordered cancellation during configure or before
 start delivery. Worker completion cases hold `stopSelf(id)` while the next run starts, and finish the old run while
 an arriving START is promoting its notification; both check the old id stays attached to the completed run.

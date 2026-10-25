@@ -14,6 +14,9 @@ struct LocalDeviceState {
     QString text;
     int failureKind = dsd_qt::DecoderHost::NoDeviceFailure;
     QString name = QStringLiteral("RTL-SDR");
+    bool pending = false;
+    QString requestedSource;
+    QString requestedSerial;
 
     void
     apply(dsd_qt::DecoderHost& host, const QJsonObject& record) {
@@ -27,8 +30,13 @@ struct LocalDeviceState {
         const bool nextReady = record.value(QStringLiteral("ready")).toBool();
         const QString nextText = record.value(QStringLiteral("text")).toString();
         const QString nextName = record.value(QStringLiteral("name")).toString(QStringLiteral("RTL-SDR"));
+        // UsbSourceManager's outstanding access request; a record without one has none.
+        const bool nextPending = record.value(QStringLiteral("pending")).toBool();
+        const QString nextRequestedSource = record.value(QStringLiteral("requestedSource")).toString();
+        const QString nextRequestedSerial = record.value(QStringLiteral("requestedSerial")).toString();
         if (serial == nextSerial && source == nextSource && ready == nextReady && text == nextText
-            && failureKind == failure && name == nextName) {
+            && failureKind == failure && name == nextName && pending == nextPending
+            && requestedSource == nextRequestedSource && requestedSerial == nextRequestedSerial) {
             return;
         }
         serial = nextSerial;
@@ -37,6 +45,9 @@ struct LocalDeviceState {
         text = nextText;
         failureKind = failure;
         name = nextName;
+        pending = nextPending;
+        requestedSource = nextRequestedSource;
+        requestedSerial = nextRequestedSerial;
         Q_EMIT host.localDeviceChanged();
     }
 };
