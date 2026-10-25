@@ -59,12 +59,15 @@ UiController::~UiController() = default;
 // WP-S2: attachment consumption and target lookup happen outside this pure decision.
 void
 UiController::requestAutoStart(bool enabled, bool onboardingDone, const QString& kind, const QString& uid,
-                               const QVariantMap& target) {
+                               const QVariantMap& target, const QString& attachedKind) {
     const bool exists = !uid.isEmpty() && target.value(QStringLiteral("uid")).toString() == uid
                         && (kind == QStringLiteral("saved") || kind == QStringLiteral("scan"));
+    // #647 D3a: the receiver that just attached, not whatever else is on the bus, decides.
+    const QString source = target.value(QStringLiteral("sourceType")).toString();
+    const bool kindMatches =
+        (source == QStringLiteral("usb") || source == QStringLiteral("airspy")) && source == attachedKind;
     if (m_host
-        && autoStartAllowed(enabled, onboardingDone, m_host->sessionState(), m_autoStartBlocked, exists,
-                            target.value(QStringLiteral("sourceType")).toString() == QStringLiteral("usb"))) {
+        && autoStartAllowed(enabled, onboardingDone, m_host->sessionState(), m_autoStartBlocked, exists, kindMatches)) {
         Q_EMIT autoStartRequested(kind, uid);
     }
 }

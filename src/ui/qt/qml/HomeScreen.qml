@@ -299,11 +299,13 @@ Item {
             }
 
             FailureCard {
+                objectName: "homeFailureCard"
                 width: parent.width
                 visible: (screen.failure.message || "").length > 0
                 message: screen.failure.message || ""
                 source: screen.failure.source || ""
                 canRetry: screen.failure.canRetry === true
+                retryText: screen.failure.retryText || qsTr("Retry")
                 onRetry: screen.retryFailure()
                 onEdit: screen.editFailure()
                 onDismiss: screen.dismissFailure()

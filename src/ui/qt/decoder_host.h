@@ -550,7 +550,13 @@ class DecoderHost : public QObject {
     void sessionInitialized();
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postalCode, const QString& countryCode, const QString& error);
-    void localDeviceAttached(const QString& deviceName);
+    /**
+     * @brief A supported receiver was plugged in; each attachment is delivered once.
+     *
+     * @p attachment is "<kind>:<device name>": the kind is "usb" for an RTL-SDR or "airspy", and decides which
+     * saved system or scan list may start on it (#647 D3a); the name is the device's own, for display only.
+     */
+    void localDeviceAttached(const QString& attachment);
     void runningChanged();
     void statusTextChanged();
     void sessionStateChanged();

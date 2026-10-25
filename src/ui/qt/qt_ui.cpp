@@ -89,13 +89,15 @@ void
 wire_attachment(DecoderHost* host, UiController* controller, const AppPrefs* prefs, const SavedSystemsModel* systems,
                 const ScanListsModel* scanLists) {
     // WP-S2: resolve stable identities at the attachment edge; no recency writes here.
-    QObject::connect(host, &DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+    QObject::connect(host, &DecoderHost::localDeviceAttached, controller, [=](const QString& attachment) {
+        const QString attachedKind = attachment.section(QLatin1Char(':'), 0, 0);
         const QString kind = prefs->lastStartedKind();
         const QString uid = prefs->lastStartedUid();
         const QVariantMap target = kind == QStringLiteral("saved")  ? systems->getByUid(uid)
                                    : kind == QStringLiteral("scan") ? scanLists->getByUid(uid)
                                                                     : QVariantMap();
-        controller->requestAutoStart(prefs->autoStartOnAttach(), prefs->onboardingDone(), kind, uid, target);
+        controller->requestAutoStart(prefs->autoStartOnAttach(), prefs->onboardingDone(), kind, uid, target,
+                                     attachedKind);
     });
 }
 

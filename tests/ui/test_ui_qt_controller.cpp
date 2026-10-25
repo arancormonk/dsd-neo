@@ -446,31 +446,74 @@ test_auto_start_requests() {
                          check(uid == "target");
                      });
     const QVariantMap usb{{"uid", "target"}, {"sourceType", "usb"}};
-    controller.requestAutoStart(true, true, "saved", "target", usb);
+    controller.requestAutoStart(true, true, "saved", "target", usb, "usb");
     check(requests == 0); // No QML binding installed yet.
     controller.setProperty("autoStartBlocked", false);
-    controller.requestAutoStart(true, true, "saved", "target", usb);
+    controller.requestAutoStart(true, true, "saved", "target", usb, "usb");
     check(requests == 1 && requestedKind == "saved");
-    controller.requestAutoStart(true, true, "scan", "target", usb);
+    controller.requestAutoStart(true, true, "scan", "target", usb, "usb");
     check(requests == 2 && requestedKind == "scan");
-    controller.requestAutoStart(true, true, "explore", "target", usb);
-    controller.requestAutoStart(true, true, "saved", "deleted", usb);
-    controller.requestAutoStart(true, true, "saved", "target", {});
-    controller.requestAutoStart(true, true, "saved", "", {});
+    controller.requestAutoStart(true, true, "explore", "target", usb, "usb");
+    controller.requestAutoStart(true, true, "saved", "deleted", usb, "usb");
+    controller.requestAutoStart(true, true, "saved", "target", {}, "usb");
+    controller.requestAutoStart(true, true, "saved", "", {}, "usb");
     for (const char* source : {"rtltcp", "udp", "tcp", "file", ""}) {
-        controller.requestAutoStart(true, true, "saved", "target", {{"uid", "target"}, {"sourceType", source}});
+        // Not even an attachment that names the same kind makes a network or file target a receiver's.
+        controller.requestAutoStart(true, true, "saved", "target", {{"uid", "target"}, {"sourceType", source}}, source);
     }
-    controller.requestAutoStart(false, true, "saved", "target", usb);
-    controller.requestAutoStart(true, false, "saved", "target", usb);
+    controller.requestAutoStart(false, true, "saved", "target", usb, "usb");
+    controller.requestAutoStart(true, false, "saved", "target", usb, "usb");
     for (auto phase : {Host::Starting, Host::Running, Host::Stopping, Host::Failed}) {
         host.phase = phase;
-        controller.requestAutoStart(true, true, "saved", "target", usb);
+        controller.requestAutoStart(true, true, "saved", "target", usb, "usb");
     }
     host.phase = Host::Idle;
     controller.setProperty("autoStartBlocked", true);
-    controller.requestAutoStart(true, true, "saved", "target", usb);
+    controller.requestAutoStart(true, true, "saved", "target", usb, "usb");
     controller.setProperty("autoStartBlocked", false);
     check(requests == 2); // Suppressed requests do not retry when the gate opens.
+}
+
+// #647 D3a: an Airspy target resumes like an RTL-SDR one, but only when the receiver that just attached is of the
+// target's kind. What else is on the bus does not count, so the second receiver plugged in, in either order, resumes
+// only a target on its own kind.
+static void
+test_auto_start_follows_the_attached_kind() {
+    Host host;
+    host.phase = Host::Idle;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    controller.setProperty("autoStartBlocked", false);
+    QStringList requested;
+    QObject::connect(&controller, &dsd_qt::UiController::autoStartRequested,
+                     [&](const QString& kind, const QString& uid) { requested << kind + ":" + uid; });
+    const QVariantMap airspy{{"uid", "air"}, {"sourceType", "airspy"}};
+    const QVariantMap rtl{{"uid", "rtl"}, {"sourceType", "usb"}};
+    controller.requestAutoStart(true, true, "saved", "air", airspy, "airspy");
+    check(requested == QStringList{"saved:air"});
+    controller.requestAutoStart(true, true, "scan", "air", airspy, "airspy");
+    check(requested == (QStringList{"saved:air", "scan:air"}));
+    requested.clear();
+    controller.requestAutoStart(true, true, "saved", "air", airspy, "usb");
+    controller.requestAutoStart(true, true, "saved", "rtl", rtl, "airspy");
+    controller.requestAutoStart(true, true, "saved", "air", airspy, "");
+    controller.requestAutoStart(true, true, "saved", "rtl", rtl, "fixture-usb");
+    check(requested.isEmpty());
+    for (const QStringList& order : {QStringList{"usb", "airspy"}, QStringList{"airspy", "usb"}}) {
+        for (const QVariantMap& target : {airspy, rtl}) {
+            requested.clear();
+            const QString uid = target.value("uid").toString();
+            for (const QString& attached : order) {
+                controller.requestAutoStart(true, true, "saved", uid, target, attached);
+            }
+            check(requested == QStringList{"saved:" + uid});
+        }
+    }
+    // A suppressed attachment of the right kind is consumed, not kept for when the gate opens.
+    requested.clear();
+    controller.setProperty("autoStartBlocked", true);
+    controller.requestAutoStart(true, true, "saved", "air", airspy, "airspy");
+    controller.setProperty("autoStartBlocked", false);
+    check(requested.isEmpty());
 }
 
 // Issue #525: the Radio sheet's NFM width control goes through the real bridge and decoder queue as
@@ -789,6 +832,7 @@ main(int argc, char** argv) {
     test_scan_row_edit_bridge();
     test_zero_bounds();
     test_auto_start_requests();
+    test_auto_start_follows_the_attached_kind();
     test_initial_usb_record();
     test_usb_request_record();
     test_usb_refusal_record();
@@ -1000,7 +1044,7 @@ main(int argc, char** argv) {
         check(QFile::exists(exportPath));
         dsd_app_frontend_runtime_stop();
         host.setPhase(Host::Idle);
-        Q_EMIT host.localDeviceAttached(QStringLiteral("RTL-SDR"));
+        Q_EMIT host.localDeviceAttached(QStringLiteral("usb:RTL-SDR"));
     };
     (void)dsd_app_frontend_redraw_consume();
     QEventLoop exportLoop;

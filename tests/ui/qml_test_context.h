@@ -128,6 +128,11 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
             m_running = true;
             Q_EMIT runningChanged();
             Q_EMIT sessionStateChanged();
+            // #647: as Android's, an accepted start replaces the last session's receiver ending.
+            if (health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
+                health = healthyReceiver();
+                Q_EMIT runResultChanged();
+            }
         }
         return acceptStart;
     }
@@ -202,6 +207,13 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return failure;
     }
 
+    int failureKind = 0;
+
+    int
+    inputFailureKind() const override {
+        return failureKind;
+    }
+
     // WP-S1: exercise the same brokered-USB gate as saved-system starts.
     bool
     localDeviceBrokered() const override {
@@ -213,8 +225,25 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return usbReady;
     }
 
+    // #647: what the last request asked for, and Android's acknowledgement of an ended session's receiver.
+    void
+    requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) override {
+        accessSource = source;
+        accessSerial = serial;
+        ++accessForSourceRequests;
+        requestLocalDeviceAccess();
+    }
+
+    QString accessSource;
+    QString accessSerial;
+    int accessForSourceRequests = 0;
+
     void
     requestLocalDeviceAccess() override {
+        if (!sessionActive() && health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
+            health = healthyReceiver();
+            Q_EMIT runResultChanged();
+        }
         ++usbRequests;
         // As Android does: the permission prompt is up until it is answered.
         if (requestPends) {
@@ -2050,9 +2079,10 @@ class Setup : public QObject {
     }
 
     // WP-S2: deliver a consumed host event, rather than bypassing policy with a start signal.
+    // #647: as Android's takeAttachment() words it, "<kind>:<device name>", for an RTL-SDR unless @p kind says.
     Q_INVOKABLE void
-    emitLocalDeviceAttached() {
-        Q_EMIT m_lifecycle_host->localDeviceAttached(QStringLiteral("fixture-usb"));
+    emitLocalDeviceAttached(const QString& kind = QStringLiteral("usb")) {
+        Q_EMIT m_lifecycle_host->localDeviceAttached(kind + QStringLiteral(":fixture"));
     }
 
     Q_INVOKABLE void
@@ -2120,6 +2150,28 @@ class Setup : public QObject {
     Q_INVOKABLE int
     dongleRetryRequests() const {
         return m_lifecycle_host->usbRequests;
+    }
+
+    /** @brief The access requests that named a receiver, and the last one's kind and serial (#647). */
+    Q_INVOKABLE QVariantMap
+    lastDeviceAccess() const {
+        return {{QStringLiteral("count"), m_lifecycle_host->accessForSourceRequests},
+                {QStringLiteral("source"), m_lifecycle_host->accessSource},
+                {QStringLiteral("serial"), m_lifecycle_host->accessSerial}};
+    }
+
+    Q_INVOKABLE void
+    resetDeviceAccess() {
+        m_lifecycle_host->accessForSourceRequests = 0;
+        m_lifecycle_host->accessSource.clear();
+        m_lifecycle_host->accessSerial.clear();
+    }
+
+    /** @brief The last session's input failure kind, as DecoderHost::inputFailureKind() reports it. */
+    Q_INVOKABLE void
+    setLifecycleFailureKind(int kind) {
+        m_lifecycle_host->failureKind = kind;
+        Q_EMIT m_lifecycle_host->runResultChanged();
     }
 
     // WP-D3: platform capability gate for the nearby search button.
@@ -2916,19 +2968,23 @@ class Setup : public QObject {
         auto* controller = new TestUiController(engine);
         auto* scan_lists = new dsd_qt::ScanListsModel(engine);
         // WP-S2: use the production pure policy for host attachment delivery in QML tests.
-        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER.
+        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER; this copies its
+        // #647 D3a target rule, and qt_ui.cpp's reading of the "<kind>:<device name>" attachment.
         for (ImportOnlyHost* attachmentHost : {m_import_host, static_cast<ImportOnlyHost*>(m_initializing_host)}) {
             QObject::connect(
-                attachmentHost, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+                attachmentHost, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString& attachment) {
+                    const QString attachedKind = attachment.section(QLatin1Char(':'), 0, 0);
                     const QString kind = app_prefs->lastStartedKind();
                     const QString uid = app_prefs->lastStartedUid();
                     const QVariantMap target = kind == QStringLiteral("saved")  ? saved_systems->getByUid(uid)
                                                : kind == QStringLiteral("scan") ? scan_lists->getByUid(uid)
                                                                                 : QVariantMap();
-                    if (dsd_qt::autoStartAllowed(
-                            app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(), attachmentHost->sessionState(),
-                            controller->autoStartBlocked, !target.isEmpty(),
-                            target.value(QStringLiteral("sourceType")).toString() == QStringLiteral("usb"))) {
+                    const QString source = target.value(QStringLiteral("sourceType")).toString();
+                    const bool kindMatches = (source == QStringLiteral("usb") || source == QStringLiteral("airspy"))
+                                             && source == attachedKind;
+                    if (dsd_qt::autoStartAllowed(app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(),
+                                                 attachmentHost->sessionState(), controller->autoStartBlocked,
+                                                 !target.isEmpty(), kindMatches)) {
                         controller->requestAutoStart(kind, uid);
                     }
                 });

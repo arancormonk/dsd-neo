@@ -38,6 +38,13 @@ Window {
         var kind = host.inputFailureKind || 0;
         if (startError.length)
             return startError;
+        // The answer to the access request a start waits on, not the last
+        // session's failure: that session is over, and this is what holds the
+        // start up now ("USB permission denied").
+        if (usbAccessText.length)
+            return usbAccessText;
+        if (receiverNoticeText.length)
+            return receiverNoticeText;
         if (kind === 1)
             return qsTr("Connection refused. Check the server address, port, and whether the server is running.");
         if (kind === 2)
@@ -54,9 +61,41 @@ Window {
             return qsTr("The source configuration could not be applied. Review its settings and imported files.");
         return awaitingUsbAccess ? usbAccessText : qsTr("The source could not be started. Review its settings or open Details.");
     }
+    // #647 D2a: the host's word on the last session's receiver, scoped to that
+    // session. Listen gives it a notice once the session is over; while it
+    // winds down, the Monitor's pill says LOST.
+    readonly property var receiverHealth: decoderHost && decoderHost.receiverHealth ? decoderHost.receiverHealth : ({state: "ok", source: ""})
+    readonly property bool receiverEnded: (receiverHealth.state === "lost" || receiverHealth.state === "failed") && !(decoderHost && decoderHost.sessionActive)
+    /**
+     * Why the last session stopped, when its receiver ended it, and what gets
+     * it back. Reconnect resumes the attempt Main started; after an Activity
+     * recreation there is none, so the notice says to start it again after
+     * Reconnect. @p search words it for Signal search's own screen, where the
+     * search is started again from its controls.
+     */
+    function receiverNotice(search) {
+        var lost = receiverHealth.state === "lost";
+        var receiver = receiverHealth.source === "airspy" ? qsTr("Airspy") : receiverHealth.source === "usb" ? qsTr("RTL-SDR") : qsTr("The receiver");
+        if (search)
+            return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then start the search again.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, then start the search again.")).arg(receiver).arg(qsTr("Signal search"));
+        var attempt = attemptedSource;
+        if (!attempt)
+            return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, tap Reconnect, then start it again.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, tap Reconnect, then start it again.")).arg(receiver).arg(qsTr("the session"));
+        var session = attempt.kind !== "explore" ? attempt.system.name || qsTr("the session") : attempt.system.signalSearch ? qsTr("Signal search") : qsTr("Explore");
+        return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, then tap Reconnect.")).arg(receiver).arg(session);
+    }
+    readonly property string receiverNoticeText: receiverEnded ? receiverNotice(false) : ""
     function retrySource() {
-        if (!attemptedSource || decoderHost.sessionActive || decoderHost.transitioning)
+        if (decoderHost.sessionActive || decoderHost.transitioning)
             return;
+        if (!attemptedSource) {
+            // D2a: a recreated Activity has no verified link from the
+            // service's run to a saved system or scan list, so Reconnect only
+            // asks for that receiver again; the notice says to start it after.
+            if (receiverEnded)
+                decoderHost.requestLocalDeviceAccessForSource(receiverHealth.source);
+            return;
+        }
         // The attempt itself, not just its kind: a failed Signal search start
         // is retried as a search, and an Explore-here start as that frequency.
         pendingRestart = {
@@ -310,14 +349,15 @@ Window {
     property bool scanListOpen: false
     property string scanWarnings: ""
     readonly property string usbAccessText: awaitingUsbAccess && decoderHost && !decoderHost.localDeviceReady ? decoderHost.localDeviceStatus : ""
-    readonly property string failureText: startError.length > 0 ? startError : usbAccessText.length > 0 ? usbAccessText : hostFailure
+    readonly property string failureText: startError.length > 0 ? startError : usbAccessText.length > 0 ? usbAccessText : receiverNoticeText.length > 0 ? receiverNoticeText : hostFailure
 
     // WP-S2: consume each attachment once; blocked events are never deferred.
     Binding {
         target: uiController
         property: "autoStartBlocked"
         // A backup flow counts for its whole length: its system pickers show no sheet.
-        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive
+        // So does a permission prompt of the host's own, until it is answered or expires (#647).
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive
     }
     Connections {
         target: uiController
@@ -577,9 +617,11 @@ Window {
 
     // Dismissing the banner abandons a start still waiting on USB access; the
     // flag must not linger, or a dongle detached minutes later while idle would
-    // resurrect a permission banner the user never asked about.
+    // resurrect a permission banner the user never asked about. It abandons a
+    // restart Retry queued for the decoder's next idle turn as well (B13).
     onDismissedFailureChanged: {
         if (dismissedFailure.length > 0) {
+            cancelPendingRestart();
             awaitingUsbAccess = false;
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
@@ -973,7 +1015,8 @@ Window {
             failure: ({
                     message: mainRoot.showFailure ? mainRoot.failureMessage() : "",
                     source: mainRoot.sourceLabel(),
-                    canRetry: !decoderHost.sessionActive && !decoderHost.transitioning
+                    canRetry: !decoderHost.sessionActive && !decoderHost.transitioning,
+                    retryText: mainRoot.receiverNoticeText.length > 0 && mainRoot.failureText === mainRoot.receiverNoticeText ? qsTr("Reconnect") : qsTr("Retry")
                 })
             // B1: an Airspy is as much a brokered receiver as an RTL-SDR.
             localDeviceRelevant: !mainRoot.showFailure || !mainRoot.attemptedSource || mainRoot.attemptedSource.system.sourceType === "usb" || mainRoot.attemptedSource.system.sourceType === "airspy"
@@ -1291,7 +1334,8 @@ Window {
         sessionActive: decoderHost.sessionActive
         leaving: mainRoot.leavingSearch
         sessionSource: metrics.radioSource || ({})
-        failure: mainRoot.failureText
+        // A receiver's ending is worded for this screen: the search starts again from here.
+        failure: mainRoot.receiverNoticeText.length > 0 && mainRoot.failureText === mainRoot.receiverNoticeText ? mainRoot.receiverNotice(true) : mainRoot.failureText
         onBackRequested: mainRoot.requestBack()
         onClosed: {
             mainRoot.abandonSignalSearchStart();

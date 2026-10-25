@@ -6,6 +6,8 @@ UiPanel {
     property string message: ""
     property string source: ""
     property bool canRetry: false
+    // "Reconnect" when the receiver ended the session (#647).
+    property string retryText: qsTr("Retry")
     Accessible.role: Accessible.AlertMessage
     Accessible.name: message
     Accessible.description: source
@@ -58,8 +60,9 @@ UiPanel {
             width: parent.width
             spacing: 8
             OutlineButton {
+                objectName: "failureRetry"
                 width: (parent.width - 8) / 2
-                text: qsTr("Retry")
+                text: card.retryText
                 enabled: card.canRetry
                 onClicked: card.retry()
             }
