@@ -1092,6 +1092,48 @@ test_load_and_apply_alerts_empty_event_mask(void) {
     return rc;
 }
 
+/* Issue #669 B10: an INI rtl_volume outside 0..3 reads as the default 1 on every radio source, as the local RTL setup
+   and the menu always read it: 10 would multiply the monitor audio tenfold, and the menu cycle could never return to
+   it. */
+static int
+test_rtl_volume_out_of_range_reads_as_default(void) {
+    static const char* const sources[] = {"rtl", "soapy", "rtltcp"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof sources / sizeof sources[0]; i++) {
+        for (int vol = -1; vol <= 10; vol++) {
+            char ini[256];
+            DSD_SNPRINTF(ini, sizeof ini,
+                         "[input]\nsource = \"%s\"\nrtl_freq = \"155.340M\"\nrtltcp_host = \"127.0.0.1\"\n"
+                         "rtltcp_port = 1234\nrtl_volume = %d\n",
+                         sources[i], vol);
+            char path[DSD_TEST_PATH_MAX];
+            if (write_temp_config(ini, path, sizeof path) != 0) {
+                return 1;
+            }
+            dsdneoUserConfig cfg;
+            if (dsd_user_config_load(path, &cfg) != 0) {
+                (void)remove(path);
+                return 1;
+            }
+            (void)remove(path);
+            static dsd_opts opts;
+            static dsd_state state;
+            reset_opts_and_state(opts, state);
+            opts.rtl_volume_multiplier = 2;
+            dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+            (void)dsd_rtl_input_spec_apply(&opts);
+            /* rtl_volume = 0 is the key's unset value, which keeps the volume the session had. */
+            const int want = (vol == 0) ? 2 : ((vol < 0 || vol > 3) ? 1 : vol);
+            if (opts.rtl_volume_multiplier != want) {
+                DSD_FPRINTF(stderr, "%s rtl_volume = %d gave %d, want %d\n", sources[i], vol,
+                            opts.rtl_volume_multiplier, want);
+                rc |= 1;
+            }
+        }
+    }
+    return rc;
+}
+
 static int
 test_load_and_apply_soapy_input_no_args(void) {
     static const char* ini = "[input]\n"
@@ -1125,7 +1167,7 @@ test_load_and_apply_soapy_input_no_args(void) {
     reset_opts_and_state(opts, state);
     opts.rtl_gain_value = 77;
     opts.rtl_dsp_bw_khz = 16;
-    opts.rtl_volume_multiplier = 9;
+    opts.rtl_volume_multiplier = 3;
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -1137,7 +1179,7 @@ test_load_and_apply_soapy_input_no_args(void) {
         DSD_FPRINTF(stderr, "rtlsdr_center_freq mismatch for soapy source: %u\n", opts.rtlsdr_center_freq);
         rc |= 1;
     }
-    if (opts.rtl_gain_value != 77 || opts.rtl_dsp_bw_khz != 16 || opts.rtl_volume_multiplier != 9) {
+    if (opts.rtl_gain_value != 77 || opts.rtl_dsp_bw_khz != 16 || opts.rtl_volume_multiplier != 3) {
         DSD_FPRINTF(stderr, "soapy defaults should preserve existing rtl tuning values gain=%d bw=%d vol=%d\n",
                     opts.rtl_gain_value, opts.rtl_dsp_bw_khz, opts.rtl_volume_multiplier);
         rc |= 1;
@@ -4962,6 +5004,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_imports_dir_follows_config_dir();
+    rc |= test_rtl_volume_out_of_range_reads_as_default();
     rc |= test_receive_defaults_and_row_inheritance();
     rc |= test_receive_boundary_waits_for_resume();
     rc |= test_rtl_bw_khz_72_round_trip();

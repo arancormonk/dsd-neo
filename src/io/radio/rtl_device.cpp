@@ -6915,7 +6915,10 @@ rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
 }
 
 int
-rtl_device_get_tuner_gain(struct rtl_device* dev) {
+rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db) {
+    if (!out_tenth_db) {
+        return -1;
+    }
     if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
         return DSD_ERR_NOT_SUPPORTED;
     }
@@ -6926,16 +6929,21 @@ rtl_device_get_tuner_gain(struct rtl_device* dev) {
         if (!dev->dev) {
             return -1;
         }
-        return rtlsdr_get_tuner_gain(dev->dev);
+        /* librtlsdr's gain tables reach below zero (E4K -10, FC0012/FC0013 -99 tenths): the value is the reading, and
+           only the missing device above is an error. */
+        *out_tenth_db = rtlsdr_get_tuner_gain(dev->dev);
+        return 0;
     }
     if (dev->backend == RTL_BACKEND_TCP) {
-        if (dev->agc_mode) {
-            return 0;
-        }
-        return dev->gain;
+        *out_tenth_db = dev->agc_mode ? 0 : dev->gain;
+        return 0;
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return dev->replay_cfg.tuner_gain_tenth_db;
+        if (dev->replay_cfg.tuner_gain_unknown) {
+            return DSD_ERR_NOT_SUPPORTED;
+        }
+        *out_tenth_db = dev->replay_cfg.tuner_gain_tenth_db;
+        return 0;
     }
 #ifdef USE_SOAPYSDR
     if (dev->backend == RTL_BACKEND_SOAPY) {
@@ -6952,7 +6960,8 @@ rtl_device_get_tuner_gain(struct rtl_device* dev) {
         if (rc != 0) {
             return rc;
         }
-        return (int)(gain_db * 10.0 + (gain_db >= 0.0 ? 0.5 : -0.5));
+        *out_tenth_db = (int)(gain_db * 10.0 + (gain_db >= 0.0 ? 0.5 : -0.5));
+        return 0;
     }
 #endif
     return -1;

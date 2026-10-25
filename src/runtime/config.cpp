@@ -1067,12 +1067,14 @@ config_init_costas(dsdneoRuntimeConfig& c) {
 
 static void
 config_init_ted(dsdneoRuntimeConfig& c) {
-    /* CQPSK/OP25 Gardner timing gain */
+    /* CQPSK/OP25 Gardner timing gain, in the range the setter allows (rtl_stream_set_ted_gain(): 0.01..0.5), so a
+       startup value can neither freeze the loop nor drive it past what any control sets. A value that is not a finite
+       number is no setting: the default stands (issue #669 B11). */
     const char* tg = getenv("DSD_NEO_TED_GAIN");
-    c.ted_gain_is_set = env_is_set(tg);
+    double v = 0.0;
+    c.ted_gain_is_set = env_is_set(tg) && env_parse_double_strict(tg, &v) && std::isfinite(v);
     if (c.ted_gain_is_set) {
-        double v = 0.0;
-        c.ted_gain = env_parse_double_strict(tg, &v) ? (float)v : 0.0f;
+        c.ted_gain = (float)((v < 0.01) ? 0.01 : ((v > 0.5) ? 0.5 : v));
     } else {
         c.ted_gain = 0.05f;
     }

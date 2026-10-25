@@ -790,7 +790,7 @@ test_rtltcp_tuning_tokens_and_bias(void) {
     }
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
-                 "rtltcp:radio.local:1234:769.00625M:28:3:24:-47:5:bias=off");
+                 "rtltcp:radio.local:1234:769.00625M:28:3:24:-47:3:bias=off");
     opts->rtl_bias_tee = 1;
     int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
@@ -803,7 +803,7 @@ test_rtltcp_tuning_tokens_and_bias(void) {
     test_rc |= expect_true("rtltcp frequency", opts->rtlsdr_center_freq == 769006250U);
     test_rc |=
         expect_true("rtltcp gain ppm bw volume", opts->rtl_gain_value == 28 && opts->rtlsdr_ppm_error == 3
-                                                     && opts->rtl_dsp_bw_khz == 24 && opts->rtl_volume_multiplier == 5);
+                                                     && opts->rtl_dsp_bw_khz == 24 && opts->rtl_volume_multiplier == 3);
     test_rc |= expect_true("rtltcp bias off", opts->rtl_bias_tee == 0);
     test_rc |= expect_double_near("rtltcp squelch", opts->rtl_squelch_level, dB_to_pwr(-47.0), 1e-12);
 
@@ -907,7 +907,9 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
                            opts->rtl_gain_value == 14 && opts->rtlsdr_ppm_error == -2);
     test_rc |= expect_true("rtltcp invalid bandwidth defaults", opts->rtl_dsp_bw_khz == 48);
     test_rc |= expect_true("rtltcp invalid bias off", opts->rtl_bias_tee == 0);
-    test_rc |= expect_true("rtltcp invalid volume parsed", opts->rtl_volume_multiplier == 7);
+    /* A monitor gain outside 0..3 reads as the default 1, as on every input (issue #669 B10): 7 would multiply the
+       audio sevenfold, and the menu cycle could never return to it. */
+    test_rc |= expect_true("rtltcp out-of-range volume reads as 1", opts->rtl_volume_multiplier == 1);
     test_rc |= expect_double_near("rtltcp invalid squelch", opts->rtl_squelch_level, dB_to_pwr(-35.0), 1e-12);
 
     free_test_runtime(opts, state);
@@ -917,13 +919,13 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     }
     /* An unparseable squelch token is not a request to switch the squelch off:
      * the setting the session already had has to survive it. */
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:sql.example:1234:450M:11:0:24:loud:5");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:sql.example:1234:450M:11:0:24:loud:3");
     opts->rtl_squelch_level = 0.25;
     rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     test_rc |= expect_true("rtltcp unparseable sql run ok", rc == 0);
     test_rc |=
         expect_double_near("rtltcp unparseable sql keeps previous threshold", opts->rtl_squelch_level, 0.25, 1e-12);
-    test_rc |= expect_true("rtltcp unparseable sql still parses volume", opts->rtl_volume_multiplier == 5);
+    test_rc |= expect_true("rtltcp unparseable sql still parses volume", opts->rtl_volume_multiplier == 3);
 
     free_test_runtime(opts, state);
 

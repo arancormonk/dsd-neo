@@ -2301,6 +2301,38 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
+/* Issue #669 B11: DSD_NEO_TED_GAIN takes the range the setter allows (0.01..0.5, rtl_stream_set_ted_gain()), so a
+   startup value can neither freeze the CQPSK timing loop (0, or text that does not parse, which read as 0) nor drive it
+   past what any control could set (10, nan). Values inside the range are applied exactly as before. */
+static int
+test_ted_gain_env_range(void) {
+    static const struct {
+        const char* value;
+        int is_set;
+        double gain;
+    } cases[] = {
+        {"0.025", 1, 0.025}, {"0.3", 1, 0.3},  {"0.5", 1, 0.5},  {"0.01", 1, 0.01},
+        {"10", 1, 0.5},      {"0.6", 1, 0.5},  {"0", 1, 0.01},   {"-0.2", 1, 0.01},
+        {"abc", 0, 0.05},    {"nan", 0, 0.05}, {"inf", 0, 0.05}, {"1e400", 0, 0.05},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        setenv("DSD_NEO_TED_GAIN", cases[i].value, 1);
+        dsd_neo_config_init();
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (!cfg || cfg->ted_gain_is_set != cases[i].is_set || std::fabs(cfg->ted_gain - cases[i].gain) > 1e-6) {
+            DSD_FPRINTF(stderr, "DSD_NEO_TED_GAIN=%s: is_set %d gain %.6f, want %d %.6f\n", cases[i].value,
+                        cfg ? cfg->ted_gain_is_set : -1, cfg ? (double)cfg->ted_gain : -1.0, cases[i].is_set,
+                        cases[i].gain);
+            rc = 1;
+        }
+    }
+    unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init();
+    return rc;
+}
+
 static int
 test_config_pointer_process_stable(void) {
     dsd_neo_config_init();
@@ -2607,6 +2639,10 @@ main(void) {
         return rc;
     }
     rc = test_dsp_misc_env();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_ted_gain_env_range();
     if (rc != 0) {
         return rc;
     }

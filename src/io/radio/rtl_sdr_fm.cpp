@@ -1931,8 +1931,9 @@ rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
         /* In auto mode, report AGC without a specific gain value. */
         return 0;
     }
-    int g = rtl_device_get_tuner_gain(rtl_device_handle);
-    if (g < 0) {
+    /* The status says whether there is a reading; the value may be negative (E4K, FC0012/FC0013). */
+    int g = 0;
+    if (rtl_device_get_tuner_gain(rtl_device_handle, &g) != 0) {
         return -1;
     }
     if (out_tenth_db) {
@@ -2958,9 +2959,9 @@ demod_autogain_latch_manual_target(DemodAutogainState* st) {
     if (!st || st->target_initialized) {
         return;
     }
-    int cg = rtl_device_get_tuner_gain(rtl_device_handle);
+    int cg = 0;
     int is_auto_boot = rtl_device_is_auto_gain(rtl_device_handle);
-    if (!is_auto_boot && cg >= 0) {
+    if (!is_auto_boot && rtl_device_get_tuner_gain(rtl_device_handle, &cg) == 0) {
         st->manual_target = cg;
     }
     st->target_initialized = 1;
@@ -6596,7 +6597,15 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     cfg->center_frequency_hz = (uint64_t)opts->rtlsdr_center_freq;
     cfg->capture_center_frequency_hz = (uint64_t)load_dongle_frequency();
     cfg->ppm = load_dongle_ppm_error();
-    cfg->tuner_gain_tenth_db = rtl_device_get_tuner_gain(rtl_device_handle);
+    /* A tuner that reports no gain (Airspy, a Soapy device without a gain range) records none, never the read's error
+       code as a gain. */
+    int tuner_gain = 0;
+    if (rtl_device_get_tuner_gain(rtl_device_handle, &tuner_gain) == 0) {
+        cfg->tuner_gain_tenth_db = tuner_gain;
+    } else {
+        cfg->tuner_gain_tenth_db = 0;
+        cfg->tuner_gain_unknown = 1;
+    }
     cfg->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
     cfg->base_decimation = (uint32_t)((demod.downsample_passes > 0) ? (1U << demod.downsample_passes) : 1U);
     cfg->post_downsample = (uint32_t)((demod.post_downsample > 0) ? demod.post_downsample : 1);
@@ -10487,8 +10496,8 @@ static int
 rtl_stream_apply_manual_retune_gain(int tuner_gain_tenth_db) {
     int rc = rtl_device_set_gain_nearest(rtl_device_handle, tuner_gain_tenth_db);
     if (rc == 0) {
-        int applied = rtl_device_get_tuner_gain(rtl_device_handle);
-        dongle_note_gain(applied >= 0 ? applied : tuner_gain_tenth_db);
+        int applied = 0;
+        dongle_note_gain(rtl_device_get_tuner_gain(rtl_device_handle, &applied) == 0 ? applied : tuner_gain_tenth_db);
     }
     return rc;
 }

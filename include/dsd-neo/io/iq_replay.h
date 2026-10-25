@@ -54,6 +54,9 @@ typedef struct {
     uint64_t data_bytes;
     int ppm;
     int tuner_gain_tenth_db;
+    /* 1 when the capture did not know its tuner gain ("tuner_gain_known": false; or, in metadata written before that
+     * field existed, an Airspy capture, whose tuner never reported one): tuner_gain_tenth_db is then no reading. */
+    int tuner_gain_unknown;
     int rtl_dsp_bw_khz;
     uint32_t base_decimation;
     uint32_t post_downsample;

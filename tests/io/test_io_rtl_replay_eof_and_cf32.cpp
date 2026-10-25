@@ -3501,6 +3501,83 @@ test_loop_pass_that_submits_nothing_ends(void) {
     return rc;
 }
 
+/* The gain a replay reports is the one its capture recorded, negative gains included: librtlsdr's tables reach -9.9 dB
+ * (FC0012/FC0013) and -1.0 dB (E4K), and a status separate from the value keeps them readings rather than failures
+ * (issue #669 B9), which the frontends' tuner_gain_valid mirrors. A capture whose tuner reported no gain says so
+ * ("tuner_gain_known": false) and replays without one; so does a legacy Airspy capture, which recorded the read's
+ * error code instead. */
+static int
+test_replay_reports_the_recorded_tuner_gain(void) {
+    int rc = 0;
+    const int gains[] = {-99, -10, 0, 270};
+    for (size_t i = 0; i < sizeof gains / sizeof gains[0]; i++) {
+        char metadata_path[DSD_TEST_PATH_MAX];
+        if (make_replay_fixture_with_gain(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8,
+                                          "post_mute_pre_widen", 1, kReplayChunkBytes * 2U, gains[i])
+            != 0) {
+            return 1;
+        }
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+            stop_and_destroy_stream(ctx);
+            return 1;
+        }
+        int gain = 12345;
+        int is_auto = -1;
+        rc |= expect_int_eq("replay gain read succeeds", rtl_stream_get_gain(&gain, &is_auto), 0);
+        rc |= expect_int_eq("replay gain is the recorded one", gain, gains[i]);
+        rc |= expect_int_eq("replay gain is manual", is_auto, 0);
+        stop_and_destroy_stream(ctx);
+    }
+
+    /* No gain recorded: no reading. */
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture_with_gain(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                                      kReplayChunkBytes * 2U, 0)
+        != 0) {
+        return 1;
+    }
+    rc |= rewrite_sidecar_text(metadata_path, "\"tuner_gain_known\": true,", "\"tuner_gain_known\": false,");
+    dsd_iq_replay_config cfg;
+    char err[256] = {0};
+    rc |= expect_int_eq("unknown-gain sidecar reads", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof err),
+                        DSD_IQ_OK);
+    rc |= expect_int_eq("unknown gain flagged", cfg.tuner_gain_unknown, 1);
+    dsd_iq_replay_config_clear(&cfg);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    int gain = 0;
+    rc |= expect_int_eq("unknown gain is no reading", rtl_stream_get_gain(&gain, NULL), -1);
+    stop_and_destroy_stream(ctx);
+
+    /* A legacy Airspy capture: no "tuner_gain_known", and the error code as its gain. */
+    if (make_replay_fixture_with_gain(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                                      kReplayChunkBytes * 2U, -2)
+        != 0) {
+        return 1;
+    }
+    rc |= rewrite_sidecar_text(metadata_path, "  \"tuner_gain_known\": true,\n", "");
+    rc |= rewrite_sidecar_text(metadata_path, "\"source_backend\": \"rtl\"", "\"source_backend\": \"airspy\"");
+    rc |= expect_int_eq("legacy airspy sidecar reads",
+                        dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof err), DSD_IQ_OK);
+    rc |= expect_int_eq("legacy airspy gain unknown", cfg.tuner_gain_unknown, 1);
+    rc |= expect_int_eq("legacy airspy gain cleared", cfg.tuner_gain_tenth_db, 0);
+    dsd_iq_replay_config_clear(&cfg);
+    /* A legacy capture from any other tuner keeps its recorded gain. */
+    rc |= rewrite_sidecar_text(metadata_path, "\"source_backend\": \"airspy\"", "\"source_backend\": \"rtl\"");
+    rc |= expect_int_eq("legacy rtl sidecar reads", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof err),
+                        DSD_IQ_OK);
+    rc |= expect_int_eq("legacy rtl gain known", cfg.tuner_gain_unknown, 0);
+    rc |= expect_int_eq("legacy rtl gain kept", cfg.tuner_gain_tenth_db, -2);
+    dsd_iq_replay_config_clear(&cfg);
+    return rc;
+}
+
 /* An I/Q replay has no tuner gain to adjust, so the supervisory tuner autogain stays off under it even when the runtime
  * config enables it (DSD_NEO_TUNER_AUTOGAIN) and the capture records no gain, which is where a live open turns it on:
  * its hold and throttle windows run on real time, and its adjustments would only log on a wall-clock cadence. A flag
@@ -3554,6 +3631,7 @@ main(void) {
     }
     int rc = 0;
     rc |= test_replay_eof_drain_delivers_final_block();
+    rc |= test_replay_reports_the_recorded_tuner_gain();
     rc |= test_replay_read_survives_clear_at_eof();
     rc |= test_replay_read_error_ends_stream();
     rc |= test_replay_reader_start_failure_unwinds();

@@ -422,7 +422,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
             dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
         dsd_squelch_setting_store(opts, &setting);
     }
-    opts->rtl_volume_multiplier = vol;
+    opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(vol);
 }
 
 static int

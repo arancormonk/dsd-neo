@@ -78,6 +78,11 @@ The writer records:
   short. Reaching the limit is not data loss and is not counted in `capture_drops`, so this is what distinguishes a
   completed capped capture from one that is still running. Absent from metadata written by older builds, where it reads
   back as `false`.
+- `tuner_gain_tenth_db` and `tuner_gain_known`: the tuner gain in tenths of a dB as the device reported it (negative
+  gains are real: an E4K's lowest is -1.0 dB, an FC0012's -9.9 dB), and `false` when the tuner reported none (an
+  Airspy, a SoapySDR device without a gain range), with the gain written as 0. Replay reports no gain then. Metadata
+  written by older builds has no `tuner_gain_known`; an Airspy capture among them recorded an error code as its gain and
+  replays without one, and any other reads as known.
 - retune fields (`contains_retunes`, `capture_retune_count`).
 - for v2 captures, an `events` array describing scheduled replay events.
 

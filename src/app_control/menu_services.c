@@ -2202,10 +2202,7 @@ svc_rtl_set_volume_mult(dsd_opts* opts, int mult) {
     if (!opts) {
         return -1;
     }
-    if (mult < 0 || mult > 3) {
-        mult = 1;
-    }
-    opts->rtl_volume_multiplier = mult;
+    opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(mult);
     return 0;
 }
 
