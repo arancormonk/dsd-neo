@@ -3906,7 +3906,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`: `getFrameSync()` rebuilds its window in
   place and keeps hunting, so neither its no-sync hooks nor the engine's `noCarrier()` after a no-sync return run,
   since the dwell goes on, from the budget path and from the matchless-pass timeout alike, which can reach the point
-  on the same symbol); P25p1 alone and a trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep
+  on the same symbol; a modulation lock applied live ends a probe or a comparison in flight at the next
+  `getFrameSync()` entry, `frame_sync_apply_cli_mod_lock()`, and the handback refuses under a lock);
+  P25p1 alone and a trunk-scan target's trial (`frame_sync_trunk_scan_p25p1_trial()`) keep
   the whole dwell, and the rotation and dwell lengths are unchanged. A decoded NID (`dsd_dispatch_handle_p25p1()`)
   records the chain that carried it (`p25_p1_validated_rf_mod`, the learned modulation the hold, the hunt's restore
   and trunk retunes read). The first

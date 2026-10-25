@@ -830,6 +830,62 @@ run_compare_trial_pass_keeps_hunting_case(size_t uncounted_at) {
     return rc;
 }
 
+/* A modulation lock applied live (a config's demod = "qpsk", the UI's modulation chip) while a CQPSK probe, or a chain
+   comparison, is in flight ends it: the lock owns the demodulator, so the trial's handback, which would put the decoder
+   and the front end on C4FM halfway through the dwell, does not run, and neither does the comparison's next pass. */
+static int
+run_lock_ends_probe_case(int comparing) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static char pattern[128];
+    init_common_wav_opts_state(&opts, &state);
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate lock state buffers\n");
+        return 1;
+    }
+    opts.mod_cli_lock = 0;
+    opts.mod_gfsk = 0;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)fake_ctx;
+    state.sps_hunt_idx = 0;
+    set_profile_timing(&opts, &state, 0);
+    dsd_frame_sync_reset_mod_state();
+    state.rf_mod = 1;
+    state.p25_p1_mod_probe_active = 1;
+    if (comparing) {
+        state.p25_p1_mod_compare.phase = 1;
+        state.p25_p1_mod_compare.incumbent_rf_mod = 1;
+        state.p25_p1_mod_compare.carrier_seq = state.carrier_seq;
+        state.p25_p1_validated_rf_mod = 1;
+    }
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell / 2 - 5;
+    /* The lock arrives: -mq. */
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_c4fm = 0;
+
+    DSD_MEMSET(pattern, '1', 40);
+    DSD_MEMCPY(pattern + 40, DMR_BS_DATA_SYNC, strlen(DMR_BS_DATA_SYNC) + 1);
+    g_sync_pattern = pattern;
+    g_symbol_index = 0U;
+    (void)getFrameSync(&opts, &state);
+    g_sync_pattern = DMR_BS_DATA_SYNC;
+
+    int rc = 0;
+    if (state.rf_mod != 1 || state.p25_p1_mod_probe_active != 0 || state.p25_p1_mod_compare.phase != 0) {
+        DSD_FPRINTF(stderr,
+                    "lock mid-%s: rf_mod=%d probe=%d phase=%d, expected the lock's CQPSK and nothing in flight\n",
+                    comparing ? "comparison" : "probe", state.rf_mod, state.p25_p1_mod_probe_active,
+                    state.p25_p1_mod_compare.phase);
+        rc = 1;
+    }
+    state.rtl_ctx = NULL;
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -841,6 +897,8 @@ main(void) {
     rc |= run_sync_after_carrier_boundary_case();
     rc |= run_cqpsk_handback_keeps_hunting_case(40);
     rc |= run_cqpsk_handback_keeps_hunting_case(DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    rc |= run_lock_ends_probe_case(0);
+    rc |= run_lock_ends_probe_case(1);
     rc |= run_compare_trial_pass_keeps_hunting_case(SIZE_MAX);
     rc |= run_compare_trial_pass_keeps_hunting_case(100U);
     return rc;

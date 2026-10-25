@@ -2374,6 +2374,16 @@ dsd_frame_sync_test_reset_p25_trunk_tick_state(void) {
 static inline void
 frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
     if (opts->mod_cli_lock) {
+        /* A lock applied live (a config's demod, the modulation chip, a scan row's modulation) owns the demodulator
+           from here: a CQPSK probe or a chain comparison still in flight ends, so neither the trial's handback nor a
+           pass switches the chain against it. A chain step, under the tick guard. */
+        if (state->p25_p1_mod_probe_active || state->p25_p1_mod_compare.phase != 0) {
+            int taken = 0;
+            (void)frame_sync_p25p1_chain_step_begin(opts, state, &taken);
+            frame_sync_p25p1_mod_compare_abort(opts, state, 1, 0);
+            state->p25_p1_mod_probe_active = 0;
+            frame_sync_p25p1_chain_step_end(taken);
+        }
         int forced = opts->mod_qpsk ? 1 : (opts->mod_gfsk ? 2 : 0);
         state->rf_mod = forced;
     }
@@ -4314,9 +4324,9 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
  */
 static int
 frame_sync_p25p1_cqpsk_trial_half_dwell_due(const dsd_opts* opts, const dsd_state* state, int dwell) {
-    if (!state->p25_p1_mod_probe_active || state->rf_mod != 1 || state->p25_p1_mod_compare.phase != 0
-        || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || state->sps_hunt_counter < dwell / 2
-        || state->sps_hunt_counter >= dwell) {
+    if (opts->mod_cli_lock || !state->p25_p1_mod_probe_active || state->rf_mod != 1
+        || state->p25_p1_mod_compare.phase != 0 || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+        || state->sps_hunt_counter < dwell / 2 || state->sps_hunt_counter >= dwell) {
         return 0;
     }
     return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1)
