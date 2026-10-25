@@ -30,6 +30,13 @@ struct airspy_source {
     dsd_airspy_config config{};
     dsd_airspy_info info{};
     std::atomic<uint64_t> drops{0};
+    /* Counted first thing by every receive callback; the stream monitor reads it, without the lock, to tell a receiver
+     * that went silent. */
+    std::atomic<uint64_t> progress{0};
+    /* Set while reconfigure() stops and restarts the stream, so the monitor counts no silence then. */
+    std::atomic<int> reconfiguring{0};
+    /* Bumped by every airspy_start_rx() that succeeded. */
+    std::atomic<uint64_t> generation{0};
     uint32_t frequency = 0;
     bool started = false;
     bool owns_fd = false;
@@ -59,11 +66,14 @@ checked(int result, const char* operation) {
 
 static int
 receive(airspy_transfer* transfer) {
-    if (!transfer || !transfer->ctx || !transfer->samples || transfer->sample_count <= 0
-        || transfer->sample_type != AIRSPY_SAMPLE_FLOAT32_IQ) {
+    if (!transfer || !transfer->ctx) {
         return -1;
     }
     auto* s = static_cast<airspy_source*>(transfer->ctx);
+    s->progress.fetch_add(1, std::memory_order_relaxed);
+    if (!transfer->samples || transfer->sample_count <= 0 || transfer->sample_type != AIRSPY_SAMPLE_FLOAT32_IQ) {
+        return -1;
+    }
     s->drops.fetch_add(transfer->dropped_samples, std::memory_order_relaxed);
     s->callback(s->context, static_cast<const float*>(transfer->samples), (size_t)transfer->sample_count,
                 transfer->dropped_samples);
@@ -235,6 +245,8 @@ airspy_source_start(airspy_source* s) {
     if (rc != 0) {
         // The SDK can leave submitted transfers active after thread creation fails.
         (void)checked(airspy_stop_rx(s->device), "stop after failed start");
+    } else {
+        s->generation.fetch_add(1, std::memory_order_relaxed);
     }
     s->started = rc == 0;
     return rc;
@@ -277,11 +289,42 @@ airspy_source_running(airspy_source* s) {
     return s->started && airspy_is_streaming(s->device) == AIRSPY_TRUE;
 }
 
+uint64_t
+airspy_source_progress(const airspy_source* s) {
+    return s ? s->progress.load(std::memory_order_relaxed) : 0U;
+}
+
+int
+airspy_source_reconfiguring(const airspy_source* s) {
+    return s ? s->reconfiguring.load(std::memory_order_acquire) : 0;
+}
+
+uint64_t
+airspy_source_generation(const airspy_source* s) {
+    return s ? s->generation.load(std::memory_order_relaxed) : 0U;
+}
+
+namespace {
+/* Marks a reconfigure() for the stream monitor while it holds the source. */
+class Reconfiguring {
+    std::atomic<int>* flag;
+
+  public:
+    explicit Reconfiguring(std::atomic<int>* f) : flag(f) { flag->store(1, std::memory_order_release); }
+
+    ~Reconfiguring() { flag->store(0, std::memory_order_release); }
+
+    Reconfiguring(const Reconfiguring&) = delete;
+    Reconfiguring& operator=(const Reconfiguring&) = delete;
+};
+} // namespace
+
 /* libairspy queues raw USB transfers internally. Stop joins its consumer before
  * programming a new frequency, and start resets those queues and its IQ filter. */
 static int
 reconfigure(airspy_source* s, uint32_t value, bool rate) {
     AirspyLock guard(&s->lock);
+    Reconfiguring marked(&s->reconfiguring);
     uint32_t previous = rate ? s->info.sample_rate : s->frequency;
     if (value == previous) {
         return 0;
@@ -313,6 +356,8 @@ reconfigure(airspy_source* s, uint32_t value, bool rate) {
             (void)checked(airspy_stop_rx(s->device), "stop after failed restart");
             s->started = false;
             rc = start_rc;
+        } else {
+            s->generation.fetch_add(1, std::memory_order_relaxed);
         }
     }
     return checked(rc, rate ? "sample rate" : "frequency");
@@ -409,6 +454,24 @@ int
 airspy_source_running(airspy_source* s) {
     (void)s;
     return 0;
+}
+
+uint64_t
+airspy_source_progress(const airspy_source* s) {
+    (void)s;
+    return 0U;
+}
+
+int
+airspy_source_reconfiguring(const airspy_source* s) {
+    (void)s;
+    return 0;
+}
+
+uint64_t
+airspy_source_generation(const airspy_source* s) {
+    (void)s;
+    return 0U;
 }
 
 int

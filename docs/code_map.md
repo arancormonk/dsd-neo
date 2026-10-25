@@ -2126,7 +2126,7 @@ suite runs under this compiler.
     `dsd_input_failure_clear()`, and not counted by the generation): set only by the radio path that ends a session for
     its USB receiver, when it raises the exit flag. The latch alone is not that fact, since a path that recovers may
     write and restore it (an Airspy reconfigure that fails, rolls back and keeps streaming). Tests:
-    `RUNTIME_INPUT_FAILURE`, `IO_RTL_READER_EXIT`.
+    `RUNTIME_INPUT_FAILURE`, `IO_RTL_READER_EXIT`, `IO_USB_PROGRESS_MONITOR`.
 - Build files: `src/runtime/CMakeLists.txt`
 - Config docs: `docs/config-system.md`, `docs/radioreference-import.md`
 
@@ -4329,6 +4329,23 @@ Key public headers:
     so a single cancel lost a stop that landed while the reader was starting and the join hung; the reader checks
     `run` after publishing `reader_entered` and before it calls `rtlsdr_read_async()`. Tests: `IO_RTL_READER_EXIT`,
     and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` for the vendored allocation path.
+  - USB sample-progress monitor (RTL-SDR and Airspy only; replay, rtl_tcp and SoapySDR have none): a receiver can
+    stay enumerated and stop delivering with nothing returning (librtlsdr drops a transfer for good on each error
+    status and waits forever once none is left; a device that stops completing transfers, which have no timeout,
+    leaves either SDK waiting). `rtlsdr_callback()` and the Airspy source's receive callback count progress as their
+    first statement (one relaxed increment, no clock read: `rtl_device::progress`, `airspy_source_progress()`). A
+    monitor samples it every 100 ms on `dsd_realtime_mono_ms()`: for the RTL-SDR its own thread, started by
+    `rtl_device_start_async()` after the reader and stopped and joined in `rtl_usb_reader_stop()` before the cancel
+    loop; for the Airspy the device thread, `airspy_monitor()`. Silence accrues by the time between samples while the
+    stream is up (the RTL reader inside `rtlsdr_read_async()`; the Airspy not inside a retune or rate change,
+    `airspy_source_reconfiguring()`, and the time a sample waits on the source's lock is not counted), does not reset
+    when the stream restarts (`airspy_source_generation()` counts restarts, for the log only), and only observed
+    progress ends it. 5000 ms of it ends the session with `-ETIMEDOUT` through `rtl_device_end_for_receiver()`, so the
+    grace applies, and cancels the RTL reader. The Airspy's "stream stopped" verdict (`-1`) takes the same path. Every
+    verdict carries the progress count it was made at; during the grace only progress since then drops it, never a
+    restart or an SDK that says it streams, and the deadline never restarts. Of verdicts that race (a reader exit and
+    the monitor), the first reports (`receiver_end_claimed`). Tests: `IO_USB_PROGRESS_MONITOR`; bench:
+    `dsd-neo_bench_usb_ingest`.
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
   `include/dsd-neo/io/m17_udp.h`
 - UDP control API: `include/dsd-neo/io/udp_control.h`

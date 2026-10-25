@@ -7,6 +7,9 @@
 
 #include "airspy_sdk_double.h"
 #include <airspy.h>
+#include <atomic>
+#include <dsd-neo/platform/timing.h>
+#include <mutex>
 #include <stdint.h>
 
 namespace airspy_double {
@@ -14,7 +17,7 @@ namespace airspy_double {
 airspy_device device;
 airspy_sample_block_cb_fn rx;
 void* rx_context;
-bool streaming;
+std::atomic<bool> streaming{false};
 bool device_open;
 int starts;
 int stops;
@@ -33,6 +36,21 @@ int lna_agc;
 int mixer_agc;
 int bias;
 uint32_t rates[2] = {10000000, 2500000};
+int start_delay_ms;
+
+/* Held by a delivery and by start/stop, as libairspy's consumer thread is joined by its stop. */
+static std::mutex consumer;
+
+bool
+deliver(const float* samples, int pairs) {
+    std::lock_guard<std::mutex> hold(consumer);
+    if (!streaming || !rx) {
+        return false;
+    }
+    airspy_transfer transfer{&device, rx_context, const_cast<float*>(samples), pairs, 0, AIRSPY_SAMPLE_FLOAT32_IQ};
+    (void)rx(&transfer);
+    return true;
+}
 
 } // namespace airspy_double
 
@@ -113,6 +131,10 @@ airspy_set_freq(airspy_device*, uint32_t value) {
 
 int
 airspy_start_rx(airspy_device*, airspy_sample_block_cb_fn cb, void* context) {
+    if (start_delay_ms > 0) {
+        dsd_sleep_ms((unsigned int)start_delay_ms);
+    }
+    std::lock_guard<std::mutex> hold(consumer);
     if (streaming) {
         return AIRSPY_ERROR_BUSY;
     }
@@ -126,6 +148,7 @@ airspy_start_rx(airspy_device*, airspy_sample_block_cb_fn cb, void* context) {
 
 int
 airspy_stop_rx(airspy_device*) {
+    std::lock_guard<std::mutex> hold(consumer);
     streaming = false;
     ++stops;
     return 0;

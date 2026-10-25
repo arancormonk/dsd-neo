@@ -124,8 +124,9 @@ int rtl_device_preopened_fd_supported(void);
 /**
  * @brief Set how long a USB receiver's failure waits before it ends the session.
  *
- * When a USB receiver's reader stops for a reason other than a stop (unplugged, or its transfers gave out), the session
- * ends for it as a device failure. Where something else owns an unplug's outcome -- on Android, the USB detach
+ * When a USB receiver stops delivering for a reason other than a stop (its reader returned: unplugged, or its transfers
+ * gave out; or it sent no samples for 5 s, which the sample-progress monitor notices), the session ends for it as a
+ * device failure. Where something else owns an unplug's outcome -- on Android, the USB detach
  * broadcast, which stops the engine itself -- that owner needs a moment to act first: during the grace the failure
  * polls the session, and a stop or an exit request inside it keeps the failure silent. Only once the grace runs out is
  * the failure reported and the receiver's ending committed (dsd_input_failure_receiver_ended()).

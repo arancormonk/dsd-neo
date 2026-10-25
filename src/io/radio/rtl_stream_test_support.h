@@ -208,6 +208,25 @@ typedef struct {
  * it once it returned by itself. 0 on success, -1 when the reader could not start. */
 int rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request);
 
+/* The USB sample-progress monitor's silence limit and sample period (5000 ms and 100 ms in production); 0 restores
+ * the production value. Set while no USB device streams. */
+void rtl_device_test_set_progress_limit_ms(uint32_t limit_ms);
+void rtl_device_test_set_progress_period_ms(uint32_t period_ms);
+
+struct rtl_device;
+
+/* A USB device started into @p ring by rtl_device_start_async(), its reader standing in for rtlsdr_read_async(): it
+ * streams, delivering nothing by itself, until a cancel reaches it, as librtlsdr's does. The receiver's callbacks come
+ * from rtl_device_test_usb_stream_deliver(); rtl_device_test_usb_stream_stop() ends it. One at a time; NULL when it
+ * could not start. */
+struct rtl_device* rtl_device_test_usb_stream_start(struct input_ring_state* ring);
+/* One librtlsdr callback of @p len bytes of cu8 I/Q into the production callback, as the reader would deliver it. */
+void rtl_device_test_usb_stream_deliver(struct rtl_device* dev, unsigned char* buf, uint32_t len);
+/* Whether the device's reader has returned: a cancel reached it. */
+int rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev);
+/* Stop the device (rtl_device_stop_async()) and destroy it. */
+void rtl_device_test_usb_stream_stop(struct rtl_device* dev);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */
