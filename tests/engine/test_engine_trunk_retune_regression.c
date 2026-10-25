@@ -2201,8 +2201,9 @@ test_p25_probe_chain_from_validated_evidence(dsd_opts* opts, dsd_state* state) {
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     assert(state->sps_hunt_counter == 17);
 
-    // The presumption is the P25 hunt's, not every tune's: with no P25 probe in flight (an IDAS Type-D busy-repeater tune
-    // under Auto -T, before its SCCH run confirmed NXDN) the engine's return to the control channel keeps the NXDN chain.
+    // The presumption is the P25 hunt's, not every tune's: with no P25 probe in flight (an IDAS Type-D busy-repeater
+    // tune under Auto -T, before its SCCH run confirmed NXDN) the engine's return to the control channel keeps the NXDN
+    // chain.
     auto_probe_session(opts, state);
     g_p25_hunt_in_flight = 0;
     state->p25_cc_freq = 451000000;

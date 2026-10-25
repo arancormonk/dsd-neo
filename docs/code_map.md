@@ -1688,8 +1688,8 @@ suite runs under this compiler.
   `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan
   advance, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's thread;
   `trunk_scan_switch_to()` (which also covers the forced release's own apply) and its rollback, which restores the
-  record without the evidence and so drops the part; a colour-code change on the carrier (the BS confidence relock, the MS/direct slot type and embedded colour
-  code, `dmr_ras_note_color_code()`); the DMR reset command; a user move (`ui_user_move_forgets_identity()`); and the
+  record without the evidence and so drops the part; a colour-code change on the carrier (the BS confidence relock,
+  the MS/direct slot type and embedded colour code, `dmr_ras_note_color_code()`); the DMR reset command; a user move (`ui_user_move_forgets_identity()`); and the
   guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so the next transmission proves RAS again. A frame
   of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
   it again. `dsd_engine_forget_carrier_codes()` does not reset it: the voice-channel tune that calls it can run on the
@@ -2862,8 +2862,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   radio panel). Test: `APP_CONTROL_RTL_GAIN_VIEW`.
   `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
   one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
-  scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override` when the row on air carries its own `-F` or
-  `--strict-crc`; `dsd_app_crc_policy_edit_notice()` is the toggle's toast under such a row. The pair it reads,
+  scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override`
+  when the row on air carries its own `-F` or `--strict-crc`; `dsd_app_crc_policy_edit_notice()` is the toggle's toast under such a row. The pair it reads,
   `aggressive_framesync` and `dmr_crc_relaxed_default`, is set only through `dsd_opts_set_relaxed_crc()` (`core/opts.h`;
   `dsd_opts_relaxed_crc()` reads either field relaxing as on) by `-F`, `--strict-crc`, a row's CRC option and
   `DSD_APP_CMD_AGGR_SYNC_TOGGLE` (no payload flips it, the terminal's key and row; an `int32_t` payload sets it, the
@@ -5854,8 +5854,8 @@ Private per-protocol modules worth knowing about:
   confirm RAS (`dmr_ras_confirmed()`) and note `DSD_RXID_DMR_RAS`; the burst that confirms it prints, while relaxed CRC
   is off (`dsd_opts_relaxed_crc()`), the console notice `DMR RAS (Restricted Access to System) detected: control and
   data fail the standard CRC; -F decodes them` once per confirmation, with `, but this channel sets strict CRC itself`
-  added while `-F` is configured on (`dsd_scan_mode_configured_relaxed_crc()`) under a row's own `--strict-crc`. `dmr_ras_reset()` is the one reset; its call
-  points are listed under the received identity record (Core). Tests: `DMR_RAS_DETECT`,
+  added while `-F` is configured on (`dsd_scan_mode_configured_relaxed_crc()`) under a row's own `--strict-crc`.
+  `dmr_ras_reset()` is the one reset; its call points are listed under the received identity record (Core). Tests: `DMR_RAS_DETECT`,
   `DECODE_IQ_DMR_T3_RAS_CC_DETECT` (no `-F`: the notice, nothing accepted), and `DECODE_IQ_DMR_T3_CC` and
   `DECODE_IQ_DMR_POLARITY_AUTO`, whose carriers must never print it.
 - `src/protocol/dmr/dmr_enc_class.c` — per-slot privacy-bit hysteresis, and each slot's vendor late-entry mode
