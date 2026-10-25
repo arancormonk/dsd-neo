@@ -62,11 +62,11 @@ _Static_assert(DSD_SYNC_HIT_HISTORY_LEN <= 255, "dsd_sync_hit_history::next is a
 #endif
 
 static inline void
-dsd_sync_hit_history_clear(dsd_sync_hit_history* history) {
+dsd_sync_hit_history_clear(dsd_sync_hit_history* hits) {
     for (int i = 0; i < DSD_SYNC_HIT_HISTORY_LEN; i++) {
-        history->kind[i] = 0U;
+        hits->kind[i] = 0U;
     }
-    history->next = 0U;
+    hits->next = 0U;
 }
 
 /* NXDN96 frame synchronization (src/dsp/dsd_frame_sync.c, NXDN TS 1-A 5.3): the frame sync word hits lately seen; the
