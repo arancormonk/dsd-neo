@@ -2143,7 +2143,9 @@ test_nxdn96_and_m17_histories_end_with_the_carrier(void) {
     static dsd_state state;
     const dsd_nxdn96_lich_result good = DSD_NXDN96_LICH_GOOD;
 
-    for (int boundary = 0; boundary < 2; boundary++) {
+    /* 0: an acquisition reset; 1: a carrier change; 2: a trunk retune made off the decoder thread (the P25 watchdog's),
+     * which the matcher applies before it reads the lock. */
+    for (int boundary = 0; boundary < 3; boundary++) {
         nxdn96_sync_setup(&opts, &state);
         assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
         state.symbolcnt += 192;
@@ -2152,6 +2154,17 @@ test_nxdn96_and_m17_histories_end_with_the_carrier(void) {
         state.m17_join_hits.kind[0] = 1U;
         state.m17_join_hits.symbolcnt[0] = state.symbolcnt;
         state.m17_join_hits.next = 1U;
+        if (boundary == 2) {
+            dsd_frame_sync_note_off_thread_tune();
+            assert(state.nxdn96_sync.lock_type == DSD_SYNC_NXDN_POS); /* the decoder thread's to forget */
+            state.symbolcnt += 192;
+            assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+            assert(!dsd_frame_sync_off_thread_tune_pending());
+            assert(sync_hits_empty(&state.m17_join_hits));
+            state.symbolcnt += 192;
+            assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+            continue;
+        }
         if (boundary) {
             dsd_state_note_carrier_change(&state);
             state.symbol_clock += 1000U; /* the next carrier's windows are whole */

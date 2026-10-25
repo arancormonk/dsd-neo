@@ -1210,8 +1210,9 @@ struct dsd_state {
     /* NXDN96 frame synchronization: the frame sync word hits lately seen (where in dsd_state::symbolcnt, and the
      * polarity, as the sync type) and the lock a transmission's accepted FSWs keep (src/dsp/dsd_frame_sync.c), moved
      * by the LICHs their frames read (dsd_nxdn96_sync_note_lich()). Cleared with the M17 join history (no carrier, an
-     * M17 EOT, an acquisition reset, any carrier change: dsd_state_note_carrier_change()), by S1 wrong LICHs in a
-     * row, at a carrier boundary inside an NXDN frame, and on an NXDN trunked tune. */
+     * M17 EOT, an acquisition reset, any carrier change: dsd_state_note_carrier_change(), every accepted trunk retune),
+     * by S1 wrong LICHs in a row, and at a carrier boundary inside an NXDN frame. The decoder thread's: a retune made
+     * off it leaves the clear to the frame sync (dsd_frame_sync_apply_off_thread_tunes()). */
     dsd_nxdn96_sync nxdn96_sync;
     /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
      * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
@@ -2471,13 +2472,19 @@ dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
 /* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
    input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
    (an I/Q replay retune) splits that symbol, which counts as the carrier left's. The sync join histories are the
-   carrier left's evidence too: an NXDN96 lock or FSW, or an M17 word, does not pair with the next carrier's. */
+   carrier left's evidence too: an NXDN96 lock or FSW, or an M17 word, does not pair with the next carrier's
+   (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
+static inline void
+dsd_state_forget_sync_join_histories(dsd_state* state) {
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
+    dsd_sync_hit_history_clear(&state->m17_join_hits);
+}
+
 static inline void
 dsd_state_note_carrier_change(dsd_state* state) {
     state->carrier_change_symbol_clock = state->symbol_clock + (state->symbol_read_active != 0U ? 1U : 0U);
     state->carrier_change_seen = 1U;
-    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
-    dsd_sync_hit_history_clear(&state->m17_join_hits);
+    dsd_state_forget_sync_join_histories(state);
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word

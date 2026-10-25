@@ -72,6 +72,8 @@ dsd_frame_sync_apply_off_thread_tunes(dsd_state* state) {
         return 0;
     }
     s_off_thread_tunes_seen = tunes;
+    /* The carrier the tune left sent the histories: nothing of them pairs with the carrier it reached. */
+    dsd_state_forget_sync_join_histories(state);
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
     if (cmp->phase != 0) {
         /* The tune read the leading chain (dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()) and set the decoder's

@@ -3881,13 +3881,16 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   8, so a lock can ride a slicer whose four-level reading is biased for a whole call. Dropping the lock after 2, 3 or
   4 locked FSWs in a row that read more than two bits on four levels was measured on 72 weak nxdn96 realizations
   (0-10 dB): mean RAN frames 28.92, 29.14 and 29.18 against 29.24 keeping it, no run rescued, so the lock is kept.
-  Both are also cleared with the M17 join history, at an acquisition reset and any carrier change
-  (`dsd_state_note_carrier_change()`, so a tune, a probe or a trunk-scan switch), at a carrier boundary inside an NXDN
-  frame, on an NXDN trunked tune and at the CAC reset. The four-level reading takes the window's level ring, which
-  a symbol capture fills with its dibits' levels (`dsd_symbol_level_from_dibit()`), so it applies there too; only a
-  window holding fewer than ten levels (the unit tests' sign-only windows) skips it, and the sign match then counts as
-  clear. A LICH failure prints its sync under `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests:
-  `FRAME_SYNC_INTERNAL_HELPERS` (`test_nxdn96_follows_the_receiver_sync_rules`, `test_nxdn96_lock_follows_the_lich`,
+  Both are also cleared with the M17 join history (`dsd_state_forget_sync_join_histories()`), at an acquisition reset
+  and any carrier change (`dsd_state_note_carrier_change()`, so a tune, a probe or a trunk-scan switch), at every
+  accepted trunk retune of any protocol (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`: an NXDN DISC's
+  return included; one the P25 watchdog makes off the decoder thread is applied by the frame sync's next step,
+  `dsd_frame_sync_apply_off_thread_tunes()`), at a carrier boundary inside an NXDN frame and at the CAC reset. The
+  four-level reading takes the window's level ring, which a symbol capture fills with its dibits' levels
+  (`dsd_symbol_level_from_dibit()`), so it applies there too; only a window holding fewer than ten levels (the unit
+  tests' sign-only windows) skips it, and the sign match then counts as clear. A LICH failure prints its sync under
+  `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_nxdn96_follows_the_receiver_sync_rules`, `test_nxdn96_lock_follows_the_lich`,
   `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
   `_AUTO` twin, `DECODE_IQ_NXDN96_WEAK`, `DECODE_IQ_NXDN96_WEAK_0DB`, `DECODE_IQ_NXDN96`.
@@ -3942,11 +3945,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard. A tune the P25
     watchdog's tick makes on its own thread leaves it alone. It reads the chain the comparison leads on, and the learned
     modulation, as the decoder publishes them at every step and every stamp
-    (`dsd_frame_sync_p25p1_mod_compare_publish()`, one atomic value read through `dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()` and
-    `dsd_frame_sync_p25p1_published_learned_rf_mod()`), puts `rf_mod` on the leading chain as the end would, and an
-    accepted tune notes itself (`dsd_frame_sync_note_off_thread_tune()`); the decoder thread ends the comparison on that
-    chain at `getFrameSync()` entry, or in the hunt while one runs (`dsd_frame_sync_apply_off_thread_tunes()`), leaving
-    the demodulator to the tune.
+    (`dsd_frame_sync_p25p1_mod_compare_publish()`, one atomic value read through
+    `dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()` and `dsd_frame_sync_p25p1_published_learned_rf_mod()`), puts
+    `rf_mod` on the leading chain as the end would, and an accepted tune notes itself
+    (`dsd_frame_sync_note_off_thread_tune()`); the decoder thread ends the comparison on that chain at `getFrameSync()`
+    entry, or in the hunt while one runs (`dsd_frame_sync_apply_off_thread_tunes()`), leaving the demodulator to the
+    tune.
   - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
     gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The

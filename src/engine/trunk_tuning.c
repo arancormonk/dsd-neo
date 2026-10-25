@@ -606,9 +606,9 @@ dsd_engine_maybe_drain_audio(dsd_opts* opts, const dsd_state* state) {
 static void
 dsd_engine_rxid_trunk_tune(dsd_state* state) {
     /* The carrier left's RAS evidence (dmr_ras_reset()) goes wherever the drop is applied: here when it is applied now,
-       and where the decoder thread applies a request that waits. Off the decoder thread the tune also notes itself for
-       the frame sync, which ends a chain comparison in flight at its next step
-       (dsd_frame_sync_apply_off_thread_tunes()). */
+       and where the decoder thread applies a request that waits. So do the frame sync's join histories, the NXDN96 lock
+       and the M17 words, which the hunt reads outside the guard: off the decoder thread the tune only notes itself, and
+       the frame sync forgets them at its next step (dsd_frame_sync_apply_off_thread_tunes()). */
     if (!s_decoder_thread) {
         if (dsd_rxid_request_trunk_tune(state)) {
             dmr_ras_reset(state);
@@ -623,6 +623,7 @@ dsd_engine_rxid_trunk_tune(dsd_state* state) {
     (void)dsd_rxid_request_trunk_tune(state);
     (void)dsd_rxid_apply_trunk_tune(state);
     dmr_ras_reset(state);
+    dsd_state_forget_sync_join_histories(state);
     if (take_guard) {
         p25_sm_tick_guard_leave();
     }

@@ -521,8 +521,7 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
     /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it. */
-    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
-    dsd_sync_hit_history_clear(&state->m17_join_hits);
+    dsd_state_forget_sync_join_histories(state);
     /* Nothing decoded since says the carrier is two-slot TDMA: a decoded frame of the next acquisition does. */
     state->tdma_carrier = 0U;
     /* Nor does an X2-TDMA superframe read before it chain to the next one. */
@@ -1532,6 +1531,10 @@ frame_sync_try_m17_join(frame_sync_match_ctx* ctx, int sync_type, uint8_t word, 
     if (word == 0U) {
         return sync_type;
     }
+    /* A tune another thread made since: the history before it is the carrier left's. */
+    if (dsd_frame_sync_off_thread_tune_pending()) {
+        (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    }
     const uint32_t now = (uint32_t)state->symbolcnt;
     const int chained =
         sync_type == DSD_SYNC_NONE
@@ -2104,6 +2107,10 @@ frame_sync_nxdn96_frames_apart(uint32_t since, uint32_t frames) {
  */
 static int
 frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
+    /* A tune another thread made since: the lock and the hits before it are the carrier left's. */
+    if (dsd_frame_sync_off_thread_tune_pending()) {
+        (void)dsd_frame_sync_apply_off_thread_tunes(ctx->state);
+    }
     dsd_nxdn96_sync* sync = &ctx->state->nxdn96_sync;
     const uint32_t now = (uint32_t)ctx->state->symbolcnt;
     const uint8_t kind = (uint8_t)synctype;

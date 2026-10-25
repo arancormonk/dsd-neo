@@ -1128,6 +1128,62 @@ test_chain_comparison_watchdog_tunes_race_the_hunt(dsd_opts* opts, dsd_state* st
     rtl_stream_clear_pending_retune_profile();
 }
 
+/* A trunk retune leaves the carrier as a carrier boundary does: the frame sync's NXDN96 lock and hits and its M17 join
+ * words go with it, so neither the lock's flywheel nor a word the carrier left sent pairs with the carrier reached. An
+ * NXDN DISC returns through dsd_engine_trunk_tune_to_cc_request() with no boundary of its own; a grant tunes through
+ * dsd_engine_trunk_tune_to_freq_request(). The watchdog's leave them to the decoder thread's next frame sync step. */
+static void
+seed_sync_join_histories(dsd_state* state) {
+    state->nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_NEG;
+    state->nxdn96_sync.lock_symbolcnt = 4000U;
+    state->nxdn96_sync.hits.kind[0] = (uint8_t)DSD_SYNC_NXDN_NEG;
+    state->m17_join_hits.kind[0] = 1U;
+    state->m17_join_hits.next = 1U;
+}
+
+static int
+sync_join_histories_empty(const dsd_state* state) {
+    return state->nxdn96_sync.lock_type == 0U && state->nxdn96_sync.hits.kind[0] == 0U
+           && state->m17_join_hits.kind[0] == 0U && state->m17_join_hits.next == 0U;
+}
+
+static void
+test_trunk_retune_forgets_sync_join_histories(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 2;
+    state->p25_p2_active_slot = -1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_engine_set_decoder_thread(1);
+    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+
+    seed_sync_join_histories(state);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461750000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(sync_join_histories_empty(state));
+    seed_sync_join_histories(state);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 461762500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(sync_join_histories_empty(state));
+    /* A tune that fails left nothing. */
+    seed_sync_join_histories(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461775000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(state->nxdn96_sync.lock_type == (uint8_t)DSD_SYNC_NXDN_NEG);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    /* Off the decoder thread the histories wait for it. */
+    dsd_engine_set_decoder_thread(0);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461787500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->nxdn96_sync.lock_type == (uint8_t)DSD_SYNC_NXDN_NEG);
+    dsd_engine_set_decoder_thread(1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(sync_join_histories_empty(state));
+    dsd_engine_set_decoder_thread(1);
+    rtl_stream_clear_pending_retune_profile();
+}
+
 /* Issue #583, one landing-family decision per retune preparation: a DMR control-channel tune outside a scan (no scan
  * row's timing for it to follow) asks the stream once whether the analog family runs, or the work outstanding lands a
  * family. An analog retune is outstanding at that read and fails right after it: the GFSK chain's TED,
@@ -3516,6 +3572,7 @@ main(void) {
     test_chain_comparison_in_flight_tunes_on_the_leading_chain(opts, state);
     test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(opts, state);
     test_chain_comparison_watchdog_tunes_race_the_hunt(opts, state);
+    test_trunk_retune_forgets_sync_join_histories(opts, state);
 #endif
 
     dsd_decode_clock_use_system();
