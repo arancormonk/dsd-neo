@@ -48,6 +48,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "dsd-neo/platform/platform.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/platform/threading.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
