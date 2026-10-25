@@ -347,8 +347,8 @@ whole 48 kHz capture; seed 8007, `DERIVED_AWGN`), 192 kB. It pins NXDN96 acquisi
 (`DECODE_IQ_NXDN96_WEAK`): acquiring on the FSW right after the preamble left this realization reading one FSW symbol
 wrong on every frame and failing every SACCH, so not one RAN decoded, where acquiring on two FSWs a frame apart decodes
 36. Over 72 realizations (0-10 dB, six seeds, with and without a two-ray echo) the four-level FSW reading read real
-FSWs within two bit errors in 93% of hits at 6-10 dB and 82% at 0-4 dB; the losses at low SNR were in the payload, not
-the sync.
+FSWs within two bit errors in 94% of hits at 6-10 dB and 85% at 0-4 dB. Allowing three bit errors gained 0.4 RAN frames
+a call on average, mostly at 2 dB, and let receiver noise acquire on LowVHF, faNXDN and faNXDNScan.
 
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
