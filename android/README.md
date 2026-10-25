@@ -1082,9 +1082,10 @@ To move to a newer libairspy:
 ```sh
 git clone https://github.com/airspy/airspyone_host.git /tmp/airspy
 git -C /tmp/airspy checkout <new-commit>
-cd /tmp/airspy/libairspy/src && for p in <repo>/android/third_party/patches/*-libairspy-*.patch; do patch -p1 < "$p"; done
-# then copy the library sources over the vendored tree, regenerate the patches
-# against the new baseline, and update the table above and README.dsd-neo
+cd /tmp/airspy && for p in <repo>/android/third_party/patches/*-libairspy-*.patch; do patch -p1 < "$p"; done
+# then copy libairspy/src/* over the vendored tree, regenerate the patches against
+# the new baseline, and update the table above, README.dsd-neo and the upstream
+# hashes in tests/tools/test_airspy_packaging.py
 ```
 
 ## Codec2, libcurl and expat

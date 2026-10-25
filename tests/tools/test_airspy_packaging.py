@@ -17,7 +17,9 @@ from test_legal_inventory import mbelib_notice_fixture
 
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 NOTICE = "libairspy-LICENSE.txt"
-# SHA256 of the unmodified upstream bd15be3 libairspy/src files and LICENSE.md.
+# SHA256 of the unmodified upstream bd15be3 libairspy/src files. The vendored tree is that snapshot with the recorded
+# android/third_party/patches/*-libairspy-*.patch series applied (paths from the airspyone_host root), as the librtlsdr
+# tree is with its series.
 UPSTREAM_HASHES = {
     "airspy.c": "f6fd2fe296819dc1e2b6655de32f53b7dde6d60d17ef3902297b96974b3109fa",
     "airspy.h": "b2ad0b944263ed91f947e111195da3dd906cd51c5b4455c603499d6741283e44",
@@ -47,11 +49,32 @@ class AirspyPackaging(unittest.TestCase):
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def upstream_from_vendored(self):
+        """Rebuild upstream libairspy/src by reverting the recorded patch series from the vendored tree."""
+        vendor = ROOT / "android/third_party/libairspy"
+        upstream = self.work / "airspyone_host"
+        source = upstream / "libairspy/src"
+        source.mkdir(parents=True)
+        for name in UPSTREAM_HASHES:
+            shutil.copyfile(vendor / name, source / name)
+        patch = shutil.which("patch")
+        self.assertIsNotNone(patch, "patch is required to check the vendored libairspy against upstream")
+        series = sorted((ROOT / "android/third_party/patches").glob("*-libairspy-*.patch"))
+        for path in reversed(series):
+            with self.subTest(patch=path.name):
+                # No fuzz: each patch must revert exactly, so the series records every vendored change. An offset
+                # hunk leaves a .orig backup, which the file list check below rejects as well.
+                self.assert_success(run([patch, "-R", "-p1", "-F0", "-i", str(path)], cwd=upstream))
+        return source, series
+
     def test_b1_upstream_snapshot_and_notices(self):
         vendor = ROOT / "android/third_party/libairspy"
+        source, series = self.upstream_from_vendored()
+        self.assertTrue(series, "the vendored libairspy carries a recorded patch series")
         for name, digest in UPSTREAM_HASHES.items():
             with self.subTest(file=name):
-                self.assertEqual(hashlib.sha256((vendor / name).read_bytes()).hexdigest(), digest)
+                self.assertEqual(hashlib.sha256((source / name).read_bytes()).hexdigest(), digest)
+        self.assertEqual(sorted(path.name for path in source.iterdir()), sorted(UPSTREAM_HASHES))
         notice = (vendor / "LICENSE").read_bytes()
         start = notice.index(b"The AirSpy library includes")
         self.assertEqual(hashlib.sha256(notice[start:]).hexdigest(), UPSTREAM_LICENSE_MD)

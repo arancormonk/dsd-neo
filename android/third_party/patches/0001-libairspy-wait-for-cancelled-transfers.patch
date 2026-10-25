@@ -34,13 +34,12 @@ it as soon as a test drives the library's own threads.
 The vendored copy builds with clang for Android; the __atomic builtins and
 _Atomic are GCC/clang C11 and are not meant for upstream's MSVC build.
 
-Generated against airspyone_host bd15be38e91ebaa3e0bebb1e320255bde4ccf059
-(libairspy/src/airspy.c; apply with patch -p1 inside libairspy/src).
+Generated against airspyone_host bd15be38e91ebaa3e0bebb1e320255bde4ccf059.
 
-diff --git a/airspy.c b/airspy.c
+diff --git a/libairspy/src/airspy.c b/libairspy/src/airspy.c
 index a2caf38..6ee8b35 100644
---- a/airspy.c
-+++ b/airspy.c
+--- a/libairspy/src/airspy.c
++++ b/libairspy/src/airspy.c
 @@ -33,6 +33,9 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
  #endif
  

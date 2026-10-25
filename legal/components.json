@@ -377,7 +377,9 @@
       "name": "librtlsdr Android snapshot",
       "paths": [
         "android/third_party/librtlsdr/",
-        "android/third_party/patches/"
+        "android/third_party/patches/0001-librtlsdr-add-rtlsdr_open_fd.patch",
+        "android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch",
+        "android/third_party/patches/0003-librtlsdr-account-for-every-transfer.patch"
       ],
       "distribution": [
         "source",

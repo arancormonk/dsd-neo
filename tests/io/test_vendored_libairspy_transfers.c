@@ -19,6 +19,7 @@
 #include <string.h> // IWYU pragma: keep
 #include <sys/time.h>
 #include <time.h>
+#include <unistd.h> // IWYU pragma: keep
 
 enum { kMaxQueued = 64, kMaxLive = 128, kMaxQuarantined = 128 };
 
@@ -184,6 +185,25 @@ static int g_submits_at_hold;  /* submissions when the stream was last held */
 static int g_completions;      /* callbacks with a status other than CANCELLED */
 static int g_cancelled_callbacks;
 static int g_samples; /* sample blocks the library handed to the consumer callback */
+/* The next resubmission from a callback is refused with LIBUSB_ERROR_IO, and every transfer after it is held. */
+static int g_refuse_next_resubmit;
+static int g_refused_resubmits;
+/* The next resubmission from a callback (on g_park_thread when g_park_on_thread is set) waits until this many full
+ * passes of cancels have gone by, then goes in; 0: none. */
+static int g_park_cancel_passes;
+static int g_park_on_thread;
+static pthread_t g_park_thread;
+static int g_parked; /* a resubmission is waiting */
+static int g_cancels_while_parked;
+static int g_late_resubmits; /* resubmissions that went in after those cancels */
+static int g_park_done;      /* the parked resubmission has gone in */
+static int g_idle_polls;     /* polls in a row with nothing to deliver and no cancellation to come */
+static const char* g_case_name = "";
+static pthread_t g_main_thread;
+
+/* With nothing to deliver and no cancellation to come for this many polls (about 1 ms each), whoever polls waits on a
+ * transfer libusb will never call back: the library lost count of one. The case reports it instead of hanging. */
+enum { kIdlePollsBeforeAbort = 3000 };
 
 /* The status of the next completion that is not a cancellation. */
 static enum libusb_transfer_status
@@ -257,6 +277,31 @@ libusb_submit_transfer(struct libusb_transfer* transfer) {
         pthread_mutex_unlock(&g_mu);
         return LIBUSB_ERROR_NO_MEM;
     }
+    const int resubmit = !pthread_equal(pthread_self(), g_main_thread);
+    if (resubmit && g_refuse_next_resubmit) {
+        g_refuse_next_resubmit = 0;
+        g_refused_resubmits++;
+        g_holding = 1;
+        pthread_mutex_unlock(&g_mu);
+        return LIBUSB_ERROR_IO;
+    }
+    if (resubmit && g_park_cancel_passes > 0 && (!g_park_on_thread || pthread_equal(pthread_self(), g_park_thread))) {
+        /* The callback has passed its streaming check; the stop's cancels run while it waits here. */
+        const int passes = g_park_cancel_passes;
+        g_park_cancel_passes = 0;
+        g_parked = 1;
+        g_cancels_while_parked = 0;
+        /* A library that never makes those passes gets the resubmission after kWaitMs, so the case reports. */
+        const long long deadline = now_ms() + kWaitMs;
+        while (g_cancels_while_parked < passes * kTransfers && now_ms() <= deadline) {
+            pthread_mutex_unlock(&g_mu);
+            sleep_us(200);
+            pthread_mutex_lock(&g_mu);
+        }
+        g_late_resubmits += g_cancels_while_parked >= passes * kTransfers;
+        g_parked = 0;
+        g_park_done = 1;
+    }
     if (queued_index_locked(transfer) >= 0) {
         g_busy_submits++;
         pthread_mutex_unlock(&g_mu);
@@ -278,6 +323,9 @@ int LIBUSB_CALL
 libusb_cancel_transfer(struct libusb_transfer* transfer) {
     int r = LIBUSB_ERROR_NOT_FOUND;
     pthread_mutex_lock(&g_mu);
+    if (g_parked) {
+        g_cancels_while_parked++;
+    }
     const int i = queued_index_locked(transfer);
     if (i >= 0 && !g_queue[i].cancel_requested) {
         g_queue[i].cancel_requested = 1;
@@ -289,16 +337,36 @@ libusb_cancel_transfer(struct libusb_transfer* transfer) {
 }
 
 /* An event poll: under the event lock, it calls back one transfer that is due on the polling thread, or waits about
- * 1 ms when none is. */
+ * 1 ms when none is. While another thread handles events it waits about 1 ms for the lock and returns, as a libusb
+ * event waiter does. */
 int LIBUSB_CALL
 libusb_handle_events_timeout_completed(libusb_context* ctx, struct timeval* tv, int* completed) {
     (void)ctx;
     (void)tv;
     (void)completed;
-    pthread_mutex_lock(&g_events_mu);
+    int locked = 0;
+    for (int i = 0; i < 20 && !locked; ++i) {
+        locked = pthread_mutex_trylock(&g_events_mu) == 0;
+        if (!locked) {
+            sleep_us(50);
+        }
+    }
+    if (!locked) {
+        return 0;
+    }
     pthread_mutex_lock(&g_mu);
     const int pick = next_delivery_locked();
     if (pick < 0) {
+        int cancel_to_come = 0;
+        for (int i = 0; i < g_queued; ++i) {
+            cancel_to_come |= g_queue[i].cancel_requested;
+        }
+        g_idle_polls = cancel_to_come ? 0 : g_idle_polls + 1;
+        if (g_idle_polls >= kIdlePollsBeforeAbort) {
+            DSD_FPRINTF(stderr, "FAIL %s: still polling with %d transfer(s) in flight and no cancellation to come\n",
+                        g_case_name, g_queued);
+            abort();
+        }
         pthread_mutex_unlock(&g_mu);
         sleep_us(1000);
         pthread_mutex_unlock(&g_events_mu);
@@ -314,6 +382,7 @@ libusb_handle_events_timeout_completed(libusb_context* ctx, struct timeval* tv, 
     if (cancelled) {
         g_cancelled_callbacks++;
     }
+    g_idle_polls = 0;
     pthread_mutex_unlock(&g_mu);
 
     /* libusb hands the transfer back here; from now on the library owns it. */
@@ -546,6 +615,16 @@ open_case(const char* name) {
     g_early_transfer_frees = 0;
     g_early_buffer_frees = 0;
     g_busy_submits = 0;
+    g_refuse_next_resubmit = 0;
+    g_refused_resubmits = 0;
+    g_park_cancel_passes = 0;
+    g_park_on_thread = 0;
+    g_park_done = 0;
+    g_parked = 0;
+    g_cancels_while_parked = 0;
+    g_late_resubmits = 0;
+    g_idle_polls = 0;
+    g_case_name = name;
     pthread_mutex_unlock(&g_mu);
 
     airspy_device_t* dev = NULL;
@@ -748,8 +827,82 @@ packing_change_waits_for_ended_stream(void) {
     close_case(name, dev);
 }
 
+/* A resubmission from a callback is refused: that transfer is back for good, and the others are held. The stream ends
+ * by itself, and the stop must still drain to zero, which it cannot if the refused transfer kept its slot. */
+static void
+failed_resubmit_returns_its_slot(void) {
+    const char* name = "failed_resubmit_returns_its_slot";
+    airspy_device_t* dev = open_case(name);
+    stream_run(name, dev, "start");
+    pthread_mutex_lock(&g_mu);
+    g_refuse_next_resubmit = 1;
+    pthread_mutex_unlock(&g_mu);
+    expect(name, wait_for_stream_end(dev), "the stream ended after the refused resubmission");
+    expect(name, read_counter(&g_refused_resubmits) == 1, "one resubmission refused");
+    (void)airspy_stop_rx(dev);
+    expect(name, read_counter(&g_queued) == 0, "no transfer in flight when the stop returned");
+    expect(name, read_counter(&g_cancelled_callbacks) == kTransfers - 1,
+           "the other transfers called back as cancelled before the stop returned");
+    close_case(name, dev);
+}
+
+/* Polls for events from outside libairspy, as a synchronous control transfer on another thread does, until its
+ * parked resubmission has gone in. */
+static void*
+other_poller_main(void* arg) {
+    (void)arg;
+    while (read_counter(&g_park_done) == 0) {
+        (void)libusb_handle_events_timeout_completed(NULL, NULL, NULL);
+    }
+    return NULL;
+}
+
+/* A completion passes the callback's streaming check just before a stop, and its resubmission goes in only after the
+ * stop has cancelled every transfer: on the transfer thread, after the stop's first cancels (the drain must cancel it
+ * again), or on another polling thread, after the drain's first pass too (each pass must cancel again). */
+static void
+drain_cancels_a_late_resubmit(int on_other_thread) {
+    const char* name = on_other_thread ? "drain_cancels_a_late_resubmit (on another polling thread)"
+                                       : "drain_cancels_a_late_resubmit (on the transfer thread)";
+    airspy_device_t* dev = open_case(name);
+    stream_run(name, dev, "start");
+    pthread_t poller;
+    pthread_mutex_lock(&g_mu);
+    g_park_cancel_passes = on_other_thread ? 2 : 1;
+    g_park_on_thread = on_other_thread;
+    if (on_other_thread) {
+        /* Before the thread runs, so its first resubmission is the parked one. */
+        if (pthread_create(&poller, NULL, other_poller_main, NULL) != 0) {
+            DSD_FPRINTF(stderr, "%s: could not start the polling thread\n", name);
+            abort();
+        }
+        g_park_thread = poller;
+    }
+    pthread_mutex_unlock(&g_mu);
+    const long long deadline = now_ms() + kWaitMs;
+    while (!read_counter(&g_parked) && now_ms() <= deadline) {
+        sleep_us(200);
+    }
+    expect(name, read_counter(&g_parked), "a resubmission waits inside the callback");
+    /* The callback under way holds the event lock, so hold the rest without it: they come back only when cancelled. */
+    pthread_mutex_lock(&g_mu);
+    g_holding = 1;
+    pthread_mutex_unlock(&g_mu);
+    const int rc = airspy_stop_rx(dev);
+    expect(name, rc == AIRSPY_SUCCESS, "stop");
+    expect(name, read_counter(&g_late_resubmits) == 1, "the resubmission went in after the stop's cancels");
+    expect(name, read_counter(&g_queued) == 0, "no transfer in flight when the stop returned");
+    expect(name, read_counter(&g_cancelled_callbacks) == kTransfers,
+           "every transfer, the late one too, called back as cancelled");
+    if (on_other_thread) {
+        (void)pthread_join(poller, NULL);
+    }
+    close_case(name, dev);
+}
+
 int
 main(void) {
+    g_main_thread = pthread_self();
     stop_waits_for_deferred_cancel();
     close_after_stop_frees_nothing_outstanding(1);
     close_after_stop_frees_nothing_outstanding(0);
@@ -757,6 +910,9 @@ main(void) {
     restart_reuses_only_returned_transfers(0);
     partial_start_submit();
     packing_change_waits_for_ended_stream();
+    failed_resubmit_returns_its_slot();
+    drain_cancels_a_late_resubmit(0);
+    drain_cancels_a_late_resubmit(1);
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d expectation(s) failed\n", g_failures);
