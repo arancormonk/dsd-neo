@@ -10,6 +10,7 @@
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MM_PDU_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MM_PDU_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -260,6 +261,11 @@ typedef struct {
  *         truncated or malformed, or is a reserved PDU type or a D-OTAR sub-type without a downlink layout.
  */
 int tetra_mm_decode(const uint8_t* bits, int nbits, tetra_mm_pdu* out);
+
+/** " ksg=TEA2 class=2 sckn=3" in @p out (capacity @p cap) for the ciphering parameters @p params (EN 300 392-7 table
+ * A.46: KSG number, security class 0 for class 2 and 1 for class 3, then the SCK number of a class 2 cell) that cipher
+ * control @p control announces; "" with cipher control off. Uplink and downlink PDUs carry the same element. */
+void tetra_mm_cipher_detail(uint8_t control, uint16_t params, char* out, size_t cap);
 
 #ifdef __cplusplus
 }

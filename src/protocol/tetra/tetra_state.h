@@ -342,13 +342,14 @@ typedef struct {
  * (DSD_TETRA_AIR_KEY_SLOTS), whose evidence is never evicted, and four more (tetra_air.c). */
 #define TETRA_AIR_KSG_NETS 20
 
-/** The KSG numbers one network's signalling named (tetra_state_t::air_ksg). */
+/** The KSG numbers one network's signalling named, and those its radios proposed (tetra_state_t::air_ksg). */
 typedef struct {
-    uint32_t seq;  /* when the entry was made: the oldest keyless entry is the one a full cache replaces */
-    uint16_t mcc;  /* 10-bit MCC */
-    uint16_t mnc;  /* 14-bit MNC */
-    uint16_t mask; /* bit k: KSG number k was named (0..3 standard, 8..15 proprietary; 4..7 are reserved) */
-    uint8_t valid; /* the entry holds a network */
+    uint32_t seq;       /* when the entry was made: the oldest keyless entry is the one a full cache replaces */
+    uint16_t mcc;       /* 10-bit MCC */
+    uint16_t mnc;       /* 14-bit MNC */
+    uint16_t mask;      /* bit k: KSG number k was named (0..3 standard, 8..15 proprietary; 4..7 are reserved) */
+    uint16_t requested; /* bit k: a clear uplink U-LOCATION UPDATE DEMAND proposed KSG number k (tetra_ul.c) */
+    uint8_t valid;      /* the entry holds a network */
 } tetra_air_ksg_net;
 
 typedef struct tetra_state {
@@ -408,6 +409,11 @@ typedef struct tetra_state {
     uint32_t frames_resource;
     uint8_t enc_mode;
 
+    /* The uplink's air encryption (TETRA_UL_ENC_*, tetra_ul.h): the encrypted flag of the last CRC-passed uplink
+     * MAC-ACCESS or MAC-DATA, Null PDUs included (EN 300 392-2 clause 21.4.2.1 note 1). The carrier's: a carrier
+     * boundary, another cell and direct mode clear it. */
+    uint8_t ul_enc;
+
     /* Bursts and blocks whose CRC passed; TETRA reads as decoded once one did (tetra_publish()). */
     uint32_t decode_ok;
 
@@ -428,10 +434,11 @@ typedef struct tetra_state {
     uint8_t fn;
     uint8_t mn;
 
-    /* The KSG numbers (EN 300 392-7 table A.73) the network's CRC-passed signalling named -- a D-OTAR SCK or GCK
-     * Provide, the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT -- per network keyed by MCC/MNC, for
-     * the session (tetra_air.c); air_ksg_seq numbers the entries in the order they were made. The operator air keys
-     * live in the key set (dsd_state::tetra_air_keys). */
+    /* The KSG numbers (EN 300 392-7 table A.73) the network's CRC-passed signalling named -- a D-OTAR SCK Provide of a
+     * trunked mode SCK or a GCK Provide, the ciphering parameters of a D-LOCATION UPDATE COMMAND or REJECT, a repeat
+     * proof -- and, apart from them, those clear uplink U-LOCATION UPDATE DEMANDs proposed, per network keyed by
+     * MCC/MNC, for the session (tetra_air.c); air_ksg_seq numbers the entries in the order they were made. The operator
+     * air keys live in the key set (dsd_state::tetra_air_keys). */
     tetra_air_ksg_net air_ksg[TETRA_AIR_KSG_NETS];
     uint32_t air_ksg_seq;
 

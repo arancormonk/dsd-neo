@@ -12144,6 +12144,7 @@ set(_dsd_tetra_test_sources
     tetra_speech_channel
     tetra_sch_hu
     tetra_trunk_sm
+    tetra_ul
     tetra_publication
     tetra_voice_gate
     tetra_calls

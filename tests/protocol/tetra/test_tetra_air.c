@@ -326,6 +326,38 @@ test_ksg_evidence(void) {
     free_state(st);
 }
 
+/* What radios proposed on a network's uplink is kept apart from what its signalling named: it never makes or breaks the
+ * network's single algorithm. It shares the network's entry, so a keyed network keeps it and a full cache evicts it with
+ * the oldest keyless network. */
+static void
+test_ksg_requested(void) {
+    char spec[48];
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(dsd_state));
+    printf("[KSG requested]\n");
+    CHECK(tetra_air_ksg_request(st, 86, 28, 0) == 1 && tetra_air_ksg_requested(st, 86, 28) == 0x0001U
+              && tetra_air_ksg_seen(st, 86, 28) == 0U && tetra_air_ksg_lookup(st, 86, 28) == -1,
+          "a proposed TEA1 names no algorithm of the network");
+    CHECK(tetra_air_ksg_remember(st, 86, 28, 1) == 1 && tetra_air_ksg_lookup(st, 86, 28) == 1
+              && tetra_air_ksg_requested(st, 86, 28) == 0x0001U,
+          "the network's own TEA2 stays its single algorithm beside the proposal");
+    CHECK(tetra_air_ksg_request(st, 86, 28, 6) == 0 && tetra_air_ksg_requested(st, 86, 28) == 0x0001U,
+          "a reserved KSG is refused");
+    CHECK(tetra_air_ksg_request(st, 86, 28, 9) == 1 && tetra_air_ksg_requested(st, 86, 28) == 0x0201U,
+          "a proprietary one is kept");
+
+    DSD_SNPRINTF(spec, sizeof spec, "1,100,00000000000000000000");
+    (void)dsd_key_apply_direct(st, DSD_KEY_TYPE_TETRA_AIR, spec, DSD_KEY_APPLY_OVERLAY);
+    (void)tetra_air_ksg_request(st, 1, 100, 2);
+    for (unsigned mnc = 200U; mnc < 240U; mnc++) {
+        (void)tetra_air_ksg_request(st, 2, (uint16_t)mnc, 0);
+    }
+    CHECK(tetra_air_ksg_requested(st, 1, 100) == 0x0004U, "a keyed network keeps its proposals");
+    CHECK(tetra_air_ksg_requested(st, 86, 28) == 0U && tetra_air_ksg_seen(st, 86, 28) == 0U,
+          "a full cache evicts the oldest keyless network, proposals and all");
+    CHECK(tetra_air_ksg_requested(st, 2, 239) == 0x0001U, "and keeps the newest");
+    free_state(st);
+}
+
 /* Twenty networks of evidence: the evidence of a network an air key is loaded for is never evicted, so observations of
  * other networks (a foreign OTAR) cannot erase it, nor turn its two algorithms back into one. */
 static void
@@ -457,6 +489,7 @@ main(void) {
     test_cipher_key();
     test_ksg_evidence();
     test_ksg_evidence_cache();
+    test_ksg_requested();
     test_key_choice();
     free(g_opts);
     printf("%s\n", g_fail ? "FAILED" : "ALL TESTS PASSED");

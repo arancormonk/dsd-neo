@@ -44,6 +44,16 @@ int tetra_air_ksg_remember(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t
 /* The KSG numbers the network's signalling named: bit k for KSG k; 0 for none. */
 uint16_t tetra_air_ksg_seen(const dsd_state* state, uint16_t mcc, uint16_t mnc);
 
+/* Note that a CRC-passed clear U-LOCATION UPDATE DEMAND on this network's uplink proposed KSG number @p ksg (EN 300
+ * 392-7 clause 6.6.2.1: the MS declares its preferred KSG, which the SwMI accepts or rejects). A proposal is not the
+ * network's word: it is kept apart from what the network's signalling named and never chooses a key's algorithm. The
+ * entry, its eviction and the pinning of keyed networks are tetra_air_ksg_remember()'s. Returns 1 when stored, 0 for a
+ * reserved KSG (4..7) or a full cache. */
+int tetra_air_ksg_request(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t ksg);
+
+/* The KSG numbers radios proposed on the network's uplink (tetra_air_ksg_request()): bit k for KSG k; 0 for none. */
+uint16_t tetra_air_ksg_requested(const dsd_state* state, uint16_t mcc, uint16_t mnc);
+
 /* The network's one algorithm: the KSG number its signalling named, or -1 when it named none or more than one. */
 int tetra_air_ksg_lookup(const dsd_state* state, uint16_t mcc, uint16_t mnc);
 

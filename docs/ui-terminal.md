@@ -898,8 +898,11 @@ list policy on a session where nothing detects tones, the log says once that it 
 
 Under the TETRA preset (`-fT`), once a block has decoded, Call Info shows what the Qt/Android monitor shows: the
 working mode with the air encryption and every algorithm the network's signalling named (a network does not broadcast
-its algorithm: it shows only once a D-OTAR, a D-LOCATION UPDATE COMMAND or REJECT, or in direct mode the DMAC-SYNC of
-the transmission, named one), the network (its colour code in decimal, as the call history names one, with the
+its algorithm: it shows only once a D-OTAR key provide of trunked mode keys, a D-LOCATION UPDATE COMMAND or REJECT, a
+repeat proof of an encrypted message, or in direct mode the DMAC-SYNC of the transmission, named one; until then an
+encrypted trunked carrier reads `encrypted (TEA not broadcast)`), on an uplink (`--tetra-uplink`) the algorithms its
+radios' clear registrations proposed (`TMO control uplink · clear · radios propose TEA1`, a radio's choice, not the
+network's confirmation), the network (its colour code in decimal, as the call history names one, with the
 location area and the carrier being received once known: the fields a TEA1 reduced key is bound to), the security the
 cell broadcasts (its security class or classes, SCKN and authentication, or `no air encryption`) with the loaded key
 that applies to the carrier being received, or in direct mode the transmission's security class, where call following

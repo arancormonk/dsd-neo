@@ -15,6 +15,7 @@
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -26,6 +27,7 @@
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -45,6 +47,7 @@
 #include "tetra_confirm.h"
 #include "tetra_state.h"
 #include "tetra_test_pdu.h"
+#include "tetra_ul.h"
 #include "tetra_voice_gate.h"
 
 /* Trunking can follow a TETRA carrier (the Qt "Follow this system" control asks), and the negative syncs are the
@@ -93,10 +96,10 @@ dibits_of(const char* text, uint8_t* dibits, size_t count) {
 /* Signalling transmit chain (EN 300 392-2 clauses 8.2.3, 8.2.4 and 8.2.5) for @p ntype1 type-1 bits: CRC-16 and four
  * tail bits, the rate-1/4 mother code punctured to 2/3 into @p ncoded bits, block interleaving with @p a and scrambling
  * with @p seed, as the dibits the decoder reads. SCH/HD (clause 8.3.1.4.1) is 124 bits to 216 with a = 101, SCH/HU
- * (clause 8.3.1.4.3) 92 bits to 168 with a = 13. */
+ * (clause 8.3.1.4.3) 92 bits to 168 with a = 13, SCH/F (clause 8.3.1.2) 268 bits to 432 with a = 103. */
 static void
 encode_signalling(const uint8_t* type1, int ntype1, int ncoded, int a, uint32_t seed, uint8_t* dibits) {
-    enum { TYPE2_MAX = 144, CODED_MAX = 216 };
+    enum { TYPE2_MAX = 288, CODED_MAX = 432 };
 
     const int ntype2 = ntype1 + 16 + 4;
     assert(ntype2 <= TYPE2_MAX && ncoded <= CODED_MAX);
@@ -1139,6 +1142,147 @@ test_uplink_normal_burst_takes_the_lead(void) {
     session_close(&s);
 }
 
+enum { SCH_F_BITS = 268 };
+
+/* A normal uplink burst (--tetra-uplink) with one full-slot channel, its 216 coded dibits @p coded: block 1 right
+ * against the training sequence as the frame sync captured it, block 2 read after it. */
+static dsd_frame_verdict
+uplink_nts1_burst(session* s, const uint8_t* coded) {
+    feed(s, coded + BLOCK_DIBITS, BLOCK_DIBITS);
+    DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, coded, BLOCK_DIBITS);
+    s->state->tetra_sync.b1_valid = 1;
+    s->state->tetra_sync.b1_soft_valid = 0;
+    s->state->tetra_sync.nts2 = 0;
+    s->state->tetra_sync.cb = 0;
+    s->state->tetra_sync.b2_lead_count = 0;
+    s->state->tetra_sync.phase_rot = 0;
+    s->state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
+/* The MAC PDU of a radio's registration, @p nbits type-1 bits: a MAC-ACCESS (@p access, EN 300 392-2 table 21.41) or a
+ * MAC-DATA (table 21.46) from SSI 0x00A001 with encrypted flag @p enc and no length indication, carrying a BL-UDATA
+ * (table 21.1) whose TL-SDU is an MM U-LOCATION UPDATE DEMAND (table 16.18) with cipher control on and ciphering
+ * parameters naming KSG @p ksg, security class 2, SCKN 1 (EN 300 392-7 table A.46); zeros after it. */
+static void
+registration_pdu(uint8_t* bits, int nbits, int access, uint32_t enc, uint32_t ksg) {
+    ttb_block b = {0};
+    if (access) {
+        ttb_put(&b, 0, 1); /* MAC-ACCESS */
+    } else {
+        ttb_put(&b, 0, 2); /* MAC-DATA */
+    }
+    ttb_put(&b, 0, 1); /* fill bit indication */
+    ttb_put(&b, enc, 1);
+    ttb_put(&b, 0, 2); /* SSI */
+    ttb_put(&b, 0x00A001U, 24);
+    if (access) {
+        ttb_put(&b, 0, 1); /* no optional field */
+    } else {
+        ttb_put(&b, 1, 1); /* capacity request: not fragmented, no reservation, reserved bit */
+        ttb_put(&b, 0, 6);
+    }
+    ttb_put(&b, 2, 4); /* BL-UDATA */
+    ttb_put(&b, 1, 3); /* MLE protocol discriminator: MM */
+    ttb_put(&b, 2, 4); /* U-LOCATION UPDATE DEMAND */
+    ttb_put(&b, 3, 3); /* ITSI attach */
+    ttb_put(&b, 0, 1);
+    ttb_put(&b, 1, 1); /* cipher control on */
+    ttb_put(&b, (ksg << 6) | 0U, 10);
+    assert(b.n <= nbits);
+    DSD_MEMSET(bits, 0, (size_t)nbits);
+    DSD_MEMCPY(bits, b.bits, (size_t)b.n);
+}
+
+/* A radio's clear registration on the uplink proposes an algorithm, published apart from the network's own
+ * (dsd_tetra_publication::ksg_requested_mask), from a control uplink burst's MAC-ACCESS and a normal uplink burst's
+ * full slot MAC-DATA alike, with the uplink's air encryption. A block whose CRC failed changes neither; nor does a
+ * stealing channel half slot, nor a synchronisation burst's block 2, which is downlink, in an uplink session. A carrier
+ * boundary publishes at once that the uplink's encryption is no longer known, keeping the network's proposals; direct
+ * mode clears the encryption and publishes no proposal. */
+static void
+test_uplink_registration_proposes_its_algorithm(void) {
+    session s = session_open();
+    s.opts->tetra_uplink = 1;
+    s.opts->tetra_net_preset = 1;
+    s.opts->tetra_net_mcc = 460;
+    s.opts->tetra_net_mnc = 4242;
+    s.opts->tetra_net_colour = 17;
+    const uint32_t seed = tetra_compute_scramb_seed(460, 4242, 17);
+    uint8_t mac[SCH_F_BITS];
+    uint8_t cb[2 * CB_HALF_DIBITS];
+    uint8_t slot[2 * BLOCK_DIBITS];
+
+    registration_pdu(mac, SCH_HU_BITS, 1, 0U, 0U);
+    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
+    assert(control_burst(&s, cb, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const dsd_tetra_publication* pub = &s.state->tetra_pub;
+    assert(pub->mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK && pub->ksg_requested_mask == 0x0001U);
+    assert(pub->ksg_mask == 0U && pub->air_encryption == DSD_TETRA_AIR_ENC_CLEAR);
+
+    registration_pdu(mac, SCH_F_BITS, 0, 0U, 1U);
+    encode_signalling(mac, SCH_F_BITS, 432, 103, seed, slot);
+    assert(uplink_nts1_burst(&s, slot) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(pub->mode == DSD_TETRA_MODE_TMO_UPLINK && pub->ksg_requested_mask == 0x0003U);
+
+    /* TEA3 proposed in blocks whose CRC fails: nothing changes. */
+    registration_pdu(mac, SCH_HU_BITS, 1, 1U, 2U);
+    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
+    for (int i = 0; i < CB_HALF_DIBITS; i += 2) {
+        cb[i] ^= 1U;
+    }
+    (void)control_burst(&s, cb, 0);
+    registration_pdu(mac, SCH_F_BITS, 0, 1U, 2U);
+    encode_signalling(mac, SCH_F_BITS, 432, 103, seed, slot);
+    for (int i = 0; i < BLOCK_DIBITS; i += 2) {
+        slot[i] ^= 1U;
+    }
+    (void)uplink_nts1_burst(&s, slot);
+    assert(pub->ksg_requested_mask == 0x0003U && pub->air_encryption == DSD_TETRA_AIR_ENC_CLEAR);
+
+    /* A stealing channel half slot carrying a registration is not read. */
+    uint8_t half[BLOCK_DIBITS];
+    registration_pdu(mac, TTB_SCH_HD_BITS, 0, 0U, 2U);
+    encode_sch_hd(mac, seed, half);
+    assert(uplink_nts2_burst(&s, half, half) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(pub->ksg_requested_mask == 0x0003U);
+
+    /* An encrypted registration: the encryption shows, nothing is proposed; a carrier boundary forgets the encryption
+     * at once and keeps the network's proposals. */
+    registration_pdu(mac, SCH_HU_BITS, 1, 1U, 2U);
+    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
+    assert(control_burst(&s, cb, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED && pub->ksg_requested_mask == 0x0003U);
+    tetra_forget_carrier(s.state);
+    assert(pub->air_encryption == DSD_TETRA_AIR_ENC_UNKNOWN && pub->ksg_requested_mask == 0x0003U);
+
+    /* Direct mode: no proposal published, the uplink's encryption forgotten. */
+    assert(control_burst(&s, cb, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED);
+    uint8_t sch_s[60];
+    bits_of(k_dmo_sch_s, sch_s);
+    assert(dmo_sync_burst(&s, sch_s, NULL) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_st_existing(s.state)->ul_enc == TETRA_UL_ENC_UNKNOWN && pub->ksg_requested_mask == 0U);
+    /* A carrier boundary in direct mode leaves the published mode alone until the next burst: it is never relabelled
+     * as the trunked mode the decoder starts the next carrier in. */
+    assert(pub->mode == DSD_TETRA_MODE_DMO_DIRECT);
+    tetra_forget_carrier(s.state);
+    assert(pub->mode == DSD_TETRA_MODE_DMO_DIRECT && pub->air_encryption == DSD_TETRA_AIR_ENC_UNKNOWN);
+    session_close(&s);
+
+    /* A synchronisation burst's block 2 is downlink, even in an uplink session: never read as an uplink block. */
+    session d = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    d.opts->tetra_uplink = 1;
+    registration_pdu(mac, TTB_SCH_HD_BITS, 0, 0U, 0U);
+    encode_sch_hd(mac, tetra_compute_scramb_seed(460, 4242, 17), half);
+    assert(sync_burst(&d, bsch, half) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_air_ksg_requested(d.state, 460, 4242) == 0U && d.state->tetra_pub.ksg_requested_mask == 0U);
+    session_close(&d);
+}
+
 /* What the frontends were last handed at the end of a burst (tetra_burst_done()). */
 static int g_snapshots;
 static uint8_t g_snapshot_mode;
@@ -1188,6 +1332,7 @@ test_every_burst_ends_with_its_publication(void) {
 int
 main(void) {
     test_every_burst_ends_with_its_publication();
+    test_uplink_registration_proposes_its_algorithm();
     test_noise_is_unproductive();
     test_uplink_normal_burst_takes_the_lead();
     test_sync_burst_decodes_bnch();
