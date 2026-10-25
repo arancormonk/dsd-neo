@@ -2050,6 +2050,16 @@ test_nxdn96_follows_the_receiver_sync_rules(void) {
     assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
     state.symbolcnt += 92;
     assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NXDN_POS);
+    /* An accept leaves lastsynctype on the type it accepted, as every other matcher's does, however the payload hit
+     * before it read: the frame's notices and its end-of-frame check read the protocol from it. */
+    nxdn96_sync_setup(&opts, &state);
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);
+    state.symbolcnt += 100;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    state.symbolcnt += 92;
+    assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NXDN_NEG);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_NEG);
     /* A hit a frame after one of the other polarity is not that frame's FSW. */
     nxdn96_sync_setup(&opts, &state);
     assert(nxdn96_fsw(&opts, &state, -1, 0, good) == DSD_SYNC_NONE);

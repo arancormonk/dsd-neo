@@ -2183,12 +2183,14 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
      * (frame_sync_nxdn96_accepts()). */
     const int accepts =
         frame_sync_nxdn96_window(ctx) ? frame_sync_nxdn96_accepts(ctx, synctype) : state->lastsynctype == synctype;
+    /* An NXDN96 accept does not need lastsynctype to match, so it sets it: the frame's notices and
+     * nxdn_finalize_sync_reject() read the protocol from it, and a payload hit or a reset may have left another. */
+    state->lastsynctype = synctype;
     if (accepts) {
         frame_sync_note_cc_sync(ctx);
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
         return synctype;
     }
-    state->lastsynctype = synctype;
     return DSD_SYNC_NONE;
 }
 
