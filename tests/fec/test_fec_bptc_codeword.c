@@ -46,14 +46,20 @@ test_extract_keeps_failed_column(void) {
     assert(memcmp(out, payload, sizeof out) == 0);
     assert(memcmp(r, r0, sizeof r) == 0);
 
-    // The same pattern in the first column has no previous column to copy.
-    encode_deinterleaved(payload, r0, word);
+    // The same pattern in the first column has no previous column to copy: the decoder's output buffer is unwritten
+    // there. Every bit of that column set (R = 4 puts a 1 in row 0), so a zeroed or byte-valued leftover fails.
+    static const uint8_t r4[3] = {0, 0, 1};
+    DSD_MEMSET(payload, 0, sizeof payload);
+    for (size_t row = 1; row < 9; row++) {
+        payload[8U + ((row - 1U) * 11U)] = 1; // matrix row @p row, column 0
+    }
+    encode_deinterleaved(payload, r4, word);
     word[136] ^= 1U; // matrix row 9, column 0
     word[181] ^= 1U; // matrix row 12, column 0
     irr = BPTC_196x96_Extract_Data(word, out, r);
     assert(irr > 0);
     assert(memcmp(out, payload, sizeof out) == 0);
-    assert(memcmp(r, r0, sizeof r) == 0);
+    assert(memcmp(r, r4, sizeof r) == 0);
 }
 
 /* Clean CSBK from the dmr_t3_cc fixture (R = 0) and the RAS reference burst
@@ -208,7 +214,6 @@ test_codeword_wrong_beyond_radius(void) {
         }
         assert(decode(word, out, r, &distance) == 1);
         assert(distance == 5);
-        assert(distance > 4);
         assert(r_value(r) == wrong_r[w]);
         assert(memcmp(out, payload, sizeof out) != 0);
     }
@@ -224,7 +229,68 @@ xorshift32(uint32_t* state) {
     return x;
 }
 
-/* Random words rarely decode at all, and never close to a codeword. */
+/* The distance the decoder reports is the true one: the 195 product-code bits (1..195; bit 0 is outside the code) that
+   differ between @p word and the codeword it returned, re-encoded. */
+static uint32_t
+distance_to_codeword(const uint8_t word[196], const uint8_t out[96], const uint8_t r[3]) {
+    uint8_t codeword[196];
+    encode_deinterleaved(out, r, codeword);
+    uint32_t diff = 0;
+    for (size_t i = 1; i < 196; i++) {
+        diff += (uint32_t)((word[i] & 1U) != codeword[i]);
+    }
+    return diff;
+}
+
+/* Words a few errors from a random codeword: every decode reports its true distance, and a codeword it reaches within
+   the unique radius (4) of a word at most 4 errors from the one sent is that one, whatever bit 0 reads. With up to
+   eight errors the decoder succeeds on most of them, so these checks run thousands of times. */
+static void
+test_codeword_near_words(void) {
+    uint32_t state = 0x0BADC0DEU;
+    unsigned successes = 0;
+    for (unsigned t = 0; t < 4000; t++) {
+        uint8_t payload[96];
+        uint8_t reserved[3];
+        uint8_t word[196];
+        uint8_t out[96];
+        uint8_t r[3];
+        uint32_t distance = 0;
+        for (size_t i = 0; i < 96; i++) {
+            payload[i] = (uint8_t)(xorshift32(&state) & 1U);
+        }
+        for (size_t i = 0; i < 3; i++) {
+            reserved[i] = (uint8_t)(xorshift32(&state) & 1U);
+        }
+        uint8_t clean[196];
+        encode_deinterleaved(payload, reserved, clean);
+        DSD_MEMCPY(word, clean, sizeof word);
+        const uint32_t errors = t % 9U;
+        for (uint32_t flipped = 0; flipped < errors;) {
+            const size_t bit = 1U + (xorshift32(&state) % 195U);
+            if (word[bit] == clean[bit]) { // distinct bits
+                word[bit] ^= 1U;
+                flipped++;
+            }
+        }
+        word[0] ^= (uint8_t)(xorshift32(&state) & 1U);
+        if (decode(word, out, r, &distance) != 1) {
+            continue;
+        }
+        successes++;
+        assert(distance == distance_to_codeword(word, out, r));
+        /* The iterative decoder may carry a few errors to another codeword further away, never to one within. */
+        if (errors <= DSD_BPTC_196x96_UNIQUE_RADIUS && distance <= DSD_BPTC_196x96_UNIQUE_RADIUS) {
+            assert(distance == errors);
+            assert(memcmp(out, payload, sizeof out) == 0);
+            assert(memcmp(r, reserved, sizeof r) == 0);
+        }
+    }
+    assert(successes > 2000U);
+}
+
+/* Random words rarely decode at all, and never close to a codeword: one that does is at its reported distance, far
+   beyond the unique radius. */
 static void
 test_codeword_random_words(void) {
     uint32_t state = 0x5EED1234U;
@@ -239,6 +305,7 @@ test_codeword_random_words(void) {
         }
         if (decode(word, out, r, &distance) == 1) {
             successes++;
+            assert(distance == distance_to_codeword(word, out, r));
             assert(distance >= 17);
         }
     }
@@ -339,6 +406,7 @@ main(void) {
     test_codeword_column_parity_error();
     test_codeword_differs_from_extractor();
     test_codeword_wrong_beyond_radius();
+    test_codeword_near_words();
     test_codeword_random_words();
     test_codeword_rejects();
     test_extract_falls_back_to_nearest_codeword();
