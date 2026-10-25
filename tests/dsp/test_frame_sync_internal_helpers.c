@@ -18,6 +18,7 @@
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -3833,6 +3834,171 @@ test_p25p1_comparison_ends_cleanly(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* A notice of the P25 watchdog's tune, which read the decision @p state publishes now (its comparison, its leader). */
+static void
+post_watchdog_tune_of(const dsd_state* state) {
+    dsd_p25p1_decision read;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
+    dsd_frame_sync_p25p1_read_decision(&read);
+    dsd_frame_sync_note_off_thread_tune(&read);
+}
+
+/*
+ * Serialized chain steps. The P25 watchdog's control-channel tune completes after getFrameSync() looked for notices and
+ * before the comparison's pass ends and switches the chain: the step re-checks inside the tick guard, reconciles the
+ * tune, and stands down, so the chain the tune installed stays. A reconciled notice also puts the decoder and the front
+ * end back on the tuned chain when a step already moved them.
+ */
+static void
+test_p25p1_chain_steps_serialize_with_watchdog_tunes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+
+    /* CQPSK leads a pass that missed frames, which would end on the C4FM trial's pass. */
+    compare_setup(&opts, &state, 1);
+    compare_frame(&opts, &state, 0, 134);
+    for (int i = 0; i < 2; i++) {
+        compare_frame(&opts, &state, 3 * 180 - 134, 134);
+    }
+    assert(state.p25_p1_mod_compare.phase == 1 && state.rf_mod == 1);
+    post_watchdog_tune_of(&state);
+    compare_idle(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 134 - 2 * 3 * 180);
+    assert(state.p25_p1_mod_compare.phase == 0 && state.p25_p1_mod_probe_active == 0);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1);
+    assert(g_profile_set_calls == 0);
+    assert(!dsd_frame_sync_off_thread_tune_pending());
+
+    /* A state already wrong: the tune set CQPSK, a step since put the decoder and the front end on C4FM. */
+    compare_setup(&opts, &state, 1);
+    compare_frame(&opts, &state, 0, 134);
+    post_watchdog_tune_of(&state);
+    state.p25_p1_mod_compare.phase = 0;
+    state.p25_p1_mod_probe_active = 0;
+    state.rf_mod = 0;
+    reset_fake_profile_capture();
+    assert(dsd_frame_sync_apply_off_thread_tunes(&opts, &state) == 1);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1);
+    assert(g_profile_set_calls == 1 && g_profile_cqpsk == 1);
+    /* Applying it again changes nothing. */
+    assert(dsd_frame_sync_apply_off_thread_tunes(&opts, &state) == 0 && g_profile_set_calls == 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/* The P25 SM tick guard as the engine installs it (re-entrant), on a test mutex. */
+static dsd_mutex_t g_test_guard;
+static _Thread_local int g_test_guard_held;
+
+static int
+test_guard_enter(void) {
+    if (g_test_guard_held) {
+        return 0;
+    }
+    (void)dsd_mutex_lock(&g_test_guard);
+    g_test_guard_held = 1;
+    return 1;
+}
+
+static void
+test_guard_leave(void) {
+    g_test_guard_held = 0;
+    (void)dsd_mutex_unlock(&g_test_guard);
+}
+
+typedef struct {
+    dsd_state* state;
+    int tunes;
+} chain_race_ctx;
+
+/* The watchdog: tunes under the guard, each with one read of the decision, putting the decoder's modulation on the
+ * leading chain as the off-thread tune does, and posting its notice. */
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    chain_race_watchdog(void* arg) {
+    chain_race_ctx* ctx = (chain_race_ctx*)arg;
+    for (int i = 0; i < ctx->tunes; i++) {
+        const int taken = test_guard_enter();
+        dsd_p25p1_decision read;
+        dsd_frame_sync_p25p1_read_decision(&read);
+        if (read.running && read.learned >= 0) {
+            ctx->state->rf_mod = read.learned;
+        }
+        dsd_frame_sync_note_off_thread_tune(&read);
+        if (taken) {
+            test_guard_leave();
+        }
+    }
+    DSD_THREAD_RETURN;
+}
+
+/*
+ * The decoder's comparison against a stream of watchdog tunes on another thread (run under ThreadSanitizer to check
+ * it): every step that changes the comparison or the chain runs under the guard the tunes take, and at the end the
+ * decoder's modulation is the chain the learned modulation names.
+ */
+static void
+test_p25p1_chain_steps_race_watchdog_tunes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_mutex_init(&g_test_guard) == 0);
+    dsd_frame_sync_hooks_set(
+        &(dsd_frame_sync_hooks){.tick_guard_enter = test_guard_enter, .tick_guard_leave = test_guard_leave});
+    dsd_frame_sync_off_thread_tunes_reset(NULL);
+    compare_setup(&opts, &state, 1);
+    chain_race_ctx ctx = {&state, 400};
+    dsd_thread_t watchdog;
+    assert(dsd_thread_create(&watchdog, chain_race_watchdog, &ctx) == 0);
+    for (int i = 0; i < 4000; i++) {
+        if (state.p25_p1_mod_compare.phase == 0) {
+            /* A frame validated on the chain in force (dispatch stamps it under the guard) opens a comparison. */
+            const int taken = test_guard_enter();
+            state.symbolcnt += 46U;
+            state.sps_hunt_symbolcnt_mark = state.symbolcnt;
+            state.symbolcnt += 134U;
+            if (state.rf_mod == 0 || state.rf_mod == 1) {
+                state.p25_p1_validated_rf_mod = state.rf_mod;
+            }
+            state.p25_p1_validated_symbolcnt = state.symbolcnt;
+            state.p25_p1_mod_compare.verdict_valid = 0;
+            dsd_frame_sync_p25p1_mod_compare_publish(&state);
+            frame_sync_p25p1_mod_compare_note(&opts, &state);
+            if (taken) {
+                test_guard_leave();
+            }
+            continue;
+        }
+        /* The comparison's passes: one-block TSDUs, one in three, then the search the pass ends on. */
+        state.symbolcnt += 406U;
+        state.sps_hunt_symbolcnt_mark = state.symbolcnt;
+        state.symbolcnt += 134U;
+        frame_sync_p25p1_mod_compare_note(&opts, &state);
+        (void)dsd_frame_sync_apply_off_thread_tunes(&opts, &state);
+    }
+    assert(dsd_thread_join(watchdog) == 0);
+    (void)dsd_frame_sync_apply_off_thread_tunes(&opts, &state);
+    const int taken = test_guard_enter();
+    assert(state.p25_p1_mod_compare.phase != 0 || state.p25_p1_validated_rf_mod < 0
+           || state.rf_mod == state.p25_p1_validated_rf_mod);
+    if (taken) {
+        test_guard_leave();
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    (void)dsd_mutex_destroy(&g_test_guard);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * Issue #423: a P25p1 sync cannot claim CQPSK -- the sync word is identical on both
  * modulations -- but while the chain is already on it must re-assert the front-end profile the
@@ -4734,6 +4900,8 @@ main(void) {
     test_validated_cqpsk_survives_rotation_but_not_disproof();
     test_p25p1_partial_chain_loses_the_comparison();
     test_p25p1_comparison_ends_cleanly();
+    test_p25p1_chain_steps_serialize_with_watchdog_tunes();
+    test_p25p1_chain_steps_race_watchdog_tunes();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();
     test_decode_mode_profiles_agree_with_the_sps_hunt_table();

@@ -481,6 +481,8 @@ frame_sync_seed_p25_cqpsk_level_windows(const dsd_opts* opts, dsd_state* state) 
     }
 }
 
+static int frame_sync_p25p1_chain_step_begin(const dsd_opts* opts, dsd_state* state, int* taken);
+static void frame_sync_p25p1_chain_step_end(int taken);
 static void frame_sync_p25p1_mod_compare_abort(const dsd_opts* opts, dsd_state* state, int restore_learned,
                                                int restore_chain);
 
@@ -498,12 +500,15 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     /* A comparison in flight belongs to the acquisition this ends; its verdict goes with the learned modulation. The
        caller owns the demodulator and the learned modulation from here (a trunk-scan target switch has restored the
        target's already), so neither is put back. */
+    int taken = 0;
+    (void)frame_sync_p25p1_chain_step_begin(opts, state, &taken);
     frame_sync_p25p1_mod_compare_abort(opts, state, 0, 0);
     if (forget_p25_modulation) {
         state->p25_p1_validated_rf_mod = -1;
         state->p25_p1_mod_compare.verdict_valid = 0;
     }
     dsd_frame_sync_p25p1_mod_compare_publish(state);
+    frame_sync_p25p1_chain_step_end(taken);
     state->symbol_history_count = 0;
     state->symbol_history_head = 0;
     state->sidx = 0;
@@ -1533,7 +1538,7 @@ frame_sync_try_m17_join(frame_sync_match_ctx* ctx, int sync_type, uint8_t word, 
     }
     /* A tune another thread made since: the history before it is the carrier left's. */
     if (dsd_frame_sync_off_thread_tune_pending()) {
-        (void)dsd_frame_sync_apply_off_thread_tunes(state);
+        (void)dsd_frame_sync_apply_off_thread_tunes(ctx->opts, state);
     }
     const uint32_t now = (uint32_t)state->symbolcnt;
     const int chained =
@@ -2109,7 +2114,7 @@ static int
 frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
     /* A tune another thread made since: the lock and the hits before it are the carrier left's. */
     if (dsd_frame_sync_off_thread_tune_pending()) {
-        (void)dsd_frame_sync_apply_off_thread_tunes(ctx->state);
+        (void)dsd_frame_sync_apply_off_thread_tunes(ctx->opts, ctx->state);
     }
     dsd_nxdn96_sync* sync = &ctx->state->nxdn96_sync;
     const uint32_t now = (uint32_t)ctx->state->symbolcnt;
@@ -4023,7 +4028,7 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
 }
 
 /* Put the 4800/4 profile on one P25p1 chain, as the probe above does. */
-static void
+void
 frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
     state->rf_mod = chain;
     if (chain == 1) {
@@ -4036,6 +4041,21 @@ frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
 #else
     UNUSED(opts);
 #endif
+}
+
+/* A P25p1 chain step begins: the P25 SM tick guard, under which the watchdog tunes, is taken (re-entrant;
+ * *@p taken for frame_sync_p25p1_chain_step_end()), and a tune it made before the guard was ours is reconciled first
+ * (dsd_frame_sync_apply_off_thread_tunes()). 1 when one was: the tune moved the receiver and the chain under the step,
+ * which then stands down. See frame_sync_p25p1_compare.c for the serialization rule. */
+static int
+frame_sync_p25p1_chain_step_begin(const dsd_opts* opts, dsd_state* state, int* taken) {
+    *taken = dsd_frame_sync_hook_tick_guard_enter();
+    return dsd_frame_sync_apply_off_thread_tunes(opts, state);
+}
+
+static void
+frame_sync_p25p1_chain_step_end(int taken) {
+    dsd_frame_sync_hook_tick_guard_leave(taken);
 }
 
 /* Where a comparison may run at all: the places the probe can switch the chain (an unlocked RTL session with P25p1 on,
@@ -4114,12 +4134,18 @@ frame_sync_p25p1_mod_compare_decide(const dsd_opts* opts, dsd_state* state) {
 
 /* A frame whose NID decoded on the chain the demodulator is on opens a comparison, unless that chain is the one a
  * verdict chose: its chain gets one search pass from the frame's sync, which @p consumed symbols back. */
+static int
+frame_sync_p25p1_mod_compare_open_due(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    return frame_sync_p25p1_mod_compare_allowed(opts, state) && (state->rf_mod == 0 || state->rf_mod == 1)
+           && state->p25_p1_validated_rf_mod == state->rf_mod
+           && !(cmp->verdict_valid && cmp->verdict_rf_mod == state->rf_mod);
+}
+
 static void
 frame_sync_p25p1_mod_compare_open(const dsd_opts* opts, dsd_state* state, uint32_t consumed) {
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    if (!frame_sync_p25p1_mod_compare_allowed(opts, state) || (state->rf_mod != 0 && state->rf_mod != 1)
-        || state->p25_p1_validated_rf_mod != state->rf_mod
-        || (cmp->verdict_valid && cmp->verdict_rf_mod == state->rf_mod)) {
+    if (!frame_sync_p25p1_mod_compare_open_due(opts, state)) {
         return;
     }
     cmp->phase = 1;
@@ -4213,23 +4239,10 @@ frame_sync_p25p1_mod_compare_end_incumbent_pass(const dsd_opts* opts, dsd_state*
  * other chain's pass runs out inside a call (frame_sync_p25p1_mod_compare_trial_pass_ended()): per symbol, one
  * phase check.
  */
-void
-frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return;
-    }
+/* frame_sync_p25p1_mod_compare_note()'s step, under the tick guard: open, count, end a pass, settle or abort. */
+static void
+frame_sync_p25p1_mod_compare_step(const dsd_opts* opts, dsd_state* state, int validated_now, uint32_t consumed) {
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    const int validated_now = state->p25_p1_validated_symbolcnt != cmp->seen_symbolcnt;
-    cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
-    if (cmp->phase == 0 && !validated_now) {
-        return;
-    }
-    /* What the last frame's handler read, measured as frame_sync_sps_hunt_note_handler_consumption() measures it. */
-    uint32_t consumed = state->symbolcnt - state->sps_hunt_symbolcnt_mark;
-    if (consumed > (uint32_t)INT_MAX) {
-        consumed = 0;
-    }
-
     if (cmp->phase == 0) {
         frame_sync_p25p1_mod_compare_open(opts, state, consumed);
         return;
@@ -4253,6 +4266,34 @@ frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     frame_sync_p25p1_mod_compare_decide(opts, state);
+}
+
+void
+frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    const int validated_now = state->p25_p1_validated_symbolcnt != cmp->seen_symbolcnt;
+    cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
+    if (cmp->phase == 0 && !validated_now) {
+        return;
+    }
+    /* What the last frame's handler read, measured as frame_sync_sps_hunt_note_handler_consumption() measures it. */
+    uint32_t consumed = state->symbolcnt - state->sps_hunt_symbolcnt_mark;
+    if (consumed > (uint32_t)INT_MAX) {
+        consumed = 0;
+    }
+
+    /* Nothing to do on most frames: no comparison, and none this frame opens. */
+    if (cmp->phase == 0 && !frame_sync_p25p1_mod_compare_open_due(opts, state)) {
+        return;
+    }
+    int taken = 0;
+    if (!frame_sync_p25p1_chain_step_begin(opts, state, &taken)) {
+        frame_sync_p25p1_mod_compare_step(opts, state, validated_now, consumed);
+    }
+    frame_sync_p25p1_chain_step_end(taken);
 }
 
 /**
@@ -4287,8 +4328,13 @@ frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, 
     if (!frame_sync_p25p1_cqpsk_trial_half_dwell_due(opts, state, dwell)) {
         return 0;
     }
-    state->p25_p1_mod_probe_active = 0;
-    frame_sync_p25p1_set_chain(opts, state, 0);
+    /* A chain step: a tune reconciled first moved the chain under it, and the window is rebuilt for that instead. */
+    int taken = 0;
+    if (!frame_sync_p25p1_chain_step_begin(opts, state, &taken)) {
+        state->p25_p1_mod_probe_active = 0;
+        frame_sync_p25p1_set_chain(opts, state, 0);
+    }
+    frame_sync_p25p1_chain_step_end(taken);
     return FRAME_SYNC_HUNT_CHAIN_HANDBACK;
 }
 
@@ -4313,16 +4359,20 @@ frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* s
     /* A tune another thread made since ends the comparison here (dsd_frame_sync_apply_off_thread_tunes()); the tune
      * set the demodulator, so the window is not rebuilt for it. */
     if (dsd_frame_sync_off_thread_tune_pending()) {
-        (void)dsd_frame_sync_apply_off_thread_tunes(state);
+        (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
         return 0;
     }
     if (cmp->phase != 2 || ((uint32_t)(state->symbolcnt - cmp->window_start) < window && searched < (int)window)) {
         return 0;
     }
-    frame_sync_p25p1_mod_compare_note(opts, state);
-    if (cmp->phase == 2) {
-        frame_sync_p25p1_mod_compare_decide(opts, state);
+    int taken = 0;
+    if (!frame_sync_p25p1_chain_step_begin(opts, state, &taken)) {
+        frame_sync_p25p1_mod_compare_note(opts, state);
+        if (cmp->phase == 2) {
+            frame_sync_p25p1_mod_compare_decide(opts, state);
+        }
     }
+    frame_sync_p25p1_chain_step_end(taken);
     return 1;
 }
 
@@ -4342,12 +4392,9 @@ frame_sync_sps_hunt_unlocked_next_index(const dsd_opts* opts, const dsd_state* s
     return frame_sync_sps_hunt_next_index(opts, state);
 }
 
-int
-frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    const int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
-    if (state->sps_hunt_counter < dwell) {
-        return frame_sync_p25p1_cqpsk_trial_half_dwell(opts, state, dwell);
-    }
+/* A dwell expired (frame_sync_no_sync_sps_hunt()): the hunt steps. */
+static int
+frame_sync_no_sync_sps_hunt_expire(const dsd_opts* opts, dsd_state* state) {
     state->sps_hunt_counter = 0;
     /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. That is
      * true whether or not the profile then rotates, and this is the one place a probe's flag is
@@ -4409,6 +4456,29 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
      * So is an overtaken comparison that put the other chain back. The two comparisons are
      * exact: the helper mutates nothing else once it is past its own no-op guard. */
     return state->sps_hunt_idx != previous_idx || state->rf_mod != previous_mod;
+}
+
+int
+frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
+    const int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    if (state->sps_hunt_counter < dwell) {
+        return frame_sync_p25p1_cqpsk_trial_half_dwell(opts, state, dwell);
+    }
+    /* An expiry can end a comparison and switch the P25p1 chain (the probe): a chain step, where one can run (an RTL
+     * session with P25p1 on). A tune the watchdog made since moved the receiver, its profile and its dwell, which
+     * leaves no expiry to judge: the window is rebuilt for it, the dwell started over. */
+    if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx || opts->frame_p25p1 != 1) {
+        return frame_sync_no_sync_sps_hunt_expire(opts, state);
+    }
+    int taken = 0;
+    int step = FRAME_SYNC_HUNT_CHAIN_HANDBACK;
+    if (frame_sync_p25p1_chain_step_begin(opts, state, &taken)) {
+        state->sps_hunt_counter = 0;
+    } else {
+        step = frame_sync_no_sync_sps_hunt_expire(opts, state);
+    }
+    frame_sync_p25p1_chain_step_end(taken);
+    return step;
 }
 
 double
@@ -4591,7 +4661,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_decode_now_mono_s();
     frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
     frame_sync_apply_cli_mod_lock(opts, state);
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     frame_sync_p25p1_mod_compare_note(opts, state);
     frame_sync_sps_hunt_note_handler_consumption(state);
     frame_sync_ensure_enabled_sps_profile(opts, state);

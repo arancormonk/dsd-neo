@@ -3960,7 +3960,17 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     carrier left, and rewriting it to the tune's chain would claim a measurement no comparison made and stop the new
     carrier being compared), and the sync join histories go. A run boundary seeds the decision from the new session's
     state and drops the notices posted so far (`dsd_frame_sync_off_thread_tunes_reset()`, at the run's start before the
-    watchdog starts, and at its end after it stops).
+    watchdog starts, and at its end after it stops). The serialization rule: the watchdog tunes under the P25 SM tick
+    guard, and the decoder takes the same guard (`dsd_frame_sync_hook_tick_guard_enter()`, re-entrant, installed by the
+    engine) around every step that changes the comparison or the chain -- opening it, a pass's end and its chain switch,
+    a settle or an abort, a CQPSK trial's handback, a dwell expiry's probe, an acquisition reset, and reconciling a
+    notice -- and reconciles any notice still pending inside the guard before it acts
+    (`frame_sync_p25p1_chain_step_begin()`), standing down when one was. So no tune lands between a step's decision and
+    the chain it installs, and a reconciled notice puts `rf_mod` and the front end back on the tuned chain
+    (`frame_sync_p25p1_set_chain()`), which repairs a state already wrong. The guard is taken only on those steps, which
+    run while a comparison or probe is in flight, at a dwell expiry, or at a reset; the per-call checks are an atomic
+    load and a phase read. The publication stays: not every writer of the learned modulation runs under the guard (a
+    trunk-scan snapshot restore, a decoder-thread tune), so the one coherent read stays a read of the published value.
   - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
     gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The

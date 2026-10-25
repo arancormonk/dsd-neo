@@ -135,6 +135,17 @@ engine_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
     return s_p25_probe_last_answer;
 }
 
+/* The tick guard for a P25p1 chain step of the frame sync, re-entrant: the watchdog's tunes run under it, so a step
+   taken under it cannot interleave with one (frame_sync_p25p1_compare.c). */
+static int
+engine_tick_guard_enter(void) {
+    if (p25_sm_tick_guard_held_by_caller()) {
+        return 0;
+    }
+    p25_sm_tick_guard_enter();
+    return 1;
+}
+
 void
 dsd_engine_frame_sync_hooks_install(void) {
     s_p25_probe_last_answer = 0; // a previous run's probe is not this run's
@@ -144,6 +155,8 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.p25_sm_try_tick = p25_sm_try_tick;
     hooks.decoder_ticks_due = engine_decoder_ticks_due;
     hooks.p25_probe_in_flight = engine_p25_probe_in_flight;
+    hooks.tick_guard_enter = engine_tick_guard_enter;
+    hooks.tick_guard_leave = p25_sm_tick_guard_leave;
     hooks.p25_sm_release = p25_sm_release_from_frame_sync;
     hooks.p25_sm_vc_sync = p25_sm_vc_sync_from_frame_sync;
     hooks.p25_sm_vc_no_sync = p25_sm_vc_no_sync_from_frame_sync;

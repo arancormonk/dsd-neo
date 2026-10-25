@@ -920,7 +920,8 @@ typedef struct {
 } dsd_engine_p25p1_compare_snapshot;
 
 static void
-dsd_engine_end_p25p1_compare_for_tune(dsd_state* state, dsd_engine_p25p1_compare_snapshot* snapshot) {
+dsd_engine_end_p25p1_compare_for_tune(const dsd_opts* opts, dsd_state* state,
+                                      dsd_engine_p25p1_compare_snapshot* snapshot) {
     snapshot->off_thread = !s_decoder_thread;
     snapshot->set_rf_mod = 0;
     if (snapshot->off_thread) {
@@ -935,7 +936,7 @@ dsd_engine_end_p25p1_compare_for_tune(dsd_state* state, dsd_engine_p25p1_compare
         return;
     }
     /* Notices an earlier off-thread tune posted are reconciled first: this tune decides on the state they leave. */
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     snapshot->compare = state->p25_p1_mod_compare;
     snapshot->probe_active = state->p25_p1_mod_probe_active;
     snapshot->validated_rf_mod = state->p25_p1_validated_rf_mod;
@@ -1116,7 +1117,7 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
 #endif
     /* A P25p1 chain comparison in flight hands the tune the chain leading so far, not the one its pass is trying. */
-    dsd_engine_end_p25p1_compare_for_tune(state, &compare_snapshot);
+    dsd_engine_end_p25p1_compare_for_tune(opts, state, &compare_snapshot);
 
     /* Trunking (P25): the SM sets state->rf_mod based on the grant (0=C4FM FDMA,
      * 1=QPSK family for TDMA/CQPSK). For mixed P25P1 C4FM CC + P25P2 TDMA voice,
@@ -1221,7 +1222,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
 #endif
     /* As a grant's tune: a P25p1 chain comparison in flight hands the control channel the chain leading so far. */
-    dsd_engine_end_p25p1_compare_for_tune(state, &compare_snapshot);
+    dsd_engine_end_p25p1_compare_for_tune(opts, state, &compare_snapshot);
 
     // NOTE: Costas/TED reset is deferred to the controller thread after the hardware
     // retune completes. See dsd_engine_trunk_tune_to_freq_request for the full rationale.

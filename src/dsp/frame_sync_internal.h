@@ -133,6 +133,9 @@ void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* stat
 int frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
 /** @brief Arm (non-zero) or disarm the 2 s CQPSK dwell the 4800/4 profile holds a CQPSK chain for. */
 void frame_sync_qpsk_dwell_set(int armed);
+/** Put the 4800/4 profile, the decoder's modulation and the front end on P25p1 chain @p chain (0 C4FM, 1 CQPSK),
+ * arming the CQPSK dwell with it. A chain step: the caller holds the P25 SM tick guard. */
+void frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain);
 /* The P25p1 chain comparison's shared steps (frame_sync_p25p1_compare.c). */
 /** @brief End a comparison (dsd_p25p1_mod_compare): no phase, and the trial flag that kept the votes off is down. */
 void frame_sync_p25p1_mod_compare_end(dsd_state* state);

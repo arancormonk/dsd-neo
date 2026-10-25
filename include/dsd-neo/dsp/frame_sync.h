@@ -255,10 +255,11 @@ int dsd_frame_sync_off_thread_tune_pending(void);
 /**
  * @brief On the decoder thread, reconcile the tunes made off it since the last call, whatever the comparison did since:
  * forget the sync join histories, make the learned modulation the chain the latest tune set, end a comparison still
- * running there without a verdict, and drop a verdict reached since on a comparison that tune captured. 1 when one was
- * reconciled.
+ * running there without a verdict, drop a verdict reached since on a comparison that tune captured, and put rf_mod and
+ * the front end (@p opts) back on the chain the tune set if a step since moved them. Runs under the P25 SM tick guard
+ * (taken when the caller does not hold it). 1 when one was reconciled.
  */
-int dsd_frame_sync_apply_off_thread_tunes(dsd_state* state);
+int dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief A run boundary (a new session on @p state, or its end): seed the published decision from @p state (or with

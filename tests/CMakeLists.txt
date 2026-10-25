@@ -7094,6 +7094,7 @@ target_sources(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 add_test(
     NAME ENGINE_TRUNK_RETUNE_REGRESSION

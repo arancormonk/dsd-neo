@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -247,6 +248,18 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 frame_sync_qpsk_dwell_set(int armed) {
     (void)armed;
+}
+
+/* The frame sync's chain step (dsd_frame_sync.c), which a reconciled notice runs to put the decoder back on the chain
+ * the tune set: the decoder's modulation, as the real one sets it with the front end. */
+static int g_set_chain_calls;
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
+    (void)opts;
+    g_set_chain_calls++;
+    state->rf_mod = chain;
 }
 
 /* Mirrors the real helper in src/dsp/dsd_frame_sync.c so the assertions below read the
@@ -1058,7 +1071,7 @@ static void
 test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(dsd_opts* opts, dsd_state* state) {
     static dsd_p25p1_mod_compare before;
     dsd_engine_set_decoder_thread(0); /* the watchdog's thread */
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
 
     /* A CQPSK incumbent in front, the C4FM trial on the demodulator. */
     seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
@@ -1074,7 +1087,7 @@ test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(dsd_opts* opts, dsd
     rtl_stream_clear_pending_retune_profile();
     /* The decoder thread applies it: the comparison ends on the leading chain, with no verdict. */
     dsd_engine_set_decoder_thread(1);
-    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
     assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_mod_probe_active == 0);
     assert(state->p25_p1_mod_compare.verdict_valid == 0 && state->p25_p1_validated_rf_mod == 1);
     assert(published_leading() == -1 && !dsd_frame_sync_off_thread_tune_pending());
@@ -1091,7 +1104,7 @@ test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(dsd_opts* opts, dsd
     state->p25_p1_mod_compare.trial_read += 134U;
     dsd_frame_sync_p25p1_mod_compare_publish(state);
     assert(published_leading() == 0);
-    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
     assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_validated_rf_mod == 1);
     assert(published_learned() == 1);
     /* Two tunes before the decoder's next step: the later one's chain. */
@@ -1110,7 +1123,7 @@ test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(dsd_opts* opts, dsd
     dsd_engine_set_decoder_thread(1);
     state->p25_p1_mod_compare.incumbent_read = 1206U;
     state->p25_p1_mod_compare.trial_read = 0U;
-    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
     assert(state->p25_p1_validated_rf_mod == 0);
     dsd_engine_set_decoder_thread(0);
 
@@ -1121,7 +1134,7 @@ test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(dsd_opts* opts, dsd
     assert(memcmp(&state->p25_p1_mod_compare, &before, sizeof before) == 0);
     assert(g_rtl_cqpsk_enable == 1 && state->rf_mod == 1);
     rtl_stream_clear_pending_retune_profile();
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
 
     /* One that fails moves nothing and notes nothing: the decoder's modulation goes back to the trial chain. */
     seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
@@ -1158,7 +1171,7 @@ decoder_counts_a_c4fm_trial_frame(void) {
 static void
 test_off_thread_tune_reads_the_decision_once(dsd_opts* opts, dsd_state* state) {
     dsd_engine_set_decoder_thread(1);
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
 
     /* CQPSK leads when the tune begins; C4FM by the time it picks the control channel's chain. */
     seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
@@ -1171,7 +1184,7 @@ test_off_thread_tune_reads_the_decision_once(dsd_opts* opts, dsd_state* state) {
     assert(state->rf_mod == 1);
     rtl_stream_clear_pending_retune_profile();
     dsd_engine_set_decoder_thread(1);
-    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
     assert(state->p25_p1_mod_compare.phase == 0 && state->p25_p1_validated_rf_mod == 1 && published_learned() == 1);
 
     /* The tune captures a comparison C4FM leads; the decoder settles it on CQPSK, with a verdict, before reconciling
@@ -1188,7 +1201,7 @@ test_off_thread_tune_reads_the_decision_once(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_mod_compare.verdict_valid = 1;
     state->p25_p1_mod_compare.verdict_rf_mod = 1;
     dsd_frame_sync_p25p1_mod_compare_publish(state);
-    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
     assert(state->p25_p1_validated_rf_mod == 0 && state->p25_p1_mod_compare.verdict_valid == 0);
     assert(published_learned() == 0);
 
@@ -1206,22 +1219,42 @@ test_off_thread_tune_reads_the_decision_once(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_validated_rf_mod = -1;
     state->rf_mod = 0;
     dsd_frame_sync_off_thread_tunes_reset(state);
-    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 0 && published_learned() == -1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 0 && published_learned() == -1);
     dsd_engine_set_decoder_thread(0);
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_cqpsk_enable == 0 && state->rf_mod == 0);
     rtl_stream_clear_pending_retune_profile();
     dsd_engine_set_decoder_thread(1);
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
 }
 
 /* The two threads at once, as the watchdog's tick and the decoder's hunt run: the watchdog's tunes, and the decoder's
- * comparison steps and its application of those tunes, touch the comparison only on the decoder thread (run under
- * ThreadSanitizer to check it). */
+ * comparison steps and its application of those tunes, touch the comparison only on the decoder thread, and the
+ * decoder's chain steps run under the tick guard the tunes run under (run under ThreadSanitizer to check it). */
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
 } retune_race_ctx;
+
+/* The P25 SM tick guard on a mutex, re-entrant as the engine installs it for the frame sync's chain steps. */
+static dsd_mutex_t g_race_guard;
+static _Thread_local int g_race_guard_held;
+
+static int
+race_guard_enter(void) {
+    if (g_race_guard_held) {
+        return 0;
+    }
+    (void)dsd_mutex_lock(&g_race_guard);
+    g_race_guard_held = 1;
+    return 1;
+}
+
+static void
+race_guard_leave(void) {
+    g_race_guard_held = 0;
+    (void)dsd_mutex_unlock(&g_race_guard);
+}
 
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
@@ -1230,7 +1263,12 @@ static DSD_THREAD_RETURN_TYPE
     retune_race_watchdog(void* arg) {
     const retune_race_ctx* ctx = (const retune_race_ctx*)arg;
     for (int i = 0; i < 200; i++) {
+        /* p25_sm_try_tick(): the tick, and the tunes it makes, run under the guard. */
+        const int taken = race_guard_enter();
         (void)dsd_engine_trunk_tune_to_cc_request(ctx->opts, ctx->state, 852000000 + (i & 1) * 12500, 10, 0U);
+        if (taken) {
+            race_guard_leave();
+        }
     }
     DSD_THREAD_RETURN;
 }
@@ -1239,7 +1277,10 @@ static void
 test_chain_comparison_watchdog_tunes_race_the_hunt(dsd_opts* opts, dsd_state* state) {
     seed_chain_comparison_in_trial(opts, state, 1, 1206, 268);
     dsd_engine_set_decoder_thread(1);
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    assert(dsd_mutex_init(&g_race_guard) == 0);
+    dsd_frame_sync_hooks_set(
+        &(dsd_frame_sync_hooks){.tick_guard_enter = race_guard_enter, .tick_guard_leave = race_guard_leave});
     retune_race_ctx ctx = {opts, state};
     dsd_thread_t watchdog;
     assert(dsd_thread_create(&watchdog, retune_race_watchdog, &ctx) == 0);
@@ -1255,10 +1296,12 @@ test_chain_comparison_watchdog_tunes_race_the_hunt(dsd_opts* opts, dsd_state* st
         cmp->seen_symbolcnt++;
         cmp->trial_read += 134U;
         dsd_frame_sync_p25p1_mod_compare_publish(state);
-        (void)dsd_frame_sync_apply_off_thread_tunes(state);
+        (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     }
     assert(dsd_thread_join(watchdog) == 0);
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    dsd_frame_sync_hooks_set(NULL);
+    (void)dsd_mutex_destroy(&g_race_guard);
     dsd_frame_sync_p25p1_mod_compare_end_for_tune(state);
     dsd_engine_set_decoder_thread(1);
     rtl_stream_clear_pending_retune_profile();
@@ -1294,7 +1337,7 @@ test_trunk_retune_forgets_sync_join_histories(dsd_opts* opts, dsd_state* state) 
     state->p25_p2_active_slot = -1;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     dsd_engine_set_decoder_thread(1);
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
 
     seed_sync_join_histories(state);
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461750000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
@@ -1314,7 +1357,7 @@ test_trunk_retune_forgets_sync_join_histories(dsd_opts* opts, dsd_state* state) 
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461787500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->nxdn96_sync.lock_type == (uint8_t)DSD_SYNC_NXDN_NEG);
     dsd_engine_set_decoder_thread(1);
-    assert(dsd_frame_sync_apply_off_thread_tunes(state) == 1);
+    assert(dsd_frame_sync_apply_off_thread_tunes(opts, state) == 1);
     assert(sync_join_histories_empty(state));
     dsd_engine_set_decoder_thread(1);
     rtl_stream_clear_pending_retune_profile();
@@ -2328,7 +2371,7 @@ check_rxid_watchdog_tunes(dsd_opts* opts, dsd_state* state) {
     assert(state->rx_id.valid == rxid_system && state->rx_id.p25_sysid == 0x1A3U);
     assert(g_tick_guard_enters == 0U);
     g_tick_guard_held = 0;
-    (void)dsd_frame_sync_apply_off_thread_tunes(state);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_engine_set_decoder_thread(1);
 }
 

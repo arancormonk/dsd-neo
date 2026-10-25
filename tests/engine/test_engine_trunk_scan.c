@@ -14185,6 +14185,13 @@ frame_sync_qpsk_dwell_set(int armed) {
     (void)armed;
 }
 
+/* ... and puts the decoder back on a tuned chain through this when it reconciles a watchdog tune. */
+void
+frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
+    (void)opts;
+    state->rf_mod = chain;
+}
+
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
     (void)opts;

@@ -84,6 +84,18 @@ dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* sta
 }
 
 int
+dsd_frame_sync_hook_tick_guard_enter(void) {
+    return g_frame_sync_hooks.tick_guard_enter ? g_frame_sync_hooks.tick_guard_enter() : 0;
+}
+
+void
+dsd_frame_sync_hook_tick_guard_leave(int taken) {
+    if (taken && g_frame_sync_hooks.tick_guard_leave) {
+        g_frame_sync_hooks.tick_guard_leave();
+    }
+}
+
+int
 dsd_frame_sync_hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
     return g_frame_sync_hooks.p25_probe_in_flight ? g_frame_sync_hooks.p25_probe_in_flight(opts, state) : 0;
 }

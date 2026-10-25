@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
@@ -23,6 +24,14 @@
  *   notice, whatever has happened to the comparison since (dsd_frame_sync_apply_off_thread_tunes()): the learned
  *   modulation becomes the chain the tune set, a comparison still running ends there without a verdict, and a verdict
  *   reached since on the comparison the tune captured is dropped.
+ *
+ * The serialization rule: the watchdog tunes under the P25 SM tick guard, and the decoder takes the same guard
+ * (dsd_frame_sync_hook_tick_guard_enter(), re-entrant) around every step that changes the comparison or the chain --
+ * opening it, a pass's end and its chain switch, a settle or an abort, a CQPSK trial's handback or a probe's switch, an
+ * acquisition reset, and the reconciling below -- and reconciles any notice still pending inside the guard before it
+ * acts. So no tune lands between a step's decision and the chain it installs, and a reconciled notice puts rf_mod and
+ * the front end back on the tuned chain, which repairs a state already wrong. The guard is taken only on those rare
+ * steps; the per-call checks are an atomic load or a phase read, and only while a comparison or a probe is in flight.
  *
  * The decision is one value: bit 2 set while a comparison runs, and the learned modulation
  * (dsd_frame_sync_p25p1_learned_rf_mod(): the leading chain during a comparison) plus one in bits 0-1. The notices are
@@ -103,12 +112,14 @@ dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state) {
 }
 
 int
-dsd_frame_sync_apply_off_thread_tunes(dsd_state* state) {
-    if (!state) {
+dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state) {
+    if (!state || !dsd_frame_sync_off_thread_tune_pending()) {
         return 0;
     }
+    const int taken = dsd_frame_sync_hook_tick_guard_enter();
     const int tunes = atomic_load(&s_off_thread_tunes);
     if (off_thread_tunes_count(tunes) == s_off_thread_tunes_seen) {
+        dsd_frame_sync_hook_tick_guard_leave(taken);
         return 0;
     }
     s_off_thread_tunes_seen = off_thread_tunes_count(tunes);
@@ -118,15 +129,23 @@ dsd_frame_sync_apply_off_thread_tunes(dsd_state* state) {
      * its read): the decoder follows it, whatever the comparison did since. */
     const int chain = decision_learned(tunes);
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    if (cmp->phase != 0) {
-        /* Still running (or opened since): it ends there without a verdict, as the decoder thread's own tunes end one,
-         * the CQPSK dwell following the chain if the pass was on the other. */
-        const int pass_chain = cmp->phase == 2 ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
-        if (state->p25_p2_active_slot == -1 && chain >= 0 && pass_chain != chain) {
-            frame_sync_qpsk_dwell_set(chain == 1);
-        }
+    const int pass_chain = cmp->phase == 2 ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
+    const int was_running = cmp->phase != 0;
+    if (was_running) {
+        /* Still running (or opened since): it ends there without a verdict, as the decoder thread's own tunes end
+         * one. */
         cmp->phase = 0;
         state->p25_p1_mod_probe_active = 0;
+    }
+    if ((tunes & DECISION_RUNNING) && chain >= 0 && state->p25_p2_active_slot == -1) {
+        /* The tune put the decoder's modulation and the front end on its chain: they are put there again if a step
+         * since moved them, which makes this idempotent and repairs a state already wrong; the CQPSK dwell follows
+         * the chain. */
+        if (state->rf_mod != chain) {
+            frame_sync_p25p1_set_chain(opts, state, chain);
+        } else if (was_running && pass_chain != chain) {
+            frame_sync_qpsk_dwell_set(chain == 1);
+        }
     }
     if (tunes & DECISION_RUNNING) {
         /* The tune captured a comparison, which may have reached a verdict since: one measured on the carrier the tune
@@ -137,6 +156,7 @@ dsd_frame_sync_apply_off_thread_tunes(dsd_state* state) {
     state->p25_p1_validated_rf_mod = chain;
     cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
     dsd_frame_sync_p25p1_mod_compare_publish(state);
+    dsd_frame_sync_hook_tick_guard_leave(taken);
     return 1;
 }
 
