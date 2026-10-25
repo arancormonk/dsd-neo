@@ -4403,7 +4403,7 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
 /**
  * @brief Step the hunt once its budget has run a pass, and say what getFrameSync() does next.
  *
- * A step the dwell ends with is a no-sync exit (FRAME_SYNC_HUNT_NO_SYNC_EXIT): it owes the P25 SM its accounting and
+ * A step the dwell ends with is a no-sync exit, FRAME_SYNC_HUNT_NO_SYNC_EXIT. It owes the P25 SM its accounting and
  * noCarrier(), in that order, and getFrameSync() returns no-sync, after which the engine runs noCarrier() too. A CQPSK
  * trial's handback (FRAME_SYNC_HUNT_CHAIN_HANDBACK) is not: it changes the demodulator under the window halfway through
  * a dwell that goes on, so getFrameSync() rebuilds its window in place and keeps hunting, and nothing that ends a call
