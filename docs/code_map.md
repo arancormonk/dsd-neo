@@ -5032,14 +5032,14 @@ control within the CC grace walks its channel map with the ordinary hunts.
   probe is in flight (`p25_sm_hunt_probe_in_flight()`: `HUNTING`, or `ON_CC` on a hunt probe not yet decoded, under a
   P25 or unknown owner) the frame-sync SPS hunt steps only between 4800/4 and 6000/4
   (`dsd_frame_sync_hook_p25_probe_in_flight()`, installed in `frame_sync_hooks_install.c` and asked once per step
-  under the tick guard, the last answer standing while the watchdog holds it;
-  `frame_sync_sps_hunt_p25_probe_next_index()`), the sequence a P25-only rotation runs: from 4800/4 it steps to 6000/4,
-  never to 2400/4 or 9600/2. The trunked 4800/4 dwell (1.875 s) ends just inside the 2 s probe, so 6000/4 gets the
-  probe's last ~125 ms, as under a P25-only set. The full rotation resumes when the hunt ends. DMR and NXDN96 control live on 4800/4;
-  NXDN48 control (2400/4) is not found by a P25-driven probe (a decided limit: a dead-start NXDN48 system names
-  `-fi`). With no other eligible row, DMR probes the row
-  it last probed again when that tune never completed (a failed or expired probe: only a success retires the failure
-  that gates every frame), and listens on one the radio is on (`dmr_cc_next_mapped_candidate()`).
+  on the decoder thread, holding the tick guard or not: the engine reads the machine under the guard, taking it when
+  free, and the last answer stands while the watchdog holds it; `frame_sync_sps_hunt_p25_probe_next_index()`), the
+  sequence a P25-only rotation runs: from 4800/4 it steps to 6000/4, never to 2400/4 or 9600/2. The trunked 4800/4
+  dwell (1.875 s) ends just inside the 2 s probe, so 6000/4 gets the probe's last ~125 ms, as under a P25-only set.
+  The full rotation resumes when the hunt ends. DMR and NXDN96 control live on 4800/4; NXDN48 control (2400/4) is not
+  found by a P25-driven probe (a decided limit: a dead-start NXDN48 system names `-fi`). With no other eligible row,
+  DMR probes the row it last probed again when that tune never completed (a failed or expired probe: only a success
+  retires the failure that gates every frame), and listens on one the radio is on (`dmr_cc_next_mapped_candidate()`).
 - Ending: validated control naming another protocol's owner (DMR control, an NXDN CAC through
   `nxdn_cc_hunt_note_control()`, a confirmed Type-D SCCH through `nxdn_cc_hunt_note_type_d()`, after which nothing
   hunts), or a Hytera XPT site identifying itself, ends the hunt in place (the owner's ordinary recovery follows; a grant either machine followed meanwhile stands, and only the
