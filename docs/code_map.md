@@ -3841,8 +3841,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   taken as before. A transmission joined after its preamble opens on the same exact sync word three frames
   (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) running (`frame_sync_try_m17_join()`, `dsd_state::m17_join_hits`, cleared
   with the preamble candidate and with the NXDN96 sync; every exact word is kept, whichever path took its window,
-  since the payload matches some word a few times a frame): the stream word is a stream, the LSF word repeated an inverted stream (a transmission
-  sends one LSF), and the BERT word, or the packet word under an inverted session, BERT. A packet is never joined (its
+  since the payload matches some word a few times a frame): the stream word is a stream, the LSF word repeated an
+  inverted stream (a transmission sends one LSF), and the BERT word, or the packet word under an inverted session, BERT. A packet is never joined (its
   CRC covers every packet frame; the packet word sits a frame apart in NXDN96 data frames' LICH). A join opens one
   frame and clears the history, so the next frame continues only on M17's evidence
   (`frame_sync_m17_chain_has_evidence()`, a BERT PRBS lock) or waits for three fresh hits. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
