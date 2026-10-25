@@ -219,8 +219,17 @@ void dsd_frame_sync_p25p1_mod_compare_end_for_tune(dsd_state* state);
 int dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state);
 
 /**
- * @brief Publish @p state's P25p1 chain comparison and learned modulation for a tune made on another thread
- * (dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(), dsd_frame_sync_p25p1_published_learned_rf_mod()).
+ * @brief The P25p1 decision the decoder thread publishes for a tune made on another thread (the P25 watchdog's), read
+ * whole in one atomic load (dsd_frame_sync_p25p1_read_decision()).
+ */
+typedef struct {
+    int raw;     /* the published value, which a notice carries (dsd_frame_sync_note_off_thread_tune()) */
+    int running; /* a chain comparison runs */
+    int learned; /* the learned modulation: the leading chain while one runs; 0 C4FM, 1 CQPSK, -1 nothing learned */
+} dsd_p25p1_decision;
+
+/**
+ * @brief Publish @p state's P25p1 chain comparison and learned modulation (dsd_frame_sync_p25p1_learned_rf_mod()).
  *
  * The decoder thread owns both, and every step of the comparison publishes; a caller that writes either itself (a
  * decoded NID's stamp, a tune's rollback, a trunk-scan target's restore) publishes after it.
@@ -228,35 +237,34 @@ int dsd_frame_sync_p25p1_learned_rf_mod(const dsd_state* state);
 void dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state);
 
 /**
- * @brief The learned P25p1 modulation as last published (dsd_frame_sync_p25p1_learned_rf_mod()): 0 C4FM, 1 CQPSK,
- * -1 nothing learned. Safe from any thread; a tune off the decoder thread reads it in place of the state.
+ * @brief Read the published decision, once. Safe from any thread. An off-thread tune reads it once and uses that read
+ * both for the chain it tunes and for its notice.
  */
-int dsd_frame_sync_p25p1_published_learned_rf_mod(void);
+void dsd_frame_sync_p25p1_read_decision(dsd_p25p1_decision* out);
 
 /**
- * @brief The chain a P25p1 chain comparison in flight leads on, 0 C4FM or 1 CQPSK, or -1 when none runs. Safe from any
- * thread: a tune off the decoder thread reads it in place of the comparison and the learned modulation, which the
- * comparison's other chain overwrites during its pass.
+ * @brief Note an accepted tune made off the decoder thread, with the decision it read (@p read) and tuned by. The
+ * decoder thread reconciles it at its next frame sync step (dsd_frame_sync_apply_off_thread_tunes()). Safe from any
+ * thread.
  */
-int dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(void);
-
-/**
- * @brief Note an accepted tune made off the decoder thread (the P25 watchdog's), which landed a P25p1 chain comparison
- * in flight on @p chain (the leading chain it read, dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(); -1 when it found
- * none). The decoder thread applies it at its next frame sync step (dsd_frame_sync_apply_off_thread_tunes()): it ends
- * the comparison on the latest such tune's chain, as the decoder thread's own tunes end one, and forgets the sync join
- * histories. Safe from any thread.
- */
-void dsd_frame_sync_note_off_thread_tune(int chain);
+void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
 
 /** @brief Whether a tune off the decoder thread awaits dsd_frame_sync_apply_off_thread_tunes(). Decoder thread. */
 int dsd_frame_sync_off_thread_tune_pending(void);
 
 /**
- * @brief On the decoder thread, apply the tunes made off it since the last call: forget the sync join histories and end
- * a chain comparison in flight on the chain it leads on, leaving the demodulator to the tune. 1 when one was applied.
+ * @brief On the decoder thread, reconcile the tunes made off it since the last call, whatever the comparison did since:
+ * forget the sync join histories, make the learned modulation the chain the latest tune set, end a comparison still
+ * running there without a verdict, and drop a verdict reached since on a comparison that tune captured. 1 when one was
+ * reconciled.
  */
 int dsd_frame_sync_apply_off_thread_tunes(dsd_state* state);
+
+/**
+ * @brief A run boundary (a new session on @p state, or its end): seed the published decision from @p state (or with
+ * nothing learned for NULL) and drop the notices posted so far, before the P25 watchdog starts. Decoder thread.
+ */
+void dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state);
 
 /**
  * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.

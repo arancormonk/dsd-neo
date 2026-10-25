@@ -2155,7 +2155,9 @@ test_nxdn96_and_m17_histories_end_with_the_carrier(void) {
         state.m17_join_hits.symbolcnt[0] = state.symbolcnt;
         state.m17_join_hits.next = 1U;
         if (boundary == 2) {
-            dsd_frame_sync_note_off_thread_tune(-1);
+            dsd_p25p1_decision read;
+            dsd_frame_sync_p25p1_read_decision(&read);
+            dsd_frame_sync_note_off_thread_tune(&read);
             assert(state.nxdn96_sync.lock_type == DSD_SYNC_NXDN_POS); /* the decoder thread's to forget */
             state.symbolcnt += 192;
             assert(nxdn96_fsw(&opts, &state, 1, 0, good) == DSD_SYNC_NONE);

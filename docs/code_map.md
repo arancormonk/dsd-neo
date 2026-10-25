@@ -3944,15 +3944,22 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     `rf_mod` on CQPSK and named its slot (`p25_p2_active_slot`), and that modulation stays the tune's; only the learned
     modulation goes back. A tune that fails or is deferred puts the comparison back as it was, with the front end's
     profile captured before the comparison ended, so the decoder and the front end stay on the same chain.
-  - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard. A tune the P25
-    watchdog's tick makes on its own thread leaves it alone. It reads the chain the comparison leads on, and the learned
-    modulation, as the decoder publishes them at every step and every stamp
-    (`dsd_frame_sync_p25p1_mod_compare_publish()`, one atomic value read through
-    `dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()` and `dsd_frame_sync_p25p1_published_learned_rf_mod()`), puts
-    `rf_mod` on the leading chain as the end would, and an accepted tune notes itself with that chain, count and chain
-    in one atomic value (`dsd_frame_sync_note_off_thread_tune()`); the decoder thread ends the comparison on the latest
-    such tune's chain, though frames it counted since put the other chain in front, at `getFrameSync()` entry or in the
-    hunt while one runs (`dsd_frame_sync_apply_off_thread_tunes()`), leaving the demodulator to the tune.
+  - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard, and a tune the P25
+    watchdog's tick makes on its own thread never touches it. The invariant: an off-thread tune makes one coherent read
+    of the decision the decoder publishes (`dsd_frame_sync_p25p1_read_decision()`: one atomic value, whether a
+    comparison runs and the learned modulation, the leading chain while one runs, published at every comparison step and
+    every write of the learned modulation by `dsd_frame_sync_p25p1_mod_compare_publish()`), taken when its outermost
+    tune request begins (`dsd_engine_tune_decision_begin()`), and uses that one read both for the chain it tunes
+    (`rf_mod`, the control channel's chain) and for the notice it posts (`dsd_frame_sync_note_off_thread_tune()`, which
+    carries the read with the count, in one atomic value). The decoder thread reconciles every notice, whatever the
+    comparison did since (`dsd_frame_sync_apply_off_thread_tunes()`, at `getFrameSync()` entry, in the hunt while a
+    comparison runs, before the NXDN96 and M17 matchers read their histories, and before a decoder-thread tune decides):
+    the learned modulation becomes the chain the latest tune set, a comparison still running (or opened since) ends
+    there without a verdict, a verdict reached since on a comparison the tune captured is dropped (it measured the
+    carrier left, and rewriting it to the tune's chain would claim a measurement no comparison made and stop the new
+    carrier being compared), and the sync join histories go. A run boundary seeds the decision from the new session's
+    state and drops the notices posted so far (`dsd_frame_sync_off_thread_tunes_reset()`, at the run's start before the
+    watchdog starts, and at its end after it stops).
   - Decided limit: "read" counts a frame once its NID decodes, even when its TSBK trellis or CRC then fails, and a
     gap is judged against the frame before it, so a one-block TSDU missed after a three-block one (a 226-symbol search
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The

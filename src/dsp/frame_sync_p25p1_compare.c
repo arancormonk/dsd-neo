@@ -13,21 +13,38 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 
-/* The decoder thread owns the comparison and the learned modulation, which the hunt writes outside the P25 SM tick
- * guard. A tune another thread makes (the P25 watchdog's) reads them from here instead, as one value so the two agree:
- * bit 2 set while a comparison runs, and the learned modulation (dsd_frame_sync_p25p1_learned_rf_mod(): the leading
- * chain during a comparison) plus one in the low bits. It leaves the comparison's ending, and the sync join histories'
- * clearing, to the decoder thread (s_off_thread_tunes). Nothing learned and no comparison until the first publish. */
+/*
+ * The decoder thread owns the comparison and the learned modulation; the hunt writes them outside the P25 SM tick
+ * guard. A tune made on another thread (the P25 watchdog's) never touches them. The invariant:
+ *
+ *   An off-thread tune makes one coherent read of the decision the decoder publishes (s_published,
+ *   dsd_frame_sync_p25p1_read_decision()), and uses that one read both for the chain it tunes and for the notice it
+ *   posts (dsd_frame_sync_note_off_thread_tune()), which carries the read whole. The decoder thread reconciles every
+ *   notice, whatever has happened to the comparison since (dsd_frame_sync_apply_off_thread_tunes()): the learned
+ *   modulation becomes the chain the tune set, a comparison still running ends there without a verdict, and a verdict
+ *   reached since on the comparison the tune captured is dropped.
+ *
+ * The decision is one value: bit 2 set while a comparison runs, and the learned modulation
+ * (dsd_frame_sync_p25p1_learned_rf_mod(): the leading chain during a comparison) plus one in bits 0-1. The notices are
+ * one value too: their count above bit 2, the latest one's decision in bits 0-2. Both are seeded at a run boundary
+ * (dsd_frame_sync_off_thread_tunes_reset()).
+ */
 static atomic_int s_published = 0;
-/* Tunes made off the decoder thread, counted, with the chain the latest one landed a comparison on, as one value: the
- * count above the low two bits, which hold that chain plus one (0: none). The decoder thread applies them
- * (dsd_frame_sync_apply_off_thread_tunes()) up to the count it last saw, which only it reads. */
 static atomic_int s_off_thread_tunes = 0;
+/* The notice count the decoder thread has reconciled up to; only it reads this. */
 static unsigned int s_off_thread_tunes_seen = 0U;
+
+#define DECISION_RUNNING 4
+#define DECISION_MASK    7
 
 static unsigned int
 off_thread_tunes_count(int value) {
-    return (unsigned int)value >> 2;
+    return (unsigned int)value >> 3;
+}
+
+static int
+decision_learned(int decision) {
+    return (decision & 3) - 1;
 }
 
 void
@@ -36,19 +53,19 @@ dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state) {
         return;
     }
     const int learned = dsd_frame_sync_p25p1_learned_rf_mod(state);
-    const int running = state->p25_p1_mod_compare.phase != 0 ? 4 : 0;
+    const int running = state->p25_p1_mod_compare.phase != 0 ? DECISION_RUNNING : 0;
     atomic_store(&s_published, running | ((learned >= -1 && learned <= 1) ? learned + 1 : 0));
 }
 
-int
-dsd_frame_sync_p25p1_mod_compare_leading_rf_mod(void) {
-    const int published = atomic_load(&s_published);
-    return (published & 4) ? (published & 3) - 1 : -1;
-}
-
-int
-dsd_frame_sync_p25p1_published_learned_rf_mod(void) {
-    return (atomic_load(&s_published) & 3) - 1;
+void
+dsd_frame_sync_p25p1_read_decision(dsd_p25p1_decision* out) {
+    if (!out) {
+        return;
+    }
+    const int decision = atomic_load(&s_published);
+    out->raw = decision & DECISION_MASK;
+    out->running = (decision & DECISION_RUNNING) != 0;
+    out->learned = decision_learned(decision);
 }
 
 void
@@ -59,11 +76,11 @@ frame_sync_p25p1_mod_compare_end(dsd_state* state) {
 }
 
 void
-dsd_frame_sync_note_off_thread_tune(int chain) {
-    const unsigned int code = (chain == 0 || chain == 1) ? (unsigned int)chain + 1U : 0U;
+dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read) {
+    const unsigned int code = read ? (unsigned int)(read->raw & DECISION_MASK) : 0U;
     int expected = atomic_load(&s_off_thread_tunes);
     for (;;) {
-        const unsigned int next = ((off_thread_tunes_count(expected) + 1U) << 2) | code;
+        const unsigned int next = ((off_thread_tunes_count(expected) + 1U) << 3) | code;
         if (atomic_compare_exchange_strong(&s_off_thread_tunes, &expected, (int)next)) {
             return;
         }
@@ -73,6 +90,16 @@ dsd_frame_sync_note_off_thread_tune(int chain) {
 int
 dsd_frame_sync_off_thread_tune_pending(void) {
     return off_thread_tunes_count(atomic_load(&s_off_thread_tunes)) != s_off_thread_tunes_seen;
+}
+
+void
+dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state) {
+    s_off_thread_tunes_seen = off_thread_tunes_count(atomic_load(&s_off_thread_tunes));
+    if (state) {
+        dsd_frame_sync_p25p1_mod_compare_publish(state);
+    } else {
+        atomic_store(&s_published, 0);
+    }
 }
 
 int
@@ -87,22 +114,29 @@ dsd_frame_sync_apply_off_thread_tunes(dsd_state* state) {
     s_off_thread_tunes_seen = off_thread_tunes_count(tunes);
     /* The carrier the tune left sent the histories: nothing of them pairs with the carrier it reached. */
     dsd_state_forget_sync_join_histories(state);
+    /* The latest tune set the decoder's modulation and the front end on the chain it read (the learned modulation of
+     * its read): the decoder follows it, whatever the comparison did since. */
+    const int chain = decision_learned(tunes);
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
     if (cmp->phase != 0) {
-        /* The latest tune read the leading chain (dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()) and landed on it,
-         * setting the decoder's modulation itself: the comparison ends on that chain, as one the decoder thread's tune
-         * ends, and the learned modulation goes back to it, though the comparison has counted frames since that put
-         * the other chain in front. A tune that found no comparison to read names none: it ends on the leader. */
-        const int tuned = (tunes & 3) - 1;
-        const int leader = tuned >= 0 ? tuned : frame_sync_p25p1_mod_compare_leader(state);
+        /* Still running (or opened since): it ends there without a verdict, as the decoder thread's own tunes end one,
+         * the CQPSK dwell following the chain if the pass was on the other. */
         const int pass_chain = cmp->phase == 2 ? !cmp->incumbent_rf_mod : cmp->incumbent_rf_mod;
-        state->p25_p1_validated_rf_mod = leader;
-        cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
-        if (state->p25_p2_active_slot == -1 && pass_chain != leader) {
-            frame_sync_qpsk_dwell_set(leader == 1);
+        if (state->p25_p2_active_slot == -1 && chain >= 0 && pass_chain != chain) {
+            frame_sync_qpsk_dwell_set(chain == 1);
         }
-        frame_sync_p25p1_mod_compare_end(state);
+        cmp->phase = 0;
+        state->p25_p1_mod_probe_active = 0;
     }
+    if (tunes & DECISION_RUNNING) {
+        /* The tune captured a comparison, which may have reached a verdict since: one measured on the carrier the tune
+         * left, which says nothing of the one it reached and would stop that one being compared. Dropped, not
+         * rewritten to the tune's chain, which no comparison measured. */
+        cmp->verdict_valid = 0;
+    }
+    state->p25_p1_validated_rf_mod = chain;
+    cmp->seen_symbolcnt = state->p25_p1_validated_symbolcnt;
+    dsd_frame_sync_p25p1_mod_compare_publish(state);
     return 1;
 }
 

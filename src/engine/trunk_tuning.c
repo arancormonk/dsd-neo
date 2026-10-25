@@ -167,6 +167,37 @@ dsd_engine_set_decoder_thread(int is_decoder) {
     s_decoder_thread = is_decoder ? 1 : 0;
 }
 
+/* Off the decoder thread, a tune request's one read of the P25p1 decision the decoder publishes
+   (dsd_frame_sync_p25p1_read_decision()): taken when the outermost request on this thread begins, and used for every
+   read the request makes, and the requests it makes (a return's control-channel tune): the chain it tunes and the
+   notice it posts (dsd_engine_rxid_trunk_tune()). One read for both is the invariant that keeps the decoder's
+   reconciliation coherent with the front end (frame_sync_p25p1_compare.c). */
+static DSD_ENGINE_THREAD_LOCAL int s_tune_depth = 0;
+static DSD_ENGINE_THREAD_LOCAL dsd_p25p1_decision s_tune_decision;
+
+static void
+dsd_engine_tune_decision_begin(void) {
+    if (s_tune_depth++ == 0 && !s_decoder_thread) {
+        dsd_frame_sync_p25p1_read_decision(&s_tune_decision);
+    }
+}
+
+static void
+dsd_engine_tune_decision_end(void) {
+    if (s_tune_depth > 0) {
+        s_tune_depth--;
+    }
+}
+
+/* The read the request in progress took; outside one, a read of its own. */
+static const dsd_p25p1_decision*
+dsd_engine_tune_decision(void) {
+    if (s_tune_depth == 0) {
+        dsd_frame_sync_p25p1_read_decision(&s_tune_decision);
+    }
+    return &s_tune_decision;
+}
+
 /**
  * @brief Whether an FDMA P25 control channel should come up on CQPSK.
  *
@@ -186,8 +217,7 @@ dsd_engine_p25_fdma_cc_wants_cqpsk(const dsd_opts* opts, const dsd_state* state)
     /* The decoder thread owns the learned modulation, and a tune on it has ended a chain comparison in flight by now. A
        tune off it (the P25 watchdog's) reads what the decoder published: during a comparison, the chain it leads on,
        since the other chain's frames overwrite the learned modulation in its pass. */
-    const int learned =
-        s_decoder_thread ? state->p25_p1_validated_rf_mod : dsd_frame_sync_p25p1_published_learned_rf_mod();
+    const int learned = s_decoder_thread ? state->p25_p1_validated_rf_mod : dsd_engine_tune_decision()->learned;
     return (!opts->mod_cli_lock && learned == 1) ? 1 : 0;
 }
 
@@ -604,7 +634,7 @@ dsd_engine_maybe_drain_audio(dsd_opts* opts, const dsd_state* state) {
    it at once under the guard (its own hold, or one taken here): nothing the decoder publishes or notes next reads
    the carrier left's code. */
 static void
-dsd_engine_rxid_trunk_tune(dsd_state* state, int compare_chain) {
+dsd_engine_rxid_trunk_tune(dsd_state* state) {
     /* The carrier left's RAS evidence (dmr_ras_reset()) goes wherever the drop is applied: here when it is applied now,
        and where the decoder thread applies a request that waits. So do the frame sync's join histories, the NXDN96 lock
        and the M17 words, which the hunt reads outside the guard: off the decoder thread the tune only notes itself, and
@@ -613,7 +643,7 @@ dsd_engine_rxid_trunk_tune(dsd_state* state, int compare_chain) {
         if (dsd_rxid_request_trunk_tune(state)) {
             dmr_ras_reset(state);
         }
-        dsd_frame_sync_note_off_thread_tune(compare_chain);
+        dsd_frame_sync_note_off_thread_tune(dsd_engine_tune_decision());
         return;
     }
     const int take_guard = !p25_sm_tick_guard_held_by_caller();
@@ -630,7 +660,7 @@ dsd_engine_rxid_trunk_tune(dsd_state* state, int compare_chain) {
 }
 
 static void
-dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq, int compare_chain) {
+dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->trunk_is_tuned = 1;
@@ -662,7 +692,7 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq,
     state->receive_codes_fresh_freq = freq;
     /* The voice channel belongs to the control channel's system: the received identity keeps the system and drops the
        control channel's access code. */
-    dsd_engine_rxid_trunk_tune(state, compare_chain);
+    dsd_engine_rxid_trunk_tune(state);
 }
 
 /* Send the demodulator and passband a rigctl peer is asked for under the settings in force (issues #526, #621), which
@@ -875,10 +905,10 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
  * comparison back as it was, on the chain its pass was reading, together with the front end's profile.
  *
  * The comparison is the decoder thread's, which runs it in the hunt outside the tick guard. A tune off that thread (the
- * P25 watchdog's) leaves it alone: it reads the chain the comparison leads on as the decoder published it
- * (dsd_frame_sync_p25p1_mod_compare_leading_rf_mod()), puts the decoder's modulation on it as the end would, and an
- * accepted tune notes itself for the decoder thread, which ends the comparison
- * (dsd_frame_sync_apply_off_thread_tunes()). */
+ * P25 watchdog's) leaves it alone: it puts the decoder's modulation on the chain its one read of the published decision
+ * leads on (dsd_engine_tune_decision()), as the end would, and an accepted tune notes that read for the decoder thread,
+ * which reconciles it (dsd_frame_sync_apply_off_thread_tunes()). A tune on the decoder thread reconciles the notices
+ * still pending before it reads anything. */
 typedef struct {
     dsd_p25p1_mod_compare compare;
     int probe_active;
@@ -886,7 +916,6 @@ typedef struct {
     uint32_t validated_symbolcnt;
     int rf_mod;
     int off_thread; /* the tune runs off the decoder thread: the comparison was left alone */
-    int leader;     /* off it, the chain the comparison led on, which the tune landed on; -1 for none */
     int set_rf_mod; /* off it, the tune put the decoder's modulation on the leading chain */
 } dsd_engine_p25p1_compare_snapshot;
 
@@ -894,11 +923,10 @@ static void
 dsd_engine_end_p25p1_compare_for_tune(dsd_state* state, dsd_engine_p25p1_compare_snapshot* snapshot) {
     snapshot->off_thread = !s_decoder_thread;
     snapshot->set_rf_mod = 0;
-    snapshot->leader = -1;
     if (snapshot->off_thread) {
         snapshot->compare.phase = 0;
-        const int leading = dsd_frame_sync_p25p1_mod_compare_leading_rf_mod();
-        snapshot->leader = leading;
+        const dsd_p25p1_decision* decision = dsd_engine_tune_decision();
+        const int leading = decision->running ? decision->learned : -1;
         if (leading >= 0 && state->p25_p2_active_slot == -1 && state->rf_mod != leading) {
             snapshot->rf_mod = state->rf_mod;
             snapshot->set_rf_mod = 1;
@@ -906,6 +934,8 @@ dsd_engine_end_p25p1_compare_for_tune(dsd_state* state, dsd_engine_p25p1_compare
         }
         return;
     }
+    /* Notices an earlier off-thread tune posted are reconciled first: this tune decides on the state they leave. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(state);
     snapshot->compare = state->p25_p1_mod_compare;
     snapshot->probe_active = state->p25_p1_mod_probe_active;
     snapshot->validated_rf_mod = state->p25_p1_validated_rf_mod;
@@ -1014,8 +1044,8 @@ dsd_engine_log_queued_ted_override(const dsd_opts* opts, const dsd_state* state,
  * @param opts Decoder options (tuning targets and sockets).
  * @param state Decoder state to reset.
  */
-dsd_trunk_tune_result
-dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+static dsd_trunk_tune_result
+engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     if (!opts || !state) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -1044,12 +1074,19 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
     /* Keep symbol timing aligned with the current control-channel mode. A return that retuned nothing leaves a chain
        comparison going on the carrier it is on, and the comparison owns the chain and the dwell there: the control
        channel's timing would set rf_mod without the front end and restart the dwell the comparison refunds. */
-    const int comparing = s_decoder_thread ? state->p25_p1_mod_compare.phase != 0
-                                           : dsd_frame_sync_p25p1_mod_compare_leading_rf_mod() >= 0;
+    const int comparing = s_decoder_thread ? state->p25_p1_mod_compare.phase != 0 : dsd_engine_tune_decision()->running;
     if (retunes || !comparing) {
         dsd_engine_apply_cc_symbol_timing(opts, state);
     }
     return tune_result;
+}
+
+dsd_trunk_tune_result
+dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    dsd_engine_tune_decision_begin();
+    const dsd_trunk_tune_result result = engine_return_to_cc_request_once(opts, state, request_id);
+    dsd_engine_tune_decision_end();
+    return result;
 }
 
 /**
@@ -1063,9 +1100,9 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
  * @param freq Target frequency in Hz.
  * @param ted_sps TED samples-per-symbol to set (0 = no override).
  */
-dsd_trunk_tune_result
-dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                      uint64_t request_id) {
+static dsd_trunk_tune_result
+engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                       uint64_t request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
@@ -1141,7 +1178,16 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
     // Only reset for P25P2 (ted_sps matching the TDMA symbol rate), not P25P1 or other modes.
     dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
 
-    dsd_engine_update_vc_tune_state(opts, state, freq, compare_snapshot.leader);
+    dsd_engine_update_vc_tune_state(opts, state, freq);
+    return result;
+}
+
+dsd_trunk_tune_result
+dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                      uint64_t request_id) {
+    dsd_engine_tune_decision_begin();
+    const dsd_trunk_tune_result result = engine_trunk_tune_to_freq_request_once(opts, state, freq, ted_sps, request_id);
+    dsd_engine_tune_decision_end();
     return result;
 }
 
@@ -1157,8 +1203,9 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
  * @param ted_sps TED samples-per-symbol to set (0 = no change). Caller should
  *        pass the CC SPS (4 for P25P2 TDMA CC, 5 for P25P1 CC).
  */
-dsd_trunk_tune_result
-dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+static dsd_trunk_tune_result
+engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                     uint64_t request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
@@ -1204,9 +1251,17 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     state->trunk_cc_freq = (long int)freq;
     /* Back to (or on to) the system's control channel: the received identity keeps the system, and the voice channel's
        access code goes with the voice channel. */
-    dsd_engine_rxid_trunk_tune(state, compare_snapshot.leader);
+    dsd_engine_rxid_trunk_tune(state);
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    return result;
+}
+
+dsd_trunk_tune_result
+dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    dsd_engine_tune_decision_begin();
+    const dsd_trunk_tune_result result = engine_trunk_tune_to_cc_request_once(opts, state, freq, ted_sps, request_id);
+    dsd_engine_tune_decision_end();
     return result;
 }
 
