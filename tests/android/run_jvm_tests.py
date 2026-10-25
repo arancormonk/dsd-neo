@@ -185,6 +185,60 @@ def native_lifecycle_contract():
     return None
 
 
+def usb_broker_contract():
+    """UsbSourceManager talks to the platform, so it never compiles here; its use of UsbRequestState is read instead."""
+    manager_path = REPO / APP_SOURCES / "UsbSourceManager.kt"
+    record_path = REPO / "android/local_device_state.h"
+    try:
+        manager = manager_path.read_text(encoding="utf-8")
+        record = record_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the USB broker sources: {error}"
+    where = APP_SOURCES / "UsbSourceManager.kt"
+    # #647 B9: each permission request has its own PendingIntent identity and says which request it answers.
+    broadcasts = re.findall(r"PendingIntent\.getBroadcast\(([^)]*)\)", manager)
+    if not broadcasts or any(not re.match(r"\s*\w+,\s*generation,", args) for args in broadcasts):
+        return f"{where}: every permission PendingIntent must use the request's generation as its request code"
+    if "FLAG_UPDATE_CURRENT" in manager:
+        return f"{where}: FLAG_UPDATE_CURRENT would hand an old request's reply the new request's extras"
+    if not re.search(r"\.putExtra\(EXTRA_GENERATION, generation\)", manager):
+        return f"{where}: the permission intent must carry its generation"
+    if not re.search(r"requests\.onReply\(\s*intent\.getIntExtra\(EXTRA_GENERATION,", manager):
+        return f"{where}: a permission reply must be matched to its request by generation"
+    # #647 B8: a detach stops the engine only for a session that uses the local receiver, and always releases.
+    detach = re.search(r"UsbManager\.ACTION_USB_DEVICE_DETACHED ->(.*?)UsbManager\.ACTION_USB_DEVICE_ATTACHED ->", manager, re.S)
+    owner = (
+        r"ownsSession = DsdNative\.nativeSessionUsesLocalReceiver\(\) \|\|\s*DsdNative\.nativeIsUsbFdInUse\(\) \|\|"
+        r"\s*DecoderService\.configuringLocalReceiver\(\)"
+    )
+    stop = r"if \(ownsSession\) \{[^}]*EngineStop\.request\(StopCause\.DEVICE_DETACHED,[^}]*\}(\s*else \{[^}]*\})?\s*release\(\)"
+    if not detach or not re.search(owner, detach.group(1)) or not re.search(stop, detach.group(1)):
+        return (
+            f"{where}: a detach must stop the engine only when nativeSessionUsesLocalReceiver(), nativeIsUsbFdInUse() "
+            "or a configuring local-receiver session says the session uses it, and release the connection either way"
+        )
+    # #647 WP4: the host polls deviceStatus(), which retires an unanswered request and publishes the request.
+    status = re.search(r"fun deviceStatus\(\): String \{(.*?)\n    \}", manager, re.S)
+    if not status or "requests.expireIfStale()" not in status.group(1):
+        return f"{where}: deviceStatus() must retire an unanswered request"
+    for key in ("pending", "requestedSource", "requestedSerial"):
+        if f'.put("{key}"' not in status.group(1):
+            return f"{where}: deviceStatus() must publish {key}"
+    # #647 B4: an access request that finds the receiver ready rewrites the record for it.
+    if not re.search(r'if \(isReady\(\)\) \{(\s*//[^\n]*)*\s*setStatus\("Ready: ', manager):
+        return f"{where}: an access request while ready must rewrite \"Ready: <device>\" with no failure kind"
+    # #647 B11: every failure kind the broker writes is one the host's record knows; "refused" is no device failure.
+    kinds = set(re.findall(r'setStatus\([^\n]*,\s*"(\w+)"\)', manager))
+    if "UsbRequestState.REFUSED)" not in manager:
+        return f"{where}: the switch refusal must be written with kind UsbRequestState.REFUSED"
+    for kind in sorted(kinds):
+        if f'QStringLiteral("{kind}")' not in record:
+            return f"android/local_device_state.h: UsbSourceManager writes kind \"{kind}\", which the record never maps"
+    if not re.search(r'QStringLiteral\("refused"\)\s*\?\s*dsd_qt::DecoderHost::NoDeviceFailure', record):
+        return "android/local_device_state.h: kind \"refused\" must map to NoDeviceFailure"
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -237,6 +291,17 @@ SUITES = {
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
     "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
+    # The USB broker's permission requests, detach and attach bookkeeping, and the attachment's kind. Plain Kotlin with
+    # no Android imports, so no stubs; the source check pins how UsbSourceManager drives it.
+    "usb": Suite(
+        builds=(
+            Build(
+                sources=("UsbRequestState.kt", "UsbAttachmentTracker.kt", "UsbReceiverKind.kt"),
+                tests=("UsbRequestStateTest.kt",),
+            ),
+        ),
+        checks=(usb_broker_contract,),
+    ),
     # How Android says recent app processes ended, as diagnostics lines. Plain Kotlin with no Android imports, so no
     # stubs; ProcessFacts reads the records off ActivityManager.
     "exit_facts": Suite(builds=(Build(sources=("ExitFacts.kt",), tests=("ExitFactsTest.kt",)),)),
@@ -245,7 +310,7 @@ SUITES = {
         builds=(
             Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),
             Build(
-                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt"),
+                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt", "UsbReceiverKind.kt"),
                 tests=("DecoderServiceStopTest.kt",),
                 stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),

@@ -18435,6 +18435,12 @@ if(Python3_Interpreter_FOUND)
             usb_receiver
     )
     add_test(
+        NAME ANDROID_USB_BROKER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite usb
+    )
+    add_test(
         NAME ANDROID_ENGINE_STOP_JVM
         COMMAND
             ${Python3_EXECUTABLE}
@@ -18454,6 +18460,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
         ANDROID_USB_RECEIVER_JVM
+        ANDROID_USB_BROKER_JVM
         ANDROID_ENGINE_STOP_JVM
         ANDROID_EXIT_FACTS_JVM
         PROPERTIES

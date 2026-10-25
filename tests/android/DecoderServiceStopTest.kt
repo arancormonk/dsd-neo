@@ -258,6 +258,38 @@ private fun aStartInNotificationWorkCannotLendItsIdToTheOldRun() {
     }
 }
 
+// #647: the native record names a session's receiver only once configure returns, so until then the service says whether
+// the session it is configuring takes a local RTL-SDR or Airspy; a USB detach in that window still belongs to it.
+private fun configuringALocalReceiverSessionOwnsItsDetach() {
+    val cases = listOf(
+        arrayOf("-f", "a", "-i", "rtl:0:851.0125M:22:-2:24:0:2") to true,
+        arrayOf("-i", "rtl") to true,
+        arrayOf("-i", "airspy:26A464DC:851.0125M:12:0:0") to true,
+        arrayOf("-i", "rtltcp:10.0.2.2:1234:851.0125M") to false,
+        arrayOf("-i", "udp:0.0.0.0:7355") to false,
+        arrayOf("-i", "/sdcard/capture.wav") to false,
+        arrayOf("-i", "rtltcp:10.0.2.2:1234", "-i", "rtl:0") to true,
+        emptyArray<String>() to false,
+    )
+    for ((args, local) in cases) {
+        DsdNative.prepareRun()
+        val service = DecoderService()
+        service.onCreate()
+        var during: Boolean? = null
+        DsdNative.configureHook = { during = DecoderService.configuringLocalReceiver() }
+        check(!DecoderService.configuringLocalReceiver()) { "nothing is configuring before the start" }
+        DecoderService.startDecoder(service, args)
+        deliver(service, service.intents.remove())
+        await(DsdNative.enteredRun)
+        try {
+            check(during == local) { "configuring ${args.joinToString(" ")}: expected $local, got $during" }
+            check(!DecoderService.configuringLocalReceiver()) { "once configure returns, the native record answers" }
+        } finally {
+            finish(service)
+        }
+    }
+}
+
 fun main(args: Array<String>) {
     val tests = linkedMapOf<String, () -> Unit>(
         "direct" to ::stopDoesNotWaitForIntentDelivery,
@@ -270,6 +302,7 @@ fun main(args: Array<String>) {
         "native_failure" to ::aRefusedNativeStopRemainsRetryable,
         "stale" to ::aLateStopCannotCancelTheNextRun,
         "configure" to ::stopDuringConfigureUsesOrderedDelivery,
+        "configure_receiver" to ::configuringALocalReceiverSessionOwnsItsDetach,
         "pending_start" to ::stopBeforeStartDeliveryStillStopsThatStart,
         "completion" to ::completedRunKeepsItsOwnStopId,
         "arriving_start" to ::aStartInNotificationWorkCannotLendItsIdToTheOldRun

@@ -162,7 +162,22 @@ directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCA
 that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
-RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty.
+RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty; it also reads which local
+receiver a session's `-i` selects (`rtl`/`rtl:…` and `airspy`/`airspy:…`, never rtl_tcp; the last `-i` wins).
+`ANDROID_USB_BROKER_JVM` (the `usb` suite) runs `UsbRequestState.kt`, the USB broker's request and permission-prompt
+bookkeeping, with `UsbAttachmentTracker.kt` and no stubs, on an injected clock: a reply to an older prompt, for another
+device or replayed is ignored; the serial search's hop to the next Airspy keeps the request's generation and restarts
+its wait; unplugging the requested device retires its prompt, so a re-plug prompts again at once; a prompt unanswered
+for 60 s expires on the clock alone and never prompts again; nothing is requested before the first request; an attach
+of another kind, an unreadable or wrong serial, or any attach over a live connection leaves the diagnostic alone; a
+switch while running is refused as `refused`; a plain Connect asks for the request's own target, then the connected
+kind, then the first receiver on the bus; and an attachment is taken as `<kind>:<device>`. Its source check reads
+`UsbSourceManager.kt`, which never compiles on the JVM: each permission `PendingIntent` uses the request's generation as
+its request code (no `FLAG_UPDATE_CURRENT`) and carries it back, the reply is matched by it, a detach stops the engine
+only when `nativeSessionUsesLocalReceiver()`, `nativeIsUsbFdInUse()` or `DecoderService.configuringLocalReceiver()` says
+the session uses the receiver and releases the connection either way, `deviceStatus()` retires a stale prompt and
+publishes the request, a request that finds the receiver ready rewrites "Ready: <device>", and every failure kind the
+broker writes is one `android/local_device_state.h` maps (`refused` to no device failure).
 `ANDROID_ENGINE_STOP_JVM` (the `engine_stop` suite) runs `EngineStop.kt` with no stubs: only `StopCause.USER` hands
 `nativeStop` `userRequested = true` (abandoning pending rdio uploads), and a stop intent with a missing or unknown cause
 drains. Its source check first pins the cause every production caller passes: each `nativeStop` call goes through
@@ -175,7 +190,8 @@ unplug-owner grace (`dsd_android::install_receiver_policy()`).
 The same suite also runs `DecoderService.kt` itself with controlled native-run and intent-delivery boundaries:
 cancellation before callbacks, rejected dispatch and missing Activity context, notification cancellation before
 notification work, task removal without Activity destruction, a user Stop during a lifecycle drain (each stop passing
-its own cause), the lifecycle record carrying its own session's ending and receiver, a refused native
+its own cause), the lifecycle record carrying its own session's ending and receiver, the service saying while
+configure runs (and only then) whether the session takes a local RTL-SDR or Airspy, a refused native
 stop remaining retryable, a delayed stop after a subsequent start, and ordered cancellation during configure or before
 start delivery. Worker completion cases hold `stopSelf(id)` while the next run starts, and finish the old run while
 an arriving START is promoting its notification; both check the old id stays attached to the completed run.

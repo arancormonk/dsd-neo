@@ -35,13 +35,12 @@ import org.json.JSONObject
 object UsbSourceManager {
     private const val TAG = "dsd-neo"
     private const val ACTION_USB_PERMISSION = "io.github.arancormonk.dsdneo.action.USB_PERMISSION"
+    /** Which permission request a reply answers; see [UsbRequestState]. */
+    private const val EXTRA_GENERATION = "io.github.arancormonk.dsdneo.extra.USB_REQUEST_GENERATION"
 
     /** How long release() waits for the engine before it gives up and leaks the fd. */
     private const val RELEASE_TIMEOUT_MS = 10000L
     private const val RELEASE_POLL_MS = 50L
-
-    /** How long to wait for a permission broadcast before assuming it was lost. */
-    private const val REQUEST_TIMEOUT_MS = 60000L
 
     private val lock = Any()
     private var connection: UsbDeviceConnection? = null
@@ -54,13 +53,12 @@ object UsbSourceManager {
     private var deviceLabel: String = "RTL-SDR"
     /** Product and VID:PID of the last device opened, for the diagnostics session line. */
     private var diagnosticsLabel: String? = null
-    private var requestedSource: String = "usb"
     private var connectedSource: String = ""
     private var connectedSerial: String = ""
-    private var requestedDevice: String? = null
-    private var requestedSerial: String = ""
-    private var requestPending = false
-    private var requestedAtMs = 0L
+    /** The connected receiver's name, for "Ready: <device>". */
+    private var connectedLabel: String = ""
+    /** The access request and its permission prompt; guarded by [lock]. */
+    private val requests = UsbRequestState { SystemClock.elapsedRealtime() }
 
     /** Set while [open] is between claiming the slot and installing a connection. */
     private var opening = false
@@ -78,39 +76,61 @@ object UsbSourceManager {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 ACTION_USB_PERMISSION -> {
-                    synchronized(lock) { requestPending = false }
                     val device = usbDeviceExtra(intent)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    if (device == null) {
-                        setStatus("Permission result had no device")
-                    } else if (granted) {
-                        open(context, device)
-                    } else {
+                    // Only the outstanding prompt's own answer counts: a reply to an older prompt, for another
+                    // device, or replayed (below API 33 this receiver is exported) changes nothing (#647 B9).
+                    val reply = synchronized(lock) {
+                        requests.onReply(intent.getIntExtra(EXTRA_GENERATION, 0), device?.deviceName.orEmpty(), granted)
+                    }
+                    when (reply) {
+                        UsbRequestState.Reply.IGNORED -> Log.i(TAG, "usb: ignoring a permission reply for another request")
+                        // A matched reply names the requested device, so it is never null here.
+                        UsbRequestState.Reply.GRANTED -> if (device != null) open(context, device)
                         // Declined USB permission does not prevent using rtl_tcp.
-                        setStatus("USB permission denied", "permission")
+                        UsbRequestState.Reply.DENIED -> setStatus("USB permission denied", "permission")
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = usbDeviceExtra(intent)
-                    synchronized(lock) {
-                        if (device != null) UsbAttachmentTracker.detach(identity(device))
-                        if (device?.deviceName == requestedDevice) requestedDevice = null
+                    val (attached, requestedGone) = synchronized(lock) {
+                        var requested = false
+                        if (device != null) {
+                            UsbAttachmentTracker.detach(identity(device))
+                            // The requested device going before it was opened retires its prompt, so Connect
+                            // prompts again at once after a re-plug instead of waiting out the old one (B9).
+                            val aimed = requests.device == device.deviceName && attachedName != device.deviceName
+                            requests.onDetach(device.deviceName)
+                            requested = aimed
+                        }
                         UsbAttachmentTracker.reconcile(currentDevices(context))
+                        attachedName to requested
                     }
-                    val attached = synchronized(lock) { attachedName }
                     // The filter sees every device on the bus, so an unresolvable
                     // EXTRA_DEVICE counts as ours only when there is an "ours" to lose.
                     // Without that, unplugging an unrelated accessory would stop an
                     // rtl_tcp, UDP or file session that never touched USB at all.
                     if (attached != null && (device == null || device.deviceName == attached)) {
-                        Log.i(TAG, "SDR detached; stopping the engine")
-                        // The engine is mid-transfer on a descriptor that just went
-                        // away: ask it to stop, and let release() close the connection
-                        // once it has actually unwound. A normal end, so pending rdio uploads
-                        // still drain (#718 D4).
-                        EngineStop.request(StopCause.DEVICE_DETACHED, DsdNative::nativeStop)
+                        // A connection outlives the sessions that used it, so holding one is not enough: the
+                        // session must actually use the local receiver, or the engine have the descriptor wrapped,
+                        // or a local-receiver session be mid-configure (#647 B8).
+                        val ownsSession = DsdNative.nativeSessionUsesLocalReceiver() ||
+                            DsdNative.nativeIsUsbFdInUse() ||
+                            DecoderService.configuringLocalReceiver()
+                        if (ownsSession) {
+                            Log.i(TAG, "SDR detached; stopping the engine")
+                            // The engine is mid-transfer on a descriptor that just went
+                            // away: ask it to stop, and let release() close the connection
+                            // once it has actually unwound. A normal end, so pending rdio uploads
+                            // still drain (#718 D4).
+                            EngineStop.request(StopCause.DEVICE_DETACHED, DsdNative::nativeStop)
+                        } else {
+                            Log.i(TAG, "SDR detached; no session is using it")
+                        }
                         release()
                         setStatus("Device detached", "detached")
+                    } else if (device != null && requestedGone) {
+                        setStatus("Device detached: ${describe(device)}", "detached")
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
@@ -136,18 +156,31 @@ object UsbSourceManager {
         val device = usbDeviceExtra(intent) ?: return
         if (!isKnown(device)) return
         synchronized(lock) {
-            if (UsbAttachmentTracker.report(identity(device), currentDevices(context))) {
+            // Every validated edge is recorded for auto-start; the shown diagnostic is replaced only by the receiver
+            // the request is waiting for, or by any receiver when nothing is asked and nothing connected (#647 B2).
+            if (UsbAttachmentTracker.report(identity(device), currentDevices(context)) &&
+                requests.attachReplacesDiagnostic(sourceOf(device), serialOf(device), connection != null)) {
                 // Cold Activity startup may precede native library initialization.
                 status = "${describe(device)} attached"
+                failureKind = ""
             }
         }
     }
 
     /** WP-D5: publish diagnostic fields together for the UI's existing poll. */
     @JvmStatic
-    fun deviceStatus(): String = synchronized(lock) {
-        JSONObject().put("ready", connection != null).put("text", status)
-            .put("kind", failureKind).put("name", deviceLabel).put("source", connectedSource).put("serial", connectedSerial).toString()
+    fun deviceStatus(): String {
+        // The host polls this every 250 ms, so a prompt whose answer never came is retired here, with no new request
+        // and without prompting again: Connect comes back instead (#647 B9).
+        if (synchronized(lock) { requests.expireIfStale() }) {
+            setStatus("No answer to the permission request")
+        }
+        return synchronized(lock) {
+            JSONObject().put("ready", connection != null).put("text", status)
+                .put("kind", failureKind).put("name", deviceLabel).put("source", connectedSource).put("serial", connectedSerial)
+                .put("pending", requests.pending).put("requestedSource", requests.requestedSource)
+                .put("requestedSerial", requests.requestedSerial).toString()
+        }
     }
 
     /**
@@ -163,7 +196,10 @@ object UsbSourceManager {
         return UsbReceiverKind.attachedKind(manager.deviceList.values.map { it.vendorId to it.productId })
     }
 
-    /** Retained attach edge for the UI's existing poll, independent of permission. */
+    /**
+     * Retained attach edge for the UI's existing poll, independent of permission: "<kind>:<device name>" with kind
+     * "usb" or "airspy", so auto-start can match the receiver that was plugged in (#647 D3), or empty.
+     */
     @JvmStatic
     fun takeAttachment(): String = synchronized(lock) {
         val context = attachmentContext ?: return@synchronized ""
@@ -190,32 +226,47 @@ object UsbSourceManager {
      */
     @JvmStatic
     fun requestAccess(context: Context) {
+        // The request already made comes first (its serial included), then the connected receiver, then the bus
+        // (#647 B10): a plain Connect after an Airspy request never opens whichever RTL-SDR happens to be listed first.
         val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-        val device = manager.deviceList.values.firstOrNull { isKnown(it) }
-        requestAccessForSource(context, if (device != null) sourceOf(device) else "usb", "")
+        val bus = manager.deviceList.values.filter { isKnown(it) }.map { sourceOf(it) }
+        val (source, serial) = synchronized(lock) { requests.accessTarget(if (connection != null) connectedSource else "", bus) }
+        requestAccessForSource(context, source, serial)
     }
 
     @JvmStatic
     fun requestAccessForSource(context: Context, source: String, serial: String) {
+        requestDevice(context, source, serial, hop = false)
+    }
+
+    /**
+     * Body of [requestAccessForSource]. [hop] is the serial search moving on from a granted device that carries
+     * another serial: the same request, so it keeps its generation.
+     */
+    private fun requestDevice(context: Context, source: String, serial: String, hop: Boolean) {
         if (source != "usb" && source != "airspy") return
-        val previous = synchronized(lock) { connectedSource }
-        if (previous.isNotEmpty() && (previous != source || (serial.isNotEmpty() && !synchronized(lock) { connectedSerial.equals(serial, ignoreCase = true) }))) {
-            if (DsdNative.nativeIsRunning()) {
-                setStatus("Stop the current receiver before switching USB devices", "open_failed")
+        val running = DsdNative.nativeIsRunning()
+        val switch = synchronized(lock) {
+            UsbRequestState.switchFor(if (connection != null) connectedSource else "", connectedSerial, source, serial, running)
+        }
+        when (switch) {
+            UsbRequestState.Switch.REFUSE -> {
+                // The connection works; this is an answer to the request, not a device failure (#647 B11).
+                setStatus("Stop the current receiver before switching USB devices", UsbRequestState.REFUSED)
                 return
             }
-            release()
+            UsbRequestState.Switch.RELEASE -> release()
+            UsbRequestState.Switch.KEEP -> {}
         }
-        synchronized(lock) {
-            if (requestedSource != source || requestedSerial != serial) { requestPending = false; requestedDevice = null }
-            requestedSource = source
-            requestedSerial = serial
-        }
+        synchronized(lock) { requests.select(source, serial) }
 
         val appContext = context.applicationContext
         ensureReceiver(appContext)
 
         if (isReady()) {
+            // Rewritten even though nothing changes: a failure written while ready (a refused switch, a stale
+            // attach) must not outlive the request that finds the receiver ready (#647 B4).
+            setStatus("Ready: ${synchronized(lock) { connectedLabel }}")
             return
         }
 
@@ -229,31 +280,31 @@ object UsbSourceManager {
             return
         }
 
-        synchronized(lock) { requestedDevice = device.deviceName }
         if (manager.hasPermission(device)) {
+            synchronized(lock) { requests.aim(device.deviceName) }
             open(appContext, device)
             return
         }
 
         // The permission broadcast can go missing — the dialog is dismissed by a
-        // configuration change, or the process is backgrounded while it is up — and a
-        // flag that only the result clears would then wedge this object for the rest
-        // of the process's life. Re-prompt once the wait has clearly overrun instead.
-        synchronized(lock) {
-            val now = SystemClock.elapsedRealtime()
-            if (requestPending && now - requestedAtMs < REQUEST_TIMEOUT_MS) {
-                return
+        // configuration change, or the process is backgrounded while it is up. A prompt
+        // still inside its wait is not repeated; one past it has already been retired by
+        // the deviceStatus() poll, so this Connect asks afresh.
+        val generation = synchronized(lock) {
+            requests.expireIfStale()
+            when {
+                hop -> requests.hop(device.deviceName)
+                requests.pending -> return
+                else -> requests.begin(source, serial, device.deviceName)
             }
-            if (requestPending) {
-                Log.w(TAG, "no permission result after ${REQUEST_TIMEOUT_MS}ms; asking again")
-            }
-            requestPending = true
-            requestedAtMs = now
         }
         setStatus("Requesting permission for ${describe(device)}")
-        val intent = Intent(ACTION_USB_PERMISSION).setPackage(appContext.packageName)
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        manager.requestPermission(device, PendingIntent.getBroadcast(appContext, 0, intent, flags))
+        // One PendingIntent identity per request: the generation is both the request code and the extra the reply
+        // carries back. FLAG_CANCEL_CURRENT retires a leftover with the same code (from an earlier process) rather
+        // than reusing it; FLAG_MUTABLE lets the framework add the device and the answer.
+        val intent = Intent(ACTION_USB_PERMISSION).setPackage(appContext.packageName).putExtra(EXTRA_GENERATION, generation)
+        val flags = PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_MUTABLE
+        manager.requestPermission(device, PendingIntent.getBroadcast(appContext, generation, intent, flags))
     }
 
     /**
@@ -278,6 +329,7 @@ object UsbSourceManager {
             attachedName = null
             connectedSource = ""
             connectedSerial = ""
+            connectedLabel = ""
             current
         }
         if (open == null) {
@@ -324,7 +376,7 @@ object UsbSourceManager {
 
     private fun open(context: Context, device: UsbDevice) {
         if (!isKnown(device)) return
-        val wanted = synchronized(lock) { sourceOf(device) == requestedSource && device.deviceName == requestedDevice }
+        val wanted = synchronized(lock) { sourceOf(device) == requests.requestedSource && device.deviceName == requests.device }
         if (!wanted) return
 
         val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -346,9 +398,9 @@ object UsbSourceManager {
         // libusb is still transferring on the old one; repeat it and the process runs
         // out of descriptors. hasPermission above cannot catch this: permission
         // genuinely is held.
-        val serial = synchronized(lock) { requestedSerial }
+        val serial = synchronized(lock) { requests.requestedSerial }
         if (serial.isNotEmpty() && !matchesSerial(device, serial)) {
-            requestAccessForSource(context, sourceOf(device), serial)
+            requestDevice(context, sourceOf(device), serial, hop = true)
             return
         }
         synchronized(lock) {
@@ -409,8 +461,8 @@ object UsbSourceManager {
         if (!manager.deviceList.containsKey(device.deviceName)) { opened.close(); return }
         val serial = serialOf(device)
         val rc = synchronized(lock) {
-            if (sourceOf(device) != requestedSource || device.deviceName != requestedDevice ||
-                (requestedSerial.isNotEmpty() && !serial.equals(requestedSerial, ignoreCase = true))) {
+            if (sourceOf(device) != requests.requestedSource || device.deviceName != requests.device ||
+                !requests.satisfiedBy(sourceOf(device), serial)) {
                 DsdNative.STATUS_ERROR
             } else {
                 val result = if (sourceOf(device) == "airspy") DsdNative.nativeSetAirspyUsbFd(fd) else DsdNative.nativeSetUsbFd(fd)
@@ -419,6 +471,7 @@ object UsbSourceManager {
                     attachedName = device.deviceName
                     connectedSource = sourceOf(device)
                     connectedSerial = serial
+                    connectedLabel = describe(device)
                 }
                 result
             }

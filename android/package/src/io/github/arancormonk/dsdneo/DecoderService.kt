@@ -185,7 +185,17 @@ class DecoderService : Service() {
         }
 
         DsdNative.nativeHostDiagnostic("service: configuring the engine")
-        val configureRc = DsdNative.nativeConfigure(args, synchronized(lock) { sessionId })
+        // The native record names the session's receiver only once configure returns; until then a USB detach asks
+        // this whether the session being configured opens the local receiver (#647).
+        val session = synchronized(lock) {
+            configuringLocalReceiver = UsbReceiverKind.sessionInput(args).isNotEmpty()
+            sessionId
+        }
+        val configureRc = try {
+            DsdNative.nativeConfigure(args, session)
+        } finally {
+            synchronized(lock) { configuringLocalReceiver = false }
+        }
         DsdNative.nativeHostDiagnostic("service: engine configuration returned $configureRc")
         if (configureRc == DsdNative.STATUS_CONFIG_EXIT) {
             // Help and other successful one-shot configuration flows did not
@@ -820,6 +830,8 @@ class DecoderService : Service() {
         private var sessionId = 0L
         private var terminalReason = DsdNative.RUN_PENDING
         private var deviceError = 0
+        /** Set while nativeConfigure runs for a session whose input is a local RTL-SDR or Airspy. */
+        private var configuringLocalReceiver = false
 
         /** Newest start id handed to onStartCommand; the worker captures it before releasing IDLE. */
         private var lastStartId = 0
@@ -961,6 +973,14 @@ class DecoderService : Service() {
                 .put("endCause", if (matches && fields.size >= 9) fields[7].toInt() else 0)
                 .put("receiverSource", if (matches && fields.size >= 9) fields[8].toInt() else 0).toString()
         }
+
+        /**
+         * Whether a session that opens the local RTL-SDR or Airspy is being configured right now. The native
+         * [DsdNative.nativeSessionUsesLocalReceiver] turns true only when configure returns, and the descriptor is
+         * taken later still, so [UsbSourceManager]'s detach asks this too: a detach inside the bootstrap then stops
+         * that session as an unplug, instead of letting it start on a receiver that is gone (#647).
+         */
+        fun configuringLocalReceiver(): Boolean = synchronized(lock) { configuringLocalReceiver }
 
         /** Service-side view of the lifecycle, for UI status text. */
         @JvmStatic

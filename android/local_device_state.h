@@ -21,7 +21,9 @@ struct LocalDeviceState {
     void
     apply(dsd_qt::DecoderHost& host, const QJsonObject& record) {
         const QString kind = record.value(QStringLiteral("kind")).toString();
-        const int failure = kind == QStringLiteral("detached")      ? dsd_qt::DecoderHost::DeviceDetached
+        // "refused" (a receiver switch refused mid-session) answers the request; the connection still works (#647 B11).
+        const int failure = kind == QStringLiteral("refused")       ? dsd_qt::DecoderHost::NoDeviceFailure
+                            : kind == QStringLiteral("detached")    ? dsd_qt::DecoderHost::DeviceDetached
                             : kind == QStringLiteral("permission")  ? dsd_qt::DecoderHost::DevicePermission
                             : kind == QStringLiteral("open_failed") ? dsd_qt::DecoderHost::DeviceOpenFailed
                                                                     : dsd_qt::DecoderHost::NoDeviceFailure;

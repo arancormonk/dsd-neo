@@ -177,6 +177,27 @@ test_usb_request_record() {
     check(host.property("receiverHealth").toMap().value("state").toString() == "ok");
 }
 
+// #647 B11: refusing to switch receivers mid-session is feedback on the request; the connection still works.
+static void
+test_usb_refusal_record() {
+    Host host;
+    dsd_android::LocalDeviceState usb;
+    const QJsonObject ready{{"ready", true}, {"text", "Ready: RTL-SDR"}, {"kind", ""}, {"source", "usb"}};
+    usb.apply(host, ready);
+    QJsonObject refused = ready;
+    refused.insert("text", "Stop the current receiver before switching USB devices");
+    refused.insert("kind", "refused");
+    int properties = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::localDeviceChanged, [&]() { ++properties; });
+    usb.apply(host, refused);
+    check(properties == 1 && usb.ready && usb.text == "Stop the current receiver before switching USB devices");
+    check(usb.failureKind == Host::NoDeviceFailure);
+    QJsonObject failed = refused;
+    failed.insert("kind", "open_failed");
+    usb.apply(host, failed);
+    check(properties == 2 && usb.failureKind == Host::DeviceOpenFailed);
+}
+
 static void
 test_history_receives_effective_scan_options() {
     static dsd_opts opts;
@@ -770,6 +791,7 @@ main(int argc, char** argv) {
     test_auto_start_requests();
     test_initial_usb_record();
     test_usb_request_record();
+    test_usb_refusal_record();
     test_spaced_direct_profile_applies_live();
     static dsd_opts opts;
     static dsd_state state;

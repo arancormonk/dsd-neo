@@ -77,4 +77,22 @@ internal object UsbReceiverKind {
             else -> ""
         }
     }
+
+    /**
+     * The local receiver a session's arguments select: "usb" for an RTL-SDR (`-i rtl` or `rtl:...`, not rtl_tcp),
+     * "airspy" for an Airspy, else empty. Reads the `-i <spec>` pairs the Qt host builds (src/ui/qt/session_args.cpp)
+     * the way the option parser and `receiver_source_for_input()` in android/run_status.h do, the last one winning, so
+     * the service can say what a session it is still configuring will open before the native record names it (#647).
+     */
+    fun sessionInput(args: Array<String>): String {
+        var input = ""
+        for (index in 0 until args.size - 1) {
+            if (args[index] == "-i") input = args[index + 1]
+        }
+        return when {
+            input == "rtl" || input.startsWith("rtl:") -> RTL
+            input == "airspy" || input.startsWith("airspy:") -> AIRSPY
+            else -> ""
+        }
+    }
 }
