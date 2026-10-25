@@ -32,6 +32,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1138,8 +1139,55 @@ test_uplink_normal_burst_takes_the_lead(void) {
     session_close(&s);
 }
 
+/* What the frontends were last handed at the end of a burst (tetra_burst_done()). */
+static int g_snapshots;
+static uint8_t g_snapshot_mode;
+
+static void
+count_snapshot(const dsd_state* state) {
+    g_snapshots++;
+    g_snapshot_mode = state->tetra_pub.mode;
+}
+
+/* Every burst ends for the frontends once its own publication is made: a control uplink burst too, which ended for
+ * none of them, and a normal burst's snapshot is that burst's publication, never the one before it. A control uplink
+ * burst that returns before decoding (no colour code yet) still consumes block 1. */
+static void
+test_every_burst_ends_with_its_publication(void) {
+    session s = session_open();
+    s.opts->tetra_uplink = 1;
+    s.opts->frontend_kind = DSD_FRONTEND_TERMINAL;
+    dsd_telemetry_hooks_set((dsd_telemetry_hooks){count_snapshot, NULL, NULL});
+    g_snapshots = 0;
+    const uint8_t mac[SCH_HU_BITS] = {0};
+    uint8_t coded[2 * CB_HALF_DIBITS];
+    encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+
+    /* No colour code to descramble with: nothing decodes, block 1 is consumed and the burst still ends. */
+    (void)control_burst(&s, coded, 0);
+    assert(s.state->tetra_sync.b1_valid == 0);
+    assert(g_snapshots == 1);
+
+    s.opts->tetra_net_preset = 1;
+    s.opts->tetra_net_mcc = 460;
+    s.opts->tetra_net_mnc = 4242;
+    s.opts->tetra_net_colour = 17;
+    const dsd_frame_verdict verdict = control_burst(&s, coded, 0);
+    assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(g_snapshots == 2 && g_snapshot_mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK);
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    (void)nts2_burst(&s, zeros, zeros);
+    assert(g_snapshots == 3 && g_snapshot_mode == DSD_TETRA_MODE_TMO_UPLINK);
+    (void)control_burst(&s, coded, 0);
+    assert(g_snapshots == 4 && g_snapshot_mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK);
+    dsd_telemetry_hooks_set((dsd_telemetry_hooks){NULL, NULL, NULL});
+    s.opts->frontend_kind = DSD_FRONTEND_NONE;
+    session_close(&s);
+}
+
 int
 main(void) {
+    test_every_burst_ends_with_its_publication();
     test_noise_is_unproductive();
     test_uplink_normal_burst_takes_the_lead();
     test_sync_burst_decodes_bnch();

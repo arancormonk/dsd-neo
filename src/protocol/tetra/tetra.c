@@ -427,7 +427,8 @@ tetra_nb_decode(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const
     }
 }
 
-/* The end of every burst: the frontends and the event watchdog. The engine ticks the trunking state machine. */
+/* The end of every burst, once its publication is made (tetra_frame_leave()): the frontends and the event watchdog.
+   The engine ticks the trunking state machine. */
 static void
 tetra_burst_done(dsd_opts* opts, dsd_state* state) {
     if (dsd_opts_frontend_active(opts)) {
@@ -488,7 +489,6 @@ tetra_dmo_process_ndb(dsd_opts* opts, dsd_state* state) {
         tetra_nb_decode(opts, state, &ctx, b2_dibits, soft);
     }
     tetra_block1_consumed(state);
-    tetra_burst_done(opts, state);
 }
 
 /* Normal uplink burst (EN 300 392-2 clause 9.4.4.2.4): a downlink NDB's logical channels and colour code, without the
@@ -513,7 +513,6 @@ tetra_uplink_process_nub(dsd_opts* opts, dsd_state* state) {
         tetra_nb_decode(opts, state, &ctx, b2_dibits, soft);
     }
     tetra_block1_consumed(state);
-    tetra_burst_done(opts, state);
 }
 
 /* Control uplink burst: its 168 bits are one SCH/HU block (EN 300 392-2 clause 8.3.1.4.3). Its extended training
@@ -539,6 +538,7 @@ tetra_uplink_process_cb(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA UL");
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "CB SCH/HU");
     if (!tetra_uplink_net_known(ts) || !state->tetra_sync.b1_valid) {
+        tetra_block1_consumed(state);
         return;
     }
     if (!tetra_confirm_burst_current(state)) {
@@ -660,7 +660,6 @@ tetra_process_ndb(dsd_opts* opts, dsd_state* state) {
     tetra_calls_on_aach(opts, state, aach_read, aach);
     tetra_nb_decode(opts, state, &ctx, b2_dibits, b2_soft);
     tetra_block1_consumed(state);
-    tetra_burst_done(opts, state);
 }
 
 /* ---------------------------------------------------------------------------------------------------------------
@@ -777,7 +776,6 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA DMO");
-    tetra_burst_done(opts, state);
 }
 
 /* The captured BSCH (or direct-mode SCH/S) block to SB_TYPE2 bits in @p decoded: descramble, deinterleave with
@@ -919,7 +917,6 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "BSCH");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
-    tetra_burst_done(opts, state);
 }
 
 /* The TETRA state this burst works on, with the command-line uplink setting and network identity applied; NULL
@@ -1131,12 +1128,14 @@ tetra_publish(dsd_state* state) {
 }
 
 /* Tell the frame sync where block 1 of the next normal burst sits: right against the training sequence in direct
- * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show. Returns 1 when the
- * burst decoded a block whose CRC passed. */
+ * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show, and end the burst
+ * for them with that publication (tetra_burst_done()), whichever burst it was and however its decode ended. Returns 1
+ * when the burst decoded a block whose CRC passed. */
 static int
-tetra_frame_leave(dsd_state* state, const tetra_state_t* ts) {
+tetra_frame_leave(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts) {
     state->tetra_sync.block1_follows_training = (uint8_t)((ts->dmo || ts->uplink) ? 1 : 0);
     tetra_publish(state);
+    tetra_burst_done(opts, state);
     return tetra_confirm_burst_end(state);
 }
 
@@ -1161,7 +1160,7 @@ processTetraFrame(dsd_opts* opts, dsd_state* state) {
     }
     tetra_burst_enter(opts, state);
     tetra_process_ndb(opts, state);
-    return tetra_frame_leave(state, ts);
+    return tetra_frame_leave(opts, state, ts);
 }
 
 int
@@ -1172,7 +1171,7 @@ processTetraSBFrame(dsd_opts* opts, dsd_state* state) {
     }
     tetra_burst_enter(opts, state);
     tetra_process_sb(opts, state);
-    return tetra_frame_leave(state, ts);
+    return tetra_frame_leave(opts, state, ts);
 }
 
 void
