@@ -240,13 +240,10 @@ dsd_frame_sync_reset_mod_state(void) {
 
 /* dsd_frame_sync_p25p1_mod_compare_end_for_tune() is the real one (src/dsp/frame_sync_p25p1_compare.c); the CQPSK
  * dwell it arms lives in frame sync. */
-static int g_qpsk_dwell_set_calls = 0;
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 frame_sync_qpsk_dwell_set(int armed) {
     (void)armed;
-    g_qpsk_dwell_set_calls++;
 }
 
 /* Mirrors the real helper in src/dsp/dsd_frame_sync.c so the assertions below read the
