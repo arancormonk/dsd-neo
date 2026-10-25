@@ -67,18 +67,19 @@ tetra_air_ksg_entry(const dsd_state* state, tetra_state_t* ts) {
     return oldest;
 }
 
-int
-tetra_air_ksg_remember(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t ksg) {
+/* The network's evidence entry, made when it has none; NULL for a reserved KSG or a full cache. */
+static tetra_air_ksg_net*
+tetra_air_ksg_note(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t ksg) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !tetra_air_ksg_defined(ksg)) {
-        return 0;
+        return NULL;
     }
     const int found = tetra_air_ksg_find(ts, mcc, mnc);
     tetra_air_ksg_net* e = found >= 0 ? &ts->air_ksg[found] : NULL;
     if (!e) {
         e = tetra_air_ksg_entry(state, ts);
         if (!e) {
-            return 0;
+            return NULL;
         }
         DSD_MEMSET(e, 0, sizeof(*e));
         e->valid = 1;
@@ -86,7 +87,26 @@ tetra_air_ksg_remember(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t ksg
         e->mnc = mnc;
         e->seq = ++ts->air_ksg_seq;
     }
+    return e;
+}
+
+int
+tetra_air_ksg_remember(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t ksg) {
+    tetra_air_ksg_net* const e = tetra_air_ksg_note(state, mcc, mnc, ksg);
+    if (!e) {
+        return 0;
+    }
     e->mask = (uint16_t)(e->mask | (1u << ksg));
+    return 1;
+}
+
+int
+tetra_air_ksg_request(dsd_state* state, uint16_t mcc, uint16_t mnc, uint8_t ksg) {
+    tetra_air_ksg_net* const e = tetra_air_ksg_note(state, mcc, mnc, ksg);
+    if (!e) {
+        return 0;
+    }
+    e->requested = (uint16_t)(e->requested | (1u << ksg));
     return 1;
 }
 
@@ -95,6 +115,13 @@ tetra_air_ksg_seen(const dsd_state* state, uint16_t mcc, uint16_t mnc) {
     const tetra_state_t* const ts = tetra_st_peek(state);
     const int found = ts ? tetra_air_ksg_find(ts, mcc, mnc) : -1;
     return found >= 0 ? ts->air_ksg[found].mask : 0U;
+}
+
+uint16_t
+tetra_air_ksg_requested(const dsd_state* state, uint16_t mcc, uint16_t mnc) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    const int found = ts ? tetra_air_ksg_find(ts, mcc, mnc) : -1;
+    return found >= 0 ? ts->air_ksg[found].requested : 0U;
 }
 
 int

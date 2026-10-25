@@ -125,6 +125,11 @@ typedef enum {
  */
 tetra_dl_usage tetra_access_assign_dl_usage(uint16_t pdu, uint8_t* usage_marker);
 
+/** Fill bit deletion (EN 300 392-2 clause 23.4.3.2), uplink and downlink alike: with the fill bit indication @p fill
+ * set, the last 1 bit of a PDU's bits [@p start, @p end) and the 0 bits after it are fill. Returns the end of the PDU
+ * content, @p end without fill bits, or -1 when no 1 bit follows @p start. */
+int tetra_mac_content_end(const uint8_t* bits, int start, int end, uint32_t fill);
+
 #ifdef __cplusplus
 }
 #endif

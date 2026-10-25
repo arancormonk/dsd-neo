@@ -129,7 +129,8 @@ Item {
             root.height = 360;
             Ui.Theme.fontScale = 1.6;
             showControlChannel();
-            testContext.setMetric("tetraModeText", "DMO via repeater/gateway · encrypted (TEA2)");
+            testContext.setMetric("tetraModeText",
+                                  "TMO control uplink · encrypted (TEA not broadcast) · radios propose TEA1/TEA2");
             testContext.setMetric("tetraTrafficText", "carrier 4095 · TS 1,2,3,4 · 1234.56789 MHz");
             testContext.setMetric("tetraCodecText", "decode errors · 4294967295 frames · 4294967295 errors");
             testContext.setMetric("tetraNetworkText", "MCC 1023 · MNC 16383 · LA 16383 · CC 63 · carrier 4095");

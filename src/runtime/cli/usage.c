@@ -327,9 +327,14 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fm           Decode only dPMR\n");
     printf("  -fT           Decode only TETRA (pi/4-DQPSK at 18 ksym/s) at a 72 kHz DSP bandwidth: needs an I/Q\n");
     printf("                radio input whose DSP rate is a multiple of 18 kHz, or a symbol capture\n");
+    printf("      --tetra-uplink        TETRA: decode a trunked mode uplink carrier (the radios' side) instead of a\n");
+    printf("                            downlink; it carries no network identity, so give it with --tetra-net\n");
+    printf("      --tetra-net <mcc,mnc,colour>  TETRA network identity to descramble with until a BSCH names one\n");
+    printf("                            (an uplink never does); MCC 0-1023, MNC 0-16383, colour code 0-63\n");
     printf("      --tetra-key <mcc,mnc,hex[,teaN]>  TETRA air interface cipher key (SCK or CCK, 20 hex digits) of\n");
-    printf("                            one network, optionally naming its algorithm (tea1, tea2 or tea3);\n");
-    printf("                            air-encrypted trunked speech decrypts with it\n");
+    printf("                            one network, optionally naming its algorithm (tea1, tea2 or tea3; without\n");
+    printf("                            one, TEA1 to TEA3 are tried); air-encrypted trunked signalling and speech\n");
+    printf("                            decrypt with it\n");
     printf("      --tetra-key <mcc,mnc,hex,la=N,cc=N,carrier=N>  TEA1 reduced key (8 hex digits) of one channel:\n");
     printf("                            its location area, colour code and carrier number\n");
     printf("  -l            Disable DMR, dPMR, NXDN, M17 input filtering\n");

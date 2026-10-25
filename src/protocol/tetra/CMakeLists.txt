@@ -16,6 +16,7 @@ target_sources(
         tetra_mm.c
         tetra_state.c
         tetra_trunk_sm.c
+        tetra_ul.c
         tetra_voice.c
         tetra_voice_gate.c
 )

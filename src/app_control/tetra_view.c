@@ -52,16 +52,18 @@ tetra_view_append(char* out, size_t cap, size_t* used, const char* sep, const ch
 }
 
 /* "TEA1/TEA2", "proprietary KSG 9", "TEA4/KSG 5": every KSG number of @p mask (EN 300 392-7 table 6.2), as many as fit
- * in @p out, "/..." for the rest. A name other than the last leaves room for that marker. */
-static void
+ * in @p out (capacity @p cap), "/..." for the rest. A name other than the last leaves room for that marker; the last
+ * may fill @p cap exactly. Returns the number of names written. */
+static int
 tetra_view_ksg_names(uint16_t mask, char* out, size_t cap) {
     static const char k_more[] = "/...";
     size_t used = 0U;
-    out[0] = '\0';
-    if (cap <= sizeof k_more) {
-        return;
+    int names = 0;
+    if (cap == 0U) {
+        return 0;
     }
-    const size_t room = cap - (sizeof k_more - 1U);
+    out[0] = '\0';
+    const size_t room = cap > sizeof k_more ? cap - (sizeof k_more - 1U) : 0U;
     for (unsigned k = 0U; k < 16U; k++) {
         if (((mask >> k) & 1U) == 0U) {
             continue;
@@ -73,36 +75,75 @@ tetra_view_ksg_names(uint16_t mask, char* out, size_t cap) {
             DSD_SNPRINTF(name, sizeof name, "%sKSG %u", k >= 8U ? "proprietary " : "", k);
         }
         const int last = (mask >> (k + 1U)) == 0U;
-        if (!tetra_view_append(out, last ? cap : room, &used, "/", name)) {
-            (void)tetra_view_append(out, cap, &used, "/", "...");
-            return;
+        const size_t limit = last ? cap : room;
+        if (limit <= used || !tetra_view_append(out, limit, &used, "/", name)) {
+            if (names > 0) {
+                (void)tetra_view_append(out, cap, &used, "/", "...");
+            }
+            return names;
         }
+        names++;
+    }
+    return names;
+}
+
+/* The air encryption part of the mode line, after the @p used bytes of @p row (capacity @p cap): "encrypted (TEA2)",
+ * "clear" and its algorithms as a part of their own, or the algorithms alone while the encryption is unknown. A trunked
+ * network that named none while its air interface is encrypted says so: a network never broadcasts its algorithm (EN
+ * 300 392-7 clause 6.3.1; SYNC and SYSINFO carry none), "encrypted (TEA not broadcast)". */
+static void
+tetra_view_mode_encryption(char* row, size_t cap, size_t* used, const char* sep, const dsd_tetra_publication* pub,
+                           int trunked) {
+    char tea[DSD_APP_TETRA_TEXT_SIZE] = "";
+    char part[DSD_APP_TETRA_TEXT_SIZE];
+    if (pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED) {
+        /* The algorithms take what the row leaves them after "<sep>encrypted ()". */
+        const size_t fixed = *used + strlen(sep) + sizeof("encrypted ()") - 1U;
+        (void)tetra_view_ksg_names(pub->ksg_mask, tea, fixed < cap ? cap - fixed : 0U);
+        if (tea[0] == '\0' && trunked && pub->ksg_mask == 0U) {
+            DSD_SNPRINTF(tea, sizeof tea, "%s", "TEA not broadcast");
+        }
+        DSD_SNPRINTF(part, sizeof part, "encrypted%s%s%s", tea[0] ? " (" : "", tea, tea[0] ? ")" : "");
+        (void)tetra_view_append(row, cap, used, sep, part);
+        return;
+    }
+    if (pub->air_encryption == DSD_TETRA_AIR_ENC_CLEAR) {
+        (void)tetra_view_append(row, cap, used, sep, "clear");
+    }
+    const size_t fixed = *used + strlen(sep);
+    if (tetra_view_ksg_names(pub->ksg_mask, tea, fixed < cap ? cap - fixed : 0U) > 0) {
+        (void)tetra_view_append(row, cap, used, sep, tea);
     }
 }
 
 /* "TMO downlink · encrypted (TEA2)": the mode, then whatever is known of the air-interface encryption, and the
-   algorithms signalling named whatever the last PDU's encryption ("TMO downlink · clear · TEA2"). */
+   algorithms the network's signalling named whatever the last PDU's encryption ("TMO downlink · clear · TEA2").
+   Last, the algorithms a trunked network's radios proposed in clear uplink registrations, which are not the network's
+   word: "radios propose TEA1", with what room the network's part left, dropped whole when not one name fits. */
 static void
 tetra_view_fill_mode(dsd_app_tetra* out, const dsd_tetra_publication* pub, unsigned flags) {
+    static const char k_proposed[] = "radios propose ";
     const char* const mode = tetra_view_mode_name(pub->mode);
     const char* const sep = tetra_view_sep(flags);
     if (!mode) {
         return;
     }
-    /* The algorithms take what the row leaves them after its longest form, "<mode><sep>encrypted (...)". */
-    const size_t fixed = strlen(mode) + strlen(sep) + sizeof("encrypted ()") - 1U;
-    char tea[DSD_APP_TETRA_TEXT_SIZE];
-    tetra_view_ksg_names(pub->ksg_mask, tea, fixed < sizeof tea ? sizeof tea - fixed : 1U);
+    char* const row = out->mode_text;
+    const size_t cap = sizeof out->mode_text;
+    const int trunked = tetra_view_mode_is_trunked(pub->mode);
+    size_t used = 0U;
+    (void)tetra_view_append(row, cap, &used, sep, mode);
     out->encrypted = (uint8_t)(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED);
-    if (out->encrypted) {
-        DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s%sencrypted%s%s%s", mode, sep, tea[0] ? " (" : "", tea,
-                     tea[0] ? ")" : "");
-    } else if (pub->air_encryption == DSD_TETRA_AIR_ENC_CLEAR) {
-        DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s%sclear%s%s", mode, sep, tea[0] ? sep : "", tea);
-    } else if (tea[0] != '\0') {
-        DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s%s%s", mode, sep, tea);
-    } else {
-        DSD_SNPRINTF(out->mode_text, sizeof out->mode_text, "%s", mode);
+    tetra_view_mode_encryption(row, cap, &used, sep, pub, trunked);
+    if (!trunked || pub->ksg_requested_mask == 0U) {
+        return;
+    }
+    char tea[DSD_APP_TETRA_TEXT_SIZE];
+    char part[DSD_APP_TETRA_TEXT_SIZE];
+    const size_t fixed = used + strlen(sep) + sizeof k_proposed - 1U;
+    if (tetra_view_ksg_names(pub->ksg_requested_mask, tea, fixed < cap ? cap - fixed : 0U) > 0) {
+        DSD_SNPRINTF(part, sizeof part, "%s%s", k_proposed, tea);
+        (void)tetra_view_append(row, cap, &used, sep, part);
     }
 }
 

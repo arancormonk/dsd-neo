@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "tetra_state.h"
+#include "tetra_ul.h"
 
 static dsd_state*
 state_open(void) {
@@ -100,6 +101,32 @@ test_trunked_downlink(void) {
     tetra_publish(state);
     assert(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED);
 
+    /* What radios proposed on the uplink publishes apart from the network's own algorithm. */
+    assert(pub->ksg_requested_mask == 0U);
+    assert(tetra_air_ksg_request(state, 262U, 1001U, 0U) == 1);
+    tetra_publish(state);
+    assert(pub->ksg_requested_mask == 0x0001U && pub->ksg_mask == 0x0002U);
+
+    /* An uplink session publishes the uplink's own encryption, never the downlink's encryption mode. */
+    ts->uplink = 1U;
+
+    static const struct {
+        uint8_t ul_enc;
+        uint8_t published;
+    } k_uplink[] = {
+        {TETRA_UL_ENC_UNKNOWN, DSD_TETRA_AIR_ENC_UNKNOWN},
+        {TETRA_UL_ENC_CLEAR, DSD_TETRA_AIR_ENC_CLEAR},
+        {TETRA_UL_ENC_ENCRYPTED, DSD_TETRA_AIR_ENC_ENCRYPTED},
+    };
+
+    for (size_t i = 0; i < sizeof k_uplink / sizeof k_uplink[0]; i++) {
+        ts->ul_enc = k_uplink[i].ul_enc;
+        tetra_publish(state);
+        assert(pub->air_encryption == k_uplink[i].published);
+    }
+    ts->uplink = 0U;
+    ts->ul_enc = TETRA_UL_ENC_UNKNOWN;
+
     /* No timeslot is no traffic channel; an unresolved or impossible frequency publishes as 0. */
     ts->sm.followed.timeslots = 0U;
     ts->dl_carrier_hz = -5L;
@@ -171,6 +198,7 @@ test_direct_mode_and_uplink(void) {
     ts->dmo = 1U;
     ts->net_known = 1U;
     assert(tetra_air_ksg_remember(state, 0U, 0U, 0U) == 1);
+    assert(tetra_air_ksg_request(state, 0U, 0U, 1U) == 1);
     for (uint8_t comm = 0; comm < 4U; comm++) {
         ts->dmo_comm_type = comm;
         ts->dmo_crypt = crypts[comm];
@@ -178,6 +206,7 @@ test_direct_mode_and_uplink(void) {
         assert(state->tetra_pub.mode == dmo_modes[comm]);
         assert(state->tetra_pub.air_encryption == air_encryption[comm]);
         assert(state->tetra_pub.ksg_mask == 0U && state->tetra_pub.dmo_class == DSD_TETRA_DMO_CLASS_UNKNOWN);
+        assert(state->tetra_pub.ksg_requested_mask == 0U);
     }
 
     ts->dmo = 0U;

@@ -3579,6 +3579,15 @@ test_tetra_rows_follow_the_view(void) {
     ui_render_call_info_tetra(opts, state);
     assert_capture_starts_with("| TETRA: TMO downlink - clear - TEA1\n| Network: ");
 
+    /* An uplink whose network named no algorithm, and whose radios' clear registrations proposed one. */
+    state->tetra_pub.mode = DSD_TETRA_MODE_TMO_CONTROL_UPLINK;
+    state->tetra_pub.air_encryption = DSD_TETRA_AIR_ENC_ENCRYPTED;
+    state->tetra_pub.ksg_mask = 0U;
+    state->tetra_pub.ksg_requested_mask = 1U;
+    assert(ui_format_tetra_lines(opts, state, &lines) >= 1);
+    assert(strcmp(lines.text[0], "TETRA: TMO control uplink - encrypted (TEA not broadcast) - radios propose TEA1")
+           == 0);
+
     state->tetra_pub.mode = DSD_TETRA_MODE_NONE; /* reset: nothing decoded yet */
     assert(ui_format_tetra_lines(opts, state, &lines) == 0);
     reset_printw_capture();
