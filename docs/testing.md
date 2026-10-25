@@ -2442,6 +2442,16 @@ The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLL
 watch the incremental collector again, set `QV4_GC_TIMELIMIT` to a slice length in milliseconds
 (Qt's default is 5): the policy keeps any integer it finds.
 
+Android-only presentation (the receiver pill, the receiver notice, the Monitor's LOST pill and width rule) is gated on
+`DecoderHost::localDeviceBrokered`, which production reads as a CONSTANT. A QML case therefore picks the brokered host
+before the screen binds it: `testContext.setUsbBrokered(true)` and then `useLifecycleHost(true)` (switching the
+lifecycle host off and on again republishes it). The same test context feeds the host's USB record and receiver
+facts (`setLocalDeviceRecord()`, `setReceiverHealth()`, `setDeviceRequestPends()`,
+`emitLocalDeviceAttached(kind)`), so these cases run on the desktop build. Every such feature keeps a
+non-brokered case pinning the desktop layout unchanged. Cases whose bindings or focus rules could warn call
+`failOnWarning()` in `init()` (`tst_main_receiver_notice.qml`, `tst_monitor_receiver.qml`): Qt's "Cannot set
+activeFocusOnTab to false once item is the active focus item" was a real defect there, not noise.
+
 The backup suites (`UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY`, `UI_QT_BACKUP_MODEL`; issue #580) build their
 configurations through the real models in storage that `dsd_test_qt_isolate_paths()`
 (`tests/test_support/qt_test_paths.h`) makes disposable, and they delete whole trees. All three check that

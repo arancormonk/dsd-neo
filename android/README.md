@@ -749,7 +749,106 @@ native descriptor-in-use reporting cover both drivers; switching between USB
 receivers requires the current session to stop. Both drivers share the vendored
 libusb target, and Java retains descriptor ownership until native transfers end.
 
-Onboarding and Home's dongle status show the USB diagnostic and a **Retry**
+### Receiver status on Listen
+
+Listen keeps the receiver's status in a pill beside the title, in a header that
+stays put while the list scrolls (the desktop has no pill and its title scrolls
+as before). One shared reading (`DeviceStatus.qml`) names the receiver —
+RTL-SDR, Airspy, or "receiver" when it cannot tell — for Listen, Onboarding and
+the Monitor:
+
+| Pill | Meaning | Tap |
+| --- | --- | --- |
+| `RTL-SDR READY` | connected and permitted | — |
+| `CONNECT RTL-SDR` / `CONNECT RECEIVER` | plugged in, not opened yet | Connect |
+| `RTL-SDR WAITING` | Android's permission prompt is up | — (Connect returns after 60 s without an answer) |
+| `NO RTL-SDR` / `NO RECEIVER` | the requested receiver (or any) is not attached | Retry / Connect |
+| `RTL-SDR NO ACCESS` | permission denied | Retry |
+| `RTL-SDR ERROR` | Android could not open or claim it | Retry |
+| `RTL-SDR LOST` | it was unplugged or stopped sending samples during the last session | Retry |
+
+An Airspy reads `AIRSPY` in place of `RTL-SDR`. Which receiver is named: the
+connected one, else the one the last session lost, else the one last requested,
+else the only kind on the bus. With both kinds attached and nothing requested it
+reads `CONNECT RECEIVER`. The pill and the details card under it only ask for
+access; they start nothing, and they act only while no session runs. When the
+label does not fit beside the title (narrow screens, large fonts) the pill moves
+under it and wraps instead of cutting the label off. Onboarding words its card
+from the same reading ("Airspy detected", "No receiver detected", …).
+
+### When a receiver ends a session
+
+A session whose receiver is unplugged, or stops delivering samples (its reader
+returns, or no samples arrive for 5 s), ends by itself. The Monitor's LIVE pill
+turns to `LOST` at once, while the session still saves and uploads its last calls;
+tapping it explains that the session is finishing and offers **Stop now**, which
+drops the uploads still waiting. On a short landscape Monitor, where the header
+scrolls away, a fixed `RTL-SDR LOST` line above Stop does the same. Nothing
+restarts during a session.
+
+Once the session has ended, Listen shows a notice in place of the receiver card:
+"RTL-SDR was unplugged, so <system> stopped. Plug it back in, then tap Reconnect."
+or "RTL-SDR stopped sending samples, so <system> stopped. Check its USB connection,
+then tap Reconnect." **Reconnect** runs the usual USB access (a permission prompt
+if one is needed) and then starts the same system, scan list or Explore session.
+With Signal search open, its screen says to plug the receiver back in and start
+the search again. **Dismiss** clears the notice and cancels a Reconnect still
+waiting. After the Activity is recreated (for example after Android reclaimed
+it in the background) the app cannot prove which saved system the service was
+running, so Reconnect there only asks for access and the notice ends "…tap
+Reconnect, then start it again."
+
+A stop you ask for first wins: Stop and then an unplug while the session winds
+down shows no notice; an unplug and then Stop now keeps it. The receiver's own
+end is detected natively — see `docs/code_map.md` "USB reader exit" and "USB
+sample-progress monitor" — with a 2 s grace that lets the detach broadcast own an
+unplug, so an unplug reads "unplugged" rather than "stopped sending samples".
+
+Known limits: the notice names only the receiver's kind, so after a recreation
+with two Airspys attached Reconnect may ask for the other one; a recreated
+Activity shows a retained notice again even if it was dismissed before; a healthy
+session reattached after a recreation shows LIVE with no receiver sheet (LOST
+still shows if it ends).
+
+### Permission requests and detaches
+
+`UsbSourceManager.kt` keeps its request bookkeeping in the plain-Kotlin
+`UsbRequestState.kt`. Each permission prompt is a new generation: its
+`PendingIntent` uses the generation as request code (`FLAG_CANCEL_CURRENT`) and
+carries it as an extra, and a reply for another generation or device is ignored.
+The Airspy serial search's hop to the next device keeps the request's generation
+and restarts its wait. A prompt left unanswered for 60 s expires on the host's
+250 ms status poll: the record says "No answer to the permission request",
+Connect comes back, and nothing prompts again until asked; a late answer is
+ignored. Unplugging the requested device retires its prompt and says "Device
+detached: <device>", so a re-plug can prompt at once. While a prompt is
+outstanding, auto-start waits.
+
+A plain Connect asks for the last requested receiver (kind and serial), then the
+connected kind, then the first known receiver on the bus. An attachment replaces
+the card's text only when nothing is connected and either nothing was requested or
+it is the requested receiver (an RTL-SDR plugged in never clears "Requested Airspy
+serial not found"); a request
+that finds its receiver already open rewrites "Ready: <device>". Asking for the
+other kind while a session runs is refused with "Stop the current receiver before
+switching USB devices", which is request feedback, not a device failure.
+
+A detach always releases the connection, but it stops the engine only when the
+session uses that receiver: configured or running on a local RTL-SDR or Airspy
+(`nativeSessionUsesLocalReceiver()`), holding its descriptor
+(`nativeIsUsbFdInUse()`), or being configured for one right now
+(`DecoderService.detachWhileConfiguring()`; a detach noted during configure stops
+the run as an unplug once configure returns). Unplugging a retained receiver no
+session uses, or one during an rtl_tcp session, stops nothing.
+
+`ANDROID_USB_BROKER_JVM` runs `UsbRequestState.kt` and the real
+`UsbSourceManager.kt` on the JVM against stubs of the USB service and its prompts.
+The request-code identity itself is checked against the Android documentation and
+these stubs only: the emulator exposes no USB device to ask permission for.
+
+### USB diagnostics and Retry
+
+Onboarding and Home's receiver card show the USB diagnostic and a **Retry**
 button. If `UsbManager.openDevice()` returns null, the app rechecks the device
 list and permission: the result is `detached`, `permission`, or `open_failed`,
 in that order. A null return with permission still granted says
@@ -797,11 +896,15 @@ attached kind when the remembered USB kind is not plugged in.
 ## Auto-start on USB attachment
 
 Settings → Listening → **Start when a dongle is attached** is off by default and
-appears only on hosts that broker local USB access. When enabled, an attachment
-resumes the last successfully initialized saved system or scan list if it still
-exists and uses USB. Explore and network/file sources are never selected. The
+appears only on hosts that broker local USB access ("Resume the last
+USB-receiver system or scan list"). When enabled, an attachment resumes the last
+successfully initialized saved system or scan list if it still exists, uses an
+RTL-SDR or an Airspy, and is on the kind of receiver that just attached: an
+Airspy plugged in resumes an Airspy target and never an RTL-SDR one, whatever
+else is on the bus. Explore and network/file sources are never selected. The
 app must have completed onboarding, be Idle (Failed does not qualify), and have
-no overlay or USB permission request open. A suppressed attachment is consumed;
+no overlay or USB permission request open; a permission request that expires
+unanswered lifts the block. A suppressed attachment is consumed;
 closing a sheet or enabling the preference does not retry it. Existing start and
 permission failures use the normal banner. Last-started identity changes only
 on confirmed session initialization, never when the service queues a start.
@@ -813,8 +916,9 @@ consumes that pending identity, including on the first host refresh. App-specifi
 intent input supplies no decoder configuration or bypass of the opt-in policy.
 
 Host regressions: `UI_QT_AUTO_START_POLICY`, `UI_QT_CONTROLLER`,
-`UI_QT_PERSISTENCE`, and `UI_QT_QML_CALL_LISTS`. The Android-free Kotlin tracker
-has no Gradle unit-test task wired in this package; verify on a device:
+`UI_QT_PERSISTENCE`, `UI_QT_QML_CALL_LISTS` and `UI_QT_QML_MAIN_RECEIVER_NOTICE`.
+The Android-free Kotlin tracker reports each attachment as `<kind>:<device>` and
+runs on the JVM in `ANDROID_USB_BROKER_JVM`; verify the rest on a device:
 
 - Cold launch from the USB intent followed by the receiver's duplicate report
   starts exactly once; an Activity recreation or duplicate new intent does not
@@ -823,9 +927,10 @@ has no Gradle unit-test task wired in this package; verify on a device:
   polling produce no start. With two devices, only the newest pending attachment
   is delivered; detaching it cancels the pending delivery.
 - Opt-out, incomplete onboarding, Starting/Running/Stopping/Failed, an open
-  overlay, a pending permission request, a deleted target, and an Explore or
-  non-USB target suppress the start. Removing the blocker alone does not retry.
-- Saved USB systems and USB scan lists both resume through the existing permission
+  overlay, a pending permission request, a deleted target, an Explore,
+  network or file target, and a target on the other receiver kind suppress the
+  start. Removing the blocker alone does not retry.
+- Saved RTL-SDR and Airspy systems and scan lists resume through the existing permission
   flow. Denial, invalid configuration, or failed tuner initialization shows the
   existing banner and leaves last-started identity unchanged; successful
   initialization updates it. Test both cold and already-running Activity intents.
