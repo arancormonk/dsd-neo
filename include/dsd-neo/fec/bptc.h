@@ -25,8 +25,9 @@ void BPTCDeInterleaveDMRData(const uint8_t* Input, uint8_t* Output);
 uint32_t BPTC_196x96_Extract_Data(uint8_t InputDeInteleavedData[196], uint8_t DMRDataExtracted[96], uint8_t R[3]);
 /*
  * Guaranteed decoding radius of the BPTC(196,96) product code (minimum distance 9): a valid codeword within this many
- * bits of the received word is the unique nearest one. BPTC_196x96_Decode_Codeword() is iterative, so a codeword it
- * reports further away may be wrong.
+ * bits of the received word is the unique nearest one. Distances count the 195 product-code bits, deinterleaved bits
+ * 1..195; bit 0 is outside the code and never counts (BPTC_196x96_Decode_Codeword()'s distance, which every gate on
+ * this radius reads). BPTC_196x96_Decode_Codeword() is iterative, so a codeword it reports further away may be wrong.
  */
 #define DSD_BPTC_196x96_UNIQUE_RADIUS 4U
 
