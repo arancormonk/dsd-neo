@@ -2387,12 +2387,15 @@ frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
         /* The front end goes with the decoder: a lock that moves the modulation moves the demodulator profile too
            (a notice reconciled, or a step, before the lock may have left the other chain on the front end). */
         const int forced = opts->mod_qpsk ? 1 : (opts->mod_gfsk ? 2 : 0);
-        if (state->rf_mod != forced) {
-            state->rf_mod = forced;
 #ifdef USE_RADIO
-            rtl_maybe_apply_active_demod_profile(opts, state);
+        const int moved = state->rf_mod != forced;
 #endif
+        state->rf_mod = forced;
+#ifdef USE_RADIO
+        if (moved) {
+            rtl_maybe_apply_active_demod_profile(opts, state);
         }
+#endif
     }
 }
 
