@@ -171,6 +171,13 @@ def native_lifecycle_contract():
         return f"{APP_SOURCES / 'DsdNative.kt'}: nativeStop must take (userRequested: Boolean, cause: String)"
     if not re.search(r"DsdNative_nativeStop\(JNIEnv\* env, jclass clazz, jboolean user_requested,\s*jstring cause\)", jni):
         return "android/dsdneo_jni.cpp: nativeStop must take the jstring cause after user_requested"
+    # A stop the configure discards must not leave its cause latched (#647): the flag reset and the new record share one
+    # lifecycle-lock block, and nativeStop latches its cause and raises its flag inside one.
+    lock = r"std::lock_guard<std::mutex> status_guard\(g_lifecycle_lock\);"
+    if not re.search(lock + r"[^}]*g_stop_requested\.store\(false\);[^}]*g_run_status\.begin\(", jni):
+        return "android/dsdneo_jni.cpp: nativeConfigure must clear g_stop_requested before begin() under g_lifecycle_lock"
+    if not re.search(lock + r"[^}]*note_stop_cause\([^}]*g_stop_requested\.store\(true\);", jni):
+        return "android/dsdneo_jni.cpp: nativeStop must latch its cause and raise g_stop_requested under g_lifecycle_lock"
     # Android owns an unplug through the detach broadcast for the grace (#647); without it the reader's -1 races it.
     init = re.search(r"DsdNative_nativeInit\(.*?\n\}", jni, re.S)
     if not init or "dsd_android::install_receiver_policy();" not in init.group(0):

@@ -169,7 +169,9 @@ drains. Its source check first pins the cause every production caller passes: ea
 `EngineStop.request`, a USB detach and the Activity and service teardowns drain, and both `ACTION_STOP` senders (the Qt
 host's Stop listening and the notification's Stop action) say `USER`. A second source check reads `DsdNative.kt` against
 `android/*.cpp` (the binding never compiles on the JVM): every `external fun` has its JNI definition, `nativeStop` takes
-the cause's wire value, and `nativeInit` installs the unplug-owner grace (`dsd_android::install_receiver_policy()`).
+the cause's wire value and latches it with its stop flag under the lifecycle-status lock, `nativeConfigure` clears that
+flag in the same block as the new run record (so a stop it discards leaves no cause), and `nativeInit` installs the
+unplug-owner grace (`dsd_android::install_receiver_policy()`).
 The same suite also runs `DecoderService.kt` itself with controlled native-run and intent-delivery boundaries:
 cancellation before callbacks, rejected dispatch and missing Activity context, notification cancellation before
 notification work, task removal without Activity destruction, a user Stop during a lifecycle drain (each stop passing

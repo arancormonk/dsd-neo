@@ -264,7 +264,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool updateReceiverHealth();
     /** @brief A new start acknowledges the endings of sessions up to @p session; emits runResultChanged(). */
     void clearReceiverHealth(uint64_t session);
-    /** @brief A new access request acknowledges the ending on screen, never one still to come. */
+    /** @brief A new access request acknowledges the ending on screen once its session ended, never one to come. */
     void acknowledgeReceiverEnding();
     /** @brief Whether the native claim error belongs to the receiver that is ready now (B11). */
     bool deviceErrorApplies() const;

@@ -173,7 +173,7 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
                                           : m_phase.update(name.constData(), running, session, reason, now_ms);
     // #647: the receiver ended this session; it is winding down, whatever the service still says.
     if (!status.isEmpty() && (end_cause == kEndDetached || end_cause == kEndReceiverFailed)
-        && m_phase.note_receiver_end(session)) {
+        && receiver_source != kReceiverNone && m_phase.note_receiver_end(session)) {
         phase = m_phase.phase();
     }
     const bool adopted_idle = session != 0 && session == m_adopted_idle_session;
@@ -216,7 +216,8 @@ DecoderHostAndroid::updateReceiverHealth() {
     const QString state = m_end_cause == kEndDetached         ? QStringLiteral("lost")
                           : m_end_cause == kEndReceiverFailed ? QStringLiteral("failed")
                                                               : QString();
-    if (!acknowledged && !state.isEmpty()) {
+    // An ending with no local receiver (a detach during an rtl_tcp session) is no receiver's: nothing to name.
+    if (!acknowledged && !state.isEmpty() && m_receiver_source != kReceiverNone) {
         health = {{QStringLiteral("state"), state},
                   {QStringLiteral("source"), receiver_source_name(m_receiver_source)},
                   {QStringLiteral("session"), static_cast<qlonglong>(m_health_session)}};
@@ -238,7 +239,8 @@ DecoderHostAndroid::clearReceiverHealth(uint64_t session) {
 
 void
 DecoderHostAndroid::acknowledgeReceiverEnding() {
-    if (m_receiver_health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
+    // Like the WP-D5 claim error: while the ended session still winds down its notice stays (the Monitor's LOST).
+    if (!sessionActive() && m_receiver_health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
         clearReceiverHealth(m_health_session);
     }
 }

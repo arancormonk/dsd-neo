@@ -531,10 +531,21 @@ check_receiver_health() {
           "30 s of cleanup hold Stopping, with no stop expiry");
     check(results == 1, "polls of the same ending publish nothing new");
 
-    /* Stop now while it drains: the native latch keeps the first cause, so the record still says detached. */
+    /* An access request while the ended session still winds down keeps its notice (the Monitor's LOST). */
+    host.requestLocalDeviceAccessForSource(QStringLiteral("usb"));
+    host.requestLocalDeviceAccess();
+    host.refresh();
+    check(accessRequests == 2 && health_state(host) == QStringLiteral("lost") && results == 1
+              && host.sessionState() == DecoderHost::Stopping,
+          "an access request during the hold keeps the notice until the session ends");
+
+    /* Stop now during the hold still reaches the service; the phase and notice do not move. (That the native latch
+     * keeps "detached" after it is IO_RTL_RUN_RESULT's "detach then Stop now stays a detach".) */
+    const int stopsBefore = serviceStops;
     host.stop();
+    check(serviceStops == stopsBefore + 1, "Stop now during the hold dispatches the user's stop");
     check(health_state(host) == QStringLiteral("lost") && host.sessionState() == DecoderHost::Stopping,
-          "Stop now keeps the receiver notice");
+          "a host Stop during the hold changes nothing on screen");
     retained_record() = lifecycle_record(81, "IDLE", kRunCancelled, kEndDetached, kReceiverRtl);
     running = false;
     host.refresh();
@@ -552,8 +563,8 @@ check_receiver_health() {
     /* A new access request acknowledges it, and the same retained record stays acknowledged. */
     results = 0;
     host.requestLocalDeviceAccessForSource(QStringLiteral("usb"));
-    check(health_state(host) == QStringLiteral("ok") && accessRequests == 1 && results == 1,
-          "an access request clears the notice");
+    check(health_state(host) == QStringLiteral("ok") && accessRequests == 3 && results == 1,
+          "an access request after the session ended clears the notice");
     host.refresh();
     check(health_state(host) == QStringLiteral("ok") && results == 1, "the retained record stays acknowledged");
 
@@ -617,6 +628,21 @@ check_receiver_health() {
     retained_record() = lifecycle_record(85, "IDLE", kRunCancelled, kEndDetached, kReceiverRtl);
     running = false;
     host.refresh();
+
+    /* A detach that stopped a session with no local receiver (rtl_tcp) names no receiver: no notice and no hold. */
+    retained_record() = lifecycle_record(86, "RUNNING", kRunPending, kEndNone, kReceiverNone);
+    running = true;
+    host.refresh();
+    for (const int cause : {kEndDetached, kEndReceiverFailed}) {
+        retained_record() = lifecycle_record(86, "RUNNING", kRunPending, cause, kReceiverNone);
+        host.refresh();
+        check(health_state(host) == QStringLiteral("ok") && host.sessionState() == DecoderHost::Running,
+              "an ending without a local receiver shows no notice and holds nothing");
+    }
+    retained_record() = lifecycle_record(86, "IDLE", kRunCancelled, kEndDetached, kReceiverNone);
+    running = false;
+    host.refresh();
+    check(health_state(host) == QStringLiteral("ok") && host.sessionState() == DecoderHost::Idle, "and ends healthy");
 
     retained_record() = QJsonObject();
     serviceStops = 0;

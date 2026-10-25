@@ -454,6 +454,17 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
 
     {
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        /* A completed run leaves the shutdown flag raised; main() never restarts, an
+         * embedding host always does. Safe to clear both here and nowhere else: the
+         * service is STARTING for the whole of this call and rejects stops, so no stop
+         * request for the run being configured can exist yet. A direct nativeStop (a
+         * detach broadcast, the Activity's teardown) that lands before this block is
+         * discarded whole: its flag here and its latched cause by begin() below, under the
+         * lock nativeStop latches and raises its flag under (#647). */
+        dsd_exitflag_store(0);
+        g_stop_requested.store(false);
+        /* #718 D4: a user Stop that landed after the last run's upload shutdown must not abandon this run's uploads. */
+        dsd_rdio_upload_cancel_reset();
         /* The last run's committed receiver ending stays latched until the bootstrap clears it; cleared here with
          * the new record, under the same lock, so no poll can read it into this session. */
         dsd_input_failure_clear();
@@ -466,15 +477,6 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     if (!build_argv(env, args, &cli)) {
         return kStatusError;
     }
-
-    /* A completed run leaves the shutdown flag raised; main() never restarts, an
-     * embedding host always does. Safe to clear both here and nowhere else: the
-     * service is STARTING for the whole of this call and rejects stops, so no stop
-     * request for the run being configured can exist yet. */
-    dsd_exitflag_store(0);
-    g_stop_requested.store(false);
-    /* #718 D4: a user Stop that landed after the last run's upload shutdown must not abandon this run's uploads. */
-    dsd_rdio_upload_cancel_reset();
 
     int exit_rc = 0;
     const int rc = dsd_runtime_bootstrap(cli.argc, cli.argv, g_opts, g_state, nullptr, &exit_rc);
@@ -597,10 +599,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
         dsd_android::note_stop_cause(g_run_status,
                                      dsd_android::end_cause_from_wire(converted ? wire.c_str() : nullptr));
+        /* Latched as well as raised: a stop arriving before the engine loop starts would
+         * otherwise be lost to the engine's own shutdown-flag reset. See g_stop_requested.
+         * Under the lock with the cause, so nativeConfigure's reset keeps or drops both. */
+        g_stop_requested.store(true);
     }
-    /* Latched as well as raised: a stop arriving before the engine loop starts would
-     * otherwise be lost to the engine's own shutdown-flag reset. See g_stop_requested. */
-    g_stop_requested.store(true);
     /* #718 D4: the user's Stop does not wait for the rdio upload backlog. Device detach and lifecycle teardowns pass
      * false and drain, so a normal end still uploads its last calls. Takes no lock. */
     if (user_requested == JNI_TRUE) {
