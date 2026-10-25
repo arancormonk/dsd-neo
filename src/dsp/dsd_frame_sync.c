@@ -4218,6 +4218,35 @@ frame_sync_p25p1_mod_compare_end_incumbent_pass(const dsd_opts* opts, dsd_state*
     dsd_frame_sync_p25p1_mod_compare_publish(state);
 }
 
+/* frame_sync_p25p1_mod_compare_note()'s step, under the tick guard: open, count, end a pass, settle or abort. */
+static void
+frame_sync_p25p1_mod_compare_step(const dsd_opts* opts, dsd_state* state, int validated_now, uint32_t consumed) {
+    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    if (cmp->phase == 0) {
+        frame_sync_p25p1_mod_compare_open(opts, state, consumed);
+        return;
+    }
+    if (!frame_sync_p25p1_mod_compare_allowed(opts, state)) {
+        frame_sync_p25p1_mod_compare_abort(opts, state, 1, 0);
+        return;
+    }
+    if (state->carrier_seq != cmp->carrier_seq) {
+        frame_sync_p25p1_mod_compare_abort(opts, state, 1, 1);
+        return;
+    }
+    if (validated_now) {
+        frame_sync_p25p1_mod_compare_count_frame(state, consumed);
+    }
+    if ((uint32_t)(state->symbolcnt - cmp->window_start) < (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+        return;
+    }
+    if (cmp->phase == 1) {
+        frame_sync_p25p1_mod_compare_end_incumbent_pass(opts, state);
+        return;
+    }
+    frame_sync_p25p1_mod_compare_decide(opts, state);
+}
+
 /**
  * @brief Compare the two P25p1 chains once per acquisition, on validated frames.
  *
@@ -4249,35 +4278,6 @@ frame_sync_p25p1_mod_compare_end_incumbent_pass(const dsd_opts* opts, dsd_state*
  * other chain's pass runs out inside a call (frame_sync_p25p1_mod_compare_trial_pass_ended()): per symbol, one
  * phase check.
  */
-/* frame_sync_p25p1_mod_compare_note()'s step, under the tick guard: open, count, end a pass, settle or abort. */
-static void
-frame_sync_p25p1_mod_compare_step(const dsd_opts* opts, dsd_state* state, int validated_now, uint32_t consumed) {
-    dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    if (cmp->phase == 0) {
-        frame_sync_p25p1_mod_compare_open(opts, state, consumed);
-        return;
-    }
-    if (!frame_sync_p25p1_mod_compare_allowed(opts, state)) {
-        frame_sync_p25p1_mod_compare_abort(opts, state, 1, 0);
-        return;
-    }
-    if (state->carrier_seq != cmp->carrier_seq) {
-        frame_sync_p25p1_mod_compare_abort(opts, state, 1, 1);
-        return;
-    }
-    if (validated_now) {
-        frame_sync_p25p1_mod_compare_count_frame(state, consumed);
-    }
-    if ((uint32_t)(state->symbolcnt - cmp->window_start) < (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
-        return;
-    }
-    if (cmp->phase == 1) {
-        frame_sync_p25p1_mod_compare_end_incumbent_pass(opts, state);
-        return;
-    }
-    frame_sync_p25p1_mod_compare_decide(opts, state);
-}
-
 void
 frame_sync_p25p1_mod_compare_note(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {

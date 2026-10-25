@@ -35,6 +35,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_test_support.h"
 

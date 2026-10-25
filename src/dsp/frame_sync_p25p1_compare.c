@@ -11,6 +11,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 
