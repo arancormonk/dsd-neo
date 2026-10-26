@@ -4726,10 +4726,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         rt.symbol = getSymbol(opts, state, 0);
         if (state->input_interrupted) {
-            /* The read left a silent input's wait for a queued command, or the input ended (issue #634), or it met a
-               gap in the radio stream (issue #518): no symbol came and no pass ran, so nothing of it is counted. The
-               engine loop applies the command, switches the input or resets the decoding the gap cut, and the next call
-               hunts afresh. */
+            /* The read left a silent input's wait for a queued command, the input ended (issue #634) or the read
+               met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
+               loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }

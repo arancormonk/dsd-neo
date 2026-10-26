@@ -45,9 +45,14 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
+#include "dsd-neo/platform/platform.h"
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 #include "test_support.h"
+
+struct rtl_device;
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)

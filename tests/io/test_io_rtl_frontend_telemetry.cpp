@@ -30,11 +30,13 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <memory>
+#include <stdio.h>
 #include <string>
 #include <thread>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "test_support.h"
@@ -120,7 +122,7 @@ make_replay_fixture(int tuner_gain_tenth_db, char* out_metadata_path, size_t out
         return 1;
     }
     /* Four live transfers of a ramp: enough for the input level to have something to measure. */
-    std::vector<uint8_t> payload(16384U * 4U);
+    std::vector<uint8_t> payload(static_cast<size_t>(16384U) * 4U);
     for (size_t i = 0; i < payload.size(); i++) {
         payload[i] = static_cast<uint8_t>(i & 0xFFU);
     }

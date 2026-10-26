@@ -44,16 +44,24 @@
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <vector>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
+#include "dsd-neo/platform/platform.h"
 #include "rtl_stream_test_support.h"
 #include "test_support.h"
 
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+struct rtl_device;
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -2020,9 +2028,9 @@ test_stream_retune_keeps_pair_alignment(void) {
 }
 
 /* commands_raise_no_sigpipe: a command to a connection that is gone fails, and never raises SIGPIPE (MSG_NOSIGNAL, or
- * SO_NOSIGPIPE where that is missing). The rest of this test ignores SIGPIPE, so a case that sends on a connection taken
- * down (old_sender_does_not_touch_replacement) runs again in a child process of this binary with SIGPIPE's default
- * disposition, which a raised SIGPIPE would kill. */
+ * SO_NOSIGPIPE where that is missing). The rest of this test ignores SIGPIPE, so a case that sends on a connection
+ * taken down (old_sender_does_not_touch_replacement) runs again in a child process of this binary with SIGPIPE's
+ * default disposition, which a raised SIGPIPE would kill. */
 const char* g_self = nullptr;
 
 void

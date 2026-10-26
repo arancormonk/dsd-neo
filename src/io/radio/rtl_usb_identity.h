@@ -119,7 +119,7 @@ struct rtl_usb_driver_ops {
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 /* Test hook: NULL restores the real drivers. Install while nothing else uses the unit. */
-void rtl_usb_identity_set_driver_ops(const struct rtl_usb_driver_ops* ops);
+void rtl_usb_identity_set_driver_ops(const struct rtl_usb_driver_ops* driver_ops);
 #endif
 
 #endif /* DSD_NEO_IO_RADIO_RTL_USB_IDENTITY_H */

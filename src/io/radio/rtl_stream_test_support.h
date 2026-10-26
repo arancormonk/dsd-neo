@@ -426,7 +426,8 @@ typedef struct {
  * configured direct sampling mode and @p opts the session options; the stream's own state comes back afterwards. */
 int rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
                                             int direct_sampling, rtl_stream_test_capture_result* out);
-/* Run the start's programming as above, then a controller retune's to @p retune_center_hz; @p out holds the retune's. */
+/* Run the start's programming as above, then a controller retune's to @p retune_center_hz; @p out holds the
+ * retune's. */
 int rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
                                            uint32_t retune_center_hz, rtl_stream_test_capture_result* out);
 

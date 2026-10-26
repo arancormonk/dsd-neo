@@ -27,13 +27,13 @@
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>

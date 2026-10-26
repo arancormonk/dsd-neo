@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <math.h>
+#include <time.h>
 
 enum {
     DSD_INPUT_LEVEL_TOAST_TTL_SEC = 4,
@@ -539,6 +540,20 @@ input_level_should_notify(const dsd_opts* opts, const dsd_state* state, const ds
     return difftime(now, state->input_level_last_toast_time) >= (double)cooldown;
 }
 
+/* Whether the published @p next prints its warning at decode time @p decode_now. */
+static int
+input_level_publish_notifies(const dsd_opts* opts, const dsd_state* state, const dsd_input_level_snapshot* next,
+                             unsigned int notify_mask, time_t decode_now) {
+    if (input_level_should_suppress_tcp_pcm_toast(opts, state, next)
+        || !input_level_should_notify(opts, state, next, notify_mask, decode_now)) {
+        return 0;
+    }
+    /* A live receiver's level that real time has left behind is the last one of a receiver that stopped: no warning
+       about it. A replay's levels keep their warnings, which follow the capture: one that pauses (a slow decoder, a
+       jittered read) prints the same ones in every run. Read only when a warning would print. */
+    return (opts && opts->iq_replay_active) || !dsd_input_level_is_stale(next, dsd_realtime_mono_ms());
+}
+
 void
 dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                         unsigned int notify_mask) {
@@ -562,15 +577,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
        time in every run, however fast it runs; live, decode time is the system's. The snapshot's `updated_ms` stays
        the real time it was measured at, and the toast stays up for real time (ui_msg_expire below). */
     const time_t decode_now = dsd_decode_time();
-    int notify = input_level_should_suppress_tcp_pcm_toast(opts, state, &next)
-                     ? 0
-                     : input_level_should_notify(opts, state, &next, notify_mask, decode_now);
-    /* A live receiver's level that real time has left behind is the last one of a receiver that stopped: no warning
-       about it. A replay's levels keep their warnings, which follow the capture: one that pauses (a slow decoder, a
-       jittered read) prints the same ones in every run. Read only when a warning would print. */
-    if (notify && !(opts && opts->iq_replay_active) && dsd_input_level_is_stale(&next, dsd_realtime_mono_ms())) {
-        notify = 0;
-    }
+    const int notify = input_level_publish_notifies(opts, state, &next, notify_mask, decode_now);
     state->input_level = next;
     if (!notify) {
         return;

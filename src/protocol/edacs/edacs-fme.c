@@ -402,7 +402,7 @@ edacs_fill_analog_block_converted(dsd_opts* opts, dsd_state* state, dsd_rate_con
 /* The RF power of an RTL triplet: none when it holds silence for a missing stream (edacs_read_sample_rtl()), not the
    stream's last measurement, which stays where the carrier left it. */
 static double
-edacs_rtl_triplet_pwr(dsd_state* state) {
+edacs_rtl_triplet_pwr(const dsd_state* state) {
     return state->edacs_no_stream_seen ? 0.0 : dsd_rtl_stream_io_hook_return_pwr(state);
 }
 #endif

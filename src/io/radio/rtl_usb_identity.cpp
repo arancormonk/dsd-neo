@@ -26,6 +26,7 @@
 #include <libusb.h>
 #include <new>
 #include <rtl-sdr.h>
+#include <sys/types.h>
 #else
 #define RTL_USB_IDENTITY_REAL 0
 #endif
@@ -310,13 +311,12 @@ struct usb_scan {
     int ok = 0;
     int matches = 0;
     int unreadable = 0;
-    struct rtl_usb_device_info match;
+    struct rtl_usb_device_info match{};
 };
 
 usb_scan
 scan_usb(const rtl_usb_driver_ops* o, const triple& want, const struct rtl_usb_identity* recorded) {
     usb_scan u;
-    DSD_MEMSET(&u.match, 0, sizeof(u.match));
     void* session = nullptr;
     int count = 0;
     if (o->usb_open_session(&session, &count) != RTL_USB_OP_OK) {
@@ -368,7 +368,7 @@ at_identity_port(const struct rtl_usb_device_info& info, const struct rtl_usb_id
     if (info.vid != id->vid || info.pid != id->pid || info.bus != id->bus || info.port_depth != id->port_depth) {
         return false;
     }
-    if (id->port_depth < 0 || id->port_depth > (int)sizeof(id->ports)) {
+    if (id->port_depth < 0 || id->port_depth > static_cast<int>(sizeof id->ports)) {
         return false;
     }
     return memcmp(info.ports, id->ports, (size_t)id->port_depth) == 0;
@@ -408,6 +408,49 @@ rediscover(const rtl_usb_driver_ops* o, const struct rtl_usb_identity* id, int (
         uint64_t left = deadline - now;
         o->sleep_ms(left < kRediscoverPollMs ? (unsigned int)left : kRediscoverPollMs);
     }
+}
+
+/* The session index of the device at @p id's bus and port path, or -1. */
+int
+find_at_identity_port(const rtl_usb_driver_ops* o, void* session, int count, const struct rtl_usb_identity* id) {
+    for (int i = 0; i < count; i++) {
+        struct rtl_usb_device_info info;
+        if (o->usb_describe(session, i, &info) == RTL_USB_OP_OK && at_identity_port(info, id)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+rtl_usb_id_result
+open_failure_result(int rc) {
+    if (rc == RTL_USB_OP_ACCESS) {
+        return RTL_USB_ID_ACCESS;
+    }
+    return rc == RTL_USB_OP_GONE ? RTL_USB_ID_NOT_FOUND : RTL_USB_ID_FAILED;
+}
+
+/* Reset the device @p handle opened, once its strings, re-read on that handle so nothing can take the port in between,
+ * are still @p id's. */
+rtl_usb_id_result
+reset_if_identity(const rtl_usb_driver_ops* o, void* handle, const struct rtl_usb_identity* id, int (*cancelled)(void*),
+                  void* ctx) {
+    triple t;
+    if (o->usb_read_strings(handle, t.manufacturer, t.product, t.serial) != RTL_USB_OP_OK) {
+        return RTL_USB_ID_UNREADABLE;
+    }
+    terminate_strings(&t);
+    if (!same_triple(t, id)) {
+        return RTL_USB_ID_MISMATCH;
+    }
+    if (is_cancelled(cancelled, ctx)) {
+        return RTL_USB_ID_FAILED;
+    }
+    const int rc = o->usb_reset(handle);
+    if (rc == RTL_USB_OP_OK) {
+        return RTL_USB_ID_OK;
+    }
+    return rc == RTL_USB_OP_GONE ? RTL_USB_ID_NOT_FOUND : RTL_USB_ID_FAILED;
 }
 
 #endif /* RTL_USB_IDENTITY_REAL */
@@ -499,47 +542,18 @@ rtl_usb_identity_reset(const struct rtl_usb_identity* id, int (*cancelled)(void*
     if (o->usb_open_session(&session, &count) != RTL_USB_OP_OK) {
         return RTL_USB_ID_FAILED;
     }
-    int found = -1;
-    for (int i = 0; i < count && found < 0; i++) {
-        struct rtl_usb_device_info info;
-        if (o->usb_describe(session, i, &info) == RTL_USB_OP_OK && at_identity_port(info, id)) {
-            found = i;
-        }
-    }
+    const int found = find_at_identity_port(o, session, count, id);
     if (found < 0) {
         o->usb_close_session(session);
         return RTL_USB_ID_NOT_FOUND;
     }
     void* handle = nullptr;
-    int rc = o->usb_open(session, found, &handle);
+    const int rc = o->usb_open(session, found, &handle);
     if (rc != RTL_USB_OP_OK) {
         o->usb_close_session(session);
-        if (rc == RTL_USB_OP_ACCESS) {
-            return RTL_USB_ID_ACCESS;
-        }
-        return rc == RTL_USB_OP_GONE ? RTL_USB_ID_NOT_FOUND : RTL_USB_ID_FAILED;
+        return open_failure_result(rc);
     }
-    /* The strings are re-read on the handle the reset goes through, so nothing can take the port in between. */
-    triple t;
-    rc = o->usb_read_strings(handle, t.manufacturer, t.product, t.serial);
-    rtl_usb_id_result result = RTL_USB_ID_FAILED;
-    if (rc != RTL_USB_OP_OK) {
-        result = RTL_USB_ID_UNREADABLE;
-    } else {
-        terminate_strings(&t);
-        if (!same_triple(t, id)) {
-            result = RTL_USB_ID_MISMATCH;
-        } else if (is_cancelled(cancelled, ctx)) {
-            result = RTL_USB_ID_FAILED;
-        } else {
-            rc = o->usb_reset(handle);
-            if (rc == RTL_USB_OP_OK) {
-                result = RTL_USB_ID_OK;
-            } else if (rc == RTL_USB_OP_GONE) {
-                result = RTL_USB_ID_NOT_FOUND;
-            }
-        }
-    }
+    const rtl_usb_id_result result = reset_if_identity(o, handle, id, cancelled, ctx);
     o->usb_close(handle);
     o->usb_close_session(session);
     if (result == RTL_USB_ID_NOT_FOUND) {
@@ -594,11 +608,11 @@ rtl_usb_identity_off_reason(rtl_usb_id_result r) {
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 void
-rtl_usb_identity_set_driver_ops(const struct rtl_usb_driver_ops* ops_in) {
+rtl_usb_identity_set_driver_ops(const struct rtl_usb_driver_ops* driver_ops) {
 #if RTL_USB_IDENTITY_REAL
-    g_ops.store(ops_in != nullptr ? ops_in : &k_real_ops, std::memory_order_release);
+    g_ops.store(driver_ops != nullptr ? driver_ops : &k_real_ops, std::memory_order_release);
 #else
-    (void)ops_in;
+    (void)driver_ops;
 #endif
 }
 #endif

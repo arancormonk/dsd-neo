@@ -286,16 +286,16 @@ read_across_the_gap(dsd_opts* opts, dsd_state* state, const char* name, uint64_t
    the first sample of the batch after it, while the samples the cache held before it come out first, in order. */
 static void
 test_recovery_events_reset_decoder_cached_reader(dsd_opts* opts, dsd_state* state) {
-    reset_stream(opts, state, 1, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, 37U, 3U * 37U);
-    read_across_the_gap(opts, state, "replay, cached reader", 3U * 37U);
+    reset_stream(opts, state, 1, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, 37U, (uint64_t)3U * 37U);
+    read_across_the_gap(opts, state, "replay, cached reader", (uint64_t)3U * 37U);
 }
 
 /* The same through the one-sample reader (the monitor output): the read that returns the batch's first sample sees the
    gap, and that sample is handed out first once the engine has consumed it. */
 static void
 test_recovery_events_reset_decoder_one_sample_reader(dsd_opts* opts, dsd_state* state) {
-    reset_stream(opts, state, 1, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 37U, 3U * 37U);
-    read_across_the_gap(opts, state, "replay, one-sample reader", 3U * 37U);
+    reset_stream(opts, state, 1, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 37U, (uint64_t)3U * 37U);
+    read_across_the_gap(opts, state, "replay, one-sample reader", (uint64_t)3U * 37U);
 }
 
 /* A live stream through the cache: the count is read after every read, so the read that returns the first sample past

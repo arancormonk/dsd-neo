@@ -303,7 +303,8 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 }
 
 #ifdef USE_RADIO
-/* Why the receiver cannot take a control (issue #518 D6), as the running stream would say; none unless a test sets it. */
+/* Why the receiver cannot take a control (issue #518 D6), as the running stream would say; none unless a test
+ * sets it. */
 static int g_control_unavailable = 0;
 /* A live bias tee change's result while armed; the real stream's otherwise. */
 static int g_bias_tee_armed = 0;

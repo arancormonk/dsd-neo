@@ -31,6 +31,8 @@
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 
+struct rtl_device;
+
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
@@ -44,7 +46,7 @@ constexpr int kAutoGain = -100;
 constexpr int kStepReset = 100;
 constexpr int kStepVerify = 101;
 
-/* ---- Fake USB device list (Task 6's driver ops) ---- */
+/* ---- Fake USB device list (the identity unit's driver ops) ---- */
 
 struct usb_dev {
     rtl_usb_device_info info;

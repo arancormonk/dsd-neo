@@ -67,6 +67,7 @@
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <errno.h>
 #include <iterator>
 #include <limits.h>
 #include <memory>
@@ -76,7 +77,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <utility>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -340,8 +340,8 @@ struct controller_state {
     /* A stall recovery the USB device's progress monitor asked for (controller_post_usb_recovery()); guarded by hop_m
        for the wake, taken by controller_wait_for_retune_work() ahead of any retune. */
     std::atomic<int> usb_recovery_pending{0};
-    /* A reconnected rtl_tcp connection the device's reader handed over (controller_post_tcp_handoff()); guarded by hop_m
-       for the wake, taken like a recovery, ahead of any retune. */
+    /* A reconnected rtl_tcp connection the device's reader handed over (controller_post_tcp_handoff()); guarded by
+       hop_m for the wake, taken like a recovery, ahead of any retune. */
     std::atomic<int> tcp_handoff_pending{0};
 };
 
@@ -2466,8 +2466,8 @@ rtl_stream_input_level_publish(const dsd_input_level_snapshot* snapshot) {
     input_level_write_end(seq);
 }
 
-/* Copy the published input level into @p out: 1 when there is one and the copy is one publish whole, 0 otherwise (@p out
- * untouched). Any thread. */
+/* Copy the published input level into @p out: 1 when there is one and the copy is one publish whole, 0 otherwise
+ * (@p out untouched). Any thread. */
 static int
 rtl_stream_input_level_read(dsd_input_level_snapshot* out) {
     for (int attempt = 0; attempt < kInputLevelReadAttempts; attempt++) {
@@ -3270,9 +3270,9 @@ demod_autogain_spectral_gate_ok(DemodAutogainState* st, const struct demod_state
     return (st->spec_pass >= st->up_persist) ? 1 : 0;
 }
 
-/* Set the supported tuner gain nearest @p target_tenth_db and note the one that took. A change the device refused leaves
- * the gain it reports published: the earlier one, rolled back, or no reading when that failed too. Returns whether the
- * change took. */
+/* Set the supported tuner gain nearest @p target_tenth_db and note the one that took. A change the device refused
+ * leaves the gain it reports published: the earlier one, rolled back, or no reading when that failed too. Returns
+ * whether the change took. */
 static int
 demod_autogain_set_gain(int target_tenth_db) {
     int selected = 0;
@@ -5542,14 +5542,15 @@ static void* g_test_stream_boundary_probe_ctx = nullptr;
 #endif
 
 /* A stream boundary on the same centre (issue #518 D1): the device's stream was lost and is replaced under the running
- * pipeline, a USB recovery's reset and reopen or an rtl_tcp reconnect, as @p reason (kStreamGap*) says. Runs on the controller thread,
- * which owns every retune, so the two never interleave. The reconfigure gate parks the demod and holds the capture,
- * @p device_op(@p ctx) replaces the device's stream, and the tail a same-centre retune runs follows on every exit:
- * post mute, finalize (input purge, demod reset with StreamGap, no capture RESET of its own), post-reset mute, capture
- * hold released. Only when @p device_op succeeded: the output generation moves and the output ring is emptied, the
- * gap is noted (its RETUNE and RESET capture events, then the discontinuity count the decoder checks), and only then
- * may the producer deliver again, so no sample from after the gap can be read before the count moved. The gate ends
- * last. Returns @p device_op's result, else the producer's resume result (-ECANCELED once the device was stopped). */
+ * pipeline, a USB recovery's reset and reopen or an rtl_tcp reconnect, as @p reason (kStreamGap*) says. Runs on the
+ * controller thread, which owns every retune, so the two never interleave. The reconfigure gate parks the demod and
+ * holds the capture, @p device_op(@p ctx) replaces the device's stream, and the tail a same-centre retune runs follows
+ * on every exit: post mute, finalize (input purge, demod reset with StreamGap, no capture RESET of its own), post-reset
+ * mute, capture hold released. Only when @p device_op succeeded: the output generation moves and the output ring is
+ * emptied, the gap is noted (its RETUNE and RESET capture events, then the discontinuity count the decoder checks), and
+ * only then may the producer deliver again, so no sample from after the gap can be read before the count moved. The
+ * gate ends last. Returns @p device_op's result, else the producer's resume result (-ECANCELED once the device was
+ * stopped). */
 static int
 controller_stream_boundary(struct controller_state* s, int reason, int (*device_op)(void*), void* ctx) {
     if (!s || !device_op) {
@@ -6069,6 +6070,48 @@ controller_clear_active_ppm_request(struct controller_state* s, int ppm_pending)
     s->ppm_apply_in_progress.store(0, std::memory_order_release);
 }
 
+/* Whether any work is queued for the controller (hop_m held). */
+static int
+controller_has_retune_work_locked(const struct controller_state* s) {
+    return s->manual_retune_pending.load(std::memory_order_acquire)
+           || s->ppm_change_pending.load(std::memory_order_acquire)
+           || s->usb_recovery_pending.load(std::memory_order_acquire)
+           || s->tcp_handoff_pending.load(std::memory_order_acquire);
+}
+
+/* Take a queued manual retune into @p work (hop_m held). */
+static void
+controller_take_manual_retune_locked(struct controller_state* s, ControllerRetuneWork* work) {
+    work->manual_pending = s->manual_retune_pending.exchange(0, std::memory_order_acq_rel);
+    if (!work->manual_pending) {
+        return;
+    }
+    work->manual_freq_hz = s->manual_retune_freq;
+    work->manual_token = s->manual_retune_token;
+    work->manual_profile = s->manual_retune_profile;
+    s->manual_retune_freq = 0U;
+    s->manual_retune_token = 0U;
+    rtl_stream_clear_retune_profile(&s->manual_retune_profile);
+    /* In flight from here until controller_process_manual_retune() has landed it. A profile left for another
+       target by a coalesced retune never applies (rtl_stream_apply_retune_profile()), so it carries no family. */
+    const int lands = rtl_stream_retune_profile_matches_target(&work->manual_profile, work->manual_freq_hz);
+    s->retune_in_flight_family = lands ? work->manual_profile.analog_family : -1;
+    s->retune_in_flight_family_requests = work->manual_profile.family_request_count;
+}
+
+/* Take a queued PPM change into @p work and mark it active (hop_m held). */
+static void
+controller_take_ppm_change_locked(struct controller_state* s, ControllerRetuneWork* work) {
+    work->requested_ppm = s->pending_ppm_error.load(std::memory_order_acquire);
+    work->requested_ppm_request_id = s->pending_ppm_request_seq.load(std::memory_order_acquire);
+    work->ppm_pending = s->ppm_change_pending.exchange(0, std::memory_order_acq_rel);
+    if (work->ppm_pending) {
+        s->active_ppm_error.store(work->requested_ppm, std::memory_order_release);
+        s->active_ppm_request_seq.store(work->requested_ppm_request_id, std::memory_order_release);
+        s->ppm_apply_in_progress.store(1, std::memory_order_release);
+    }
+}
+
 static int
 controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork* work) {
     if (!s || !work) {
@@ -6081,51 +6124,25 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     work->manual_token = 0U;
     rtl_stream_clear_retune_profile(&work->manual_profile);
     dsd_mutex_lock(&s->hop_m);
-    while (!s->manual_retune_pending.load(std::memory_order_acquire)
-           && !s->ppm_change_pending.load(std::memory_order_acquire)
-           && !s->usb_recovery_pending.load(std::memory_order_acquire)
-           && !s->tcp_handoff_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
-           && !(g_stream && g_stream->should_exit.load())) {
+    while (!controller_has_retune_work_locked(s) && !demod_should_exit_requested()) {
         dsd_cond_wait(&s->hop, &s->hop_m);
     }
-    if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load())) {
+    if (demod_should_exit_requested()) {
         dsd_mutex_unlock(&s->hop_m);
         return 0;
     }
-    /* A recovery (or an rtl_tcp reconnect) goes first and alone: a retune or PPM change queued behind it stays queued for
-       the next pass, and lands on the reopened dongle or the reconnected server. */
+    /* A recovery (or an rtl_tcp reconnect) goes first and alone: a retune or PPM change queued behind it stays queued
+       for the next pass, and lands on the reopened dongle or the reconnected server. */
     work->usb_recovery = s->usb_recovery_pending.exchange(0, std::memory_order_acq_rel);
-    if (work->usb_recovery) {
+    if (!work->usb_recovery) {
+        work->tcp_handoff = s->tcp_handoff_pending.exchange(0, std::memory_order_acq_rel);
+    }
+    if (work->usb_recovery || work->tcp_handoff) {
         dsd_mutex_unlock(&s->hop_m);
         return 1;
     }
-    work->tcp_handoff = s->tcp_handoff_pending.exchange(0, std::memory_order_acq_rel);
-    if (work->tcp_handoff) {
-        dsd_mutex_unlock(&s->hop_m);
-        return 1;
-    }
-    work->manual_pending = s->manual_retune_pending.exchange(0, std::memory_order_acq_rel);
-    if (work->manual_pending) {
-        work->manual_freq_hz = s->manual_retune_freq;
-        work->manual_token = s->manual_retune_token;
-        work->manual_profile = s->manual_retune_profile;
-        s->manual_retune_freq = 0U;
-        s->manual_retune_token = 0U;
-        rtl_stream_clear_retune_profile(&s->manual_retune_profile);
-        /* In flight from here until controller_process_manual_retune() has landed it. A profile left for another
-           target by a coalesced retune never applies (rtl_stream_apply_retune_profile()), so it carries no family. */
-        const int lands = rtl_stream_retune_profile_matches_target(&work->manual_profile, work->manual_freq_hz);
-        s->retune_in_flight_family = lands ? work->manual_profile.analog_family : -1;
-        s->retune_in_flight_family_requests = work->manual_profile.family_request_count;
-    }
-    work->requested_ppm = s->pending_ppm_error.load(std::memory_order_acquire);
-    work->requested_ppm_request_id = s->pending_ppm_request_seq.load(std::memory_order_acquire);
-    work->ppm_pending = s->ppm_change_pending.exchange(0, std::memory_order_acq_rel);
-    if (work->ppm_pending) {
-        s->active_ppm_error.store(work->requested_ppm, std::memory_order_release);
-        s->active_ppm_request_seq.store(work->requested_ppm_request_id, std::memory_order_release);
-        s->ppm_apply_in_progress.store(1, std::memory_order_release);
-    }
+    controller_take_manual_retune_locked(s, work);
+    controller_take_ppm_change_locked(s, work);
     dsd_mutex_unlock(&s->hop_m);
     work->current_ppm = load_dongle_ppm_error();
     work->ppm_changed = work->ppm_pending && (work->requested_ppm != work->current_ppm);
@@ -6422,6 +6439,35 @@ controller_process_ppm_change(struct controller_state* s, const ControllerRetune
     note_failed_ppm_request(work->requested_ppm, work->requested_ppm_request_id, work->current_ppm, ppm_rc);
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Tell a test which kind of work the controller took. */
+static void
+controller_test_note_work(const ControllerRetuneWork* work) {
+    if (g_test_controller_work_hook) {
+        const int kind = work->usb_recovery  ? RTL_STREAM_TEST_WORK_USB_RECOVERY
+                         : work->tcp_handoff ? RTL_STREAM_TEST_WORK_TCP_HANDOFF
+                                             : RTL_STREAM_TEST_WORK_RETUNE;
+        g_test_controller_work_hook(kind, g_test_controller_work_hook_ctx);
+    }
+}
+#endif
+
+/* With no request queued, step a multi-frequency stream to its next centre. */
+static void
+controller_hop_next(struct controller_state* s, const ControllerRetuneWork* work) {
+    if (s->freq_len <= 1) {
+        return;
+    }
+    s->freq_now = (s->freq_now + 1) % s->freq_len;
+    int ppm_rc = 0;
+    int reconfigured = 0;
+    int retune_rc = controller_apply_reconfigure(s, (uint32_t)s->freqs[s->freq_now], work->current_ppm, NULL, &ppm_rc,
+                                                 &reconfigured, NULL);
+    if (retune_rc == 0 || reconfigured) {
+        drain_output_on_retune();
+    }
+}
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -6429,45 +6475,25 @@ static DSD_THREAD_RETURN_TYPE
     controller_thread_retune_loop(void* arg) {
     struct controller_state* s = static_cast<controller_state*>(arg);
 
-    while (!dsd_exitflag_load() && !(g_stream && g_stream->should_exit.load())) {
+    while (!demod_should_exit_requested()) {
         ControllerRetuneWork work = {};
         if (!controller_wait_for_retune_work(s, &work)) {
             break;
         }
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
-        if (g_test_controller_work_hook) {
-            const int kind = work.usb_recovery  ? RTL_STREAM_TEST_WORK_USB_RECOVERY
-                             : work.tcp_handoff ? RTL_STREAM_TEST_WORK_TCP_HANDOFF
-                                                : RTL_STREAM_TEST_WORK_RETUNE;
-            g_test_controller_work_hook(kind, g_test_controller_work_hook_ctx);
-        }
+        controller_test_note_work(&work);
 #endif
         if (work.usb_recovery) {
             controller_process_usb_recovery(s);
-            continue;
-        }
-        if (work.tcp_handoff) {
+        } else if (work.tcp_handoff) {
             controller_process_tcp_handoff(s);
-            continue;
-        }
-        if (controller_process_manual_retune(s, &work)) {
-            continue;
-        }
-        if (work.ppm_pending) {
-            controller_process_ppm_change(s, &work);
-            controller_clear_active_ppm_request(s, work.ppm_pending);
-            continue;
-        }
-        if (s->freq_len <= 1) {
-            continue;
-        }
-        s->freq_now = (s->freq_now + 1) % s->freq_len;
-        int ppm_rc = 0;
-        int reconfigured = 0;
-        int retune_rc = controller_apply_reconfigure(s, (uint32_t)s->freqs[s->freq_now], work.current_ppm, NULL,
-                                                     &ppm_rc, &reconfigured, NULL);
-        if (retune_rc == 0 || reconfigured) {
-            drain_output_on_retune();
+        } else if (!controller_process_manual_retune(s, &work)) {
+            if (work.ppm_pending) {
+                controller_process_ppm_change(s, &work);
+                controller_clear_active_ppm_request(s, work.ppm_pending);
+            } else {
+                controller_hop_next(s, &work);
+            }
         }
     }
     DSD_THREAD_RETURN;

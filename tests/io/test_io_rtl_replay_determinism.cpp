@@ -174,8 +174,8 @@ open_capture_writer(char* out_metadata_path, size_t out_metadata_path_size) {
     return writer;
 }
 
-/* Write @p payload as a cu8 capture with its sidecar and @p events (sorted by offset); @p out_metadata_path receives the
- * sidecar's path. */
+/* Write @p payload as a cu8 capture with its sidecar and @p events (sorted by offset); @p out_metadata_path receives
+ * the sidecar's path. */
 static int
 make_capture_with_events(const std::vector<uint8_t>& payload, const std::vector<CaptureEvent>& events,
                          char* out_metadata_path, size_t out_metadata_path_size) {

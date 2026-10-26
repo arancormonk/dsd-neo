@@ -15,7 +15,9 @@
 #include <string.h>
 #include <time.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 classify(dsd_input_level_snapshot* snapshot) {

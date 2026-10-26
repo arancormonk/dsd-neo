@@ -5,8 +5,8 @@
 
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -109,10 +109,10 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
 }
 
 /*
- * The receiver's level from the stream's own copy, which the producer publishes with every block it delivers (B6). The
- * decoder's copy (state->input_level) refreshes only every 64 decoded symbols, so it holds its last reading whenever the
- * decoder stops, and the stream's copy holds it when the receiver stops: only the measurement's age says which. The
- * classification is the decoder's own, against the user's threshold, so the row and the warnings agree.
+ * The receiver's level from the stream's own copy, which the producer publishes with every block it delivers (B6).
+ * The decoder's copy (state->input_level) refreshes only every 64 decoded symbols, so it holds its last reading
+ * whenever the decoder stops, and the stream's copy holds it when the receiver stops: only the measurement's age says
+ * which. The classification is the decoder's own, against the user's threshold, so the row and the warnings agree.
  */
 int
 dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out) {

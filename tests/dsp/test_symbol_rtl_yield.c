@@ -301,11 +301,11 @@ yield_resumes_at_the_next_sample(dsd_opts* opts, dsd_state* state, int output_ki
     check(label, in_order);
 }
 
-/* sticky_yield_across_reconnect: an rtl_tcp outage gave way to a queued command (the yield stands), and the server comes
- * back between two reads, its reconnect having moved the stream's discontinuity count. The read after it still stands
- * the yield: an unusable 0, nothing read from the stream. Once the engine consumed the yield, the next read raises the
- * stream gap rather than letting it slip by, before any sample after it; once that is consumed, reading resumes at the
- * next sample, none lost. */
+/* sticky_yield_across_reconnect: an rtl_tcp outage gave way to a queued command (the yield stands), and the server
+ * comes back between two reads, its reconnect having moved the stream's discontinuity count. The read after it still
+ * stands the yield: an unusable 0, nothing read from the stream. Once the engine consumed the yield, the next read
+ * raises the stream gap rather than letting it slip by, before any sample after it; once that is consumed, reading
+ * resumes at the next sample, none lost. */
 static void
 sticky_yield_across_reconnect(dsd_opts* opts, dsd_state* state, int output_kind, const char* name) {
     char label[192];

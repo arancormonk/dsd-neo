@@ -17,8 +17,8 @@
 #include <string.h>
 #include <time.h>
 
-/* A level measured just now (a live publish of it is fresh: dsd_input_level_is_stale()), and the decode time these cases
-   publish it at. */
+/* A level measured just now (a live publish of it is fresh: dsd_input_level_is_stale()), and the decode time these
+   cases publish it at. */
 typedef struct {
     dsd_input_level_snapshot level;
     time_t decode_s;
