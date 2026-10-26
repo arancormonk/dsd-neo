@@ -83,6 +83,15 @@ expect_running(void) {
     assert(dsd_input_failure_receiver_ended() == 0);
 }
 
+/* Wait until the verdict after @p in_grace began waiting out the unplug-owner grace, however late its thread runs. */
+void
+wait_verdict_in_grace(unsigned int in_grace) {
+    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == in_grace; ++waited_ms) {
+        dsd_sleep_ms(1);
+    }
+    assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
+}
+
 /* ---- RTL-SDR ---- */
 
 unsigned char g_rtl_buffer[512];
@@ -165,10 +174,7 @@ test_rtl_stop_inside_grace(input_ring_state* ring) {
     const unsigned int in_grace = rtl_device_test_verdicts_in_grace();
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == in_grace; ++waited_ms) {
-        dsd_sleep_ms(1);
-    }
-    assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
+    wait_verdict_in_grace(in_grace);
     expect_running();
     const uint64_t stop_ms = dsd_realtime_mono_ms();
     rtl_device_test_usb_stream_stop(dev);
@@ -191,10 +197,7 @@ test_rtl_reader_exit_inside_monitor_grace(input_ring_state* ring) {
     const unsigned int in_grace = rtl_device_test_verdicts_in_grace();
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == in_grace; ++waited_ms) {
-        dsd_sleep_ms(1);
-    }
-    assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
+    wait_verdict_in_grace(in_grace);
     expect_running();
     rtl_device_test_usb_stream_return(-1);
     assert(wait_receiver_ended(2000U) != 0U);
@@ -420,9 +423,10 @@ test_airspy_stopped_verdict_grace(input_ring_state* ring, int samples_after_rest
     dsd_sleep_ms(100U);
     feeder.feeding.store(0, std::memory_order_release);
     dsd_sleep_ms(10U);
+    const unsigned int in_grace = rtl_device_test_verdicts_in_grace();
     const uint64_t lost_ms = dsd_realtime_mono_ms();
     airspy_double::streaming = false;
-    dsd_sleep_ms(100U);
+    wait_verdict_in_grace(in_grace);
     expect_running();
     assert(rtl_device_set_frequency(dev, retune_target(1)) == 0);
     assert(airspy_double::streaming);
