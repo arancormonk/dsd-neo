@@ -226,6 +226,8 @@ static const struct scenario g_idle = {
     .refuse_submit_index = -1,
     .no_device_at = -1,
 };
+/* The running case's scenario, copied in: a caller's scenario lives on its stack. */
+static struct scenario g_case;
 static const struct scenario* g_sc = &g_idle;
 static rtlsdr_dev_t* g_dev;
 static pthread_t g_completer;
@@ -680,7 +682,8 @@ run_case(const struct scenario* sc) {
 
     pthread_mutex_lock(&g_deliver_mu);
     pthread_mutex_lock(&g_mu);
-    g_sc = sc;
+    g_case = *sc;
+    g_sc = &g_case;
     g_dev = &dev;
     g_queued = 0;
     g_submits = 0;
