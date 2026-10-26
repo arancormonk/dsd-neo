@@ -21,11 +21,13 @@
  *   A device this process may not open (access denied, or no usable driver: LIBUSB_ERROR_ACCESS or
  *   LIBUSB_ERROR_NOT_SUPPORTED) is not counted as unreadable: librtlsdr opens the dongle with the same permissions
  *   right after, so such a device cannot be it. Any other failure (I/O, pipe, timeout, descriptors unreadable on an
- *   opened device) still refuses.
+ *   opened device) still refuses. Accepted limit (like the open-time hotplug window): a dongle whose own open is
+ *   refused in that instant while a readable device of another VID:PID carries the same triple records that device.
  * - rtl_usb_identity_verify_handle() checks that the opened handle carries the triple.
  * - rtl_usb_identity_reset() opens the device at the recorded bus + port path with the recorded VID:PID, re-reads its
  *   strings and resets it only when they are still the triple; a device that replaced it on that port is left alone.
- *   A device that re-enumerates in the reset is found again by its triple (bounded, cancellable). The port path
+ *   A device that re-enumerates in the reset is found again by its triple (bounded, cancellable; refused devices of
+ *   another VID:PID are left out, a refused one with the recorded VID:PID is waited for). The port path
  *   survives a re-enumeration on the same port; a caller that finds the device elsewhere re-resolves it to record the
  *   new one.
  *
@@ -105,6 +107,7 @@ struct rtl_usb_driver_ops {
     int (*rtl_get_usb_strings)(rtlsdr_dev_t* dev, char* manufacturer, char* product, char* serial);
     int (*usb_open_session)(void** session, int* count);
     void (*usb_close_session)(void* session);
+    /* On ACCESS/UNSUPPORTED from a configuration read, out still holds VID:PID, bus and port path. */
     int (*usb_describe)(void* session, int i, struct rtl_usb_device_info* out);
     int (*usb_open)(void* session, int i, void** handle);
     void (*usb_close)(void* handle);

@@ -104,17 +104,18 @@ real_usb_close_session(void* session) {
 }
 
 /* Every configuration, not only the active one: an unconfigured or reconfigured twin must still count. A descriptor
- * that cannot be read leaves the class unknown, which the caller treats as an unreadable candidate. */
+ * that cannot be read leaves the class unknown, which the caller treats as an unreadable candidate, or as a refused
+ * one when the configuration read is refused (ACCESS, NOT_SUPPORTED): VID:PID, bus and port path are filled first. */
 int
 real_usb_describe(void* session, int i, struct rtl_usb_device_info* out) {
     auto* s = static_cast<real_session*>(session);
     libusb_device* dev = s->list[i];
+    DSD_MEMSET(out, 0, sizeof(*out));
     struct libusb_device_descriptor dd;
     int rc = libusb_get_device_descriptor(dev, &dd);
     if (rc != LIBUSB_SUCCESS) {
         return map_libusb(rc);
     }
-    DSD_MEMSET(out, 0, sizeof(*out));
     out->vid = dd.idVendor;
     out->pid = dd.idProduct;
     out->bus = libusb_get_bus_number(dev);
@@ -285,12 +286,26 @@ scan_rtl_indexes(const rtl_usb_driver_ops* o, const triple& want) {
     return r;
 }
 
+/*
+ * Whether a candidate this process may not open, or whose configuration it may not read (ACCESS, NOT_SUPPORTED), is
+ * left out of a scan rather than counted unreadable. In identity resolution (no recorded identity) it always is:
+ * librtlsdr opens the dongle with this process's permissions right after, so a device this process cannot open is not
+ * the dongle. Accepted limit, of the same class as the open-time hotplug window: if the dongle's own open is refused
+ * in that instant while a readable device of another VID:PID carries the same triple, that device's port is recorded
+ * (the reset still requires the triple there). In rediscovery after a reset it is left out only when its VID:PID
+ * differs from the recorded one: a re-enumerated dongle keeps its VID:PID and may be refused until udev has applied
+ * its permissions, so a refused device with the recorded VID:PID is waited for.
+ */
+bool
+refused_is_skipped(int rc, const struct rtl_usb_device_info& info, const struct rtl_usb_identity* recorded) {
+    if (rc != RTL_USB_OP_ACCESS && rc != RTL_USB_OP_UNSUPPORTED) {
+        return false;
+    }
+    return recorded == nullptr || info.vid != recorded->vid || info.pid != recorded->pid;
+}
+
 /* The vendor-specific-class USB devices that carry a triple, whatever their VID:PID. A device whose class cannot be
- * told, or whose strings cannot be read, counts as unreadable: it might carry the triple. With skip_unopenable
- * (identity resolution), a device whose open is refused for access or lack of a usable driver is skipped instead:
- * librtlsdr is about to open the dongle with this process's permissions, so a device this process cannot open is not
- * the dongle. Rediscovery after a reset keeps counting it, since udev may not yet have applied permissions to the
- * re-enumerated dongle. */
+ * told, or whose strings cannot be read, counts as unreadable: it might carry the triple (refused ones: see above). */
 struct usb_scan {
     int ok = 0;
     int matches = 0;
@@ -299,7 +314,7 @@ struct usb_scan {
 };
 
 usb_scan
-scan_usb(const rtl_usb_driver_ops* o, const triple& want, bool skip_unopenable) {
+scan_usb(const rtl_usb_driver_ops* o, const triple& want, const struct rtl_usb_identity* recorded) {
     usb_scan u;
     DSD_MEMSET(&u.match, 0, sizeof(u.match));
     void* session = nullptr;
@@ -310,17 +325,21 @@ scan_usb(const rtl_usb_driver_ops* o, const triple& want, bool skip_unopenable) 
     u.ok = 1;
     for (int i = 0; i < count; i++) {
         struct rtl_usb_device_info info;
-        if (o->usb_describe(session, i, &info) != RTL_USB_OP_OK) {
-            u.unreadable++;
+        DSD_MEMSET(&info, 0, sizeof(info));
+        int rc = o->usb_describe(session, i, &info);
+        if (rc != RTL_USB_OP_OK) {
+            if (!refused_is_skipped(rc, info, recorded)) {
+                u.unreadable++;
+            }
             continue;
         }
         if (!info.vendor_specific) {
             continue;
         }
         void* handle = nullptr;
-        int rc = o->usb_open(session, i, &handle);
+        rc = o->usb_open(session, i, &handle);
         if (rc != RTL_USB_OP_OK) {
-            if (!(skip_unopenable && (rc == RTL_USB_OP_ACCESS || rc == RTL_USB_OP_UNSUPPORTED))) {
+            if (!refused_is_skipped(rc, info, recorded)) {
                 u.unreadable++;
             }
             continue;
@@ -361,7 +380,8 @@ is_cancelled(int (*cancelled)(void*), void* ctx) {
 }
 
 /* After a reset that made the device re-enumerate: wait until exactly one readable candidate carries the triple. A
- * twin ends the wait at once; an unreadable candidate (udev may not have applied permissions yet) is waited out. */
+ * twin ends the wait at once; an unreadable candidate, or a refused one with the recorded VID:PID (udev may not have
+ * applied permissions yet), is waited out. */
 rtl_usb_id_result
 rediscover(const rtl_usb_driver_ops* o, const struct rtl_usb_identity* id, int (*cancelled)(void*), void* ctx) {
     triple want;
@@ -374,7 +394,7 @@ rediscover(const rtl_usb_driver_ops* o, const struct rtl_usb_identity* id, int (
         if (is_cancelled(cancelled, ctx)) {
             return RTL_USB_ID_NOT_FOUND;
         }
-        usb_scan u = scan_usb(o, want, false);
+        usb_scan u = scan_usb(o, want, id);
         if (u.ok && u.matches > 1) {
             return RTL_USB_ID_DUPLICATE;
         }
@@ -418,7 +438,7 @@ rtl_usb_identity_resolve(int index, struct rtl_usb_identity* out) {
     if (r.matches > 1) {
         return RTL_USB_ID_DUPLICATE;
     }
-    usb_scan u = scan_usb(o, want, true);
+    usb_scan u = scan_usb(o, want, nullptr);
     if (!u.ok) {
         return RTL_USB_ID_FAILED;
     }

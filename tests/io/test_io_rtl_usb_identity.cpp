@@ -34,6 +34,7 @@ struct fake_dev {
     int gone_hidden; /* after a GONE reset: enumerations to stay absent, -1 for ever */
     int gone_port;   /* after a GONE reset: the port it comes back on (0 keeps its port) */
     int deny_opens;  /* opens to refuse with ACCESS, -1 for ever (udev not yet done) */
+    int describe_rc; /* RTL_USB_OP_* from usb_describe (info still filled, as the real op does) */
     int gone_deny;   /* after a GONE reset: deny_opens */
 };
 
@@ -120,8 +121,9 @@ fake_close_session(void* session) {
 int
 fake_describe(void* session, int i, rtl_usb_device_info* out) {
     auto* sess = static_cast<fake_session*>(session);
-    *out = g_world.devs[(size_t)sess->visible[(size_t)i]].info;
-    return RTL_USB_OP_OK;
+    const fake_dev& d = g_world.devs[(size_t)sess->visible[(size_t)i]];
+    *out = d.info;
+    return d.describe_rc;
 }
 
 int
@@ -215,6 +217,7 @@ make_dev(uint16_t vid, uint16_t pid, uint8_t bus, uint8_t port, const char* seri
     d.read_rc = RTL_USB_OP_OK;
     d.rtl_read_rc = 0;
     d.reset_rc = RTL_USB_OP_OK;
+    d.describe_rc = RTL_USB_OP_OK;
     d.gone_hidden = 0;
     return d;
 }
@@ -351,6 +354,18 @@ access_denied_candidate_ignored(void) {
     assert(strcmp(id.serial, "56435444") == 0);
     assert(rtl_usb_identity_resolve(1, &id) == RTL_USB_ID_OK);
     assert(id.bus == 3);
+
+    /* One whose configuration descriptor read is refused the same way. */
+    fake_dev cfg_locked = make_dev(0x1a86, 0x7523, 1, 7, "", 1);
+    cfg_locked.describe_rc = RTL_USB_OP_ACCESS;
+    g_world.devs.push_back(cfg_locked);
+    assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_OK);
+    g_world.devs.back().describe_rc = RTL_USB_OP_UNSUPPORTED;
+    assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_OK);
+    /* Any other describe failure still refuses. */
+    g_world.devs.back().describe_rc = RTL_USB_OP_ERROR;
+    assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_UNREADABLE);
+    g_world.devs.pop_back();
 
     /* The reset still re-reads the triple at the recorded port and touches nothing else. */
     id = resolve_a();
@@ -493,10 +508,13 @@ reset_refuses_replacement(void) {
     assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_FAILED);
     assert(total_resets() == 0);
 
-    /* Cancelled before the reset; a failing reset. */
+    /* Cancelled on entry; cancelled after the strings were re-read, just before the reset; a failing reset. */
     reset_world();
     id = resolve_a();
     g_world.cancel_after_sessions = 0;
+    assert(rtl_usb_identity_reset(&id, cancel_check, nullptr) == RTL_USB_ID_FAILED);
+    assert(total_resets() == 0);
+    g_world.cancel_after_sessions = g_world.sessions + 1;
     assert(rtl_usb_identity_reset(&id, cancel_check, nullptr) == RTL_USB_ID_FAILED);
     assert(total_resets() == 0);
     g_world.cancel_after_sessions = -1;
@@ -573,6 +591,75 @@ reset_not_found_rediscovers(void) {
     start = g_world.now;
     assert(rtl_usb_identity_reset(&id, cancel_check, nullptr) == RTL_USB_ID_NOT_FOUND);
     assert(g_world.now - start < 1000);
+    assert(total_resets() == 1);
+}
+
+/* After a reset that re-enumerates, devices that refuse to open (or to give their configuration) and have another
+ * VID:PID cannot be the dongle: the wait ends as soon as it is back and readable. */
+void
+rediscovery_ignores_refused_other_devices(void) {
+    reset_world();
+    fake_dev reader = make_dev(0x27c6, 0x5110, 1, 5, "", 1);
+    reader.open_rc = RTL_USB_OP_ACCESS;
+    g_world.devs.push_back(reader);
+    fake_dev wifi = make_dev(0x0bda, 0x8179, 1, 6, "", 1);
+    wifi.open_rc = RTL_USB_OP_UNSUPPORTED;
+    g_world.devs.push_back(wifi);
+    fake_dev cfg_locked = make_dev(0x1a86, 0x7523, 1, 7, "", 1);
+    cfg_locked.describe_rc = RTL_USB_OP_ACCESS;
+    g_world.devs.push_back(cfg_locked);
+    rtl_usb_identity id = resolve_a();
+    g_world.devs[0].reset_rc = RTL_USB_OP_GONE;
+    g_world.devs[0].gone_hidden = 2;
+    const uint64_t start = g_world.now;
+    assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_OK);
+    assert(g_world.devs[0].hidden == 0);
+    assert(g_world.now - start <= 300);
+    assert(g_world.devs[0].resets == 1 && total_resets() == 1);
+
+    /* Any other failure on such a device is still waited out, then reported. */
+    reset_world();
+    fake_dev flaky = make_dev(0x27c6, 0x5110, 1, 5, "", 1);
+    flaky.open_rc = RTL_USB_OP_ERROR;
+    id = resolve_a();
+    g_world.devs.push_back(flaky);
+    g_world.devs[0].reset_rc = RTL_USB_OP_GONE;
+    assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_UNREADABLE);
+}
+
+/* A refused device with the recorded VID:PID may be the dongle before udev has applied its permissions: waited for,
+ * and the identity is found once it opens; one that never opens ends the wait as UNREADABLE at the bound. */
+void
+rediscovery_waits_for_refused_recorded_vidpid(void) {
+    reset_world();
+    rtl_usb_identity id = resolve_a();
+    g_world.devs[0].reset_rc = RTL_USB_OP_GONE;
+    g_world.devs[0].gone_port = 4;
+    g_world.devs[0].gone_deny = 5;
+    uint64_t start = g_world.now;
+    assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_OK);
+    assert(g_world.devs[0].deny_opens == 0);
+    assert(g_world.now - start >= 400 && g_world.now - start < 5000);
+
+    /* A refused device with the recorded VID:PID that never opens, beside the readable dongle. */
+    reset_world();
+    id = resolve_a();
+    fake_dev locked = make_dev(0x0bda, 0x2838, 2, 3, "", 1);
+    locked.open_rc = RTL_USB_OP_ACCESS;
+    g_world.devs.push_back(locked);
+    g_world.devs[0].reset_rc = RTL_USB_OP_GONE;
+    start = g_world.now;
+    assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_UNREADABLE);
+    assert(g_world.now - start >= 5000 && g_world.now - start < 5500);
+
+    /* The same with its configuration read refused. */
+    reset_world();
+    id = resolve_a();
+    locked.open_rc = RTL_USB_OP_OK;
+    locked.describe_rc = RTL_USB_OP_UNSUPPORTED;
+    g_world.devs.push_back(locked);
+    g_world.devs[0].reset_rc = RTL_USB_OP_GONE;
+    assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_UNREADABLE);
     assert(total_resets() == 1);
 }
 
@@ -663,6 +750,8 @@ main(void) {
     handle_mismatch_detected();
     reset_refuses_replacement();
     reset_not_found_rediscovers();
+    rediscovery_ignores_refused_other_devices();
+    rediscovery_waits_for_refused_recorded_vidpid();
     index_follows_identity_after_reorder();
 #else
     no_libusb_stub();

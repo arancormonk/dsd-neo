@@ -4410,13 +4410,18 @@ Key public headers:
     devices was unreadable (an unreadable one might be the dongle beside a readable twin), the serial is not empty,
     and librtlsdr has exactly one index with it; it records bus, port path and VID:PID. A device whose open is refused
     for access or lack of a usable driver (`LIBUSB_ERROR_ACCESS`, `LIBUSB_ERROR_NOT_SUPPORTED`) is not unreadable
-    here: librtlsdr opens the dongle with the same permissions right after, so it cannot be the dongle; every other
-    failure (I/O, pipe, timeout, descriptors unreadable on an opened device) refuses.
+    here (nor one whose configuration descriptor read is refused that way): librtlsdr opens the dongle with the same
+    permissions right after, so it cannot be the dongle; every other failure (I/O, pipe, timeout, descriptors
+    unreadable on an opened device) refuses. Accepted limit, of the same class as the open-time hotplug window: if the
+    dongle's own open is refused in that instant while a readable device of another VID:PID carries the same triple,
+    that device's port is recorded (a reset still requires the triple there).
     `rtl_usb_identity_verify_handle()` checks the opened handle's strings. `rtl_usb_identity_reset()` opens the device
     at the recorded bus + port path + VID:PID, re-reads its strings on the handle the reset goes through and resets
     only on the triple (a replacement on that port gets `RTL_USB_ID_MISMATCH` and no reset); a device that
     re-enumerates is found again by its triple within 5000 ms (cancellable, twins refused, unreadable candidates
-    waited out). `rtl_usb_identity_index()` is the librtlsdr index by triple, -1 unless unique.
+    waited out; refused devices of another VID:PID are left out, a refused one with the recorded VID:PID, the dongle
+    before udev has applied its permissions, is waited for). `rtl_usb_identity_index()` is the librtlsdr index by
+    triple, -1 unless unique.
     `rtl_usb_identity_off_reason()` gives the "stall recovery is off" text. Every libusb/librtlsdr call goes through
     `struct rtl_usb_driver_ops` (`rtl_usb_identity_set_driver_ops()`, test hooks only). CMake defines
     `DSD_HAVE_LIBUSB` (`cmake/FindLibusb.cmake`: header, library and a `libusb_reset_device` link check) privately on
