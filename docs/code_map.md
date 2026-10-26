@@ -4381,6 +4381,17 @@ Key public headers:
     table is an error. The stream's gain callers (retune profile, autogain supervisor) note the gain that took and
     otherwise republish what the device reports. Test: `IO_RTL_RETUNE_PREPARE` (an effective-state fake dongle,
     `rtl_device_test_usb_gain_device()`).
+  - USB offset tuning (`rtl_sdr_fm.cpp` `controller_program_initial_capture_settings()`): librtlsdr computes the LO
+    offset (`offs_freq = rate / 2 * 1.7`) from the rate the dongle holds when offset tuning is enabled, so the stream
+    start sets the frequency (Fs/4-shifted centre), then the rate (read back), then offset tuning, then recomputes the
+    capture centre and the Fs/4 rotation from whether it took, the tuner bandwidth, and the frequency again if the
+    centre moved. The device records `offset_took` only when librtlsdr reports an offset
+    (`rtl_device_get_offset_tuning()`, `rtl_device_get_offset_tuning_hz()`); R82xx tuners (-2) and direct sampling
+    (-3) refuse it and keep the Fs/4 shift. Every tuner-bandwidth call (start, retune, refused-retune restore) goes
+    through `rtl_offset_aware_bandwidth_hz()`: while offset tuning is on the bandwidth is at least `2 * offs_freq`,
+    the filter librtlsdr opens on enable (an explicit `DSD_NEO_TUNER_BW_HZ` above it is kept, below it is raised and
+    logged once). The device caches the bandwidth it last took (`tuner_bw_hz`). Test: `IO_RTL_OFFSET_TUNING`
+    (an effective-state fake of librtlsdr's tuning controls, `rtl_device_test_usb_tuner_device()`).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path

@@ -13959,6 +13959,31 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_retune_prepare
     )
 
+    # RTL-SDR hardware offset tuning from the real sample rate, the capture centre it gives,
+    # and the tuner bandwidth it needs at start and on retunes (B11, B14).
+    add_executable(
+        dsd-neo_test_io_rtl_offset_tuning
+        io/test_io_rtl_offset_tuning.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_offset_tuning
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_offset_tuning
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_offset_tuning
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_OFFSET_TUNING
+        COMMAND dsd-neo_test_io_rtl_offset_tuning
+    )
+
     # The auto squelch's plumbing in the RTL stream (issue #518 follow-up): setting, context,
     # flags through the output ring with the samples, status.
     add_executable(

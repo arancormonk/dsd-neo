@@ -2030,7 +2030,9 @@ does.
 Advanced (env)
 
 - `DSD_NEO_RTL_DIRECT=0|1|2|I|Q` — Direct sampling selection (0 off; 1 I‑ADC; 2 Q‑ADC).
-- `DSD_NEO_RTL_OFFSET_TUNING=0|1` — Disable/enable offset tuning (default is to try enabling).
+- `DSD_NEO_RTL_OFFSET_TUNING=0|1` — Disable/enable offset tuning (default is to try enabling). Tuners that support it
+  (E4000, FC0012/FC0013, FC2580) displace the LO and drop the Fs/4 shift; R820T/R828D and direct sampling refuse it
+  and keep the Fs/4 shift.
 - `DSD_NEO_RTL_XTAL_HZ` / `DSD_NEO_TUNER_XTAL_HZ` — Override crystal refs in Hz (optional).
 - `DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..."` — Set IF gain(s); gain in dB (e.g., `10`) or 0.1 dB (`125`).
 - `DSD_NEO_RTL_TESTMODE=0|1` — Enable librtlsdr test mode (ramp) instead of I/Q (for diagnostics). On a USB dongle
@@ -2372,7 +2374,8 @@ RTL‑SDR driver options
 - `DSD_NEO_RTL_TESTMODE=0|1` — test mode (ramp source)
 - `DSD_NEO_RTL_AGC=0|1` — RTL2832U AGC enable/disable (default on)
 - `DSD_NEO_RTL_VERIFY=0|1`, `DSD_NEO_RTL_VERIFY_ATTEMPTS=1..10` — local USB apply verification/retry controls
-- `DSD_NEO_TUNER_BW_HZ=<Hz|auto>` — override tuner bandwidth (`auto` or `0` = driver automatic)
+- `DSD_NEO_TUNER_BW_HZ=<Hz|auto>` — override tuner bandwidth (`auto` or `0` = driver automatic). While hardware offset
+  tuning is on the bandwidth is at least twice the LO offset (1.7 × the sample rate); a smaller value is raised.
 
 Tuner autogain (experimental)
 

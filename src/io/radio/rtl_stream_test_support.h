@@ -271,6 +271,43 @@ void rtl_device_test_usb_gain_device_free(struct rtl_device* dev);
 /* Whether a gain change on @p dev failed and could not be rolled back, so the dongle holds neither gain state. */
 int rtl_device_test_usb_gain_unknown(const struct rtl_device* dev);
 
+/* An RTL-SDR's tuning controls as librtlsdr keeps them, in place of librtlsdr's. */
+typedef struct {
+    int tuner_type; /* an RTLSDR_TUNER_* value: R820T (5) and R828D (6) refuse offset tuning with -2 */
+    uint32_t rate;  /* sample rate, 0 on a fresh handle */
+    uint32_t freq;  /* centre frequency the samples are delivered around, 0 until set */
+    uint32_t
+        offs_freq; /* LO displacement while offset tuning is on: (rate / 2) * 170 / 100 at the time it is computed */
+    uint32_t bw;   /* bandwidth last set through rtlsdr_set_tuner_bandwidth() (0: automatic) */
+    uint32_t filter_bw;    /* bandwidth the tuner's filter was last set to */
+    int direct_sampling;   /* direct sampling mode: offset tuning is refused with -3 while it is on */
+    int rate_without_freq; /* a rate was set while no frequency was (an R82xx tuner then retunes to 0 Hz) */
+} rtl_device_test_usb_tuner_fake;
+
+/* A USB device, never opened, whose tuning controls (centre frequency, sample rate, direct sampling, offset tuning,
+ * tuner bandwidth) reach @p fake in place of librtlsdr until rtl_device_test_usb_tuner_device_free(). One at a time;
+ * NULL on allocation failure. */
+struct rtl_device* rtl_device_test_usb_tuner_device(rtl_device_test_usb_tuner_fake* fake);
+void rtl_device_test_usb_tuner_device_free(struct rtl_device* dev);
+
+/* The capture an RTL stream left programmed (rtl_stream_test_program_initial_capture() and
+ * rtl_stream_test_program_retune_capture()). */
+typedef struct {
+    int rc;                   /* the programming's result: 0 when the device took it */
+    uint32_t capture_freq_hz; /* capture centre the stream asked the device for */
+    uint32_t capture_rate_hz; /* capture rate the stream runs at */
+    int offset_tuning;        /* whether the stream counts on the dongle's hardware offset tuning */
+    int fs4_rotation;         /* whether the stream shifts the capture by Fs/4 and rotates it back in software */
+} rtl_stream_test_capture_result;
+
+/* Run the stream start's device programming for @p center_hz with @p dev as the open device, @p direct_sampling the
+ * configured direct sampling mode and @p opts the session options; the stream's own state comes back afterwards. */
+int rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                            int direct_sampling, rtl_stream_test_capture_result* out);
+/* Run the start's programming as above, then a controller retune's to @p retune_center_hz; @p out holds the retune's. */
+int rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                           uint32_t retune_center_hz, rtl_stream_test_capture_result* out);
+
 /* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
 enum {
     RTL_STREAM_TEST_GAIN_RETUNE_AUTO = 0,   /* a retune profile's automatic gain */

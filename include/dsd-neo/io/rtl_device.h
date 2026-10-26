@@ -324,12 +324,38 @@ int rtl_device_set_direct_sampling(struct rtl_device* dev, int on);
 int rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on);
 
 /**
+ * @brief Report whether hardware offset tuning took on the device.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return 1 when it took, 0 when it is off or was refused.
+ */
+int rtl_device_get_offset_tuning(const struct rtl_device* dev);
+
+/**
+ * @brief Report how far librtlsdr displaces the LO while hardware offset tuning is on.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return The offset in Hz, or 0 when offset tuning did not take or the backend does not report it.
+ */
+uint32_t rtl_device_get_offset_tuning_hz(const struct rtl_device* dev);
+
+/**
  * @brief Set tuner IF bandwidth if supported by the driver.
  * @param dev RTL-SDR device handle.
  * @param bw_hz Target bandwidth in Hz (e.g., 200000).
  * @return 0 on success, negative on failure.
  */
 int rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz);
+
+/**
+ * @brief The tuner bandwidth to request while hardware offset tuning may be active.
+ *
+ * @param wanted_hz Bandwidth the configuration asks for (0 = driver automatic).
+ * @param offset_active Whether hardware offset tuning is active.
+ * @param offs_freq_hz LO offset while it is active (rtl_device_get_offset_tuning_hz()).
+ * @return @p wanted_hz, or at least 2 * @p offs_freq_hz while offset tuning is active.
+ */
+uint32_t rtl_offset_aware_bandwidth_hz(uint32_t wanted_hz, int offset_active, uint32_t offs_freq_hz);
 
 /**
  * @brief Reset device buffer.

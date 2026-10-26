@@ -251,6 +251,12 @@ rtlsdr_set_offset_tuning(rtlsdr_dev_t* dev, int on) {
 }
 
 static int
+rtlsdr_get_offset_tuning(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return -1;
+}
+
+static int
 rtlsdr_set_xtal_freq(rtlsdr_dev_t* dev, uint32_t rtl, uint32_t tuner) {
     (void)dev;
     (void)rtl;
@@ -386,8 +392,12 @@ struct rtl_device {
     int gain = 0;
     uint32_t buf_len = 0U;
     int ppm_error = 0;
-    int offset_tuning = 0;
+    /* Hardware offset tuning is on and displaces the LO: the capture is centred, so nothing rotates it by Fs/4. Set
+     * only when the device took it (librtlsdr refuses it on R82xx tuners and in direct sampling). */
+    int offset_took = 0;
     int direct_sampling = 0;
+    /* Tuner bandwidth a USB dongle last took (0: driver automatic). */
+    uint32_t tuner_bw_hz = 0U;
     std::atomic<int> mute{0};
     /* Sample progress: counted first thing by every librtlsdr callback with bytes, read by the progress monitor.
      * (An Airspy's count is its source's, airspy_source_progress().) */
@@ -523,7 +533,7 @@ rtl_tcp_metrics_record_recv_device(struct rtl_device* dev, uint32_t bytes_receiv
 
 static inline int
 fs4_shift_capture_active(const struct rtl_device* s) {
-    return (s && !s->offset_tuning && !disable_fs4_shift) ? 1 : 0;
+    return (s && !s->offset_took && !disable_fs4_shift) ? 1 : 0;
 }
 
 static inline void
@@ -4731,7 +4741,7 @@ rtl_tcp_capture_reconnect_snapshot(const struct rtl_device* s, struct rtl_tcp_re
     snap->ppm = s->ppm_error;
     snap->direct_sampling = s->direct_sampling;
     snap->bias_tee_on = s->bias_tee_on;
-    snap->offset_tuning = s->offset_tuning;
+    snap->offset_tuning = s->offset_took;
     snap->testmode_on = s->testmode_on;
     snap->rtl_xtal_hz = s->rtl_xtal_hz;
     snap->tuner_xtal_hz = s->tuner_xtal_hz;
@@ -5411,6 +5421,140 @@ rtl_usb_ctl_get_tuner_gains(rtlsdr_dev_t* dev, int* gains) {
     return rtlsdr_get_tuner_gains(dev, gains);
 }
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* While set, the tuning controls below reach this fake dongle in place of librtlsdr
+ * (rtl_device_test_usb_tuner_device()). */
+static rtl_device_test_usb_tuner_fake* g_test_usb_tuner_fake = nullptr;
+
+/* The tuner filter librtlsdr sets outside offset tuning: the bandwidth last set explicitly, else the sample rate. */
+static uint32_t
+rtl_usb_test_tuner_plain_bw(const rtl_device_test_usb_tuner_fake* fake) {
+    return (fake->bw > 0U) ? fake->bw : fake->rate;
+}
+
+/* rtlsdr_set_offset_tuning() on the fake dongle. */
+static int
+rtl_usb_test_tuner_set_offset(rtl_device_test_usb_tuner_fake* fake, int on) {
+    if (fake->tuner_type == RTLSDR_TUNER_R820T || fake->tuner_type == RTLSDR_TUNER_R828D) {
+        return -2;
+    }
+    if (fake->direct_sampling) {
+        return -3;
+    }
+    /* From the rate the dongle holds, which is 0 on a fresh handle. */
+    fake->offs_freq = on ? (fake->rate / 2U) * 170U / 100U : 0U;
+    fake->filter_bw = on ? 2U * fake->offs_freq : rtl_usb_test_tuner_plain_bw(fake);
+    return 0;
+}
+#endif
+
+/* The librtlsdr tuning controls: centre frequency, sample rate, direct sampling, offset tuning, tuner bandwidth. */
+static int
+rtl_usb_ctl_set_center_freq(rtlsdr_dev_t* dev, uint32_t freq) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rtl_device_test_usb_tuner_fake* fake = g_test_usb_tuner_fake) {
+        fake->freq = freq;
+        return 0;
+    }
+#endif
+    return rtlsdr_set_center_freq(dev, freq);
+}
+
+static uint32_t
+rtl_usb_ctl_get_center_freq(rtlsdr_dev_t* dev) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_tuner_fake) {
+        return g_test_usb_tuner_fake->freq;
+    }
+#endif
+    return rtlsdr_get_center_freq(dev);
+}
+
+static int
+rtl_usb_ctl_set_sample_rate(rtlsdr_dev_t* dev, uint32_t rate) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rtl_device_test_usb_tuner_fake* fake = g_test_usb_tuner_fake) {
+        if (rate <= 225000U || rate > 3200000U || (rate > 300000U && rate <= 900000U)) {
+            return -EINVAL;
+        }
+        if (fake->freq == 0U) {
+            fake->rate_without_freq = 1;
+        }
+        fake->rate = rate;
+        fake->filter_bw = rtl_usb_test_tuner_plain_bw(fake);
+        /* librtlsdr recomputes the offset for the new rate while offset tuning is on. */
+        if (fake->offs_freq != 0U) {
+            (void)rtl_usb_test_tuner_set_offset(fake, 1);
+        }
+        return 0;
+    }
+#endif
+    return rtlsdr_set_sample_rate(dev, rate);
+}
+
+static uint32_t
+rtl_usb_ctl_get_sample_rate(rtlsdr_dev_t* dev) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_tuner_fake) {
+        return g_test_usb_tuner_fake->rate;
+    }
+#endif
+    return rtlsdr_get_sample_rate(dev);
+}
+
+static int
+rtl_usb_ctl_set_direct_sampling(rtlsdr_dev_t* dev, int on) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rtl_device_test_usb_tuner_fake* fake = g_test_usb_tuner_fake) {
+        fake->direct_sampling = on;
+        return 0;
+    }
+#endif
+    return rtlsdr_set_direct_sampling(dev, on);
+}
+
+static int
+rtl_usb_ctl_set_offset_tuning(rtlsdr_dev_t* dev, int on) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rtl_device_test_usb_tuner_fake* fake = g_test_usb_tuner_fake) {
+        return rtl_usb_test_tuner_set_offset(fake, on);
+    }
+#endif
+    return rtlsdr_set_offset_tuning(dev, on);
+}
+
+static int
+rtl_usb_ctl_get_offset_tuning(rtlsdr_dev_t* dev) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_tuner_fake) {
+        return (g_test_usb_tuner_fake->offs_freq != 0U) ? 1 : 0;
+    }
+#endif
+    return rtlsdr_get_offset_tuning(dev);
+}
+
+static int
+rtl_usb_ctl_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rtl_device_test_usb_tuner_fake* fake = g_test_usb_tuner_fake) {
+        fake->bw = bw_hz;
+        fake->filter_bw = rtl_usb_test_tuner_plain_bw(fake);
+        return 0;
+    }
+#endif
+    return rtlsdr_set_tuner_bandwidth(dev, (int)bw_hz);
+}
+
+static int
+rtl_usb_ctl_get_tuner_type(rtlsdr_dev_t* dev) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_tuner_fake) {
+        return g_test_usb_tuner_fake->tuner_type;
+    }
+#endif
+    return rtlsdr_get_tuner_type(dev);
+}
+
 /**
  * @brief Find the nearest supported gain to the target gain.
  *
@@ -5537,7 +5681,7 @@ struct rtl_usb_frequency_apply_ctx {
 static int
 rtl_usb_apply_center_freq(void* opaque) {
     rtl_usb_frequency_apply_ctx* ctx = static_cast<rtl_usb_frequency_apply_ctx*>(opaque);
-    return (ctx && ctx->dev) ? rtlsdr_set_center_freq(ctx->dev, ctx->frequency) : -1;
+    return (ctx && ctx->dev) ? rtl_usb_ctl_set_center_freq(ctx->dev, ctx->frequency) : -1;
 }
 
 static int
@@ -5546,7 +5690,7 @@ rtl_usb_verify_center_freq(void* opaque) {
     if (!ctx || !ctx->dev) {
         return -1;
     }
-    return (rtlsdr_get_center_freq(ctx->dev) == ctx->frequency) ? 0 : -1;
+    return (rtl_usb_ctl_get_center_freq(ctx->dev) == ctx->frequency) ? 0 : -1;
 }
 
 struct rtl_usb_sample_rate_apply_ctx {
@@ -5563,7 +5707,7 @@ rtl_usb_sample_rate_readback_is_usable(uint32_t actual_rate) {
 static int
 rtl_usb_apply_sample_rate(void* opaque) {
     rtl_usb_sample_rate_apply_ctx* ctx = static_cast<rtl_usb_sample_rate_apply_ctx*>(opaque);
-    return (ctx && ctx->dev) ? rtlsdr_set_sample_rate(ctx->dev, ctx->requested_rate) : -1;
+    return (ctx && ctx->dev) ? rtl_usb_ctl_set_sample_rate(ctx->dev, ctx->requested_rate) : -1;
 }
 
 static int
@@ -5572,7 +5716,7 @@ rtl_usb_verify_sample_rate(void* opaque) {
     if (!ctx || !ctx->dev) {
         return -1;
     }
-    uint32_t actual = rtlsdr_get_sample_rate(ctx->dev);
+    uint32_t actual = rtl_usb_ctl_get_sample_rate(ctx->dev);
     // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build always reports no sample rate.
     if (!rtl_usb_sample_rate_readback_is_usable(actual)) {
         return -1;
@@ -5684,7 +5828,7 @@ struct rtl_usb_int_apply_ctx {
 static int
 rtl_usb_apply_direct_sampling(void* opaque) {
     rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
-    return (ctx && ctx->dev) ? rtlsdr_set_direct_sampling(ctx->dev, ctx->value) : -1;
+    return (ctx && ctx->dev) ? rtl_usb_ctl_set_direct_sampling(ctx->dev, ctx->value) : -1;
 }
 
 static int
@@ -5696,7 +5840,7 @@ rtl_usb_apply_ppm(void* opaque) {
 static int
 rtl_usb_apply_offset_tuning(void* opaque) {
     rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
-    return (ctx && ctx->dev) ? rtlsdr_set_offset_tuning(ctx->dev, ctx->value ? 1 : 0) : -1;
+    return (ctx && ctx->dev) ? rtl_usb_ctl_set_offset_tuning(ctx->dev, ctx->value ? 1 : 0) : -1;
 }
 
 struct rtl_usb_u32_apply_ctx {
@@ -5707,7 +5851,7 @@ struct rtl_usb_u32_apply_ctx {
 static int
 rtl_usb_apply_tuner_bandwidth(void* opaque) {
     rtl_usb_u32_apply_ctx* ctx = static_cast<rtl_usb_u32_apply_ctx*>(opaque);
-    return (ctx && ctx->dev) ? rtlsdr_set_tuner_bandwidth(ctx->dev, (int)ctx->value) : -1;
+    return (ctx && ctx->dev) ? rtl_usb_ctl_set_tuner_bandwidth(ctx->dev, ctx->value) : -1;
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -5817,7 +5961,7 @@ verbose_set_sample_rate(rtlsdr_dev_t* dev, uint32_t samp_rate, uint32_t* out_act
         DSD_FPRINTF(stderr, "WARNING: Failed to set sample rate.\n");
     } else {
         if (ctx.actual_rate == 0U) {
-            ctx.actual_rate = rtlsdr_get_sample_rate(dev);
+            ctx.actual_rate = rtl_usb_ctl_get_sample_rate(dev);
         }
         if (ctx.actual_rate == 0U) {
             ctx.actual_rate = samp_rate;
@@ -6270,7 +6414,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->run.store(0);
     dev->agc_mode = 1;
     dev->tcp_autotune = autotune_enabled ? 1 : 0;
-    dev->offset_tuning = 0;
+    dev->offset_took = 0;
     dev->tcp_pending = NULL;
     dev->tcp_pending_len = 0;
     dev->tcp_pending_cap = 0;
@@ -6402,7 +6546,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
     dev->soapy_mtu_elems = 0;
     dev->rot_phase = 0;
     dev->port = 0;
-    dev->offset_tuning = 0;
+    dev->offset_took = 0;
     dev->testmode_on = 0;
     dev->rtl_xtal_hz = 0;
     dev->tuner_xtal_hz = 0;
@@ -6584,7 +6728,7 @@ rtl_device_init_iq_replay_backend_state(struct rtl_device* dev, const dsd_iq_rep
     dev->port = 0;
     dev->run.store(0, std::memory_order_relaxed);
     dev->agc_mode = 0;
-    dev->offset_tuning = cfg->offset_tuning_enabled ? 1 : 0;
+    dev->offset_took = cfg->offset_tuning_enabled ? 1 : 0;
     dev->testmode_on = 0;
     dev->rtl_xtal_hz = 0;
     dev->tuner_xtal_hz = 0;
@@ -7079,7 +7223,7 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
         if (!dev->dev) {
             return -1;
         }
-        uint32_t actual = rtlsdr_get_sample_rate(dev->dev);
+        uint32_t actual = rtl_usb_ctl_get_sample_rate(dev->dev);
         // cppcheck-suppress unsignedLessThanZero -- The no-RTL optional build always reports a zero sample rate.
         if (actual > 0U) {
             dev->rate = actual;
@@ -7525,6 +7669,9 @@ rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
 
 /**
  * @brief Enable or disable offset tuning mode.
+ *
+ * On USB it counts as taken only once librtlsdr reports an LO offset: librtlsdr computes the offset from the sample
+ * rate the dongle holds and accepts the call on a handle with no rate yet, displacing nothing (B11).
  */
 int
 rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
@@ -7532,6 +7679,7 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
         return -1;
     }
     int r = -1;
+    int took = on ? 1 : 0;
     if (dev->backend == RTL_BACKEND_USB) {
         if (!dev->dev) {
             return -1;
@@ -7541,9 +7689,19 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
         r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_offset_tuning, NULL, &ctx, &attempts);
         if (r == 0) {
             rtl_usb_log_retry_attempts("offset tuning apply", attempts);
-            DSD_FPRINTF(stderr, on ? "Offset tuning mode enabled.\n" : "Offset tuning mode disabled.\n");
+            // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
+            took = (on && rtl_usb_ctl_get_offset_tuning(dev->dev) == 1) ? 1 : 0;
+            // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
+            if (took) {
+                DSD_FPRINTF(stderr, "Offset tuning mode enabled.\n");
+            } else if (on) {
+                DSD_FPRINTF(stderr, "WARNING: Offset tuning was accepted without an LO offset; the capture stays Fs/4 "
+                                    "shifted.\n");
+            } else {
+                DSD_FPRINTF(stderr, "Offset tuning mode disabled.\n");
+            }
         } else {
-            int tuner_type = rtlsdr_get_tuner_type(dev->dev);
+            int tuner_type = rtl_usb_ctl_get_tuner_type(dev->dev);
             DSD_FPRINTF(stderr, "WARNING: Failed to set offset tuning (%d) for tuner %s.\n", r,
                         rtl_tuner_type_name(tuner_type));
         }
@@ -7555,9 +7713,48 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
         r = DSD_ERR_NOT_SUPPORTED;
     }
     if (r == 0) {
-        dev->offset_tuning = on ? 1 : 0;
+        dev->offset_took = took;
     }
     return r;
+}
+
+int
+rtl_device_get_offset_tuning(const struct rtl_device* dev) {
+    return (dev && dev->offset_took) ? 1 : 0;
+}
+
+uint32_t
+rtl_device_get_offset_tuning_hz(const struct rtl_device* dev) {
+    if (!dev || !dev->offset_took || dev->backend != RTL_BACKEND_USB || !dev->dev) {
+        return 0U;
+    }
+    /* librtlsdr's offset for the rate it holds; it recomputes the offset whenever the rate changes. */
+    return (rtl_usb_ctl_get_sample_rate(dev->dev) / 2U) * 170U / 100U;
+}
+
+uint32_t
+rtl_offset_aware_bandwidth_hz(uint32_t wanted_hz, int offset_active, uint32_t offs_freq_hz) {
+    if (!offset_active || offs_freq_hz == 0U) {
+        return wanted_hz;
+    }
+    /* librtlsdr opens the tuner filter to twice the offset when offset tuning takes, since the channel sits offs_freq
+     * from the displaced LO; any narrower filter, the driver's automatic one (the sample rate) included, cuts into it
+     * (B14). */
+    const uint64_t floor64 = 2ULL * (uint64_t)offs_freq_hz;
+    const uint32_t floor_hz = (floor64 > (uint64_t)UINT32_MAX) ? UINT32_MAX : (uint32_t)floor64;
+    if (wanted_hz >= floor_hz) {
+        return wanted_hz;
+    }
+    if (wanted_hz != 0U) {
+        /* Once per request, not on every retune. */
+        static std::atomic<uint32_t> s_raised_request_hz{0U};
+        if (s_raised_request_hz.exchange(wanted_hz, std::memory_order_relaxed) != wanted_hz) {
+            LOG_WARN("Tuner bandwidth %u Hz is below the offset tuning floor of %u Hz (twice the LO offset); using "
+                     "%u Hz.\n",
+                     wanted_hz, floor_hz, floor_hz);
+        }
+    }
+    return floor_hz;
 }
 
 #ifdef USE_SOAPYSDR
@@ -7617,7 +7814,11 @@ rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz) {
         if (!dev->dev) {
             return -1;
         }
-        return verbose_set_tuner_bandwidth(dev->dev, bw_hz);
+        const int rc = verbose_set_tuner_bandwidth(dev->dev, bw_hz);
+        if (rc == 0) {
+            dev->tuner_bw_hz = bw_hz;
+        }
+        return rc;
     }
     if (dev->backend == RTL_BACKEND_TCP) {
         /* Not universally supported by rtl_tcp; ignore */
@@ -7964,6 +8165,34 @@ rtl_device_test_usb_gain_device_free(struct rtl_device* dev) {
 extern "C" int
 rtl_device_test_usb_gain_unknown(const struct rtl_device* dev) {
     return (dev && dev->gain_state_unknown) ? 1 : 0;
+}
+
+extern "C" struct rtl_device*
+rtl_device_test_usb_tuner_device(rtl_device_test_usb_tuner_fake* fake) {
+    if (!fake || g_test_usb_tuner_fake) {
+        return nullptr;
+    }
+    /* Allocated as rtl_device_create() does, so rtl_device_destroy() can end it. */
+    struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
+    if (!dev) {
+        return nullptr;
+    }
+    rtl_device_init_common_state(dev);
+    dev->backend = RTL_BACKEND_USB;
+    dev->agc_mode = 1;
+    /* Never dereferenced: every control the tuning paths call reaches the fake while it is installed. */
+    dev->dev = reinterpret_cast<rtlsdr_dev_t*>(fake);
+    g_test_usb_tuner_fake = fake;
+    return dev;
+}
+
+extern "C" void
+rtl_device_test_usb_tuner_device_free(struct rtl_device* dev) {
+    g_test_usb_tuner_fake = nullptr;
+    if (dev) {
+        dev->dev = nullptr;
+        rtl_device_destroy(dev);
+    }
 }
 #endif
 
@@ -8329,7 +8558,7 @@ rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_
     rtl_device dev{};
     dev.input_ring = &ring;
     dev.backend = RTL_BACKEND_USB;
-    dev.offset_tuning = 0;
+    dev.offset_took = 0;
     dev.rot_phase = 0;
 
     unsigned char input[] = {130U, 127U, 129U, 126U, 128U, 125U};

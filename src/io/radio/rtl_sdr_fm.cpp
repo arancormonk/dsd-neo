@@ -605,10 +605,17 @@ clamp_capture_frequency_hz(int64_t frequency_hz) {
     return (uint32_t)frequency_hz;
 }
 
+/* Whether the capture sits Fs/4 above the centre and is rotated back in software: unless the dongle's hardware offset
+ * tuning took, the driver delivers centred I/Q (Airspy), or the shift is turned off. */
+static inline int
+capture_fs4_shift_active(void) {
+    return (!dongle.offset_tuning && !dongle.centered_iq && !disable_fs4_shift) ? 1 : 0;
+}
+
 static uint32_t
 capture_frequency_for_rate(int64_t center_freq_hz, uint32_t capture_rate_hz) {
     int64_t capture_freq_hz = center_freq_hz;
-    if (!dongle.offset_tuning && !dongle.centered_iq && !disable_fs4_shift) {
+    if (capture_fs4_shift_active()) {
         capture_freq_hz += (int64_t)(capture_rate_hz / 4U);
     }
     capture_freq_hz += ((int64_t)controller.edge * (int64_t)demod.rate_in) / 2;
@@ -652,9 +659,9 @@ retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t reque
     }
 }
 
+/* Run the rate chain at the rate the device reports instead of the one requested; returns the rate it runs at. */
 static uint32_t
-apply_actual_capture_rate(uint32_t center_freq_hz, uint32_t requested_capture_freq_hz,
-                          uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz) {
+note_actual_capture_rate(uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz) {
     if (actual_capture_rate_hz == 0 || actual_capture_rate_hz == requested_capture_rate_hz) {
         return requested_capture_rate_hz;
     }
@@ -662,10 +669,19 @@ apply_actual_capture_rate(uint32_t center_freq_hz, uint32_t requested_capture_fr
     store_dongle_rate(actual_capture_rate_hz);
     demod.rate_out = demod_output_rate_for_capture_rate(actual_capture_rate_hz);
     demod.capture_rate_device_forced = 1;
-    retune_capture_frequency_for_actual_rate(center_freq_hz, requested_capture_freq_hz, actual_capture_rate_hz);
     LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", requested_capture_rate_hz,
              actual_capture_rate_hz, demod.rate_out);
     return actual_capture_rate_hz;
+}
+
+static uint32_t
+apply_actual_capture_rate(uint32_t center_freq_hz, uint32_t requested_capture_freq_hz,
+                          uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz) {
+    const uint32_t rate_hz = note_actual_capture_rate(requested_capture_rate_hz, actual_capture_rate_hz);
+    if (rate_hz != requested_capture_rate_hz) {
+        retune_capture_frequency_for_actual_rate(center_freq_hz, requested_capture_freq_hz, rate_hz);
+    }
+    return rate_hz;
 }
 
 namespace {
@@ -1673,10 +1689,14 @@ soapy_bandwidth_request_is_explicit(const dsd_opts* opts) {
     return (opts && radio_source_is_soapy(opts) && opts->soapy_bandwidth_hz >= 0) ? 1 : 0;
 }
 
+/* The tuner bandwidth for the capture, at start and on every retune: the configured (or automatic) one, never narrower
+ * than the filter hardware offset tuning needs while it is on (rtl_offset_aware_bandwidth_hz()). */
 static int
 apply_capture_tuner_bandwidth(uint32_t capture_rate_hz, const dsd_opts* opts, int fail_explicit_soapy) {
-    int rc =
-        rtl_device_set_tuner_bandwidth(rtl_device_handle, choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz));
+    const uint32_t bw_hz =
+        rtl_offset_aware_bandwidth_hz(choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz),
+                                      dongle.offset_tuning, rtl_device_get_offset_tuning_hz(rtl_device_handle));
+    int rc = rtl_device_set_tuner_bandwidth(rtl_device_handle, bw_hz);
     if (rc == 0) {
         return 0;
     }
@@ -4457,9 +4477,7 @@ demod_feed_signal_search(const demod_state* d) {
     search_capture.rate_hz = load_dongle_rate();
     search_capture.capture_hz = load_dongle_frequency();
     search_capture.generation = rtl_stream_output_generation();
-    search_capture.rotation_hz = (!dongle.offset_tuning && !dongle.centered_iq && !disable_fs4_shift)
-                                     ? (int32_t)(search_capture.rate_hz / 4U)
-                                     : 0;
+    search_capture.rotation_hz = capture_fs4_shift_active() ? (int32_t)(search_capture.rate_hz / 4U) : 0;
     search_capture.capture_offset_hz =
         (int64_t)search_capture.capture_hz - controller.last_applied_freq_hz.load(std::memory_order_acquire);
     search_capture.drops = input_ring.producer_drops.load(std::memory_order_acquire);
@@ -5623,6 +5641,9 @@ controller_apply_wb_frequency_offset(struct controller_state* s) {
     }
 }
 
+/* Offset tuning, once the device holds its sample rate: librtlsdr computes the LO offset from that rate, so enabling it
+ * on a fresh handle before the rate displaces nothing (B11). The stream counts on it, dropping its Fs/4 shift and
+ * rotation, only when the device reports that it took (R82xx tuners and direct sampling refuse it). */
 static void
 controller_apply_initial_offset_tuning(const dsd_opts* opts) {
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
@@ -5634,33 +5655,45 @@ controller_apply_initial_offset_tuning(const dsd_opts* opts) {
         want = 0;
     }
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (cfg && cfg->rtl_offset_tuning_is_set) {
+    const int configured = (cfg && cfg->rtl_offset_tuning_is_set) ? 1 : 0;
+    if (configured) {
         want = cfg->rtl_offset_tuning_enable ? 1 : 0;
     }
     int r = rtl_device_set_offset_tuning_enabled(rtl_device_handle, want);
-    if (r == 0) {
-        dongle.offset_tuning = want ? 1 : 0;
-    } else {
-        dongle.offset_tuning = 0;
+    dongle.offset_tuning = rtl_device_get_offset_tuning(rtl_device_handle);
+    if (configured) {
+        log_unsupported_control_if_needed("Offset tuning control", r);
     }
 }
 
 static uint32_t
-controller_sync_initial_capture_rate(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz) {
+controller_sync_initial_capture_rate(uint32_t capture_rate_hz) {
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-        return apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
+        return note_actual_capture_rate(capture_rate_hz, (uint32_t)actual);
     }
     return capture_rate_hz;
 }
 
 static int
-controller_program_initial_capture_settings(const struct controller_state* s, const dsd_opts* opts) {
-    uint32_t capture_freq_hz = load_dongle_frequency();
-    uint32_t capture_rate_hz = load_dongle_rate();
+controller_set_initial_frequency(uint32_t capture_freq_hz) {
     int rc = rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
     if (rc != 0) {
         LOG_ERROR("Failed to apply initial RTL-SDR center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
+    }
+    return rc;
+}
+
+/* Program a fresh device in the order its controls depend on each other: the sample rate (read back), offset tuning
+ * computed from it, the capture centre and Fs/4 rotation for whether offset tuning took, and the tuner bandwidth for
+ * that. The frequency goes first as well, on the shifted centre a device without offset tuning runs: a rate set on a
+ * handle with no frequency has an R82xx tuner retune to 0 Hz. It is set again only if the centre moved. */
+static int
+controller_program_initial_capture_settings(const struct controller_state* s, const dsd_opts* opts) {
+    const uint32_t planned_freq_hz = load_dongle_frequency();
+    uint32_t capture_rate_hz = load_dongle_rate();
+    int rc = controller_set_initial_frequency(planned_freq_hz);
+    if (rc != 0) {
         return rc;
     }
     LOG_INFO("Oversampling input by: %ix.\n", (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1);
@@ -5671,12 +5704,32 @@ controller_program_initial_capture_settings(const struct controller_state* s, co
         LOG_ERROR("Failed to apply initial RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
         return rc;
     }
-    capture_rate_hz = controller_sync_initial_capture_rate((uint32_t)s->freqs[0], capture_freq_hz, capture_rate_hz);
+    capture_rate_hz = controller_sync_initial_capture_rate(capture_rate_hz);
+    controller_apply_initial_offset_tuning(opts);
+    const uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)s->freqs[0], capture_rate_hz);
+    store_dongle_frequency(capture_freq_hz);
     if (apply_capture_tuner_bandwidth(capture_rate_hz, opts, 1) != 0) {
         return -1;
     }
+    if (capture_freq_hz != planned_freq_hz) {
+        rc = controller_set_initial_frequency(capture_freq_hz);
+        if (rc != 0) {
+            return rc;
+        }
+    }
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
     return 0;
+}
+
+static int
+controller_program_initial_device(const struct controller_state* s, const dsd_opts* opts) {
+    /* A fresh device has no offset tuning until it takes, so the planned centre carries the Fs/4 shift. */
+    dongle.offset_tuning = rtl_device_get_offset_tuning(rtl_device_handle);
+    optimal_settings(s->freqs[0], demod.rate_in);
+    if (dongle.direct_sampling) {
+        (void)rtl_device_set_direct_sampling(rtl_device_handle, dongle.direct_sampling);
+    }
+    return controller_program_initial_capture_settings(s, opts);
 }
 
 static int
@@ -5687,14 +5740,7 @@ controller_apply_initial_settings(struct controller_state* s, const dsd_opts* op
 
     controller_apply_wb_frequency_offset(s);
 
-    optimal_settings(s->freqs[0], demod.rate_in);
-    if (dongle.direct_sampling) {
-        (void)rtl_device_set_direct_sampling(rtl_device_handle, dongle.direct_sampling);
-    }
-    controller_apply_initial_offset_tuning(opts);
-
-    optimal_settings(s->freqs[0], demod.rate_in);
-    if (controller_program_initial_capture_settings(s, opts) != 0) {
+    if (controller_program_initial_device(s, opts) != 0) {
         return -1;
     }
 
@@ -6781,7 +6827,7 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     cfg->post_downsample = (uint32_t)((demod.post_downsample > 0) ? demod.post_downsample : 1);
     cfg->demod_rate_hz = (uint32_t)demod.rate_out;
     cfg->offset_tuning_enabled = dongle.offset_tuning ? 1 : 0;
-    cfg->fs4_shift_enabled = (!dongle.offset_tuning && !dongle.centered_iq && !disable_fs4_shift) ? 1 : 0;
+    cfg->fs4_shift_enabled = capture_fs4_shift_active();
     const dsdneoRuntimeConfig* runtime_config = dsd_neo_get_config();
     cfg->combine_rotate_enabled = runtime_config ? (runtime_config->combine_rot != 0) : 1;
     cfg->muted_bytes_excluded = 1;
@@ -7534,21 +7580,6 @@ stream_open_apply_direct_sampling(const dsdneoRuntimeConfig* cfg) {
 }
 
 static void
-stream_open_apply_offset_tuning(const dsdneoRuntimeConfig* cfg) {
-    if (!cfg || !cfg->rtl_offset_tuning_is_set) {
-        return;
-    }
-    int on = cfg->rtl_offset_tuning_enable ? 1 : 0;
-    int rc = rtl_device_set_offset_tuning_enabled(rtl_device_handle, on);
-    if (rc == 0) {
-        dongle.offset_tuning = on ? 1 : 0;
-    } else {
-        dongle.offset_tuning = 0;
-        log_unsupported_control_if_needed("Offset tuning control", rc);
-    }
-}
-
-static void
 stream_open_apply_xtal_control(const dsdneoRuntimeConfig* cfg) {
     if (!cfg || (!cfg->rtl_xtal_hz_is_set && !cfg->tuner_xtal_hz_is_set)) {
         return;
@@ -7580,7 +7611,7 @@ stream_open_apply_runtime_controls(const dsd_opts* opts) {
         return;
     }
     stream_open_apply_direct_sampling(cfg);
-    stream_open_apply_offset_tuning(cfg);
+    /* Offset tuning waits for the sample rate (controller_apply_initial_offset_tuning()). */
     stream_open_apply_xtal_control(cfg);
     stream_open_apply_testmode(cfg);
     if (cfg->rtl_if_gains_is_set && cfg->rtl_if_gains[0] != '\0') {
@@ -10695,6 +10726,111 @@ rtl_stream_apply_manual_retune_gain(int tuner_gain_tenth_db) {
 }
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+namespace {
+
+/* The stream state the capture-programming test hooks change, put back once they are done. */
+struct TestCaptureProgramState {
+    struct rtl_device* handle;
+    CaptureSettingsSnapshot capture;
+    uint32_t first_freq_hz;
+    int freq_len;
+    int edge;
+    int wb_mode;
+    int rate_in;
+    int post_downsample;
+    int offset_tuning;
+    int centered_iq;
+    int direct_sampling;
+    int disable_fs4_shift;
+};
+
+/* Make @p dev the open device of a stream about to start on @p center_hz with a 48 kHz demod input. */
+static TestCaptureProgramState
+test_capture_program_enter(struct rtl_device* dev, uint32_t center_hz, int direct_sampling) {
+    TestCaptureProgramState saved{};
+    saved.handle = rtl_device_handle;
+    saved.capture = capture_settings_snapshot();
+    saved.first_freq_hz = controller.freqs[0];
+    saved.freq_len = controller.freq_len;
+    saved.edge = controller.edge;
+    saved.wb_mode = controller.wb_mode;
+    saved.rate_in = demod.rate_in;
+    saved.post_downsample = demod.post_downsample;
+    saved.offset_tuning = dongle.offset_tuning;
+    saved.centered_iq = dongle.centered_iq;
+    saved.direct_sampling = dongle.direct_sampling;
+    saved.disable_fs4_shift = disable_fs4_shift;
+
+    rtl_device_handle = dev;
+    controller.freqs[0] = center_hz;
+    controller.freq_len = 1;
+    controller.edge = 0;
+    controller.wb_mode = 0;
+    demod.rate_in = 48000;
+    demod.post_downsample = 1;
+    dongle.offset_tuning = 0;
+    dongle.centered_iq = 0;
+    dongle.direct_sampling = direct_sampling;
+    disable_fs4_shift = 0;
+    return saved;
+}
+
+static void
+test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
+    out->rc = rc;
+    out->capture_freq_hz = load_dongle_frequency();
+    out->capture_rate_hz = load_dongle_rate();
+    out->offset_tuning = dongle.offset_tuning;
+    out->fs4_rotation = capture_fs4_shift_active();
+}
+
+static void
+test_capture_program_leave(const TestCaptureProgramState* saved) {
+    rtl_device_handle = saved->handle;
+    restore_capture_settings(&saved->capture);
+    controller.freqs[0] = saved->first_freq_hz;
+    controller.freq_len = saved->freq_len;
+    controller.edge = saved->edge;
+    controller.wb_mode = saved->wb_mode;
+    demod.rate_in = saved->rate_in;
+    demod.post_downsample = saved->post_downsample;
+    dongle.offset_tuning = saved->offset_tuning;
+    dongle.centered_iq = saved->centered_iq;
+    dongle.direct_sampling = saved->direct_sampling;
+    disable_fs4_shift = saved->disable_fs4_shift;
+}
+
+} // namespace
+
+extern "C" int
+rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                        int direct_sampling, rtl_stream_test_capture_result* out) {
+    if (!dev || !opts || center_hz == 0U || !out || g_stream) {
+        return -1;
+    }
+    const TestCaptureProgramState saved = test_capture_program_enter(dev, center_hz, direct_sampling);
+    test_capture_program_result(controller_program_initial_device(&controller, opts), out);
+    test_capture_program_leave(&saved);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                       uint32_t retune_center_hz, rtl_stream_test_capture_result* out) {
+    if (!dev || !opts || center_hz == 0U || retune_center_hz == 0U || !out || g_stream) {
+        return -1;
+    }
+    const TestCaptureProgramState saved = test_capture_program_enter(dev, center_hz, 0);
+    int rc = controller_program_initial_device(&controller, opts);
+    if (rc == 0) {
+        int hardware_changed = 0;
+        rc = program_capture_frequency_and_rate(retune_center_hz, NULL, &hardware_changed);
+    }
+    test_capture_program_result(rc, out);
+    test_capture_program_leave(&saved);
+    return 0;
+}
+
 extern "C" int
 rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int* out_published_rc,
                            int* out_published_gain, int* out_published_auto) {
