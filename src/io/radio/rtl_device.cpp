@@ -5104,7 +5104,7 @@ rtl_tcp_wait_slice(struct rtl_device* dev) {
  * cancelled without run == 0 cancelling it. */
 static int
 rtl_tcp_cancelled(void* ctx) {
-    const struct rtl_device* dev = static_cast<struct rtl_device*>(ctx);
+    const auto* dev = static_cast<const struct rtl_device*>(ctx);
     return (dsd_exitflag_load() || (dev && dev->stop_requested.load(std::memory_order_acquire))) ? 1 : 0;
 }
 
@@ -7440,7 +7440,7 @@ rtl_usb_apply_gain_record(void* opaque) {
 
 static int
 rtl_usb_verify_gain_record(void* opaque) {
-    struct rtl_device* dev = static_cast<struct rtl_device*>(opaque);
+    const struct rtl_device* dev = static_cast<const struct rtl_device*>(opaque);
     return dev ? rtl_usb_verify_tuner_gain_on(dev->dev, dev->gain) : -1;
 }
 
@@ -7561,13 +7561,13 @@ rtl_usb_verify_offset_tuning_on(void* opaque) {
 /* The tuner's gain mode and, when manual, its gain, as the gain transaction writes them. */
 static int
 rtl_usb_apply_tuner_gain(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+    const rtl_usb_int_apply_ctx* ctx = static_cast<const rtl_usb_int_apply_ctx*>(opaque);
     return ctx ? rtl_usb_write_tuner_gain(ctx->dev, ctx->value) : -1;
 }
 
 static int
 rtl_usb_verify_tuner_gain(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+    const rtl_usb_int_apply_ctx* ctx = static_cast<const rtl_usb_int_apply_ctx*>(opaque);
     return ctx ? rtl_usb_verify_tuner_gain_on(ctx->dev, ctx->value) : -1;
 }
 
