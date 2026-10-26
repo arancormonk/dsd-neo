@@ -1461,6 +1461,21 @@ test_each_gain_command_failure_propagates(void) {
     gain_failure_case(r, 1, 0x04, &gen);
     gain_failure_case(r, 0, 0x03, &gen);
     gain_failure_case(r, 0, 0x08, &gen);
+
+    /* A server that never reads its commands and goes on streaming: once a command failed there, the reader lets that
+     * connection go too and reconnects. */
+    conn_script deaf;
+    deaf.read_commands = 0;
+    server_queue(deaf);
+    lose_connection(r);
+    gen += 1U;
+    wait_generation(r, gen);
+    rtl_device_test_tcp_fail_command(0x03);
+    assert(rtl_device_set_gain(r.dev, 280) == RTL_DEVICE_ENOTCONN);
+    rtl_device_test_tcp_fail_command(-1);
+    gen += 1U;
+    wait_generation(r, gen);
+    assert(rtl_device_is_auto_gain(r.dev) == 0);
     rig_close(r);
 }
 

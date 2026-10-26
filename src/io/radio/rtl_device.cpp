@@ -366,8 +366,8 @@ struct rtl_tcp_conn {
     uint64_t generation;
     dsd_mutex_t tx_lock;
     std::atomic<int> refs;
-    /* Taken down (a failed command, a stop): its reader stops reading it even while the server goes on sending,
-     * which a shutdown alone does not stop (queued and arriving data still reads after SHUT_RD). */
+    /* Taken down (a failed command, a stop): its reader stops reading it at once. A shutdown alone does not: what the
+     * socket already holds (up to its receive buffer) still reads after it, and would reach the rings after the loss. */
     std::atomic<int> lost;
 };
 
