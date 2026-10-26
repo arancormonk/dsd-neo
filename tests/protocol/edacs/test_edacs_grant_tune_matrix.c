@@ -2854,8 +2854,9 @@ edacs_run_analog_gap_case(void) {
 #ifdef USE_RADIO
 /* Issue #518 D4: the RTL device loses its stream (a USB stall recovery runs, rtl_tcp disconnects) at sample
    g_call_drop of an analog call. The call loop asks for DSD_RTL_READ_NO_STREAM, which the stream then returns once per
-   wait slice (2 ms here); a plain read would wait for the stream that is not coming (here it gives up after 3 s,
-   failing as the session would end), and so does the 5000th slice. The stream's last RF measurement stays where the carrier left it, above the level
+   wait slice (2 ms here). A plain read would wait for a stream that is not coming: here it fails after 3 s, as the
+   session would end. After 5000 slices (about 10 s) the fake fails the read too, so a call that never ends fails the
+   test instead of hanging it. The stream's last RF measurement stays where the carrier left it, above the level
    squelch. */
 static int g_no_stream_asks = 0;
 static int g_no_stream_returned = 0;

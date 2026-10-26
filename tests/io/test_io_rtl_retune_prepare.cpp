@@ -1635,7 +1635,8 @@ live_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_op
  * comes, as a read with no command does (delayed_stream_never_yields). A reader that asks for DSD_RTL_READ_NO_STREAM
  * (the EDACS analog call loop) gets it once per wait slice while there is no stream, and never a yield. The contracts
  * beside it hold with no stream as with one: a Signal search's read fails after 100 ms of nothing, and an idle NFM
- * monitor's returns 0 samples after 100 ms (search_failure_contract_kept, analog_zero_read_contract_kept). */
+ * monitor's returns 0 samples after 100 ms (search_failure_contract_kept, analog_zero_read_contract_kept); with a
+ * command queued, a search's read with no stream yields at once like any other, and with a stream still fails. */
 static int
 test_live_read_without_stream(void) {
     static dsd_opts digital;
@@ -1711,6 +1712,23 @@ test_live_read_without_stream(void) {
                             live_read(dev, 7U, &digital, 0, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
     failed |= expect_int_eq("a search's read with no stream and no command still fails", got, -1);
     failed |= expect_waited("a search's read with no stream", waited_ms, 100U, 2000U);
+    /* A search visit's read with no stream and a queued command yields at once, as any read does: the command applies
+     * now (the decoder's yield outranks the search's interruption, and the engine loop runs the visit's deadlines on
+     * the same pass), rather than after the visit's 100 ms bound. With a stream, a queued command changes nothing: the
+     * search's read still fails after 100 ms of nothing. */
+    g_live_commands_pending.store(1);
+    failed |= expect_int_eq("no-stream search read with a command",
+                            live_read(dev, 7U, &digital, 0, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a search's read with no stream and a queued command yields", got, DSD_RTL_READ_YIELD);
+    failed |= expect_waited("a search's yielding read", waited_ms, 0U, 100U);
+    rtl_device_test_set_recovering(dev, 0);
+    g_live_commands_pending.store(1);
+    failed |= expect_int_eq("search read with a stream and a command",
+                            live_read(dev, 7U, &digital, 0, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a search's read with a stream and a queued command still fails", got, -1);
+    failed |= expect_waited("a search's read with a stream and a command", waited_ms, 100U, 2000U);
+    g_live_commands_pending.store(0);
+    rtl_device_test_set_recovering(dev, 1);
     failed |= expect_int_eq("no-stream NFM read",
                             live_read(dev, 0U, &nfm, 0, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
     failed |= expect_int_eq("an idle NFM monitor with no stream and no command still returns 0 samples", got, 0);

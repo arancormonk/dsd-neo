@@ -5050,7 +5050,9 @@ Notes:
     `rtl_stream_read_ex2()` and the runtime hook's `read_ex2`) gets `DSD_RTL_READ_NO_STREAM` once a 10 ms wait slice
     passed; any other read returns `DSD_RTL_READ_YIELD` while `dsd_runtime_controls_pending()`, else waits on. A slow
     stream's read never yields, whatever is queued (the 5 s silence verdict bounds that wait). The search's 100 ms
-    failure and the idle NFM monitor's zero read come first and are unchanged; a replay never asks. The orchestrator
+    failure and the idle NFM monitor's zero read are checked first and are unchanged; with no stream and a command
+    queued, a search visit's read yields at once like any other (the yield outranks the search's interruption, and the
+    engine loop runs the visit's deadlines on the same pass). A replay never asks. The orchestrator
     carries both results as they are (its own no-options error is -1, not -2). Tests: `IO_RTL_RETUNE_PREPARE` (the live
     read over a device with and without a stream), `IO_RTL_USB_RECOVERY` (a read yields while a real recovery runs and
     the samples after it arrive; a slow stream with a command queued never yields and decodes exactly as without one),

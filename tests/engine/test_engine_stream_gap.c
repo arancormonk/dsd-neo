@@ -46,6 +46,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -554,6 +555,26 @@ test_gap_resets_dmr_confirmation_keeps_colour_code(dsd_opts* opts, dsd_state* st
                && state->p2_cc_verified == 1U);
 }
 
+/* Whether two received identities hold the same values, every field (the record carries padding, so not memcmp). */
+static int
+rxid_equal(const dsd_received_identity* a, const dsd_received_identity* b) {
+    return a->epoch == b->epoch && a->valid == b->valid && a->fresh == b->fresh && a->p25_wacn == b->p25_wacn
+           && a->nxdn_sys == b->nxdn_sys && a->nxdn_typed_sys == b->nxdn_typed_sys && a->cc_freq_hz == b->cc_freq_hz
+           && a->access == b->access && a->p25_sysid == b->p25_sysid && a->nxdn_site == b->nxdn_site
+           && a->dmr_rest_lsn == b->dmr_rest_lsn && a->dmr_t3_syscode == b->dmr_t3_syscode
+           && a->edacs_site == b->edacs_site && a->edacs_area == b->edacs_area && a->edacs_system == b->edacs_system
+           && a->edacs_cc_lcn == b->edacs_cc_lcn && a->tetra_mcc == b->tetra_mcc && a->tetra_mnc == b->tetra_mnc
+           && a->tetra_la == b->tetra_la && a->family == b->family && a->access_kind == b->access_kind
+           && a->p25_rfss == b->p25_rfss && a->p25_site == b->p25_site && a->p25_lra == b->p25_lra
+           && a->nxdn_category == b->nxdn_category && a->nxdn_idas_area == b->nxdn_idas_area
+           && a->nxdn_idas_site_type == b->nxdn_idas_site_type && a->nxdn_idas_site_code == b->nxdn_idas_site_code
+           && a->nxdn_typed_site == b->nxdn_typed_site && a->dmr_xpt_free_lcn == b->dmr_xpt_free_lcn
+           && a->dmr_trunk == b->dmr_trunk && a->dmr_vendor == b->dmr_vendor && a->edacs_ea_mode == b->edacs_ea_mode
+           && a->tetra_colour == b->tetra_colour
+           && strncmp(a->dmr_site_text, b->dmr_site_text, sizeof a->dmr_site_text) == 0
+           && strncmp(a->dmr_brand, b->dmr_brand, sizeof a->dmr_brand) == 0;
+}
+
 static void
 test_stream_gap_mid_call_keeps_follow(dsd_opts* opts, dsd_state* state) {
     p25_sm_ctx_t* p25 = p25_sm_get_ctx();
@@ -567,6 +588,11 @@ test_stream_gap_mid_call_keeps_follow(dsd_opts* opts, dsd_state* state) {
     state->rx_id.valid = 0x3U;
     state->rx_id.p25_wacn = 0xBEE00U;
     state->rx_id.p25_sysid = 0x3A5U;
+    /* Parts the no-carrier pass or a reset would change: fresh (cleared by the pass), and values beside the system. */
+    state->rx_id.fresh = 0x3U;
+    state->rx_id.p25_rfss = 2U;
+    state->rx_id.p25_site = 7U;
+    state->rx_id.cc_freq_hz = 851012500U;
     const dsd_received_identity identity = state->rx_id;
     begin_call(state);
     const int resets = g_resets;
@@ -580,10 +606,7 @@ test_stream_gap_mid_call_keeps_follow(dsd_opts* opts, dsd_state* state) {
     expect("follow: the followed assignment stays", opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == 851012500L
                                                         && state->trunk_vc_freq[1] == 851012500L
                                                         && state->p25_vc_freq[0] == 851012500L);
-    /* Field by field: the record carries padding. The epoch moves on any reset or replacement. */
-    expect("follow: the received identity stays",
-           identity.epoch == state->rx_id.epoch && identity.valid == state->rx_id.valid
-               && identity.p25_wacn == state->rx_id.p25_wacn && identity.p25_sysid == state->rx_id.p25_sysid);
+    expect("follow: the received identity stays", rxid_equal(&identity, &state->rx_id));
     expect("follow: the boundary took the tick guard", g_resets == resets + 1 && g_resets_unguarded == 0);
     const int guard_free = p25_sm_tick_guard_try_enter();
     if (guard_free) {
