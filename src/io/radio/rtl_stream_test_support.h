@@ -290,6 +290,81 @@ typedef struct {
 struct rtl_device* rtl_device_test_usb_tuner_device(rtl_device_test_usb_tuner_fake* fake);
 void rtl_device_test_usb_tuner_device_free(struct rtl_device* dev);
 
+/* What reaches a fake dongle (rtl_device_test_usb_dongle), in the order a USB recovery replays the controls. */
+enum {
+    RTL_TEST_DONGLE_OPEN,
+    RTL_TEST_DONGLE_CLOSE,
+    RTL_TEST_DONGLE_XTAL,
+    RTL_TEST_DONGLE_DIRECT_SAMPLING,
+    RTL_TEST_DONGLE_FREQ,
+    RTL_TEST_DONGLE_RATE,
+    RTL_TEST_DONGLE_OFFSET,
+    RTL_TEST_DONGLE_BANDWIDTH,
+    RTL_TEST_DONGLE_PPM,
+    RTL_TEST_DONGLE_REG19,
+    RTL_TEST_DONGLE_GAIN_MODE,
+    RTL_TEST_DONGLE_GAIN,
+    RTL_TEST_DONGLE_IF_GAIN,
+    RTL_TEST_DONGLE_BIAS_TEE,
+    RTL_TEST_DONGLE_RESET_BUFFER,
+    RTL_TEST_DONGLE_OP_COUNT
+};
+
+/* A whole RTL-SDR in place of librtlsdr: opened by rtlsdr_open() (one handle at a time), every control, the FIFO
+ * reset and the close. Opening it gives the power-on state (nothing tuned, register 0x19 0x05, automatic gain mode,
+ * no correction, bias tee off); the tuner type, gain table and faults stay. */
+typedef struct rtl_device_test_usb_dongle {
+    rtl_device_test_usb_gain_fake gain;   /* register 0x19 and the tuner gain; its own faults refuse those writes */
+    rtl_device_test_usb_tuner_fake tuner; /* frequency, rate, direct sampling, offset tuning, tuner bandwidth */
+    int ppm;
+    uint32_t rtl_xtal, tuner_xtal;
+    int bias_tee;
+
+    struct {
+        int stage;
+        int gain;
+    } if_gains[16];
+
+    int if_gain_count;
+    /* By RTL_TEST_DONGLE_*, for every op but the gain fake's three: a fault refuses the op, counted in calls. */
+    rtl_device_test_usb_gain_fault faults[RTL_TEST_DONGLE_OP_COUNT];
+    int calls[RTL_TEST_DONGLE_OP_COUNT];
+    int ops[128]; /* the ops since the last open, in order (the open first) */
+    int op_count;
+    int open_handles;        /* opened and not closed */
+    int stale_handle_calls;  /* ops that reached a handle already closed */
+    int calls_while_reading; /* ops that reached the dongle while its reader streamed */
+    /* Called first by every op, from the thread making it, before its fault is checked. */
+    void (*on_op)(void* ctx, int op);
+    void* on_op_ctx;
+} rtl_device_test_usb_dongle;
+
+/* Route rtlsdr_open() and every librtlsdr control to @p fake (NULL restores librtlsdr). Install while no device is
+ * open. */
+void rtl_device_test_usb_dongle_install(rtl_device_test_usb_dongle* fake);
+/* Arm the USB reader seam for the next rtl_device_start_async(): the reader streams, delivering nothing, until a cancel
+ * reaches it, as rtl_device_test_usb_stream_start()'s does, and a reader restarted by a recovery streams again. Detach
+ * after the device is destroyed. */
+void rtl_device_test_usb_stream_attach(void);
+void rtl_device_test_usb_stream_detach(void);
+
+/* A USB device's recovery state. */
+typedef struct {
+    int has_handle;     /* a librtlsdr handle is published */
+    int thread_started; /* a joinable reader thread exists */
+    int reader_running; /* the reader entered and has not returned */
+    int stop_requested; /* the stop latch */
+    int recovering;     /* a swap runs */
+    int recovery_on;    /* rtl_device_usb_recovery_eligible() */
+    uint64_t progress_baseline;
+    uint32_t watch_rearm_seq;
+    uint8_t identity_bus;
+    uint8_t identity_ports[8];
+    int identity_port_depth;
+} rtl_device_test_usb_swap_state;
+
+void rtl_device_test_usb_swap_state_get(struct rtl_device* dev, rtl_device_test_usb_swap_state* out);
+
 /* The capture an RTL stream left programmed (rtl_stream_test_program_initial_capture() and
  * rtl_stream_test_program_retune_capture()). */
 typedef struct {

@@ -16,6 +16,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
 #include <dsd-neo/core/airspy_config.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -377,10 +378,57 @@ int rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len);
 /**
  * @brief Stop asynchronous reading and join the device thread.
  *
+ * On a USB device it first latches the stop (whether or not a reader runs), so a recovery in progress gives up and
+ * no reader starts afterwards (rtl_device_usb_resume_reader()); it then waits for that recovery to return.
+ *
  * @param dev RTL-SDR device handle.
  * @return 0 on success, negative on failure.
  */
 int rtl_device_stop_async(struct rtl_device* dev);
+
+/** A USB setter's result while the dongle is being reset and reopened (rtl_device_usb_recover_handle()): nothing was
+ * changed, and the setting is not remembered. */
+#define RTL_DEVICE_EBUSY (-16)
+
+/**
+ * @brief Whether a USB device can be reset and reopened when it stops delivering samples.
+ *
+ * Decided at open: the device's USB port was identified uniquely (no other device carries its manufacturer, product
+ * and serial strings, every candidate could be read, the build has libusb) and the opened handle carries them. When
+ * not, the open logged "RTL-SDR: stall recovery is off for this receiver: <reason>".
+ *
+ * @return 1 when eligible, 0 otherwise (including every non-USB device).
+ */
+int rtl_device_usb_recovery_eligible(const struct rtl_device* dev);
+
+/**
+ * @brief Reset and reopen a stalled USB dongle in place, and restore its settings.
+ *
+ * Stops the reader (its return is silent) and joins it, retires and closes the librtlsdr handle, resets the device's
+ * USB port, reopens it by its identity, checks the reopened handle is the same device and replays the settings the
+ * dongle had taken, in order: crystal, direct sampling, frequency, sample rate, offset tuning, tuner bandwidth, PPM,
+ * frequency, gain (with test mode and digital AGC), IF gains, bias tee; then resets the FIFO. A control that never
+ * took is left at the fresh dongle's default; one that took and cannot be restored fails the recovery. Only then is
+ * the new handle published. The reader is not restarted (rtl_device_usb_resume_reader()). While it runs, setters
+ * return RTL_DEVICE_EBUSY and change nothing, and getters report no reading once the old handle is retired.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param why Receives the reason on failure (may be NULL).
+ * @param why_size Capacity of @p why.
+ * @return 0 on success; -ECANCELED when a stop came first (silent); -ENOTSUP when the device is not eligible
+ *         (nothing touched); another negative code on failure, with the device left without a handle.
+ */
+int rtl_device_usb_recover_handle(struct rtl_device* dev, char* why, size_t why_size);
+
+/**
+ * @brief Restart the USB reader after a successful recovery, unless a stop came first.
+ *
+ * Records the progress count as the restarted reader's baseline and bumps the progress monitor's rearm sequence
+ * before the reader thread starts.
+ *
+ * @return 0 when the reader started; -ECANCELED when the device was stopped; another negative code on failure.
+ */
+int rtl_device_usb_resume_reader(struct rtl_device* dev);
 
 /**
  * @brief Mute the incoming raw USB/TCP byte stream for a short duration.

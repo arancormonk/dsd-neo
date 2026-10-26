@@ -4427,6 +4427,30 @@ Key public headers:
     `DSD_HAVE_LIBUSB` (`cmake/FindLibusb.cmake`: header, library and a `libusb_reset_device` link check) privately on
     `dsd-neo_io_radio` and its test mirror, only with a system librtlsdr and never on Android; otherwise every call
     returns `RTL_USB_ID_NO_LIBUSB`. Tests: `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`.
+  - USB handle swap (`rtl_device.cpp`): `rtl_device_create()` resolves the identity before the open and verifies the
+    handle after; any other result (or an Android descriptor) logs `RTL-SDR: stall recovery is off for this
+    receiver: <reason>` once and leaves `rtl_device_usb_recovery_eligible()` 0. Two locks, taken
+    `usb_lifecycle_lock` then `usb_ctrl_lock`, never the reverse, neither on the sample path: every use of the
+    librtlsdr handle (setters, getters, `rtlsdr_cancel_async()`) and of the controls' record is under
+    `usb_ctrl_lock`, so the demod never reads a gain change in flight; the handle is published or retired only with
+    both held; the reader reads it unlocked, as it starts after publication and is joined before retirement.
+    `thread_started` changes only under `usb_lifecycle_lock`. Each USB setter records in `usb_eff` (`struct
+    rtl_usb_effective`) what the dongle took, with a took flag per control, only on success.
+    `rtl_device_usb_recover_handle()` holds `usb_lifecycle_lock` throughout: sets `recovering` (setters then return
+    `RTL_DEVICE_EBUSY` and change nothing, getters still lock), cancels and joins the reader (its return is silent
+    while `recovering`), unpublishes and closes the handle, `rtl_usb_identity_reset()`, re-resolves and reopens by
+    `rtl_usb_identity_index()`, verifies, and replays `usb_eff` onto the unpublished handle (crystal, direct
+    sampling, frequency, rate, offset tuning only if it took, bandwidth through `rtl_offset_aware_bandwidth_hz()`,
+    PPM if nonzero, frequency, gain mode + gain if a gain took, register 0x19, IF gains, bias tee, FIFO reset; the
+    frequency precedes the rate so an R82xx never tunes to 0 Hz). A control that took and does not take again fails
+    the recovery with the handle closed and nothing published; success publishes the handle and clears `recovering`.
+    It never starts the reader: `rtl_device_usb_resume_reader()` does, under `usb_lifecycle_lock`, only while
+    `stop_requested` is clear, after recording `progress_baseline` and bumping `watch_rearm_seq`. Stop and destroy set
+    `stop_requested` first, whatever runs, then take `usb_lifecycle_lock`; the swap checks the latch between steps
+    (the reset polls it) and returns `-ECANCELED`, so either the reader restarted before the stop (which joins it) or
+    it never starts. A dongle found on another port is recorded there; an identity no longer unique turns recovery off
+    from then on. Test: `IO_RTL_USB_SWAP` (a whole fake dongle, `rtl_device_test_usb_dongle_install()`, over a fake
+    device list; ASan/TSan).
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is

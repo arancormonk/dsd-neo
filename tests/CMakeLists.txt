@@ -14347,7 +14347,9 @@ if(DSD_HAS_RADIO)
         )
         target_link_options(
             dsd-neo_test_io_rtl_preopened_fd
-            PRIVATE "LINKER:--wrap=rtlsdr_open"
+            PRIVATE
+                "LINKER:--wrap=rtlsdr_open"
+                "LINKER:--wrap=rtlsdr_get_device_count"
         )
     endif()
     add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
@@ -14443,6 +14445,28 @@ if(DSD_HAS_RADIO)
         )
     endif()
 
+    # Resetting and reopening a stalled RTL-SDR under a running device, over a fake
+    # dongle and a fake USB device list: the handle swap, the replay of the settings
+    # the dongle took, setters refused during the swap, and a stop at every step.
+    # Without libusb only the "recovery is off" report is checked.
+    add_executable(dsd-neo_test_io_rtl_usb_swap io/test_io_rtl_usb_swap.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_swap
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_swap
+        PRIVATE
+            DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+            $<$<BOOL:${DSD_HAVE_LIBUSB}>:DSD_HAVE_LIBUSB>
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_swap
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_SWAP COMMAND dsd-neo_test_io_rtl_usb_swap)
+    set_tests_properties(IO_RTL_USB_SWAP PROPERTIES TIMEOUT 120)
+
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
         dsd-neo_bench_usb_ingest
@@ -14481,7 +14505,9 @@ if(DSD_HAS_RADIO)
         )
         target_link_options(
             dsd-neo_test_io_rtl_run_result
-            PRIVATE "LINKER:--wrap=rtlsdr_open"
+            PRIVATE
+                "LINKER:--wrap=rtlsdr_open"
+                "LINKER:--wrap=rtlsdr_get_device_count"
         )
         add_test(NAME IO_RTL_RUN_RESULT COMMAND dsd-neo_test_io_rtl_run_result)
     endif()
