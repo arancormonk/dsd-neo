@@ -137,7 +137,7 @@ SCAN_ARGS=(
   --exclude "$ROOT_DIR/android/third_party"
 )
 if [[ $STRICT -eq 1 ]]; then
-  # No --status-bugs: the strict verdict counts the reports itself, after drop_clang_header_false_positives().
+  # No --status-bugs: the strict verdict counts the reports itself, in count_reports_but_clang_header_false_positives().
   SCAN_ARGS+=(
     -analyze-headers
     --force-analyze-debug-code
@@ -158,10 +158,11 @@ fi
 # _rdsspq_i64() pass an uninitialized value to their builtin on purpose (the header silences -Wuninitialized for it), so
 # every file that includes <immintrin.h> reports those two functions as "Uninitialized argument value". scan-build's
 # --exclude matches whole directories only, and excluding Clang's include directory would also hide real bugs that end
-# there (a bad pointer reaching _mm256_loadu_ps()). So exactly these reports are dropped, matched by file, function and
-# bug type; any other report, in that header or elsewhere, still fails the run. Only the run directories this
-# invocation added are counted (see previous_runs), as --status-bugs did. Prints how many reports are left.
-drop_clang_header_false_positives() {
+# there (a bad pointer reaching _mm256_loadu_ps()). So exactly these reports are left out of the strict count, matched
+# by file, function and bug type (they stay in the HTML output); any other report, in that header or elsewhere, still
+# fails the run. Only the run directories this invocation added are counted (see previous_runs), as --status-bugs
+# did. Prints how many reports are left.
+count_reports_but_clang_header_false_positives() {
   local analyzer_clang resource_dir run report left=0
   analyzer_clang="$(dirname "$(command -v scan-build)")/clang"
   if [[ ! -x "$analyzer_clang" ]]; then
@@ -169,7 +170,7 @@ drop_clang_header_false_positives() {
   fi
   resource_dir=$("$analyzer_clang" -print-resource-dir 2> /dev/null || true)
   while IFS= read -r -d '' run; do
-    if printf '%s\n' "$previous_runs" | grep -q -F -x -- "$run"; then
+    if grep -q -F -x -- "$run" <<< "$previous_runs"; then
       continue
     fi
     while IFS= read -r -d '' report; do
@@ -177,8 +178,7 @@ drop_clang_header_false_positives() {
         && grep -q -F -x "<!-- BUGFILE $resource_dir/include/cetintrin.h -->" "$report" \
         && grep -q -F -x "<!-- BUGTYPE Uninitialized argument value -->" "$report" \
         && grep -q -E -x "<!-- FUNCTIONNAME _rdssp(d_i32|q_i64) -->" "$report"; then
-        echo "Dropping Clang header false positive: $report" >&2
-        rm -f "$report"
+        echo "Not counting Clang header false positive: $report" >&2
         continue
       fi
       left=$((left + 1))
@@ -245,8 +245,8 @@ rc=${PIPESTATUS[0]}
 set -e
 
 if [[ $STRICT -eq 1 && $rc -eq 0 ]]; then
-  bugs=$(drop_clang_header_false_positives 2>> "$LOG_FILE")
-  echo "scan-build: $bugs bug(s) left after dropping Clang header false positives" | tee -a "$LOG_FILE"
+  bugs=$(count_reports_but_clang_header_false_positives 2>> "$LOG_FILE")
+  echo "scan-build: $bugs bug(s) counted, Clang header false positives aside" | tee -a "$LOG_FILE"
   if [[ $bugs -gt 0 ]]; then
     rc=1
   fi
