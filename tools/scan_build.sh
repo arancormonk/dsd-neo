@@ -137,8 +137,8 @@ SCAN_ARGS=(
   --exclude "$ROOT_DIR/android/third_party"
 )
 if [[ $STRICT -eq 1 ]]; then
+  # No --status-bugs: the strict verdict counts the reports itself, in count_reports_but_clang_header_false_positives().
   SCAN_ARGS+=(
-    --status-bugs
     -analyze-headers
     --force-analyze-debug-code
     -maxloop 8
@@ -153,6 +153,39 @@ if [[ $STRICT -eq 1 ]]; then
     -enable-checker optin.portability.UnixAPI
   )
 fi
+
+# -analyze-headers also analyzes every function in Clang's own intrinsic headers. cetintrin.h's _rdsspd_i32() and
+# _rdsspq_i64() pass an uninitialized value to their builtin on purpose (the header silences -Wuninitialized for it), so
+# every file that includes <immintrin.h> reports those two functions as "Uninitialized argument value". scan-build's
+# --exclude matches whole directories only, and excluding Clang's include directory would also hide real bugs that end
+# there (a bad pointer reaching _mm256_loadu_ps()). So exactly these reports are left out of the strict count, matched
+# by file, function and bug type (they stay in the HTML output); any other report, in that header or elsewhere, still
+# fails the run. Only the run directories this invocation added are counted (see previous_runs), as --status-bugs
+# did. Prints how many reports are left.
+count_reports_but_clang_header_false_positives() {
+  local analyzer_clang resource_dir run report left=0
+  analyzer_clang="$(dirname "$(command -v scan-build)")/clang"
+  if [[ ! -x "$analyzer_clang" ]]; then
+    analyzer_clang=clang
+  fi
+  resource_dir=$("$analyzer_clang" -print-resource-dir 2> /dev/null || true)
+  while IFS= read -r -d '' run; do
+    if grep -q -F -x -- "$run" <<< "$previous_runs"; then
+      continue
+    fi
+    while IFS= read -r -d '' report; do
+      if [[ -n "$resource_dir" ]] &&
+        grep -q -F -x "<!-- BUGFILE $resource_dir/include/cetintrin.h -->" "$report" &&
+        grep -q -F -x "<!-- BUGTYPE Uninitialized argument value -->" "$report" &&
+        grep -q -E -x "<!-- FUNCTIONNAME _rdssp(d_i32|q_i64) -->" "$report"; then
+        echo "Not counting Clang header false positive: $report" >&2
+        continue
+      fi
+      left=$((left + 1))
+    done < <(find "$run" -maxdepth 1 -name 'report-*.html' -print0)
+  done < <(find -H "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2> /dev/null)
+  echo "$left"
+}
 
 for d in "$BUILD_DIR" "$OUTPUT_DIR"; do
   if [[ -z "$d" || "$d" == "/" ]]; then
@@ -171,6 +204,13 @@ fi
 BUILD_CMD=(cmake --build "$BUILD_DIR" -j "$JOBS")
 if [[ ${#TARGETS[@]} -gt 0 ]]; then
   BUILD_CMD+=(--target "${TARGETS[@]}")
+fi
+
+# The run directories a reused output directory already holds; the strict verdict skips them. -H (above) follows an
+# output directory given as a symlink, as scan-build itself does when it writes there.
+previous_runs=""
+if [[ -d "$OUTPUT_DIR" ]]; then
+  previous_runs=$(find -H "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d)
 fi
 
 set +e
@@ -203,6 +243,14 @@ set +e
 } 2>&1 | tee "$LOG_FILE"
 rc=${PIPESTATUS[0]}
 set -e
+
+if [[ $STRICT -eq 1 && $rc -eq 0 ]]; then
+  bugs=$(count_reports_but_clang_header_false_positives 2>> "$LOG_FILE")
+  echo "scan-build: $bugs bug(s) counted, Clang header false positives aside" | tee -a "$LOG_FILE"
+  if [[ $bugs -gt 0 ]]; then
+    rc=1
+  fi
+fi
 
 if [[ $rc -eq 0 ]]; then
   echo "scan-build completed. Reports in $OUTPUT_DIR, log in $LOG_FILE"
