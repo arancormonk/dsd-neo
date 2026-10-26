@@ -44,6 +44,7 @@ map_libusb(int rc) {
     switch (rc) {
         case LIBUSB_SUCCESS: return RTL_USB_OP_OK;
         case LIBUSB_ERROR_ACCESS: return RTL_USB_OP_ACCESS;
+        case LIBUSB_ERROR_NOT_SUPPORTED: return RTL_USB_OP_UNSUPPORTED;
         case LIBUSB_ERROR_NO_DEVICE:
         case LIBUSB_ERROR_NOT_FOUND: return RTL_USB_OP_GONE;
         default: return RTL_USB_OP_ERROR;
@@ -285,7 +286,11 @@ scan_rtl_indexes(const rtl_usb_driver_ops* o, const triple& want) {
 }
 
 /* The vendor-specific-class USB devices that carry a triple, whatever their VID:PID. A device whose class cannot be
- * told, or whose strings cannot be read, counts as unreadable: it might carry the triple. */
+ * told, or whose strings cannot be read, counts as unreadable: it might carry the triple. With skip_unopenable
+ * (identity resolution), a device whose open is refused for access or lack of a usable driver is skipped instead:
+ * librtlsdr is about to open the dongle with this process's permissions, so a device this process cannot open is not
+ * the dongle. Rediscovery after a reset keeps counting it, since udev may not yet have applied permissions to the
+ * re-enumerated dongle. */
 struct usb_scan {
     int ok = 0;
     int matches = 0;
@@ -294,7 +299,7 @@ struct usb_scan {
 };
 
 usb_scan
-scan_usb(const rtl_usb_driver_ops* o, const triple& want) {
+scan_usb(const rtl_usb_driver_ops* o, const triple& want, bool skip_unopenable) {
     usb_scan u;
     DSD_MEMSET(&u.match, 0, sizeof(u.match));
     void* session = nullptr;
@@ -313,12 +318,15 @@ scan_usb(const rtl_usb_driver_ops* o, const triple& want) {
             continue;
         }
         void* handle = nullptr;
-        if (o->usb_open(session, i, &handle) != RTL_USB_OP_OK) {
-            u.unreadable++;
+        int rc = o->usb_open(session, i, &handle);
+        if (rc != RTL_USB_OP_OK) {
+            if (!(skip_unopenable && (rc == RTL_USB_OP_ACCESS || rc == RTL_USB_OP_UNSUPPORTED))) {
+                u.unreadable++;
+            }
             continue;
         }
         triple t;
-        int rc = o->usb_read_strings(handle, t.manufacturer, t.product, t.serial);
+        rc = o->usb_read_strings(handle, t.manufacturer, t.product, t.serial);
         o->usb_close(handle);
         if (rc != RTL_USB_OP_OK) {
             u.unreadable++;
@@ -366,7 +374,7 @@ rediscover(const rtl_usb_driver_ops* o, const struct rtl_usb_identity* id, int (
         if (is_cancelled(cancelled, ctx)) {
             return RTL_USB_ID_NOT_FOUND;
         }
-        usb_scan u = scan_usb(o, want);
+        usb_scan u = scan_usb(o, want, false);
         if (u.ok && u.matches > 1) {
             return RTL_USB_ID_DUPLICATE;
         }
@@ -410,7 +418,7 @@ rtl_usb_identity_resolve(int index, struct rtl_usb_identity* out) {
     if (r.matches > 1) {
         return RTL_USB_ID_DUPLICATE;
     }
-    usb_scan u = scan_usb(o, want);
+    usb_scan u = scan_usb(o, want, true);
     if (!u.ok) {
         return RTL_USB_ID_FAILED;
     }

@@ -4408,7 +4408,10 @@ Key public headers:
     the (manufacturer, product, serial) triple librtlsdr reads for the index, and is valid only when exactly one
     device with a vendor-specific (0xff) device or interface class carries it, whatever its VID:PID, none of those
     devices was unreadable (an unreadable one might be the dongle beside a readable twin), the serial is not empty,
-    and librtlsdr has exactly one index with it; it records bus, port path and VID:PID.
+    and librtlsdr has exactly one index with it; it records bus, port path and VID:PID. A device whose open is refused
+    for access or lack of a usable driver (`LIBUSB_ERROR_ACCESS`, `LIBUSB_ERROR_NOT_SUPPORTED`) is not unreadable
+    here: librtlsdr opens the dongle with the same permissions right after, so it cannot be the dongle; every other
+    failure (I/O, pipe, timeout, descriptors unreadable on an opened device) refuses.
     `rtl_usb_identity_verify_handle()` checks the opened handle's strings. `rtl_usb_identity_reset()` opens the device
     at the recorded bus + port path + VID:PID, re-reads its strings on the handle the reset goes through and resets
     only on the triple (a replacement on that port gets `RTL_USB_ID_MISMATCH` and no reset); a device that

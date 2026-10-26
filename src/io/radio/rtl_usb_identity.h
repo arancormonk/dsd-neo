@@ -18,6 +18,10 @@
  *   reads the strings of every USB device with a vendor-specific (0xff) device or interface class, whatever its
  *   VID:PID. It succeeds only when exactly one of them carries the triple, none could not be read (an unreadable one
  *   might be the dongle, with a readable twin elsewhere), and librtlsdr's enumeration has exactly one index with it.
+ *   A device this process may not open (access denied, or no usable driver: LIBUSB_ERROR_ACCESS or
+ *   LIBUSB_ERROR_NOT_SUPPORTED) is not counted as unreadable: librtlsdr opens the dongle with the same permissions
+ *   right after, so such a device cannot be it. Any other failure (I/O, pipe, timeout, descriptors unreadable on an
+ *   opened device) still refuses.
  * - rtl_usb_identity_verify_handle() checks that the opened handle carries the triple.
  * - rtl_usb_identity_reset() opens the device at the recorded bus + port path with the recorded VID:PID, re-reads its
  *   strings and resets it only when they are still the triple; a device that replaced it on that port is left alone.
@@ -85,9 +89,10 @@ struct rtl_usb_device_info {
 /* Results of the libusb ops. */
 enum {
     RTL_USB_OP_OK = 0,
-    RTL_USB_OP_ACCESS = -1, /* LIBUSB_ERROR_ACCESS */
-    RTL_USB_OP_GONE = -2,   /* LIBUSB_ERROR_NO_DEVICE or LIBUSB_ERROR_NOT_FOUND: disconnected or re-enumerated */
-    RTL_USB_OP_ERROR = -3,  /* anything else */
+    RTL_USB_OP_ACCESS = -1,      /* LIBUSB_ERROR_ACCESS */
+    RTL_USB_OP_GONE = -2,        /* LIBUSB_ERROR_NO_DEVICE or LIBUSB_ERROR_NOT_FOUND: disconnected or re-enumerated */
+    RTL_USB_OP_ERROR = -3,       /* anything else */
+    RTL_USB_OP_UNSUPPORTED = -4, /* LIBUSB_ERROR_NOT_SUPPORTED: no driver this process can open it through */
 };
 
 /*

@@ -2,9 +2,10 @@
 /*
  * Which USB device an RTL-SDR runs on, and a reset of only that device, over a fake device list (the real dongles are
  * never touched). Identity takes exactly one vendor-specific-class device with the receiver's string triple, refuses
- * any duplicate or unreadable candidate (a twin of another VID included), and needs one librtlsdr index with the
- * triple. A reset re-reads the strings at the recorded port and leaves a replacement alone; a device that
- * re-enumerates is found again by its triple within the bound. Without libusb every call reports it.
+ * any duplicate or unreadable candidate (a twin of another VID included; a device this process may not open is not
+ * unreadable), and needs one librtlsdr index with the triple. A reset re-reads the strings at the recorded port and
+ * leaves a replacement alone; a device that re-enumerates is found again by its triple within the bound. Without
+ * libusb every call reports it.
  */
 
 #include <assert.h>
@@ -309,10 +310,10 @@ duplicate_serial_refused(void) {
 
 void
 unreadable_vendor_candidate_refused(void) {
-    /* A vendor-specific device that cannot be opened might be a twin. */
+    /* A vendor-specific device whose open fails with an I/O-style error might be a twin. */
     reset_world();
     fake_dev locked = make_dev(0x27c6, 0x5110, 1, 5, "", 1);
-    locked.open_rc = RTL_USB_OP_ACCESS;
+    locked.open_rc = RTL_USB_OP_ERROR;
     g_world.devs.push_back(locked);
     rtl_usb_identity id;
     assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_UNREADABLE);
@@ -333,6 +334,49 @@ unreadable_vendor_candidate_refused(void) {
     /* The unreadable HID device in every world above is not a candidate. */
     reset_world();
     assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_OK);
+    assert(total_resets() == 0);
+}
+
+/* A vendor-specific device this process may not open cannot be the dongle librtlsdr is about to open with the same
+ * permissions, so it does not block the identity: a root-only fingerprint reader beside the dongles. */
+void
+access_denied_candidate_ignored(void) {
+    reset_world();
+    fake_dev locked = make_dev(0x27c6, 0x5110, 1, 5, "", 1);
+    locked.open_rc = RTL_USB_OP_ACCESS;
+    g_world.devs.push_back(locked);
+    rtl_usb_identity id;
+    assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_OK);
+    assert(id.valid == 1 && id.bus == 1 && id.ports[1] == 2);
+    assert(strcmp(id.serial, "56435444") == 0);
+    assert(rtl_usb_identity_resolve(1, &id) == RTL_USB_ID_OK);
+    assert(id.bus == 3);
+
+    /* The reset still re-reads the triple at the recorded port and touches nothing else. */
+    id = resolve_a();
+    assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_OK);
+    assert(g_world.devs[0].resets == 1 && total_resets() == 1);
+    g_world.devs[0].serial = "99999999";
+    assert(rtl_usb_identity_reset(&id, nullptr, nullptr) == RTL_USB_ID_MISMATCH);
+    assert(total_resets() == 1);
+}
+
+/* The same for a device with no driver this process can open it through (Windows without WinUSB). */
+void
+not_supported_candidate_ignored(void) {
+    reset_world();
+    fake_dev wifi = make_dev(0x0bda, 0x8179, 1, 6, "00E04C0001", 1);
+    wifi.open_rc = RTL_USB_OP_UNSUPPORTED;
+    g_world.devs.push_back(wifi);
+    rtl_usb_identity id;
+    assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_OK);
+    assert(id.valid == 1 && id.bus == 1 && strcmp(id.serial, "56435444") == 0);
+
+    /* A device that opens but whose descriptors cannot be read still refuses. */
+    g_world.devs.back().open_rc = RTL_USB_OP_OK;
+    g_world.devs.back().read_rc = RTL_USB_OP_ERROR;
+    assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_UNREADABLE);
+    assert(id.valid == 0);
     assert(total_resets() == 0);
 }
 
@@ -612,6 +656,8 @@ main(void) {
     unique_match_resolves();
     duplicate_serial_refused();
     unreadable_vendor_candidate_refused();
+    access_denied_candidate_ignored();
+    not_supported_candidate_ignored();
     cross_vid_twin_with_active_unreadable_refused();
     empty_strings_refused();
     handle_mismatch_detected();
