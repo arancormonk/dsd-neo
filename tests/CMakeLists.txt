@@ -14516,6 +14516,37 @@ if(DSD_HAS_RADIO)
     add_test(NAME IO_RTL_USB_SWAP COMMAND dsd-neo_test_io_rtl_usb_swap)
     set_tests_properties(IO_RTL_USB_SWAP PROPERTIES TIMEOUT 120)
 
+    # A stalled RTL-SDR recovered in place over the fake dongle: the progress
+    # monitor's requests and budget, and the stream boundary the controller runs
+    # around the reset and reopen. Without libusb only the ineligible case runs.
+    add_executable(
+        dsd-neo_test_io_rtl_usb_recovery
+        io/test_io_rtl_usb_recovery.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_recovery
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_recovery
+        PRIVATE
+            DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+            $<$<BOOL:${DSD_HAVE_LIBUSB}>:DSD_HAVE_LIBUSB>
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_recovery
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_RECOVERY COMMAND dsd-neo_test_io_rtl_usb_recovery)
+    set_tests_properties(IO_RTL_USB_RECOVERY PROPERTIES TIMEOUT 120)
+
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
         dsd-neo_bench_usb_ingest

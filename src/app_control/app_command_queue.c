@@ -85,6 +85,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -8824,10 +8825,38 @@ dsd_app_commands_pending(void) {
     return pending;
 }
 
+/* The stream notice the next drain shows (dsd_app_stream_notice_post()); DSD_STREAM_NOTICE_NONE for none. One slot: a
+   notice is a fact about the stream now, so a newer one replaces one not yet shown. */
+static atomic_int g_stream_notice = DSD_STREAM_NOTICE_NONE;
+
+void
+dsd_app_stream_notice_post(int kind) {
+    atomic_store(&g_stream_notice, kind);
+}
+
+void
+dsd_app_stream_notice_clear(void) {
+    atomic_store(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
+}
+
+/* Show a posted stream notice as a toast. It is news, not a failure: nothing is latched, and the session goes on. */
+static void
+ui_show_stream_notice(dsd_state* state) {
+    if (!state || atomic_load(&g_stream_notice) == DSD_STREAM_NOTICE_NONE) {
+        return;
+    }
+    const int kind = atomic_exchange(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
+    if (kind == DSD_STREAM_NOTICE_USB_RECOVERED) {
+        ui_set_toast(state, 5, "%s", "RTL-SDR stopped sending samples; reset and reopened");
+        dsd_telemetry_publish_snapshot(state);
+    }
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
+    ui_show_stream_notice(state);
     for (;;) {
         /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between
            two commands, and a switch between analog kinds or onto the monitor keeps the baseline of one still armed

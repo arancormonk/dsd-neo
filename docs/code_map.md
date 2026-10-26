@@ -4368,7 +4368,9 @@ Key public headers:
     when the stream restarts (`airspy_source_generation()` counts restarts, for the log only), and only observed
     progress ends it. 5000 ms of it (`RTL_PROGRESS_SILENCE_LIMIT_MS`; the 100 ms period is `RTL_PROGRESS_PERIOD_MS`;
     both are constants that only internal test hooks shorten) ends the session with `-ETIMEDOUT` through
-    `rtl_device_end_for_receiver()`, so the grace applies, and cancels the RTL reader. The Airspy's "stream stopped"
+    `rtl_device_end_for_receiver()`, so the grace applies, and cancels the RTL reader; an RTL-SDR eligible for stall
+    recovery is handed to its stream's controller instead, within its budget (see "USB stall recovery" below). The
+    Airspy's "stream stopped"
     verdict (`-1`) takes the same path. Every verdict carries the progress count it was made at; during the grace only
     progress since then drops it, never a restart or an SDK that says it streams, and the deadline never restarts. Of
     verdicts that race (a reader exit and the monitor), the first reports (`receiver_end_claimed`). Tests:
@@ -4470,6 +4472,35 @@ Key public headers:
     it never starts. A dongle found on another port is recorded there; a triple that after the reset no longer leads to
     exactly one device (index or resolution) fails the recovery before any open and turns recovery off from then on. Test: `IO_RTL_USB_SWAP` (a whole fake dongle, `rtl_device_test_usb_dongle_install()`, over a fake
     device list; ASan/TSan).
+  - USB stall recovery (issue #518 B1, D1, D2). The stream registers `rtl_device_set_recovery_callback()` before the
+    USB reader starts and clears it once `rtl_device_stop_async()` joined the progress monitor. At the 5000 ms silence
+    limit the monitor of an eligible receiver with a callback posts a request (`recovery_request` REQUESTED, and
+    `recovery_epoch` moves) unless its budget refuses: one per stall (a restarted reader with no nonempty callback since
+    its `progress_baseline` is the same stall) and none within 60 000 ms of the previous request; a refusal, an
+    ineligible receiver or one without a callback ends the session as #774 does. While a request is pending or taken
+    the monitor accrues nothing; one the controller has not taken (`rtl_device_usb_recovery_take()`, which logs
+    `RTL-SDR: the receiver sent no samples for <n> ms; resetting the USB device`) within 2000 ms is withdrawn and ends
+    the session. A changed `watch_rearm_seq` restarts the watch from `progress_baseline` with no silence, so callbacks
+    before the reader thread started count. `rtl_device_end_for_receiver()` drops a verdict while a request is pending
+    or taken, or when one was posted since it was made (a reader-exit verdict waiting out the unplug-owner grace);
+    `rtl_device_usb_recovery_finish()` reports the recovery's own result: 0 resumes, a stop is silent, anything else
+    ends the session for the receiver with the failed step in the cause. The controller side
+    (`rtl_sdr_fm.cpp`): the callback queues `usb_recovery_pending` on `hop_m`; `controller_wait_for_retune_work()`
+    takes it alone, ahead of a queued retune or PPM change, and `controller_process_usb_recovery()` runs
+    `controller_stream_boundary(s, reason, device_op, ctx)` (`reason`: the gap's, `kStreamGap*`): `controller_begin_reconfigure()` (gate, capture hold, input
+    purge, pre mute), `device_op` (USB: `rtl_device_usb_recover_handle()`, then the published tuner gain), then on every
+    exit the retune tail (post mute, `controller_finalize_reconfigure()` with `DemodRetuneResetReason::StreamGap`,
+    which keeps the FLL and records no capture RESET of its own, post-reset mute, capture hold released); only after a
+    successful `device_op` the output ring is emptied with the generation moved, `rtl_stream_note_discontinuity()`
+    records the gap's RETUNE+RESET pair and moves the count, and `rtl_device_resume_stream()` restarts the producer;
+    the gate ends last. `retune_reset_reason_from_name()` maps the gap reasons to `StreamGap` for a replay. A success
+    posts `DSD_STREAM_NOTICE_USB_RECOVERED` (`<dsd-neo/runtime/stream_notice_hooks.h>`); app-control installs the sink
+    at session start, `dsd_app_drain_cmds()` shows it as the toast `RTL-SDR stopped sending samples; reset and
+    reopened` (no failure latched), and session end clears it. Tests: `IO_RTL_USB_RECOVERY` (device level with the test
+    as the controller: budget, take bound, rearm, grace verdict; stream level over the real controller: step order with
+    a probe, failure and stop, capture events; ASan/TSan), `IO_USB_PROGRESS_MONITOR` (ineligible with a callback),
+    `IO_RTL_REPLAY_EOF_AND_CF32` (gap reasons replay as `StreamGap`), `APP_COMMAND_QUEUE` (the toast),
+    `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is

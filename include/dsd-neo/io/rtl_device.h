@@ -432,6 +432,52 @@ int rtl_device_usb_recover_handle(struct rtl_device* dev, char* why, size_t why_
 int rtl_device_usb_resume_reader(struct rtl_device* dev);
 
 /**
+ * @brief Asks a stream's controller to recover the device's stalled receiver; called on the progress monitor's thread.
+ *
+ * It only queues the work: the controller takes the request (rtl_device_usb_recovery_take()), runs the stream boundary
+ * and reports its result (rtl_device_usb_recovery_finish()).
+ */
+typedef void (*rtl_device_recovery_cb)(void* ctx);
+
+/**
+ * @brief Register (or, with NULL, clear) the stream's recovery callback.
+ *
+ * The progress monitor of an eligible USB receiver (rtl_device_usb_recovery_eligible()) posts a recovery request
+ * through it once the receiver has sent no samples for 5 s, at most once per stall and not within 60 s of the previous
+ * request. Without a callback the silence ends the session as before. Set before the stream starts and clear after it
+ * stopped.
+ */
+void rtl_device_set_recovery_callback(struct rtl_device* dev, rtl_device_recovery_cb cb, void* ctx);
+
+/**
+ * @brief Take the recovery request the progress monitor posted, on the controller's thread.
+ *
+ * Logs that the recovery starts. A request the monitor withdrew (not taken within 2 s; the session then ended) cannot
+ * be taken.
+ *
+ * @return 1 when the caller now owns the recovery and must finish it; 0 when there is nothing to take.
+ */
+int rtl_device_usb_recovery_take(struct rtl_device* dev);
+
+/**
+ * @brief Finish a recovery taken with rtl_device_usb_recovery_take().
+ *
+ * @p rc 0: the receiver was reset, reopened and its reader restarted; the progress monitor watches it afresh.
+ * -ECANCELED (or any result once the device was stopped): silent. Anything else ends the session for the receiver
+ * as a device failure, with @p why (the step that failed) in the logged cause.
+ */
+void rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why);
+
+/**
+ * @brief Let the device's producer deliver again after a stream boundary (USB: restart the reader,
+ * rtl_device_usb_resume_reader()).
+ *
+ * @return 0 when it delivers again (or has nothing to resume); -ECANCELED when the device was stopped; another
+ *         negative code on failure.
+ */
+int rtl_device_resume_stream(struct rtl_device* dev);
+
+/**
  * @brief Mute the incoming raw USB/TCP byte stream for a short duration.
  *
  * Note: The argument is in raw input BYTES (u8 I/Q interleaved), not int16

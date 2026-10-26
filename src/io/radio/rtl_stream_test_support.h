@@ -402,6 +402,37 @@ int rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db,
 int rtl_stream_test_note_discontinuity(struct rtl_device* dev, uint32_t center_hz, uint32_t capture_hz,
                                        uint32_t rate_hz, const char* reason);
 
+/* The steps of a stream boundary (controller_stream_boundary()), in order; the last three run only after its device
+ * step succeeded. */
+enum {
+    RTL_STREAM_TEST_BOUNDARY_GATE = 1,          /* the reconfigure gate closed and the capture held */
+    RTL_STREAM_TEST_BOUNDARY_DEVICE_OP = 2,     /* the device step returned */
+    RTL_STREAM_TEST_BOUNDARY_TAIL = 3,          /* the retune tail ran: finalize, mutes, capture hold released */
+    RTL_STREAM_TEST_BOUNDARY_DISCONTINUITY = 4, /* the output moved on and the gap was noted */
+    RTL_STREAM_TEST_BOUNDARY_RESUME = 5,        /* the producer was let deliver again */
+    RTL_STREAM_TEST_BOUNDARY_END = 6,           /* the gate opened */
+};
+
+/* Call @p probe(step, @p ctx) on the controller thread at each step of every stream boundary; NULL removes it. Set
+ * while no boundary runs. */
+void rtl_stream_test_set_stream_boundary_probe(void (*probe)(int step, void* ctx), void* ctx);
+/* The device the running stream opened, NULL without one. */
+struct rtl_device* rtl_stream_test_device(void);
+/* Whether the controller's reconfigure gate is closed (the demod parked between blocks). */
+int rtl_stream_test_reconfigure_gate_closed(void);
+/* Whether @p dev holds its capture for a reconfiguration (rtl_device_begin_capture_reconfigure()). */
+int rtl_device_test_capture_reconfigure_held(const struct rtl_device* dev);
+/* rtl_device_test_set_progress_limit_ms()'s kin for the stall recovery budget: the cooldown after a request (60 s)
+ * and the time the controller has to take one (2 s); 0 restores the production value. */
+void rtl_device_test_set_recovery_cooldown_ms(uint32_t cooldown_ms);
+void rtl_device_test_set_recovery_take_ms(uint32_t take_ms);
+/* Call @p hook(dev, @p ctx) on the progress monitor's thread once it decided to post a recovery request, before it
+ * posts; NULL removes it. */
+void rtl_device_test_set_recovery_post_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+/* Call @p hook(dev, @p ctx) when rtl_device_usb_resume_reader() has taken the reader's baseline and is about to start
+ * its thread (under the device's lifecycle lock); NULL removes it. */
+void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */

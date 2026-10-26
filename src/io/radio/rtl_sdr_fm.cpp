@@ -61,6 +61,7 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/threading.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -334,6 +335,9 @@ struct controller_state {
      * holdoffs reset even when the tuned center frequency remains unchanged
      * (for example, live PPM correction on the active stream). */
     std::atomic<uint32_t> reconfigure_seq{0U};
+    /* A stall recovery the USB device's progress monitor asked for (controller_post_usb_recovery()); guarded by hop_m
+       for the wake, taken by controller_wait_for_retune_work() ahead of any retune. */
+    std::atomic<int> usb_recovery_pending{0};
 };
 
 } // namespace
@@ -1731,6 +1735,9 @@ enum class DemodRetuneResetReason : uint8_t {
     PpmCorrection,
     FreshStream,
     CqpskReacquire,
+    /* A gap in the stream on the same carrier (a USB recovery or rtl_tcp reconnect, issue #518 D1): the demod starts
+       over on the same centre, and the FLL keeps the transmitter's offset it had learned. */
+    StreamGap,
 };
 
 struct DemodRetuneResetPlan {
@@ -1755,6 +1762,7 @@ retune_reset_reason_name(DemodRetuneResetReason reason) {
         case DemodRetuneResetReason::PpmCorrection: return "ppm-correction";
         case DemodRetuneResetReason::FreshStream: return "fresh-stream";
         case DemodRetuneResetReason::CqpskReacquire: return "cqpsk-reacquire";
+        case DemodRetuneResetReason::StreamGap: return "stream-gap";
         default: return "unknown";
     }
 }
@@ -1775,6 +1783,10 @@ retune_reset_reason_from_name(const char* reason) {
     }
     if (strcmp(reason, "cqpsk-reacquire") == 0) {
         return DemodRetuneResetReason::CqpskReacquire;
+    }
+    if (strcmp(reason, RTL_STREAM_GAP_REASON_USB_RECOVERY) == 0
+        || strcmp(reason, RTL_STREAM_GAP_REASON_TCP_RECONNECT) == 0) {
+        return DemodRetuneResetReason::StreamGap;
     }
     return DemodRetuneResetReason::FrequencyRetune;
 }
@@ -5215,7 +5227,8 @@ controller_finalize_dsp_chain(struct controller_state* s, const dsd_opts* opts, 
     DemodRetuneResetPlan reset_plan = demod_retune_reset_plan(reset_reason, previous_center_freq_hz, center_freq_hz,
                                                               previous_rate_out_hz, demod.rate_out);
     demod_reset_on_retune(&demod, reset_plan);
-    if (mark_reconfigure) {
+    /* A stream gap records its RETUNE and RESET pair itself, named after the gap (rtl_stream_note_discontinuity()). */
+    if (mark_reconfigure && reset_plan.reason != DemodRetuneResetReason::StreamGap) {
         rtl_device_record_capture_reset(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
                                         retune_reset_reason_name(reset_plan.reason));
     }
@@ -5478,6 +5491,121 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
         *out_reconfigured = 1;
     }
     return apply_rc;
+}
+
+/* Why a stream boundary (controller_stream_boundary()) left a gap in the stream: recorded and replayed as the gap's
+ * reason (RTL_STREAM_GAP_REASON_*). The demod resets with DemodRetuneResetReason::StreamGap for either. */
+enum : int {
+    kStreamGapUsbRecovery = 0,
+    kStreamGapTcpReconnect = 1,
+};
+
+static const char*
+stream_gap_reason_name(int reason) {
+    return reason == kStreamGapTcpReconnect ? RTL_STREAM_GAP_REASON_TCP_RECONNECT : RTL_STREAM_GAP_REASON_USB_RECOVERY;
+}
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Called at each step of controller_stream_boundary() (rtl_stream_test_set_stream_boundary_probe()). */
+static void (*g_test_stream_boundary_probe)(int step, void* ctx) = nullptr;
+static void* g_test_stream_boundary_probe_ctx = nullptr;
+#define STREAM_BOUNDARY_TEST_STEP(step)                                                                                \
+    do {                                                                                                               \
+        if (g_test_stream_boundary_probe) {                                                                            \
+            g_test_stream_boundary_probe((step), g_test_stream_boundary_probe_ctx);                                    \
+        }                                                                                                              \
+    } while (0)
+#else
+#define STREAM_BOUNDARY_TEST_STEP(step) ((void)0)
+#endif
+
+/* A stream boundary on the same centre (issue #518 D1): the device's stream was lost and is replaced under the running
+ * pipeline, a USB recovery's reset and reopen or an rtl_tcp reconnect, as @p reason (kStreamGap*) says. Runs on the controller thread,
+ * which owns every retune, so the two never interleave. The reconfigure gate parks the demod and holds the capture,
+ * @p device_op(@p ctx) replaces the device's stream, and the tail a same-centre retune runs follows on every exit:
+ * post mute, finalize (input purge, demod reset with StreamGap, no capture RESET of its own), post-reset mute, capture
+ * hold released. Only when @p device_op succeeded: the output generation moves and the output ring is emptied, the
+ * gap is noted (its RETUNE and RESET capture events, then the discontinuity count the decoder checks), and only then
+ * may the producer deliver again, so no sample from after the gap can be read before the count moved. The gate ends
+ * last. Returns @p device_op's result, else the producer's resume result (-ECANCELED once the device was stopped). */
+static int
+controller_stream_boundary(struct controller_state* s, int reason, int (*device_op)(void*), void* ctx) {
+    if (!s || !device_op) {
+        return -EINVAL;
+    }
+    const uint32_t center_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
+    const int previous_rate_out_hz = demod.rate_out;
+    controller_begin_reconfigure(s);
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_GATE);
+    int rc = device_op(ctx);
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_DEVICE_OP);
+    controller_arm_retune_mute("post", 1);
+    (void)controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_hz,
+                                          DemodRetuneResetReason::StreamGap, center_hz, previous_rate_out_hz, NULL);
+    controller_arm_retune_mute("post-reset", 1);
+    rtl_device_end_capture_reconfigure(rtl_device_handle);
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_TAIL);
+    if (rc == 0) {
+        rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
+        rtl_stream_note_discontinuity(stream_gap_reason_name(reason));
+        STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_DISCONTINUITY);
+        rc = rtl_device_resume_stream(rtl_device_handle);
+        STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_RESUME);
+    }
+    controller_end_reconfigure(s);
+    STREAM_BOUNDARY_TEST_STEP(RTL_STREAM_TEST_BOUNDARY_END);
+    return rc;
+}
+
+namespace {
+/* A USB recovery's device step (controller_stream_boundary()): the device, and why it failed. */
+struct UsbRecoveryOp {
+    struct rtl_device* dev;
+    char why[256];
+};
+} // namespace
+
+static int
+controller_usb_recovery_op(void* ctx) {
+    auto* op = static_cast<UsbRecoveryOp*>(ctx);
+    const int rc = rtl_device_usb_recover_handle(op->dev, op->why, sizeof op->why);
+    if (rc == 0) {
+        /* The replay put the dongle's gain back; the frontends read it from the published copy. */
+        rtl_stream_publish_tuner_gain();
+    }
+    return rc;
+}
+
+/* Run the stall recovery the device's progress monitor asked for, if it is still there to take: the stream boundary
+ * around the device's reset and reopen, then its result to the device (which ends the session on a failure) and, on
+ * success, the notice the decoder shows. */
+static void
+controller_process_usb_recovery(struct controller_state* s) {
+    struct rtl_device* dev = rtl_device_handle;
+    if (!rtl_device_usb_recovery_take(dev)) {
+        return;
+    }
+    UsbRecoveryOp op{};
+    op.dev = dev;
+    const int rc = controller_stream_boundary(s, kStreamGapUsbRecovery, controller_usb_recovery_op, &op);
+    if (rc != 0 && rc != -ECANCELED && op.why[0] == '\0') {
+        DSD_SNPRINTF(op.why, sizeof op.why, "could not restart the USB reader (rc=%d)", rc);
+    }
+    rtl_device_usb_recovery_finish(dev, rc, op.why);
+    if (rc == 0) {
+        dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    }
+}
+
+/* The USB device's recovery callback (rtl_device_set_recovery_callback()), on its progress monitor's thread: queue the
+ * work for the controller. */
+static void
+controller_post_usb_recovery(void* ctx) {
+    auto* s = static_cast<controller_state*>(ctx);
+    dsd_mutex_lock(&s->hop_m);
+    s->usb_recovery_pending.store(1, std::memory_order_release);
+    dsd_cond_signal(&s->hop);
+    dsd_mutex_unlock(&s->hop_m);
 }
 
 namespace {
@@ -5844,6 +5972,7 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
  */
 namespace {
 struct ControllerRetuneWork {
+    int usb_recovery = 0;
     int manual_pending = 0;
     uint32_t manual_freq_hz = 0U;
     uint64_t manual_token = 0U;
@@ -5877,19 +6006,28 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     if (!s || !work) {
         return 0;
     }
+    work->usb_recovery = 0;
     work->manual_pending = 0;
     work->manual_freq_hz = 0;
     work->manual_token = 0U;
     rtl_stream_clear_retune_profile(&work->manual_profile);
     dsd_mutex_lock(&s->hop_m);
     while (!s->manual_retune_pending.load(std::memory_order_acquire)
-           && !s->ppm_change_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
+           && !s->ppm_change_pending.load(std::memory_order_acquire)
+           && !s->usb_recovery_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load())) {
         dsd_cond_wait(&s->hop, &s->hop_m);
     }
     if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load())) {
         dsd_mutex_unlock(&s->hop_m);
         return 0;
+    }
+    /* A recovery goes first and alone: a retune or PPM change queued behind it stays queued for the next pass, and lands
+       on the reopened dongle. */
+    work->usb_recovery = s->usb_recovery_pending.exchange(0, std::memory_order_acq_rel);
+    if (work->usb_recovery) {
+        dsd_mutex_unlock(&s->hop_m);
+        return 1;
     }
     work->manual_pending = s->manual_retune_pending.exchange(0, std::memory_order_acq_rel);
     if (work->manual_pending) {
@@ -6221,6 +6359,10 @@ static DSD_THREAD_RETURN_TYPE
         if (!controller_wait_for_retune_work(s, &work)) {
             break;
         }
+        if (work.usb_recovery) {
+            controller_process_usb_recovery(s);
+            continue;
+        }
         if (controller_process_manual_retune(s, &work)) {
             continue;
         }
@@ -6451,6 +6593,7 @@ controller_init(struct controller_state* s) {
     controller_clear_retune_completion_results(s);
     s->last_applied_freq_hz.store(0, std::memory_order_release);
     s->reconfigure_seq.store(0, std::memory_order_release);
+    s->usb_recovery_pending.store(0, std::memory_order_release);
 }
 
 /**
@@ -6645,6 +6788,9 @@ start_threads_and_async(void) {
     } else {
         goto fail;
     }
+    /* A USB receiver's progress monitor hands a stall to the controller, which now runs (rtl_device.cpp keeps the
+       request; other devices never post one). */
+    rtl_device_set_recovery_callback(rtl_device_handle, controller_post_usb_recovery, &controller);
     LOG_INFO("Starting RTL async read...\n");
     if (rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH) == 0) {
         if (g_stream) {
@@ -6676,6 +6822,7 @@ fail:
     safe_cond_signal(&output.space, &output.ready_m);
     safe_cond_signal(&output.ready, &output.ready_m);
     (void)rtl_device_stop_async(rtl_device_handle);
+    rtl_device_set_recovery_callback(rtl_device_handle, NULL, NULL);
     if (g_stream) {
         stream_set_lifecycle_flag(g_stream->async_started, 0);
         if (g_stream->demod_thread_started.load(std::memory_order_acquire)) {
@@ -8289,6 +8436,8 @@ dsd_rtl_stream_soft_stop(void) {
         dsd_mutex_unlock(&g_stream->replay_eof_m);
     }
     rtl_device_stop_async(rtl_device_handle);
+    /* The progress monitor is joined: no recovery request reaches the controller from here. */
+    rtl_device_set_recovery_callback(rtl_device_handle, NULL, NULL);
     /* Wake any demod waits on both ready and space condition variables */
     safe_cond_signal(&demod.ready, &demod.ready_m);
     safe_cond_signal(&output.space, &output.ready_m);
@@ -10926,6 +11075,24 @@ rtl_stream_test_note_discontinuity(struct rtl_device* dev, uint32_t center_hz, u
     store_dongle_frequency(saved_capture_hz);
     store_dongle_rate(saved_rate_hz);
     return 0;
+}
+#endif
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_set_stream_boundary_probe(void (*probe)(int step, void* ctx), void* ctx) {
+    g_test_stream_boundary_probe_ctx = ctx;
+    g_test_stream_boundary_probe = probe;
+}
+
+extern "C" struct rtl_device*
+rtl_stream_test_device(void) {
+    return rtl_device_handle;
+}
+
+extern "C" int
+rtl_stream_test_reconfigure_gate_closed(void) {
+    return controller.retune_in_progress.load(std::memory_order_acquire);
 }
 #endif
 

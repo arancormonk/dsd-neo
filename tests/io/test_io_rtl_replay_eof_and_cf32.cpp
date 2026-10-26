@@ -77,6 +77,7 @@ expect_u64_ge(const char* label, uint64_t got, uint64_t want_min) {
 enum : uint8_t {
     kReplayResetReasonFrequency = 0,
     kReplayResetReasonPpmCorrection = 2,
+    kReplayResetReasonStreamGap = 5,
 };
 
 namespace {
@@ -1284,6 +1285,40 @@ test_eventful_replay_preserves_ppm_reset_reason(void) {
     rc |= expect_true("ppm scheduled reset made exactly one purge request",
                       state.replay_event_last_reset_purge_requests == 1ULL);
     rc |= expect_int_eq("ppm scheduled reset purge mismatches", (int)state.replay_event_reset_purge_mismatch_count, 0);
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+/* A recorded USB recovery or rtl_tcp reconnect replays as the stream gap it was (issue #518 D1), not as a retune. */
+static int
+test_eventful_replay_maps_stream_gap_reset_reason(const char* reason) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_eventful_replay_fixture_with_reset_reason(metadata_path, sizeof(metadata_path), 131072U, reason);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream(metadata_path, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    uint64_t drained_samples = 0;
+    rc |= drain_stream_to_eof(ctx, 5000U, &drained_samples);
+
+    rtl_stream_test_replay_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int_eq("stream gap replay state", dsd_rtl_stream_test_get_replay_state(&state), 0);
+    rc |= expect_int_eq("stream gap scheduled reset count", (int)state.replay_event_reset_count, 1);
+    rc |= expect_int_eq("stream gap scheduled reset reason", state.replay_event_last_reset_reason,
+                        kReplayResetReasonStreamGap);
+    rc |= expect_true("stream gap scheduled reset made exactly one purge request",
+                      state.replay_event_last_reset_purge_requests == 1ULL);
 
     stop_and_destroy_stream(ctx);
     return rc;
@@ -3662,6 +3697,8 @@ main(void) {
     rc |= test_replay_last_read_leaves_stream_open();
     rc |= test_eventful_replay_applies_scheduled_events();
     rc |= test_eventful_replay_preserves_ppm_reset_reason();
+    rc |= test_eventful_replay_maps_stream_gap_reset_reason(RTL_STREAM_GAP_REASON_USB_RECOVERY);
+    rc |= test_eventful_replay_maps_stream_gap_reset_reason(RTL_STREAM_GAP_REASON_TCP_RECONNECT);
     rc |= test_loop_replay_reapplies_event_timeline();
     rc |= test_realtime_loop_waits_for_terminal_mute_before_rewind();
     rc |= test_cf32_replay_fs4_policy_changes_output();

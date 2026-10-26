@@ -76,6 +76,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -7205,6 +7206,46 @@ test_quit_takes_effect_at_submit(void) {
     dsd_app_frontend_runtime_stop();
 
     dsd_exitflag_store(0);
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+
+/* A stream notice (a stalled RTL-SDR reset and reopened under the running stream, issue #518 B1) reaches the decoder at
+   its next drain as a toast and nothing else: no failure is latched and the session keeps running. It is shown once,
+   and one the session did not get to show is not the next session's. */
+static int
+test_notice_toast_without_failure_latch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    dsd_input_failure_clear();
+    dsd_exitflag_store(0);
+    state.ui_msg[0] = '\0';
+
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    rc |= expect_int("a notice is no command", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |= expect_str("notice toast", state.ui_msg, "RTL-SDR stopped sending samples; reset and reopened");
+    rc |= expect_true("notice toast shown for a while", state.ui_msg_expire > dsd_realtime_time());
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    rc |= expect_int("no failure latched", failure.kind, DSD_INPUT_FAILURE_NONE);
+    rc |= expect_int("no receiver ending", dsd_input_failure_receiver_ended(), 0);
+    rc |= expect_int("the session runs on", (int)dsd_exitflag_load(), 0);
+
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("a notice is shown once", state.ui_msg, "");
+
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    dsd_app_frontend_runtime_stop();
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    dsd_app_frontend_runtime_start(&opts, &state);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("a notice never reaches the next session", state.ui_msg, "");
+    dsd_app_frontend_runtime_stop();
+
     freeState(&state);
     DSD_SECURE_ZERO(&state, sizeof state);
     return rc;
@@ -19985,6 +20026,7 @@ main(void) {
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
     rc |= test_quit_takes_effect_at_submit();
+    rc |= test_notice_toast_without_failure_latch();
     rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)

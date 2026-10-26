@@ -87,6 +87,13 @@ enum : unsigned char {
     RTL_CAPTURE_RECONFIGURE_RELEASING = 2,
 };
 
+/* rtl_device::recovery_request */
+enum : int {
+    RTL_USB_RECOVERY_IDLE = 0,
+    RTL_USB_RECOVERY_REQUESTED = 1,
+    RTL_USB_RECOVERY_TAKEN = 2,
+};
+
 #ifdef USE_SOAPYSDR
 #include <SoapySDR/Constants.h>
 #include <SoapySDR/Device.hpp>
@@ -510,6 +517,15 @@ struct rtl_device {
      * progress monitor can watch it afresh. */
     std::atomic<uint64_t> progress_baseline{0U};
     std::atomic<uint32_t> watch_rearm_seq{0U};
+    /* A stall recovery request (D1, D2): the progress monitor posts it through the stream's callback (REQUESTED), the
+     * stream's controller takes it (TAKEN) and finishes it (IDLE), or the monitor withdraws one not taken in time
+     * (IDLE). recovery_epoch moves with each post, so a receiver verdict made before it stays silent. The callback is
+     * set and read under usb_ctrl_lock and called outside it. */
+    std::atomic<int> recovery_request{0};
+    std::atomic<uint32_t> recovery_epoch{0U};
+    std::atomic<uint64_t> recovery_silence_ms{0U};
+    rtl_device_recovery_cb recovery_cb = nullptr;
+    void* recovery_cb_ctx = nullptr;
     struct rtl_capture_u8_byte_carry iq_byte_carry{}; /* one buffered raw byte when a chunk ends mid-I/Q sample */
 
     struct rtl_if_gain if_gains[16] = {};
@@ -3074,6 +3090,16 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
 /* rtl_device_test_set_progress_limit_ms() / _period_ms(); 0 keeps the production value. */
 static std::atomic<uint32_t> g_test_progress_limit_ms{0U};
 static std::atomic<uint32_t> g_test_progress_period_ms{0U};
+/* rtl_device_test_set_recovery_cooldown_ms() / _take_ms(); 0 keeps the production value. */
+static std::atomic<uint32_t> g_test_recovery_cooldown_ms{0U};
+static std::atomic<uint32_t> g_test_recovery_take_ms{0U};
+/* rtl_device_test_set_recovery_post_hook(): called by the monitor once it decided to post, before it does. */
+static void (*g_test_recovery_post_hook)(struct rtl_device*, void*) = nullptr;
+static void* g_test_recovery_post_hook_ctx = nullptr;
+/* rtl_device_test_set_reader_restart_hook(): called by a reader restart once its baseline is taken, before the thread
+ * starts. */
+static void (*g_test_reader_restart_hook)(struct rtl_device*, void*) = nullptr;
+static void* g_test_reader_restart_hook_ctx = nullptr;
 /* rtl_device_test_refuse_progress_monitor(): the RTL monitor's thread creation fails as a refused one does. */
 static std::atomic<int> g_test_refuse_progress_monitor{0};
 /* rtl_device_test_pause_next_verdict_ms(): one verdict, past its checks, waits this long before it claims the
@@ -3090,6 +3116,28 @@ rtl_device_test_set_progress_limit_ms(uint32_t limit_ms) {
 extern "C" void
 rtl_device_test_set_progress_period_ms(uint32_t period_ms) {
     g_test_progress_period_ms.store(period_ms, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_set_recovery_cooldown_ms(uint32_t cooldown_ms) {
+    g_test_recovery_cooldown_ms.store(cooldown_ms, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_set_recovery_take_ms(uint32_t take_ms) {
+    g_test_recovery_take_ms.store(take_ms, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_set_recovery_post_hook(void (*hook)(struct rtl_device*, void*), void* ctx) {
+    g_test_recovery_post_hook_ctx = ctx;
+    g_test_recovery_post_hook = hook;
+}
+
+extern "C" void
+rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx) {
+    g_test_reader_restart_hook_ctx = ctx;
+    g_test_reader_restart_hook = hook;
 }
 
 extern "C" void
@@ -3259,16 +3307,35 @@ rtl_device_receiver_progressed_since(const struct rtl_device* s, uint64_t verdic
     return rtl_device_sample_progress(s) != verdict_progress;
 }
 
+/* Whether a stall recovery owns the receiver's outcome for a verdict made at @p epoch: one is pending or running, or
+ * one was requested since. Its own result reports (rtl_device_usb_recovery_finish()). */
+static int
+rtl_device_recovery_supersedes(const struct rtl_device* s, uint32_t epoch) {
+    return s->recovery_request.load(std::memory_order_acquire) != RTL_USB_RECOVERY_IDLE
+           || s->recovery_epoch.load(std::memory_order_acquire) != epoch;
+}
+
+/* Whether a verdict made at @p epoch, when the receiver's progress stood at @p verdict_progress, no longer ends the
+ * session: a stop, an exit request, samples since, or a stall recovery that took the receiver over. */
+static int
+rtl_device_verdict_dropped(const struct rtl_device* s, uint64_t verdict_progress, uint32_t epoch) {
+    return !s->run.load(std::memory_order_acquire) || dsd_exitflag_load()
+           || rtl_device_receiver_progressed_since(s, verdict_progress) || rtl_device_recovery_supersedes(s, epoch);
+}
+
 /* The one path that ends a session for its receiver: a USB receiver stopped delivering, and unless a stop or an exit
  * request comes first, @p cause is logged, the session ends as a device failure of the input (@p native_code kept for
  * diagnostics), the receiver's ending is committed and the demod waiting on the input ring is woken. The cause comes
  * first, so the teardown that the report starts on other threads logs after it. While an unplug owner's grace is
  * set (rtl_device_set_unplug_owner_grace_ms()), the verdict first waits it out, polling the session: a stop inside it
  * (an unplug the owner handled) or samples since the verdict, made when the receiver's progress stood at
- * @p verdict_progress, keep it silent, and observing the session does not restart the deadline. Of verdicts that race
- * (a reader exit and the progress monitor), only the first reports. Returns 1 when it reported. */
+ * @p verdict_progress, keep it silent, and observing the session does not restart the deadline. A stall recovery
+ * pending or running when the verdict is made, or requested while it waits, keeps it silent too: the recovery's own
+ * result decides. Of verdicts that race (a reader exit and the progress monitor), only the first reports. Returns 1
+ * when it reported. */
 static int
 rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verdict_progress, const char* cause) {
+    const uint32_t epoch = s->recovery_epoch.load(std::memory_order_acquire);
     const uint32_t grace_ms = rtl_device_unplug_owner_grace_ms();
     if (grace_ms > 0U) {
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -3276,15 +3343,13 @@ rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verd
 #endif
         const uint64_t deadline_ms = dsd_realtime_mono_ms() + grace_ms;
         while (dsd_realtime_mono_ms() < deadline_ms) {
-            if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()
-                || rtl_device_receiver_progressed_since(s, verdict_progress)) {
+            if (rtl_device_verdict_dropped(s, verdict_progress, epoch)) {
                 return 0;
             }
             dsd_sleep_ms(10);
         }
     }
-    if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()
-        || rtl_device_receiver_progressed_since(s, verdict_progress)) {
+    if (rtl_device_verdict_dropped(s, verdict_progress, epoch)) {
         return 0;
     }
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -3380,9 +3445,14 @@ static DSD_THREAD_RETURN_TYPE
  * relaxed increment, no clock read), and a monitor samples the count every 100 ms on the realtime clock. Silence accrues by
  * the time between samples while the stream is up and not being reconfigured, does not reset when the stream
  * restarts, and only observed progress ends it. 5 s of it ends the session for its receiver
- * (rtl_device_end_for_receiver(), through the unplug-owner grace). */
+ * (rtl_device_end_for_receiver(), through the unplug-owner grace), unless the RTL-SDR's stall recovery takes it over
+ * (rtl_usb_progress_monitor()). */
 static const uint32_t RTL_PROGRESS_SILENCE_LIMIT_MS = 5000U;
 static const uint32_t RTL_PROGRESS_PERIOD_MS = 100U;
+/* Stall recovery budget (D2): none within 60 s of the previous request, and a request the stream's controller has not
+ * taken within 2 s ends the session instead. */
+static const uint32_t RTL_RECOVERY_COOLDOWN_MS = 60000U;
+static const uint32_t RTL_RECOVERY_TAKE_MS = 2000U;
 
 static uint32_t
 rtl_progress_limit_ms(void) {
@@ -3404,6 +3474,28 @@ rtl_progress_period_ms(void) {
     }
 #endif
     return RTL_PROGRESS_PERIOD_MS;
+}
+
+static uint32_t
+rtl_recovery_cooldown_ms(void) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    const uint32_t test_ms = g_test_recovery_cooldown_ms.load(std::memory_order_relaxed);
+    if (test_ms > 0U) {
+        return test_ms;
+    }
+#endif
+    return RTL_RECOVERY_COOLDOWN_MS;
+}
+
+static uint32_t
+rtl_recovery_take_ms(void) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    const uint32_t test_ms = g_test_recovery_take_ms.load(std::memory_order_relaxed);
+    if (test_ms > 0U) {
+        return test_ms;
+    }
+#endif
+    return RTL_RECOVERY_TAKE_MS;
 }
 
 namespace {
@@ -3485,9 +3577,78 @@ rtl_monitor_running(const struct rtl_device* s) {
            && !dsd_exitflag_load();
 }
 
+/* The stall recovery the RTL-SDR's progress monitor keeps for its device: the request it posted last (when, and the
+ * rearm sequence then), and the watch since the restarted reader's baseline. Owned by the monitor thread. */
+namespace {
+struct rtl_recovery_budget {
+    int requested;         /* a recovery was requested on this device */
+    uint64_t requested_ms; /* when the last one was */
+    uint32_t rearm_seq;    /* watch_rearm_seq as last seen */
+    int rearmed;           /* the watch restarted from a restarted reader's baseline */
+    uint64_t baseline;     /* ... that baseline */
+};
+} // namespace
+
+/* Why a silence verdict on @p s cannot be handed to a stall recovery, written to @p cause (which then ends the session),
+ * or NULL when a recovery may be requested. A device that was never eligible, or whose stream registered no recovery,
+ * ends as it always did. */
+static const char*
+rtl_usb_recovery_refusal(const struct rtl_device* s, const rtl_recovery_budget* b, const rtl_progress_watch* w,
+                         uint64_t now_ms, char* cause, size_t cause_size) {
+    rtl_usb_ctrl_lock(s);
+    const int have_cb = s->recovery_cb != nullptr;
+    rtl_usb_ctrl_unlock(s);
+    if (!rtl_device_usb_recovery_eligible(s) || !have_cb) {
+        DSD_SNPRINTF(cause, cause_size, "RTL-SDR: the receiver sent no samples for %" PRIu64 " ms; the stream stops",
+                     w->silence_ms);
+        return cause;
+    }
+    /* One recovery per stall: a reader restarted by the last one that delivered nothing since is not a new stall. */
+    if (b->rearmed && w->progress == b->baseline) {
+        DSD_SNPRINTF(cause, cause_size,
+                     "RTL-SDR: the receiver sent no samples for %" PRIu64
+                     " ms, none since it was reset and reopened; the stream stops",
+                     w->silence_ms);
+        return cause;
+    }
+    if (b->requested && now_ms - b->requested_ms < rtl_recovery_cooldown_ms()) {
+        DSD_SNPRINTF(cause, cause_size,
+                     "RTL-SDR: the receiver sent no samples for %" PRIu64 " ms, %" PRIu64
+                     " ms after it was last reset; the stream stops",
+                     w->silence_ms, now_ms - b->requested_ms);
+        return cause;
+    }
+    return nullptr;
+}
+
+/* Post a stall recovery request for @p s to its stream's controller (the registered callback). */
+static void
+rtl_usb_recovery_post(struct rtl_device* s, uint64_t silence_ms) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_recovery_post_hook) {
+        g_test_recovery_post_hook(s, g_test_recovery_post_hook_ctx);
+    }
+#endif
+    rtl_usb_ctrl_lock(s);
+    const rtl_device_recovery_cb cb = s->recovery_cb;
+    void* cb_ctx = s->recovery_cb_ctx;
+    rtl_usb_ctrl_unlock(s);
+    s->recovery_silence_ms.store(silence_ms, std::memory_order_relaxed);
+    /* Pending first, then the epoch: a verdict that read the epoch before the bump finds the request pending. */
+    s->recovery_request.store(RTL_USB_RECOVERY_REQUESTED, std::memory_order_release);
+    s->recovery_epoch.fetch_add(1U, std::memory_order_acq_rel);
+    if (cb) {
+        cb(cb_ctx);
+    }
+}
+
 /* The RTL-SDR's progress monitor, started with the reader. Silence accrues while the reader is inside
- * rtlsdr_read_async() (a reader that returned is rtl_usb_reader_finished()'s); at the limit the session ends for its
- * receiver and the reader is cancelled, as nothing else would make it return. */
+ * rtlsdr_read_async() (a reader that returned is rtl_usb_reader_finished()'s). At the limit, an eligible receiver
+ * within its budget (one recovery per stall, none within the cooldown of the previous request) is handed to its
+ * stream's controller as a recovery request, and the watch pauses while the request is pending or running; a request
+ * not taken in time is withdrawn and the session ends. A recovery that restarted the reader moves watch_rearm_seq, and
+ * the watch restarts from the reader's baseline with no silence accrued. Every other verdict ends the session for its
+ * receiver and cancels the reader, as nothing else would make it return. */
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -3496,19 +3657,57 @@ static DSD_THREAD_RETURN_TYPE
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     rtl_progress_watch watch;
     rtl_progress_watch_begin(&watch, s->progress.load(std::memory_order_relaxed));
+    rtl_recovery_budget budget{};
+    budget.rearm_seq = s->watch_rearm_seq.load(std::memory_order_acquire);
     while (rtl_monitor_running(s)) {
         rtl_monitor_wait(s);
         if (!rtl_monitor_running(s)) {
             break;
+        }
+        char cause[192];
+        const int request = s->recovery_request.load(std::memory_order_acquire);
+        if (request == RTL_USB_RECOVERY_REQUESTED) {
+            if (dsd_realtime_mono_ms() - budget.requested_ms < rtl_recovery_take_ms()) {
+                continue;
+            }
+            int expected = RTL_USB_RECOVERY_REQUESTED;
+            if (!s->recovery_request.compare_exchange_strong(expected, RTL_USB_RECOVERY_IDLE, std::memory_order_acq_rel,
+                                                             std::memory_order_acquire)) {
+                continue;
+            }
+            DSD_SNPRINTF(cause, sizeof cause,
+                         "RTL-SDR: the receiver sent no samples for %" PRIu64
+                         " ms and its reset did not start within %u ms; the stream stops",
+                         s->recovery_silence_ms.load(std::memory_order_relaxed), (unsigned)rtl_recovery_take_ms());
+            if (rtl_device_end_for_receiver(s, -ETIMEDOUT, s->progress.load(std::memory_order_relaxed), cause)) {
+                (void)rtl_usb_cancel_async(s);
+                break;
+            }
+            continue;
+        }
+        if (request == RTL_USB_RECOVERY_TAKEN) {
+            continue;
+        }
+        const uint32_t rearm_seq = s->watch_rearm_seq.load(std::memory_order_acquire);
+        if (rearm_seq != budget.rearm_seq) {
+            /* Callbacks since the baseline, taken before the reader thread started, are progress already. */
+            budget.rearm_seq = rearm_seq;
+            budget.rearmed = 1;
+            budget.baseline = s->progress_baseline.load(std::memory_order_relaxed);
+            rtl_progress_watch_begin(&watch, budget.baseline);
         }
         const int streaming =
             s->reader_entered.load(std::memory_order_acquire) && !s->reader_exited.load(std::memory_order_acquire);
         if (!rtl_progress_watch_step(&watch, s->progress.load(std::memory_order_relaxed), streaming)) {
             continue;
         }
-        char cause[96];
-        DSD_SNPRINTF(cause, sizeof cause, "RTL-SDR: the receiver sent no samples for %" PRIu64 " ms; the stream stops",
-                     watch.silence_ms);
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (!rtl_usb_recovery_refusal(s, &budget, &watch, now_ms, cause, sizeof cause)) {
+            budget.requested = 1;
+            budget.requested_ms = now_ms;
+            rtl_usb_recovery_post(s, watch.silence_ms);
+            continue;
+        }
         if (rtl_device_end_for_receiver(s, -ETIMEDOUT, watch.progress, cause)) {
             (void)rtl_usb_cancel_async(s);
             break;
@@ -8828,7 +9027,7 @@ rtl_device_stop_async(struct rtl_device* dev) {
  * (rtl_device_usb_resume_reader()), so the caller can finish its stream boundary first. */
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-static void rtl_usb_test_reader_restarting(void);
+static void rtl_usb_test_reader_restarting(struct rtl_device* dev);
 #endif
 
 /* Whether a stop latched; also the cancel test the USB reset polls. */
@@ -9095,7 +9294,7 @@ rtl_device_usb_resume_reader(struct rtl_device* dev) {
         dev->reader_entered.store(0, std::memory_order_relaxed);
         dev->reader_exited.store(0, std::memory_order_relaxed);
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-        rtl_usb_test_reader_restarting();
+        rtl_usb_test_reader_restarting(dev);
 #endif
         if (dsd_thread_create(&dev->thread, dongle_thread_fn, dev) == 0) {
             dev->thread_started = 1;
@@ -9112,10 +9311,72 @@ rtl_device_usb_recovery_eligible(const struct rtl_device* dev) {
     return (dev && dev->backend == RTL_BACKEND_USB && dev->usb_recovery_on.load(std::memory_order_acquire)) ? 1 : 0;
 }
 
+void
+rtl_device_set_recovery_callback(struct rtl_device* dev, rtl_device_recovery_cb cb, void* ctx) {
+    if (!dev) {
+        return;
+    }
+    rtl_usb_ctrl_lock(dev);
+    dev->recovery_cb = cb;
+    dev->recovery_cb_ctx = cb ? ctx : nullptr;
+    rtl_usb_ctrl_unlock(dev);
+}
+
+int
+rtl_device_usb_recovery_take(struct rtl_device* dev) {
+    if (!dev || dev->backend != RTL_BACKEND_USB) {
+        return 0;
+    }
+    int expected = RTL_USB_RECOVERY_REQUESTED;
+    if (!dev->recovery_request.compare_exchange_strong(expected, RTL_USB_RECOVERY_TAKEN, std::memory_order_acq_rel,
+                                                       std::memory_order_acquire)) {
+        return 0;
+    }
+    LOG_WARN("RTL-SDR: the receiver sent no samples for %llu ms; resetting the USB device\n",
+             (unsigned long long)dev->recovery_silence_ms.load(std::memory_order_relaxed));
+    return 1;
+}
+
+void
+rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why) {
+    if (!dev || dev->backend != RTL_BACKEND_USB) {
+        return;
+    }
+    /* Idle first: the ending below is this recovery's own verdict, which nothing supersedes. */
+    dev->recovery_request.store(RTL_USB_RECOVERY_IDLE, std::memory_order_release);
+    if (rc == 0) {
+        LOG_INFO("RTL-SDR: the USB device was reset and reopened; the stream resumes\n");
+        return;
+    }
+    /* A stop or an exit request during the recovery ends it silently. */
+    if (rc == -ECANCELED || dev->stop_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+    char cause[320];
+    DSD_SNPRINTF(cause, sizeof cause,
+                 "RTL-SDR: the receiver sent no samples and resetting it failed: %s; the stream stops",
+                 (why && why[0] != '\0') ? why : "unknown error");
+    (void)rtl_device_end_for_receiver(dev, rc, rtl_device_sample_progress(dev), cause);
+}
+
+int
+rtl_device_resume_stream(struct rtl_device* dev) {
+    if (!dev) {
+        return -EINVAL;
+    }
+    if (dev->backend == RTL_BACKEND_USB) {
+        return rtl_device_usb_resume_reader(dev);
+    }
+    return 0;
+}
+
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 /* A reader restarted on the streaming seam streams again until the next cancel. */
 static void
-rtl_usb_test_reader_restarting(void) {
+rtl_usb_test_reader_restarting(struct rtl_device* dev) {
+    if (g_test_reader_restart_hook) {
+        g_test_reader_restart_hook(dev, g_test_reader_restart_hook_ctx);
+    }
     if (g_test_usb_reader_stream.load(std::memory_order_acquire)) {
         g_test_usb_reader_cancelled.store(0, std::memory_order_release);
         g_test_usb_reader_stream_return.store(0, std::memory_order_release);
@@ -9140,6 +9401,11 @@ extern "C" void
 rtl_device_test_usb_stream_detach(void) {
     g_test_usb_reader_active.store(0, std::memory_order_release);
     g_test_usb_reader_stream.store(0, std::memory_order_release);
+}
+
+extern "C" int
+rtl_device_test_capture_reconfigure_held(const struct rtl_device* dev) {
+    return rtl_capture_reconfigure_hold_active(dev);
 }
 
 extern "C" void

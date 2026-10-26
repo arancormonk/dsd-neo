@@ -17,6 +17,7 @@ target_sources(
         scan_mode.c
         signal_search.c
         signal_search_hooks.c
+        stream_notice_hooks.c
         scan_options.c
         scan_row_edit.c
         squelch.c
