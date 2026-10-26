@@ -4370,6 +4370,17 @@ Key public headers:
     gain writes `"tuner_gain_known": false` with a gain of 0 (`dsd_iq_capture_config::tuner_gain_unknown`); replay
     reads it, and a legacy Airspy sidecar without it, as `dsd_iq_replay_config::tuner_gain_unknown`, and then reports
     no gain. Test: `IO_RTL_REPLAY_EOF_AND_CF32`.
+  - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and
+    librtlsdr's setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test
+    mode while on, else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC
+    and test-mode change; asserting test mode off restores the digital AGC rather than writing it off. A gain change
+    (`rtl_usb_change_gain()`: manual = digital AGC off + manual mode + gain, automatic = automatic mode + digital AGC)
+    is one transaction: a partial failure re-applies the state the controls last took, and when that fails too (or a
+    first change has none) `gain_state_unknown` makes the gain getters report no mode and no reading until a change
+    takes. The nearest-gain lookup returns a status apart from the value (gains reach below zero), and an unreadable
+    table is an error. The stream's gain callers (retune profile, autogain supervisor) note the gain that took and
+    otherwise republish what the device reports. Test: `IO_RTL_RETUNE_PREPARE` (an effective-state fake dongle,
+    `rtl_device_test_usb_gain_device()`).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path

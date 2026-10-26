@@ -241,6 +241,11 @@ int rtl_device_get_sample_rate(struct rtl_device* dev);
 /**
  * @brief Set tuner gain mode and value.
  *
+ * On USB a gain change is one transaction over the RTL digital AGC, the tuner's gain mode and its gain: a change that
+ * fails part way puts back the gain state the device last took, and when that fails too the gain reads as unknown
+ * (rtl_device_is_auto_gain() -1, no rtl_device_get_tuner_gain() reading) until a later change takes. Test mode, which
+ * shares a register with the digital AGC, stays on through gain changes.
+ *
  * @param dev RTL-SDR device handle.
  * @param gain Gain in tenths of dB, or AUTO_GAIN for automatic.
  * @return 0 on success, negative on failure.
@@ -251,14 +256,17 @@ int rtl_device_set_gain(struct rtl_device* dev, int gain);
  * @brief Set tuner gain to the nearest supported value (manual mode).
  *
  * For USB (librtlsdr) backend, queries the list of supported gains and
- * applies the nearest value to the requested target. For rtl_tcp, sends
+ * applies the nearest value to the requested target; a gain table that
+ * cannot be read is an error and changes nothing. For rtl_tcp, sends
  * the target value directly and lets the server handle quantization.
  *
  * @param dev RTL-SDR device handle.
  * @param target_tenth_db Target gain in tenths of dB (e.g., 180 for 18.0 dB).
+ * @param out_selected_tenth_db Optional: the gain applied, written on success. It may be negative (an E4K's lowest is
+ *        -10, an FC0012's -99), so only the return value says whether the change took.
  * @return 0 on success, negative on failure.
  */
-int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db);
+int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db);
 
 /**
  * @brief Get current tuner gain in tenths of dB as reported by the driver.
@@ -271,7 +279,8 @@ int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db);
 int rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db);
 
 /**
- * @brief Return 1 if auto-gain is enabled (requested), 0 if manual.
+ * @brief Return 1 if auto-gain is enabled (requested), 0 if manual, -1 with no device or, on USB, while a failed gain
+ * change left the gain unknown.
  */
 int rtl_device_is_auto_gain(const struct rtl_device* dev);
 
@@ -473,7 +482,8 @@ int rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint3
 /**
  * @brief Enable or disable librtlsdr test mode (ramp signal instead of I/Q samples).
  *
- * Applies to USB (rtlsdr_set_testmode) and rtl_tcp (protocol cmd 0x07).
+ * Applies to USB (rtlsdr_set_testmode) and rtl_tcp (protocol cmd 0x07). On USB, test mode and the RTL digital AGC share
+ * demod register 0x19: test mode wins while on, and turning it off puts the digital AGC back as the gain mode wants it.
  *
  * @param dev RTL-SDR device handle.
  * @param on Non-zero to enable test mode; zero to disable.

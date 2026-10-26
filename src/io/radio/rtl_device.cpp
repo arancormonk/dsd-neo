@@ -436,6 +436,12 @@ struct rtl_device {
     int tcp_metrics_lock_inited = 0;
     /* Extra driver state for reconnect replay */
     int testmode_on = 0;
+    /* USB gain controls, beside gain and agc_mode: the RTL2832U digital AGC as wanted (on only with automatic gain,
+     * when the runtime config enables it; register 0x19 carries it and test mode both), whether a gain state ever
+     * took, and whether a failed gain change could not be rolled back, so the dongle holds neither state. */
+    int digital_agc_wanted = 0;
+    int gain_took = 0;
+    int gain_state_unknown = 0;
     uint32_t rtl_xtal_hz = 0U;
     uint32_t tuner_xtal_hz = 0U;
     int if_gain_count = 0;
@@ -5304,42 +5310,142 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* While set, the gain controls below reach this fake dongle in place of librtlsdr (rtl_device_test_usb_gain_device()). */
+static rtl_device_test_usb_gain_fake* g_test_usb_gain_fake = nullptr;
+
+/* Count a call to a fake control and say whether its fault refuses writing @p value. */
+static int
+rtl_usb_test_gain_refuses(const rtl_device_test_usb_gain_fault* fault, int* calls, int value) {
+    ++*calls;
+    if (fault->fail_from_call > 0 && *calls >= fault->fail_from_call) {
+        return 1;
+    }
+    return (fault->fail_value_set && value == fault->fail_value) ? 1 : 0;
+}
+
+/* Write register 0x19 of the fake dongle as librtlsdr's setters do. */
+static int
+rtl_usb_test_gain_write_reg19(int value) {
+    rtl_device_test_usb_gain_fake* fake = g_test_usb_gain_fake;
+    if (rtl_usb_test_gain_refuses(&fake->reg19_fault, &fake->reg19_calls, value)) {
+        return -1;
+    }
+    fake->reg19 = value;
+    return 0;
+}
+#endif
+
+/* The librtlsdr gain controls: register 0x19 (test mode and digital AGC), the tuner's gain mode, gain and gain table. */
+static int
+rtl_usb_ctl_set_testmode(rtlsdr_dev_t* dev, int on) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_gain_fake) {
+        return rtl_usb_test_gain_write_reg19(on ? 0x03 : 0x05);
+    }
+#endif
+    return rtlsdr_set_testmode(dev, on);
+}
+
+static int
+rtl_usb_ctl_set_agc_mode(rtlsdr_dev_t* dev, int on) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_gain_fake) {
+        return rtl_usb_test_gain_write_reg19(on ? 0x25 : 0x05);
+    }
+#endif
+    return rtlsdr_set_agc_mode(dev, on);
+}
+
+static int
+rtl_usb_ctl_set_tuner_gain_mode(rtlsdr_dev_t* dev, int manual) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rtl_device_test_usb_gain_fake* fake = g_test_usb_gain_fake) {
+        if (rtl_usb_test_gain_refuses(&fake->mode_fault, &fake->mode_calls, manual)) {
+            return -1;
+        }
+        fake->manual = manual;
+        return 0;
+    }
+#endif
+    return rtlsdr_set_tuner_gain_mode(dev, manual);
+}
+
+static int
+rtl_usb_ctl_set_tuner_gain(rtlsdr_dev_t* dev, int gain) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (rtl_device_test_usb_gain_fake* fake = g_test_usb_gain_fake) {
+        /* librtlsdr forgets the gain it had once a write fails. */
+        if (rtl_usb_test_gain_refuses(&fake->gain_fault, &fake->gain_calls, gain)) {
+            fake->gain = 0;
+            return -1;
+        }
+        fake->gain = gain;
+        return 0;
+    }
+#endif
+    return rtlsdr_set_tuner_gain(dev, gain);
+}
+
+static int
+rtl_usb_ctl_get_tuner_gain(rtlsdr_dev_t* dev) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_usb_gain_fake) {
+        return g_test_usb_gain_fake->gain;
+    }
+#endif
+    return rtlsdr_get_tuner_gain(dev);
+}
+
+static int
+rtl_usb_ctl_get_tuner_gains(rtlsdr_dev_t* dev, int* gains) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (const rtl_device_test_usb_gain_fake* fake = g_test_usb_gain_fake) {
+        const int count = std::min(fake->gain_count, (int)(sizeof fake->gains / sizeof fake->gains[0]));
+        if (count > 0 && gains) {
+            DSD_MEMCPY(gains, fake->gains, sizeof(int) * (size_t)count);
+        }
+        return count;
+    }
+#endif
+    return rtlsdr_get_tuner_gains(dev, gains);
+}
+
 /**
  * @brief Find the nearest supported gain to the target gain.
  *
+ * The status travels apart from the value, since a tuner's gains reach below zero (E4K -1.0 dB, FC0012/FC0013
+ * -9.9 dB), and a table that cannot be read is an error rather than a gain of 0 (B10).
+ *
  * @param dev RTL-SDR device handle.
  * @param target_gain Target gain in tenths of dB.
- * @return Nearest supported gain in tenths of dB, or negative error code.
+ * @param out_gain Nearest supported gain in tenths of dB, written on success.
+ * @return 0 on success, or a negative error code when the tuner's gain table cannot be read.
  */
 static int
-nearest_gain(rtlsdr_dev_t* dev, int target_gain) {
-    int i, count, nearest;
-    int* gains;
-    count = rtlsdr_get_tuner_gains(dev, NULL);
+nearest_gain(rtlsdr_dev_t* dev, int target_gain, int* out_gain) {
+    int count = rtl_usb_ctl_get_tuner_gains(dev, NULL);
     // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (count <= 0) {
-        return 0;
+        return -1;
     }
-    gains = static_cast<int*>(malloc(sizeof(int) * (size_t)count));
-    if (gains == nullptr) {
-        return 0;
-    }
-    count = rtlsdr_get_tuner_gains(dev, gains);
+    std::vector<int> gains((size_t)count);
+    int filled = rtl_usb_ctl_get_tuner_gains(dev, gains.data());
     // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
-    if (count <= 0) {
-        free(gains);
-        return 0;
+    if (filled <= 0) {
+        return -1;
     }
-    nearest = gains[0];
-    for (i = 1; i < count; i++) {
-        int err1 = abs(target_gain - nearest);
-        int err2 = abs(target_gain - gains[i]);
-        if (err2 < err1) {
-            nearest = gains[i];
+    if (filled < count) {
+        count = filled;
+    }
+    int nearest = gains[0];
+    for (int i = 1; i < count; i++) {
+        if (llabs((long long)target_gain - gains[(size_t)i]) < llabs((long long)target_gain - nearest)) {
+            nearest = gains[(size_t)i];
         }
     }
-    free(gains);
-    return nearest;
+    *out_gain = nearest;
+    return 0;
 }
 
 namespace {
@@ -5475,96 +5581,99 @@ rtl_usb_verify_sample_rate(void* opaque) {
     return 0;
 }
 
-struct rtl_usb_gain_apply_ctx {
-    rtlsdr_dev_t* dev;
-    int gain;
-    int agc_rc;
-};
-
-typedef int (*rtl_usb_int_control_fn)(void* dev, int value);
-
+/* Demod register 0x19 holds test mode and the RTL2832U's digital AGC both, and librtlsdr's setter for each writes the
+ * whole register (test mode 0x03, digital AGC 0x25, neither 0x05), so whichever was written last wins (B9). Resolve it
+ * from the record: test mode while it is on, else the digital AGC as wanted. One write: a compound gain change runs it
+ * as one of its steps inside its own retries, and a caller that runs it alone wraps it in the retry policy. */
 static int
-rtl_usb_set_agc_mode_control(void* dev, int value) {
-    return rtlsdr_set_agc_mode(static_cast<rtlsdr_dev_t*>(dev), value);
-}
-
-static int
-rtl_usb_set_tuner_gain_mode_control(void* dev, int value) {
-    return rtlsdr_set_tuner_gain_mode(static_cast<rtlsdr_dev_t*>(dev), value);
-}
-
-static int
-rtl_usb_set_tuner_gain_control(void* dev, int value) {
-    return rtlsdr_set_tuner_gain(static_cast<rtlsdr_dev_t*>(dev), value);
-}
-
-static int
-rtl_usb_apply_manual_gain_controls(void* dev, int gain, int* out_agc_rc, rtl_usb_int_control_fn set_agc_mode,
-                                   rtl_usb_int_control_fn set_gain_mode, rtl_usb_int_control_fn set_tuner_gain) {
-    if (!dev || !set_agc_mode || !set_gain_mode || !set_tuner_gain) {
+rtl_usb_apply_register19(struct rtl_device* dev) {
+    if (!dev || !dev->dev) {
         return -1;
     }
-    int agc_rc = set_agc_mode(dev, 0);
-    if (agc_rc != 0 && out_agc_rc && *out_agc_rc == 0) {
-        *out_agc_rc = agc_rc;
+    if (dev->testmode_on) {
+        return rtl_usb_ctl_set_testmode(dev->dev, 1);
     }
-    int r = set_gain_mode(dev, 1);
+    return rtl_usb_ctl_set_agc_mode(dev->dev, dev->digital_agc_wanted ? 1 : 0);
+}
+
+static int
+rtl_usb_apply_register19_once(void* opaque) {
+    return rtl_usb_apply_register19(static_cast<struct rtl_device*>(opaque));
+}
+
+/* Apply the record's gain state once, as one compound control: a manual gain is the digital AGC off, the tuner's
+ * manual mode and the gain; automatic gain is the tuner's automatic mode and the digital AGC as wanted. Register 0x19
+ * is resolved with test mode, so a gain change never ends test mode. */
+static int
+rtl_usb_apply_gain_record(void* opaque) {
+    struct rtl_device* dev = static_cast<struct rtl_device*>(opaque);
+    if (!dev || !dev->dev) {
+        return -1;
+    }
+    int r = 0;
+    if (dev->gain == RTL_AUTO_GAIN) {
+        r = rtl_usb_ctl_set_tuner_gain_mode(dev->dev, 0);
+        // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
+        return (r != 0) ? r : rtl_usb_apply_register19(dev);
+    }
+    r = rtl_usb_apply_register19(dev);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
     if (r != 0) {
         return r;
     }
-    return set_tuner_gain(dev, gain);
-}
-
-static int
-rtl_usb_apply_manual_gain(void* opaque) {
-    rtl_usb_gain_apply_ctx* ctx = static_cast<rtl_usb_gain_apply_ctx*>(opaque);
-    if (!ctx || !ctx->dev) {
-        return -1;
-    }
-    return rtl_usb_apply_manual_gain_controls(ctx->dev, ctx->gain, &ctx->agc_rc, rtl_usb_set_agc_mode_control,
-                                              rtl_usb_set_tuner_gain_mode_control, rtl_usb_set_tuner_gain_control);
-}
-
-static int
-rtl_usb_verify_manual_gain(void* opaque) {
-    rtl_usb_gain_apply_ctx* ctx = static_cast<rtl_usb_gain_apply_ctx*>(opaque);
-    if (!ctx || !ctx->dev) {
-        return -1;
-    }
-    return (rtlsdr_get_tuner_gain(ctx->dev) == ctx->gain) ? 0 : -1;
-}
-
-struct rtl_usb_auto_gain_apply_ctx {
-    rtlsdr_dev_t* dev;
-    int agc_want;
-    int agc_rc;
-};
-
-static int
-rtl_usb_apply_auto_gain_controls(void* dev, int agc_want, int* out_agc_rc, rtl_usb_int_control_fn set_gain_mode,
-                                 rtl_usb_int_control_fn set_agc_mode) {
-    if (!dev || !set_gain_mode || !set_agc_mode) {
-        return -1;
-    }
-    int r = set_gain_mode(dev, 0);
+    r = rtl_usb_ctl_set_tuner_gain_mode(dev->dev, 1);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
     if (r != 0) {
         return r;
     }
-    int agc_rc = set_agc_mode(dev, agc_want);
-    if (agc_rc != 0 && out_agc_rc && *out_agc_rc == 0) {
-        *out_agc_rc = agc_rc;
-    }
-    return 0;
+    return rtl_usb_ctl_set_tuner_gain(dev->dev, dev->gain);
 }
 
 static int
-rtl_usb_apply_auto_gain(void* opaque) {
-    rtl_usb_auto_gain_apply_ctx* ctx = static_cast<rtl_usb_auto_gain_apply_ctx*>(opaque);
-    if (!ctx || !ctx->dev) {
+rtl_usb_verify_gain_record(void* opaque) {
+    struct rtl_device* dev = static_cast<struct rtl_device*>(opaque);
+    if (!dev || !dev->dev) {
         return -1;
     }
-    return rtl_usb_apply_auto_gain_controls(ctx->dev, ctx->agc_want, &ctx->agc_rc, rtl_usb_set_tuner_gain_mode_control,
-                                            rtl_usb_set_agc_mode_control);
+    if (dev->gain == RTL_AUTO_GAIN) {
+        return 0;
+    }
+    return (rtl_usb_ctl_get_tuner_gain(dev->dev) == dev->gain) ? 0 : -1;
+}
+
+/* Move the USB gain controls to @p gain (RTL_AUTO_GAIN or tenths of a dB) with the digital AGC @p digital_agc, as one
+ * transaction. The record holds the new state while it is applied and keeps it only once the hardware took it. On a
+ * failure part way, the steps already applied are rolled back by applying the state the controls last took; when that
+ * fails too, or there is none (the device's first gain change), the hardware holds neither state, and the gain reads
+ * as unknown (no mode, no value) until a later change takes. Returns the change's result. */
+static int
+rtl_usb_change_gain(struct rtl_device* dev, int gain, int digital_agc, int* out_attempts) {
+    const int previous_gain = dev->gain;
+    const int previous_digital_agc = dev->digital_agc_wanted;
+    dev->gain = gain;
+    dev->digital_agc_wanted = digital_agc ? 1 : 0;
+    int rc = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_gain_record, rtl_usb_verify_gain_record, dev, out_attempts);
+    if (rc == 0) {
+        dev->agc_mode = (gain == RTL_AUTO_GAIN) ? 1 : 0;
+        dev->gain_took = 1;
+        dev->gain_state_unknown = 0;
+        return 0;
+    }
+    dev->gain = previous_gain;
+    dev->digital_agc_wanted = previous_digital_agc;
+    int attempts = 0;
+    const int restored = dev->gain_took ? rtl_usb_apply_with_runtime_retry(rtl_usb_apply_gain_record,
+                                                                           rtl_usb_verify_gain_record, dev, &attempts)
+                                        : -1;
+    if (restored == 0) {
+        dev->gain_state_unknown = 0;
+        DSD_FPRINTF(stderr, "RTL-SDR gain change failed; previous gain restored.\n");
+        return rc;
+    }
+    dev->gain_state_unknown = 1;
+    DSD_FPRINTF(stderr, "WARNING: RTL-SDR gain change failed and the previous gain could not be restored; the tuner "
+                        "gain is unknown until a gain change takes.\n");
+    return rc;
 }
 
 struct rtl_usb_int_apply_ctx {
@@ -5588,12 +5697,6 @@ static int
 rtl_usb_apply_offset_tuning(void* opaque) {
     rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
     return (ctx && ctx->dev) ? rtlsdr_set_offset_tuning(ctx->dev, ctx->value ? 1 : 0) : -1;
-}
-
-static int
-rtl_usb_apply_testmode(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
-    return (ctx && ctx->dev) ? rtlsdr_set_testmode(ctx->dev, ctx->value ? 1 : 0) : -1;
 }
 
 struct rtl_usb_u32_apply_ctx {
@@ -5635,77 +5738,6 @@ rtl_usb_retry_test_verify(void* opaque) {
     return (ctx->verify_calls >= ctx->verify_success_after) ? 0 : -1;
 }
 
-struct rtl_usb_manual_gain_test_ctx {
-    int agc_rc;
-    int gain_mode_rc;
-    int gain_rc;
-    int agc_calls;
-    int gain_mode_calls;
-    int gain_calls;
-};
-
-static int
-rtl_usb_manual_gain_test_agc(void* opaque, int value) {
-    UNUSED(value);
-    rtl_usb_manual_gain_test_ctx* ctx = static_cast<rtl_usb_manual_gain_test_ctx*>(opaque);
-    if (!ctx) {
-        return -1;
-    }
-    ctx->agc_calls++;
-    return ctx->agc_rc;
-}
-
-static int
-rtl_usb_manual_gain_test_mode(void* opaque, int value) {
-    UNUSED(value);
-    rtl_usb_manual_gain_test_ctx* ctx = static_cast<rtl_usb_manual_gain_test_ctx*>(opaque);
-    if (!ctx) {
-        return -1;
-    }
-    ctx->gain_mode_calls++;
-    return ctx->gain_mode_rc;
-}
-
-static int
-rtl_usb_manual_gain_test_gain(void* opaque, int value) {
-    UNUSED(value);
-    rtl_usb_manual_gain_test_ctx* ctx = static_cast<rtl_usb_manual_gain_test_ctx*>(opaque);
-    if (!ctx) {
-        return -1;
-    }
-    ctx->gain_calls++;
-    return ctx->gain_rc;
-}
-
-struct rtl_usb_auto_gain_test_ctx {
-    int agc_rc;
-    int gain_mode_rc;
-    int agc_calls;
-    int gain_mode_calls;
-};
-
-static int
-rtl_usb_auto_gain_test_agc(void* opaque, int value) {
-    UNUSED(value);
-    rtl_usb_auto_gain_test_ctx* ctx = static_cast<rtl_usb_auto_gain_test_ctx*>(opaque);
-    if (!ctx) {
-        return -1;
-    }
-    ctx->agc_calls++;
-    return ctx->agc_rc;
-}
-
-static int
-rtl_usb_auto_gain_test_mode(void* opaque, int value) {
-    UNUSED(value);
-    rtl_usb_auto_gain_test_ctx* ctx = static_cast<rtl_usb_auto_gain_test_ctx*>(opaque);
-    if (!ctx) {
-        return -1;
-    }
-    ctx->gain_mode_calls++;
-    return ctx->gain_mode_rc;
-}
-
 } // namespace
 
 extern "C" int
@@ -5744,43 +5776,6 @@ rtl_device_test_usb_sample_rate_readback(uint32_t requested_rate, uint32_t actua
     return 0;
 }
 
-extern "C" int
-rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mode_rc, int gain_rc, int* out_agc_calls,
-                                         int* out_gain_mode_calls, int* out_gain_calls, int* out_recorded_agc_rc) {
-    if (!out_agc_calls || !out_gain_mode_calls || !out_gain_calls || !out_recorded_agc_rc) {
-        return -100;
-    }
-    rtl_usb_manual_gain_test_ctx ctx{};
-    ctx.agc_rc = agc_rc;
-    ctx.gain_mode_rc = gain_mode_rc;
-    ctx.gain_rc = gain_rc;
-    int recorded_agc_rc = 0;
-    int rc = rtl_usb_apply_manual_gain_controls(&ctx, 270, &recorded_agc_rc, rtl_usb_manual_gain_test_agc,
-                                                rtl_usb_manual_gain_test_mode, rtl_usb_manual_gain_test_gain);
-    *out_agc_calls = ctx.agc_calls;
-    *out_gain_mode_calls = ctx.gain_mode_calls;
-    *out_gain_calls = ctx.gain_calls;
-    *out_recorded_agc_rc = recorded_agc_rc;
-    return rc;
-}
-
-extern "C" int
-rtl_device_test_usb_auto_gain_controls(int agc_rc, int gain_mode_rc, int* out_agc_calls, int* out_gain_mode_calls,
-                                       int* out_recorded_agc_rc) {
-    if (!out_agc_calls || !out_gain_mode_calls || !out_recorded_agc_rc) {
-        return -100;
-    }
-    rtl_usb_auto_gain_test_ctx ctx{};
-    ctx.agc_rc = agc_rc;
-    ctx.gain_mode_rc = gain_mode_rc;
-    int recorded_agc_rc = 0;
-    int rc = rtl_usb_apply_auto_gain_controls(&ctx, 1, &recorded_agc_rc, rtl_usb_auto_gain_test_mode,
-                                              rtl_usb_auto_gain_test_agc);
-    *out_agc_calls = ctx.agc_calls;
-    *out_gain_mode_calls = ctx.gain_mode_calls;
-    *out_recorded_agc_rc = recorded_agc_rc;
-    return rc;
-}
 #else
 } // namespace
 #endif
@@ -5929,28 +5924,22 @@ verbose_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
 /**
  * @brief Enable tuner automatic gain control.
  *
- * @param dev RTL-SDR device handle.
+ * @param dev RTL-SDR device.
  * @return 0 on success or a negative error code.
  */
 static int
-verbose_auto_gain(rtlsdr_dev_t* dev) {
-    /* Original plan: enable RTL digital AGC in auto mode by default.
-       Allow override via env DSD_NEO_RTL_AGC=0 to disable. */
+verbose_auto_gain(struct rtl_device* dev) {
+    /* The RTL digital AGC runs with automatic gain unless the runtime config turns it off (DSD_NEO_RTL_AGC=0). */
     int want = env_agc_want();
-    rtl_usb_auto_gain_apply_ctx ctx{dev, want, 0};
     int attempts = 0;
-    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_auto_gain, NULL, &ctx, &attempts);
+    int r = rtl_usb_change_gain(dev, RTL_AUTO_GAIN, want, &attempts);
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set automatic tuner gain.\n");
     } else {
         rtl_usb_log_retry_attempts("automatic gain apply", attempts);
         DSD_FPRINTF(stderr, "Tuner gain set to automatic.\n");
-        if (ctx.agc_rc != 0) {
-            DSD_FPRINTF(stderr, "WARNING: Failed to %s RTL AGC for automatic gain (rc=%d); continuing.\n",
-                        want ? "enable" : "disable", ctx.agc_rc);
-        } else {
-            DSD_FPRINTF(stderr, "RTL AGC %s.\n", want ? "enabled" : "disabled");
-        }
+        DSD_FPRINTF(stderr, "RTL AGC %s%s.\n", want ? "enabled" : "disabled",
+                    dev->testmode_on ? " once test mode is off" : "");
     }
     return r;
 }
@@ -5958,22 +5947,17 @@ verbose_auto_gain(rtlsdr_dev_t* dev) {
 /**
  * @brief Set a fixed tuner gain with a message indicating the result.
  *
- * @param dev RTL-SDR device handle.
- * @param gain Desired gain in tenths of dB.
+ * @param dev RTL-SDR device.
+ * @param gain Desired gain in tenths of dB, one the tuner supports.
  * @return 0 on success or a negative error code.
  */
 static int
-verbose_gain_set(rtlsdr_dev_t* dev, int gain) {
-    rtl_usb_gain_apply_ctx ctx{dev, gain, 0};
+verbose_gain_set(struct rtl_device* dev, int gain) {
     int attempts = 0;
-    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_manual_gain, rtl_usb_verify_manual_gain, &ctx, &attempts);
+    int r = rtl_usb_change_gain(dev, gain, 0, &attempts);
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set tuner gain.\n");
     } else {
-        if (ctx.agc_rc != 0) {
-            DSD_FPRINTF(stderr, "WARNING: Failed to disable RTL AGC before manual gain (rc=%d); continuing.\n",
-                        ctx.agc_rc);
-        }
         rtl_usb_log_retry_attempts("manual gain apply", attempts);
         DSD_FPRINTF(stderr, "Tuner gain set to %0.2f dB.\n", gain / 10.0);
     }
@@ -7129,14 +7113,19 @@ rtl_device_set_gain_usb(struct rtl_device* dev, int gain, int* out_applied_gain)
         return -1;
     }
     if (gain == RTL_AUTO_GAIN) {
-        int rc = verbose_auto_gain(dev->dev);
+        int rc = verbose_auto_gain(dev);
         if (rc == 0 && out_applied_gain) {
             *out_applied_gain = RTL_AUTO_GAIN;
         }
         return rc;
     }
-    int nearest = nearest_gain(dev->dev, gain);
-    int rc = verbose_gain_set(dev->dev, nearest);
+    int nearest = 0;
+    int rc = nearest_gain(dev->dev, gain, &nearest);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "WARNING: Failed to read the tuner's gain table (rc=%d); gain unchanged.\n", rc);
+        return rc;
+    }
+    rc = verbose_gain_set(dev, nearest);
     if (rc == 0 && out_applied_gain) {
         *out_applied_gain = nearest;
     }
@@ -7231,9 +7220,6 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
     int applied_gain = gain;
     if (dev->backend == RTL_BACKEND_USB) {
         rc = rtl_device_set_gain_usb(dev, gain, &applied_gain);
-        if (rc == 0) {
-            dev->agc_mode = (applied_gain == RTL_AUTO_GAIN) ? 1 : 0;
-        }
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         dev->agc_mode = 0;
         rc = 0;
@@ -7253,39 +7239,41 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
 }
 
 static int
-rtl_device_set_gain_nearest_usb(struct rtl_device* dev, int target_tenth_db) {
+rtl_device_set_gain_nearest_usb(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db) {
     if (!dev || !dev->dev) {
         return -1;
     }
-    int g = nearest_gain(dev->dev, target_tenth_db);
-    if (g < 0) {
-        return g;
+    int g = 0;
+    int r = nearest_gain(dev->dev, target_tenth_db, &g);
+    if (r != 0) {
+        DSD_FPRINTF(stderr, "WARNING: Failed to read the tuner's gain table (rc=%d); gain unchanged.\n", r);
+        return r;
     }
-    int r = verbose_gain_set(dev->dev, g);
-    if (r < 0) {
+    r = verbose_gain_set(dev, g);
+    if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set tuner gain (nearest).\n");
         return r;
     }
-    dev->gain = g;
-    dev->agc_mode = 0;
+    *out_selected_tenth_db = g;
     DSD_FPRINTF(stderr, "Tuner manual gain (nearest): %0.1f dB.\n", (double)g / 10.0);
     return 0;
 }
 
 static int
-rtl_device_set_gain_nearest_tcp(struct rtl_device* dev, int target_tenth_db) {
+rtl_device_set_gain_nearest_tcp(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db) {
     if (!dev) {
         return -1;
     }
     (void)rtl_tcp_send_cmd(dev->sockfd, 0x03, 1U);
     (void)rtl_tcp_send_cmd(dev->sockfd, 0x04, (uint32_t)target_tenth_db);
     dev->gain = target_tenth_db;
+    *out_selected_tenth_db = target_tenth_db;
     return 0;
 }
 
 #ifdef USE_SOAPYSDR
 static int
-rtl_device_set_gain_nearest_soapy(struct rtl_device* dev, int target_tenth_db) {
+rtl_device_set_gain_nearest_soapy(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db) {
     if (rtl_device_soapy_named_gain_override_active(dev)) {
         return 0;
     }
@@ -7312,13 +7300,14 @@ rtl_device_set_gain_nearest_soapy(struct rtl_device* dev, int target_tenth_db) {
     if (rc == 0) {
         dev->agc_mode = 0;
         dev->gain = (int)(applied_db * 10.0 + (applied_db >= 0.0 ? 0.5 : -0.5));
+        *out_selected_tenth_db = dev->gain;
     }
     return rc;
 }
 #endif
 
 int
-rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
+rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db) {
     if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
         (void)target_tenth_db;
         return DSD_ERR_NOT_SUPPORTED;
@@ -7326,22 +7315,27 @@ rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
     if (!dev) {
         return -1;
     }
+    /* The selection may be negative (E4K, FC0012/FC0013), so it travels apart from the status. */
+    int selected = target_tenth_db;
+    int rc = -1;
     if (dev->backend == RTL_BACKEND_USB) {
-        return rtl_device_set_gain_nearest_usb(dev, target_tenth_db);
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        return rtl_device_set_gain_nearest_tcp(dev, target_tenth_db);
-    }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        rc = rtl_device_set_gain_nearest_usb(dev, target_tenth_db, &selected);
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rc = rtl_device_set_gain_nearest_tcp(dev, target_tenth_db, &selected);
+    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         dev->gain = target_tenth_db;
-        return 0;
-    }
+        rc = 0;
+    } else {
 #ifdef USE_SOAPYSDR
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return rtl_device_set_gain_nearest_soapy(dev, target_tenth_db);
-    }
+        if (dev->backend == RTL_BACKEND_SOAPY) {
+            rc = rtl_device_set_gain_nearest_soapy(dev, target_tenth_db, &selected);
+        }
 #endif
-    return -1;
+    }
+    if (rc == 0 && out_selected_tenth_db) {
+        *out_selected_tenth_db = selected;
+    }
+    return rc;
 }
 
 #ifdef USE_SOAPYSDR
@@ -7378,12 +7372,12 @@ rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db) {
         return -1;
     }
     if (dev->backend == RTL_BACKEND_USB) {
-        if (!dev->dev) {
+        /* librtlsdr's gain tables reach below zero (E4K -10, FC0012/FC0013 -99 tenths): the value is the reading, and
+           only a missing device or a gain the last failed change left unknown is an error. */
+        if (!dev->dev || dev->gain_state_unknown) {
             return -1;
         }
-        /* librtlsdr's gain tables reach below zero (E4K -10, FC0012/FC0013 -99 tenths): the value is the reading, and
-           only the missing device above is an error. */
-        *out_tenth_db = rtlsdr_get_tuner_gain(dev->dev);
+        *out_tenth_db = rtl_usb_ctl_get_tuner_gain(dev->dev);
         return 0;
     }
     if (dev->backend == RTL_BACKEND_TCP) {
@@ -7411,7 +7405,10 @@ rtl_device_is_auto_gain(const struct rtl_device* dev) {
         return -1;
     }
     if (dev->backend == RTL_BACKEND_USB) {
-        /* We track AUTO vs manual in the requested field. */
+        /* The gain field holds the mode the controls last took; none while a failed change left it unknown. */
+        if (dev->gain_state_unknown) {
+            return -1;
+        }
         return (dev->gain == RTL_AUTO_GAIN) ? 1 : 0;
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return 0;
@@ -7935,6 +7932,39 @@ rtl_device_test_usb_stream_stop(struct rtl_device* dev) {
     g_test_usb_reader_stream.store(0, std::memory_order_release);
     rtl_device_destroy(dev);
 }
+
+extern "C" struct rtl_device*
+rtl_device_test_usb_gain_device(rtl_device_test_usb_gain_fake* fake) {
+    if (!fake || g_test_usb_gain_fake) {
+        return nullptr;
+    }
+    /* Allocated as rtl_device_create() does, so rtl_device_destroy() can end it. */
+    struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
+    if (!dev) {
+        return nullptr;
+    }
+    rtl_device_init_common_state(dev);
+    dev->backend = RTL_BACKEND_USB;
+    dev->agc_mode = 1;
+    /* Never dereferenced: every control the gain paths call reaches the fake while it is installed. */
+    dev->dev = reinterpret_cast<rtlsdr_dev_t*>(fake);
+    g_test_usb_gain_fake = fake;
+    return dev;
+}
+
+extern "C" void
+rtl_device_test_usb_gain_device_free(struct rtl_device* dev) {
+    g_test_usb_gain_fake = nullptr;
+    if (dev) {
+        dev->dev = nullptr;
+        rtl_device_destroy(dev);
+    }
+}
+
+extern "C" int
+rtl_device_test_usb_gain_unknown(const struct rtl_device* dev) {
+    return (dev && dev->gain_state_unknown) ? 1 : 0;
+}
 #endif
 
 /**
@@ -8086,10 +8116,14 @@ rtl_device_set_testmode(struct rtl_device* dev, int on) {
         if (!dev->dev) {
             return -1;
         }
-        rtl_usb_int_apply_ctx ctx{dev->dev, requested};
+        /* Test mode shares register 0x19 with the digital AGC: turning it off (or asserting it off) puts the digital
+         * AGC back as wanted rather than clearing it. */
+        const int previous = dev->testmode_on;
+        dev->testmode_on = requested;
         int attempts = 0;
-        rc = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_testmode, NULL, &ctx, &attempts);
+        rc = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_register19_once, NULL, dev, &attempts);
         if (rc != 0) {
+            dev->testmode_on = previous;
             DSD_FPRINTF(stderr, "WARNING: Failed to %s RTL-SDR test mode.\n", on ? "enable" : "disable");
             return -1;
         }

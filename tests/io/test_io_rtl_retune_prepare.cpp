@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -50,11 +51,6 @@ extern "C" int rtl_device_test_usb_apply_retry(int verify_enabled, int attempts,
                                                int* out_used_attempts);
 extern "C" int rtl_device_test_usb_sample_rate_readback(uint32_t requested_rate, uint32_t actual_rate,
                                                         uint32_t* out_actual_rate);
-extern "C" int rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mode_rc, int gain_rc, int* out_agc_calls,
-                                                        int* out_gain_mode_calls, int* out_gain_calls,
-                                                        int* out_recorded_agc_rc);
-extern "C" int rtl_device_test_usb_auto_gain_controls(int agc_rc, int gain_mode_rc, int* out_agc_calls,
-                                                      int* out_gain_mode_calls, int* out_recorded_agc_rc);
 extern "C" int rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_phase, int* out_carry_valid,
                                                    uint8_t* out_carry_byte, int* out_first_status,
                                                    int* out_second_status);
@@ -1592,6 +1588,417 @@ test_search_live_read_bound(void) {
     return failed;
 }
 
+/*
+ * USB gain controls against a fake dongle that holds what the hardware would (B9, B10, compound rollback): demod
+ * register 0x19, the tuner's gain mode and gain. Test mode and the digital AGC share register 0x19, and librtlsdr's
+ * setter for each writes it whole.
+ */
+static const int kAutoGain = -100; /* RTL_AUTO_GAIN */
+static const int kReg19Plain = 0x05;
+static const int kReg19DigitalAgc = 0x25;
+static const int kReg19TestMode = 0x03;
+static const int kR82xxGains[] = {0,   9,   14,  27,  37,  77,  87,  125, 144, 157, 166, 197, 207, 229, 254,
+                                  280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496};
+static const int kE4000Gains[] = {-10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340, 420};
+
+/* A dongle fresh from librtlsdr's baseband init (register 0x19 plain, tuner automatic) with @p gains as its table. */
+static void
+usb_gain_fake_init(rtl_device_test_usb_gain_fake* fake, const int* gains, size_t count) {
+    DSD_MEMSET(fake, 0, sizeof *fake);
+    fake->reg19 = kReg19Plain;
+    for (size_t i = 0; i < count && i < sizeof fake->gains / sizeof fake->gains[0]; i++) {
+        fake->gains[i] = gains[i];
+    }
+    fake->gain_count = (int)count;
+}
+
+/* The runtime config's RTL digital AGC under automatic gain. */
+static void
+usb_gain_set_digital_agc(int on) {
+    (void)dsd_setenv("DSD_NEO_RTL_AGC", on ? "1" : "0", 1);
+    dsd_neo_config_init();
+}
+
+/* The dongle holds @p reg19 and @p manual mode, and @p gain when manual. */
+static int
+expect_dongle(const char* label, const rtl_device_test_usb_gain_fake* fake, int reg19, int manual, int gain) {
+    char what[192];
+    int failed = 0;
+    DSD_SNPRINTF(what, sizeof what, "%s: register 0x19", label);
+    failed |= expect_int_eq(what, fake->reg19, reg19);
+    DSD_SNPRINTF(what, sizeof what, "%s: tuner gain mode", label);
+    failed |= expect_int_eq(what, fake->manual, manual);
+    if (manual) {
+        DSD_SNPRINTF(what, sizeof what, "%s: tuner gain", label);
+        failed |= expect_int_eq(what, fake->gain, gain);
+    }
+    return failed;
+}
+
+/* The device reports @p manual mode, and @p gain when manual, as the dongle holds them. */
+static int
+expect_reported_gain(const char* label, struct rtl_device* dev, int manual, int gain) {
+    char what[192];
+    int failed = 0;
+    DSD_SNPRINTF(what, sizeof what, "%s: reported auto", label);
+    failed |= expect_int_eq(what, rtl_device_is_auto_gain(dev), manual ? 0 : 1);
+    if (manual) {
+        int got = 12345;
+        DSD_SNPRINTF(what, sizeof what, "%s: gain read", label);
+        failed |= expect_int_eq(what, rtl_device_get_tuner_gain(dev, &got), 0);
+        DSD_SNPRINTF(what, sizeof what, "%s: reported gain", label);
+        failed |= expect_int_eq(what, got, gain);
+    }
+    return failed;
+}
+
+/* The tuner gain one of the stream's callers left published: @p want_rc (0 a reading, -1 none), auto, or @p gain. */
+static int
+expect_published_gain(const char* label, int published_rc, int published_gain, int published_auto, int want_rc,
+                      int want_auto, int want_gain) {
+    char what[192];
+    int failed = 0;
+    DSD_SNPRINTF(what, sizeof what, "%s: published reading", label);
+    failed |= expect_int_eq(what, published_rc, want_rc);
+    if (want_rc == 0) {
+        DSD_SNPRINTF(what, sizeof what, "%s: published auto", label);
+        failed |= expect_int_eq(what, published_auto, want_auto);
+        if (!want_auto) {
+            DSD_SNPRINTF(what, sizeof what, "%s: published gain", label);
+            failed |= expect_int_eq(what, published_gain, want_gain);
+        }
+    }
+    return failed;
+}
+
+static int
+test_usb_testmode_survives_gain_writes(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake;
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("testmode survives: device", 0, 1);
+    }
+    int failed = expect_int_eq("testmode on rc", rtl_device_set_testmode(dev, 1), 0);
+    failed |= expect_dongle("testmode on", &fake, kReg19TestMode, 0, 0);
+    failed |= expect_int_eq("auto gain under testmode rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    failed |= expect_dongle("auto gain under testmode", &fake, kReg19TestMode, 0, 0);
+    failed |= expect_int_eq("manual gain under testmode rc", rtl_device_set_gain(dev, 270), 0);
+    failed |= expect_dongle("manual gain under testmode", &fake, kReg19TestMode, 1, 280);
+    int selected = 0;
+    failed |= expect_int_eq("nearest gain under testmode rc", rtl_device_set_gain_nearest(dev, 200, &selected), 0);
+    failed |= expect_int_eq("nearest gain under testmode selected", selected, 197);
+    failed |= expect_dongle("nearest gain under testmode", &fake, kReg19TestMode, 1, 197);
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+static int
+test_usb_testmode_off_keeps_digital_agc(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake;
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("testmode off: device", 0, 1);
+    }
+    /* A configured DSD_NEO_RTL_TESTMODE=0 asserts test mode off at every start. */
+    int failed = expect_int_eq("auto gain rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    failed |= expect_dongle("auto gain", &fake, kReg19DigitalAgc, 0, 0);
+    failed |= expect_int_eq("testmode off under auto rc", rtl_device_set_testmode(dev, 0), 0);
+    failed |= expect_dongle("testmode off under auto keeps digital AGC", &fake, kReg19DigitalAgc, 0, 0);
+    failed |= expect_reported_gain("testmode off under auto", dev, 0, 0);
+
+    failed |= expect_int_eq("manual gain rc", rtl_device_set_gain(dev, 197), 0);
+    failed |= expect_int_eq("testmode off under manual rc", rtl_device_set_testmode(dev, 0), 0);
+    failed |= expect_dongle("testmode off under manual", &fake, kReg19Plain, 1, 197);
+
+    usb_gain_set_digital_agc(0);
+    failed |= expect_int_eq("auto gain, digital AGC configured off rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    failed |= expect_int_eq("testmode off, digital AGC configured off rc", rtl_device_set_testmode(dev, 0), 0);
+    failed |= expect_dongle("testmode off, digital AGC configured off", &fake, kReg19Plain, 0, 0);
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+static int
+test_usb_testmode_turned_off_restores_agc(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake;
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("testmode turned off: device", 0, 1);
+    }
+    int failed = expect_int_eq("auto gain rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    failed |= expect_int_eq("testmode on rc", rtl_device_set_testmode(dev, 1), 0);
+    failed |= expect_int_eq("auto gain again rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    failed |= expect_dongle("auto gain again under testmode", &fake, kReg19TestMode, 0, 0);
+    failed |= expect_int_eq("testmode turned off rc", rtl_device_set_testmode(dev, 0), 0);
+    failed |= expect_dongle("testmode turned off under auto", &fake, kReg19DigitalAgc, 0, 0);
+
+    failed |= expect_int_eq("testmode on again rc", rtl_device_set_testmode(dev, 1), 0);
+    failed |= expect_int_eq("manual gain under testmode rc", rtl_device_set_gain(dev, 197), 0);
+    failed |= expect_int_eq("testmode turned off under manual rc", rtl_device_set_testmode(dev, 0), 0);
+    failed |= expect_dongle("testmode turned off under manual", &fake, kReg19Plain, 1, 197);
+
+    /* A refused test-mode write changes nothing, so the next gain change does not resolve register 0x19 to it. */
+    failed |= expect_int_eq("auto gain before refusal rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    fake.reg19_fault.fail_value_set = 1;
+    fake.reg19_fault.fail_value = kReg19TestMode;
+    failed |= expect_int_eq("refused testmode on fails", rtl_device_set_testmode(dev, 1) < 0 ? 1 : 0, 1);
+    failed |= expect_dongle("refused testmode on", &fake, kReg19DigitalAgc, 0, 0);
+    fake.reg19_fault.fail_value_set = 0;
+    failed |= expect_int_eq("auto gain after refusal rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    failed |= expect_dongle("auto gain after refused testmode", &fake, kReg19DigitalAgc, 0, 0);
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+static int
+test_usb_nearest_gain_accepts_negative_e4000_gain(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake;
+    usb_gain_fake_init(&fake, kE4000Gains, sizeof kE4000Gains / sizeof kE4000Gains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("negative nearest: device", 0, 1);
+    }
+    int failed = expect_int_eq("auto gain rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    int selected = 12345;
+    failed |= expect_int_eq("nearest -2.0 dB rc", rtl_device_set_gain_nearest(dev, -20, &selected), 0);
+    failed |= expect_int_eq("nearest -2.0 dB selects the E4K's -1.0 dB", selected, -10);
+    failed |= expect_dongle("nearest -2.0 dB", &fake, kReg19Plain, 1, -10);
+    failed |= expect_reported_gain("nearest -2.0 dB", dev, 1, -10);
+
+    /* Both of the stream's nearest-gain callers, from automatic gain each time. */
+    int published_rc = 0;
+    int published_gain = 0;
+    int published_auto = 0;
+    const int callers[] = {RTL_STREAM_TEST_GAIN_RETUNE_MANUAL, RTL_STREAM_TEST_GAIN_AUTOGAIN};
+    const char* names[] = {"retune", "autogain"};
+    for (size_t i = 0; i < sizeof callers / sizeof callers[0]; i++) {
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "%s caller from auto", names[i]);
+        failed |= expect_int_eq(label,
+                                rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_RETUNE_AUTO, 0, &published_rc,
+                                                           &published_gain, &published_auto),
+                                0);
+        failed |= expect_published_gain(label, published_rc, published_gain, published_auto, 0, 1, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s caller -2.0 dB", names[i]);
+        failed |= expect_int_eq(
+            label, rtl_stream_test_apply_gain(dev, callers[i], -20, &published_rc, &published_gain, &published_auto),
+            0);
+        failed |= expect_published_gain(label, published_rc, published_gain, published_auto, 0, 0, -10);
+        failed |= expect_dongle(label, &fake, kReg19Plain, 1, -10);
+    }
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+static int
+test_usb_nearest_gain_lookup_failure_is_error(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake;
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("lookup failure: device", 0, 1);
+    }
+    int failed = expect_int_eq("auto gain rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    const int tables[] = {-1, 0}; /* the lookup fails; the table is empty */
+    for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
+        char label[96];
+        fake.gain_count = tables[i];
+        const int mode_calls = fake.mode_calls;
+        const int gain_calls = fake.gain_calls;
+        int selected = 12345;
+        DSD_SNPRINTF(label, sizeof label, "nearest with gain table %d fails", tables[i]);
+        failed |= expect_int_eq(label, rtl_device_set_gain_nearest(dev, 197, &selected) < 0 ? 1 : 0, 1);
+        failed |= expect_int_eq(label, selected, 12345);
+        DSD_SNPRINTF(label, sizeof label, "manual gain with gain table %d fails", tables[i]);
+        failed |= expect_int_eq(label, rtl_device_set_gain(dev, 197) < 0 ? 1 : 0, 1);
+        int published_rc = 0;
+        int published_gain = 0;
+        int published_auto = 0;
+        DSD_SNPRINTF(label, sizeof label, "retune caller with gain table %d", tables[i]);
+        failed |= expect_int_eq(label,
+                                rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_RETUNE_MANUAL, 197, &published_rc,
+                                                           &published_gain, &published_auto)
+                                        < 0
+                                    ? 1
+                                    : 0,
+                                1);
+        failed |= expect_published_gain(label, published_rc, published_gain, published_auto, 0, 1, 0);
+        DSD_SNPRINTF(label, sizeof label, "autogain caller with gain table %d", tables[i]);
+        failed |= expect_int_eq(label,
+                                rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_AUTOGAIN, 197, &published_rc,
+                                                           &published_gain, &published_auto)
+                                        < 0
+                                    ? 1
+                                    : 0,
+                                1);
+        failed |= expect_published_gain(label, published_rc, published_gain, published_auto, 0, 1, 0);
+        DSD_SNPRINTF(label, sizeof label, "gain table %d: nothing written", tables[i]);
+        failed |= expect_int_eq(label, fake.mode_calls - mode_calls + fake.gain_calls - gain_calls, 0);
+        failed |= expect_dongle(label, &fake, kReg19DigitalAgc, 0, 0);
+        failed |= expect_reported_gain(label, dev, 0, 0);
+    }
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+static int
+test_usb_manual_gain_partial_failure_rolls_back(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake;
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("rollback: device", 0, 1);
+    }
+    /* From automatic gain: the digital AGC write and the manual mode take, the tuner refuses 28.0 dB. With two verified
+     * attempts, each writes register 0x19, the mode and the gain; the rollback then writes the mode and register 0x19
+     * once more. */
+    (void)dsd_setenv("DSD_NEO_RTL_VERIFY_ATTEMPTS", "2", 1);
+    dsd_neo_config_init();
+    int failed = expect_int_eq("auto gain rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    fake.gain_fault.fail_value_set = 1;
+    fake.gain_fault.fail_value = 280;
+    const int reg19_calls = fake.reg19_calls;
+    const int mode_calls = fake.mode_calls;
+    const int gain_calls = fake.gain_calls;
+    int selected = 12345;
+    failed |= expect_int_eq("refused gain from auto fails", rtl_device_set_gain_nearest(dev, 270, &selected) < 0, 1);
+    failed |= expect_int_eq("refused gain from auto: register 0x19 writes", fake.reg19_calls - reg19_calls, 3);
+    failed |= expect_int_eq("refused gain from auto: mode writes", fake.mode_calls - mode_calls, 3);
+    failed |= expect_int_eq("refused gain from auto: gain writes", fake.gain_calls - gain_calls, 2);
+    (void)dsd_unsetenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
+    dsd_neo_config_init();
+    failed |= expect_dongle("refused gain from auto rolled back", &fake, kReg19DigitalAgc, 0, 0);
+    failed |= expect_reported_gain("refused gain from auto", dev, 0, 0);
+    failed |= expect_int_eq("refused gain from auto: state known", rtl_device_test_usb_gain_unknown(dev), 0);
+
+    /* From a manual gain: the previous gain comes back. */
+    failed |= expect_int_eq("manual 19.7 dB rc", rtl_device_set_gain_nearest(dev, 197, &selected), 0);
+    failed |= expect_int_eq("refused gain from manual fails", rtl_device_set_gain(dev, 270) < 0, 1);
+    failed |= expect_dongle("refused gain from manual rolled back", &fake, kReg19Plain, 1, 197);
+    failed |= expect_reported_gain("refused gain from manual", dev, 1, 197);
+
+    /* Under test mode the rollback keeps register 0x19 on test mode. */
+    failed |= expect_int_eq("auto gain again rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    failed |= expect_int_eq("testmode on rc", rtl_device_set_testmode(dev, 1), 0);
+    failed |=
+        expect_int_eq("refused gain under testmode fails", rtl_device_set_gain_nearest(dev, 270, &selected) < 0, 1);
+    failed |= expect_dongle("refused gain under testmode rolled back", &fake, kReg19TestMode, 0, 0);
+    failed |= expect_int_eq("testmode off rc", rtl_device_set_testmode(dev, 0), 0);
+    failed |= expect_dongle("testmode off after rollback", &fake, kReg19DigitalAgc, 0, 0);
+
+    /* The stream's callers publish the rolled-back gain. */
+    int published_rc = 0;
+    int published_gain = 0;
+    int published_auto = 0;
+    failed |= expect_int_eq("retune caller refused gain fails",
+                            rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_RETUNE_MANUAL, 270, &published_rc,
+                                                       &published_gain, &published_auto)
+                                < 0,
+                            1);
+    failed |=
+        expect_published_gain("retune caller after rollback", published_rc, published_gain, published_auto, 0, 1, 0);
+    failed |= expect_int_eq("manual 19.7 dB again rc", rtl_device_set_gain_nearest(dev, 197, &selected), 0);
+    failed |= expect_int_eq("autogain caller refused gain fails",
+                            rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_AUTOGAIN, 270, &published_rc,
+                                                       &published_gain, &published_auto)
+                                < 0,
+                            1);
+    failed |= expect_published_gain("autogain caller after rollback", published_rc, published_gain, published_auto, 0,
+                                    0, 197);
+    failed |= expect_dongle("autogain caller rolled back", &fake, kReg19Plain, 1, 197);
+
+    /* An earlier step refused: the digital AGC write fails the change like the others (it is no longer a warning to
+     * continue past), and so does the manual mode, each rolled back to automatic gain. */
+    fake.gain_fault.fail_value_set = 0;
+    failed |= expect_int_eq("auto gain before step refusals rc", rtl_device_set_gain(dev, kAutoGain), 0);
+    fake.reg19_fault.fail_value_set = 1;
+    fake.reg19_fault.fail_value = kReg19Plain;
+    failed |= expect_int_eq("refused digital AGC off fails", rtl_device_set_gain(dev, 197) < 0, 1);
+    failed |= expect_dongle("refused digital AGC off", &fake, kReg19DigitalAgc, 0, 0);
+    failed |= expect_reported_gain("refused digital AGC off", dev, 0, 0);
+    fake.reg19_fault.fail_value_set = 0;
+    fake.mode_fault.fail_value_set = 1;
+    fake.mode_fault.fail_value = 1;
+    failed |= expect_int_eq("refused manual mode fails", rtl_device_set_gain(dev, 197) < 0, 1);
+    failed |= expect_dongle("refused manual mode rolled back", &fake, kReg19DigitalAgc, 0, 0);
+    failed |= expect_reported_gain("refused manual mode", dev, 0, 0);
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+static int
+test_usb_rollback_failure_marks_unknown(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake;
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("rollback failure: device", 0, 1);
+    }
+    int published_rc = 0;
+    int published_gain = 0;
+    int published_auto = 0;
+    int failed = expect_int_eq("auto gain rc",
+                               rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_RETUNE_AUTO, 0, &published_rc,
+                                                          &published_gain, &published_auto),
+                               0);
+    /* The tuner refuses 28.0 dB, and then refuses going back to automatic. */
+    fake.gain_fault.fail_value_set = 1;
+    fake.gain_fault.fail_value = 280;
+    fake.mode_fault.fail_value_set = 1;
+    fake.mode_fault.fail_value = 0;
+    failed |= expect_int_eq("refused gain and rollback fails",
+                            rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_RETUNE_MANUAL, 270, &published_rc,
+                                                       &published_gain, &published_auto)
+                                < 0,
+                            1);
+    failed |= expect_int_eq("failed rollback marks the gain unknown", rtl_device_test_usb_gain_unknown(dev), 1);
+    failed |= expect_published_gain("failed rollback publishes no reading", published_rc, published_gain,
+                                    published_auto, -1, 0, 0);
+    failed |= expect_int_eq("unknown gain mode is not reported", rtl_device_is_auto_gain(dev), -1);
+    int got = 12345;
+    failed |= expect_int_eq("unknown gain is not read", rtl_device_get_tuner_gain(dev, &got) < 0, 1);
+    failed |= expect_int_eq("unknown gain leaves the value alone", got, 12345);
+
+    /* The next change that takes makes the state known again. */
+    fake.gain_fault.fail_value_set = 0;
+    fake.mode_fault.fail_value_set = 0;
+    failed |= expect_int_eq("gain after unknown rc",
+                            rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_RETUNE_MANUAL, 200, &published_rc,
+                                                       &published_gain, &published_auto),
+                            0);
+    failed |= expect_int_eq("gain after unknown: state known", rtl_device_test_usb_gain_unknown(dev), 0);
+    failed |= expect_published_gain("gain after unknown", published_rc, published_gain, published_auto, 0, 0, 197);
+    failed |= expect_dongle("gain after unknown", &fake, kReg19Plain, 1, 197);
+    failed |= expect_reported_gain("gain after unknown", dev, 1, 197);
+    rtl_device_test_usb_gain_device_free(dev);
+
+    /* A fresh device's first gain change has no earlier state to go back to. */
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return failed | expect_int_eq("fresh device", 0, 1);
+    }
+    fake.gain_fault.fail_value_set = 1;
+    fake.gain_fault.fail_value = 280;
+    int selected = 12345;
+    failed |= expect_int_eq("fresh device refused gain fails", rtl_device_set_gain_nearest(dev, 270, &selected) < 0, 1);
+    failed |= expect_int_eq("fresh device refused gain: unknown", rtl_device_test_usb_gain_unknown(dev), 1);
+    failed |= expect_int_eq("fresh device refused gain: mode not reported", rtl_device_is_auto_gain(dev), -1);
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -2115,49 +2522,15 @@ main(void) {
     rc = rtl_device_test_usb_sample_rate_readback(1024000U, 0U, &actual_rate);
     failed |= expect_int_eq("rtl sample-rate readback rejects zero rc", rc, -1);
 
-    /*
-     * Gain setup intentionally records non-fatal AGC failures while still treating
-     * gain-mode failures as fatal, matching the live-device setup sequence.
-     */
-    int agc_calls = -1;
-    int gain_mode_calls = -1;
-    int gain_calls = -1;
-    int recorded_agc_rc = 0;
-    rc =
-        rtl_device_test_usb_manual_gain_controls(-5, 0, 0, &agc_calls, &gain_mode_calls, &gain_calls, &recorded_agc_rc);
-    failed |= expect_int_eq("manual gain ignores AGC failure rc", rc, 0);
-    failed |= expect_int_eq("manual gain AGC call count", agc_calls, 1);
-    failed |= expect_int_eq("manual gain mode still applied", gain_mode_calls, 1);
-    failed |= expect_int_eq("manual gain value still applied", gain_calls, 1);
-    failed |= expect_int_eq("manual gain records AGC failure", recorded_agc_rc, -5);
-
-    rc =
-        rtl_device_test_usb_manual_gain_controls(0, -8, 0, &agc_calls, &gain_mode_calls, &gain_calls, &recorded_agc_rc);
-    failed |= expect_int_eq("manual gain mode failure remains fatal", rc, -8);
-    failed |= expect_int_eq("manual gain mode failure AGC call count", agc_calls, 1);
-    failed |= expect_int_eq("manual gain mode failure call count", gain_mode_calls, 1);
-    failed |= expect_int_eq("manual gain skips value after mode failure", gain_calls, 0);
-    failed |= expect_int_eq("manual gain mode failure records no AGC failure", recorded_agc_rc, 0);
-
-    rc =
-        rtl_device_test_usb_manual_gain_controls(0, 0, -9, &agc_calls, &gain_mode_calls, &gain_calls, &recorded_agc_rc);
-    failed |= expect_int_eq("manual gain value failure remains fatal", rc, -9);
-    failed |= expect_int_eq("manual gain value failure AGC call count", agc_calls, 1);
-    failed |= expect_int_eq("manual gain value failure mode call count", gain_mode_calls, 1);
-    failed |= expect_int_eq("manual gain value failure call count", gain_calls, 1);
-    failed |= expect_int_eq("manual gain value failure records no AGC failure", recorded_agc_rc, 0);
-
-    rc = rtl_device_test_usb_auto_gain_controls(-6, 0, &agc_calls, &gain_mode_calls, &recorded_agc_rc);
-    failed |= expect_int_eq("auto gain ignores AGC failure rc", rc, 0);
-    failed |= expect_int_eq("auto gain AGC call count", agc_calls, 1);
-    failed |= expect_int_eq("auto gain mode still applied", gain_mode_calls, 1);
-    failed |= expect_int_eq("auto gain records AGC failure", recorded_agc_rc, -6);
-
-    rc = rtl_device_test_usb_auto_gain_controls(0, -7, &agc_calls, &gain_mode_calls, &recorded_agc_rc);
-    failed |= expect_int_eq("auto gain mode failure remains fatal", rc, -7);
-    failed |= expect_int_eq("auto gain mode failure call count", gain_mode_calls, 1);
-    failed |= expect_int_eq("auto gain skips AGC after mode failure", agc_calls, 0);
-    failed |= expect_int_eq("auto gain mode failure records no AGC failure", recorded_agc_rc, 0);
+    failed |= test_usb_testmode_survives_gain_writes();
+    failed |= test_usb_testmode_off_keeps_digital_agc();
+    failed |= test_usb_testmode_turned_off_restores_agc();
+    failed |= test_usb_nearest_gain_accepts_negative_e4000_gain();
+    failed |= test_usb_nearest_gain_lookup_failure_is_error();
+    failed |= test_usb_manual_gain_partial_failure_rolls_back();
+    failed |= test_usb_rollback_failure_marks_unknown();
+    (void)dsd_unsetenv("DSD_NEO_RTL_AGC");
+    dsd_neo_config_init();
 
     // Fragmented mute spans are coalesced so capture metadata stays IQ-pair aligned.
     uint64_t pending_mute = 0U;

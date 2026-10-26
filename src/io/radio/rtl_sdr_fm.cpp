@@ -3214,6 +3214,20 @@ demod_autogain_spectral_gate_ok(DemodAutogainState* st, const struct demod_state
     return (st->spec_pass >= st->up_persist) ? 1 : 0;
 }
 
+/* Set the supported tuner gain nearest @p target_tenth_db and note the one that took. A change the device refused leaves
+ * the gain it reports published: the earlier one, rolled back, or no reading when that failed too. Returns whether the
+ * change took. */
+static int
+demod_autogain_set_gain(int target_tenth_db) {
+    int selected = 0;
+    if (rtl_device_set_gain_nearest(rtl_device_handle, target_tenth_db, &selected) != 0) {
+        rtl_stream_publish_tuner_gain();
+        return 0;
+    }
+    dongle_note_gain(selected);
+    return 1;
+}
+
 static void
 demod_autogain_probe_handle(DemodAutogainState* st, uint64_t now_ns) {
     if (!st || st->high < 3) {
@@ -3221,11 +3235,12 @@ demod_autogain_probe_handle(DemodAutogainState* st, uint64_t now_ns) {
     }
     int seed = demod_autogain_clamp_db10(st->seed_gain_db10);
     st->manual_target = demod_autogain_clamp_db10(seed - 50);
-    rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
-    dongle_note_gain(st->manual_target);
+    const int took = demod_autogain_set_gain(st->manual_target);
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
-    LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", st->manual_target / 10,
-             st->manual_target % 10);
+    if (took) {
+        LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", st->manual_target / 10,
+                 st->manual_target % 10);
+    }
 }
 
 static void
@@ -3234,11 +3249,13 @@ demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, uint64_t no
         return;
     }
     int kick = demod_autogain_clamp_db10(st->seed_gain_db10);
-    rtl_device_set_gain_nearest(rtl_device_handle, kick);
-    dongle_note_gain(kick);
+    const int took = demod_autogain_set_gain(kick);
     st->manual_target = kick;
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
-    LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n", kick / 10, kick % 10);
+    if (took) {
+        LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n", kick / 10,
+                 kick % 10);
+    }
 }
 
 static void
@@ -3259,10 +3276,12 @@ demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d
     if (!changed) {
         return;
     }
-    rtl_device_set_gain_nearest(rtl_device_handle, st->manual_target);
-    dongle_note_gain(st->manual_target);
+    const int took = demod_autogain_set_gain(st->manual_target);
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     st->spec_pass = 0;
+    if (!took) {
+        return;
+    }
     if (is_auto > 0) {
         LOG_INFO("AUTOGAIN: threshold hit; exiting device auto and setting ~%d.%d dB.\n", st->manual_target / 10,
                  st->manual_target % 10);
@@ -10656,19 +10675,60 @@ rtl_stream_apply_auto_retune_gain(void) {
     int rc = rtl_device_set_gain(rtl_device_handle, AUTO_GAIN);
     if (rc == 0) {
         dongle_note_gain(AUTO_GAIN);
+    } else {
+        /* Rolled back, or unknown when that failed too: publish what the device now reports. */
+        rtl_stream_publish_tuner_gain();
     }
     return rc;
 }
 
 static int
 rtl_stream_apply_manual_retune_gain(int tuner_gain_tenth_db) {
-    int rc = rtl_device_set_gain_nearest(rtl_device_handle, tuner_gain_tenth_db);
+    int selected = 0;
+    int rc = rtl_device_set_gain_nearest(rtl_device_handle, tuner_gain_tenth_db, &selected);
     if (rc == 0) {
-        int applied = 0;
-        dongle_note_gain(rtl_device_get_tuner_gain(rtl_device_handle, &applied) == 0 ? applied : tuner_gain_tenth_db);
+        dongle_note_gain(selected);
+    } else {
+        rtl_stream_publish_tuner_gain();
     }
     return rc;
 }
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" int
+rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int* out_published_rc,
+                           int* out_published_gain, int* out_published_auto) {
+    struct rtl_device* saved_handle = rtl_device_handle;
+    const int saved_gain = dongle.gain;
+    const int saved_squelch_gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
+    rtl_device_handle = dev;
+    int rc = -1;
+    if (caller == RTL_STREAM_TEST_GAIN_RETUNE_AUTO) {
+        rc = rtl_stream_apply_auto_retune_gain();
+    } else if (caller == RTL_STREAM_TEST_GAIN_RETUNE_MANUAL) {
+        rc = rtl_stream_apply_manual_retune_gain(tenth_db);
+    } else if (caller == RTL_STREAM_TEST_GAIN_AUTOGAIN) {
+        rc = demod_autogain_set_gain(tenth_db) ? 0 : -1;
+    }
+    int gain = 0;
+    int is_auto = 0;
+    const int published_rc = rtl_stream_get_gain(&gain, &is_auto);
+    if (out_published_rc) {
+        *out_published_rc = published_rc;
+    }
+    if (out_published_gain) {
+        *out_published_gain = gain;
+    }
+    if (out_published_auto) {
+        *out_published_auto = is_auto;
+    }
+    rtl_device_handle = saved_handle;
+    dongle.gain = saved_gain;
+    g_squelch_tuner_gain.store(saved_squelch_gain, std::memory_order_relaxed);
+    rtl_stream_publish_tuner_gain();
+    return rc;
+}
+#endif
 
 static void
 rtl_stream_apply_retune_gain_profile(const RtlRetuneProfile* profile) {

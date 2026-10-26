@@ -238,6 +238,52 @@ int rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev);
 /* Stop the device (rtl_device_stop_async()) and destroy it. */
 void rtl_device_test_usb_stream_stop(struct rtl_device* dev);
 
+/* A control of the fake dongle below that fails: every call from the fail_from_call-th on (0: never), and every write
+ * of fail_value while fail_value_set. */
+typedef struct {
+    int fail_from_call;
+    int fail_value_set;
+    int fail_value;
+} rtl_device_test_usb_gain_fault;
+
+/* An RTL-SDR's gain controls as the dongle holds them, in place of librtlsdr's. */
+typedef struct {
+    /* Demod register 0x19, which librtlsdr's test-mode and digital-AGC setters each write whole: 0x03 test mode, 0x25
+     * digital AGC, 0x05 neither. */
+    int reg19;
+    int manual;     /* tuner gain mode: 1 manual, 0 automatic */
+    int gain;       /* tuner gain in tenths of a dB as librtlsdr keeps it (0 after a refused write) */
+    int gains[32];  /* the tuner's gain table */
+    int gain_count; /* entries in gains; negative: the table lookup fails with this result */
+    rtl_device_test_usb_gain_fault reg19_fault;
+    rtl_device_test_usb_gain_fault mode_fault;
+    rtl_device_test_usb_gain_fault gain_fault;
+    int reg19_calls;
+    int mode_calls;
+    int gain_calls;
+} rtl_device_test_usb_gain_fake;
+
+/* A USB device, never opened, whose gain controls reach @p fake in place of librtlsdr until
+ * rtl_device_test_usb_gain_device_free(). The public gain, nearest-gain and test-mode setters and the gain getters
+ * work on it. One at a time; NULL on allocation failure. */
+struct rtl_device* rtl_device_test_usb_gain_device(rtl_device_test_usb_gain_fake* fake);
+void rtl_device_test_usb_gain_device_free(struct rtl_device* dev);
+/* Whether a gain change on @p dev failed and could not be rolled back, so the dongle holds neither gain state. */
+int rtl_device_test_usb_gain_unknown(const struct rtl_device* dev);
+
+/* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
+enum {
+    RTL_STREAM_TEST_GAIN_RETUNE_AUTO = 0,   /* a retune profile's automatic gain */
+    RTL_STREAM_TEST_GAIN_RETUNE_MANUAL = 1, /* a retune profile's manual gain, nearest supported */
+    RTL_STREAM_TEST_GAIN_AUTOGAIN = 2,      /* the tuner autogain supervisor's nearest manual gain */
+};
+
+/* Run one of the stream's tuner-gain callers with @p dev as the open device and report the tuner gain it left
+ * published (rtl_stream_get_gain()'s result, value and auto flag); the previous device handle and its published gain
+ * come back afterwards. Returns the caller's result: 0 when the gain took. */
+int rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int* out_published_rc,
+                               int* out_published_gain, int* out_published_auto);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */
