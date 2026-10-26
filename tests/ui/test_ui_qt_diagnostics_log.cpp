@@ -75,9 +75,23 @@ hexRepresentations(const QByteArray& key) {
     return representations;
 }
 
+/* The log's own process line ("[process] [info] pid <pid>, <os>") carries the real pid and kernel version, never a
+ * key; left in, a pid such as 1845197 reads as a leak of the basic key 197. */
+static QByteArray
+withoutProcessFacts(const QByteArray& text) {
+    QByteArray kept;
+    for (const auto& line : text.split('\n')) {
+        if (!line.startsWith("[process] [info] pid ")) {
+            kept += line;
+            kept += '\n';
+        }
+    }
+    return kept;
+}
+
 static void
 checkAbsent(const QByteArray& text, const QList<QByteArray>& representations, const char* surface) {
-    const auto folded = text.toLower();
+    const auto folded = withoutProcessFacts(text).toLower();
     for (const auto& representation : representations) {
         check(!representation.isEmpty() && !folded.contains(representation.toLower()), surface);
     }

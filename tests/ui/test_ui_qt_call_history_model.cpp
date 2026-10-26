@@ -764,6 +764,28 @@ test_clear_shows_later_calls_whatever_their_stamps(void) {
     expect("the cleared calls stay cleared", rows_in_tg_range(model, 5001, 5002) == 0);
 }
 
+/* Clear removes the rows rather than resetting the model: a ListView still building a row in
+ * its cache buffer cancels it by index on a reset, once the model is already empty. */
+void
+test_clear_removes_rows_without_a_reset(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    ring.commit(0, 5001, 100, 1754501000, 1754501004);
+    ring.commit(1, 5002, 101, 1754501010, 1754501014);
+    model.refresh(ring.state);
+    expect("two calls before the clear", model.count() == 2);
+    QSignalSpy resets(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy removed(&model, &QAbstractItemModel::rowsRemoved);
+    model.clearAll();
+    expect("clear does not reset the model", resets.count() == 0);
+    expect("clear removes every row at once",
+           removed.count() == 1 && removed.at(0).at(1).toInt() == 0 && removed.at(0).at(2).toInt() == 1);
+    expect("clear empties the log", model.count() == 0);
+    model.clearAll();
+    expect("clearing an empty log removes nothing", resets.count() == 0 && removed.count() == 1);
+}
+
 /* Clear has to hold across an Activity restart while the service's ring still holds the
  * cleared calls. The seen store goes before each relaunch, so only the clear's own persisted
  * record can tell the relaunched model which of the ring's rows were wiped. */
@@ -2457,6 +2479,7 @@ main(int argc, char** argv) {
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();
     test_clear_shows_later_calls_whatever_their_stamps();
+    test_clear_removes_rows_without_a_reset();
     test_clear_survives_a_relaunch();
     test_legacy_clear_watermark_is_retired();
     test_new_session_starts_fresh();

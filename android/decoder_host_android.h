@@ -17,6 +17,7 @@
 #include <QByteArray>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QVector>
 #include <QtGlobal>
 #include <stdint.h>
@@ -76,6 +77,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
         return m_terminal_reason;
     }
 
+    QVariantMap
+    receiverHealth() const override {
+        return m_receiver_health;
+    }
+
     QString
     audioRoute() const override {
         return m_audio_route;
@@ -129,6 +135,17 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void noteStartAttempt(const QString& sourceType) override;
     QString localDeviceStatus() const override;
     int localDeviceFailureKind() const override;
+
+    bool
+    localDeviceRequestPending() const override {
+        return m_usb.pending;
+    }
+
+    QString
+    localDeviceRequestedSource() const override {
+        return m_usb.requestedSource;
+    }
+
     void hostDiagnostic(const QString& line) override;
 
     bool
@@ -227,6 +244,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
     void requestServiceStop();
+    /** @brief DecoderService.startDecoder() with @p argv; returns why it could not be handed over, or empty. */
+    static QString platformStartDecoder(const QStringList& argv);
+    /** @brief UsbSourceManager.requestAccess() / requestAccessForSource(); the answer arrives through refresh(). */
+    static void platformRequestAccess();
+    static void platformRequestAccessForSource(const QString& source, const QString& serial);
+    /** @brief DecoderService.acknowledgeReceiverEnding(): endings up to @p session stay acknowledged past this host. */
+    static void platformAcknowledgeReceiverEnding(uint64_t session);
     QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);
@@ -238,6 +262,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void refreshLocalDevice();
     /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
     void setSessionPhase(SessionPhase phase, const QString& reason = QString());
+    /** @brief Recompute receiverHealth() from the last record; true when it changed (the caller emits). */
+    bool updateReceiverHealth();
+    /** @brief A new start acknowledges the endings of sessions up to @p session; emits runResultChanged(). */
+    void clearReceiverHealth(uint64_t session);
+    /** @brief A new access request acknowledges the ending on screen once its session ended, never one to come. */
+    void acknowledgeReceiverEnding();
+    /** @brief Whether the native claim error belongs to the receiver that is ready now (B11). */
+    bool deviceErrorApplies() const;
 
     bool m_primed = false;
     uint64_t m_adopted_idle_session = 0;
@@ -246,6 +278,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     // WP-D5: Retry acknowledges only the retained error of this session.
     uint64_t m_device_error_session = 0;
     uint64_t m_retried_device_session = 0;
+    // #647 B11: the receiver the claim error came from; it is shown only while that receiver is the ready one.
+    uint64_t m_device_error_owner = 0;
+    QString m_device_error_source;
+    QString m_device_error_serial;
     LocalDeviceState m_usb;
     // UsbSourceManager.attachedSource(), polled with the USB record.
     QString m_attached_source;
@@ -261,6 +297,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     int m_input_failure = 0;
     int m_input_error = 0;
     int m_terminal_reason = 0;
+    // #647: the last record's ending (RunEndCause) and receiver (ReceiverSource); endings of sessions up to
+    // m_health_cleared_session were acknowledged by a start or an access request, here or by a host before this one
+    // (the service keeps the mark, as endingAcknowledged, across Activity recreation).
+    uint64_t m_health_session = 0;
+    int m_end_cause = 0;
+    int m_receiver_source = 0;
+    uint64_t m_health_cleared_session = 0;
+    QVariantMap m_receiver_health = DecoderHost::healthyReceiver();
     QString m_audio_route = QStringLiteral("System default");
     bool m_notification_permission_needed = false;
 };

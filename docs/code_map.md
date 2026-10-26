@@ -2094,7 +2094,7 @@ suite runs under this compiler.
     still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
     D4): every QML `decoderHost.stop()` caller (Stop listening, switching systems, retry after a failure, leaving
     Signal search or its Stop, Back or closing the window with background listening off, "Dismiss failure and choose a
-    site") and the notification's Stop action, as `StopCause.USER` through `nativeStop(userRequested)`: a lock-free flag the worker loop (no further jobs), the retry
+    site") and the notification's Stop action, as `StopCause.USER` through `nativeStop(userRequested, cause)`: a lock-free flag the worker loop (no further jobs), the retry
     loop (between attempts) and the transfer's xferinfo callback (aborts the transfer in flight) poll. Shutdown still
     owns the join, logs once how many uploads were not sent, and clears the flag; uploads queued after the cancel (the
     final call cleanup closes) are not sent either. Files are deleted only after a successful upload, so abandoned
@@ -2121,7 +2121,12 @@ suite runs under this compiler.
     `dsd_engine_run_with_lifecycle()` reads at the end to return 1 after a device failure. A mutex guards it, since
     device threads report. `dsd_input_failure_generation()` counts its writes, a clear included, so a caller can tell
     that something wrote the latch even when the write repeats the failure latched (the rollback restart,
-    `svc_rtl_restart_recovery_locked()`). Test: `RUNTIME_INPUT_FAILURE`.
+    `svc_rtl_restart_recovery_locked()`). Beside the latch, the committed receiver ending
+    (`dsd_input_failure_commit_receiver_end()`, `dsd_input_failure_receiver_ended()`; cleared only by
+    `dsd_input_failure_clear()`, and not counted by the generation): set only by the radio path that ends a session for
+    its USB receiver, when it raises the exit flag. The latch alone is not that fact, since a path that recovers may
+    write and restore it (an Airspy reconfigure that fails, rolls back and keeps streaming). Tests:
+    `RUNTIME_INPUT_FAILURE`, `IO_RTL_READER_EXIT`, `IO_USB_PROGRESS_MONITOR`.
 - Build files: `src/runtime/CMakeLists.txt`
 - Config docs: `docs/config-system.md`, `docs/radioreference-import.md`
 
@@ -4306,17 +4311,52 @@ Key public headers:
 - Native Airspy adapter: `src/io/radio/airspy_source.cpp` owns SDK calls and USB lifecycle;
   `rtl_device.cpp` connects its CF32 callbacks to the shared generation-checked input ring.
   Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
+  The vendored Android libairspy's stop (0001-libairspy) waits until libusb has called back every cancelled transfer,
+  so `airspy_close()` and the restart after a retune never free or resubmit one still in flight; system libairspy
+  keeps upstream's single poll. Test: `VENDORED_LIBAIRSPY_TRANSFERS`.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
-  - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): `rtlsdr_read_async()` returns `-ENOMEM` when
-    librtlsdr could not allocate its USB transfers and submitted none (the vendored Android librtlsdr does since
-    `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`). With no stop in flight (the
-    device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) that is logged, latched
-    as `DSD_INPUT_FAILURE_DEVICE` with that code, and ends the session (exit flag, input ring waiters woken). A lost
-    device (-1: unplugged, or librtlsdr gave up after repeated transfer errors) is handled the same way on desktop
-    builds, where it used to leave the session waiting for samples that never came. On Android it is left to the USB
-    detach broadcast, which owns an unplug's outcome whichever side notices first. Tests: `IO_RTL_READER_EXIT`, and
-    `VENDORED_LIBRTLSDR_ASYNC_ALLOC` for the vendored allocation path.
+  - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in
+    flight (the device's `run` flag, which a stop clears before it cancels the reader, and the exit flag) is a device
+    failure, whatever its code: -1 for a lost device (unplugged, or librtlsdr gave up after repeated transfer errors;
+    the vendored Android librtlsdr also once no transfer is left, since its patch 0003), a failed submission or event
+    poll, even 0. It goes through `rtl_device_end_for_receiver()`, the one path that ends
+    a session for its receiver: after the unplug-owner grace (`rtl_device_set_unplug_owner_grace_ms()`, process-wide,
+    default 0; the Android host sets 2000 ms so its USB detach broadcast can own an unplug, and a stop or exit request
+    inside the grace keeps the failure silent), it latches `DSD_INPUT_FAILURE_DEVICE` with that code, commits the
+    receiver ending (`dsd_input_failure_receiver_ended()`) and ends the session (exit flag, input ring waiters woken).
+    `-ENOMEM` (librtlsdr could not allocate its USB transfers and submitted none; the vendored Android librtlsdr
+    returns it since `android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch`) is the host's:
+    reported at once, without the grace or the committed ending. Stop handshake (`rtl_usb_reader_stop()`, shared by
+    `rtl_device_stop_async()` and `rtl_device_destroy()`): clear `run`, then retry `rtlsdr_cancel_async()` every
+    1 ms until the reader published `reader_exited`, then join. librtlsdr refuses a cancel until the reader streams,
+    so a single cancel lost a stop that landed while the reader was starting and the join hung; the reader checks
+    `run` after publishing `reader_entered` and before it calls `rtlsdr_read_async()`. The vendored librtlsdr's
+    teardown (0003) frees transfers only once libusb has called each back; system librtlsdr keeps upstream's, so
+    desktop builds get this exit rule, the handshake and the progress monitor but not the safe teardown. A stop that
+    lands between a verdict's last check and its report is still reported and committed; on Android the stop's cause,
+    latched first, decides what the UI shows. Tests:
+    `IO_RTL_READER_EXIT`, and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` and `VENDORED_LIBRTLSDR_TRANSFERS` for the vendored
+    allocation path and transfer accounting.
+  - USB sample-progress monitor (RTL-SDR and Airspy only; replay, rtl_tcp and SoapySDR have none): a receiver can
+    stay enumerated and stop delivering with nothing returning (system librtlsdr drops a transfer for good on each
+    error status and waits forever once none is left, where the vendored copy returns -1; a device that stops
+    completing transfers, which have no timeout,
+    leaves either SDK waiting). `rtlsdr_callback()` and the Airspy source's receive callback count progress as their
+    first statement (one relaxed increment, no clock read: `rtl_device::progress`, `airspy_source_progress()`). A
+    monitor samples it every 100 ms on `dsd_realtime_mono_ms()`: for the RTL-SDR its own thread, started by
+    `rtl_device_start_async()` after the reader and stopped and joined in `rtl_usb_reader_stop()` before the cancel
+    loop; for the Airspy the device thread, `airspy_monitor()`. Silence accrues by the time between samples while the
+    stream is up (the RTL reader inside `rtlsdr_read_async()`; the Airspy not inside a retune or rate change,
+    `airspy_source_reconfiguring()`, and the time a sample waits on the source's lock is not counted), does not reset
+    when the stream restarts (`airspy_source_generation()` counts restarts, for the log only), and only observed
+    progress ends it. 5000 ms of it (`RTL_PROGRESS_SILENCE_LIMIT_MS`; the 100 ms period is `RTL_PROGRESS_PERIOD_MS`;
+    both are constants that only internal test hooks shorten) ends the session with `-ETIMEDOUT` through
+    `rtl_device_end_for_receiver()`, so the grace applies, and cancels the RTL reader. The Airspy's "stream stopped"
+    verdict (`-1`) takes the same path. Every verdict carries the progress count it was made at; during the grace only
+    progress since then drops it, never a restart or an SDK that says it streams, and the deadline never restarts. Of
+    verdicts that race (a reader exit and the monitor), the first reports (`receiver_end_claimed`). Tests:
+    `IO_USB_PROGRESS_MONITOR`; bench: `dsd-neo_bench_usb_ingest`.
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
   `include/dsd-neo/io/m17_udp.h`
 - UDP control API: `include/dsd-neo/io/udp_control.h`
@@ -7047,6 +7087,74 @@ Qt Quick frontend (`src/ui/qt`):
   they stack in focus order, keeping the source hint beneath Add a system. The available content width, including
   the supporting pane, and the current font determine reflow. Empty collection headings are hidden. Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
+- Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
+  access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
+  layout, Onboarding wording and Monitor geometry.
+  - `qml/DeviceStatus.qml` (a non-visual `QtObject`, in `qmldir` and the `qt_add_resources` list) is the one reading
+    of the brokered receiver that Listen, Onboarding and the Monitor share, so one receiver is never named or worded two
+    ways. `kind`: the connected source when ready; else the receiver of the session that just ended
+    (`receiverHealth.source`, so a receiver lost with no request on record is still named); else the requested one
+    (`localDeviceRequestedSource`, which Main overrides with the source a start waits on); else the only kind on the bus
+    (`attachedDeviceSource`); else none, named "receiver". The requested kind outranks the bus: after an RTL-SDR
+    request with only an Airspy plugged in the pill reads `NO RTL-SDR` and Retry answers "No RTL-SDR attached" until
+    an Airspy system is started. `state`, first match: `lost`/`fault` (`receiverHealth` lost
+    or failed for this kind), `failed` (failure kind busy, open failed or permission), `ready`, `pending`
+    (`localDeviceRequestPending`), `missing` (detached or not found, or the kind not on the bus, even with the other
+    kind attached), `available`, `absent`. Pill copy, mono caps: `RTL-SDR READY`, `CONNECT RTL-SDR` (`CONNECT
+    RECEIVER` with no kind), `RTL-SDR WAITING`, `NO RTL-SDR` (`NO RECEIVER`), `RTL-SDR NO ACCESS` (permission),
+    `RTL-SDR ERROR`, `RTL-SDR LOST` (lost and fault alike), `AIRSPY` for an Airspy; the dot is cyan when ready,
+    `Theme.alert` for failed, fault and lost, subdued otherwise. The action is Retry for failed, fault, lost and
+    missing, Connect for available and absent, and none while ready or pending (Connect returns once the request
+    expires); it only asks for access (`requestLocalDeviceAccess()`), never starts, and is offered only with no session
+    active or in transition (`canAct`). It also gives the accessible name, the detail line (the host record's text where
+    it has one; a receiver on the bus reads "plugged in. Tap Connect", not "Plug in") and Onboarding's card title
+    (`headline`, e.g. "Airspy detected"), so Onboarding names the receiver it found.
+  - Listen (`qml/HomeScreen.qml`): the title row is a fixed `listenHeader` above the scroll body, on the content
+    column's x and width (`columnX`/`columnWidth`; the supporting pane is untouched; safe areas come from the parent),
+    so the pill (`dongleStatusPill`, label `dongleStatusLabel`) never scrolls away. The body is clipped 6 px under the
+    header, and a 1 px `Theme.divider` shows at that edge only while the body is scrolled. Title and pill share a row
+    while `title.implicitWidth + gap + pill.implicitWidth` fits the column; otherwise the pill drops under the title,
+    left-aligned and at most the column wide, its label wrapping at spaces (never elided) and its height following the
+    label (at least `max(48, 30 * fontScale)`). Header and details-panel heights are keyed on the host, not on
+    `visible`, so hiding Home on another tab keeps its scroll range and position. One guarded `activate()` serves tap,
+    Return/Enter/Space and `Accessible.onPressAction`, under `canAct`, `Navigation.allows()` and no open management
+    sheet; the role is Button while actionable, else StaticText, and the pill stays a tab stop while shown, so focus
+    stays put when Connect turns into WAITING. The pill stays up whatever source a failure on screen is about;
+    `localDeviceRelevant` (`usb` and `airspy`) gates only the details panel (`dongleDetailsPanel`), which gives way to a
+    failure card. `revealFailure()` calls `homeScreen.revealTop()`, so a failure card or the panel is in view when a
+    session ends; desktop scroll restoration is unchanged.
+  - Receiver notice (Main.qml): when `receiverHealth` reads `lost` or `failed` and no session is active,
+    `receiverNotice()` words the ending as Home's failure, ranked after a start error and live USB-access text and
+    before the host's failure: "RTL-SDR was unplugged, so <name> stopped. Plug it back in, then tap Reconnect." or
+    "RTL-SDR stopped sending samples, so <name> stopped. Check its USB connection, then tap Reconnect.", naming the
+    attempt's system, scan list, Explore or Signal search. The `FailureCard` (`homeFailureCard`) button reads
+    `retryText` "Reconnect" while the notice shows (`receiverNoticeShown`), and the details panel is hidden, so two
+    Retry actions never compete. Reconnect is `retrySource()`: the usual USB gate (a permission prompt if needed), then
+    the same session. After an Activity recreation the UI has no verified link from the service's run to a saved
+    system or list (`attemptedSource` is empty), so Reconnect only asks for access to the lost kind, starts nothing,
+    and the copy ends "Plug it back in, tap Reconnect, then start it again." (a stream failure: "Check its USB
+    connection, tap Reconnect, then start it again."). With Signal search open, its screen says "… plug it back in,
+    then start the search again." (or "Check its USB connection, then start the search again."). Dismiss clears the
+    notice and any restart queued behind a Reconnect or Retry (`cancelPendingRestart()`); Back does not cancel a
+    pending Reconnect (Android's permission dialog takes Back as a denial). While a start waits on USB access the live
+    access text ("USB permission denied") outranks the input-failure texts. During a session the notice never shows;
+    the Monitor carries the loss (Monitor receiver pill below).
+  - Auto-start on attachment (Settings "Start when a dongle is attached", "Resume the last USB-receiver system or scan
+    list"): saved systems and scan lists on `usb` or `airspy` are eligible, and an attachment starts one only when the
+    kind of the receiver that attached equals the target's source (`autoStartKindMatches()` in
+    `auto_start_attachment.h`; `DecoderHost::localDeviceAttached` carries `"<kind>:<device name>"`, read by
+    `attachedReceiverKind()` in `qt_ui.cpp`'s `wire_attachment()` and matched by `UiController::requestAutoStart()`),
+    never because of what else is on
+    the bus; a suppressed attachment is still consumed. An unanswered permission request
+    (`localDeviceRequestPending`) joins `autoStartBlocked`; its expiry lifts the block without retrying the old
+    attachment.
+  - Tests: `UI_QT_QML_DEVICE_STATUS` (`tst_device_status.qml`, every state), `tst_home_dongle_status.qml` (pinned
+    header, reflow at 320/360/411 px by 1.0/1.6/2.0 and the 900 px supporting pane, activation paths and the modal
+    guard, focus kept when the prompt opens, scroll kept across tabs, desktop layout unchanged, Onboarding),
+    `UI_QT_QML_MAIN_RECEIVER_NOTICE` (`tst_main_receiver_notice.qml`: copy, Reconnect resuming the same session, a
+    Failed session's one card, permission denial, Dismiss before a deferred restart, recreation, Signal search, the pill
+    through a refused Airspy start, the reveal, auto-start blocking and kind), `UI_QT_CONTROLLER`
+    (`test_auto_start_follows_the_attached_kind`, `test_attachment_kind`), `UI_QT_AUTO_START_POLICY`.
 - AM (issue #524): `qml/Util.js` `DECODE_MODES` carries an `AM` chip (`-fM`) marked `iqOnly`, which the Radio sheet
   (`metrics.radioInput`, with a `radioDecodeIqNote` saying why) and the add-system wizard (`radioSource`) do not offer
   for audio that arrives demodulated. The wizard drops an `iqOnly` flag back to Auto when its source moves off the radio
@@ -7119,6 +7227,8 @@ Qt Quick frontend (`src/ui/qt`):
     reattaching to a running session (the service survived an Activity restart) takes the session the history kept,
     so it sees the calls its predecessor logged in that session.
   - Clear (`clearAll()`) names what it wiped by ring position: push_seq per slot as last read (`callHistory/clear/*`).
+    It removes the rows (one `rowsRemoved`) rather than resetting the model: a list building a row in its cache buffer
+    cancels it by index on a reset, after the model is already empty.
     Whatever the ring takes in after the clear shows, whatever its stamps. A relaunched UI does not ingest the cleared
     rows again, even if the seen store lost them. The position means something only in its own ring, so the mark also
     names that ring (`Event_History_I::instance`, `callHistory/clear/ring`), and the ring, not the session, is the
@@ -7345,14 +7455,16 @@ Qt Quick frontend (`src/ui/qt`):
   is built only from readings the rows show (SNR on radio input, the quality row's lead reading with a TETRA codec fault
   ahead of it in `Theme.alert`, the decryption state, an ENC LOCKOUT count in `Theme.magenta`, `Util.siteShortForm()`),
   one elided StyledText line; a fault never opens the rows. `tier` is chosen from measured geometry, never call
-  content: the first of 0 (stacked header, full hero, live strip fixed), 1 (header actions on the title line, Sites and
+  content: the first of 0 (stacked header, full hero, live strip fixed; on brokered hosts stacked only when the header
+  actions fit, see the width rule under Monitor receiver pill), 1 (header actions on the title line, Sites and
   Spectrum left to the session menu, which carries both on the same conditions; at 500 dp and wider they stay), 2
   (compact hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label)
   whose `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
-  leaves a row, else 5, where only Stop stays put and header, hero, strip and actions move into slots at the top of the
-  list header. Parts move by `parent` bindings between fixed hosts (`topHost`, `stripHost`, `actionsHost`) and those
-  slots; slots and hosts size from the budget's own numbers (`stripHeight`), since an Item hides its children. The hero's
-  height is reserved from its fixed lines (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
+  leaves a row, else 5, where only Stop (and, for a lost receiver, the line above it) stays put and header, hero, strip
+  and actions move into slots at the top of the list header. Parts move by `parent` bindings between fixed hosts
+  (`topHost`, `stripHost`, `actionsHost`) and those slots; slots and hosts size from the budget's own numbers
+  (`stripHeight`), since an Item hides its children. The hero's height is reserved from its fixed lines
+  (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
   one box. The list has no current item (`currentIndex: -1`): a ListView is a focus scope that would hand focus to it
   as rows land. Keyboard focus inside the list is revealed through `Theme.revealFocus(list, list.contentItem, item)`,
   whose bounds follow `originY` when passed a view's `contentItem` (plain Flickables keep 0). `FollowLatest` measures
@@ -7366,6 +7478,34 @@ Qt Quick frontend (`src/ui/qt`):
   Tests: `tst_monitor_layout_budget.qml` (tiers at 360x690, 411x780, 411x914, 640x360 by scale and live strip,
   disclosure, summary, follow and focus), `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`,
   `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE` (`test_prefs_key_table`).
+- Monitor receiver pill (issue #647; brokered hosts only, `qml/MonitorScreen.qml`): the live pill (`monitorLiveStatus`,
+  label `monitorLiveLabel`, dot `monitorLiveDot`) reads `LOST` with a `Theme.alert` dot (no halo) as soon as the host's
+  `receiverHealth` reports the session's receiver lost or failed (`receiverLost`, read through a `DeviceStatus`), while
+  the engine still saves and uploads its last calls, instead of `LIVE` until teardown ends; Stop reads "Stopping…" and
+  is disabled meanwhile. For a session on a local receiver (`sessionReceiver`: the system's `usb` or `airspy` source,
+  or the lost receiver's kind) the pill is a button (accessible name "RTL-SDR lost" while lost) that opens
+  `monitorReceiverSheet`, a `ConfirmDialog`: healthy, the receiver's headline and record text with OK; lost, what
+  happened and that the session is finishing, with Cancel and **Stop now** (`decoderHost.stop()`, the user's Stop,
+  which abandons the upload backlog). The sheet fixes its view when it opens, closes if `receiverLost` changes under it
+  (OK never turns into Stop now under a finger) and closes with the screen. rtl_tcp, network and file sessions, and
+  every desktop session, keep an inert pill (StaticText, no tab stop); so does a healthy session the Monitor reattaches
+  to after an Activity recreation, which has no system map, while LOST still shows there from `receiverHealth`. In tier
+  5, where the header scrolls with the list, a lost receiver also shows as one fixed line above Stop
+  (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens the same
+  sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already fixes
+  only Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the actions the session would show
+  (Sites, session options, Spectrum, and the pill at the widest label it can show, `LIVE`, `LOST`, `STARTING…`,
+  `STOPPING…` or the current one, measured by a hidden probe plus constant padding), and `headerActionsFit` requires it
+  to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`, `headerStacked` and the budget's
+  `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to the session menu as in tier 1
+  and tier 0 keeps the title-line header; a label change never changes which actions show. A 360 dp phone at 1.0 with
+  Sites and Spectrum therefore keeps both in the session menu even under LIVE (`STOPPING…` would overflow); 411 dp at
+  1.0 keeps all four (at 1.6 `STOPPING…` overflows there too). Every gate is `!localDeviceBrokered ||`, so desktop
+  geometry is unchanged; the one desktop change is the LIVE pill's accessible name, which now names the receiver's
+  state there too. Tests:
+  `UI_QT_QML_MONITOR_RECEIVER` (`tst_monitor_receiver.qml`), `tst_monitor_scan_target.qml`
+  (`test_header_actions_fit_a_tall_phone`, `test_header_geometry_unchanged_off_android`),
+  `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier rows).
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
   (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as
   checked (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does
@@ -8083,6 +8223,39 @@ host diagnostics line. Times are `dsd_realtime_mono_ms()` read through `DecoderH
 `UI_QT_ANDROID_HOST` replaces. The request lives in the host; a recreated
 Activity maps the service state as before. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`,
 `tst_monitor_call_actions.qml`.
+
+Receiver endings (issue #647): `RunStatus` (`android/run_status.h`) keeps, per run, why it ended (`end_cause`: user,
+detached, receiver failed, lifecycle) and the local receiver it was configured on (`receiver_source`, from the last
+`-i` at configure by `receiver_source_for_input()`: `rtl`/`rtl:` and `airspy`/`airspy:`, never rtl_tcp).
+`nativeStop(userRequested, cause)` latches its cause and raises its stop flag together under the lifecycle-status
+lock, and `nativeConfigure` clears that flag, the input-failure latch and the run record in the same block, so a stop
+configure discards leaves no cause. Each `nativeLifecycleStatus` poll, and the run's collection, takes the radio
+path's committed receiver ending (`dsd_input_failure_receiver_ended()`; never the raw failure latch, which an Airspy
+reconfigure writes, rolls back and keeps streaming) as "receiver failed". The first cause accepted is kept: a user Stop
+then an unplug during cleanup stays a user stop (no notice); an unplug then Stop now stays an unplug.
+`nativeSessionUsesLocalReceiver()` answers from the same record; configure and the USB detach broadcast both run on the
+main thread, so a detach during a start is answered by it once configure returned. `nativeInit` installs the 2000 ms
+unplug-owner grace (`install_receiver_policy()`). `DecoderHostAndroid` turns the record's `endCause`/`receiverSource`
+into `receiverHealth` (`{state: ok|lost|failed, source: usb|airspy, session}`; the base host always answers ok, so
+desktop UIs never see an ending): a detach reads lost, a committed ending failed, an ending with no local receiver ok.
+Such an ending publishes Stopping at once, and `SessionPhaseTracker::note_receiver_end()` holds it as an acknowledged
+stop until that session's terminal record, with no `kStopGraceMs` expiry, however long the upload drain runs. An
+accepted `start()` clears the health; an access request clears it only once no session is active (during the hold the
+Monitor's LOST stays) and, for a session that ended Failed by that same ending, acknowledges the failure first, so
+Listen shows one card. Each acknowledgement is also handed to `DecoderService.acknowledgeReceiverEnding()`, and a host
+takes the service's `endingAcknowledged` mark from every record, so a recreated Activity's host starts from it. A native
+claim error is kept with the receiver of the session it came from (source, and the ready connection's serial when the
+error is first seen) and shown only while that receiver is the ready one. The USB record also carries the broker's
+request (`pending`, `requestedSource`, `requestedSerial`, empty before the first request; `LocalDeviceState`), published
+as `localDeviceRequestPending`/`localDeviceRequestedSource`; kind `refused` (the switch refusal) maps to no device
+failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request generations and their 60 s
+expiry, scoped attachment diagnostics, detach ownership) is described in `android/README.md` "USB-OTG". Known limits:
+`receiverHealth` carries no Airspy serial, so the notice names only the kind and a recreated Reconnect asks for access
+by kind (with two Airspys it may prompt for the other); a claim error's serial is the ready connection's when the error
+is first seen, a proxy, so after a swap between two Airspys it can be kept with the wrong unit. Tests:
+`UI_QT_SESSION_STATE` (`test_receiver_end_holds_stopping_through_long_running`), `IO_RTL_RUN_RESULT` (causes, sources,
+the grace), `UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`, `check_request_record`),
+`UI_QT_CONTROLLER`, `ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`.
 
 Stop delivery (PR #723 follow-up): `DecoderService.stopDecoder()` also calls `requestEngineStop()` synchronously
 under the service lock, before posting the intent, for RUNNING and STOPPING. The JNI stop only raises atomics; the

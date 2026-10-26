@@ -131,7 +131,11 @@ folded into that one phase by `session_state_map.h`, which is deliberately free 
 Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host. Each accepted start
 has a monotonically increasing session id. `nativeLifecycleStatus` retains the
 post-initialization edge and terminal reason (pending/completed/cancelled/failed),
-run return code, and native USB open/claim error after cleanup. The service folds
+run return code, and native USB open/claim error after cleanup. It also carries why
+the run ended (the first cause accepted: the user's Stop, a USB detach, the receiver's
+committed ending, a teardown) and the session's configured receiver, published while
+the run's cleanup still goes, so a lost receiver moves the UI to Stopping at once and
+holds it there until that session ends. The service folds
 these into one `lifecycleStatus` record, including `lastError`; the existing UI
 tick reads it without consuming a decoder snapshot. Failures remain visible even
 when the run ends between polls or fails well after startup. While a native terminal
@@ -745,7 +749,119 @@ native descriptor-in-use reporting cover both drivers; switching between USB
 receivers requires the current session to stop. Both drivers share the vendored
 libusb target, and Java retains descriptor ownership until native transfers end.
 
-Onboarding and Home's dongle status show the USB diagnostic and a **Retry**
+### Receiver status on Listen
+
+Listen keeps the receiver's status in a pill beside the title, in a header that
+stays put while the list scrolls (the desktop has no pill and its title scrolls
+as before). One shared reading (`DeviceStatus.qml`) names the receiver —
+RTL-SDR, Airspy, or "receiver" when it cannot tell — for Listen, Onboarding and
+the Monitor:
+
+| Pill | Meaning | Tap |
+| --- | --- | --- |
+| `RTL-SDR READY` | connected and permitted | — |
+| `CONNECT RTL-SDR` / `CONNECT RECEIVER` | plugged in, not opened yet | Connect |
+| `RTL-SDR WAITING` | Android's permission prompt is up | — (Connect returns after 60 s without an answer) |
+| `NO RTL-SDR` / `NO RECEIVER` | the requested receiver (or any) is not attached | Retry / Connect |
+| `RTL-SDR NO ACCESS` | permission denied | Retry |
+| `RTL-SDR ERROR` | Android could not open or claim it | Retry |
+| `RTL-SDR LOST` | it was unplugged or stopped sending samples during the last session | Retry |
+
+An Airspy reads `AIRSPY` in place of `RTL-SDR`. Which receiver is named: the
+connected one, else the one the last session lost, else the one last requested,
+else the only kind on the bus. With both kinds attached and nothing requested it
+reads `CONNECT RECEIVER`. The pill and the details card under it only ask for
+access; they start nothing, and they act only while no session runs. When the
+label does not fit beside the title (narrow screens, large fonts) the pill moves
+under it and wraps instead of cutting the label off. Onboarding words its card
+from the same reading ("Airspy detected", "No receiver detected", …).
+
+### When a receiver ends a session
+
+A session whose receiver is unplugged, or stops delivering samples (its reader
+returns, or no samples arrive for 5 s), ends by itself. The Monitor's LIVE pill
+turns to `LOST` at once, while the session still saves and uploads its last calls;
+tapping it explains that the session is finishing and offers **Stop now**, which
+drops the uploads still waiting. On a short landscape Monitor, where the header
+scrolls away, a fixed `RTL-SDR LOST` line above Stop does the same. Nothing
+restarts during a session.
+
+Once the session has ended, Listen shows a notice in place of the receiver card:
+"RTL-SDR was unplugged, so <system> stopped. Plug it back in, then tap Reconnect."
+or "RTL-SDR stopped sending samples, so <system> stopped. Check its USB connection,
+then tap Reconnect." **Reconnect** runs the usual USB access (a permission prompt
+if one is needed) and then starts the same system, scan list or Explore session.
+With Signal search open, its screen says to plug the receiver back in and start
+the search again. **Dismiss** clears the notice and cancels a Reconnect still
+waiting. After the Activity is recreated (for example after Android reclaimed
+it in the background) the app cannot prove which saved system the service was
+running, so Reconnect there only asks for access and the notice ends "…tap
+Reconnect, then start it again."
+
+A stop you ask for first wins: Stop and then an unplug while the session winds
+down shows no notice; an unplug and then Stop now keeps it. The receiver's own
+end is detected natively — see `docs/code_map.md` "USB reader exit" and "USB
+sample-progress monitor" — with a 2 s grace that lets the detach broadcast own an
+unplug, so an unplug reads "unplugged" rather than "stopped sending samples".
+
+An ending acknowledged by a new start, or by an access request (Reconnect, the
+pill) once its session ended, stays acknowledged after a recreation: the service
+keeps the mark (`DecoderService.acknowledgeReceiverEnding()`, published as
+`endingAcknowledged` in its lifecycle record), so the pill does not read `LOST`
+again over a receiver that is connected and ready.
+
+Known limits: the notice names only the receiver's kind, so after a recreation
+with two Airspys attached Reconnect may ask for the other one; the pill names, and
+Connect asks for, the last requested kind before the kind on the bus, so after an
+RTL-SDR request with only an Airspy plugged in it reads `NO RTL-SDR` and Retry
+answers "No RTL-SDR attached" until an Airspy system is started; **Dismiss** hides
+the notice for that Activity only, as it does any failure, so a recreated Activity
+shows a dismissed (but not acknowledged) notice again; a healthy session
+reattached after a recreation shows LIVE with no receiver sheet (LOST still shows
+if it ends).
+
+### Permission requests and detaches
+
+`UsbSourceManager.kt` keeps its request bookkeeping in the plain-Kotlin
+`UsbRequestState.kt`. Each permission prompt is a new generation: its
+`PendingIntent` uses the generation as request code (`FLAG_CANCEL_CURRENT`) and
+carries it as an extra, and a reply for another generation or device is ignored.
+The Airspy serial search's hop to the next device keeps the request's generation
+and restarts its wait. A prompt left unanswered for 60 s expires on the host's
+250 ms status poll: the record says "No answer to the permission request",
+Connect comes back, and nothing prompts again until asked; a late answer is
+ignored. Unplugging the requested device retires its prompt and says "Device
+detached: <device>", so a re-plug can prompt at once. While a prompt is
+outstanding, auto-start waits.
+
+A plain Connect asks for the last requested receiver (kind and serial), then the
+connected kind, then the first known receiver on the bus. An attachment replaces
+the card's text only when nothing is connected and either nothing was requested or
+it is the requested receiver (an RTL-SDR plugged in never clears "Requested Airspy
+serial not found"); a request
+that finds its receiver already open rewrites "Ready: <device>". Asking for
+another receiver while a session runs (the other kind, or another Airspy serial)
+is refused with "Stop the current receiver before switching USB devices", which is
+request feedback, not a device failure.
+
+A detach of the connected receiver (or one whose device Android does not name)
+releases the connection; unplugging some other device releases nothing. It stops
+the engine only when the session uses that receiver: configured or running on a
+local RTL-SDR or Airspy (`nativeSessionUsesLocalReceiver()`), or holding its
+descriptor (`nativeIsUsbFdInUse()`). A detach during a start is handled after
+configure returns, by this same path: configure and the detach broadcast both run
+on the main thread, and by then the native record names the session's receiver.
+Unplugging a retained receiver no session uses, or one during an rtl_tcp session,
+stops nothing.
+
+`ANDROID_USB_BROKER_JVM` runs `UsbRequestState.kt` and the real
+`UsbSourceManager.kt` on the JVM against stubs of the USB service and its prompts.
+The request-code identity itself is checked against the Android documentation and
+these stubs only: the emulator exposes no USB device to ask permission for.
+
+### USB diagnostics and Retry
+
+Onboarding and Home's receiver card show the USB diagnostic and a **Retry**
 button. If `UsbManager.openDevice()` returns null, the app rechecks the device
 list and permission: the result is `detached`, `permission`, or `open_failed`,
 in that order. A null return with permission still granted says
@@ -765,9 +881,13 @@ Java keeps ownership of the descriptor throughout: `libusb_wrap_sys_device()` do
 not take it over. Closing the `UsbDeviceConnection` while the engine still has the
 descriptor wrapped is a use-after-close, so `UsbSourceManager.release()` clears the
 native slot immediately — that only affects the *next* open — and then hands the
-close to a background thread that waits for `nativeIsRunning()` to go false. Both
-callers (a detach broadcast, `DecoderService.onDestroy()`) therefore return without
-blocking. If the engine never stops, the connection is deliberately leaked: one
+close to a background thread. That thread waits while the engine has the descriptor
+wrapped (`nativeIsUsbFdInUse()`) or a session configured for the local receiver has
+not ended (`nativeSessionUsesLocalReceiver()`, which covers one that has not taken
+the descriptor yet); an rtl_tcp, UDP or file session never takes it, so a receiver
+unplugged during one is closed at once. Both callers (a detach broadcast, a source
+switch while stopped) therefore return without blocking. If the engine never lets
+go within 10 s, the connection is deliberately leaked: one
 descriptor held for the rest of the process's life beats pulling it out from under
 an in-flight USB transfer.
 
@@ -793,11 +913,15 @@ attached kind when the remembered USB kind is not plugged in.
 ## Auto-start on USB attachment
 
 Settings → Listening → **Start when a dongle is attached** is off by default and
-appears only on hosts that broker local USB access. When enabled, an attachment
-resumes the last successfully initialized saved system or scan list if it still
-exists and uses USB. Explore and network/file sources are never selected. The
+appears only on hosts that broker local USB access ("Resume the last
+USB-receiver system or scan list"). When enabled, an attachment resumes the last
+successfully initialized saved system or scan list if it still exists, uses an
+RTL-SDR or an Airspy, and is on the kind of receiver that just attached: an
+Airspy plugged in resumes an Airspy target and never an RTL-SDR one, whatever
+else is on the bus. Explore and network/file sources are never selected. The
 app must have completed onboarding, be Idle (Failed does not qualify), and have
-no overlay or USB permission request open. A suppressed attachment is consumed;
+no overlay or USB permission request open; a permission request that expires
+unanswered lifts the block. A suppressed attachment is consumed;
 closing a sheet or enabling the preference does not retry it. Existing start and
 permission failures use the normal banner. Last-started identity changes only
 on confirmed session initialization, never when the service queues a start.
@@ -809,8 +933,9 @@ consumes that pending identity, including on the first host refresh. App-specifi
 intent input supplies no decoder configuration or bypass of the opt-in policy.
 
 Host regressions: `UI_QT_AUTO_START_POLICY`, `UI_QT_CONTROLLER`,
-`UI_QT_PERSISTENCE`, and `UI_QT_QML_CALL_LISTS`. The Android-free Kotlin tracker
-has no Gradle unit-test task wired in this package; verify on a device:
+`UI_QT_PERSISTENCE`, `UI_QT_QML_CALL_LISTS` and `UI_QT_QML_MAIN_RECEIVER_NOTICE`.
+The Android-free Kotlin tracker reports each attachment as `<kind>:<device>` and
+runs on the JVM in `ANDROID_USB_BROKER_JVM`; verify the rest on a device:
 
 - Cold launch from the USB intent followed by the receiver's duplicate report
   starts exactly once; an Activity recreation or duplicate new intent does not
@@ -819,9 +944,10 @@ has no Gradle unit-test task wired in this package; verify on a device:
   polling produce no start. With two devices, only the newest pending attachment
   is delivered; detaching it cancels the pending delivery.
 - Opt-out, incomplete onboarding, Starting/Running/Stopping/Failed, an open
-  overlay, a pending permission request, a deleted target, and an Explore or
-  non-USB target suppress the start. Removing the blocker alone does not retry.
-- Saved USB systems and USB scan lists both resume through the existing permission
+  overlay, a pending permission request, a deleted target, an Explore,
+  network or file target, and a target on the other receiver kind suppress the
+  start. Removing the blocker alone does not retry.
+- Saved RTL-SDR and Airspy systems and scan lists resume through the existing permission
   flow. Denial, invalid configuration, or failed tuner initialization shows the
   existing banner and leaves last-started identity unchanged; successful
   initialization updates it. Test both cold and already-running Activity intents.
@@ -1004,7 +1130,7 @@ device, with a source that has known calls (an I/Q replay works):
 
 ## Vendored third-party code
 
-`third_party/` carries trimmed snapshots of two upstream projects. They are **not**
+`third_party/` carries trimmed snapshots of three upstream projects. They are **not**
 under `src/third_party/`: that perimeter has repo-wide guardrails, and these build
 privately for the Android app only.
 
@@ -1012,10 +1138,12 @@ privately for the Android app only.
 | --- | --- | --- | --- |
 | libusb | v1.0.30 | `87a55632db62c9bdc58cd31d3ccfa673f1bb017f` | The exact source list upstream's own `android/jni/libusb.mk` builds — the `linux_usbfs` backend plus the POSIX event/thread shims — with upstream's `android/config.h` |
 | librtlsdr | v2.0.3 (osmocom) | `797f8143266d983c56d8f35d2d442527529dd8a5` | The library only: `librtlsdr.c`, the five tuner drivers and `include/`; the `rtl_*` command-line tools and their helpers are dropped |
+| libairspy | 1.0.12 (airspyone_host) | `bd15be38e91ebaa3e0bebb1e320255bde4ccf059` | The library only: `libairspy/src` (`airspy.c`, the IQ converters and their headers); the `airspy_*` command-line tools are dropped |
 
 librtlsdr is GPL-2.0-or-later and libusb is LGPL-2.1-or-later; both upstream
 license texts travel with the snapshots (`*/COPYING`) and both are listed in the
-repository's `THIRD_PARTY.md`.
+repository's `THIRD_PARTY.md`. libairspy (BSD-3-Clause and MIT) keeps its notice
+in `libairspy/LICENSE`, also listed there.
 
 These trees keep upstream formatting and are excluded from every repo tool
 (`.clang-format-ignore`, `tools/format.sh`, `.githooks/pre-push`), so do not
@@ -1024,8 +1152,8 @@ they came from.
 
 ### The librtlsdr patches
 
-The patches in `third_party/patches/` are already applied to the vendored copy, in
-order; they are kept as files so the delta stays reviewable and can be re-applied
+The `*-librtlsdr-*` patches in `third_party/patches/` are already applied to the
+vendored copy, in order; they are kept as files so the delta stays reviewable and can be re-applied
 when the snapshot is refreshed.
 
 - `0001-librtlsdr-add-rtlsdr_open_fd.patch` adds `rtlsdr_open_fd()` and splits the
@@ -1035,15 +1163,52 @@ when the snapshot is refreshed.
   every transfer and buffer allocation: a failure frees what was obtained and
   `rtlsdr_read_async()` returns `-ENOMEM` instead of submitting NULL transfers.
   `VENDORED_LIBRTLSDR_ASYNC_ALLOC` (a desktop test) fails each allocation in turn.
+- `0003-librtlsdr-account-for-every-transfer.patch` makes the async reader count
+  the transfers libusb owns. A transfer lost to a failed completion or
+  resubmission no longer leaves the reader waiting forever: once none is left it
+  marks the device lost and `rtlsdr_read_async()` returns `-1`. Every exit
+  (cancel, lost device, event error, failed submission) cancels the transfers and
+  keeps handling events until each has been called back, and only then frees
+  transfers and buffers; the first error is the return value, even when the
+  device is lost while the reader drains.
+  `VENDORED_LIBRTLSDR_TRANSFERS` (a desktop test) completes, fails and cancels
+  transfers from a second thread.
 
 To move to a newer librtlsdr:
 
 ```sh
 git clone https://gitea.osmocom.org/sdr/rtl-sdr.git /tmp/rtlsdr
 git -C /tmp/rtlsdr checkout <new-tag>
-cd /tmp/rtlsdr && for p in <repo>/android/third_party/patches/*.patch; do patch -p1 < "$p"; done
+cd /tmp/rtlsdr && for p in <repo>/android/third_party/patches/*-librtlsdr-*.patch; do patch -p1 < "$p"; done
 # then copy src/librtlsdr.c, src/tuner_*.c and include/* over the vendored tree,
 # regenerate the patches against the new baseline, and update the table above
+```
+
+### The libairspy patch
+
+`0001-libairspy-wait-for-cancelled-transfers.patch` is already applied to the
+vendored copy, like the librtlsdr ones.
+
+- It makes the device count the transfers libusb owns. A stop cancels them and
+  keeps handling events until each has been called back, so `airspy_close()`
+  never frees, and a restart (a retune's stop and start) never resubmits, a
+  transfer libusb still owns. A start whose submission fails gives back the slots
+  of the transfers it never submitted, and the stop after it waits for the rest.
+  A stream that ended by itself is reaped the same way before a start or a
+  packing change reuses its transfers. `streaming` and `stop_requested` become
+  C11 atomics, since the library's own threads share them.
+  `VENDORED_LIBAIRSPY_TRANSFERS` (a desktop test) drives the library's threads
+  against a stub libusb whose cancellations call back late.
+
+To move to a newer libairspy:
+
+```sh
+git clone https://github.com/airspy/airspyone_host.git /tmp/airspy
+git -C /tmp/airspy checkout <new-commit>
+cd /tmp/airspy && for p in <repo>/android/third_party/patches/*-libairspy-*.patch; do patch -p1 < "$p"; done
+# then copy libairspy/src/* over the vendored tree, regenerate the patches against
+# the new baseline, and update the table above, README.dsd-neo and the upstream
+# hashes in tests/tools/test_airspy_packaging.py
 ```
 
 ## Codec2, libcurl and expat

@@ -4690,6 +4690,9 @@ if(DSD_ENABLE_QT_UI)
                 modal_sheet_outside_tap
                 input_commit
                 radio_persistence
+                device_status
+                main_receiver_notice
+                monitor_receiver
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
@@ -14292,8 +14295,9 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
 
-    # The USB reader's return code: an allocation failure, or a lost device on a
-    # desktop build, ends the session as a device failure; a stop in flight does not.
+    # The USB reader's return code: any return nobody asked for ends the session as a
+    # device failure (after the unplug-owner grace); a stop in flight does not, and a
+    # stop or destroy while the reader starts still ends and joins it.
     add_executable(
         dsd-neo_test_io_rtl_reader_exit
         io/test_io_rtl_reader_exit.cpp
@@ -14307,6 +14311,42 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
     add_test(NAME IO_RTL_READER_EXIT COMMAND dsd-neo_test_io_rtl_reader_exit)
+
+    # The USB sample-progress monitor: a receiver that stops delivering samples ends the
+    # session; a steady stream, retunes and rollbacks do not. The Airspy cases join it
+    # below, where the in-process SDK double is set up.
+    add_executable(
+        dsd-neo_test_io_usb_progress_monitor
+        io/test_io_usb_progress_monitor.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_usb_progress_monitor
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_usb_progress_monitor
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_USB_PROGRESS_MONITOR
+        COMMAND dsd-neo_test_io_usb_progress_monitor
+    )
+    set_tests_properties(IO_USB_PROGRESS_MONITOR PROPERTIES TIMEOUT 120)
+
+    # Paced USB ingest benchmark (not a test); run under perf stat.
+    add_executable(
+        dsd-neo_bench_usb_ingest
+        EXCLUDE_FROM_ALL
+        io/bench_usb_ingest.cpp
+    )
+    target_include_directories(
+        dsd-neo_bench_usb_ingest
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_bench_usb_ingest
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
 
     # Exercise Android's production run-result collector with a real RTL open
     # failure. The driver boundary is wrapped; no Qt, JNI or USB hardware needed.
@@ -14395,6 +14435,60 @@ if(
         NAME VENDORED_LIBRTLSDR_ASYNC_ALLOC
         COMMAND dsd-neo_test_vendored_librtlsdr_async_alloc
     )
+
+    # The same reader accounting for every USB transfer: a stub libusb whose
+    # transfers a second thread completes, fails and cancels.
+    add_executable(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        io/test_vendored_librtlsdr_transfers.c
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        SYSTEM
+        PRIVATE
+            ${_DSD_NEO_VENDORED_RTLSDR}/include
+            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    )
+    target_compile_definitions(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        PRIVATE rtlsdr_STATIC
+    )
+    target_link_libraries(
+        dsd-neo_test_vendored_librtlsdr_transfers
+        PRIVATE
+            dsd-neo_test_vendored_rtlsdr_tuners
+            Threads::Threads
+            ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME VENDORED_LIBRTLSDR_TRANSFERS
+        COMMAND dsd-neo_test_vendored_librtlsdr_transfers
+    )
+    set_tests_properties(VENDORED_LIBRTLSDR_TRANSFERS PROPERTIES TIMEOUT 120)
+
+    # The vendored libairspy's stop, close, restart and packing change waiting
+    # for cancelled USB transfers: airspy.c against the same kind of stub libusb,
+    # its own transfer thread polling for events.
+    add_executable(
+        dsd-neo_test_vendored_libairspy_transfers
+        io/test_vendored_libairspy_transfers.c
+    )
+    target_include_directories(
+        dsd-neo_test_vendored_libairspy_transfers
+        SYSTEM
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/android/third_party/libairspy
+            ${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb
+    )
+    target_link_libraries(
+        dsd-neo_test_vendored_libairspy_transfers
+        PRIVATE Threads::Threads
+    )
+    add_test(
+        NAME VENDORED_LIBAIRSPY_TRANSFERS
+        COMMAND dsd-neo_test_vendored_libairspy_transfers
+    )
+    set_tests_properties(VENDORED_LIBAIRSPY_TRANSFERS PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(
@@ -18344,6 +18438,12 @@ if(Python3_Interpreter_FOUND)
             usb_receiver
     )
     add_test(
+        NAME ANDROID_USB_BROKER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite usb
+    )
+    add_test(
         NAME ANDROID_ENGINE_STOP_JVM
         COMMAND
             ${Python3_EXECUTABLE}
@@ -18363,6 +18463,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
         ANDROID_USB_RECEIVER_JVM
+        ANDROID_USB_BROKER_JVM
         ANDROID_ENGINE_STOP_JVM
         ANDROID_EXIT_FACTS_JVM
         PROPERTIES
@@ -18734,6 +18835,39 @@ if(DSD_HAS_AIRSPY)
         COMMAND dsd-neo_test_io_rtl_stream_start_failure
     )
     set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
+
+    if(TARGET dsd-neo_test_io_usb_progress_monitor)
+        target_sources(
+            dsd-neo_test_io_usb_progress_monitor
+            PRIVATE
+                io/airspy_sdk_double.cpp
+                ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_usb_progress_monitor
+            PRIVATE ${_AIRSPY_TEST_SDK}
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_usb_progress_monitor
+            PRIVATE USE_AIRSPY DSD_TEST_USB_PROGRESS_AIRSPY
+        )
+    endif()
+    if(TARGET dsd-neo_bench_usb_ingest)
+        target_sources(
+            dsd-neo_bench_usb_ingest
+            PRIVATE
+                io/airspy_sdk_double.cpp
+                ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+        )
+        target_include_directories(
+            dsd-neo_bench_usb_ingest
+            PRIVATE ${_AIRSPY_TEST_SDK}
+        )
+        target_compile_definitions(
+            dsd-neo_bench_usb_ingest
+            PRIVATE USE_AIRSPY DSD_BENCH_USB_INGEST_AIRSPY
+        )
+    endif()
 endif()
 
 # Config-apply regressions wrap the radio and output boundaries, requiring no hardware.

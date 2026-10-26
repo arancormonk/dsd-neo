@@ -8,6 +8,7 @@
     public static void startDecoder(android.content.Context, java.lang.String[]);
     public static void stopDecoder(android.content.Context);
     public static java.lang.String lifecycleStatus();
+    public static void acknowledgeReceiverEnding(long);
     public static java.lang.String stateName();
     public static java.lang.String lastError();
 }

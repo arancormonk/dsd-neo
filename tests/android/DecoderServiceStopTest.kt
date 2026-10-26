@@ -112,6 +112,36 @@ private fun aUserStopEscalatesAnExistingDrain() = withRunningService { service -
     check(DecoderService.stateName() == "STOPPING")
     deliver(service, stopIntent())
     check(DsdNative.stops == listOf(false, true)) { "the user's Stop must abandon the ongoing drain" }
+    // #647: each stop names its cause; the native side keeps the session's first.
+    check(DsdNative.stopCauses == listOf("lifecycle", "user")) { "each stop must pass its own cause" }
+}
+
+// #647: the session's ending and its receiver ride the lifecycle record, for its own session only.
+private fun theLifecycleRecordCarriesTheReceiverEnding() = withRunningService { _ ->
+    val session = JSONObject(DecoderService.lifecycleStatus()).optLong("sessionId")
+    try {
+        DsdNative.lifecycle = longArrayOf(session, 1, DsdNative.RUN_PENDING.toLong(), 0, 0, 0, 0, 2, 1)
+        var record = JSONObject(DecoderService.lifecycleStatus())
+        check(record.optLong("endCause") == 2L && record.optLong("receiverSource") == 1L) {
+            "the native ending and receiver must reach the record: $record"
+        }
+        DsdNative.lifecycle = longArrayOf(session + 1, 1, DsdNative.RUN_PENDING.toLong(), 0, 0, 0, 0, 2, 1)
+        record = JSONObject(DecoderService.lifecycleStatus())
+        check(record.optLong("endCause") == 0L && record.optLong("receiverSource") == 0L) {
+            "another session's ending must not reach this record"
+        }
+        DsdNative.lifecycle = longArrayOf(session, 1, DsdNative.RUN_PENDING.toLong(), 0, 0, 0, 0)
+        record = JSONObject(DecoderService.lifecycleStatus())
+        check(record.optLong("endCause") == 0L) { "a record without the fields has no ending" }
+        // The UI's acknowledgement of an ending outlives its host; only a newer session moves it.
+        val before = record.optLong("endingAcknowledged")
+        DecoderService.acknowledgeReceiverEnding(session)
+        DecoderService.acknowledgeReceiverEnding(session - 1)
+        record = JSONObject(DecoderService.lifecycleStatus())
+        check(record.optLong("endingAcknowledged") == maxOf(before, session)) { "the acknowledgement is kept: $record" }
+    } finally {
+        DsdNative.lifecycle = null
+    }
 }
 
 private fun aRefusedNativeStopRemainsRetryable() = withRunningService { service ->
@@ -242,6 +272,7 @@ fun main(args: Array<String>) {
         "notification" to ::notificationStopPrecedesNotificationWork,
         "task_removed" to ::removingTheTaskStopsWithoutActivityDestruction,
         "drain" to ::aUserStopEscalatesAnExistingDrain,
+        "receiver_ending" to ::theLifecycleRecordCarriesTheReceiverEnding,
         "native_failure" to ::aRefusedNativeStopRemainsRetryable,
         "stale" to ::aLateStopCannotCancelTheNextRun,
         "configure" to ::stopDuringConfigureUsesOrderedDelivery,

@@ -7,7 +7,8 @@
  * Issue #578: the session's input failure latch counts its writes (dsd_input_failure_generation()), so a caller can
  * tell whether anything wrote the latch between two reads even when the write repeats the failure latched, which a
  * compare of the values cannot. Every write counts, a clear included, a read does not, and reports that device threads
- * make at the same time are each counted.
+ * make at the same time are each counted. Issue #647: beside it, the committed receiver ending, which a report neither
+ * sets nor takes back, the commit does not count as a write, and only a clear takes back.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -43,6 +44,27 @@ test_every_write_counts(void) {
     rc |= expect_uint("a clear counts", dsd_input_failure_generation(), start + 3U);
     dsd_input_failure_clear();
     rc |= expect_uint("a clear of a clear latch counts", dsd_input_failure_generation(), start + 4U);
+    return rc;
+}
+
+static int
+test_receiver_ending_commits_until_clear(void) {
+    int rc = 0;
+    dsd_input_failure_clear();
+    rc |= expect_uint("a clear session has no receiver ending", (unsigned int)dsd_input_failure_receiver_ended(), 0U);
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -1);
+    rc |=
+        expect_uint("a report alone commits no receiver ending", (unsigned int)dsd_input_failure_receiver_ended(), 0U);
+    const unsigned int generation = dsd_input_failure_generation();
+    dsd_input_failure_commit_receiver_end();
+    rc |= expect_uint("the commit holds", (unsigned int)dsd_input_failure_receiver_ended(), 1U);
+    rc |= expect_uint("the commit is not a write of the latch", dsd_input_failure_generation(), generation);
+    /* A path that recovers writes and restores the latch; the committed ending stays. */
+    dsd_input_failure_report(DSD_INPUT_FAILURE_NONE, 0);
+    rc |= expect_uint("a later report keeps the commit", (unsigned int)dsd_input_failure_receiver_ended(), 1U);
+    dsd_input_failure_clear();
+    rc |= expect_uint("a clear takes the commit back", (unsigned int)dsd_input_failure_receiver_ended(), 0U);
+    rc |= expect_uint("the clear still counts", dsd_input_failure_generation(), generation + 2U);
     return rc;
 }
 
@@ -91,6 +113,7 @@ test_concurrent_reports_each_count(void) {
 int
 main(void) {
     int rc = test_every_write_counts();
+    rc |= test_receiver_ending_commits_until_clear();
     rc |= test_concurrent_reports_each_count();
     return rc;
 }

@@ -33,7 +33,11 @@ object DsdNative {
 
     external fun nativeConfigure(args: Array<String>, sessionId: Long): Int
 
-    /** session id, initialized, terminal reason, run code, native USB open/claim error. */
+    /**
+     * session id, initialized, terminal reason, run code, native USB open/claim error, input failure kind and code,
+     * end cause (none, user, detached, receiver failed, lifecycle: 0-4; the run's first accepted ending) and the
+     * session's configured receiver (none, RTL-SDR, Airspy: 0-2). Must match android/run_status.h.
+     */
     external fun nativeLifecycleStatus(): LongArray?
 
     /** Lifecycle/USB messages only, never argv, credentials or key material. */
@@ -49,10 +53,19 @@ object DsdNative {
 
     /**
      * Raises the engine's stop flag. [userRequested] is true only for the user's own Stop, which
-     * also abandons the rdio uploads still pending instead of waiting for them (#718 D4). Call it
-     * through [EngineStop.request], which takes the reason from the caller.
+     * also abandons the rdio uploads still pending instead of waiting for them (#718 D4). [cause] is
+     * the [StopCause.wire] value; the session keeps the first ending it accepts, so an unplug stays
+     * an unplug after a later Stop (#647). Call it through [EngineStop.request], which takes the
+     * reason from the caller.
      */
-    external fun nativeStop(userRequested: Boolean): Int
+    external fun nativeStop(userRequested: Boolean, cause: String): Int
+
+    /**
+     * Whether the session is configured or running with a local RTL-SDR (not rtl_tcp) or Airspy
+     * input. A USB connection outlives the sessions that used it, so a detach concerns the session
+     * only when this (or [nativeIsUsbFdInUse]) is true.
+     */
+    external fun nativeSessionUsesLocalReceiver(): Boolean
 
     external fun nativeDestroy(): Int
 

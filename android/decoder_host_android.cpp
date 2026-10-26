@@ -300,14 +300,7 @@ DecoderHostAndroid::shareDiagnostics(const QString& text, const QString& title) 
 }
 
 void
-DecoderHostAndroid::requestLocalDeviceAccess() {
-    // WP-D5: keep the service's run result intact, but acknowledge its old USB
-    // diagnostic so Retry can reacquire access and the next Play can claim again.
-    if (!sessionActive() && m_device_error) {
-        m_retried_device_session = m_device_error_session;
-        m_device_error = 0;
-        Q_EMIT localDeviceChanged();
-    }
+DecoderHostAndroid::platformRequestAccess() {
     QJniObject context = android_context();
     if (!context.isValid()) {
         return;
@@ -331,8 +324,7 @@ DecoderHostAndroid::noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLo
 }
 
 void
-DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, const QString& serial) {
-    noteAttempt(source, dsd_qt::DiagnosticsLog::AttemptStage::UsbAccess);
+DecoderHostAndroid::platformRequestAccessForSource(const QString& source, const QString& serial) {
     QJniObject context = android_context();
     if (!context.isValid()) {
         return;
@@ -342,6 +334,11 @@ DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, con
     QJniObject::callStaticMethod<void>(kUsbClass, "requestAccessForSource",
                                        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
                                        context.object(), kind.object(), requested.object());
+}
+
+void
+DecoderHostAndroid::platformAcknowledgeReceiverEnding(uint64_t session) {
+    QJniObject::callStaticMethod<void>(kServiceClass, "acknowledgeReceiverEnding", "(J)V", static_cast<jlong>(session));
 }
 
 void
@@ -360,53 +357,23 @@ DecoderHostAndroid::setScreenPolicy(int mode, int delaySeconds) {
     });
 }
 
-bool
-DecoderHostAndroid::start(const QStringList& argv) {
-    if (!m_primed) {
-        refresh();
-    }
-    /* Clears the previous attempt's reason; setSessionPhase publishes that. */
-    QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
-    const QJsonObject status =
-        record.isValid() ? QJsonDocument::fromJson(record.toString().toUtf8()).object() : QJsonObject();
-    const auto last_session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
-    const QByteArray service_state = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
-    if (!m_phase.note_start_requested(last_session, service_state.constData())) {
-        const QString reason = QStringLiteral("A previous session is still stopping");
-        setSessionPhase(m_phase.phase(), reason);
-        setStatus(reason);
-        return false;
-    }
-    m_initialized_session = last_session;
-
+QString
+DecoderHostAndroid::platformStartDecoder(const QStringList& argv) {
     QJniObject context = android_context();
     if (!context.isValid()) {
-        return failStart(QStringLiteral("No Android context"));
+        return QStringLiteral("No Android context");
     }
 
     QJniEnvironment env;
     jobjectArray args = to_java_string_array(env, argv);
     if (args == nullptr) {
-        return failStart(QStringLiteral("Could not marshal arguments"));
+        return QStringLiteral("Could not marshal arguments");
     }
 
     QJniObject::callStaticMethod<void>(kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;)V",
                                        context.object(), args);
     env->DeleteLocalRef(args);
-
-    setSessionPhase(m_phase.phase());
-    setStatus(QStringLiteral("Starting…"));
-    return true;
-}
-
-bool
-DecoderHostAndroid::failStart(const QString& reason) {
-    m_phase.note_start_failed();
-    /* m_failure is only ever written by setSessionPhase, so that it can still see the
-     * previous reason and tell one failure from the next. */
-    setSessionPhase(m_phase.phase(), reason);
-    setStatus(reason);
-    return false;
+    return {};
 }
 
 bool

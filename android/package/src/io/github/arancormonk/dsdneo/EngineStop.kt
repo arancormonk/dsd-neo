@@ -47,7 +47,8 @@ enum class StopCause(val wire: String) {
 object EngineStop {
     /**
      * Raises the engine's stop flag through [nativeStop], which receives whether the stop was
-     * the user's. Returns what [nativeStop] returned.
+     * the user's and the cause's wire value. Returns what [nativeStop] returned.
      */
-    fun request(cause: StopCause, nativeStop: (Boolean) -> Int): Int = nativeStop(cause.abandonsUploads)
+    fun request(cause: StopCause, nativeStop: (Boolean, String) -> Int): Int =
+        nativeStop(cause.abandonsUploads, cause.wire)
 }

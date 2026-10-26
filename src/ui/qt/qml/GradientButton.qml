@@ -19,7 +19,10 @@ Item {
     // button is disabled exactly as before.
     property bool inputValid: true
     enabled: inputValid || Navigation.composing
-    activeFocusOnTab: Navigation.allows(control) && enabled && inputValid && visible
+    // Held while the button has active focus: Qt refuses to drop activeFocusOnTab
+    // from the active focus item (and warns), so a focused button that disables or
+    // hides keeps it until the focus has moved, then the gate applies again.
+    activeFocusOnTab: (Navigation.allows(control) && enabled && inputValid && visible) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.focusable: true

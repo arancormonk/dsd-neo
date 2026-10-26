@@ -8,6 +8,7 @@
 
 #ifndef DSD_TEST_AIRSPY_STREAM
 #include <airspy.h>
+#include <atomic>
 #include <cstring>
 #include <dsd-neo/runtime/input_failure.h>
 #include <stdint.h>

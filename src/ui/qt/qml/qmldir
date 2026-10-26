@@ -4,3 +4,4 @@ singleton Theme 1.0 Theme.qml
 singleton Navigation 1.0 Navigation.qml
 
 PlexFlickable 1.0 PlexFlickable.qml
+DeviceStatus 1.0 DeviceStatus.qml

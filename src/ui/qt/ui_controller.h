@@ -79,9 +79,10 @@ class UiController : public QObject {
         m_network = model;
     }
 
-    // WP-S2: called for a consumed host attachment, never on preference changes.
+    // WP-S2: called for a consumed host attachment, never on preference changes. @p attachedKind is the kind of
+    // the receiver that attached ("usb" for an RTL-SDR, "airspy"); only a target on that kind starts (#647 D3a).
     void requestAutoStart(bool enabled, bool onboardingDone, const QString& kind, const QString& uid,
-                          const QVariantMap& target);
+                          const QVariantMap& target, const QString& attachedKind);
 
     void start();
     void stop();

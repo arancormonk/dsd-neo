@@ -34,6 +34,10 @@ QtObject {
         }
         return false;
     }
+    // A binding that also reads `visible` asks this first: walking up the
+    // parents can settle a pending reparent (the Monitor's parts that move into
+    // its list), and a visibility read before the walk would be stale, a
+    // binding loop to Qt.
     function allows(item) {
         if (topModal)
             return contains(topModal.navigationSurface || topModal, item);

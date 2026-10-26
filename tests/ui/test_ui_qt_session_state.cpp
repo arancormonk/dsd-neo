@@ -242,6 +242,78 @@ test_stop_request_grace() {
     expect_true("Stopping takes no request", !stopping.note_stop_requested(300));
 }
 
+/* RUNNING records of session 41 from @p from_ms to @p to_ms; the phase they publish, or Idle at the first that is not
+ * Stopping. */
+SessionPhase
+hold_through_running(SessionPhaseTracker& tracker, uint64_t from_ms, uint64_t to_ms) {
+    for (uint64_t now = from_ms; now <= to_ms; now += 250) {
+        const SessionPhase phase = tracker.update("RUNNING", true, 41, kPending, now);
+        if (phase != kSessionStopping) {
+            return phase;
+        }
+    }
+    return kSessionStopping;
+}
+
+/* #647: a committed receiver ending is an acknowledged stop. The session's cleanup (the rdio upload drain) can keep the
+ * service RUNNING for minutes, and Stopping holds through all of it until that session's terminal record; the 2 s
+ * grace for an unanswered user Stop never applies. */
+void
+test_receiver_end_holds_stopping_through_long_running() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    expect("running before the receiver ends", tracker.update("RUNNING", true, 41, kPending, 0), kSessionRunning);
+    expect_true("an older session's ending is not this one's", !tracker.note_receiver_end(40));
+    expect("an older session's ending changes nothing", tracker.phase(), kSessionRunning);
+    expect_true("the running session's ending is taken", tracker.note_receiver_end(41));
+    expect("the ending publishes Stopping at once", tracker.phase(), kSessionStopping);
+    expect("30 s of RUNNING records hold Stopping", hold_through_running(tracker, 250, 30000), kSessionStopping);
+    expect_true("the hold never expires", !tracker.take_stop_expired());
+    expect("engine down, service still RUNNING", tracker.update("RUNNING", false, 41, kPending, 30250),
+           kSessionStopping);
+    expect("native result before service IDLE",
+           tracker.update("STOPPING", false, 41, dsd_android::kRunCancelled, 30500), kSessionStopping);
+    expect("the terminal record publishes Idle", tracker.update("IDLE", false, 41, dsd_android::kRunCancelled, 30750),
+           kSessionIdle);
+    expect_true("Idle takes no ending", !tracker.note_receiver_end(41));
+    expect("the retained record stays Idle", tracker.update("IDLE", false, 41, dsd_android::kRunCancelled, 31000),
+           kSessionIdle);
+
+    /* A user Stop standing when the receiver ends is acknowledged by the ending: it no longer expires. */
+    SessionPhaseTracker stopped;
+    stopped.note_start_requested(40);
+    (void)stopped.update("RUNNING", true, 41, kPending, 0);
+    expect_true("stop accepted", stopped.note_stop_requested(100));
+    expect_true("the ending is taken over the stop", stopped.note_receiver_end(41));
+    expect("a stop with an ending holds past the grace", hold_through_running(stopped, 250, 30000), kSessionStopping);
+    expect_true("and never expires", !stopped.take_stop_expired());
+    expect("its terminal record publishes Idle", stopped.update("IDLE", false, 41, dsd_android::kRunCancelled, 30250),
+           kSessionIdle);
+
+    /* An ending while the session still starts holds too, and a failed run still publishes Failed. */
+    SessionPhaseTracker starting;
+    starting.note_start_requested(40);
+    expect("starting", starting.update("STARTING", false, 41, kPending, 0), kSessionStarting);
+    expect_true("an ending during the start is taken", starting.note_receiver_end(41));
+    expect("RUNNING before the loop holds", starting.update("RUNNING", false, 41, kPending, 250), kSessionStopping);
+    expect("the failure publishes as today", starting.update("IDLE", false, 41, dsd_android::kRunFailed, 500),
+           kSessionFailed);
+
+    /* A new start ends the hold. */
+    SessionPhaseTracker restarted;
+    restarted.note_start_requested(40);
+    (void)restarted.update("RUNNING", true, 41, kPending, 0);
+    expect_true("ending taken", restarted.note_receiver_end(41));
+    restarted.note_start_requested(41);
+    expect("the new attempt starts", restarted.phase(), kSessionStarting);
+    expect("its RUNNING is not held", restarted.update("RUNNING", true, 42, kPending, 250), kSessionRunning);
+
+    /* Nothing to end: a fresh or idle tracker takes no ending. */
+    SessionPhaseTracker fresh;
+    expect_true("a fresh tracker takes no ending", !fresh.note_receiver_end(41));
+    expect("and stays Idle", fresh.phase(), kSessionIdle);
+}
+
 } // namespace
 
 int
@@ -416,6 +488,7 @@ main(void) {
     test_stop_request_then_failure();
     test_later_start_clears_stop_request();
     test_stop_request_grace();
+    test_receiver_end_holds_stopping_through_long_running();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "session state map: %d failure(s)\n", g_failures);
         return 1;

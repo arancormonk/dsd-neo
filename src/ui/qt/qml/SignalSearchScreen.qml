@@ -33,7 +33,8 @@ Item {
             backRequested();
     }
     // Main binds this to its failure text (connection, USB access and
-    // configuration failures). Never assigned here: an assignment would replace
+    // configuration failures, and a receiver that ended the search, worded
+    // for this screen). Never assigned here: an assignment would replace
     // that binding, and no later failure would reach this screen, which covers
     // Home's banner.
     property string failure: ""

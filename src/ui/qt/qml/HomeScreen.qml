@@ -10,7 +10,12 @@ Item {
 
     readonly property bool supportingPane: width >= 900
     property var failure: ({})
-    property bool usbRelevant: true
+    // Whether the failed or pending start used a brokered receiver (RTL-SDR or
+    // Airspy); only then does its details panel belong next to the failure.
+    property bool localDeviceRelevant: true
+    // The receiver a start is waiting on. Main binds it; the host's record names
+    // it only once the request lands.
+    property string requestedSource: decoderHost && decoderHost.localDeviceRequestedSource ? decoderHost.localDeviceRequestedSource : ""
     property string completionMessage: ""
     signal retryFailure
     signal editFailure
@@ -73,19 +78,160 @@ Item {
     readonly property bool managementSheetOpen: manageMenu.visible || scanMenu.visible || addSystemMenu.visible
         || removeSystem.visible || removeScanList.visible || scanListRemovalError.visible
 
-    readonly property bool showDonglePill: screen.usbRelevant && decoderHost && decoderHost.localDeviceBrokered
-    readonly property bool dongleFailed: decoderHost && decoderHost.localDeviceFailureKind !== 0
-    readonly property bool dongleReady: decoderHost && decoderHost.localDeviceReady && !dongleFailed
+    // #647 WP6: where the host brokers USB access the title and the receiver
+    // pill are pinned above the scrolling body, so the receiver's state and its
+    // Connect or Retry never scroll away. The desktop opens its receiver itself
+    // and keeps the title in the body, as before.
+    readonly property bool pinnedHeader: !!decoderHost && decoderHost.localDeviceBrokered === true
+    readonly property bool dongleReady: pinnedHeader && deviceStatus.state === "ready"
+    readonly property bool showDeviceDetails: pinnedHeader && localDeviceRelevant && !dongleReady && !(failure.message || "").length
+    // The content column, which the pinned header lines up with.
+    readonly property real columnWidth: supportingPane ? width - 280 - 3 * Theme.screenPadding : Math.min(Theme.formWidth, width - 2 * Theme.screenPadding)
+    readonly property real columnX: supportingPane ? Theme.screenPadding : (width - columnWidth) / 2
+    readonly property int headerClearance: 6
+
+    // B5: a session's ending or failure is reported at the top of the body.
+    function revealTop() {
+        scrollBody.contentY = scrollBody.originY;
+    }
+
+    DeviceStatus {
+        id: deviceStatus
+        host: decoderHost
+        requestedSource: screen.requestedSource
+    }
+
+    component ListenTitle: Text {
+        text: qsTr("Listen")
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(24)
+        font.weight: Font.Bold
+        font.letterSpacing: -0.24
+        color: Theme.textPrimary
+    }
 
     Rectangle {
         anchors.fill: parent
         color: Theme.bg
     }
 
+    Item {
+        id: listenHeader
+
+        objectName: "listenHeader"
+        visible: screen.pinnedHeader
+        enabled: !screen.managementSheetOpen
+        x: screen.columnX
+        y: Theme.screenPadding
+        width: screen.columnWidth
+        // One row while the title and the whole pill fit side by side; otherwise
+        // the pill drops under the title, left-aligned, and its label wraps at
+        // spaces rather than eliding.
+        readonly property bool stacked: headerTitle.implicitWidth + Theme.gap + dongleStatusPill.implicitWidth > width
+        readonly property real titleHeight: Math.max(44, headerTitle.implicitHeight)
+        // Keyed on the host, not on `visible`: Main hides Home on the other
+        // tabs, and a collapsing header would move the body's scroll position.
+        height: !screen.pinnedHeader ? 0 : stacked ? titleHeight + 4 + dongleStatusPill.height : Math.max(titleHeight, dongleStatusPill.height)
+
+        ListenTitle {
+            id: headerTitle
+            objectName: "listenHeaderTitle"
+            y: listenHeader.stacked ? (listenHeader.titleHeight - height) / 2 : (listenHeader.height - height) / 2
+        }
+
+        Rectangle {
+            id: dongleStatusPill
+
+            objectName: "dongleStatusPill"
+            readonly property bool actionable: deviceStatus.canAct && !screen.managementSheetOpen
+            readonly property bool navigationAllowed: Navigation.allows(dongleStatusPill)
+            function activate() {
+                if (!actionable || !Navigation.allows(dongleStatusPill))
+                    return;
+                decoderHost.requestLocalDeviceAccess();
+            }
+            // A tab stop whatever its state: pressing it opens Android's prompt,
+            // which makes it inert under the user's focus, and focus stays put
+            // as on any control. The role and activate() say whether it acts.
+            activeFocusOnTab: visible && navigationAllowed
+            Accessible.role: deviceStatus.canAct ? Accessible.Button : Accessible.StaticText
+            Accessible.name: deviceStatus.accessibleName
+            Accessible.description: deviceStatus.detailText
+            Accessible.focusable: true
+            Accessible.ignored: !navigationAllowed || !visible
+            Accessible.onPressAction: activate()
+            Keys.onReturnPressed: activate()
+            Keys.onEnterPressed: activate()
+            Keys.onSpacePressed: activate()
+            FocusFrame {}
+
+            // The whole label on one line, which the one-row test measures.
+            implicitWidth: Math.ceil(pillMetrics.advanceWidth) + 12 + 7 + 7 + 12
+            implicitHeight: Math.max(Theme.minimumTouchSize, 30 * Theme.fontScale)
+            x: listenHeader.stacked ? 0 : listenHeader.width - width
+            y: listenHeader.stacked ? listenHeader.titleHeight + 4 : (listenHeader.height - height) / 2
+            width: Math.min(implicitWidth, listenHeader.width)
+            height: Math.max(implicitHeight, pillLabel.height + 16)
+            radius: Theme.radiusButton
+            color: pillTap.pressed && actionable ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
+            border.width: 1
+            border.color: Theme.panelBorder
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: 120
+                }
+            }
+
+            TextMetrics {
+                id: pillMetrics
+                font: pillLabel.font
+                text: pillLabel.text
+            }
+
+            Rectangle {
+                x: 12
+                // Level with the first line when the label wraps.
+                y: pillLabel.y + (pillMetrics.height - height) / 2
+                width: 7
+                height: 7
+                radius: 3.5
+                color: deviceStatus.dotColor
+            }
+
+            Text {
+                id: pillLabel
+
+                objectName: "dongleStatusLabel"
+                x: 12 + 7 + 7
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - x - 12
+                wrapMode: Text.WordWrap
+                text: deviceStatus.pillText
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(11)
+                font.letterSpacing: 1.4
+                color: deviceStatus.state === "ready" || deviceStatus.alerting ? Theme.textPrimary : Theme.textSubdued
+            }
+
+            TapHandler {
+                id: pillTap
+                enabled: dongleStatusPill.actionable
+                onTapped: dongleStatusPill.activate()
+            }
+        }
+    }
+
     PlexFlickable {
+        id: scrollBody
+
         objectName: "dongleScrollBody"
         anchors.fill: parent
-        contentHeight: content.height + 2 * Theme.screenPadding
+        // Pinned, the body is clipped a few pixels below the header, so cards
+        // scroll away short of the pill; the rest of the header's gap to the
+        // first card stays at the body's top, and nothing moves at rest.
+        anchors.topMargin: screen.pinnedHeader ? listenHeader.y + listenHeader.height + screen.headerClearance : 0
+        contentHeight: content.y + content.height + Theme.screenPadding
         clip: true
         // Menu rows use passive tap grabs, so a tap on a manage-menu button
         // would otherwise also reach whatever sits under the overlay — observed as
@@ -95,58 +241,20 @@ Item {
         Column {
             id: content
 
-            x: screen.supportingPane ? Theme.screenPadding : (parent.width - width) / 2
-            y: Theme.screenPadding
-            width: screen.supportingPane ? parent.width - 280 - 3 * Theme.screenPadding : Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
+            x: screen.columnX
+            y: screen.pinnedHeader ? Theme.gap - screen.headerClearance : Theme.screenPadding
+            width: screen.columnWidth
             spacing: Theme.gap
 
             Item {
+                visible: !screen.pinnedHeader
                 width: parent.width
                 height: 44
 
-                Text {
-                    text: qsTr("Listen")
+                ListenTitle {
+                    objectName: "listenTitle"
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(24)
-                    font.weight: Font.Bold
-                    font.letterSpacing: -0.24
-                    color: Theme.textPrimary
-                }
-
-                Rectangle {
-                    visible: screen.showDonglePill
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: pillRow.implicitWidth + 24
-                    height: 30
-                    radius: Theme.radiusButton
-                    color: Theme.panel
-                    border.width: 1
-                    border.color: Theme.panelBorder
-
-                    Row {
-                        id: pillRow
-                        anchors.centerIn: parent
-                        spacing: 7
-
-                        Rectangle {
-                            width: 7
-                            height: 7
-                            radius: 3.5
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: screen.dongleReady ? Theme.cyan : Theme.textSubdued
-                        }
-
-                        Text {
-                            text: screen.dongleFailed ? qsTr("DONGLE ERROR") : screen.dongleReady ? qsTr("DONGLE READY") : qsTr("NO DONGLE")
-                            font.family: Theme.mono
-                            font.pixelSize: Theme.fontSize(11)
-                            font.letterSpacing: 1.4
-                            color: screen.dongleReady ? Theme.textPrimary : Theme.textSubdued
-                        }
-                    }
                 }
             }
 
@@ -158,9 +266,12 @@ Item {
 
             // WP-D5: keep the complete USB diagnostic next to the dongle pill.
             UiPanel {
+                objectName: "dongleDetailsPanel"
                 width: parent.width
-                visible: screen.showDonglePill && !screen.dongleReady && !(screen.failure.message || "").length
-                height: visible ? dongleDetails.implicitHeight + 2 * Theme.cardPadding : 0
+                visible: screen.showDeviceDetails
+                // Keyed on its own condition, not on `visible`, which also goes
+                // false while Main shows another tab and would collapse the body.
+                height: screen.showDeviceDetails ? dongleDetails.implicitHeight + 2 * Theme.cardPadding : 0
                 Column {
                     id: dongleDetails
                     x: Theme.cardPadding
@@ -170,7 +281,7 @@ Item {
                     Text {
                         objectName: "dongleStatusText"
                         width: parent.width
-                        text: decoderHost.localDeviceStatus || qsTr("Plug in an RTL-SDR, then tap Connect.")
+                        text: deviceStatus.detailText
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(14)
@@ -178,20 +289,23 @@ Item {
                     }
                     OutlineButton {
                         objectName: "dongleRetry"
-                        width: 110
-                        text: screen.dongleFailed ? qsTr("Retry") : qsTr("Connect")
-                        enabled: !decoderHost.sessionActive
+                        width: Math.max(110, implicitWidth)
+                        visible: deviceStatus.actionText.length > 0
+                        text: deviceStatus.actionText
+                        enabled: deviceStatus.canAct
                         onClicked: decoderHost.requestLocalDeviceAccess()
                     }
                 }
             }
 
             FailureCard {
+                objectName: "homeFailureCard"
                 width: parent.width
                 visible: (screen.failure.message || "").length > 0
                 message: screen.failure.message || ""
                 source: screen.failure.source || ""
                 canRetry: screen.failure.canRetry === true
+                retryText: screen.failure.retryText || qsTr("Retry")
                 onRetry: screen.retryFailure()
                 onEdit: screen.editFailure()
                 onDismiss: screen.dismissFailure()
@@ -511,6 +625,16 @@ Item {
                 }
             }
         }
+    }
+
+    // Once cards pass under the pinned header, a hairline marks where they go,
+    // as the bottom navigation's top edge does.
+    Rectangle {
+        visible: screen.pinnedHeader && scrollBody.contentY > scrollBody.originY + 0.5
+        y: scrollBody.y - 1
+        width: screen.supportingPane ? screen.columnX + screen.columnWidth : screen.width
+        height: 1
+        color: Theme.divider
     }
 
     ActionMenu {

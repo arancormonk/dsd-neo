@@ -398,7 +398,7 @@ Item {
                         objectName: "autoStartOnAttachToggle"
                         visible: decoderHost.localDeviceBrokered
                         title: qsTr("Start when a dongle is attached")
-                        subtitle: qsTr("Resume the last USB system or scan list")
+                        subtitle: qsTr("Resume the last USB-receiver system or scan list")
                         checked: prefs.autoStartOnAttach
                         showDivider: decoderHost.screenPolicySupported
                         onToggled: function (state) {

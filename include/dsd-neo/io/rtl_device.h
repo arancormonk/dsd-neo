@@ -122,6 +122,30 @@ int rtl_device_preopened_fd_in_use(void);
 int rtl_device_preopened_fd_supported(void);
 
 /**
+ * @brief Set how long a USB receiver's failure waits before it ends the session.
+ *
+ * When a USB receiver stops delivering for a reason other than a stop (its reader returned: unplugged, or its transfers
+ * gave out; or it sent no samples for 5 s, which the sample-progress monitor notices), the session ends for it as a
+ * device failure. Where something else owns an unplug's outcome -- on Android, the USB detach
+ * broadcast, which stops the engine itself -- that owner needs a moment to act first: during the grace the failure
+ * polls the session, and a stop or an exit request inside it keeps the failure silent. Only once the grace runs out is
+ * the failure reported and the receiver's ending committed (dsd_input_failure_receiver_ended()).
+ *
+ * Process-wide, read when a failure is raised. The Android host sets 2000 ms at startup; every other build keeps the
+ * default 0, which reports at once. An allocation failure (-ENOMEM) is the host's, not the receiver's, and never waits.
+ *
+ * @param ms Grace in milliseconds; 0 for none.
+ */
+void rtl_device_set_unplug_owner_grace_ms(uint32_t ms);
+
+/**
+ * @brief The grace rtl_device_set_unplug_owner_grace_ms() set (default 0).
+ *
+ * @return Grace in milliseconds.
+ */
+uint32_t rtl_device_unplug_owner_grace_ms(void);
+
+/**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
  *
  * Connects to an rtl_tcp server (default port 1234) and configures the

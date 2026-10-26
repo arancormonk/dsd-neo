@@ -99,6 +99,7 @@ qt_add_resources(
         qml/Caret.qml
         qml/CsvTypeBadge.qml
         qml/DashedActionButton.qml
+        qml/DeviceStatus.qml
         qml/DecodeChip.qml
         qml/DiagnosticsScreen.qml
         qml/LicensesScreen.qml
@@ -268,4 +269,7 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_key_sheet.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_backup.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_util_fixed.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_device_status.qml" # #647
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_main_receiver_notice.qml" # #647
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_receiver.qml" # #647
 )

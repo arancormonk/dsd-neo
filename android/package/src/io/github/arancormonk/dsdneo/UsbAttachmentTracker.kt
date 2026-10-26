@@ -25,10 +25,14 @@ internal object UsbAttachmentTracker {
         if (pending == device) pending = null
     }
 
+    /**
+     * The pending attachment as "<kind>:<device name>" (kind "usb" or "airspy"), or empty; taken once. The kind lets
+     * auto-start resume only a target of the receiver that was just plugged in (#647 D3).
+     */
     fun take(current: Set<Identity>): String {
         reconcile(current)
-        val name = pending?.deviceName.orEmpty()
+        val device = pending ?: return ""
         pending = null
-        return name
+        return "${UsbReceiverKind.sourceOf(device.vendorId, device.productId)}:${device.deviceName}"
     }
 }

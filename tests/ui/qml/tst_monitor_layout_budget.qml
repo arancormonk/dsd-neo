@@ -104,6 +104,9 @@ Item {
             tc.monitor.prefsStore = fakePrefs;
         }
         function init() {
+            // The history clear below lands while the list may still be building a
+            // row ahead of the viewport; the clear must not leave it a stale cancel.
+            failOnWarning(/DelegateModel::cancel/);
             testContext.resetCommands();
             testContext.setHostRunning(true);
             m("radioInput", true);
@@ -140,7 +143,68 @@ Item {
             m("tetraCodecText", "");
             testContext.setPrefs("monitorDetailsExpanded", false);
             Ui.Theme.resetFontScale();
+            item("monitorReceiverSheet").visible = false;
+            tc.monitor.system = null;
+            tc.monitor.sitesAvailable = false;
+            decoderHost.receiverHealth = {state: "ok", source: "", session: 0};
+            decoderHost.localDeviceBrokered = false;
             testContext.setHostRunning(false);
+        }
+
+        // ---- #647: a lost receiver in tier 5 ----
+
+        // Where the header scrolls with the calls, a lost receiver also shows as
+        // one fixed line above Stop, on screen with the header scrolled away, and
+        // it opens the pill's sheet. Elsewhere the pill is in view and there is no
+        // line. Losing the receiver never changes the tier.
+        function test_lost_line_data() {
+            return [{tag: "640x360@1.6", width: 640, height: 360, scale: 1.6, line: true},
+                    {tag: "640x360@1", width: 640, height: 360, scale: 1, line: true},
+                    {tag: "360x690@1.6", width: 360, height: 690, scale: 1.6, line: false},
+                    {tag: "411x914@1", width: 411, height: 914, scale: 1, line: false}];
+        }
+        function test_lost_line(data) {
+            decoderHost.localDeviceBrokered = true;
+            tc.monitor.system = {name: "County P25", sourceType: "usb"};
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            setCall(1, 2);
+            settle();
+            var tier = tc.monitor.tier;
+            compare(tier === 5, data.line, "tier " + tier);
+            var line = item("monitorReceiverLostLine");
+            verify(!line.visible, "no line while the receiver is healthy");
+            var listBottom = tc.list.mapToItem(tc.monitor, 0, tc.list.height).y;
+            decoderHost.receiverHealth = {state: "lost", source: "usb", session: 1};
+            tryCompare(item("monitorLiveLabel"), "text", "LOST");
+            settle();
+            compare(tc.monitor.tier, tier, "the tier held");
+            compare(line.visible, data.line);
+            if (!data.line) {
+                compare(tc.list.mapToItem(tc.monitor, 0, tc.list.height).y, listBottom, "the list kept its place");
+                return;
+            }
+            // The header, and the pill with it, scrolled out of view.
+            tc.list.contentY = tc.list.originY + tc.list.contentHeight - tc.list.height;
+            settle();
+            var pill = item("monitorLiveStatus");
+            verify(pill.mapToItem(tc.list, 0, pill.height).y <= 0.5, "the pill scrolled away");
+            var at = line.mapToItem(tc.monitor, 0, 0);
+            var stop = item("stopListeningButton");
+            verify(at.x >= -0.5 && at.y >= -0.5 && at.x + line.width <= tc.monitor.width + 0.5, "the line is inside the screen");
+            verify(at.y + line.height <= stop.mapToItem(tc.monitor, 0, 0).y + 0.5, "the line sits above Stop");
+            verify(tc.list.mapToItem(tc.monitor, 0, tc.list.height).y <= at.y + 0.5, "the list ends above the line");
+            verify(line.height >= Ui.Theme.minimumTouchSize);
+            compare(line.Accessible.name, "RTL-SDR lost");
+            compare(line.Accessible.role, Accessible.Button);
+            mouseClick(line, line.width / 2, line.height / 2);
+            var sheet = item("monitorReceiverSheet");
+            tryCompare(sheet, "visible", true);
+            compare(sheet.confirmText, "Stop now");
+            verify(!line.activeFocusOnTab, "no tab stop behind its sheet");
+            sheet.cancel();
+            tryCompare(sheet, "visible", false);
         }
 
         // ---- The budget ----
@@ -158,12 +222,24 @@ Item {
                     }
                 }
             }
+            // #647 B16: a brokered host with Sites and Spectrum, where the header
+            // actions do not fit a 360 dp row and tier 0 keeps the title-line header.
+            for (var broker of [[360, 690, 1], [360, 690, 1.6], [411, 914, 1], [411, 914, 1.6]]) {
+                rows.push({tag: broker[0] + "x" + broker[1] + "@" + broker[2] + "+brokered", width: broker[0], height: broker[1],
+                           scale: broker[2], slot: false, scan: false, brokered: true});
+            }
             return rows;
+        }
+        // Brokered (Android) with Sites and Spectrum in play: the width rule in force.
+        function useBrokered(on) {
+            decoderHost.localDeviceBrokered = on;
+            tc.monitor.sitesAvailable = on;
         }
         // The chosen tier is the first whose measured call space holds two rows, and
         // the screen as laid out agrees with the measurement: at the list's start,
         // the viewport less the list header is the call space the tier promised.
         function test_tier_budget(data) {
+            useBrokered(data.brokered === true);
             root.width = data.width;
             root.height = data.height;
             Ui.Theme.fontScale = data.scale;
@@ -190,6 +266,18 @@ Item {
             } else {
                 verify(tc.monitor.callSpaceFor(4) < row, "tier 5 only when tier 4 leaves less than a row");
             }
+            // The header the budget measured is the one drawn: it ends where its
+            // title lines or its actions end, stacked or not.
+            var header = item("monitorHeader");
+            var heading = item("monitorHeaderTitle").parent;
+            var pill = item("monitorLiveStatus");
+            verify(waitForPolish(pill.parent));
+            var drawn = Math.max(heading.mapToItem(header, 0, heading.height).y, pill.mapToItem(header, 0, pill.height).y);
+            verify(Math.abs(drawn - header.height) < 0.5, "header " + header.height + " vs drawn " + drawn);
+            if (data.brokered && !tc.monitor.headerActionsFit) {
+                verify(!tc.monitor.headerStacked, "nothing to stack");
+                verify(!item("runningSiteChooserButton").visible && !item("openSpectrumButton").visible);
+            }
             // The table for the record.
             console.log("TIER", data.tag, "tier", tier, "row", row,
                         "hero", item("monitorHero").height, "header", item("monitorHeader").height,
@@ -206,10 +294,13 @@ Item {
             for (var combo of [[false, false], [true, false], [false, true], [true, true]]) {
                 rows.push({tag: "360x690" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 360, height: 690, slot: combo[0], scan: combo[1], tier: -1});
                 rows.push({tag: "411x914" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 411, height: 914, slot: combo[0], scan: combo[1], tier: 0});
+                rows.push({tag: "360x690+brokered" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 360, height: 690, slot: combo[0], scan: combo[1], tier: -1, brokered: true});
+                rows.push({tag: "411x914+brokered" + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : ""), width: 411, height: 914, slot: combo[0], scan: combo[1], tier: 0, brokered: true});
             }
             return rows;
         }
         function test_phone_portrait_guarantees(data) {
+            useBrokered(data.brokered === true);
             root.width = data.width;
             root.height = data.height;
             setCall(1, 2);

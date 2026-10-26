@@ -73,6 +73,7 @@
 #include "decryption_profiles_model.h"
 
 #include "app_prefs.h"
+#include "auto_start_attachment.h"
 #include "auto_start_policy.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
@@ -123,6 +124,12 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     bool
     start(const QStringList& argv) override {
         lastArgv = argv;
+        // #647: as Android's, the start replaces the last session's receiver ending before the platform is asked,
+        // so a start the platform then refuses has cleared it too.
+        if (health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
+            health = healthyReceiver();
+            Q_EMIT runResultChanged();
+        }
         if (acceptStart) {
             phase = startRunning ? Running : Starting;
             m_running = true;
@@ -202,6 +209,13 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return failure;
     }
 
+    int failureKind = 0;
+
+    int
+    inputFailureKind() const override {
+        return failureKind;
+    }
+
     // WP-S1: exercise the same brokered-USB gate as saved-system starts.
     bool
     localDeviceBrokered() const override {
@@ -213,10 +227,41 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return usbReady;
     }
 
+    // #647: what the last request asked for, and Android's acknowledgement of an ended session's receiver.
+    void
+    requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) override {
+        accessSource = source;
+        accessSerial = serial;
+        ++accessForSourceRequests;
+        requestLocalDeviceAccess();
+    }
+
+    QString accessSource;
+    QString accessSerial;
+    int accessForSourceRequests = 0;
+
     void
     requestLocalDeviceAccess() override {
+        if (!sessionActive() && health.value(QStringLiteral("state")).toString() != QStringLiteral("ok")) {
+            // A Failed session the receiver ended is retired with its notice, the failure first (Android's
+            // acknowledgeReceiverEnding()).
+            if (phase == Failed) {
+                phase = Idle;
+                failure.clear();
+                Q_EMIT sessionStateChanged();
+            }
+            health = healthyReceiver();
+            Q_EMIT runResultChanged();
+        }
         ++usbRequests;
+        // As Android does: the permission prompt is up until it is answered.
+        if (requestPends) {
+            usbPending = true;
+            Q_EMIT localDeviceChanged();
+        }
     }
+
+    bool requestPends = false;
 
     // WP-D5: rendering fixture; native error propagation has its own test.
     QString
@@ -239,6 +284,33 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     }
 
     QString attachedSource;
+
+    // #647: the connected receiver's kind. "usb" until a case sets it, which is
+    // what the base host answers, so cases that only connect an RTL-SDR read as before.
+    QString
+    localDeviceSource() const override {
+        return usbSource;
+    }
+
+    bool
+    localDeviceRequestPending() const override {
+        return usbPending;
+    }
+
+    QString
+    localDeviceRequestedSource() const override {
+        return usbRequestedSource;
+    }
+
+    QVariantMap
+    receiverHealth() const override {
+        return health;
+    }
+
+    QString usbSource = QStringLiteral("usb");
+    bool usbPending = false;
+    QString usbRequestedSource;
+    QVariantMap health = healthyReceiver();
 
     bool usbBrokered = false;
     bool usbReady = false;
@@ -1521,9 +1593,12 @@ class CallLogStore : public QAbstractListModel {
 
     Q_INVOKABLE void
     clearAll() {
-        beginResetModel();
-        m_rows.clear();
-        endResetModel();
+        // Removed, not reset, as CallHistoryModel::clearAll() does.
+        if (!m_rows.isEmpty()) {
+            beginRemoveRows(QModelIndex(), 0, static_cast<int>(m_rows.size()) - 1);
+            m_rows.clear();
+            endRemoveRows();
+        }
         Q_EMIT countChanged();
     }
 
@@ -2016,9 +2091,10 @@ class Setup : public QObject {
     }
 
     // WP-S2: deliver a consumed host event, rather than bypassing policy with a start signal.
+    // #647: as Android's takeAttachment() words it, "<kind>:<device name>", for an RTL-SDR unless @p kind says.
     Q_INVOKABLE void
-    emitLocalDeviceAttached() {
-        Q_EMIT m_lifecycle_host->localDeviceAttached(QStringLiteral("fixture-usb"));
+    emitLocalDeviceAttached(const QString& kind = QStringLiteral("usb")) {
+        Q_EMIT m_lifecycle_host->localDeviceAttached(kind + QStringLiteral(":fixture"));
     }
 
     Q_INVOKABLE void
@@ -2052,9 +2128,62 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Publish the rest of the brokered USB record (#647): the connected receiver's kind ("" while none is
+     * connected, as Android reports it), whether an access request awaits its answer, and the kind it asked for.
+     */
+    Q_INVOKABLE void
+    setLocalDeviceRecord(const QString& source, bool pending, const QString& requestedSource) {
+        m_lifecycle_host->usbSource = source;
+        m_lifecycle_host->usbPending = pending;
+        m_lifecycle_host->usbRequestedSource = requestedSource;
+        Q_EMIT m_lifecycle_host->localDeviceChanged();
+    }
+
+    /** @brief Make an access request leave a permission prompt pending, as Android's does (#647). */
+    Q_INVOKABLE void
+    setDeviceRequestPends(bool pends) {
+        m_lifecycle_host->requestPends = pends;
+    }
+
+    /** @brief Report the last session's receiver as "ok", "lost" or "failed", with its kind (#647). */
+    Q_INVOKABLE void
+    setReceiverHealth(const QString& state, const QString& source) {
+        QVariantMap health = dsd_qt::DecoderHost::healthyReceiver();
+        if (state != QStringLiteral("ok")) {
+            health[QStringLiteral("state")] = state;
+            health[QStringLiteral("source")] = source;
+            health[QStringLiteral("session")] = qlonglong(1);
+        }
+        m_lifecycle_host->health = health;
+        Q_EMIT m_lifecycle_host->runResultChanged();
+    }
+
     Q_INVOKABLE int
     dongleRetryRequests() const {
         return m_lifecycle_host->usbRequests;
+    }
+
+    /** @brief The access requests that named a receiver, and the last one's kind and serial (#647). */
+    Q_INVOKABLE QVariantMap
+    lastDeviceAccess() const {
+        return {{QStringLiteral("count"), m_lifecycle_host->accessForSourceRequests},
+                {QStringLiteral("source"), m_lifecycle_host->accessSource},
+                {QStringLiteral("serial"), m_lifecycle_host->accessSerial}};
+    }
+
+    Q_INVOKABLE void
+    resetDeviceAccess() {
+        m_lifecycle_host->accessForSourceRequests = 0;
+        m_lifecycle_host->accessSource.clear();
+        m_lifecycle_host->accessSerial.clear();
+    }
+
+    /** @brief The last session's input failure kind, as DecoderHost::inputFailureKind() reports it. */
+    Q_INVOKABLE void
+    setLifecycleFailureKind(int kind) {
+        m_lifecycle_host->failureKind = kind;
+        Q_EMIT m_lifecycle_host->runResultChanged();
     }
 
     // WP-D3: platform capability gate for the nearby search button.
@@ -2767,6 +2896,9 @@ class Setup : public QObject {
         host[QStringLiteral("locationSupported")] = false;
         host[QStringLiteral("shareSupported")] = false;
         host[QStringLiteral("localDeviceFailureKind")] = 0;
+        host[QStringLiteral("localDeviceRequestPending")] = false;
+        host[QStringLiteral("localDeviceRequestedSource")] = QString();
+        host[QStringLiteral("receiverHealth")] = dsd_qt::DecoderHost::healthyReceiver();
         host[QStringLiteral("sessionState")] = 0;
         host[QStringLiteral("keyboardTop")] = -1;
         m_host = host;
@@ -2848,19 +2980,22 @@ class Setup : public QObject {
         auto* controller = new TestUiController(engine);
         auto* scan_lists = new dsd_qt::ScanListsModel(engine);
         // WP-S2: use the production pure policy for host attachment delivery in QML tests.
-        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER.
+        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER; the #647 D3a kind rule
+        // and the reading of the "<kind>:<device name>" attachment are production's own helpers.
         for (ImportOnlyHost* attachmentHost : {m_import_host, static_cast<ImportOnlyHost*>(m_initializing_host)}) {
             QObject::connect(
-                attachmentHost, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+                attachmentHost, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString& attachment) {
+                    const QString attachedKind = dsd_qt::attachedReceiverKind(attachment);
                     const QString kind = app_prefs->lastStartedKind();
                     const QString uid = app_prefs->lastStartedUid();
                     const QVariantMap target = kind == QStringLiteral("saved")  ? saved_systems->getByUid(uid)
                                                : kind == QStringLiteral("scan") ? scan_lists->getByUid(uid)
                                                                                 : QVariantMap();
-                    if (dsd_qt::autoStartAllowed(
-                            app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(), attachmentHost->sessionState(),
-                            controller->autoStartBlocked, !target.isEmpty(),
-                            target.value(QStringLiteral("sourceType")).toString() == QStringLiteral("usb"))) {
+                    const bool kindMatches = dsd_qt::autoStartKindMatches(
+                        target.value(QStringLiteral("sourceType")).toString(), attachedKind);
+                    if (dsd_qt::autoStartAllowed(app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(),
+                                                 attachmentHost->sessionState(), controller->autoStartBlocked,
+                                                 !target.isEmpty(), kindMatches)) {
                         controller->requestAutoStart(kind, uid);
                     }
                 });

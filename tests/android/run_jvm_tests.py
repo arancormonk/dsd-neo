@@ -154,6 +154,105 @@ def stop_callers_carry_their_cause():
     return None
 
 
+def native_lifecycle_contract():
+    """DsdNative.kt never compiles here (it loads the app library), so its JNI pairing is read from the sources."""
+    kotlin_path = REPO / APP_SOURCES / "DsdNative.kt"
+    jni_paths = sorted((REPO / "android").glob("*.cpp"))
+    try:
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        jni = "\n".join(path.read_text(encoding="utf-8") for path in jni_paths)
+    except OSError as error:
+        return f"cannot read the JNI sources: {error}"
+    for name in re.findall(r"external fun (native\w+)\(", kotlin):
+        if not re.search(rf"\bJava_io_github_arancormonk_dsdneo_DsdNative_{name}\(", jni):
+            return f"{APP_SOURCES / 'DsdNative.kt'}: {name} has no JNI definition under android/"
+    # #647: the first accepted cause of a session's ending is latched natively, so every stop passes its own.
+    if not re.search(r"external fun nativeStop\(userRequested: Boolean, cause: String\): Int", kotlin):
+        return f"{APP_SOURCES / 'DsdNative.kt'}: nativeStop must take (userRequested: Boolean, cause: String)"
+    if not re.search(r"DsdNative_nativeStop\(JNIEnv\* env, jclass clazz, jboolean user_requested,\s*jstring cause\)", jni):
+        return "android/dsdneo_jni.cpp: nativeStop must take the jstring cause after user_requested"
+    # A stop the configure discards must not leave its cause latched (#647): the flag reset and the new record share one
+    # lifecycle-lock block, and nativeStop latches its cause and raises its flag inside one.
+    lock = r"std::lock_guard<std::mutex> status_guard\(g_lifecycle_lock\);"
+    if not re.search(lock + r"[^}]*g_stop_requested\.store\(false\);[^}]*g_run_status\.begin\(", jni):
+        return "android/dsdneo_jni.cpp: nativeConfigure must clear g_stop_requested before begin() under g_lifecycle_lock"
+    if not re.search(lock + r"[^}]*note_stop_cause\([^}]*g_stop_requested\.store\(true\);", jni):
+        return "android/dsdneo_jni.cpp: nativeStop must latch its cause and raise g_stop_requested under g_lifecycle_lock"
+    # Android owns an unplug through the detach broadcast for the grace (#647); without it the reader's -1 races it.
+    init = re.search(r"DsdNative_nativeInit\(.*?\n\}", jni, re.S)
+    if not init or "dsd_android::install_receiver_policy();" not in init.group(0):
+        return "android/dsdneo_jni.cpp: nativeInit must call dsd_android::install_receiver_policy()"
+    return None
+
+
+def ready_branch_rewrites_status(source):
+    """Whether every `if (isReady()) {` branch writes "Ready: …" as its first statement, past any comment lines.
+
+    A line scan rather than one regex: a comment run in a regex lets `\\s*` and the comment body share `//`, which
+    backtracks exponentially on a long run of slashes."""
+    lines = source.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.strip() == "if (isReady()) {"]
+    if not starts:
+        return False
+    for start in starts:
+        body = (line.strip() for line in lines[start + 1 :])
+        statement = next((line for line in body if line and not line.startswith("//")), "")
+        if not statement.startswith('setStatus("Ready: '):
+            return False
+    return True
+
+
+def usb_broker_contract():
+    """UsbSourceManager talks to the platform, so it never compiles here; its use of UsbRequestState is read instead."""
+    manager_path = REPO / APP_SOURCES / "UsbSourceManager.kt"
+    record_path = REPO / "android/local_device_state.h"
+    try:
+        manager = manager_path.read_text(encoding="utf-8")
+        record = record_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the USB broker sources: {error}"
+    where = APP_SOURCES / "UsbSourceManager.kt"
+    # #647 B9: each permission request has its own PendingIntent identity and says which request it answers.
+    broadcasts = re.findall(r"PendingIntent\.getBroadcast\(([^)]*)\)", manager)
+    if not broadcasts or any(not re.match(r"\s*\w+,\s*generation,", args) for args in broadcasts):
+        return f"{where}: every permission PendingIntent must use the request's generation as its request code"
+    if "FLAG_UPDATE_CURRENT" in manager:
+        return f"{where}: FLAG_UPDATE_CURRENT would hand an old request's reply the new request's extras"
+    if not re.search(r"\.putExtra\(EXTRA_GENERATION, generation\)", manager):
+        return f"{where}: the permission intent must carry its generation"
+    if not re.search(r"requests\.onReply\(\s*intent\.getIntExtra\(EXTRA_GENERATION,", manager):
+        return f"{where}: a permission reply must be matched to its request by generation"
+    # #647 B8: a detach stops the engine only for a session that uses the local receiver, and always releases.
+    detach = re.search(r"UsbManager\.ACTION_USB_DEVICE_DETACHED ->(.*?)UsbManager\.ACTION_USB_DEVICE_ATTACHED ->", manager, re.S)
+    owner = r"ownsSession = DsdNative\.nativeSessionUsesLocalReceiver\(\) \|\|\s*DsdNative\.nativeIsUsbFdInUse\(\)\n"
+    stop = r"if \(ownsSession\) \{[^}]*EngineStop\.request\(StopCause\.DEVICE_DETACHED,[^}]*\}(\s*else \{[^}]*\})?\s*release\(\)"
+    if not detach or not re.search(owner, detach.group(1)) or not re.search(stop, detach.group(1)):
+        return (
+            f"{where}: a detach must stop the engine only when nativeSessionUsesLocalReceiver() or nativeIsUsbFdInUse() "
+            "says the session uses it, and release the connection either way"
+        )
+    # #647 WP4: the host polls deviceStatus(), which retires an unanswered request and publishes the request.
+    status = re.search(r"fun deviceStatus\(\): String \{(.*?)\n    \}", manager, re.S)
+    if not status or "requests.expireIfStale()" not in status.group(1):
+        return f"{where}: deviceStatus() must retire an unanswered request"
+    for key in ("pending", "requestedSource", "requestedSerial"):
+        if f'.put("{key}"' not in status.group(1):
+            return f"{where}: deviceStatus() must publish {key}"
+    # #647 B4: an access request that finds the receiver ready rewrites the record for it.
+    if not ready_branch_rewrites_status(manager):
+        return f"{where}: an access request while ready must rewrite \"Ready: <device>\" with no failure kind"
+    # #647 B11: every failure kind the broker writes is one the host's record knows; "refused" is no device failure.
+    kinds = set(re.findall(r'setStatus\([^\n]*,\s*"(\w+)"\)', manager))
+    if "UsbRequestState.REFUSED)" not in manager:
+        return f"{where}: the switch refusal must be written with kind UsbRequestState.REFUSED"
+    for kind in sorted(kinds):
+        if f'QStringLiteral("{kind}")' not in record:
+            return f"android/local_device_state.h: UsbSourceManager writes kind \"{kind}\", which the record never maps"
+    if not re.search(r'QStringLiteral\("refused"\)\s*\?\s*dsd_qt::DecoderHost::NoDeviceFailure', record):
+        return "android/local_device_state.h: kind \"refused\" must map to NoDeviceFailure"
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -206,6 +305,37 @@ SUITES = {
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
     "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
+    # The USB broker's permission requests, detach and attach bookkeeping, and the attachment's kind: the plain-Kotlin
+    # state with no stubs, then UsbSourceManager itself against stubs of the USB service, prompts and engine.
+    "usb": Suite(
+        builds=(
+            Build(
+                sources=("UsbRequestState.kt", "UsbAttachmentTracker.kt", "UsbReceiverKind.kt"),
+                tests=("UsbRequestStateTest.kt",),
+            ),
+            # The production manager itself, against a scripted bus, prompt and engine.
+            Build(
+                sources=(
+                    "UsbSourceManager.kt",
+                    "UsbRequestState.kt",
+                    "UsbAttachmentTracker.kt",
+                    "UsbReceiverKind.kt",
+                    "EngineStop.kt",
+                ),
+                tests=("UsbSourceManagerTest.kt",),
+                stubs=(
+                    "UsbContext.kt",
+                    "UsbHardware.kt",
+                    "UsbPendingIntent.kt",
+                    "UsbOs.kt",
+                    "UsbNative.kt",
+                    "Log.kt",
+                    "JSONObject.kt",
+                ),
+            ),
+        ),
+        checks=(usb_broker_contract,),
+    ),
     # How Android says recent app processes ended, as diagnostics lines. Plain Kotlin with no Android imports, so no
     # stubs; ProcessFacts reads the records off ActivityManager.
     "exit_facts": Suite(builds=(Build(sources=("ExitFacts.kt",), tests=("ExitFactsTest.kt",)),)),
@@ -220,7 +350,7 @@ SUITES = {
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),
             ),
         ),
-        checks=(stop_callers_carry_their_cause,),
+        checks=(stop_callers_carry_their_cause, native_lifecycle_contract),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure

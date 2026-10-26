@@ -14,6 +14,7 @@ main() {
     }
     static_assert(!autoStartAllowed(true, true, 0, true, true, true), "overlay blocks start");
     static_assert(!autoStartAllowed(true, true, 0, false, false, true), "missing target blocks start");
-    static_assert(!autoStartAllowed(true, true, 0, false, true, false), "non-USB target blocks start");
+    static_assert(!autoStartAllowed(true, true, 0, false, true, false),
+                  "a target on another receiver kind blocks start");
     return 0;
 }

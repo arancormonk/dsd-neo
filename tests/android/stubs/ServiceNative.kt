@@ -19,6 +19,7 @@ object DsdNative {
     var configureHook: (() -> Unit)? = null
     var nativeStopCode = STATUS_OK
     val stops = CopyOnWriteArrayList<Boolean>()
+    val stopCauses = CopyOnWriteArrayList<String>()
     val diagnostics = CopyOnWriteArrayList<String>()
     fun prepareRun() {
         enteredRun = CountDownLatch(1)
@@ -26,6 +27,8 @@ object DsdNative {
         configureHook = null
         nativeStopCode = STATUS_OK
         stops.clear()
+        stopCauses.clear()
+        lifecycle = null
         diagnostics.clear()
     }
     fun nativeInit(config: String, cache: String) = STATUS_OK
@@ -36,9 +39,10 @@ object DsdNative {
         check(finish.await(5, TimeUnit.SECONDS)) { "test did not release the engine" }
         return STATUS_OK
     }
-    fun nativeStop(userRequested: Boolean): Int { stops += userRequested; return nativeStopCode }
+    fun nativeStop(userRequested: Boolean, cause: String): Int { stops += userRequested; stopCauses += cause; return nativeStopCode }
     fun nativeDestroy() = STATUS_OK
-    fun nativeLifecycleStatus(): LongArray? = null
+    @Volatile var lifecycle: LongArray? = null
+    fun nativeLifecycleStatus(): LongArray? = lifecycle
     fun nativeHostDiagnostic(line: String) { diagnostics += line }
     fun nativeArmStartupDiagnostics() {}
     fun nativeFlushDiagnostics() {}

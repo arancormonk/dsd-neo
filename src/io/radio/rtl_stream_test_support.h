@@ -192,12 +192,51 @@ typedef struct {
     struct input_ring_state* ring; /* the ring the demod reads; its waiters see the reader's exit */
     int reader_rc;                 /* what the reader returns, in place of rtlsdr_read_async()'s result */
     int stop_while_reading;        /* the reader returns only after rtl_device_stop_async() asked it to end */
+    int stop_after_ms;             /* > 0: the reader returns at once; rtl_device_stop_async() follows this long after
+                                      the start (a stop that lands inside the unplug-owner grace) */
+    /* A stop that lands while the reader thread is starting: the reader is held, before it publishes that it entered
+     * (stop_before_reader_entry) or after its run check just before rtlsdr_read_async() (stop_before_read_async),
+     * until the stop's first rtlsdr_cancel_async(), which finds nothing streaming yet. Released, it streams as
+     * librtlsdr does, until a cancel reaches it (at most 5 s, so a lost stop fails the test rather than hanging it). */
+    int stop_before_reader_entry;
+    int stop_before_read_async;
+    int destroy_instead_of_stop; /* end the device with rtl_device_destroy() in place of rtl_device_stop_async() */
+    int reader_streamed;         /* out: a held reader went on to stream, however briefly */
 } rtl_device_test_usb_reader_request;
 
 /* Start a USB device's reader (rtl_device_start_async()) whose rtlsdr_read_async() returns @p request->reader_rc, and
- * join it: through rtl_device_stop_async() when @p request->stop_while_reading is set, else once it returned by
- * itself. 0 on success, -1 when the reader could not start. */
-int rtl_device_test_usb_reader_exit(const rtl_device_test_usb_reader_request* request);
+ * end it: through rtl_device_stop_async() (or rtl_device_destroy()) when the request asks for a stop, else by joining
+ * it once it returned by itself. 0 on success, -1 when the reader could not start. */
+int rtl_device_test_usb_reader_exit(rtl_device_test_usb_reader_request* request);
+
+/* The USB sample-progress monitor's silence limit and sample period (5000 ms and 100 ms in production); 0 restores
+ * the production value. Set while no USB device streams. */
+void rtl_device_test_set_progress_limit_ms(uint32_t limit_ms);
+void rtl_device_test_set_progress_period_ms(uint32_t period_ms);
+/* The next receiver verdict that passed its checks waits @p ms before it claims the report, so that a racing verdict
+ * passes its own checks meanwhile. One-shot. */
+void rtl_device_test_pause_next_verdict_ms(uint32_t ms);
+/* While set, the RTL-SDR's progress monitor thread fails to start, as a refused thread creation does. */
+void rtl_device_test_refuse_progress_monitor(int refuse);
+/* How many receiver verdicts began waiting out the unplug-owner grace, ever: a test polls it to know a verdict is
+ * pending. */
+unsigned int rtl_device_test_verdicts_in_grace(void);
+
+struct rtl_device;
+
+/* A USB device started into @p ring by rtl_device_start_async(), its reader standing in for rtlsdr_read_async(): it
+ * streams, delivering nothing by itself, until a cancel reaches it, as librtlsdr's does. The receiver's callbacks come
+ * from rtl_device_test_usb_stream_deliver(); rtl_device_test_usb_stream_stop() ends it. One at a time; NULL when it
+ * could not start. */
+struct rtl_device* rtl_device_test_usb_stream_start(struct input_ring_state* ring);
+/* One librtlsdr callback of @p len bytes of cu8 I/Q into the production callback, as the reader would deliver it. */
+void rtl_device_test_usb_stream_deliver(struct rtl_device* dev, unsigned char* buf, uint32_t len);
+/* Make the streaming reader return @p rc by itself, as rtlsdr_read_async() does for a lost device (-1). */
+void rtl_device_test_usb_stream_return(int rc);
+/* Whether the device's reader has returned: a cancel reached it, or it returned by itself. */
+int rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev);
+/* Stop the device (rtl_device_stop_async()) and destroy it. */
+void rtl_device_test_usb_stream_stop(struct rtl_device* dev);
 
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no

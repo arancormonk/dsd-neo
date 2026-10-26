@@ -162,15 +162,42 @@ directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCA
 that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
-RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty.
+RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a
+session's input selects (`rtl`/`rtl:…` and `airspy`/`airspy:…`, never rtl_tcp or a network input) is native and
+covered by `IO_RTL_RUN_RESULT`.
+`ANDROID_USB_BROKER_JVM` (the `usb` suite) runs `UsbRequestState.kt`, the USB broker's request and permission-prompt
+bookkeeping, with `UsbAttachmentTracker.kt` and no stubs, on an injected clock: a reply to an older prompt, for another
+device or replayed is ignored; the serial search's hop to the next Airspy keeps the request's generation and restarts
+its wait; unplugging the requested device retires its prompt, so a re-plug prompts again at once; a prompt unanswered
+for 60 s expires on the clock alone and never prompts again; nothing is requested before the first request; an attach
+of another kind, an unreadable or wrong serial, or any attach over a live connection leaves the diagnostic alone; a
+switch while running is refused as `refused`; a plain Connect asks for the request's own target, then the connected
+kind, then the first receiver on the bus; and an attachment is taken as `<kind>:<device>`. The suite then runs
+`UsbSourceManager.kt` itself (`UsbSourceManagerTest.kt`) against stubs of the USB service, its prompts, the clock and
+the engine, each case in a class loader of its own so the manager object starts fresh: a prompt's request code and
+extra are its generation and a reply naming another generation is ignored; the 60 s expiry is published by the poll
+with no new prompt; unplugging the requested device says so and lets a re-plug prompt at once; the serial search hops
+to the next Airspy under the same request code; an attach replaces the diagnostic (and clears its kind) only for the
+awaited receiver, never over a live connection, while the attachment is still recorded with its kind; a plain Connect
+keeps the request's kind and serial; a switch while running reads `refused` and the next ready request rewrites
+"Ready: <device>"; and a detach of the connection stops the engine only for a session that uses the receiver or holds
+its descriptor, releasing the connection either way. A source check first reads
+`UsbSourceManager.kt` for the same wiring (the generation as every permission `PendingIntent`'s request code, no
+`FLAG_UPDATE_CURRENT`, the detach's ownership test, the poll's expiry, the ready rewrite), and checks that every failure
+kind the broker writes is one `android/local_device_state.h` maps (`refused` to no device failure).
 `ANDROID_ENGINE_STOP_JVM` (the `engine_stop` suite) runs `EngineStop.kt` with no stubs: only `StopCause.USER` hands
 `nativeStop` `userRequested = true` (abandoning pending rdio uploads), and a stop intent with a missing or unknown cause
 drains. Its source check first pins the cause every production caller passes: each `nativeStop` call goes through
 `EngineStop.request`, a USB detach and the Activity and service teardowns drain, and both `ACTION_STOP` senders (the Qt
-host's Stop listening and the notification's Stop action) say `USER`.
+host's Stop listening and the notification's Stop action) say `USER`. A second source check reads `DsdNative.kt` against
+`android/*.cpp` (the binding never compiles on the JVM): every `external fun` has its JNI definition, `nativeStop` takes
+the cause's wire value and latches it with its stop flag under the lifecycle-status lock, `nativeConfigure` clears that
+flag in the same block as the new run record (so a stop it discards leaves no cause), and `nativeInit` installs the
+unplug-owner grace (`dsd_android::install_receiver_policy()`).
 The same suite also runs `DecoderService.kt` itself with controlled native-run and intent-delivery boundaries:
 cancellation before callbacks, rejected dispatch and missing Activity context, notification cancellation before
-notification work, task removal without Activity destruction, a user Stop during a lifecycle drain, a refused native
+notification work, task removal without Activity destruction, a user Stop during a lifecycle drain (each stop passing
+its own cause), the lifecycle record carrying its own session's ending and receiver, a refused native
 stop remaining retryable, a delayed stop after a subsequent start, and ordered cancellation during configure or before
 start delivery. Worker completion cases hold `stopSelf(id)` while the next run starts, and finish the old run while
 an arriving START is promoting its notification; both check the old id stays attached to the completed run.
@@ -2413,6 +2440,23 @@ The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLL
 `ctest` with other builds running. A test that builds its own `QQmlEngine` calls the policy first. To
 watch the incremental collector again, set `QV4_GC_TIMELIMIT` to a slice length in milliseconds
 (Qt's default is 5): the policy keeps any integer it finds.
+
+Android-only presentation (the receiver pill, the receiver notice, the Monitor's LOST pill and width rule) is gated on
+`DecoderHost::localDeviceBrokered`, which production reads as a CONSTANT. A QML case therefore picks the brokered host
+before the screen binds it: `testContext.setUsbBrokered(true)` and then `useLifecycleHost(true)` (switching the
+lifecycle host off and on again republishes it). The same test context feeds the host's USB record and receiver
+facts (`setLocalDeviceRecord()`, `setReceiverHealth()`, `setDeviceRequestPends()`,
+`emitLocalDeviceAttached(kind)`), so these cases run on the desktop build. Every such feature keeps a
+non-brokered case pinning the desktop layout unchanged. Cases whose bindings or focus rules could warn call
+`failOnWarning()` in `init()` (`tst_main_receiver_notice.qml`, `tst_monitor_receiver.qml`, and
+`tst_home_dongle_status.qml`'s `test_pill_keeps_focus_when_the_prompt_opens`): a focus-rule warning such as "Cannot
+set activeFocusOnTab to false once item is the active focus item" is a defect, not noise. The whole QML suite
+(`UI_QT_QML_CALL_LISTS`) runs without a `QWARN`; files whose warnings were real defects pin them the same way:
+`tst_back_modals.qml` (a focused button's tab stop), `tst_main_session_tools.qml` (binding loops in a Main recreated
+mid-session), `tst_history_session_identity.qml` (deferred work on an unloaded screen), `tst_monitor_layout_budget.qml`
+(a history clear cancelling a row the list is still building) and `tst_home_scan_lists.qml` /
+`tst_monitor_call_actions.qml` (an unnamed session's header). Fix a new warning at its cause rather than with
+`ignoreWarning()`, unless the warning is the behaviour a case asserts.
 
 The backup suites (`UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY`, `UI_QT_BACKUP_MODEL`; issue #580) build their
 configurations through the real models in storage that `dsd_test_qt_isolate_paths()`

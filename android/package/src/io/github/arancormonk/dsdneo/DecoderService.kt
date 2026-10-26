@@ -185,6 +185,8 @@ class DecoderService : Service() {
         }
 
         DsdNative.nativeHostDiagnostic("service: configuring the engine")
+        // On the main thread, as is the USB receiver: a detach is handled only once this returns, when the native
+        // record already names the session's receiver (nativeSessionUsesLocalReceiver(), #647).
         val configureRc = DsdNative.nativeConfigure(args, synchronized(lock) { sessionId })
         DsdNative.nativeHostDiagnostic("service: engine configuration returned $configureRc")
         if (configureRc == DsdNative.STATUS_CONFIG_EXIT) {
@@ -206,7 +208,6 @@ class DecoderService : Service() {
             )
             return
         }
-
         val thread = Thread({
             DsdNative.nativeHostDiagnostic("service: engine run starting")
             val rc = DsdNative.nativeRun()
@@ -820,6 +821,8 @@ class DecoderService : Service() {
         private var sessionId = 0L
         private var terminalReason = DsdNative.RUN_PENDING
         private var deviceError = 0
+        /** The newest session whose receiver ending the UI acknowledged; outlives the Activity's host (#647). */
+        private var endingAcknowledged = 0L
 
         /** Newest start id handed to onStartCommand; the worker captures it before releasing IDLE. */
         private var lastStartId = 0
@@ -956,7 +959,21 @@ class DecoderService : Service() {
                 .put("initialized", matches && fields[1] != 0L)
                 .put("reason", reason).put("deviceError", usbError).put("lastError", error)
                 .put("inputFailure", if (matches && fields.size >= 7) fields[5].toInt() else 0)
-                .put("inputError", if (matches && fields.size >= 7) fields[6].toInt() else 0).toString()
+                .put("inputError", if (matches && fields.size >= 7) fields[6].toInt() else 0)
+                // #647: why the session ended and its receiver, published while its cleanup still runs.
+                .put("endCause", if (matches && fields.size >= 9) fields[7].toInt() else 0)
+                .put("receiverSource", if (matches && fields.size >= 9) fields[8].toInt() else 0)
+                .put("endingAcknowledged", endingAcknowledged).toString()
+        }
+
+        /**
+         * The UI acknowledged the receiver endings of sessions up to [session] (a start, or an access request once the
+         * session ended). Kept here rather than in the Activity's host, so a recreated Activity does not show an
+         * acknowledged ending again (#647).
+         */
+        @JvmStatic
+        fun acknowledgeReceiverEnding(session: Long) = synchronized(lock) {
+            endingAcknowledged = maxOf(endingAcknowledged, session)
         }
 
         /** Service-side view of the lifecycle, for UI status text. */

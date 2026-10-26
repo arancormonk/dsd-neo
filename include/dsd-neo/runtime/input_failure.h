@@ -22,9 +22,18 @@ typedef struct {
     int native_code;
 } dsd_input_failure;
 
+/** Clears the latched failure and the committed receiver ending. */
 void dsd_input_failure_clear(void);
 void dsd_input_failure_report(dsd_input_failure_kind kind, int code);
 void dsd_input_failure_get(dsd_input_failure* out);
+/** Commit that this run ended because its receiver ended: a USB receiver's reader or stream gave out and the session
+ * is ending for it (raised with the exit flag, after the device failure was reported). Unlike the failure latch, which
+ * a path that recovers may write and restore (an Airspy reconfigure that fails, rolls back and keeps streaming), this
+ * is never written except to end the run; dsd_input_failure_clear() alone takes it back. The commit does not advance
+ * dsd_input_failure_generation(). */
+void dsd_input_failure_commit_receiver_end(void);
+/** 1 once dsd_input_failure_commit_receiver_end() committed this run's ending, else 0. */
+int dsd_input_failure_receiver_ended(void);
 /** The latch's write count: every dsd_input_failure_report(), dsd_input_failure_clear() included, advances it by one
  * under the latch's lock, whether or not the value written differs from the one latched; a read does not. It wraps, so
  * compare two reads only for equality: they differ when something wrote the latch in between, which a compare of the
