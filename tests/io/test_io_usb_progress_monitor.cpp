@@ -338,10 +338,11 @@ test_airspy_retune_storm_healthy(input_ring_state* ring) {
 }
 
 /* A stream restarted every 100 ms that never delivers: the restarts do not reset the silence, and the verdict, which
- * restarts do not drop either, ends the session once the limit and then the grace ran out. */
+ * restarts do not drop either, ends the session once the limit and then the grace ran out. The trip limit applies from
+ * the fourth restart on, however late the test thread makes them, so a silence that restarts reset never reaches it. */
 void
 test_airspy_restarts_without_samples_trip(input_ring_state* ring) {
-    rtl_device_test_set_progress_limit_ms(kLimitMs);
+    rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
     rtl_device_set_unplug_owner_grace_ms(kGraceMs);
     rtl_device* dev = start_airspy(ring);
     const uint64_t started_ms = dsd_realtime_mono_ms();
@@ -349,6 +350,9 @@ test_airspy_restarts_without_samples_trip(input_ring_state* ring) {
     const int starts_before = airspy_double::starts;
     for (int i = 1; i <= 30 && ended_ms == 0U; ++i) {
         assert(rtl_device_set_frequency(dev, retune_target(i)) == 0);
+        if (airspy_double::starts - starts_before >= 4) {
+            rtl_device_test_set_progress_limit_ms(kLimitMs);
+        }
         dsd_sleep_ms(100U);
         if (dsd_input_failure_receiver_ended()) {
             ended_ms = dsd_realtime_mono_ms();
