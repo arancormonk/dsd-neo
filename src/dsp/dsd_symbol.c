@@ -901,6 +901,9 @@ enum {
     /* A gap in the stream stands before the cached samples (issue #518 D5): they are kept, and handed out once the
        engine has consumed the gap (symbol_rtl_stream_gap()). */
     RTL_SYMBOL_CACHE_GAP = 4,
+    /* The cache is empty and the refill's live read gave way to a queued command while the device has no stream
+       (issue #518 D4, DSD_RTL_READ_YIELD): no failure (symbol_rtl_read_yielded()). */
+    RTL_SYMBOL_CACHE_YIELD = 5,
 };
 
 static inline int
@@ -1224,9 +1227,10 @@ rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, 
                         uint32_t* generation, uint32_t expected_generation, float* sample_out) {
     int got = 0;
     uint32_t read_generation = generation ? *generation : expected_generation;
-    if (dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, &got) < 0 || got <= 0) {
+    const int read_rc = dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, &got);
+    if (read_rc < 0 || got <= 0) {
         rtl_symbol_cache_reset_pending(state);
-        return RTL_SYMBOL_CACHE_EMPTY;
+        return read_rc == DSD_RTL_READ_YIELD ? RTL_SYMBOL_CACHE_YIELD : RTL_SYMBOL_CACHE_EMPTY;
     }
     if (got > DSD_RTL_SYMBOL_CACHE_CAP) {
         got = DSD_RTL_SYMBOL_CACHE_CAP;
@@ -2314,6 +2318,16 @@ symbol_rtl_read_failed(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A live read found nothing and gave way to a queued command, the device having no stream at all (issue #518 D4: a USB
+   stall recovery runs, or rtl_tcp is not connected; DSD_RTL_READ_YIELD). Not a failure, and nothing of the stream is
+   lost: the decoder raises the yield interruption, which stands for every symbol read until the engine loop consumes
+   it and applies the command, and the frame being decoded finishes on erasures, as a Signal search leaves one. */
+static inline void
+symbol_rtl_read_yielded(dsd_state* state) {
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_YIELD);
+    state->symbol_replay_symbol_unusable = 1;
+}
+
 /* The samples a read returned come after a gap in the stream (issue #518 D5: a USB recovery, an rtl_tcp reconnect, or
    one an I/Q replay's capture recorded), whose discontinuity count is @p gap_seq. The decoder takes the count up and
    raises the stream-gap interruption, which stands for every symbol read until the engine loop consumes it and resets
@@ -2344,6 +2358,10 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
     }
     int got = 0;
     const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got);
+    if (read_rc == DSD_RTL_READ_YIELD) {
+        symbol_rtl_read_yielded(state);
+        return 0;
+    }
     if (read_rc == 0 && got == 0 && dsd_analog_tone_detection_active(opts)) {
         state->input_interrupted = 1;
         return 0;
@@ -2375,6 +2393,10 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
         }
         if (cache_status == RTL_SYMBOL_CACHE_GAP) {
             symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);
+            return 0;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_YIELD) {
+            symbol_rtl_read_yielded(state);
             return 0;
         }
         if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
@@ -2728,6 +2750,10 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
         }
         if (cache_status == RTL_SYMBOL_CACHE_GAP) {
             symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);
+            return -1;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_YIELD) {
+            symbol_rtl_read_yielded(state);
             return -1;
         }
         if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
@@ -3217,9 +3243,10 @@ symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symb
     return symbol;
 }
 
-/* Whether an interruption a read recorded stands for every symbol until the engine loop consumes it: a stream gap or a
-   yield (symbol_rtl_stream_gap()) always, one a search visit made (symbol_rtl_read_failed()) while the search runs,
-   since that read counted no symbol and the count may sit off the throttle for the rest of the frame. */
+/* Whether an interruption a read recorded stands for every symbol until the engine loop consumes it: a stream gap
+   (symbol_rtl_stream_gap()) or a yield (symbol_rtl_read_yielded()) always, one a search visit made
+   (symbol_rtl_read_failed()) while the search runs, since that read counted no symbol and the count may sit off the
+   throttle for the rest of the frame. */
 static inline int
 symbol_interruption_stands(const dsd_state* state) {
     return state->input_interrupted

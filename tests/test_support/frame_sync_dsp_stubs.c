@@ -40,10 +40,15 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
     return 0;
 }
 
+/* Shutdown requests, counted (nothing else happens), so a test can tell a reader asked for one. */
+// NOLINTNEXTLINE(misc-use-internal-linkage) -- Tests read it through an extern declaration.
+int g_frame_sync_dsp_stub_shutdown_requests = 0;
+
 void
 dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_frame_sync_dsp_stub_shutdown_requests++;
 }
 
 void

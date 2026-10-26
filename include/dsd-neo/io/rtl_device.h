@@ -478,6 +478,17 @@ void rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* 
 int rtl_device_resume_stream(struct rtl_device* dev);
 
 /**
+ * @brief Whether the device has a stream at all (issue #518 D4), as against one that is only delayed.
+ *
+ * A USB receiver has none from the moment its progress monitor asks for a stall recovery until that recovery finished
+ * (rtl_device_usb_recovery_take(), rtl_device_usb_recovery_finish()). rtl_tcp and every other backend report one.
+ * Safe from any thread.
+ *
+ * @return 1 when the device has a stream, 0 when it has none or @p dev is NULL.
+ */
+int rtl_device_has_stream(const struct rtl_device* dev);
+
+/**
  * @brief Mute the incoming raw USB/TCP byte stream for a short duration.
  *
  * Note: The argument is in raw input BYTES (u8 I/Q interleaved), not int16

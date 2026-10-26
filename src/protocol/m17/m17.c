@@ -1817,9 +1817,9 @@ enum m17_str_read_result {
     M17_STR_READ_ERROR = -1,
     M17_STR_READ_STOP = 0,
     M17_STR_READ_OK = 1,
-    /* The input was silent for a stream pause while a command waited (issue #634), or a gap in the RTL stream cut the
-       block (issue #518): nothing is encoded from it, and the encoder applies any command before it reads the block
-       again. */
+    /* The input was silent for a stream pause while a command waited (issue #634), a gap in the RTL stream cut the
+       block (issue #518 D5), or the RTL read gave way to a queued command while the radio has no stream (D4):
+       nothing is encoded from it, and the encoder applies any command before it reads the block again. */
     M17_STR_READ_AGAIN = 2,
 };
 
@@ -1973,7 +1973,13 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
             float raw = 0.0f;
             uint8_t flag = 0U;
             int got = 0;
-            if (dsd_rtl_stream_io_hook_read_ex(state, &raw, &flag, 1, &got) < 0 || got != 1) {
+            const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, &raw, &flag, 1, &got);
+            /* The radio has no stream (a USB stall recovery runs, rtl_tcp is not connected) and a command waits: not
+               an end. The block read so far is given up, as for a gap, which follows once the stream is back. */
+            if (read_rc == DSD_RTL_READ_YIELD) {
+                return M17_STR_READ_AGAIN;
+            }
+            if (read_rc < 0 || got != 1) {
                 dsd_request_shutdown(opts, state);
                 return M17_STR_READ_STOP;
             }

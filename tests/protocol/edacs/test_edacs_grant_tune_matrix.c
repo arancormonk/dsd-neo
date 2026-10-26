@@ -32,7 +32,9 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -2849,6 +2851,149 @@ edacs_run_analog_gap_case(void) {
 }
 #endif
 
+#ifdef USE_RADIO
+/* Issue #518 D4: the RTL device loses its stream (a USB stall recovery runs, rtl_tcp disconnects) at sample
+   g_call_drop of an analog call. The call loop asks for DSD_RTL_READ_NO_STREAM, which the stream then returns once per
+   wait slice (2 ms here); a plain read would wait for the stream that is not coming (here it gives up after 3 s,
+   failing as the session would end), and so does the 5000th slice. The stream's last RF measurement stays where the carrier left it, above the level
+   squelch. */
+static int g_no_stream_asks = 0;
+static int g_no_stream_returned = 0;
+static int g_plain_reads_after_drop = 0;
+static uint64_t g_no_stream_from_ms = 0U;
+
+static int
+edacs_no_stream_read_ex2(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream) {
+    if (want_no_stream) {
+        g_no_stream_asks++;
+    }
+    if ((long)g_rtl_read_count < g_call_drop) {
+        return edacs_call_read_ex(rtl_ctx, out, flags, count, out_got);
+    }
+    if (out_got != NULL) {
+        *out_got = 0;
+    }
+    if (g_no_stream_from_ms == 0U) {
+        g_no_stream_from_ms = dsd_realtime_mono_ms();
+    }
+    /* A call that never ends on it (10 s of it) fails, as the session would end, rather than hang the test. */
+    if (want_no_stream && g_no_stream_returned < 5000) {
+        dsd_sleep_ms(2);
+        g_no_stream_returned++;
+        return DSD_RTL_READ_NO_STREAM;
+    }
+    g_plain_reads_after_drop++;
+    dsd_sleep_ms(3000);
+    return -1;
+}
+
+static int
+edacs_no_stream_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    return edacs_no_stream_read_ex2(rtl_ctx, out, flags, count, out_got, 0);
+}
+
+static int
+edacs_no_stream_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return edacs_no_stream_read_ex2(rtl_ctx, out, NULL, count, out_got, 0);
+}
+
+/* The stream's last RF measurement, held as the carrier left it: above the level squelch's -60 dB. */
+static double
+edacs_no_stream_stale_pwr(const void* rtl_ctx) {
+    (void)rtl_ctx;
+    return 1.0;
+}
+
+/* edacs_analog_no_stream_ends_call_with_stale_rf_above_squelch: an analog call whose stream goes away at @p rate_hz
+   (48 kHz plain, else rate-converted) under squelch @p mode. NO_STREAM reaches the triplet collectors as closed squelch
+   with no RF power, paced by the time that passes, so the call's own hang timer ends it (the level squelch's five
+   closed readings, the gate's closed run) though the stale measurement stands above the squelch. The loop never asks
+   for shutdown for it, and returns to the engine, which then applies queued commands. */
+static int
+edacs_run_no_stream_case(unsigned int rate_hz, int mode, const char* name) {
+    static int call_dibit_buf[900256];
+    static int call_payload_buf[900256];
+    static int rtl_ctx_token;
+    edacs_reset_audio_hook_state();
+    edacs_setup_state_fixture(0);
+    edacs_call_defaults(edacs_triplet_reads(rate_hz) * 4L, rate_hz);
+    g_opts.trunk_tune_group_calls = 1;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.audio_out = 1;
+    g_opts.audio_out_type = 8;
+    g_opts.slot1_on = 1;
+    g_opts.rtl_squelch_mode = mode;
+    g_opts.rtl_squelch_margin_db = 10;
+    g_opts.rtl_squelch_level = mode == DSD_SQUELCH_MODE_LEVEL ? dB_to_pwr(-60.0) : 0.0;
+    g_state.rtl_ctx = (struct RtlSdrContext*)&rtl_ctx_token;
+    g_state.synctype = DSD_SYNC_EDACS_POS;
+    g_state.dibit_buf = call_dibit_buf;
+    g_state.dmr_payload_buf = call_payload_buf;
+    g_state.dibit_buf_p = call_dibit_buf + 200;
+    g_state.dmr_payload_p = call_payload_buf + 200;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = edacs_no_stream_read,
+        .return_pwr = edacs_no_stream_stale_pwr,
+        .read_ex = edacs_no_stream_read_ex,
+        .squelch_status = edacs_call_squelch_status,
+        .read_ex2 = edacs_no_stream_read_ex2,
+    });
+    dsd_rtl_stream_metrics_hooks rates;
+    DSD_MEMSET(&rates, 0, sizeof(rates));
+    rates.output_rate_hz = edacs_call_output_rate_hz;
+    dsd_rtl_stream_metrics_hooks_set(&rates);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = edacs_call_blast_analog});
+    g_call_noise = 1U;
+    g_call_blasted = 0;
+    g_no_stream_asks = 0;
+    g_no_stream_returned = 0;
+    g_plain_reads_after_drop = 0;
+    g_no_stream_from_ms = 0U;
+
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(0, 4, 321, 1234),
+                              edacs_standard_group_msg2(1234));
+    const uint64_t ended_ms = dsd_realtime_mono_ms();
+    const uint64_t outage_ms = g_no_stream_from_ms != 0U ? ended_ms - g_no_stream_from_ms : 0U;
+
+    int rc = 0;
+    rc |= edacs_expect(g_no_stream_asks > 0 && g_plain_reads_after_drop == 0, name, "asks",
+                       "the call loop reads the stream asking for DSD_RTL_READ_NO_STREAM");
+    rc |= edacs_expect(dsd_exitflag_load() == 0, name, "no-shutdown",
+                       "no stream is no end of the session: the loop asks for no shutdown");
+    rc |= edacs_expect(g_no_stream_returned > 0 && (long)g_rtl_read_count == g_call_drop, name, "ended",
+                       "the call ended while the stream was missing, on its own timers");
+    /* The silence is paced by the time that passes: the call ends no sooner than its hang timer runs in real time, five
+       closed triplets (300 ms) for the level squelch, the gate's hold for the dynamic squelch (both counted at the
+       chain's 48 kHz, whatever rate the stream is read at). */
+    const uint64_t hang_ms =
+        mode == DSD_SQUELCH_MODE_LEVEL
+            ? (uint64_t)(5 * EDACS_ANALOG_TRIPLET_SAMPLES * 1000 / EDACS_ANALOG_RATE_HZ)
+            : (uint64_t)(edacs_gate_hold_samples(EDACS_ANALOG_RATE_HZ) * 1000U / (size_t)EDACS_ANALOG_RATE_HZ);
+    rc |= edacs_expect(outage_ms + 5U >= hang_ms && outage_ms < 20000U, name, "paced",
+                       "the time without a stream, not the reads, pays for the silent samples");
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  %s: asks %d no-stream %d plain-after-drop %d reads %ld outage %llu ms (hang %llu ms)\n",
+                    name, g_no_stream_asks, g_no_stream_returned, g_plain_reads_after_drop, (long)g_rtl_read_count,
+                    (unsigned long long)outage_ms, (unsigned long long)hang_ms);
+    }
+    dsd_exitflag_store(0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    edacs_reset_audio_hook_state();
+    dsd_state_ext_free_all(&g_state);
+    return rc;
+}
+
+static int
+edacs_run_no_stream_cases(void) {
+    int rc = 0;
+    rc |= edacs_run_no_stream_case(48000U, DSD_SQUELCH_MODE_LEVEL, "no-stream-level");
+    rc |= edacs_run_no_stream_case(24000U, DSD_SQUELCH_MODE_LEVEL, "no-stream-level-converted");
+    rc |= edacs_run_no_stream_case(48000U, DSD_SQUELCH_MODE_AUTO, "no-stream-gate");
+    rc |= edacs_run_no_stream_case(24000U, DSD_SQUELCH_MODE_AUTO, "no-stream-gate-converted");
+    return rc;
+}
+#endif
+
 /* FNV-1a over @p n bytes. */
 static uint64_t
 edacs_fnv1a(uint64_t h, const void* data, size_t n) {
@@ -3085,6 +3230,7 @@ main(void) {
     rc |= edacs_run_rtl_rate_switch_case();
     rc |= edacs_run_tune_completion_race_case();
     rc |= edacs_run_analog_gap_case();
+    rc |= edacs_run_no_stream_cases();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

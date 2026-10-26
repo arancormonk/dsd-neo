@@ -3512,8 +3512,9 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     dsd_engine_slicer_threshold_cache_init(&threshold_cache);
 
     while (!dsd_exitflag_load()) {
-        /* A hunt read that left a silent input's wait for a queued command (issue #634) ended no reception: unless the
-           command replaced the input, the pass resumes without noCarrier(). */
+        /* A hunt read that left a silent input's wait for a queued command (issue #634), or a radio read that gave way
+           to one while the device has no stream (issue #518 D4, DSD_INTERRUPT_YIELD), ended no reception: the pump
+           below applies the command, and unless it replaced the input the pass resumes without noCarrier(). */
         const int interrupted = state->input_interrupted;
         const int interrupt_reason = state->input_interrupt_reason;
         state->input_interrupted = 0;

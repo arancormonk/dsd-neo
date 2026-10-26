@@ -252,8 +252,41 @@ edacs_fill_analog_block_udp(dsd_opts* opts, dsd_state* state, short* block) {
 }
 
 #ifdef USE_RADIO
+/* A read that found the RTL device with no stream (issue #518 D4: a USB stall recovery runs, rtl_tcp is not connected;
+   DSD_RTL_READ_NO_STREAM): the silent samples the time since the run of such reads began pays for at the rate the
+   stream is read at, less those already paid. The call loop is entered on a grant and holds the decoder until its call
+   ends, so it does not wait the outage out: it plays the time that passes as closed squelch, and its own timers end
+   the call (edacs_read_sample_rtl()). */
+static void
+edacs_no_stream_pay(const dsd_opts* opts, dsd_state* state) {
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    if (!state->edacs_no_stream_active) {
+        state->edacs_no_stream_active = 1U;
+        state->edacs_no_stream_since_ms = now_ms;
+        state->edacs_no_stream_paid = 0U;
+    }
+    const uint64_t rate_hz = (uint64_t)edacs_analog_input_rate_hz(opts);
+    const uint64_t due = ((now_ms - state->edacs_no_stream_since_ms) * rate_hz) / 1000U;
+    if (due > state->edacs_no_stream_paid) {
+        state->edacs_no_stream_owed += due - state->edacs_no_stream_paid;
+        state->edacs_no_stream_paid = due;
+    }
+}
+
+/* An analog call starts with nothing owed from an earlier one's outage. */
+static void
+edacs_no_stream_reset(dsd_state* state) {
+    state->edacs_no_stream_active = 0U;
+    state->edacs_no_stream_seen = 0U;
+    state->edacs_no_stream_owed = 0U;
+    state->edacs_no_stream_paid = 0U;
+}
+
 /* One sample of the RTL stream, with its squelch flag into @p flag (or NULL); 0 when it ended, which asks for
-   shutdown. */
+   shutdown. While the device has no stream (DSD_RTL_READ_NO_STREAM), the time that passes comes out as silent samples
+   with the squelch closed (edacs_no_stream_pay()), never as an end: the triplet that holds any has no RF power either
+   (edacs_rtl_triplet_pwr()), so the level squelch closes whatever the stream last measured, and the call ends on
+   its own hang timer whatever the squelch mode. */
 static inline int
 edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* flag) {
     float rtl_sample = 0.0f;
@@ -261,11 +294,30 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* fla
         dsd_request_shutdown(opts, state);
         return 0;
     }
-    int got = 0;
-    if (dsd_rtl_stream_io_hook_read_ex(state, &rtl_sample, flag, 1, &got) < 0 || got != 1) {
-        dsd_request_shutdown(opts, state);
-        return 0;
+    for (;;) {
+        if (state->edacs_no_stream_owed > 0U) {
+            state->edacs_no_stream_owed--;
+            state->edacs_no_stream_seen = 1U;
+            *out = 0;
+            if (flag) {
+                *flag = DSD_SQUELCH_FLAG_CLOSED;
+            }
+            return 1;
+        }
+        int got = 0;
+        const int read_rc = dsd_rtl_stream_io_hook_read_ex2(state, &rtl_sample, flag, 1, &got, 1);
+        if (read_rc == DSD_RTL_READ_NO_STREAM) {
+            edacs_no_stream_pay(opts, state);
+            continue;
+        }
+        if (read_rc < 0 || got != 1) {
+            dsd_request_shutdown(opts, state);
+            return 0;
+        }
+        break;
     }
+    /* The stream delivers: a later outage is paced from its own start. */
+    state->edacs_no_stream_active = 0U;
     /* A gap in the stream (issue #518 D5: a USB recovery, an rtl_tcp reconnect): the analog call loop reads the stream
        itself, so it takes the gap up here, and the symbol reader never raises it again. The loop sees the count move
        across the triplet and plays that triplet as silence (edacs_analog_call()). */
@@ -346,6 +398,15 @@ edacs_fill_analog_block_converted(dsd_opts* opts, dsd_state* state, dsd_rate_con
     return 1;
 }
 
+#ifdef USE_RADIO
+/* The RF power of an RTL triplet: none when it holds silence for a missing stream (edacs_read_sample_rtl()), not the
+   stream's last measurement, which stays where the carrier left it. */
+static double
+edacs_rtl_triplet_pwr(dsd_state* state) {
+    return state->edacs_no_stream_seen ? 0.0 : dsd_rtl_stream_io_hook_return_pwr(state);
+}
+#endif
+
 static int
 edacs_collect_converted_triplet(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv, short* analog1,
                                 short* analog2, short* analog3, uint8_t* flags, double* pwr) {
@@ -358,7 +419,7 @@ edacs_collect_converted_triplet(dsd_opts* opts, dsd_state* state, dsd_rate_conve
     }
 #ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        *pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+        *pwr = edacs_rtl_triplet_pwr(state);
         return 1;
     }
 #endif
@@ -421,7 +482,7 @@ edacs_collect_rtl_triplet(dsd_opts* opts, dsd_state* state, short* analog1, shor
                                      flags ? flags + ((size_t)2U * EDACS_ANALOG_BLOCK_SAMPLES) : NULL)) {
         return 0;
     }
-    *pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+    *pwr = edacs_rtl_triplet_pwr(state);
     return 1;
 }
 #endif
@@ -451,6 +512,9 @@ edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, dsd_rate_co
     if (flags && opts->audio_in_type != AUDIO_IN_RTL) {
         DSD_MEMSET(flags, 0, (size_t)EDACS_ANALOG_TRIPLET_SAMPLES);
     }
+#ifdef USE_RADIO
+    state->edacs_no_stream_seen = 0U;
+#endif
 
     if (conv != NULL && conv->mode == DSD_RATE_CONVERTER_CONVERTING) {
         return edacs_analog_input_readable(opts->audio_in_type)
@@ -1245,6 +1309,9 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
     call.start = now;
     call.first_of_call = 1;
     dsd_rate_converter_init(&call.conv);
+#ifdef USE_RADIO
+    edacs_no_stream_reset(state);
+#endif
     double pwr = call.sql + 1e-3; // small offset for initial loop phase
 
     DSD_FPRINTF(stderr, "\n");

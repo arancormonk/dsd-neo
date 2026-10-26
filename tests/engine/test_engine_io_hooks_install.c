@@ -97,6 +97,23 @@ rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count,
     return 5;
 }
 
+static int g_rtl_read_ex2_calls = 0;
+static int g_last_want_no_stream = -1;
+
+int
+rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream) {
+    ++g_rtl_read_ex2_calls;
+    g_last_rtl_ctx = ctx;
+    g_last_rtl_count = count;
+    g_last_want_no_stream = want_no_stream;
+    (void)out;
+    (void)flags;
+    if (out_got != NULL) {
+        *out_got = 0;
+    }
+    return DSD_RTL_READ_NO_STREAM;
+}
+
 int
 rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
     out->active = 1;
@@ -137,6 +154,8 @@ static void
 reset_rtl_stub(void) {
     g_rtl_read_calls = 0;
     g_rtl_read_ex_calls = 0;
+    g_rtl_read_ex2_calls = 0;
+    g_last_want_no_stream = -1;
     g_rtl_return_pwr_calls = 0;
     g_last_rtl_ctx = NULL;
     g_last_rtl_count = 0;
@@ -217,6 +236,12 @@ test_rtl_stream_io_installer(void) {
     assert(g_rtl_read_ex_calls == 1 && g_rtl_read_calls == 1);
     assert(g_last_rtl_count == 2U && got == 1 && sample == 4.5f && flag == 1U);
 
+    /* A reader that takes no-stream reads (issue #518 D4) goes to rtl_stream_read_ex2() with its ask, and gets
+       DSD_RTL_READ_NO_STREAM back as it is. */
+    assert(dsd_rtl_stream_io_hook_read_ex2(&state, &sample, &flag, 1U, &got, 1) == DSD_RTL_READ_NO_STREAM);
+    assert(g_rtl_read_ex2_calls == 1 && g_last_want_no_stream == 1 && g_last_rtl_count == 1U);
+    assert(g_rtl_read_ex_calls == 1 && g_rtl_read_calls == 1);
+
     /* The dynamic squelch's status reaches the runtime table, and dsd_state through the publication. */
     dsd_rtl_squelch_status status;
     assert(dsd_rtl_stream_io_hook_squelch_status(&state, &status) == 0);
@@ -245,6 +270,10 @@ test_rtl_stream_io_installer(void) {
     assert(dsd_rtl_stream_io_hook_read_ex(&state, &sample, NULL, 1U, &got) == 7);
     assert(dsd_rtl_stream_io_hook_read_ex(&state, NULL, &flag, 1U, &got) == -1);
     assert(dsd_rtl_stream_io_hook_read_ex(&state, &sample, &flag, 0U, &got) == -1);
+    /* ... and so does read_ex2, which then never says the stream is missing. */
+    flag = 7U;
+    assert(dsd_rtl_stream_io_hook_read_ex2(&state, &sample, &flag, 1U, &got, 1) == 7);
+    assert(g_rtl_read_calls == 4 && got == 1 && flag == 0U && g_rtl_read_ex2_calls == 1);
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
 }

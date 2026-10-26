@@ -2051,6 +2051,16 @@ struct dsd_state {
     uint8_t rtl_gap_held_flag;
     float rtl_gap_held_sample;
     uint32_t rtl_gap_held_generation;
+    /* The EDACS analog call loop's reads while the RTL device has no stream (issue #518 D4: DSD_RTL_READ_NO_STREAM),
+       which it plays as closed squelch at the stream's rate for the time that passes: whether such a run is on (the
+       stream delivered nothing since it began), when it began (realtime ms), the silent samples that time has paid for
+       so far and those still owed, and whether the triplet being collected took any (it then has no RF power).
+       Decoder-thread owned. */
+    uint8_t edacs_no_stream_active;
+    uint8_t edacs_no_stream_seen;
+    uint64_t edacs_no_stream_since_ms;
+    uint64_t edacs_no_stream_paid;
+    uint64_t edacs_no_stream_owed;
     int input_boundary;
     /* The carrier boundary's count (issue #575): dsd_engine_carrier_boundary() bumps it whenever the receiver leaves a
        carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,

@@ -2993,6 +2993,65 @@ test_m17_encoder_gap_drops_partial_block(void) {
 }
 #endif
 
+#ifdef USE_RADIO
+/* Issue #518 D4: the stream yields (DSD_RTL_READ_YIELD) at read g_yield_at, as a live read with no stream does when a
+   command is queued; a read that yields hands out no sample. */
+static uint64_t g_yield_at = UINT64_MAX;
+static int g_yield_reads = 0;
+
+static int
+fake_rtl_yield_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    if (out_got != NULL) {
+        *out_got = 0;
+    }
+    if (g_yield_reads++ == (int)g_yield_at) {
+        return DSD_RTL_READ_YIELD;
+    }
+    return fake_rtl_gap_read(rtl_ctx, out, count, out_got);
+}
+
+/* m17_encoder_survives_yield: the M17 encoder reads the stream itself, so a yield reaches it directly. It is no
+   failure: the encoder asks for no shutdown, gives the block up as on a gap (M17_STR_READ_AGAIN), so its loop pumps the
+   command before it reads again, and reads on from the next sample. */
+static int
+test_m17_encoder_survives_yield(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int token;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_volume_multiplier = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)&token;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_rtl_yield_read,
+        .return_pwr = fake_rtl_return_pwr,
+    });
+    g_gap_next = 0U;
+    g_gap_at = UINT64_MAX;
+    g_yield_reads = 0;
+    g_yield_at = 960U + 300U;
+    dsd_exitflag_store(0);
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 48000);
+    short out[160];
+    int rc = 0;
+    rc |= expect_int("yield: a block before it reads", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    rc |= expect_int("yield: the block it cuts is given up for the command",
+                     m17_encoder_read_block(&opts, &state, &in, out, 160U), 2);
+    rc |= expect_int("yield: no shutdown", dsd_exitflag_load(), 0);
+    rc |= expect_int("yield: no interruption is left for the symbol reader", state.input_interrupted, 0);
+    const uint64_t next = g_gap_next;
+    rc |= expect_int("yield: the next block reads", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    rc |= expect_int("yield: it reads on from the next sample", (int)(g_gap_next - next), 960);
+    rc |= expect_int("yield: still no shutdown", dsd_exitflag_load(), 0);
+    g_yield_at = UINT64_MAX;
+    dsd_exitflag_store(0);
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    return rc;
+}
+#endif
+
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
 /* The local output's writes ('W', 'Z' for all zeros) and drains ('D') in order, while g_audio_wrap_on. */
 static char g_audio_events[2048];
@@ -4174,6 +4233,7 @@ main(void) {
 #ifdef USE_RADIO
     err |= test_encoder_rtl_input_reaches_pcm_scale();
     err |= test_m17_encoder_gap_drops_partial_block();
+    err |= test_m17_encoder_survives_yield();
 #endif
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();

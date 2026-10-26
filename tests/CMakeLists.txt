@@ -10618,6 +10618,28 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_dsp_symbol_stream_gap
     )
 
+    # Issue #518 (D4): a live RTL read that gave way to a queued command (no stream)
+    # reaches the symbol readers as a sticky yield, never as a failure.
+    add_executable(
+        dsd-neo_test_dsp_symbol_rtl_yield
+        dsp/test_symbol_rtl_yield.c
+        test_support/frame_sync_dsp_stubs.c
+    )
+    target_include_directories(
+        dsd-neo_test_dsp_symbol_rtl_yield
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_dsp_symbol_rtl_yield
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME DSP_SYMBOL_RTL_YIELD
+        COMMAND dsd-neo_test_dsp_symbol_rtl_yield
+    )
+
     add_executable(
         dsd-neo_test_frame_sync_p25p2_rtl
         dsp/test_frame_sync_p25p2_rtl.c

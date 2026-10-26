@@ -230,7 +230,8 @@ int rtl_stream_get_requested_ppm(const dsd_opts* opts);
  * @param out Destination buffer for samples. Must not be NULL.
  * @param count Maximum number of samples to read.
  * @param out_got [out] Set to the number of samples actually read; 0 when a live NFM monitor yields on an idle input.
- * @return 0 on success; otherwise <0 on error (e.g., shutdown).
+ * @return 0 on success; DSD_RTL_READ_YIELD (<dsd-neo/runtime/rtl_stream_io_hooks.h>) when a live read found nothing
+ *         while the device has no stream and a command is queued; otherwise <0 on error (e.g., shutdown).
  */
 int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
 /**
@@ -239,6 +240,11 @@ int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
  * otherwise, and for every sample of any other setting), or NULL.
  */
 int rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got);
+/**
+ * @brief rtl_stream_read_ex() for a reader that takes DSD_RTL_READ_NO_STREAM (@p want_no_stream nonzero): a live read
+ * that found nothing for one wait slice while the device has no stream returns it, and never DSD_RTL_READ_YIELD.
+ */
+int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
 /**
  * @brief Get the current output sample rate in Hz.
  * @param ctx Stream context.

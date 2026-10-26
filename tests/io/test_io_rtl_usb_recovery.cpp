@@ -14,6 +14,10 @@
  * swap and replay, retune tail, output moved on and gap noted, reader restarted, gate opened), the tail runs on a
  * failure and a stop too, a failure ends the session with the step that failed, a stop is silent, samples after the
  * recovery reach the decoder and the I/Q capture, which records the gap once, and the decoder is told.
+ *
+ * Commands during the outage (issue #518 D4, B3): while the recovery runs the stream has none, and the decoder's read
+ * gives way to a queued command (DSD_RTL_READ_YIELD), then reads the samples after it; a stream that is only slow never
+ * does, and decodes exactly as the same samples fed without a queued command.
  */
 
 #include <assert.h>
@@ -26,11 +30,13 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <errno.h>
 #include <memory>
@@ -807,6 +813,16 @@ stream_deliver(const stream_rig& r, int callbacks, unsigned int period_ms) {
     }
 }
 
+/* Wait until the stream posted @p n notices: the controller finishes a recovery (its log line, then the notice) once
+ * its boundary returned, after the boundary's last step. */
+void
+wait_notices(int n) {
+    for (uint64_t waited = 0; waited < kWaitMs && g_notices.load() < n; ++waited) {
+        dsd_sleep_ms(1);
+    }
+    assert(g_notices.load() >= n);
+}
+
 /* Wait until the boundary probe saw @p step. */
 void
 wait_step(int step) {
@@ -903,6 +919,7 @@ test_silence_posts_recovery_and_reader_return_is_silent(void) {
     wait_step(RTL_STREAM_TEST_BOUNDARY_END);
     /* No second stall from here: the test feeds the stream at its own pace. */
     rtl_device_test_set_progress_limit_ms(60000U);
+    wait_notices(1);
     expect_running();
     assert(g_usb.devs[0].resets.load() == 1);
     assert(g_notices.load() == 1);
@@ -1018,6 +1035,217 @@ test_stop_during_recovery_is_silent(void) {
     g_usb.on_reset = nullptr;
 }
 
+/* ---- Commands during the outage (D4) ---- */
+
+/* A queued command, as the decoder's read asks after it (dsd_runtime_controls_pending()). */
+std::atomic<int> g_command_queued{0};
+
+int
+command_queued(void) {
+    return g_command_queued.load();
+}
+
+/* A thread reading the stream as the decoder does, keeping every sample: a yield is the decoder's cue to apply the
+ * queued command (here: it is gone) and read on. */
+struct recording_reader {
+    RtlSdrContext* ctx = nullptr;
+    dsd_mutex_t lock;
+    std::vector<float> samples;
+    std::atomic<uint64_t> count{0U};
+    std::atomic<int> yields{0};
+    std::atomic<int> yields_outside_recovery{0};
+    std::atomic<int> in_recovery{0};
+    std::atomic<int> quit{0};
+    std::atomic<int> done{0};
+    dsd_thread_t thread{};
+};
+
+DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+__stdcall
+#endif
+record_output(void* arg) {
+    auto* reader = static_cast<recording_reader*>(arg);
+    std::vector<float> block(4096U);
+    while (reader->quit.load() == 0) {
+        int got = 0;
+        const int rc = rtl_stream_read(reader->ctx, block.data(), block.size(), &got);
+        if (rc == DSD_RTL_READ_YIELD) {
+            reader->yields.fetch_add(1);
+            if (reader->in_recovery.load() == 0) {
+                reader->yields_outside_recovery.fetch_add(1);
+            }
+            g_command_queued.store(0);
+            continue;
+        }
+        if (rc != 0 || got < 0) {
+            break;
+        }
+        dsd_mutex_lock(&reader->lock);
+        reader->samples.insert(reader->samples.end(), block.begin(), block.begin() + got);
+        dsd_mutex_unlock(&reader->lock);
+        reader->count.fetch_add((uint64_t)got);
+    }
+    reader->done.store(1);
+    DSD_THREAD_RETURN;
+}
+
+void
+recording_start(recording_reader& reader, RtlSdrContext* ctx) {
+    reader.ctx = ctx;
+    assert(dsd_mutex_init(&reader.lock) == 0);
+    const int created = dsd_thread_create(&reader.thread, record_output, &reader);
+    assert(created == 0);
+}
+
+/* Let the reader quit: samples wake a read waiting for them. */
+void
+recording_stop(recording_reader& reader, const stream_rig& r) {
+    reader.quit.store(1);
+    for (uint64_t waited = 0; waited < kWaitMs && reader.done.load() == 0; waited += 5U) {
+        stream_deliver(r, 1, 0U);
+        dsd_sleep_ms(5U);
+    }
+    assert(reader.done.load() == 1);
+    dsd_thread_join(reader.thread);
+    dsd_mutex_destroy(&reader.lock);
+}
+
+/* Varied I/Q, the same for every run, so a decode that differed would show. */
+std::vector<unsigned char>
+noise_callback(uint32_t index) {
+    std::vector<unsigned char> buf(sizeof g_buffer);
+    uint32_t x = 0x9E3779B9U ^ (index * 2654435761U);
+    for (unsigned char& b : buf) {
+        x = (x * 1664525U) + 1013904223U;
+        b = (unsigned char)(x >> 24);
+    }
+    return buf;
+}
+
+/* Feed @p callbacks of varied I/Q, each once the reader has what the one before produced (or 2 s passed: a muted one
+ * produces nothing), so the demodulator takes each as one block whatever the pacing. @p gap_ms more pass before
+ * every fourth one, with a command queued over the gap when @p queue_command is set. */
+void
+feed_paced(const stream_rig& r, const recording_reader& reader, int callbacks, unsigned int gap_ms, int queue_command) {
+    for (int i = 0; i < callbacks; ++i) {
+        if (gap_ms > 0U && (i % 4) == 3) {
+            if (queue_command != 0) {
+                g_command_queued.store(1);
+            }
+            dsd_sleep_ms(gap_ms);
+        }
+        std::vector<unsigned char> buf = noise_callback((uint32_t)i);
+        const uint64_t before = reader.count.load();
+        rtl_device_test_usb_stream_deliver(r.dev, buf.data(), (uint32_t)buf.size());
+        for (int waited = 0; waited < 2000 && reader.count.load() == before; ++waited) {
+            dsd_sleep_ms(1U);
+        }
+        dsd_sleep_ms(2U);
+    }
+}
+
+std::vector<float>
+decode_paced(unsigned int gap_ms, int queue_command, int* out_yields) {
+    stream_rig r;
+    stream_open(r, 0, 0);
+    recording_reader reader;
+    recording_start(reader, r.ctx);
+    feed_paced(r, reader, 24, gap_ms, queue_command);
+    g_command_queued.store(0);
+    *out_yields = reader.yields.load();
+    dsd_mutex_lock(&reader.lock);
+    std::vector<float> out = reader.samples;
+    dsd_mutex_unlock(&reader.lock);
+    recording_stop(reader, r);
+    stream_close(r);
+    expect_running();
+    return out;
+}
+
+/* delayed_stream_never_yields: the stream pauses 120 ms before every fourth callback (well inside the silence limit,
+ * so no recovery starts) with a command queued over each pause. The read waits for the samples, yielding never, and the
+ * decoder gets exactly what the same samples fed without a queued command give. */
+void
+test_delayed_stream_never_yields(void) {
+    usb_world_reset(0);
+    rtl_device_test_set_progress_limit_ms(60000U);
+    dsd_runtime_set_controls_pending(command_queued);
+    int reference_yields = 0;
+    const std::vector<float> reference = decode_paced(0U, 0, &reference_yields);
+    int gapped_yields = 0;
+    const std::vector<float> gapped = decode_paced(120U, 1, &gapped_yields);
+    assert(reference_yields == 0);
+    assert(gapped_yields == 0);
+    assert(!reference.empty());
+    assert(gapped.size() == reference.size());
+    assert(memcmp(gapped.data(), reference.data(), reference.size() * sizeof(float)) == 0);
+    dsd_runtime_set_controls_pending(nullptr);
+    rtl_device_test_set_progress_limit_ms(kLimitMs);
+}
+
+recording_reader* g_yield_reader = nullptr;
+
+/* At the boundary's first step the recovery owns the receiver: queue a command, and hold the controller until the
+ * decoder's read has given way to it. */
+void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the boundary probe's.
+probe_yield(int step, void* ctx) {
+    probe_boundary(step, ctx);
+    recording_reader* reader = g_yield_reader;
+    if (step == RTL_STREAM_TEST_BOUNDARY_GATE && reader != nullptr) {
+        reader->in_recovery.store(1);
+        g_command_queued.store(1);
+        /* Half the wait, so a read that never yields fails the yield check below, not the step's wait. */
+        for (uint64_t waited = 0; waited < kWaitMs / 2U && reader->yields.load() == 0; ++waited) {
+            dsd_sleep_ms(1);
+        }
+    }
+    if (step == RTL_STREAM_TEST_BOUNDARY_END && reader != nullptr) {
+        reader->in_recovery.store(0);
+    }
+}
+
+/* yield_reaches_decoder_during_recovery: a stall, recovered. Before it the stream is only slow and a queued command
+ * waits; while the recovery runs the decoder's read gives way to one at once (B3: commands apply during the outage),
+ * no failure is reported, and samples after the recovery reach the decoder. */
+void
+test_yield_reaches_decoder_during_recovery(void) {
+    usb_world_reset(0);
+    (void)log_take();
+    g_notices.store(0);
+    (void)boundary_take();
+    dsd_runtime_set_controls_pending(command_queued);
+    stream_rig r;
+    stream_open(r, 0, 0);
+    recording_reader reader;
+    g_yield_reader = &reader;
+    rtl_stream_test_set_stream_boundary_probe(probe_yield, nullptr);
+    recording_start(reader, r.ctx);
+    stream_deliver(r, 20, 5U);
+    wait_step(RTL_STREAM_TEST_BOUNDARY_END);
+    rtl_device_test_set_progress_limit_ms(60000U);
+    expect_running();
+    assert(reader.yields.load() >= 1);
+    assert(reader.yields_outside_recovery.load() == 0);
+    assert(g_command_queued.load() == 0);
+    wait_notices(1);
+    assert(g_notices.load() == 1);
+    const uint64_t before = reader.count.load();
+    for (int i = 0; i < 60 && reader.count.load() == before; ++i) {
+        stream_deliver(r, 4, 5U);
+    }
+    assert(reader.count.load() > before);
+    recording_stop(reader, r);
+    rtl_stream_test_set_stream_boundary_probe(probe_boundary, nullptr);
+    g_yield_reader = nullptr;
+    stream_close(r);
+    expect_running();
+    (void)boundary_take();
+    dsd_runtime_set_controls_pending(nullptr);
+    rtl_device_test_set_progress_limit_ms(kLimitMs);
+}
+
 } // namespace
 
 int
@@ -1047,6 +1275,8 @@ main(void) {
         test_silence_posts_recovery_and_reader_return_is_silent();
         test_recovery_failure_runs_the_tail_and_ends();
         test_stop_during_recovery_is_silent();
+        test_yield_reaches_decoder_during_recovery();
+        test_delayed_stream_never_yields();
         rtl_stream_test_set_stream_boundary_probe(nullptr, nullptr);
     }
 

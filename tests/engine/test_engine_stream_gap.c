@@ -13,6 +13,10 @@
  *    as on a sync loss, the evidence goes, and the next read resumes at the first sample past the gap;
  *  - a gap a frame-sync hunt read meets between frames resets the same way;
  *  - a pending scan tune, which makes noCarrier() return early, does not skip the reset.
+ * A live read that gives way to a queued command while the device has no stream (issue #518 D4: DSD_RTL_READ_YIELD)
+ * reaches the engine loop the same way, as the yield interruption: the loop applies the command at its next pump with
+ * no carrier boundary and no shutdown, and the next read resumes at the next sample
+ * (yield_reaches_engine_and_command_applies).
  * The boundary itself, called directly: it forgets the evidence and the multi-frame assemblies, the seeded P25 Phase 2
  * ESS state and the DMR confirmation (candidate, lock, voice gate), and moves the carrier count, but keeps the
  * carrier's codes, its received identity and the voice channel a trunking session follows. A stream start takes up the
@@ -34,6 +38,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -41,7 +46,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -90,11 +94,41 @@ add_gap_before_next_sample(void) {
     }
 }
 
+/* The device has no stream (a USB stall recovery runs) while g_no_stream is set: a read then yields to a queued command
+   (g_command_queued), as the live read does, and the queued command's apply (fake_pump()) brings the stream back. */
+static int g_no_stream = 0;
+static int g_command_queued = 0;
+static int g_yields = 0;
+static int g_applied = 0;
+static int g_applied_after_consume = 0;
+
+static int
+fake_commands_pending(void) {
+    return g_command_queued;
+}
+
+static void
+fake_pump(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    if (!g_command_queued) {
+        return;
+    }
+    g_command_queued = 0;
+    g_applied++;
+    g_applied_after_consume += state->input_interrupted == 0 && state->input_interrupt_reason == DSD_INTERRUPT_NONE;
+    g_no_stream = 0;
+}
+
 static int
 fake_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
     (void)rtl_ctx;
     if (!out || !out_got || count == 0U) {
         return -1;
+    }
+    if (g_no_stream && g_command_queued) {
+        g_yields++;
+        *out_got = 0;
+        return DSD_RTL_READ_YIELD;
     }
     g_reads++;
     size_t n = count < kReadSize ? count : kReadSize;
@@ -329,6 +363,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 }
 
 static uint32_t g_seq_before = 0U;
+static int g_reads_before_yield = 0;
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -397,6 +432,30 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
             expect("pending scan tune: the boundary ran", g_resets == 3 && state->carrier_seq >= g_seq_before + 1U);
             expect("pending scan tune: the call ended", !call_active(state));
             expect("pending scan tune: the evidence went", state->dstar_confirmed == 0);
+            /* yield_reaches_engine_and_command_applies: the samples the cache holds (25..32), then the stream goes
+               away with a command queued, and the hunt read yields to it. */
+            expect("yield: the samples before the outage read", reads_sample(read_symbols(opts, state, 8, 0), 32));
+            dsd_runtime_set_controls_pending(fake_commands_pending);
+            dsd_runtime_set_control_pump(fake_pump);
+            g_no_stream = 1;
+            g_command_queued = 1;
+            g_seq_before = state->carrier_seq;
+            g_reads_before_yield = g_reads;
+            expect("yield: the hunt read yields to the queued command",
+                   reads_sample(read_symbols(opts, state, 1, 0), 0) && state->input_interrupted == 1
+                       && state->input_interrupt_reason == DSD_INTERRUPT_YIELD && g_yields == 1);
+            return DSD_SYNC_NONE;
+        case 6:
+            expect("yield: the engine loop applied the command", g_applied == 1 && g_command_queued == 0);
+            expect("yield: it consumed the yield before it applied the command", g_applied_after_consume == 1);
+            expect("yield: the interruption is consumed",
+                   state->input_interrupted == 0 && state->input_interrupt_reason == DSD_INTERRUPT_NONE);
+            expect("yield: a yield is no carrier boundary", state->carrier_seq == g_seq_before && g_resets == 3);
+            expect("yield: a yield asks for no shutdown", dsd_exitflag_load() == 0);
+            expect("yield: the read yielded once", g_yields == 1 && g_reads == g_reads_before_yield);
+            expect("yield: reading resumes at the next sample", reads_sample(read_symbols(opts, state, 1, 0), 33));
+            dsd_runtime_set_control_pump(NULL);
+            dsd_runtime_set_controls_pending(NULL);
             dsd_exitflag_store(1);
             return DSD_SYNC_NONE;
         default: dsd_exitflag_store(1); return DSD_SYNC_NONE;
@@ -521,7 +580,10 @@ test_stream_gap_mid_call_keeps_follow(dsd_opts* opts, dsd_state* state) {
     expect("follow: the followed assignment stays", opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == 851012500L
                                                         && state->trunk_vc_freq[1] == 851012500L
                                                         && state->p25_vc_freq[0] == 851012500L);
-    expect("follow: the received identity stays", memcmp(&identity, &state->rx_id, sizeof identity) == 0);
+    /* Field by field: the record carries padding. The epoch moves on any reset or replacement. */
+    expect("follow: the received identity stays",
+           identity.epoch == state->rx_id.epoch && identity.valid == state->rx_id.valid
+               && identity.p25_wacn == state->rx_id.p25_wacn && identity.p25_sysid == state->rx_id.p25_sysid);
     expect("follow: the boundary took the tick guard", g_resets == resets + 1 && g_resets_unguarded == 0);
     const int guard_free = p25_sm_tick_guard_try_enter();
     if (guard_free) {
@@ -567,7 +629,7 @@ main(void) {
 
     const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     expect("the engine ran", rc == 0);
-    expect("the script ran to its end", g_step == 5);
+    expect("the script ran to its end", g_step == 6);
     dsd_exitflag_store(0);
 
     test_gap_resets_evidence_and_assemblies(opts, state);

@@ -9370,6 +9370,24 @@ rtl_device_resume_stream(struct rtl_device* dev) {
     return 0;
 }
 
+int
+rtl_device_has_stream(const struct rtl_device* dev) {
+    if (!dev) {
+        return 0;
+    }
+    if (dev->backend == RTL_BACKEND_USB) {
+        /* From the progress monitor's request to the controller's finish: the reader is stopped, or is about to be, and
+           only the recovery's end (or the session's) brings samples. */
+        return (dev->recovery_request.load(std::memory_order_acquire) == RTL_USB_RECOVERY_IDLE
+                && !dev->recovering.load(std::memory_order_acquire))
+                   ? 1
+                   : 0;
+    }
+    /* rtl_tcp reports a stream until its reconnect tracks whether it is connected; a disconnected server then reads
+       here as no stream. Every other backend has one while it runs. */
+    return 1;
+}
+
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 /* A reader restarted on the streaming seam streams again until the next cancel. */
 static void
@@ -9591,6 +9609,13 @@ rtl_device_test_usb_gain_device_free(struct rtl_device* dev) {
     if (dev) {
         dev->dev = nullptr;
         rtl_device_destroy(dev);
+    }
+}
+
+extern "C" void
+rtl_device_test_set_recovering(struct rtl_device* dev, int on) {
+    if (dev) {
+        dev->recovering.store(on ? 1 : 0, std::memory_order_release);
     }
 }
 

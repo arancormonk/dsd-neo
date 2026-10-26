@@ -773,6 +773,27 @@ int rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_r
 int rtl_stream_test_search_live_read_bound(uint64_t search_owner, const dsd_opts* live_opts, int feed_after_ms,
                                            int* out_got, uint64_t* out_waited_ms);
 
+/* rtl_stream_test_search_live_read_bound()'s read (issue #518 D4) with @p dev as the open device, whose stream (or lack
+ * of one, rtl_device_has_stream()) it reads by, for a reader that does (@p want_no_stream) or does not take
+ * DSD_RTL_READ_NO_STREAM. After @p event_after_ms the producer calls @p event (when set), then delivers one sample when
+ * @p feed is set. */
+typedef struct {
+    struct rtl_device* dev;
+    uint64_t search_owner;
+    const dsd_opts* live_opts;
+    int want_no_stream;
+    int event_after_ms;
+    void (*event)(void* ctx);
+    void* event_ctx;
+    int feed;
+} rtl_stream_test_live_read_request;
+
+/* Reports what the read returned (a sample count, -1, 0 for an idle monitor, DSD_RTL_READ_YIELD or
+ * DSD_RTL_READ_NO_STREAM) and how long it waited; returns 0 when the read ran. */
+int rtl_stream_test_live_read(const rtl_stream_test_live_read_request* req, int* out_got, uint64_t* out_waited_ms);
+/* Set or clear a USB device's recovering state (the swap's), which rtl_device_has_stream() reads as no stream. */
+void rtl_device_test_set_recovering(struct rtl_device* dev, int on);
+
 typedef struct rtl_stream_test_digital_row_result {
     int open_rc;
     /* After the row's symbol profile landed on the -fA session. */

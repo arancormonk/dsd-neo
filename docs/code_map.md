@@ -3552,6 +3552,22 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   themselves and take the gap up there (the triplet it cut plays as silence and the chain starts over; the block it cut
   is dropped with the input filter's memory), so the symbol reader never raises it again. Tests:
   `DSP_SYMBOL_STREAM_GAP`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`.
+- Reads while the radio has no stream (issue #518 D4). A live read that found nothing while the device has no stream
+  and a command is queued returns `DSD_RTL_READ_YIELD` (`<dsd-neo/runtime/rtl_stream_io_hooks.h>`; see IO, "Reads
+  while the device has no stream"), its own status beside -1 (a failure) and an empty read: the cache refill answers
+  `RTL_SYMBOL_CACHE_YIELD` (both cached readers) and the one-sample reader sees it directly, and either raises
+  `DSD_INTERRUPT_YIELD` (`symbol_rtl_read_yielded()`), sticky like a stream gap, so the frame being decoded finishes on
+  erasures; nothing asks for shutdown and nothing of the stream is lost. The engine loop consumes it at its next pass
+  and its control pump applies the command, with no carrier boundary and no `noCarrier()` (the gap the stream's return
+  brings resets the decoding). A search's failed read and an idle NFM monitor's empty read keep their contracts. The
+  M17 encoder takes a yield as `M17_STR_READ_AGAIN` (the block read so far dropped; its loop pumps the command). The
+  EDACS analog call loop, which holds the decoder until its call ends, asks for `DSD_RTL_READ_NO_STREAM` instead
+  (`dsd_rtl_stream_io_hook_read_ex2()`, `want_no_stream`) and never yields: each one pays the realtime since the outage
+  began in silent samples at the stream's rate with the squelch flag closed (`edacs_no_stream_pay()`,
+  `dsd_state::edacs_no_stream_*`), and a triplet that holds any has no RF power (`edacs_rtl_triplet_pwr()`), not the
+  stream's last measurement, so the level squelch's count and the gate's closed run end the call on its own timers,
+  plain or rate-converted; it asks for no shutdown. Tests: `DSP_SYMBOL_RTL_YIELD`, `ENGINE_STREAM_GAP` (the engine
+  applies the command), `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
@@ -5025,6 +5041,20 @@ Notes:
     the new. The decoder side is in DSP (`dsd_symbol.c`, stream gaps) and Engine (`DSD_CARRIER_BOUNDARY_STREAM_GAP`).
     Tests: `IO_RTL_REPLAY_DETERMINISM` (recovery and reconnect events mark exactly the batches after them, a frequency
     RESET marks none, every batch read whole in order; a gap noted while a capture is written replays as the same gap).
+  - Reads while the device has no stream (issue #518 D4, B3). `rtl_device_has_stream()` says whether the device has a
+    stream at all, as against one that is only slow: a USB receiver has none from its progress monitor's recovery
+    request until the recovery finished (`recovery_request` not IDLE, or `recovering`); rtl_tcp and the other backends
+    report one (rtl_tcp until its reconnect tracks its connection). `rtl_stream_read_live_samples()` asks it only after
+    an empty poll (`rtl_live_read_no_stream()`), so a read that finds samples asks nothing. With no stream, a reader
+    that asks for it (`want_no_stream`, through `dsd_rtl_stream_read_ex()`, `RtlSdrOrchestrator::read()`,
+    `rtl_stream_read_ex2()` and the runtime hook's `read_ex2`) gets `DSD_RTL_READ_NO_STREAM` once a 10 ms wait slice
+    passed; any other read returns `DSD_RTL_READ_YIELD` while `dsd_runtime_controls_pending()`, else waits on. A slow
+    stream's read never yields, whatever is queued (the 5 s silence verdict bounds that wait). The search's 100 ms
+    failure and the idle NFM monitor's zero read come first and are unchanged; a replay never asks. The orchestrator
+    carries both results as they are (its own no-options error is -1, not -2). Tests: `IO_RTL_RETUNE_PREPARE` (the live
+    read over a device with and without a stream), `IO_RTL_USB_RECOVERY` (a read yields while a real recovery runs and
+    the samples after it arrive; a slow stream with a command queued never yields and decodes exactly as without one),
+    `IO_RTL_STREAM_ORCHESTRATOR`, `ENGINE_IO_HOOKS_INSTALL`.
   - I/Q replay events on an idle pipeline (issue #572; "Replay events on an idle pipeline" in `rtl_sdr_fm.cpp`,
     `replay_dispatch_pending_events()` in `rtl_device.cpp`). The reader applies every event (RETUNE, MUTE, RESET) and a
     loop rewind only once the pipeline is idle, so it lands between the same two chunks and the same two decoder reads
@@ -5692,23 +5722,23 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   An input interruption drops the same units: each guard is `dsd_state_frame_read_lost()`, true when the count moved or
   `dsd_state::input_interrupted` is set. A Signal search sets the flag inside a frame when it leaves it (a deadline,
   Skip, Pause or any queued command) or a live read gives up on a stalled input, and so does a gap in the radio stream
-  (`DSD_INTERRUPT_STREAM_GAP`, see DSP, "Stream gaps"), and `getSymbol()` then stands erasures
-  in for every symbol until the engine loop consumes it, so the flag stays set wherever a guard sits, also for a frame a
-  decoder starts after the cut. The stood-in zeros slice to one constant dibit, which the BCH, Golay, Hamming, QR and
-  Reed-Solomon codes can take for their all-zero codeword, so units the count leaves unguarded check the flag too,
-  keeping the boundary's behaviour as it was: the P25 Phase 1 NID (the dispatcher decodes nothing and withholds the
+  (`DSD_INTERRUPT_STREAM_GAP`, see DSP, "Stream gaps") or a live read that gives way to a queued command while the radio
+  has no stream (`DSD_INTERRUPT_YIELD`, see DSP, "Reads while the radio has no stream"), and `getSymbol()` then stands
+  erasures in for every symbol until the engine loop consumes it, so the flag stays set wherever a guard sits, also for
+  a frame a decoder starts after the cut. The stood-in zeros slice to one constant dibit, which the BCH, Golay, Hamming,
+  QR and Reed-Solomon codes can take for their all-zero codeword, so units the count leaves unguarded check the flag
+  too, keeping the boundary's behaviour as it was: the P25 Phase 1 NID (the dispatcher decodes nothing and withholds the
   verdict), each TSBK block, each IMBE frame (`process_IMBE()` hands nothing to the vocoder, and the LDUs raise no voice
-  activity on it), the ProVoice IMBE pairs, the DMR RC burst, and the DMR data burst's slot type and the MS EMB
-  (decoded as soon as read). Descrambled, stood-in M17 symbols can still clear every Golay block of a LICH and
-  Viterbi-decode to a stream frame number with its end flag set, which would end the call as a terminator does; the
-  M17 frame guards above drop such a frame. A P25
-  Phase 2 window an interruption cuts is dropped without `p25p2_frame_forget_carrier()`: the receiver is still on the
-  carrier, so the slots keep what they gathered and the playout keeps its frames. Behind the guards, `processFrame()`
-  withholds a cut frame's SPS-hunt verdict (`DSD_FRAME_VERDICT_WITHHELD`: the cut was the engine's), the MBE capture
-  refuses its frames, `dsd_audio_play_decoded_pcm16()` (M17's Codec2 voice) plays nothing, the search ignores evidence
-  noted while the flag stands, and `dsd_two_level_symbol_reliability()` gives the stood-in symbols no confidence.
-  Nothing sets the flag inside a frame outside a search or a stream gap, so none of this changes decoding there or
-  symbol-file replay.
+  activity on it), the ProVoice IMBE pairs, the DMR RC burst, and the DMR data burst's slot type and the MS EMB (decoded
+  as soon as read). Descrambled, stood-in M17 symbols can still clear every Golay block of a LICH and Viterbi-decode to
+  a stream frame number with its end flag set, which would end the call as a terminator does; the M17 frame guards above
+  drop such a frame. A P25 Phase 2 window an interruption cuts is dropped without `p25p2_frame_forget_carrier()`: the
+  receiver is still on the carrier, so the slots keep what they gathered and the playout keeps its frames. Behind the
+  guards, `processFrame()` withholds a cut frame's SPS-hunt verdict (`DSD_FRAME_VERDICT_WITHHELD`: the cut was the
+  engine's), the MBE capture refuses its frames, `dsd_audio_play_decoded_pcm16()` (M17's Codec2 voice) plays nothing,
+  the search ignores evidence noted while the flag stands, and `dsd_two_level_symbol_reliability()` gives the stood-in
+  symbols no confidence. Nothing sets the flag inside a frame outside a search, a stream gap or a yield, so none of this
+  changes decoding there or symbol-file replay.
 
   It runs at the lowest-level primitives where the carrier changes, so a new command that reaches one is covered:
   - An accepted tune the user asked for: `svc_rtl_set_freq()`/`svc_rtl_set_freq_locked()` (`svc_rtl_tune()`) run it

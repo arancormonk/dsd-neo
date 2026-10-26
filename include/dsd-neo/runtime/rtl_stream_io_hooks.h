@@ -36,6 +36,17 @@ typedef struct {
     double window_power; /**< the last 40 ms window's mean |z|^2 */
 } dsd_rtl_squelch_status;
 
+/* What a live RTL read returns besides samples and -1 (a failure: the stream ended, or a Signal search visit's bound),
+   while the device has no stream at all (issue #518 D4: a USB stall recovery runs; rtl_tcp is not connected). A
+   stream that is only delayed is still a stream: its reads wait for samples. */
+/* The read was empty and gave way to a queued command: the consumer stands erasures in and lets the engine loop apply
+   it (the DSD_INTERRUPT_YIELD interruption), then reads on. */
+#define DSD_RTL_READ_YIELD     (-2)
+/* The read was empty for one wait slice. Only a reader that asks for it gets it
+   (dsd_rtl_stream_io_hook_read_ex2()): the EDACS analog call loop, which plays the time that passed as closed squelch
+   and ends its call by its own timers. */
+#define DSD_RTL_READ_NO_STREAM (-3)
+
 typedef struct {
     int (*read)(void* rtl_ctx, float* out, size_t count, int* out_got);
     double (*return_pwr)(const void* rtl_ctx);
@@ -44,6 +55,9 @@ typedef struct {
     int (*read_ex)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got);
     /* The dynamic squelch's status. Optional. */
     int (*squelch_status)(const void* rtl_ctx, dsd_rtl_squelch_status* out);
+    /* read_ex that returns DSD_RTL_READ_NO_STREAM to a reader that asks for it (@p want_no_stream). Optional: without
+       it, dsd_rtl_stream_io_hook_read_ex2() reads through read_ex. */
+    int (*read_ex2)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
 } dsd_rtl_stream_io_hooks;
 
 void dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks hooks);
@@ -57,6 +71,14 @@ int dsd_rtl_stream_io_hook_read(dsd_state* state, float* out, size_t count, int*
  * @p out_got set to 0 on an idle input, letting its decoder thread service call deadlines.
  */
 int dsd_rtl_stream_io_hook_read_ex(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got);
+
+/**
+ * @brief dsd_rtl_stream_io_hook_read_ex() for a reader that takes DSD_RTL_READ_NO_STREAM (@p want_no_stream): while the
+ * device has no stream, each read that found nothing for one wait slice returns it instead of waiting on, and never
+ * DSD_RTL_READ_YIELD. With @p want_no_stream 0 it reads as dsd_rtl_stream_io_hook_read_ex().
+ */
+int dsd_rtl_stream_io_hook_read_ex2(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got,
+                                    int want_no_stream);
 
 /** @brief The auto squelch's status through the hook: 0, or -1 (zeroed) with no stream or no hook. */
 int dsd_rtl_stream_io_hook_squelch_status(const dsd_state* state, dsd_rtl_squelch_status* out);

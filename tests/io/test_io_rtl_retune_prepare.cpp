@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -16,9 +17,11 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
@@ -1588,6 +1591,137 @@ test_search_live_read_bound(void) {
     return failed;
 }
 
+/* Issue #518 D4: the queued commands the live read asks after (dsd_runtime_controls_pending()), and the producer-side
+ * events that change them or the device's stream while a read waits. */
+static std::atomic<int> g_live_commands_pending{0};
+
+static int
+live_commands_pending(void) {
+    return g_live_commands_pending.load();
+}
+
+static void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the producer event's.
+live_queue_command(void* ctx) {
+    (void)ctx;
+    g_live_commands_pending.store(1);
+}
+
+/* The recovery finished: the device has its stream again (the sample follows). */
+static void
+live_stream_back(void* ctx) {
+    rtl_device_test_set_recovering(static_cast<struct rtl_device*>(ctx), 0);
+}
+
+static int
+live_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_opts, int want_no_stream,
+          int event_after_ms, void (*event)(void*), void* event_ctx, int feed, int* got, uint64_t* waited_ms) {
+    rtl_stream_test_live_read_request req = {};
+    req.dev = dev;
+    req.search_owner = search_owner;
+    req.live_opts = live_opts;
+    req.want_no_stream = want_no_stream;
+    req.event_after_ms = event_after_ms;
+    req.event = event;
+    req.event_ctx = event_ctx;
+    req.feed = feed;
+    return rtl_stream_test_live_read(&req, got, waited_ms);
+}
+
+/* A live read on an input with no stream at all (a USB stall recovery runs: the read sees the device recovering) gives
+ * way to a queued command with DSD_RTL_READ_YIELD, at once or as soon as one is queued while it waits, so commands
+ * apply during the outage (B3). It never yields without a command: then it waits for the stream as it always has. A
+ * stream that is only delayed is still a stream: a queued command never cuts its read, which takes the sample when it
+ * comes, as a read with no command does (delayed_stream_never_yields). A reader that asks for DSD_RTL_READ_NO_STREAM
+ * (the EDACS analog call loop) gets it once per wait slice while there is no stream, and never a yield. The contracts
+ * beside it hold with no stream as with one: a Signal search's read fails after 100 ms of nothing, and an idle NFM
+ * monitor's returns 0 samples after 100 ms (search_failure_contract_kept, analog_zero_read_contract_kept). */
+static int
+test_live_read_without_stream(void) {
+    static dsd_opts digital;
+    static dsd_opts nfm;
+    DSD_MEMSET(&digital, 0, sizeof digital);
+    digital.audio_in_type = AUDIO_IN_RTL;
+    nfm = digital;
+    nfm.analog_only = 1;
+    nfm.monitor_input_audio = 1;
+    nfm.analog_demod = DSD_ANALOG_DEMOD_FM;
+    rtl_device_test_usb_gain_fake fake = {};
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    int failed = expect_int_eq("no-stream device", dev != nullptr ? 1 : 0, 1);
+    if (dev == nullptr) {
+        return failed;
+    }
+    dsd_runtime_set_controls_pending(live_commands_pending);
+    int got = 0;
+    uint64_t waited_ms = 0U;
+
+    failed |= expect_int_eq("a device that is not recovering has a stream", rtl_device_has_stream(dev), 1);
+    rtl_device_test_set_recovering(dev, 1);
+    failed |= expect_int_eq("a recovering device has no stream", rtl_device_has_stream(dev), 0);
+    failed |= expect_int_eq("no device, no stream", rtl_device_has_stream(nullptr), 0);
+
+    g_live_commands_pending.store(1);
+    failed |=
+        expect_int_eq("yield read", live_read(dev, 0U, &digital, 0, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("no stream and a queued command: the read yields", got, DSD_RTL_READ_YIELD);
+    failed |= expect_waited("a yielding read", waited_ms, 0U, 1000U);
+
+    g_live_commands_pending.store(0);
+    failed |= expect_int_eq("late command read",
+                            live_read(dev, 0U, &digital, 0, 150, live_queue_command, nullptr, 0, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a command queued while the read waits with no stream: it yields", got, DSD_RTL_READ_YIELD);
+    failed |= expect_waited("a read that yields to a later command", waited_ms, 140U, 2000U);
+
+    g_live_commands_pending.store(0);
+    failed |= expect_int_eq("no command read",
+                            live_read(dev, 0U, &digital, 0, 300, live_stream_back, dev, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("no stream and no command: the read waits for the stream", got, 1);
+    failed |= expect_waited("a read with no stream and no command", waited_ms, 250U, 60000U);
+
+    /* delayed_stream_never_yields */
+    g_live_commands_pending.store(1);
+    failed |=
+        expect_int_eq("delayed read", live_read(dev, 0U, &digital, 0, 300, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a delayed stream with a queued command: the read takes the sample", got, 1);
+    failed |= expect_waited("a delayed stream's read", waited_ms, 250U, 60000U);
+    failed |= expect_int_eq("no device read",
+                            live_read(nullptr, 0U, &digital, 0, 300, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("no device to say the stream is missing: the read takes the sample", got, 1);
+
+    /* NO_STREAM to the reader that asks for it, with or without a command; never to a reader with a stream. */
+    rtl_device_test_set_recovering(dev, 1);
+    failed |= expect_int_eq("no-stream read",
+                            live_read(dev, 0U, &digital, 1, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a reader that asks gets DSD_RTL_READ_NO_STREAM, not a yield", got, DSD_RTL_READ_NO_STREAM);
+    failed |= expect_waited("a no-stream read (one wait slice)", waited_ms, 5U, 1000U);
+    g_live_commands_pending.store(0);
+    failed |= expect_int_eq("no-stream read without a command",
+                            live_read(dev, 0U, &digital, 1, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("DSD_RTL_READ_NO_STREAM needs no command", got, DSD_RTL_READ_NO_STREAM);
+    rtl_device_test_set_recovering(dev, 0);
+    failed |= expect_int_eq("asking reader with a stream",
+                            live_read(dev, 0U, &digital, 1, 300, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("with a stream the asking reader waits for the sample", got, 1);
+    failed |= expect_waited("an asking reader's read with a stream", waited_ms, 250U, 60000U);
+
+    /* search_failure_contract_kept, analog_zero_read_contract_kept */
+    rtl_device_test_set_recovering(dev, 1);
+    failed |= expect_int_eq("no-stream search read",
+                            live_read(dev, 7U, &digital, 0, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a search's read with no stream and no command still fails", got, -1);
+    failed |= expect_waited("a search's read with no stream", waited_ms, 100U, 2000U);
+    failed |= expect_int_eq("no-stream NFM read",
+                            live_read(dev, 0U, &nfm, 0, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
+    failed |= expect_int_eq("an idle NFM monitor with no stream and no command still returns 0 samples", got, 0);
+    failed |= expect_waited("an idle NFM read with no stream", waited_ms, 100U, 2000U);
+
+    g_live_commands_pending.store(0);
+    dsd_runtime_set_controls_pending(nullptr);
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
 /*
  * USB gain controls against a fake dongle that holds what the hardware would (B9, B10, compound rollback): demod
  * register 0x19, the tuner's gain mode and gain. Test mode and the digital AGC share register 0x19, and librtlsdr's
@@ -2921,6 +3055,7 @@ main(void) {
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();
+    failed |= test_live_read_without_stream();
 
     return failed ? 1 : 0;
 }
