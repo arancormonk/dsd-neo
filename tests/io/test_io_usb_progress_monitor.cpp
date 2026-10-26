@@ -166,6 +166,38 @@ test_rtl_steady_stream_never_trips(input_ring_state* ring) {
     assert(failure.kind == DSD_INPUT_FAILURE_NONE);
 }
 
+/* A stalled transfer can still return callbacks with no bytes: those are not samples and do not end the silence. Zero
+ * length buffers every 50 ms for longer than the limit end the session once; nonempty buffers among them keep it
+ * running, since the silence counts from the last one. */
+void
+test_rtl_zero_length_callbacks_do_not_count_as_progress(input_ring_state* ring) {
+    rtl_device_test_set_progress_limit_ms(kLimitMs);
+    reset_session();
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device* dev = rtl_device_test_usb_stream_start(ring);
+    assert(dev);
+    for (int i = 0; i < 20 && !dsd_input_failure_receiver_ended(); ++i) {
+        rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, 0U);
+        dsd_sleep_ms(50U);
+    }
+    assert(dsd_input_failure_receiver_ended() == 1);
+    expect_receiver_ending(-ETIMEDOUT);
+    assert(dsd_input_failure_generation() == generation + 1U);
+    rtl_device_test_usb_stream_stop(dev);
+    assert(dsd_input_failure_generation() == generation + 1U);
+
+    reset_session();
+    dev = rtl_device_test_usb_stream_start(ring);
+    assert(dev);
+    for (int i = 0; i < 12; ++i) {
+        rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, (i & 1) ? 0U : (uint32_t)sizeof g_rtl_buffer);
+        dsd_sleep_ms(50U);
+    }
+    expect_running();
+    rtl_device_test_usb_stream_stop(dev);
+    expect_running();
+}
+
 /* The monitor's verdict waits out the unplug-owner grace like the reader's: a stop inside it (the detach broadcast's)
  * keeps the session silent and joins the monitor while it waits. */
 void
@@ -466,6 +498,7 @@ main(void) {
     test_rtl_starvation_from_start(ring.get());
     test_rtl_silence_after_progress(ring.get());
     test_rtl_steady_stream_never_trips(ring.get());
+    test_rtl_zero_length_callbacks_do_not_count_as_progress(ring.get());
     test_rtl_stop_inside_grace(ring.get());
     test_rtl_reader_exit_inside_monitor_grace(ring.get());
     test_rtl_racing_verdicts_report_once(ring.get());

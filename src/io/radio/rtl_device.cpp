@@ -389,8 +389,8 @@ struct rtl_device {
     int offset_tuning = 0;
     int direct_sampling = 0;
     std::atomic<int> mute{0};
-    /* Sample progress: counted first thing by every librtlsdr callback, read by the progress monitor. (An Airspy's
-     * count is its source's, airspy_source_progress().) */
+    /* Sample progress: counted first thing by every librtlsdr callback with bytes, read by the progress monitor.
+     * (An Airspy's count is its source's, airspy_source_progress().) */
     std::atomic<uint64_t> progress{0U};
     int thread_started = 0;
     std::atomic<uint32_t> capture_retune_count{0U};
@@ -2879,9 +2879,11 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
     if (!s) {
         return;
     }
-    /* Counted before anything below can drop the buffer: a callback is the receiver delivering, which is all the
-     * progress monitor asks. */
-    s->progress.fetch_add(1U, std::memory_order_relaxed);
+    /* Counted before anything below can drop the buffer: a callback with bytes is the receiver delivering, which is
+     * all the progress monitor asks. A stalled transfer can still complete with none, and that is not progress. */
+    if (len > 0U) {
+        s->progress.fetch_add(1U, std::memory_order_relaxed);
+    }
 
     /* One-time: ensure the USB callback thread gets RT scheduling/affinity if enabled */
     {
@@ -3251,8 +3253,8 @@ static DSD_THREAD_RETURN_TYPE
 /* ---- USB sample-progress monitor (RTL-SDR and Airspy) ----
  * A receiver can stay enumerated and stop delivering samples with nothing returning: librtlsdr drops a transfer for
  * good on each error status and then waits forever once none is left, and a device that stops completing transfers
- * (they have no timeout) leaves both SDKs waiting. Every receive callback counts progress first (one relaxed
- * increment, no clock read), and a monitor samples the count every 100 ms on the realtime clock. Silence accrues by
+ * (they have no timeout) leaves both SDKs waiting. Every receive callback with bytes counts progress first (one
+ * relaxed increment, no clock read), and a monitor samples the count every 100 ms on the realtime clock. Silence accrues by
  * the time between samples while the stream is up and not being reconfigured, does not reset when the stream
  * restarts, and only observed progress ends it. 5 s of it ends the session for its receiver
  * (rtl_device_end_for_receiver(), through the unplug-owner grace). */
