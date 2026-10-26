@@ -14397,6 +14397,52 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_USB_PROGRESS_MONITOR PROPERTIES TIMEOUT 120)
 
+    # Which USB device an RTL-SDR runs on and a reset of only that device, over a
+    # fake device list. Without libusb the unit is a stub and the test checks that;
+    # with it, the stub is also built from the same source and checked on its own.
+    add_executable(
+        dsd-neo_test_io_rtl_usb_identity
+        io/test_io_rtl_usb_identity.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_identity
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_identity
+        PRIVATE
+            DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+            $<$<BOOL:${DSD_HAVE_LIBUSB}>:DSD_HAVE_LIBUSB>
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_identity
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_IDENTITY COMMAND dsd-neo_test_io_rtl_usb_identity)
+    if(DSD_HAVE_LIBUSB)
+        add_executable(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            io/test_io_rtl_usb_identity.cpp
+            ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_usb_identity.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        )
+        target_link_libraries(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            PRIVATE dsd-neo_runtime dsd-neo_platform dsd-neo_warnings
+        )
+        add_test(
+            NAME IO_RTL_USB_IDENTITY_STUB
+            COMMAND dsd-neo_test_io_rtl_usb_identity_stub
+        )
+    endif()
+
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
         dsd-neo_bench_usb_ingest

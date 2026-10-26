@@ -4402,6 +4402,23 @@ Key public headers:
     requested PPM (published under its mutex), the narrow spectrum (a seqlock copy of the demod's bins) and the output
     rate (the metrics hook's; the snapshot's `rtl_ctx` is never dereferenced). `rtl_device_handle` and `g_stream` are
     cleared before the objects they point at are destroyed. Test: `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan).
+  - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
+    `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never
+    a second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes
+    the (manufacturer, product, serial) triple librtlsdr reads for the index, and is valid only when exactly one
+    device with a vendor-specific (0xff) device or interface class carries it, whatever its VID:PID, none of those
+    devices was unreadable (an unreadable one might be the dongle beside a readable twin), the serial is not empty,
+    and librtlsdr has exactly one index with it; it records bus, port path and VID:PID.
+    `rtl_usb_identity_verify_handle()` checks the opened handle's strings. `rtl_usb_identity_reset()` opens the device
+    at the recorded bus + port path + VID:PID, re-reads its strings on the handle the reset goes through and resets
+    only on the triple (a replacement on that port gets `RTL_USB_ID_MISMATCH` and no reset); a device that
+    re-enumerates is found again by its triple within 5000 ms (cancellable, twins refused, unreadable candidates
+    waited out). `rtl_usb_identity_index()` is the librtlsdr index by triple, -1 unless unique.
+    `rtl_usb_identity_off_reason()` gives the "stall recovery is off" text. Every libusb/librtlsdr call goes through
+    `struct rtl_usb_driver_ops` (`rtl_usb_identity_set_driver_ops()`, test hooks only). CMake defines
+    `DSD_HAVE_LIBUSB` (`cmake/FindLibusb.cmake`: header, library and a `libusb_reset_device` link check) privately on
+    `dsd-neo_io_radio` and its test mirror, only with a system librtlsdr and never on Android; otherwise every call
+    returns `RTL_USB_ID_NO_LIBUSB`. Tests: `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is

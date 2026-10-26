@@ -451,6 +451,23 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             continue()
         endif()
 
+        # libusb is called directly only to identify and reset the running RTL-SDR;
+        # everything else reaches USB through librtlsdr or the SDR libraries.
+        if(_ARCH_RULES_HEADER MATCHES "(^|.*/)libusb\\.h$")
+            if(NOT _ARCH_RULES_REL STREQUAL "src/io/radio/rtl_usb_identity.cpp")
+                message(
+                    SEND_ERROR
+                    "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden libusb include '${_ARCH_RULES_HEADER}' (libusb is confined to src/io/radio/rtl_usb_identity.cpp)"
+                )
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
+            endif()
+            continue()
+        endif()
+
         if(
             NOT _ARCH_RULES_HEADER MATCHES "^dsd-neo/"
             AND _ARCH_RULES_HEADER MATCHES "(^|.*/)(curses|ncurses)\\.h$"

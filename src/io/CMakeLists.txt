@@ -34,6 +34,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_stream.cpp
             radio/rtl_stream_c.cpp
             radio/rtl_sdr_fm.cpp
+            radio/rtl_usb_identity.cpp
             radio/rtl_view_rings.cpp
             radio/rtl_wideband_spectrum.cpp
             radio/signal_measure.cpp
@@ -126,6 +127,23 @@ if(DSD_HAS_RADIO)
                 dsd-neo_feature_airspy
                 dsd-neo_warnings
         )
+    endif()
+
+    # libusb only for the USB identity and reset unit; private, so nothing that
+    # links the radio library sees its header or define.
+    if(DSD_HAVE_LIBUSB)
+        set(_dsd_neo_io_radio_libusb_targets dsd-neo_io_radio)
+        if(BUILD_TESTING)
+            list(
+                APPEND _dsd_neo_io_radio_libusb_targets
+                dsd-neo_io_radio_private_test_support
+            )
+        endif()
+        foreach(_target IN LISTS _dsd_neo_io_radio_libusb_targets)
+            target_compile_definitions(${_target} PRIVATE DSD_HAVE_LIBUSB)
+            target_link_libraries(${_target} PRIVATE Libusb::Libusb)
+        endforeach()
+        unset(_dsd_neo_io_radio_libusb_targets)
     endif()
 
     install(
