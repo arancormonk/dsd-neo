@@ -4518,46 +4518,61 @@ Key public headers:
     `IO_RTL_REPLAY_EOF_AND_CF32` (gap reasons replay as `StreamGap`), `APP_COMMAND_QUEUE` (the toast),
     `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
   - rtl_tcp connections and reconnects (issue #518 WP3; B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends
-    exactly a 12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()`
-    reads those twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS,
-    EOF, INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
+    exactly a 12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads
+    those twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,
+    INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
     `rtl_tcp_conn` (socket, `generation`, its own `tx_lock`, `lost`); the last reference closes the socket. The
     cancellation token is the stop latch (`stop_requested`, set first by stop and destroy) or the exit flag, never
-    `run`, so the session's first connect and header read (before any reader) are cancellable too. A command (or a
-    gain change's commands, as one unit) takes a reference to the published connection under `tcp_lock`, sends under
-    its `tx_lock` with `rtl_tcp_send_all()` (partial writes continued, 50 ms send slices between cancellation checks,
-    2 s in all) and, still under `tx_lock`, records what took in the effective record (D6: the device's values plus
-    `tcp_took`) under `tcp_lock` only while that connection is still the published one; `tcp_lock` is never held
-    while sending. With no published connection, or when the connection was lost or replaced meanwhile, a setter
-    returns `RTL_DEVICE_ENOTCONN` and records nothing; a failed send takes down only the connection it used
-    (unpublished, `lost` set, socket shut down, so its reader stops reading it even while the server still sends). Gain
-    follows the USB register-0x19 policy in commands: manual = 0x08 off (left out under test mode) + 0x03 manual +
-    0x04 gain; automatic = 0x03 auto + 0x08 as configured; test mode (0x07) is asserted after either and wins; turning
-    test mode off sends 0x08 as the gain state wants. The nearest-gain setter is a manual gain change (B16). The reader
-    (`tcp_thread_fn()`) treats an error, end of stream, `DSD_NEO_TCP_MAX_TIMEOUTS` receive timeouts in a row, the
-    throughput watchdog or a connection taken down as a loss: it unpublishes it (no stream from here,
-    `rtl_device_has_stream()`), then `rtl_tcp_reconnect()` connects, reads the header and hands the new connection
-    over (`rtl_tcp_handoff_and_wait()`): QUEUED with a new generation, posted through the recovery callback, which the
-    stream sets to `controller_post_tcp_handoff()` before the reader starts. While it waits the reader drains the
-    connection into a discard path, counting the bytes modulo the I/Q pair, so the server's I/Q from before its
-    settings are restored builds no backlog. The controller takes it (`rtl_device_tcp_handoff_take()`, CLAIMED; first
-    and alone, like a USB recovery) and runs `controller_stream_boundary(s, kStreamGapTcpReconnect, ...)` with
-    `rtl_device_tcp_publish_handoff()` as its device step: the effective record replayed as one unit (crystals, direct
-    sampling, frequency, rate, offset tuning, PPM, gain policy, IF gains, bias tee; every control that took, as last
-    taken, so a server restarted with other defaults ends with the session's settings), then published, or closed
-    (FAILED, the reader reconnects again; CANCELLED on a stop). The boundary's `rtl_device_resume_stream()` releases
-    the reader (RELEASED) and waits until it acknowledged after any receive in flight: it drops the odd byte the
-    discard left (a Q byte), clears its carry and partial slice (`rtl_reset_capture_state_on_stream_boundary()`), and
-    from there its bytes meet the post-reset mute and the capture. Stop and destroy run `rtl_tcp_stop()` first: latch,
-    admission closed for good, a QUEUED hand-off cancelled (the reader, its waiter, closes the connection it still
-    holds; a CLAIMED one is the controller's, which gives it up at its next step), the published socket shut down
-    (waking the reader and any blocked sender); only then is the reader joined. Reconnect back-off sleeps in 10 ms
-    slices. A frequency command leaves the reader-owned capture restart to the reader (`tcp_restart_pending`). The
-    rtl_tcp pipeline start fails when its controller or demod thread cannot start (B17), as every other pipeline's
-    does.
+    `run`, so the session's first connect and header read (before any reader) are cancellable too. A command (or a gain
+    change's commands, as one unit) takes a reference to the published connection under `tcp_lock`, sends under its
+    `tx_lock` with `rtl_tcp_send_all()` (waits for room a 50 ms slice at a time, checking cancellation between slices,
+    then sends what fits without blocking (`MSG_DONTWAIT`), partial writes continued, 2 s in all; where a send cannot be
+    asked not to block (Winsock) the socket's 2 s send timeout only bounds one that blocks anyway, and any send that
+    fails or times out ends the connection, since Winsock leaves a timed-out socket indeterminate) and, still under
+    `tx_lock`, records what took in the effective record (D6: the device's values plus `tcp_took`) under `tcp_lock` only
+    while that connection is still the published one; `tcp_lock` is never held while sending. With no published
+    connection, or when the connection was lost or replaced meanwhile, a setter returns `RTL_DEVICE_ENOTCONN` and
+    records nothing; a failed send takes down only the connection it used (unpublished, `lost` set, socket shut down, so
+    its reader stops reading it even while the server still sends). Gain follows the USB register-0x19 policy in
+    commands: manual = 0x08 off (left out under test mode) + 0x03 manual + 0x04 gain; automatic = 0x03 auto + 0x08 as
+    configured; test mode (0x07) is asserted after either and wins; turning test mode off sends 0x08 as the gain state
+    wants. The nearest-gain setter is a manual gain change (B16). Before any gain takes the record holds the session's
+    default (automatic, digital AGC as configured); a gain or test-mode change that failed part way marks it
+    (`gain_unknown`, `testmode_unknown`), and the replay then asserts the record's state even if none ever took (Task
+    4's USB rule). The reader (`tcp_thread_fn()`, `rtl_tcp_reader_recv()`; on Winsock it waits for data a slice at a
+    time rather than leaning on a receive timeout) treats an error, end of stream, `DSD_NEO_TCP_MAX_TIMEOUTS` receive
+    timeouts in a row, the throughput watchdog or a connection taken down as a loss, and logs which: it unpublishes it
+    (no stream from here, `rtl_device_has_stream()`), then `rtl_tcp_reconnect()` connects, reads the header and hands
+    the new connection over (`rtl_tcp_handoff_and_wait()`): QUEUED with a new generation, posted through the recovery
+    callback, which the stream sets to `controller_post_tcp_handoff()` before the reader starts. While it waits the
+    reader drains the connection into a discard path, counting the bytes modulo the I/Q pair, so the server's I/Q from
+    before its settings are restored builds no backlog. The controller takes it (`rtl_device_tcp_handoff_take()`,
+    CLAIMED; first and alone, like a USB recovery) and runs `controller_stream_boundary(s, kStreamGapTcpReconnect, ...)`
+    with `rtl_device_tcp_publish_handoff()` as its device step: the effective record replayed as one unit (crystals,
+    direct sampling, frequency, rate, offset tuning, PPM, gain policy, IF gains, bias tee; every control that took, as
+    last taken, so a server restarted with other defaults ends with the session's settings), then published, or closed
+    (FAILED, the reader reconnects again; CANCELLED on a stop). The boundary's `rtl_device_resume_stream()` releases the
+    reader (RELEASED) and waits until it acknowledged after any receive in flight: it drops the odd byte the discard
+    left (a Q byte), clears its carry and partial slice (`rtl_reset_capture_state_on_stream_boundary()`), and from there
+    its bytes meet the post-reset mute and the capture. Stop and destroy run `rtl_tcp_stop()` first: latch, admission
+    closed for good, a QUEUED hand-off cancelled (the reader, its waiter, closes the connection it still holds; a
+    CLAIMED one is the controller's, which gives it up at its next step), the published socket shut down (waking the
+    reader and any blocked sender); only then is the reader joined. Reconnect back-off sleeps in 10 ms slices. The
+    reader passes whole I/Q pairs only into its pipeline (mute, capture hold, capture, ring; `rtl_tcp_process_pairs()`),
+    as a USB reader's buffers are, holding an odd last byte at the front of its buffer for its Q: TCP chunks have any
+    length, and the byte accounting the pipeline shares with the controller (a mute armed while a chunk is being muted,
+    the capture writer's half pair at an event) slips a pair on an odd chunk. After a frequency command the reader drops
+    what it buffered for the old frequency on the way to the ring itself (`tcp_restart_pending`,
+    `rtl_tcp_drop_buffered_for_retune()`): the stream goes on. The rtl_tcp pipeline start fails when its controller or
+    demod thread cannot start (B17), as every other pipeline's does. Frontends: `rtl_device_control_unavailable()` /
+    `rtl_stream_control_unavailable()` say why the receiver cannot take a control (`RTL_DEVICE_EBUSY` during a USB
+    reset, `RTL_DEVICE_ENOTCONN` without a server), and app-control's `svc_radio_control_unavailable_text()` turns
+    either (or the control's own result) into the reason of the "Failed:" toast for a frequency, bias tee or PPM change
+    ("the RTL-SDR is being reset; try again in a moment", "the rtl_tcp server is not connected"); a PPM change, which
+    applies later on the controller, is refused up front.
     Tests: `IO_RTL_TCP_RECONNECT` (a scripted fake rtl_tcp server on loopback; device level with the test as the
     controller and stream level through the real controller; ASan/TSan), `DSP_SYMBOL_RTL_YIELD`
-    (`sticky_yield_across_reconnect`).
+    (`sticky_yield_across_reconnect`), `APP_COMMAND_QUEUE` (the toasts).
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is

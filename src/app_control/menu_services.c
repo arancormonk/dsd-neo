@@ -29,6 +29,7 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -2219,6 +2220,21 @@ svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on) {
         return rtl_stream_set_bias_tee(opts->rtl_bias_tee);
     }
     return 0;
+}
+
+const char*
+svc_radio_control_unavailable_text(int device_rc) {
+    int code = device_rc;
+    if (code != RTL_DEVICE_EBUSY && code != RTL_DEVICE_ENOTCONN) {
+        code = rtl_stream_control_unavailable();
+    }
+    if (code == RTL_DEVICE_EBUSY) {
+        return "the RTL-SDR is being reset; try again in a moment";
+    }
+    if (code == RTL_DEVICE_ENOTCONN) {
+        return "the rtl_tcp server is not connected";
+    }
+    return NULL;
 }
 
 int

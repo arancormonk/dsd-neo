@@ -43,6 +43,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/io/udp_input.h>
@@ -193,6 +194,11 @@ int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
+#ifdef USE_RADIO
+int __real_rtl_stream_set_bias_tee(int on);
+int __wrap_rtl_stream_set_bias_tee(int on);
+int __wrap_rtl_stream_control_unavailable(void);
+#endif
 void __real_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                                    const uint8_t* reliab98);
 void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
@@ -295,6 +301,27 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
     }
     return __real_dsd_audio_reconfigure_output_for_input_policy(opts);
 }
+
+#ifdef USE_RADIO
+/* Why the receiver cannot take a control (issue #518 D6), as the running stream would say; none unless a test sets it. */
+static int g_control_unavailable = 0;
+/* A live bias tee change's result while armed; the real stream's otherwise. */
+static int g_bias_tee_armed = 0;
+static int g_bias_tee_result = 0;
+
+int
+__wrap_rtl_stream_control_unavailable(void) {
+    return g_control_unavailable;
+}
+
+int
+__wrap_rtl_stream_set_bias_tee(int on) {
+    if (g_bias_tee_armed) {
+        return g_bias_tee_result;
+    }
+    return __real_rtl_stream_set_bias_tee(on);
+}
+#endif
 
 int
 __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
@@ -7174,6 +7201,73 @@ test_session_queue_cancellation(void) {
     DSD_SECURE_ZERO(&state, sizeof state);
     return rc;
 }
+
+#if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) && defined(USE_RADIO)
+/* issue #518 D6: a radio control the receiver itself refused, because a USB RTL-SDR is being reset and reopened
+   (RTL_DEVICE_EBUSY) or an rtl_tcp input has no connection to its server (RTL_DEVICE_ENOTCONN), says so in its toast:
+   the bias tee from the device's own result, a frequency from the stream's state (a tune's result does not carry it),
+   and a PPM correction, which applies later on the controller, is refused up front. */
+static int
+test_radio_control_unavailable_toasts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    static const char k_resetting[] = "Failed: the RTL-SDR is being reset; try again in a moment";
+    static const char k_not_connected[] = "Failed: the rtl_tcp server is not connected";
+    static int fake_rtl_context = 0;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+
+    g_bias_tee_armed = 1;
+    g_bias_tee_result = RTL_DEVICE_EBUSY;
+    rc |= expect_true("bias tee during a reset queued", post_i32(DSD_APP_CMD_RTL_SET_BIAS_TEE, 1) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("bias tee during a reset toast", state.ui_msg, k_resetting);
+    g_bias_tee_result = RTL_DEVICE_ENOTCONN;
+    rc |= expect_true("bias tee without a server queued", post_i32(DSD_APP_CMD_RTL_SET_BIAS_TEE, 1) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("bias tee without a server toast", state.ui_msg, k_not_connected);
+    g_bias_tee_result = -1;
+    rc |= expect_true("bias tee failing otherwise queued", post_i32(DSD_APP_CMD_RTL_SET_BIAS_TEE, 1) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("bias tee failing otherwise toast", state.ui_msg, "Failed: RTL bias tee update");
+    g_bias_tee_armed = 0;
+
+    g_io_control_tune_result = RTL_STREAM_TUNE_FAILED;
+    g_control_unavailable = RTL_DEVICE_EBUSY;
+    rc |= expect_true("tune during a reset queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("tune during a reset toast", state.ui_msg, k_resetting);
+    g_control_unavailable = RTL_DEVICE_ENOTCONN;
+    rc |= expect_true("tune without a server queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("tune without a server toast", state.ui_msg, k_not_connected);
+    g_control_unavailable = 0;
+    rc |= expect_true("tune failing otherwise queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("tune failing otherwise toast", state.ui_msg, "Failed: RTL frequency -> 851012500 Hz");
+    g_io_control_tune_result = RTL_STREAM_TUNE_OK;
+
+    const int ppm_before = opts.rtlsdr_ppm_error;
+    g_control_unavailable = RTL_DEVICE_ENOTCONN;
+    rc |= expect_true("ppm without a server queued", post_i32(DSD_APP_CMD_RTL_SET_PPM, ppm_before + 3) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("ppm without a server toast", state.ui_msg, k_not_connected);
+    rc |= expect_int("ppm without a server changes nothing", opts.rtlsdr_ppm_error, ppm_before);
+    g_control_unavailable = RTL_DEVICE_EBUSY;
+    rc |= expect_true("ppm during a reset queued", post_i32(DSD_APP_CMD_RTL_SET_PPM, ppm_before + 3) > 0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("ppm during a reset toast", state.ui_msg, k_resetting);
+    rc |= expect_int("ppm during a reset changes nothing", opts.rtlsdr_ppm_error, ppm_before);
+    g_control_unavailable = 0;
+
+    state.rtl_ctx = NULL;
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+#endif
 
 /* B2: a decoder blocked in a read never drains the queue, so an accepted QUIT raises the exit flag at submit. A
    submission the closed session refuses has no such side effect, and an eviction cannot take the flag back. */
@@ -20026,6 +20120,9 @@ main(void) {
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
     rc |= test_quit_takes_effect_at_submit();
+#if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) && defined(USE_RADIO)
+    rc |= test_radio_control_unavailable_toasts();
+#endif
     rc |= test_notice_toast_without_failure_latch();
     rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();

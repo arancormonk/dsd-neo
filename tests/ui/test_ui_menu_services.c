@@ -740,6 +740,12 @@ rtl_stream_set_bias_tee(int on) {
     return 0;
 }
 
+/* The receiver can always take a control here (issue #518 D6: no reset, no lost rtl_tcp server). */
+int
+rtl_stream_control_unavailable(void) {
+    return 0;
+}
+
 int
 rtl_stream_set_rtltcp_autotune(int onoff) {
     (void)onoff;

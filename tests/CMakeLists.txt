@@ -7707,6 +7707,20 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=SetModulationKind"
     )
 endif()
+# The receiver's refusals (issue #518 D6) reach the command toasts through the stream; radio builds only.
+if(
+    DSD_HAS_RADIO
+    AND NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+)
+    target_link_options(
+        dsd-neo_test_app_command_queue
+        PRIVATE
+            "LINKER:--wrap=rtl_stream_control_unavailable"
+            "LINKER:--wrap=rtl_stream_set_bias_tee"
+    )
+endif()
 if(
     DSD_HAS_RADIO
     AND NOT APPLE

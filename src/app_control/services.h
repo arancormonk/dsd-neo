@@ -1007,6 +1007,18 @@ int svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 /** @brief Toggle RTL bias tee (applied live when stream active). */
 int svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on);
+/**
+ * @brief Why a radio control failed when the receiver itself was the cause, as the reason a "Failed:" toast gives
+ * (issue #518 D6): "the RTL-SDR is being reset; try again in a moment" while a USB RTL-SDR is reset and reopened,
+ * "the rtl_tcp server is not connected" while an rtl_tcp input has no connection.
+ *
+ * Decoder thread. @p device_rc is the control's own result: RTL_DEVICE_EBUSY or RTL_DEVICE_ENOTCONN names the cause;
+ * any other value (a result that does not carry it, or 0 before trying) asks the running stream
+ * (rtl_stream_control_unavailable()).
+ *
+ * @return The reason, or NULL when the receiver is not the cause.
+ */
+const char* svc_radio_control_unavailable_text(int device_rc);
 /** @brief Toggle RTL-TCP adaptive networking and propagate to env/stream. */
 int svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on);
 /** @brief Toggle carrier/error-based auto PPM and propagate to env/stream. */

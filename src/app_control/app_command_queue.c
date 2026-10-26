@@ -1944,6 +1944,8 @@ ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner
                      stop_scanner ? " (scanner stopped)" : "");
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
+    } else if (svc_radio_control_unavailable_text(rc)) {
+        ui_set_toast(state, 4, "Failed: %s", svc_radio_control_unavailable_text(rc));
     } else {
         ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
     }
@@ -2039,6 +2041,8 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         }
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
+    } else if (svc_radio_control_unavailable_text(rc)) {
+        ui_set_toast(state, 4, "Failed: %s", svc_radio_control_unavailable_text(rc));
     } else {
         ui_set_toast(state, 4, "Failed: tune -> %u Hz", v);
     }
@@ -2072,6 +2076,13 @@ ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        /* The correction applies later, on the controller; a receiver that cannot take it now refuses it here, so the
+           toast never claims a change that will not land. */
+        const char* unavailable = svc_radio_control_unavailable_text(0);
+        if (unavailable) {
+            ui_set_toast(state, 4, "Failed: %s", unavailable);
+            return UI_CMD_APPLY_FAILED;
+        }
         int rc = rtl_stream_request_ppm(opts, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2203,6 +2214,8 @@ ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct ds
             ui_set_toast(state, 3, "Applied: RTL bias tee -> %s", on ? "On" : "Off");
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: bias tee control not available on active backend");
+        } else if (svc_radio_control_unavailable_text(rc)) {
+            ui_set_toast(state, 4, "Failed: %s", svc_radio_control_unavailable_text(rc));
         } else {
             ui_set_toast(state, 4, "Failed: RTL bias tee update");
         }
