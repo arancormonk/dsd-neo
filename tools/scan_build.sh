@@ -159,25 +159,31 @@ fi
 # every file that includes <immintrin.h> reports those two functions as "Uninitialized argument value". scan-build's
 # --exclude matches whole directories only, and excluding Clang's include directory would also hide real bugs that end
 # there (a bad pointer reaching _mm256_loadu_ps()). So exactly these reports are dropped, matched by file, function and
-# bug type; any other report, in that header or elsewhere, still fails the run. Prints how many reports are left.
+# bug type; any other report, in that header or elsewhere, still fails the run. Only the run directories this
+# invocation added are counted (see previous_runs), as --status-bugs did. Prints how many reports are left.
 drop_clang_header_false_positives() {
-  local analyzer_clang resource_dir report left=0
+  local analyzer_clang resource_dir run report left=0
   analyzer_clang="$(dirname "$(command -v scan-build)")/clang"
   if [[ ! -x "$analyzer_clang" ]]; then
     analyzer_clang=clang
   fi
   resource_dir=$("$analyzer_clang" -print-resource-dir 2> /dev/null || true)
-  while IFS= read -r -d '' report; do
-    if [[ -n "$resource_dir" ]] \
-      && grep -q -F -x "<!-- BUGFILE $resource_dir/include/cetintrin.h -->" "$report" \
-      && grep -q -F -x "<!-- BUGTYPE Uninitialized argument value -->" "$report" \
-      && grep -q -E -x "<!-- FUNCTIONNAME _rdssp(d_i32|q_i64) -->" "$report"; then
-      echo "Dropping Clang header false positive: $report" >&2
-      rm -f "$report"
+  while IFS= read -r -d '' run; do
+    if printf '%s\n' "$previous_runs" | grep -q -F -x -- "$run"; then
       continue
     fi
-    left=$((left + 1))
-  done < <(find "$OUTPUT_DIR" -name 'report-*.html' -print0)
+    while IFS= read -r -d '' report; do
+      if [[ -n "$resource_dir" ]] \
+        && grep -q -F -x "<!-- BUGFILE $resource_dir/include/cetintrin.h -->" "$report" \
+        && grep -q -F -x "<!-- BUGTYPE Uninitialized argument value -->" "$report" \
+        && grep -q -E -x "<!-- FUNCTIONNAME _rdssp(d_i32|q_i64) -->" "$report"; then
+        echo "Dropping Clang header false positive: $report" >&2
+        rm -f "$report"
+        continue
+      fi
+      left=$((left + 1))
+    done < <(find "$run" -maxdepth 1 -name 'report-*.html' -print0)
+  done < <(find -H "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2> /dev/null)
   echo "$left"
 }
 
@@ -198,6 +204,13 @@ fi
 BUILD_CMD=(cmake --build "$BUILD_DIR" -j "$JOBS")
 if [[ ${#TARGETS[@]} -gt 0 ]]; then
   BUILD_CMD+=(--target "${TARGETS[@]}")
+fi
+
+# The run directories a reused output directory already holds; the strict verdict skips them. -H (above) follows an
+# output directory given as a symlink, as scan-build itself does when it writes there.
+previous_runs=""
+if [[ -d "$OUTPUT_DIR" ]]; then
+  previous_runs=$(find -H "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d)
 fi
 
 set +e
