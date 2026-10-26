@@ -4429,7 +4429,8 @@ Key public headers:
     returns `RTL_USB_ID_NO_LIBUSB`. Tests: `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`.
   - USB handle swap (`rtl_device.cpp`): `rtl_device_create()` resolves the identity before the open and verifies the
     handle after; any other result (or an Android descriptor) logs `RTL-SDR: stall recovery is off for this
-    receiver: <reason>` once and leaves `rtl_device_usb_recovery_eligible()` 0. Two locks, taken
+    receiver: <reason>` once (info level for Android, a warning otherwise) and leaves
+    `rtl_device_usb_recovery_eligible()` 0. Two locks, taken
     `usb_lifecycle_lock` then `usb_ctrl_lock`, never the reverse, neither on the sample path: every use of the
     librtlsdr handle (setters, getters, `rtlsdr_cancel_async()`) and of the controls' record is under
     `usb_ctrl_lock`, so the demod never reads a gain change in flight; the handle is published or retired only with
@@ -4444,6 +4445,8 @@ Key public headers:
     PPM if nonzero, frequency, gain mode + gain if a gain took, register 0x19, IF gains, bias tee, FIFO reset; the
     frequency precedes the rate so an R82xx never tunes to 0 Hz). A control that took and does not take again fails
     the recovery with the handle closed and nothing published; success publishes the handle and clears `recovering`.
+    Every handle the swap closes (the old one, or a new one it gives up on) first gets one best-effort bias-tee-off
+    write when the bias tee took on: librtlsdr's close and a USB reset leave it powered.
     It never starts the reader: `rtl_device_usb_resume_reader()` does, under `usb_lifecycle_lock`, only while
     `stop_requested` is clear, after recording `progress_baseline` and bumping `watch_rearm_seq`. Stop and destroy set
     `stop_requested` first, whatever runs, then take `usb_lifecycle_lock`; the swap checks the latch between steps

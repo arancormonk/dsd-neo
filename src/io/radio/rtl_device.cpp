@@ -306,6 +306,13 @@ enum : unsigned char {
 
 static const int RTL_AUTO_GAIN = -100;
 
+/* librtlsdr's LO displacement while offset tuning is on, from the sample rate the dongle holds; it recomputes it
+ * whenever the rate changes. */
+static uint32_t
+rtl_usb_offs_for_rate(uint32_t rate) {
+    return (rate / 2U) * 170U / 100U;
+}
+
 static const char*
 rtl_tuner_type_name(int tuner_type) {
     switch (tuner_type) {
@@ -5615,7 +5622,7 @@ rtl_usb_test_tuner_set_offset(rtl_device_test_usb_tuner_fake* fake, int on) {
         return -3;
     }
     /* From the rate the dongle holds, which is 0 on a fresh handle. */
-    fake->offs_freq = on ? (fake->rate / 2U) * 170U / 100U : 0U;
+    fake->offs_freq = on ? rtl_usb_offs_for_rate(fake->rate) : 0U;
     fake->filter_bw = on ? 2U * fake->offs_freq : rtl_usb_test_tuner_plain_bw(fake);
     return 0;
 }
@@ -6096,6 +6103,30 @@ rtl_usb_apply_register19_once(void* opaque) {
     return rtl_usb_apply_register19(static_cast<struct rtl_device*>(opaque));
 }
 
+/* The tuner's side of a gain state on @p handle: its gain mode and, for a manual @p gain, the gain. Shared by the gain
+ * transaction and a recovery's replay. */
+static int
+rtl_usb_write_tuner_gain(rtlsdr_dev_t* handle, int gain) {
+    if (!handle) {
+        return -1;
+    }
+    if (gain == RTL_AUTO_GAIN) {
+        return rtl_usb_ctl_set_tuner_gain_mode(handle, 0);
+    }
+    const int r = rtl_usb_ctl_set_tuner_gain_mode(handle, 1);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
+    return (r != 0) ? r : rtl_usb_ctl_set_tuner_gain(handle, gain);
+}
+
+/* Whether the tuner on @p handle reads back the manual @p gain (automatic gain has nothing to read back). */
+static int
+rtl_usb_verify_tuner_gain_on(rtlsdr_dev_t* handle, int gain) {
+    if (!handle) {
+        return -1;
+    }
+    return (gain == RTL_AUTO_GAIN || rtl_usb_ctl_get_tuner_gain(handle) == gain) ? 0 : -1;
+}
+
 /* Apply the record's gain state once, as one compound control: a manual gain is the digital AGC off, the tuner's
  * manual mode and the gain; automatic gain is the tuner's automatic mode and the digital AGC as wanted. Register 0x19
  * is resolved with test mode, so a gain change never ends test mode. */
@@ -6107,33 +6138,19 @@ rtl_usb_apply_gain_record(void* opaque) {
     }
     int r = 0;
     if (dev->gain == RTL_AUTO_GAIN) {
-        r = rtl_usb_ctl_set_tuner_gain_mode(dev->dev, 0);
+        r = rtl_usb_write_tuner_gain(dev->dev, RTL_AUTO_GAIN);
         // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
         return (r != 0) ? r : rtl_usb_apply_register19(dev);
     }
     r = rtl_usb_apply_register19(dev);
     // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
-    if (r != 0) {
-        return r;
-    }
-    r = rtl_usb_ctl_set_tuner_gain_mode(dev->dev, 1);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
-    if (r != 0) {
-        return r;
-    }
-    return rtl_usb_ctl_set_tuner_gain(dev->dev, dev->gain);
+    return (r != 0) ? r : rtl_usb_write_tuner_gain(dev->dev, dev->gain);
 }
 
 static int
 rtl_usb_verify_gain_record(void* opaque) {
-    struct rtl_device* dev = static_cast<struct rtl_device*>(opaque);
-    if (!dev || !dev->dev) {
-        return -1;
-    }
-    if (dev->gain == RTL_AUTO_GAIN) {
-        return 0;
-    }
-    return (rtl_usb_ctl_get_tuner_gain(dev->dev) == dev->gain) ? 0 : -1;
+    const struct rtl_device* dev = static_cast<const struct rtl_device*>(opaque);
+    return dev ? rtl_usb_verify_tuner_gain_on(dev->dev, dev->gain) : -1;
 }
 
 /* Copy the gain record, as a change left it, into the effective record a recovery replays. */
@@ -6249,28 +6266,17 @@ rtl_usb_verify_offset_tuning_on(void* opaque) {
     return (ctx && ctx->dev && rtl_usb_ctl_get_offset_tuning(ctx->dev) == 1) ? 0 : -1;
 }
 
-/* The tuner's gain mode and, when manual, its gain. */
+/* The tuner's gain mode and, when manual, its gain, as the gain transaction writes them. */
 static int
 rtl_usb_apply_tuner_gain(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
-    if (!ctx || !ctx->dev) {
-        return -1;
-    }
-    if (ctx->value == RTL_AUTO_GAIN) {
-        return rtl_usb_ctl_set_tuner_gain_mode(ctx->dev, 0);
-    }
-    const int r = rtl_usb_ctl_set_tuner_gain_mode(ctx->dev, 1);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
-    return (r != 0) ? r : rtl_usb_ctl_set_tuner_gain(ctx->dev, ctx->value);
+    const rtl_usb_int_apply_ctx* ctx = static_cast<const rtl_usb_int_apply_ctx*>(opaque);
+    return ctx ? rtl_usb_write_tuner_gain(ctx->dev, ctx->value) : -1;
 }
 
 static int
 rtl_usb_verify_tuner_gain(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
-    if (!ctx || !ctx->dev) {
-        return -1;
-    }
-    return (ctx->value == RTL_AUTO_GAIN || rtl_usb_ctl_get_tuner_gain(ctx->dev) == ctx->value) ? 0 : -1;
+    const rtl_usb_int_apply_ctx* ctx = static_cast<const rtl_usb_int_apply_ctx*>(opaque);
+    return ctx ? rtl_usb_verify_tuner_gain_on(ctx->dev, ctx->value) : -1;
 }
 
 struct rtl_usb_register19_apply_ctx {
@@ -6757,13 +6763,19 @@ rtl_usb_open_index(rtlsdr_dev_t** out, uint32_t index) {
 #endif
 }
 
-/* This receiver will not be reset and reopened when it stalls: say why, once, where its open is logged. */
+/* This receiver will not be reset and reopened when it stalls: say why, once, where its open is logged. A receiver
+ * that is never recovered by design (@p by_design: Android, whose host owns reconnects) says so at info level; every
+ * other reason is a warning. */
 static void
-rtl_usb_recovery_off(struct rtl_device* dev, const char* reason) {
+rtl_usb_recovery_off(struct rtl_device* dev, const char* reason, int by_design) {
     dev->usb_recovery_on.store(0, std::memory_order_release);
     dev->usb_recovery_off_reason = reason;
     dev->identity.valid = 0;
-    LOG_WARN("RTL-SDR: stall recovery is off for this receiver: %s\n", reason);
+    if (by_design) {
+        LOG_INFO("RTL-SDR: stall recovery is off for this receiver: %s\n", reason);
+    } else {
+        LOG_WARN("RTL-SDR: stall recovery is off for this receiver: %s\n", reason);
+    }
 }
 
 /**
@@ -6842,7 +6854,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
             return NULL;
         }
         dev->owns_preopened_fd = 1;
-        rtl_usb_recovery_off(dev, RTL_USB_ID_OFF_REASON_ANDROID);
+        rtl_usb_recovery_off(dev, RTL_USB_ID_OFF_REASON_ANDROID, 1);
         return dev;
     }
 #endif
@@ -6862,7 +6874,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     if (verified == RTL_USB_ID_OK) {
         dev->usb_recovery_on.store(1, std::memory_order_release);
     } else {
-        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(verified));
+        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(verified), 0);
     }
 
     return dev;
@@ -8519,8 +8531,7 @@ rtl_device_get_offset_tuning_hz(const struct rtl_device* dev) {
     rtl_usb_ctrl_lock(dev);
     uint32_t offs_hz = 0U;
     if (dev->offset_took && dev->dev) {
-        /* librtlsdr's offset for the rate it holds; it recomputes the offset whenever the rate changes. */
-        offs_hz = (rtl_usb_ctl_get_sample_rate(dev->dev) / 2U) * 170U / 100U;
+        offs_hz = rtl_usb_offs_for_rate(rtl_usb_ctl_get_sample_rate(dev->dev));
     }
     rtl_usb_ctrl_unlock(dev);
     return offs_hz;
@@ -8833,6 +8844,22 @@ rtl_usb_set_recovering(struct rtl_device* dev, int on) {
     rtl_usb_ctrl_unlock(dev);
 }
 
+/* Close a handle the swap retired or gives up on. While the bias tee took on, one write turns it off first, its failure
+ * ignored (a wedged dongle still answers control transfers): librtlsdr's close leaves it as it is and a USB reset does
+ * not power the dongle down, so its LNA would stay powered after a stopped or failed recovery ends the session. A swap
+ * that succeeds turns it back on in its replay. */
+static void
+rtl_usb_close_swapped(const struct rtl_device* dev, rtlsdr_dev_t* handle) {
+#ifdef USE_RTLSDR_BIAS_TEE
+    if (dev->usb_eff.bias_tee_took && dev->usb_eff.bias_tee) {
+        (void)rtl_usb_ctl_set_bias_tee(handle, 0);
+    }
+#else
+    (void)dev;
+#endif
+    (void)rtl_usb_ctl_close(handle);
+}
+
 /* Replay the effective record @p e onto the reopened, unpublished @p handle, in order: crystal, direct sampling,
  * frequency, rate, offset tuning, tuner bandwidth, PPM, frequency, gain, register 0x19, IF gains, bias tee, FIFO
  * reset. A control that never took is skipped (the fresh dongle keeps its default); one that took and does not take
@@ -8884,7 +8911,7 @@ rtl_usb_replay_effective(const struct rtl_device* dev, rtlsdr_dev_t* handle, con
         }
     }
     if (rc == 0 && e->tuner_bw_took) {
-        const uint32_t offs_hz = e->offset_took ? (rtl_usb_ctl_get_sample_rate(handle) / 2U) * 170U / 100U : 0U;
+        const uint32_t offs_hz = e->offset_took ? rtl_usb_offs_for_rate(rtl_usb_ctl_get_sample_rate(handle)) : 0U;
         rtl_usb_u32_apply_ctx bw{handle, rtl_offset_aware_bandwidth_hz(e->tuner_bw, e->offset_took, offs_hz)};
         rc = step(1, "tuner bandwidth", rtl_usb_apply_tuner_bandwidth, NULL, &bw);
     }
@@ -8948,7 +8975,7 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
     }
     rtlsdr_dev_t* retired = rtl_usb_retire_handle(dev);
     if (retired) {
-        (void)rtl_usb_ctl_close(retired);
+        rtl_usb_close_swapped(dev, retired);
     }
     if (rtl_usb_stop_latched(dev)) {
         return -ECANCELED;
@@ -8967,7 +8994,7 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
      * rather than open a dongle that may not be this one. */
     const int index = rtl_usb_identity_index(&dev->identity);
     if (index < 0) {
-        rtl_usb_recovery_off(dev, "no single receiver carries its USB strings after the reset");
+        rtl_usb_recovery_off(dev, "no single receiver carries its USB strings after the reset", 0);
         DSD_SNPRINTF(why, why_size, "%s", "after the USB reset no single receiver carries its USB strings");
         return -ENODEV;
     }
@@ -8977,7 +9004,7 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
         return -ECANCELED;
     }
     if (resolved != RTL_USB_ID_OK) {
-        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(resolved));
+        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(resolved), 0);
         DSD_SNPRINTF(why, why_size, "after the USB reset: %s", rtl_usb_identity_off_reason(resolved));
         return -ENODEV;
     }
@@ -9005,7 +9032,7 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
         rtl_usb_ctrl_unlock(dev);
     }
     if (rc != 0) {
-        (void)rtl_usb_ctl_close(handle);
+        rtl_usb_close_swapped(dev, handle);
     }
     return rc;
 }

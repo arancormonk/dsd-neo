@@ -31,6 +31,8 @@
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 
+extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
+
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
 
@@ -95,9 +97,10 @@ fake_rtl_index_strings(uint32_t index, char* m, char* p, char* s) {
 }
 
 int
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_rtl_handle_strings(rtlsdr_dev_t* dev, char* m, char* p, char* s) {
     (void)dev;
-    if (g_usb.on_step) {
+    if (g_usb.on_step != nullptr) {
         g_usb.on_step(kStepVerify);
     }
     fill_strings(g_usb.devs[0], m, p, s);
@@ -141,11 +144,13 @@ fake_usb_open(void* session, int i, void** handle) {
 }
 
 void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_usb_close(void* handle) {
     (void)handle;
 }
 
 int
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_read_strings(void* handle, char* m, char* p, char* s) {
     fill_strings(*static_cast<const usb_dev*>(handle), m, p, s);
     return RTL_USB_OP_OK;
@@ -154,11 +159,11 @@ fake_read_strings(void* handle, char* m, char* p, char* s) {
 int
 fake_reset(void* handle) {
     auto* d = static_cast<usb_dev*>(handle);
-    if (g_usb.on_step) {
+    if (g_usb.on_step != nullptr) {
         g_usb.on_step(kStepReset);
     }
     d->resets.fetch_add(1);
-    if (g_usb.twin_on_reset) {
+    if (g_usb.twin_on_reset != 0) {
         usb_dev& twin = g_usb.devs[1];
         twin.info = d->info;
         twin.info.pid = 0x2832;
@@ -166,12 +171,12 @@ fake_reset(void* handle) {
         twin.serial = d->serial;
         twin.hidden = 0;
         g_usb.dev_count = 2;
-        g_usb.rtl_count = g_usb.twin_in_librtlsdr ? 2 : 1;
+        g_usb.rtl_count = (g_usb.twin_in_librtlsdr != 0) ? 2 : 1;
     }
-    if (!d->gone_on_reset) {
+    if (d->gone_on_reset == 0) {
         return RTL_USB_OP_OK;
     }
-    if (d->never_back) {
+    if (d->never_back != 0) {
         d->hidden = -1;
     } else if (d->port_after != 0U) {
         d->info.ports[d->info.port_depth - 1] = d->port_after;
@@ -230,7 +235,7 @@ usb_world_reset(int duplicate) {
     a.serial = "56435444";
     g_usb.dev_count = 1;
     g_usb.rtl_count = 1;
-    if (duplicate) {
+    if (duplicate != 0) {
         usb_dev& b = g_usb.devs[1];
         b.info = a.info;
         b.info.bus = 3;
@@ -238,6 +243,13 @@ usb_world_reset(int duplicate) {
         g_usb.dev_count = 2;
         g_usb.rtl_count = 2;
     }
+}
+
+/* The app's descriptor "opens" (rtl_device_create()'s Android path, with no dongle behind it). */
+int
+open_fd_succeeds(int fd) {
+    (void)fd;
+    return 0;
 }
 
 /* ---- Threads ---- */
@@ -253,17 +265,29 @@ start_thread(dsd_thread_t* thread, dsd_thread_fn fn, void* arg) {
 struct log_capture {
     dsd_mutex_t lock;
     std::string text;
+    int off_level; /* the level the last "stall recovery is off" line was logged at, -1 for none */
 };
 
 log_capture g_log;
 
 void
 capture_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
-    (void)level;
     auto* log = static_cast<log_capture*>(ctx);
     dsd_mutex_lock(&log->lock);
-    log->text += text ? text : "";
+    log->text += (text != nullptr) ? text : "";
+    if (text != nullptr && strstr(text, "stall recovery is off") != nullptr) {
+        log->off_level = (int)level;
+    }
     dsd_mutex_unlock(&log->lock);
+}
+
+int
+log_off_level_take(void) {
+    dsd_mutex_lock(&g_log.lock);
+    const int level = g_log.off_level;
+    g_log.off_level = -1;
+    dsd_mutex_unlock(&g_log.lock);
+    return level;
 }
 
 std::string
@@ -322,7 +346,7 @@ rig_open(rig& r, int tuner_type) {
 }
 
 void
-rig_configure(rig& r, const settings& s) {
+rig_configure(const rig& r, const settings& s) {
     rtl_device* dev = r.dev;
     if (s.rtl_xtal != 0U || s.tuner_xtal != 0U) {
         assert(rtl_device_set_xtal_freq(dev, s.rtl_xtal, s.tuner_xtal) == 0);
@@ -332,10 +356,10 @@ rig_configure(rig& r, const settings& s) {
     }
     assert(rtl_device_set_frequency(dev, s.freq) == 0);
     assert(rtl_device_set_sample_rate(dev, s.rate) == 0);
-    if (s.offset) {
+    if (s.offset != 0) {
         (void)rtl_device_set_offset_tuning_enabled(dev, 1);
     }
-    if (s.set_bw) {
+    if (s.set_bw != 0) {
         assert(rtl_device_set_tuner_bandwidth(dev, s.bw) == 0);
     }
     if (s.ppm != 0) {
@@ -343,13 +367,13 @@ rig_configure(rig& r, const settings& s) {
     }
     assert(rtl_device_set_frequency(dev, s.freq) == 0);
     assert(rtl_device_set_gain(dev, s.gain) == 0);
-    if (s.testmode) {
+    if (s.testmode != 0) {
         assert(rtl_device_set_testmode(dev, 1) == 0);
     }
     if (s.if_stage >= 0) {
         assert(rtl_device_set_if_gain(dev, s.if_stage, s.if_gain) == 0);
     }
-    if (s.bias) {
+    if (s.bias != 0) {
         const int rc = rtl_device_set_bias_tee(dev, 1);
         assert(rc == 0 || rc == DSD_ERR_NOT_SUPPORTED);
         g_bias_api = (rc == 0) ? 1 : 0;
@@ -365,7 +389,7 @@ swap_state(const rig& r) {
 
 void
 wait_reader_running(const rig& r) {
-    for (int i = 0; i < 2000 && !swap_state(r).reader_running; i++) {
+    for (int i = 0; i < 2000 && (swap_state(r).reader_running == 0); i++) {
         dsd_sleep_ms(1);
     }
     assert(swap_state(r).reader_running);
@@ -381,11 +405,11 @@ rig_start(rig& r) {
 
 void
 rig_close(rig& r) {
-    if (r.dev) {
+    if (r.dev != nullptr) {
         rtl_device_destroy(r.dev);
         r.dev = nullptr;
     }
-    if (r.reader_attached) {
+    if (r.reader_attached != 0) {
         rtl_device_test_usb_stream_detach();
         r.reader_attached = 0;
     }
@@ -396,13 +420,28 @@ rig_close(rig& r) {
 }
 
 int
-recover(rig& r, std::string* why = nullptr) {
+recover(const rig& r, std::string* why = nullptr) {
     char buf[256] = {};
     const int rc = rtl_device_usb_recover_handle(r.dev, buf, sizeof buf);
-    if (why) {
+    if (why != nullptr) {
         *why = buf;
     }
     return rc;
+}
+
+/* A swap that ended without publishing a handle leaves no bias tee powered: librtlsdr's close and a USB reset leave it
+ * as it is, so it would stay on after the session. */
+bool
+bias_tee_left_on(const rig& r) {
+    return g_bias_api != 0 && r.dongle.bias_tee != 0;
+}
+
+/* The settings a failure test starts from: the bias tee on. */
+settings
+biased(void) {
+    settings s;
+    s.bias = 1;
+    return s;
 }
 
 int
@@ -429,9 +468,9 @@ expect_dongle_holds(const rtl_device_test_usb_dongle& d, const settings& s, int 
     assert(d.tuner.rate_without_freq == 0);
     assert(d.tuner.direct_sampling == s.direct_sampling);
     assert((d.tuner.offs_freq != 0U) == (offset_took != 0));
-    if (s.set_bw) {
+    if (s.set_bw != 0) {
         uint32_t want = s.bw;
-        if (offset_took && want < 2U * offs_for(s.rate)) {
+        if ((offset_took != 0) && want < 2U * offs_for(s.rate)) {
             want = 2U * offs_for(s.rate);
         }
         assert(d.tuner.bw == want);
@@ -445,7 +484,7 @@ expect_dongle_holds(const rtl_device_test_usb_dongle& d, const settings& s, int 
         assert(d.gain.manual == 1);
         assert(d.gain.gain == s.gain);
     }
-    if (s.testmode) {
+    if (s.testmode != 0) {
         assert(d.gain.reg19 == 0x03);
     } else if (s.gain != kAutoGain) {
         assert(d.gain.reg19 == 0x05);
@@ -578,7 +617,7 @@ void
 test_failed_retune_not_replayed(void) {
     rig r;
     rig_open(r, 1);
-    settings s;
+    const settings s;
     rig_configure(r, s);
     rig_start(r);
     r.dongle.faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
@@ -651,9 +690,10 @@ int g_busy_at = -1;
 int g_busy_ran = 0;
 
 void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the fake dongle's on_op hook.
 busy_on_op(void* ctx, int op) {
     (void)ctx;
-    if (op != g_busy_at || g_busy_ran) {
+    if (op != g_busy_at || (g_busy_ran != 0)) {
         return;
     }
     g_busy_ran = 1;
@@ -666,7 +706,7 @@ void
 test_setter_during_swap_returns_busy(void) {
     /* Once with the handle retired (at the reopen) and once in the replay (at the PPM write). */
     const int points[] = {RTL_TEST_DONGLE_OPEN, RTL_TEST_DONGLE_PPM};
-    for (int point : points) {
+    for (const int point : points) {
         rig r;
         rig_open(r, 1);
         settings s;
@@ -718,13 +758,14 @@ struct held_setter {
 held_setter g_held;
 
 void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the fake dongle's on_op hook.
 hold_gain_write(void* ctx, int op) {
     (void)ctx;
-    if (op != RTL_TEST_DONGLE_GAIN || g_held.inside.load()) {
+    if (op != RTL_TEST_DONGLE_GAIN || (g_held.inside.load() != 0)) {
         return;
     }
     g_held.inside.store(1);
-    for (int i = 0; i < 2000 && !g_held.release.load(); i++) {
+    for (int i = 0; i < 2000 && (g_held.release.load() == 0); i++) {
         dsd_sleep_ms(1);
     }
 }
@@ -784,7 +825,7 @@ test_setter_before_retire_is_replayed(void) {
     r.dongle.on_op = hold_gain_write;
     dsd_thread_t setter;
     start_thread(&setter, held_setter_thread, &g_held);
-    for (int i = 0; i < 2000 && !g_held.inside.load(); i++) {
+    for (int i = 0; i < 2000 && (g_held.inside.load() == 0); i++) {
         dsd_sleep_ms(1);
     }
     assert(g_held.inside.load());
@@ -825,14 +866,14 @@ __stdcall
 setter_hammer(void* arg) {
     auto* h = static_cast<hammer*>(arg);
     int n = 0;
-    while (h->run.load()) {
+    while (h->run.load() != 0) {
         const int rcs[] = {
             rtl_device_set_gain(h->dev, k_gains[n % 14]),
             rtl_device_set_ppm(h->dev, (n % 5) - 2),
-            g_bias_api ? rtl_device_set_bias_tee(h->dev, n & 1) : 0,
+            (g_bias_api != 0) ? rtl_device_set_bias_tee(h->dev, n & 1) : 0,
             rtl_device_set_tuner_bandwidth(h->dev, 1000000U + (uint32_t)(n % 4) * 100000U),
         };
-        for (int rc : rcs) {
+        for (const int rc : rcs) {
             if (rc == RTL_DEVICE_EBUSY) {
                 h->busy.fetch_add(1);
             } else if (rc == 0) {
@@ -851,8 +892,8 @@ DSD_THREAD_RETURN_TYPE
 __stdcall
 #endif
 getter_hammer(void* arg) {
-    auto* h = static_cast<hammer*>(arg);
-    while (h->run.load()) {
+    const auto* h = static_cast<hammer*>(arg);
+    while (h->run.load() != 0) {
         int tenth_db = 0;
         (void)rtl_device_get_tuner_gain(h->dev, &tenth_db);
         (void)rtl_device_is_auto_gain(h->dev);
@@ -888,10 +929,10 @@ test_getter_and_setter_in_flight_during_retire(void) {
         dsd_sleep_ms(5);
     }
     h.run.store(0);
-    for (dsd_thread_t t : setters) {
+    for (const dsd_thread_t t : setters) {
         dsd_thread_join(t);
     }
-    for (dsd_thread_t t : getters) {
+    for (const dsd_thread_t t : getters) {
         dsd_thread_join(t);
     }
     assert(h.bad.load() == 0);
@@ -925,7 +966,7 @@ __stdcall
 #endif
 stopper_thread(void* arg) {
     auto* s = static_cast<stopper*>(arg);
-    if (s->use_destroy) {
+    if (s->use_destroy != 0) {
         rtl_device_destroy(s->dev);
         s->rc = 0;
     } else {
@@ -936,13 +977,13 @@ stopper_thread(void* arg) {
 
 void
 stop_on_step(int step) {
-    if (g_recording_steps) {
+    if (g_recording_steps != 0) {
         if (g_steps_seen.empty() || g_steps_seen.back() != step) {
             g_steps_seen.push_back(step);
         }
         return;
     }
-    if (step != g_stop_at || g_stop_fired) {
+    if (step != g_stop_at || (g_stop_fired != 0)) {
         return;
     }
     g_stop_fired = 1;
@@ -951,7 +992,7 @@ stop_on_step(int step) {
     for (int i = 0; i < 2000; i++) {
         rtl_device_test_usb_swap_state st{};
         rtl_device_test_usb_swap_state_get(g_stopper.dev, &st);
-        if (st.stop_requested) {
+        if (st.stop_requested != 0) {
             return;
         }
         dsd_sleep_ms(1);
@@ -960,13 +1001,14 @@ stop_on_step(int step) {
 }
 
 void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the fake dongle's on_op hook.
 stop_on_op(void* ctx, int op) {
     (void)ctx;
     stop_on_step(op);
 }
 
 void
-configure_full(rig& r) {
+configure_full(const rig& r) {
     settings s;
     s.rtl_xtal = 28800100U;
     s.offset = 1;
@@ -1003,7 +1045,7 @@ test_stop_at_each_swap_step(void) {
     steps.push_back(-2); /* a stop while the reset waits for the dongle to come back */
     for (size_t i = 0; i < steps.size(); i++) {
         for (int use_destroy = 0; use_destroy < 2; use_destroy++) {
-            if (use_destroy && (i % 3U) != 0U) {
+            if ((use_destroy != 0) && (i % 3U) != 0U) {
                 continue; /* destroy at a sample of the steps */
             }
             usb_world_reset(0);
@@ -1032,9 +1074,10 @@ test_stop_at_each_swap_step(void) {
                 DSD_FPRINTF(stderr, "stop at step %d: recovery returned %d (%s)\n", step, rc, why.c_str());
             }
             assert(rc == -ECANCELED);
-            /* Cancelled promptly, not after the rediscovery's 5 s. */
+            /* Cancelled promptly, not after the rediscovery's 5 s, and with the bias tee off. */
             assert(dsd_realtime_mono_ms() - t0 < 4000U);
-            if (use_destroy) {
+            assert(!bias_tee_left_on(r));
+            if (use_destroy != 0) {
                 r.dev = nullptr;
             } else {
                 r.dongle.on_op = nullptr;
@@ -1058,7 +1101,7 @@ DSD_THREAD_RETURN_TYPE
 __stdcall
 #endif
 resume_thread(void* arg) {
-    auto* r = static_cast<rig*>(arg);
+    const auto* r = static_cast<rig*>(arg);
     (void)rtl_device_usb_resume_reader(r->dev);
     DSD_THREAD_RETURN;
 }
@@ -1111,18 +1154,19 @@ enum restore_control {
     RESTORE_BANDWIDTH,
     RESTORE_FREQ,
     RESTORE_RATE,
-    RESTORE_COUNT
+    RESTORE_FIFO,
+    RESTORE_COUNT,
 };
 
 const char* const k_restore_names[RESTORE_COUNT] = {
     "bias tee",        "gain",          "PPM",       "crystal",   "IF gain",     "test mode",
-    "direct sampling", "offset tuning", "bandwidth", "frequency", "sample rate",
+    "direct sampling", "offset tuning", "bandwidth", "frequency", "sample rate", "FIFO reset",
 };
 
 void
 test_previously_effective_control_restore_failure_fails(void) {
     for (int c = 0; c < RESTORE_COUNT; c++) {
-        if (c == RESTORE_BIAS && !g_bias_api) {
+        if (c == RESTORE_BIAS && (g_bias_api == 0)) {
             continue;
         }
         rig r;
@@ -1162,7 +1206,8 @@ test_previously_effective_control_restore_failure_fails(void) {
             case RESTORE_OFFSET: d.faults[RTL_TEST_DONGLE_OFFSET].fail_from_call = 1; break;
             case RESTORE_BANDWIDTH: d.faults[RTL_TEST_DONGLE_BANDWIDTH].fail_from_call = 1; break;
             case RESTORE_FREQ: d.faults[RTL_TEST_DONGLE_FREQ].fail_from_call = 1; break;
-            default: d.faults[RTL_TEST_DONGLE_RATE].fail_from_call = 1; break;
+            case RESTORE_RATE: d.faults[RTL_TEST_DONGLE_RATE].fail_from_call = 1; break;
+            default: d.faults[RTL_TEST_DONGLE_RESET_BUFFER].fail_from_call = 1; break;
         }
         /* The faults count calls from here on. */
         for (int op = 0; op < RTL_TEST_DONGLE_OP_COUNT; op++) {
@@ -1178,11 +1223,13 @@ test_previously_effective_control_restore_failure_fails(void) {
         }
         assert(rc < 0 && rc != -ECANCELED);
         assert(why.find(k_restore_names[c]) != std::string::npos);
-        /* The half-restored dongle was closed, never published, and its FIFO never reset for a reader. */
+        /* The half-restored dongle was closed with its bias tee off, never published, and (but for the failing FIFO
+         * reset itself) its FIFO never reset for a reader. */
         rtl_device_test_usb_swap_state st = swap_state(r);
         assert(!st.has_handle && !st.thread_started && !st.recovering);
         assert(d.open_handles == 0);
-        assert(op_index(d, RTL_TEST_DONGLE_RESET_BUFFER, 0) < 0);
+        assert(!bias_tee_left_on(r));
+        assert(c == RESTORE_FIFO || op_index(d, RTL_TEST_DONGLE_RESET_BUFFER, 0) < 0);
         /* The reader never restarts. */
         assert(rtl_device_usb_resume_reader(r.dev) < 0);
         st = swap_state(r);
@@ -1202,7 +1249,7 @@ test_reenumerated_port_recorded(void) {
     g_usb.devs[0].gone_on_reset = 1;
     g_usb.devs[0].port_after = 4;
     assert(recover(r) == 0);
-    rtl_device_test_usb_swap_state st = swap_state(r);
+    const rtl_device_test_usb_swap_state st = swap_state(r);
     assert(st.recovery_on && st.identity_port_depth == 1 && st.identity_ports[0] == 4);
     /* And the next reset reaches it there. */
     g_usb.devs[0].gone_on_reset = 0;
@@ -1219,7 +1266,7 @@ test_reset_not_back_fails(void) {
     usb_world_reset(0);
     rig r;
     rig_open(r, 1);
-    rig_configure(r, settings{});
+    rig_configure(r, biased());
     rig_start(r);
     g_usb.devs[0].gone_on_reset = 1;
     g_usb.devs[0].never_back = 1;
@@ -1228,6 +1275,7 @@ test_reset_not_back_fails(void) {
     assert(rc < 0 && rc != -ECANCELED);
     assert(why.find("not found") != std::string::npos);
     assert(!swap_state(r).has_handle);
+    assert(!bias_tee_left_on(r));
     (void)log_take();
     rig_close(r);
     usb_world_reset(0);
@@ -1242,7 +1290,7 @@ test_reopen_with_duplicate_triple_fails_recovery(void) {
         usb_world_reset(0);
         rig r;
         rig_open(r, 1);
-        rig_configure(r, settings{});
+        rig_configure(r, biased());
         rig_start(r);
         (void)log_take();
         g_usb.twin_on_reset = 1;
@@ -1255,8 +1303,10 @@ test_reopen_with_duplicate_triple_fails_recovery(void) {
         /* No rtlsdr_open() of any index. */
         assert(r.dongle.calls[RTL_TEST_DONGLE_OPEN] == opens);
         assert(r.dongle.open_handles == 0);
-        const char* cause = in_librtlsdr ? "no single receiver carries its USB strings"
-                                         : "another device has the same serial (set a unique one with rtl_eeprom)";
+        assert(!bias_tee_left_on(r));
+        const char* cause = (in_librtlsdr != 0)
+                                ? "no single receiver carries its USB strings"
+                                : "another device has the same serial (set a unique one with rtl_eeprom)";
         if (why.find(cause) == std::string::npos) {
             DSD_FPRINTF(stderr, "duplicate after reset (librtlsdr %d): why=\"%s\"\n", in_librtlsdr, why.c_str());
         }
@@ -1265,7 +1315,7 @@ test_reopen_with_duplicate_triple_fails_recovery(void) {
         assert(log.find(std::string("RTL-SDR: stall recovery is off for this receiver: ") + cause)
                != std::string::npos);
         /* Recovery stays off, and the reader is not restarted. */
-        rtl_device_test_usb_swap_state st = swap_state(r);
+        const rtl_device_test_usb_swap_state st = swap_state(r);
         assert(!st.recovery_on && !st.has_handle && !st.thread_started && !st.reader_running && !st.recovering);
         assert(rtl_device_usb_resume_reader(r.dev) < 0);
         assert(!swap_state(r).thread_started);
@@ -1274,6 +1324,37 @@ test_reopen_with_duplicate_triple_fails_recovery(void) {
         assert(again.find(cause) != std::string::npos);
         rig_close(r);
     }
+    usb_world_reset(0);
+}
+
+/* An Android receiver (opened from the app's descriptor) is never recovered by design: its open says so once, at info
+ * level, not as a warning. */
+void
+test_android_recovery_off_logged_at_info(void) {
+    rtl_device_test_set_open_fd_failure_hook(open_fd_succeeds);
+    rtl_device_set_preopened_fd(7);
+    (void)log_take();
+    (void)log_off_level_take();
+    const auto ring = std::make_unique<input_ring_state>();
+    assert(input_ring_init(ring.get(), 1U << 16) == 0);
+    rtl_device* dev = rtl_device_create(0, ring.get());
+    assert(dev != nullptr);
+    const std::string log = log_take();
+    assert(log.find("RTL-SDR: stall recovery is off for this receiver: opened from an Android descriptor")
+           != std::string::npos);
+    assert(log_off_level_take() == (int)LOG_LEVEL_INFO);
+    assert(rtl_device_usb_recovery_eligible(dev) == 0);
+    rtl_device_destroy(dev);
+    input_ring_destroy(ring.get());
+    rtl_device_set_preopened_fd(-1);
+    rtl_device_test_set_open_fd_failure_hook(nullptr);
+
+    /* Any other reason stays a warning. */
+    usb_world_reset(1);
+    rig r;
+    rig_open(r, 1);
+    assert(log_off_level_take() == (int)LOG_LEVEL_WARN);
+    rig_close(r);
     usb_world_reset(0);
 }
 
@@ -1330,6 +1411,7 @@ test_ineligible_recovery_off_reason_logged(void) {
 int
 main(void) {
     assert(dsd_mutex_init(&g_log.lock) == 0);
+    g_log.off_level = -1;
     dsd_neo_log_set_tap(capture_log, &g_log);
     rtl_usb_identity_set_driver_ops(&k_usb_ops);
     /* The monitor never ends these sessions: no sample is ever delivered. */
@@ -1337,13 +1419,14 @@ main(void) {
     usb_world_reset(0);
 
     test_ineligible_recovery_off_reason_logged();
+    test_android_recovery_off_logged_at_info();
 #ifdef DSD_HAVE_LIBUSB
     const int have_libusb = 1;
 #else
     const int have_libusb = 0;
 #endif
     /* Without libusb no receiver is eligible; the report above is all there is. */
-    if (have_libusb) {
+    if (have_libusb != 0) {
         test_swap_configures_before_reader_runs();
         test_replay_restores_effective_not_initial();
         test_replay_direct_sampling_r820t();
