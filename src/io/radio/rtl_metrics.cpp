@@ -27,6 +27,9 @@
 #include "rtl_finite.h"
 #include "rtl_spectrum_kernels.h"
 #include "rtl_stream_shared.hpp"
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include "rtl_stream_test_support.h"
+#endif
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
 static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
@@ -762,3 +765,25 @@ rtl_stream_get_auto_ppm(void) {
     }
     return g_auto_ppm_enabled.load(std::memory_order_relaxed) ? 1 : 0;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" void
+rtl_metrics_test_spectrum_reset(void) {
+    g_spec_ready.store(0, std::memory_order_release);
+    g_spec_cur.store(-1, std::memory_order_seq_cst);
+    g_spec_last = &g_spec_writer;
+}
+
+extern "C" int
+rtl_metrics_test_spectrum_hold_spares(int hold) {
+    const int cur = g_spec_cur.load(std::memory_order_seq_cst);
+    int held = 0;
+    for (int i = 0; i < kSpecFrames; i++) {
+        if (i != cur) {
+            g_spec_holds[i].fetch_add(hold ? 1 : -1, std::memory_order_seq_cst);
+            held++;
+        }
+    }
+    return held;
+}
+#endif

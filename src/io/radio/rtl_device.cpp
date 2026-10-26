@@ -4934,7 +4934,25 @@ rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* requ
     input_ring_destroy(&ring);
     return 0;
 }
+
+/* soapy_copy_cs16_samples() itself: @p elem_count CS16 pairs from @p src_iq into @p dst. */
+extern "C" int
+rtl_device_test_soapy_cs16_copy(float* dst, const int16_t* src_iq, size_t elem_count, int apply_rot, int* phase) {
+    soapy_copy_cs16_samples(dst, src_iq, elem_count, 1.0f / 32768.0f, apply_rot, phase);
+    return 0;
+}
 #else
+/* The build has no SoapySDR: nothing is copied, and the hook returns 1. */
+extern "C" int
+rtl_device_test_soapy_cs16_copy(float* dst, const int16_t* src_iq, size_t elem_count, int apply_rot, int* phase) {
+    (void)dst;
+    (void)src_iq;
+    (void)elem_count;
+    (void)apply_rot;
+    (void)phase;
+    return 1;
+}
+
 /* The build has no SoapySDR: there is no read to replay, so the outputs are not touched and the hook returns 1. */
 extern "C" int
 rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,

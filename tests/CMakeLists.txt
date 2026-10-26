@@ -14508,6 +14508,41 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_SOAPY_STREAM_LOSS PROPERTIES TIMEOUT 120)
 
+    # The SoapySDR reader's CS16 conversion, grouped fs/4 rotation included, bit for
+    # bit against the per-sample rotation. Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_soapy_cs16_copy
+        io/test_io_soapy_cs16_copy.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_soapy_cs16_copy
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_soapy_cs16_copy
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_SOAPY_CS16_COPY COMMAND dsd-neo_test_io_soapy_cs16_copy)
+
+    # The narrow spectrum's frame buffers: the average carries across buffers, and a
+    # frame folded while readers hold every spare buffer reaches the next one.
+    add_executable(
+        dsd-neo_test_io_rtl_spectrum_frames
+        io/test_io_rtl_spectrum_frames.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_spectrum_frames
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_spectrum_frames
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_SPECTRUM_FRAMES
+        COMMAND dsd-neo_test_io_rtl_spectrum_frames
+    )
+
     # Which USB device an RTL-SDR runs on and a reset of only that device, over a
     # fake device list. Without libusb the unit is a stub and the test checks that;
     # with it, the stub is also built from the same source and checked on its own.

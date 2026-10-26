@@ -185,6 +185,16 @@ typedef struct {
 /* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */
 int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
                                       size_t* output_count, int* out_phase);
+/* The SoapySDR reader's CS16 conversion (soapy_copy_cs16_samples(), scale 1/32768): @p elem_count pairs into @p dst,
+ * each rotated at fs/4 phase *phase + i when @p apply_rot is set, *phase then moved on. Returns 1, and touches nothing,
+ * when the build has no SoapySDR. */
+int rtl_device_test_soapy_cs16_copy(float* dst, const int16_t* src_iq, size_t elem_count, int apply_rot, int* phase);
+
+/* The narrow spectrum's frame buffers (rtl_metrics.cpp): forget every frame, so the next one seeds the average; and,
+ * as readers do, hold (@p hold set) or let go of every buffer but the current one. Returns the buffers changed. Call
+ * with no other spectrum reader or writer running. */
+void rtl_metrics_test_spectrum_reset(void);
+int rtl_metrics_test_spectrum_hold_spares(int hold);
 
 struct input_ring_state;
 
