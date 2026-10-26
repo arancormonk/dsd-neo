@@ -23,7 +23,6 @@
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/core/parse.h>
-#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -38,6 +37,7 @@
 
 #ifdef DSD_BENCH_USB_INGEST_AIRSPY
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/io/rtl_device.h>
 #include "airspy_sdk_double.h"
 #endif
 

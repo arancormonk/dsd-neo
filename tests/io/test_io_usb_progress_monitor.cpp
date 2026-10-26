@@ -11,10 +11,7 @@
  */
 
 #include <assert.h>
-#include <atomic>
 #include <dsd-neo/io/rtl_device.h>
-#include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -27,7 +24,10 @@
 #include "rtl_stream_test_support.h"
 
 #ifdef DSD_TEST_USB_PROGRESS_AIRSPY
+#include <atomic>
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/threading.h>
 #include "airspy_sdk_double.h"
 #endif
 
@@ -40,7 +40,6 @@ namespace {
 
 constexpr uint32_t kLimitMs = 300U;
 constexpr uint32_t kPeriodMs = 20U;
-constexpr uint32_t kGraceMs = 200U;
 
 void
 reset_session(void) {
@@ -231,6 +230,8 @@ test_rtl_monitor_start_refused(input_ring_state* ring) {
 
 #ifdef DSD_TEST_USB_PROGRESS_AIRSPY
 /* ---- Airspy ---- */
+
+constexpr uint32_t kGraceMs = 200U;
 
 /* Stands in for the receiver's sample flow: a transfer every 5 ms while feeding and the stream is up. */
 struct airspy_feeder {
