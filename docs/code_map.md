@@ -1937,7 +1937,16 @@ suite runs under this compiler.
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
     demodulator a whole squelch setting (`set_channel_squelch_setting`, `rtl_stream_set_channel_squelch_setting()`;
     issue #518 follow-up), which a scan scope's push uses for every setting, levels included; a table without it falls
-    back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`, `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
+    back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
+    `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
+  - Stream notices and reads with no stream (issue #518): `include/dsd-neo/runtime/stream_notice_hooks.h` carries what
+    the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`), posted from the stream's controller with
+    `dsd_runtime_stream_notice_post()` into the sink app-control installs at session start
+    (`dsd_app_stream_notice_post()`: one slot, which the next `dsd_app_drain_cmds()` shows as a toast; NULL at session
+    end); with no sink it is dropped, and nothing is latched in the input failure. `rtl_stream_io_hooks.h` gives a
+    live read two results beside a count and -1: `DSD_RTL_READ_YIELD` (no stream and a command queued) and, for a
+    reader that asks through `read_ex2` (`want_no_stream`), `DSD_RTL_READ_NO_STREAM` (see IO, "Reads while the device
+    has no stream"). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `ENGINE_IO_HOOKS_INSTALL`.
   - Squelch setting (`include/dsd-neo/runtime/squelch.h`, `src/runtime/squelch.c`, issue #518 follow-up): a
     `dsd_squelch_setting` (`<dsd-neo/core/power.h>`: mode LEVEL, AUTO or NOISE -- the dynamic modes,
     `dsd_squelch_mode_is_dynamic()` -- the AUTO margin or NOISE quieting in whole dB 3..30, the LEVEL threshold in
@@ -2251,6 +2260,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - Path: `src/app_control`, `include/dsd-neo/app_control`
 - Target: `dsd-neo_app_control`
 - Responsibilities:
+  - Quit (issue #518 B2): the decoder thread may sit in a read that never returns (a receiver that stopped before its
+    silence verdict, a driver call that hangs), so `dsd_app_command_submit()` raises the exit flag for an accepted
+    `DSD_APP_CMD_QUIT` itself, after session admission and under the queue lock, and still queues the command (its
+    handler stores the same flag). A submission the closed session rejects raises nothing, and an overflow that evicts
+    the queued quit cannot take it back. Test: `APP_COMMAND_QUEUE` (`test_quit_takes_effect_at_submit`); tests that
+    submit a quit put the flag down after.
   - Signal search commands 712/713 are frontend-only and not public TCP API commands.
     `actions/actions_signal_search.c` runs them on the decoder thread, adds the access code
     and received tone to copied hits, and flushes on stop. The call tuple (IDs, texts, slot,
@@ -3552,7 +3567,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   reason). The held or cached samples come next. The EDACS analog call loop and the M17 encoder read the stream
   themselves and take the gap up there (the triplet it cut plays as silence and the chain starts over; the block it cut
   is dropped with the input filter's memory), so the symbol reader never raises it again. Tests:
-  `DSP_SYMBOL_STREAM_GAP`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`.
+  `DSP_SYMBOL_STREAM_GAP`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`; bench: `dsd-neo_bench_rtl_consumer` (both
+  cached readers and the one-sample reader over a live rtl_tcp stream).
 - Reads while the radio has no stream (issue #518 D4). A live read that found nothing while the device has no stream
   and a command is queued returns `DSD_RTL_READ_YIELD` (`<dsd-neo/runtime/rtl_stream_io_hooks.h>`; see IO, "Reads
   while the device has no stream"), its own status beside -1 (a failure) and an empty read: the cache refill answers
@@ -4372,58 +4388,45 @@ Key public headers:
     `IO_RTL_READER_EXIT`, and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` and `VENDORED_LIBRTLSDR_TRANSFERS` for the vendored
     allocation path and transfer accounting.
   - USB sample-progress monitor (RTL-SDR and Airspy; SoapySDR's is below; replay and rtl_tcp have none): a receiver can
-    stay enumerated and stop delivering with nothing returning (system librtlsdr drops a transfer for good on each
-    error status and waits forever once none is left, where the vendored copy returns -1; a device that stops
-    completing transfers, which have no timeout,
-    leaves either SDK waiting). `rtlsdr_callback()` and the Airspy source's receive callback count progress as their
-    first statement (one relaxed increment, no clock read: `rtl_device::progress`, `airspy_source_progress()`). A
-    monitor samples it every 100 ms on `dsd_realtime_mono_ms()`: for the RTL-SDR its own thread, started by
-    `rtl_device_start_async()` after the reader and stopped and joined in `rtl_usb_reader_stop()` before the cancel
-    loop; for the Airspy the device thread, `airspy_monitor()`. Silence accrues by the time between samples while the
-    stream is up (the RTL reader inside `rtlsdr_read_async()`; the Airspy not inside a retune or rate change,
-    `airspy_source_reconfiguring()`, and the time a sample waits on the source's lock is not counted), does not reset
-    when the stream restarts (`airspy_source_generation()` counts restarts, for the log only), and only observed
+    stay enumerated and stop delivering with nothing returning (system librtlsdr drops a transfer for good on each error
+    status and waits forever once none is left, where the vendored copy returns -1; a device that stops completing
+    transfers, which have no timeout, leaves either SDK waiting). `rtlsdr_callback()` counts each callback that carries
+    bytes (a stalled transfer can still complete with none, which is no progress) and the Airspy source's receive
+    callback each callback, as their first statement (one relaxed increment, no clock read: `rtl_device::progress`,
+    `airspy_source_progress()`). A monitor samples it every 100 ms on `dsd_realtime_mono_ms()`: for the RTL-SDR its own
+    thread, started by `rtl_device_start_async()` after the reader and stopped and joined in `rtl_usb_reader_stop()`
+    before the cancel loop; for the Airspy the device thread, `airspy_monitor()`. Silence accrues by the time between
+    samples while the stream is up (the RTL reader inside `rtlsdr_read_async()`; the Airspy not inside a retune or rate
+    change, `airspy_source_reconfiguring()`, and the time a sample waits on the source's lock is not counted), does not
+    reset when the stream restarts (`airspy_source_generation()` counts restarts, for the log only), and only observed
     progress ends it. 5000 ms of it (`RTL_PROGRESS_SILENCE_LIMIT_MS`; the 100 ms period is `RTL_PROGRESS_PERIOD_MS`;
     both are constants that only internal test hooks shorten) ends the session with `-ETIMEDOUT` through
     `rtl_device_end_for_receiver()`, so the grace applies, and cancels the RTL reader; an RTL-SDR eligible for stall
     recovery is handed to its stream's controller instead, within its budget (see "USB stall recovery" below). The
-    Airspy's "stream stopped"
-    verdict (`-1`) takes the same path. Every verdict carries the progress count it was made at; during the grace only
-    progress since then drops it, never a restart or an SDK that says it streams, and the deadline never restarts. Of
-    verdicts that race (a reader exit and the monitor), the first reports (`receiver_end_claimed`). Tests:
-    `IO_USB_PROGRESS_MONITOR`; bench: `dsd-neo_bench_usb_ingest`.
-  - SoapySDR stream loss: the reader (`soapy_thread_fn()`) counts every read with samples in `rtl_device::progress`
+    Airspy's "stream stopped" verdict (`-1`) takes the same path. Every verdict carries the progress count it was made
+    at; during the grace only progress since then drops it, never a restart or an SDK that says it streams, and the
+    deadline never restarts. Of verdicts that race (a reader exit and the monitor), the first reports
+    (`receiver_end_claimed`). Tests: `IO_USB_PROGRESS_MONITOR`; bench: `dsd-neo_bench_usb_ingest`.
+  - SoapySDR stream loss: the reader (`soapy_read_loop()`) counts every read with samples in `rtl_device::progress`
     before a retune mute or a reconfigure hold can drop them (timeouts, overflows and empty reads do not count), and
     publishes `reader_entered` once its stream is active and `reader_exited` once it left its loop. Its own monitor
-    thread (`soapy_progress_monitor()`), started by `rtl_device_start_async()` before the reader (a monitor that
-    cannot start fails the start) and stopped and joined by `rtl_device_stop_async()` and `rtl_device_destroy()`
-    before the reader, applies the rule above: silence accrues while the reader streams and no control or setup
-    transaction holds `soapy_lock` (`soapy_control_hold`, set once the lock is held by `soapy_call_locked()`, the
-    stream setup and its cleanup, never by a read, so a read that hangs or keeps timing out accrues), and the verdict
-    waits out the grace on the monitor while the reader keeps reading. An end of the reader nobody asked for reports
-    once (`soapy_reader_finished()`): a failed setup or buffer allocation at once as a device failure without the
-    grace or the committed ending (as `-ENOMEM` above), a read that threw (`-EIO`) or returned a fatal code through
-    `rtl_device_end_for_receiver()`; either raises the exit flag and wakes the demod, and a stop is silent. A read hung
-    inside the driver cannot be cancelled: the session ends, and its stop waits for the driver to return. Tests:
-    `IO_SOAPY_STREAM_LOSS` (the reader runs against a stand-in driver, `rtl_device_test_soapy_device()`); bench:
-    `dsd-neo_bench_soapy_ingest`.
-- Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
-  `include/dsd-neo/io/m17_udp.h`
-- UDP control API: `include/dsd-neo/io/udp_control.h`
-- UDP audio output: `include/dsd-neo/io/udp_audio.h` (implemented in `src/io/audio_backends/udp_audio.c`)
-- UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
-- I/Q capture/replay: `include/dsd-neo/io/iq_capture.h`, `include/dsd-neo/io/iq_replay.h`,
-  `include/dsd-neo/io/iq_types.h`, `include/dsd-neo/io/iq_wav.h`
-  - Tuner gain (issue #669): `rtl_device_get_tuner_gain(dev, &tenth_db)` returns a status separate from the value,
-    since librtlsdr's gains reach below zero (E4K -1.0 dB, FC0012/FC0013 -9.9 dB); its callers (`rtl_stream_get_gain()`,
-    the autogain latch, the capture metadata, the retune note) all read it that way. A capture whose tuner reports no
-    gain writes `"tuner_gain_known": false` with a gain of 0 (`dsd_iq_capture_config::tuner_gain_unknown`); replay
-    reads it, and a legacy Airspy sidecar without it, as `dsd_iq_replay_config::tuner_gain_unknown`, and then reports
-    no gain. Test: `IO_RTL_REPLAY_EOF_AND_CF32`.
-  - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and
-    librtlsdr's setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test
-    mode while on, else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC
-    and test-mode change; asserting test mode off restores the digital AGC rather than writing it off. A gain change
+    thread (`soapy_progress_monitor()`), started by `rtl_device_start_async()` before the reader (a monitor that cannot
+    start fails the start) and stopped and joined by `rtl_device_stop_async()` and `rtl_device_destroy()` before the
+    reader, applies the rule above: silence accrues while the reader streams and no control or setup transaction holds
+    `soapy_lock` (`soapy_control_hold`, set once the lock is held by `soapy_call_locked()`, the stream setup and its
+    cleanup, never by a read, so a read that hangs or keeps timing out accrues), and the verdict waits out the grace on
+    the monitor while the reader keeps reading. An end of the reader nobody asked for reports once
+    (`soapy_reader_finished()`): a failed setup or buffer allocation at once as a device failure without the grace or
+    the committed ending (as `-ENOMEM` above), a read that threw (`-EIO`) or returned a fatal code through
+    `rtl_device_end_for_receiver()`; either raises the exit flag and wakes the demod, and a stop is silent. A driver
+    call that hangs cannot be cancelled: a hung read ends the session, and its stop waits for the driver to return; a
+    hung control or setup call holds `soapy_lock`, which pauses the silence count and blocks the reader and the stop
+    alike until the driver returns. Tests: `IO_SOAPY_STREAM_LOSS` (the reader runs against a stand-in driver,
+    `rtl_device_test_soapy_device()`); bench: `dsd-neo_bench_soapy_ingest`.
+  - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and librtlsdr's
+    setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test mode while on,
+    else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC and test-mode
+    change; asserting test mode off restores the digital AGC rather than writing it off. A gain change
     (`rtl_usb_change_gain()`: manual = digital AGC off + manual mode + gain, automatic = automatic mode + digital AGC)
     is one transaction: a partial failure re-applies the state the controls last took, and when that fails too (or a
     first change has none) `gain_state_unknown` makes the gain getters report no mode and no reading until a change
@@ -4436,116 +4439,116 @@ Key public headers:
     start sets the frequency (Fs/4-shifted centre), then the rate (read back), then offset tuning, then recomputes the
     capture centre and the Fs/4 rotation from whether it took, the tuner bandwidth, and the frequency again if the
     centre moved. The device records `offset_took` only when librtlsdr reports an offset
-    (`rtl_device_get_offset_tuning()`, `rtl_device_get_offset_tuning_hz()`); R82xx tuners (-2) and direct sampling
-    (-3) refuse it and keep the Fs/4 shift. Every tuner-bandwidth call (start, retune, refused-retune restore) goes
-    through `rtl_offset_aware_bandwidth_hz()`: while offset tuning is on the bandwidth is at least `2 * offs_freq`,
-    the filter librtlsdr opens on enable (an explicit `DSD_NEO_TUNER_BW_HZ` above it is kept, below it is raised and
-    logged once). The device caches the bandwidth it last took (`tuner_bw_hz`). Test: `IO_RTL_OFFSET_TUNING`
-    (an effective-state fake of librtlsdr's tuning controls, `rtl_device_test_usb_tuner_device()`).
+    (`rtl_device_get_offset_tuning()`, `rtl_device_get_offset_tuning_hz()`); R82xx tuners (-2) and direct sampling (-3)
+    refuse it and keep the Fs/4 shift. Every tuner-bandwidth call (start, retune, refused-retune restore) goes through
+    `rtl_offset_aware_bandwidth_hz()`: while offset tuning is on the bandwidth is at least `2 * offs_freq`, the filter
+    librtlsdr opens on enable (an explicit `DSD_NEO_TUNER_BW_HZ` above it is kept, below it is raised and logged once).
+    The device caches the bandwidth it last took (`tuner_bw_hz`). Test: `IO_RTL_OFFSET_TUNING` (an effective-state fake
+    of librtlsdr's tuning controls, `rtl_device_test_usb_tuner_device()`).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path
-    reads a process-lifetime atomic or a seqlock copy the stream published: the tuner gain (read back from the device
-    by the thread that applied it, `dongle_note_gain()`, and published as no reading before the device goes), the
-    stream activity (`stream_set_lifecycle_flag()`), the input level (a multi-writer seqlock: reader, demod, controller
-    and decoder all write it; dropped at stream start and stop), the decode health, the IQ controls and TED gain, the
-    requested PPM (published under its mutex), the narrow spectrum (a seqlock copy of the demod's bins) and the output
-    rate (the metrics hook's; the snapshot's `rtl_ctx` is never dereferenced). `rtl_device_handle` and `g_stream` are
-    cleared before the objects they point at are destroyed. Test: `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan).
+    reads a process-lifetime atomic or a copy the stream published: the tuner gain (read back from the device by
+    the thread that applied it, `dongle_note_gain()`, and published as no reading before the device goes), the stream
+    activity (`stream_set_lifecycle_flag()`), the input level (a multi-writer seqlock: reader, demod, controller and
+    decoder all write it; dropped at stream start and stop), the decode health, the IQ controls and TED gain, the
+    requested PPM (published under its mutex), the narrow spectrum (`rtl_metrics.cpp`: the demod folds each frame out of
+    place into a buffer no reader holds and makes it current, and a reader holds the current buffer while it copies it,
+    so nothing is copied to publish) and the output rate (the metrics hook's; the snapshot's `rtl_ctx` is never
+    dereferenced). `rtl_device_handle` and `g_stream` are cleared before the objects they point at are destroyed. Test:
+    `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan).
   - Input level freshness (B6): the producer stamps every level it measures on the real-time monotonic clock
     (`updated_ms`, in place of the wall read moments finalization used to take, so no new clock read on the sample
     path). `dsd_input_level_is_stale()` (`runtime/input_level.c`, `DSD_INPUT_LEVEL_STALE_MS` = 2 s) is the one rule:
-    frontends show a radio input's level through `dsd_app_frontend_input_level()` (`app_control/frontend.c`), built
-    from the stream's seqlock copy (`rtl_stream_get_input_level()`), never the decoder's `state->input_level`, which
+    frontends show a radio input's level through `dsd_app_frontend_input_level()` (`app_control/frontend.c`), built from
+    the stream's seqlock copy (`rtl_stream_get_input_level()`), never the decoder's `state->input_level`, which
     refreshes only every 64 decoded symbols, and classified with `opts->input_warn_db` by `dsd_input_level_classify()`;
     a stale or missing level reads `No input` with no readings. The decoder keeps a stale live level but warns about
     nothing (`dsd_input_level_publish()`); an I/Q replay (`opts->iq_replay_active`) keeps every warning its capture
     calls for, so a paused replay prints the same advisories in every run. PCM inputs keep the decoder's level. Tests:
     `IO_INPUT_LEVEL_METRICS`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
-    `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never
-    a second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes
-    the (manufacturer, product, serial) triple librtlsdr reads for the index, and is valid only when exactly one
-    device with a vendor-specific (0xff) device or interface class carries it, whatever its VID:PID, none of those
-    devices was unreadable (an unreadable one might be the dongle beside a readable twin), the serial is not empty,
-    and librtlsdr has exactly one index with it; it records bus, port path and VID:PID. A device whose open is refused
-    for access or lack of a usable driver (`LIBUSB_ERROR_ACCESS`, `LIBUSB_ERROR_NOT_SUPPORTED`) is not unreadable
-    here (nor one whose configuration descriptor read is refused that way): librtlsdr opens the dongle with the same
-    permissions right after, so it cannot be the dongle; every other failure (I/O, pipe, timeout, descriptors
-    unreadable on an opened device) refuses. Accepted limit, of the same class as the open-time hotplug window: if the
-    dongle's own open is refused in that instant while a readable device of another VID:PID carries the same triple,
-    that device's port is recorded (a reset still requires the triple there).
-    `rtl_usb_identity_verify_handle()` checks the opened handle's strings. `rtl_usb_identity_reset()` opens the device
-    at the recorded bus + port path + VID:PID, re-reads its strings on the handle the reset goes through and resets
-    only on the triple (a replacement on that port gets `RTL_USB_ID_MISMATCH` and no reset); a device that
-    re-enumerates is found again by its triple within 5000 ms (cancellable, twins refused, unreadable candidates
-    waited out; refused devices of another VID:PID are left out, a refused one with the recorded VID:PID, the dongle
-    before udev has applied its permissions, is waited for). `rtl_usb_identity_index()` is the librtlsdr index by
-    triple, -1 unless unique.
-    `rtl_usb_identity_off_reason()` gives the "stall recovery is off" text. Every libusb/librtlsdr call goes through
-    `struct rtl_usb_driver_ops` (`rtl_usb_identity_set_driver_ops()`, test hooks only). CMake defines
-    `DSD_HAVE_LIBUSB` (`cmake/FindLibusb.cmake`: header, library and a `libusb_reset_device` link check) privately on
-    `dsd-neo_io_radio` and its test mirror, only with a system librtlsdr and never on Android; otherwise every call
-    returns `RTL_USB_ID_NO_LIBUSB`. Tests: `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`.
+    `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never a
+    second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes the
+    (manufacturer, product, serial) triple librtlsdr reads for the index, and is valid only when exactly one device with
+    a vendor-specific (0xff) device or interface class carries it, whatever its VID:PID, none of those devices was
+    unreadable (an unreadable one might be the dongle beside a readable twin), the serial is not empty, and librtlsdr
+    has exactly one index with it; it records bus, port path and VID:PID. A device whose open is refused for access or
+    lack of a usable driver (`LIBUSB_ERROR_ACCESS`, `LIBUSB_ERROR_NOT_SUPPORTED`) is not unreadable here (nor one whose
+    configuration descriptor read is refused that way): librtlsdr opens the dongle with the same permissions right
+    after, so it cannot be the dongle; every other failure (I/O, pipe, timeout, descriptors unreadable on an opened
+    device) refuses. Accepted limit, of the same class as the open-time hotplug window: if the dongle's own open is
+    refused in that instant while a readable device of another VID:PID carries the same triple, that device's port is
+    recorded (a reset still requires the triple there). `rtl_usb_identity_verify_handle()` checks the opened handle's
+    strings. `rtl_usb_identity_reset()` opens the device at the recorded bus + port path + VID:PID, re-reads its strings
+    on the handle the reset goes through and resets only on the triple (a replacement on that port gets
+    `RTL_USB_ID_MISMATCH` and no reset); a device that re-enumerates is found again by its triple within 5000 ms
+    (cancellable, twins refused, unreadable candidates waited out; refused devices of another VID:PID are left out, a
+    refused one with the recorded VID:PID, the dongle before udev has applied its permissions, is waited for).
+    `rtl_usb_identity_index()` is the librtlsdr index by triple, -1 unless unique. `rtl_usb_identity_off_reason()` gives
+    the "stall recovery is off" text. Every libusb/librtlsdr call goes through `struct rtl_usb_driver_ops`
+    (`rtl_usb_identity_set_driver_ops()`, test hooks only). CMake defines `DSD_HAVE_LIBUSB` (`cmake/FindLibusb.cmake`:
+    header, library and a `libusb_reset_device` link check) privately on `dsd-neo_io_radio` and its test mirror, only
+    with a system librtlsdr and never on Android; otherwise every call returns `RTL_USB_ID_NO_LIBUSB`. Tests:
+    `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`.
   - USB handle swap (`rtl_device.cpp`): `rtl_device_create()` resolves the identity before the open and verifies the
-    handle after; any other result (or an Android descriptor) logs `RTL-SDR: stall recovery is off for this
-    receiver: <reason>` once (info level for Android, a warning otherwise) and leaves
-    `rtl_device_usb_recovery_eligible()` 0. Two locks, taken
-    `usb_lifecycle_lock` then `usb_ctrl_lock`, never the reverse, neither on the sample path: every use of the
-    librtlsdr handle (setters, getters, `rtlsdr_cancel_async()`) and of the controls' record is under
-    `usb_ctrl_lock`, so the demod never reads a gain change in flight; the handle is published or retired only with
-    both held; the reader reads it unlocked, as it starts after publication and is joined before retirement.
-    `thread_started` changes only under `usb_lifecycle_lock`. Each USB setter records in `usb_eff` (`struct
-    rtl_usb_effective`) what the dongle took, with a took flag per control, only on success.
-    `rtl_device_usb_recover_handle()` holds `usb_lifecycle_lock` throughout: sets `recovering` (setters then return
-    `RTL_DEVICE_EBUSY` and change nothing, getters still lock), cancels and joins the reader (its return is silent
-    while `recovering`), unpublishes and closes the handle, `rtl_usb_identity_reset()`, re-resolves and reopens by
-    `rtl_usb_identity_index()`, verifies, and replays `usb_eff` onto the unpublished handle (crystal, direct
-    sampling, frequency, rate, offset tuning only if it took, bandwidth through `rtl_offset_aware_bandwidth_hz()`,
-    PPM if nonzero, frequency, gain mode + gain if a gain took, register 0x19, IF gains, bias tee, FIFO reset; the
-    frequency precedes the rate so an R82xx never tunes to 0 Hz). A control that took and does not take again fails
-    the recovery with the handle closed and nothing published; success publishes the handle and clears `recovering`.
-    Every handle the swap closes (the old one, or a new one it gives up on) first gets one best-effort bias-tee-off
-    write when the bias tee took on: librtlsdr's close and a USB reset leave it powered.
-    It never starts the reader: `rtl_device_usb_resume_reader()` does, under `usb_lifecycle_lock`, only while
-    `stop_requested` is clear, after recording `progress_baseline` and bumping `watch_rearm_seq`. Stop and destroy set
-    `stop_requested` first, whatever runs, then take `usb_lifecycle_lock`; the swap checks the latch between steps
-    (the reset polls it) and returns `-ECANCELED`, so either the reader restarted before the stop (which joins it) or
-    it never starts. A dongle found on another port is recorded there; a triple that after the reset no longer leads to
-    exactly one device (index or resolution) fails the recovery before any open and turns recovery off from then on. Test: `IO_RTL_USB_SWAP` (a whole fake dongle, `rtl_device_test_usb_dongle_install()`, over a fake
-    device list; ASan/TSan).
-  - USB stall recovery (issue #518 B1, D1, D2). The stream registers `rtl_device_set_recovery_callback()` before the
-    USB reader starts and clears it once `rtl_device_stop_async()` joined the progress monitor. At the 5000 ms silence
-    limit the monitor of an eligible receiver with a callback posts a request (`recovery_request` REQUESTED, and
+    handle after; any other result (or an Android descriptor) logs `RTL-SDR: stall recovery is off for this receiver:
+    <reason>` once (info level for Android, a warning otherwise) and leaves `rtl_device_usb_recovery_eligible()` 0. Two
+    locks, taken `usb_lifecycle_lock` then `usb_ctrl_lock`, never the reverse, neither on the sample path: every use of
+    the librtlsdr handle (setters, getters, `rtlsdr_cancel_async()`) and of the controls' record is under
+    `usb_ctrl_lock`, so the demod never reads a gain change in flight; the handle is published or retired only with both
+    held; the reader reads it unlocked, as it starts after publication and is joined before retirement. `thread_started`
+    changes only under `usb_lifecycle_lock`. Each USB setter records in `usb_eff` (`struct rtl_usb_effective`) what the
+    dongle took, with a took flag per control, only on success. `rtl_device_usb_recover_handle()` holds
+    `usb_lifecycle_lock` throughout: sets `recovering` (setters then return `RTL_DEVICE_EBUSY` and change nothing,
+    getters still lock), cancels and joins the reader (its return is silent while `recovering`), unpublishes and closes
+    the handle, `rtl_usb_identity_reset()`, re-resolves and reopens by `rtl_usb_identity_index()`, verifies, and replays
+    `usb_eff` onto the unpublished handle (crystal, direct sampling, frequency, rate, offset tuning only if it took,
+    bandwidth through `rtl_offset_aware_bandwidth_hz()`, PPM if nonzero, frequency, gain mode + gain if a gain took,
+    register 0x19, IF gains, bias tee, FIFO reset; the frequency precedes the rate so an R82xx never tunes to 0 Hz). A
+    control that took and does not take again fails the recovery with the handle closed and nothing published; success
+    publishes the handle and clears `recovering`. Every handle the swap closes (the old one, or a new one it gives up
+    on) first gets one best-effort bias-tee-off write when the bias tee took on: librtlsdr's close and a USB reset leave
+    it powered. It never starts the reader: `rtl_device_usb_resume_reader()` does, under `usb_lifecycle_lock`, only
+    while `stop_requested` is clear, after recording `progress_baseline` and bumping `watch_rearm_seq`. Stop and destroy
+    set `stop_requested` first, whatever runs, then take `usb_lifecycle_lock`; the swap checks the latch between steps
+    (the reset polls it) and returns `-ECANCELED`, so either the reader restarted before the stop (which joins it) or it
+    never starts. A dongle found on another port is recorded there; a triple that after the reset no longer leads to
+    exactly one device (index or resolution) fails the recovery before any open and turns recovery off from then on.
+    Test: `IO_RTL_USB_SWAP` (a whole fake dongle, `rtl_device_test_usb_dongle_install()`, over a fake device list;
+    ASan/TSan).
+  - USB stall recovery (issue #518 B1, D1, D2). The stream registers `rtl_device_set_recovery_callback()` before the USB
+    reader starts and clears it once `rtl_device_stop_async()` joined the progress monitor. At the 5000 ms silence limit
+    the monitor of an eligible receiver with a callback posts a request (`recovery_request` REQUESTED, and
     `recovery_epoch` moves) unless its budget refuses: one per stall (a restarted reader with no nonempty callback since
     its `progress_baseline` is the same stall) and none within 60 000 ms of the previous request; a refusal, an
-    ineligible receiver or one without a callback ends the session as #774 does. While a request is pending or taken
-    the monitor accrues nothing; one the controller has not taken (`rtl_device_usb_recovery_take()`, which logs
-    `RTL-SDR: the receiver sent no samples for <n> ms; resetting the USB device`) within 2000 ms is withdrawn and ends
-    the session. A changed `watch_rearm_seq` restarts the watch from `progress_baseline` with no silence, so callbacks
+    ineligible receiver or one without a callback ends the session as #774 does. While a request is pending or taken the
+    monitor accrues nothing; one the controller has not taken (`rtl_device_usb_recovery_take()`, which logs `RTL-SDR:
+    the receiver sent no samples for <n> ms; resetting the USB device`) within 2000 ms is withdrawn and ends the
+    session. A changed `watch_rearm_seq` restarts the watch from `progress_baseline` with no silence, so callbacks
     before the reader thread started count. `rtl_device_end_for_receiver()` drops a verdict while a request is pending
     or taken, or when one was posted since it was made (a reader-exit verdict waiting out the unplug-owner grace);
     `rtl_device_usb_recovery_finish()` reports the recovery's own result: 0 resumes, a stop is silent, anything else
-    ends the session for the receiver with the failed step in the cause. The controller side
-    (`rtl_sdr_fm.cpp`): the callback queues `usb_recovery_pending` on `hop_m`; `controller_wait_for_retune_work()`
-    takes it alone, ahead of a queued retune or PPM change, and `controller_process_usb_recovery()` runs
-    `controller_stream_boundary(s, reason, device_op, ctx)` (`reason`: the gap's, `kStreamGap*`): `controller_begin_reconfigure()` (gate, capture hold, input
+    ends the session for the receiver with the failed step in the cause. The controller side (`rtl_sdr_fm.cpp`): the
+    callback queues `usb_recovery_pending` on `hop_m`; `controller_wait_for_retune_work()` takes it alone, ahead of a
+    queued retune or PPM change, and `controller_process_usb_recovery()` runs `controller_stream_boundary(s, reason,
+    device_op, ctx)` (`reason`: the gap's, `kStreamGap*`): `controller_begin_reconfigure()` (gate, capture hold, input
     purge, pre mute), `device_op` (USB: `rtl_device_usb_recover_handle()`, then the published tuner gain), then on every
-    exit the retune tail (post mute, `controller_finalize_reconfigure()` with `DemodRetuneResetReason::StreamGap`,
-    which keeps the FLL and records no capture RESET of its own, post-reset mute, capture hold released); only after a
+    exit the retune tail (post mute, `controller_finalize_reconfigure()` with `DemodRetuneResetReason::StreamGap`, which
+    keeps the FLL and records no capture RESET of its own, post-reset mute, capture hold released); only after a
     successful `device_op` the output ring is emptied with the generation moved, `rtl_stream_note_discontinuity()`
-    records the gap's RETUNE+RESET pair and moves the count, and `rtl_device_resume_stream()` restarts the producer;
-    the gate ends last. `retune_reset_reason_from_name()` maps the gap reasons to `StreamGap` for a replay. A success
-    posts `DSD_STREAM_NOTICE_USB_RECOVERED` (`<dsd-neo/runtime/stream_notice_hooks.h>`); app-control installs the sink
-    at session start, `dsd_app_drain_cmds()` shows it as the toast `RTL-SDR stopped sending samples; reset and
-    reopened` (no failure latched), and session end clears it. Tests: `IO_RTL_USB_RECOVERY` (device level with the test
-    as the controller: budget, take bound, rearm, grace verdict; stream level over the real controller: step order with
-    a probe, failure and stop, capture events; ASan/TSan), `IO_USB_PROGRESS_MONITOR` (ineligible with a callback),
+    records the gap's RETUNE+RESET pair and moves the count, and `rtl_device_resume_stream()` restarts the producer; the
+    gate ends last. `retune_reset_reason_from_name()` maps the gap reasons to `StreamGap` for a replay. A success posts
+    `DSD_STREAM_NOTICE_USB_RECOVERED` (`<dsd-neo/runtime/stream_notice_hooks.h>`); app-control installs the sink at
+    session start, `dsd_app_drain_cmds()` shows it as the toast `RTL-SDR stopped sending samples; reset and reopened`
+    (no failure latched), and session end clears it. Tests: `IO_RTL_USB_RECOVERY` (device level with the test as the
+    controller: budget, take bound, rearm, grace verdict; stream level over the real controller: step order with a
+    probe, failure and stop, capture events; ASan/TSan), `IO_USB_PROGRESS_MONITOR` (ineligible with a callback),
     `IO_RTL_REPLAY_EOF_AND_CF32` (gap reasons replay as `StreamGap`), `APP_COMMAND_QUEUE` (the toast),
     `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
-  - rtl_tcp connections and reconnects (issue #518 WP3; B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends
-    exactly a 12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads
-    those twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,
+  - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends exactly a
+    12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads those
+    twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,
     INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
     `rtl_tcp_conn` (socket, `generation`, its own `tx_lock`, `lost`); the last reference closes the socket. The
     cancellation token is the stop latch (`stop_requested`, set first by stop and destroy) or the exit flag, never
@@ -4564,9 +4567,9 @@ Key public headers:
     configured; test mode (0x07) is asserted after either and wins; turning test mode off sends 0x08 as the gain state
     wants. The nearest-gain setter is a manual gain change (B16). Before any gain takes the record holds the session's
     default (automatic, digital AGC as configured); a gain or test-mode change that failed part way marks it
-    (`gain_unknown`, `testmode_unknown`), and the replay then asserts the record's state even if none ever took (Task
-    4's USB rule). The reader (`tcp_thread_fn()`, `rtl_tcp_reader_recv()`; on Winsock it waits for data a slice at a
-    time rather than leaning on a receive timeout) treats an error, end of stream, `DSD_NEO_TCP_MAX_TIMEOUTS` receive
+    (`gain_unknown`, `testmode_unknown`), and the replay then asserts the record's state even if none ever took (as a
+    USB recovery does). The reader (`tcp_thread_fn()`, `rtl_tcp_reader_recv()`; on Winsock it waits for data a slice at
+    a time rather than leaning on a receive timeout) treats an error, end of stream, `DSD_NEO_TCP_MAX_TIMEOUTS` receive
     timeouts in a row, the throughput watchdog or a connection taken down as a loss, and logs which: it unpublishes it
     (no stream from here, `rtl_device_has_stream()`), then `rtl_tcp_reconnect()` connects, reads the header and hands
     the new connection over (`rtl_tcp_handoff_and_wait()`): QUEUED with a new generation, posted through the recovery
@@ -4595,10 +4598,22 @@ Key public headers:
     reset, `RTL_DEVICE_ENOTCONN` without a server), and app-control's `svc_radio_control_unavailable_text()` turns
     either (or the control's own result) into the reason of the "Failed:" toast for a frequency, bias tee or PPM change
     ("the RTL-SDR is being reset; try again in a moment", "the rtl_tcp server is not connected"); a PPM change, which
-    applies later on the controller, is refused up front.
-    Tests: `IO_RTL_TCP_RECONNECT` (a scripted fake rtl_tcp server on loopback; device level with the test as the
-    controller and stream level through the real controller; ASan/TSan), `DSP_SYMBOL_RTL_YIELD`
-    (`sticky_yield_across_reconnect`), `APP_COMMAND_QUEUE` (the toasts).
+    applies later on the controller, is refused up front. Tests: `IO_RTL_TCP_RECONNECT` (a scripted fake rtl_tcp server
+    on loopback; device level with the test as the controller and stream level through the real controller; ASan/TSan),
+    `DSP_SYMBOL_RTL_YIELD` (`sticky_yield_across_reconnect`), `APP_COMMAND_QUEUE` (the toasts).
+- Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
+  `include/dsd-neo/io/m17_udp.h`
+- UDP control API: `include/dsd-neo/io/udp_control.h`
+- UDP audio output: `include/dsd-neo/io/udp_audio.h` (implemented in `src/io/audio_backends/udp_audio.c`)
+- UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
+- I/Q capture/replay: `include/dsd-neo/io/iq_capture.h`, `include/dsd-neo/io/iq_replay.h`,
+  `include/dsd-neo/io/iq_types.h`, `include/dsd-neo/io/iq_wav.h`
+  - Tuner gain (issue #669): `rtl_device_get_tuner_gain(dev, &tenth_db)` returns a status separate from the value,
+    since librtlsdr's gains reach below zero (E4K -1.0 dB, FC0012/FC0013 -9.9 dB); its callers (`rtl_stream_get_gain()`,
+    the autogain latch, the capture metadata, the retune note) all read it that way. A capture whose tuner reports no
+    gain writes `"tuner_gain_known": false` with a gain of 0 (`dsd_iq_capture_config::tuner_gain_unknown`); replay
+    reads it, and a legacy Airspy sidecar without it, as `dsd_iq_replay_config::tuner_gain_unknown`, and then reports
+    no gain. Test: `IO_RTL_REPLAY_EOF_AND_CF32`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is
@@ -5116,8 +5131,8 @@ Notes:
     process-wide, value-only `g_rtl_discontinuity_seq` (`rtl_stream_discontinuity_seq()`), which never goes back.
     `rtl_stream_note_discontinuity(reason)`, which the controller runs inside its boundary transaction after the purge
     and before the producer resumes, records a RETUNE and a RESET with the reason (`RTL_STREAM_GAP_REASON_*`) on the
-    centre in force in the capture, then moves the count: no sample past the gap can be read or captured before
-    either. Under a replay, a RESET with one of those reasons moves the count once it is applied on the idle pipeline
+    centre in force in the capture, then moves the count: no sample past the gap can be read or captured before either.
+    Under a replay, a RESET with one of those reasons moves the count once it is applied on the idle pipeline
     (`rtl_replay_on_reset_event()`), and `demod_replay_batch_tag()` tags every batch with the count
     (`rtl_stream_replay_batch::boundary_seq`): the batches of chunks before the gap carry the old one, those after it
     the new. The decoder side is in DSP (`dsd_symbol.c`, stream gaps) and Engine (`DSD_CARRIER_BOUNDARY_STREAM_GAP`).
@@ -5127,19 +5142,18 @@ Notes:
     stream at all, as against one that is only slow: a USB receiver has none from its progress monitor's recovery
     request until the recovery finished (`recovery_request` not IDLE, or `recovering`); rtl_tcp has none from the loss
     of its connection until a reconnected one is published (`tcp_connected`); the other backends report one.
-    `rtl_stream_read_live_samples()` asks it only after
-    an empty poll (`rtl_live_read_no_stream()`), so a read that finds samples asks nothing. With no stream, a reader
-    that asks for it (`want_no_stream`, through `dsd_rtl_stream_read_ex()`, `RtlSdrOrchestrator::read()`,
-    `rtl_stream_read_ex2()` and the runtime hook's `read_ex2`) gets `DSD_RTL_READ_NO_STREAM` once a 10 ms wait slice
-    passed; any other read returns `DSD_RTL_READ_YIELD` while `dsd_runtime_controls_pending()`, else waits on. A slow
-    stream's read never yields, whatever is queued (the 5 s silence verdict bounds that wait). The search's 100 ms
-    failure and the idle NFM monitor's zero read are checked first and are unchanged; with no stream and a command
-    queued, a search visit's read yields at once like any other (the yield outranks the search's interruption, and the
-    engine loop runs the visit's deadlines on the same pass). A replay never asks. The orchestrator
-    carries both results as they are (its own no-options error is -1, not -2). Tests: `IO_RTL_RETUNE_PREPARE` (the live
-    read over a device with and without a stream), `IO_RTL_USB_RECOVERY` (a read yields while a real recovery runs and
-    the samples after it arrive; a slow stream with a command queued never yields and decodes exactly as without one),
-    `IO_RTL_STREAM_ORCHESTRATOR`, `ENGINE_IO_HOOKS_INSTALL`.
+    `rtl_stream_read_live_samples()` asks it only after an empty poll (`rtl_live_read_no_stream()`), so a read that
+    finds samples asks nothing. With no stream, a reader that asks for it (`want_no_stream`, through
+    `dsd_rtl_stream_read_ex()`, `RtlSdrOrchestrator::read()`, `rtl_stream_read_ex2()` and the runtime hook's `read_ex2`)
+    gets `DSD_RTL_READ_NO_STREAM` once a 10 ms wait slice passed; any other read returns `DSD_RTL_READ_YIELD` while
+    `dsd_runtime_controls_pending()`, else waits on. A slow stream's read never yields, whatever is queued (the 5 s
+    silence verdict bounds that wait). The search's 100 ms failure and the idle NFM monitor's zero read are checked
+    first and are unchanged; with no stream and a command queued, a search visit's read yields at once like any other
+    (the yield outranks the search's interruption, and the engine loop runs the visit's deadlines on the same pass). A
+    replay never asks. The orchestrator carries both results as they are (its own no-options error is -1, not -2).
+    Tests: `IO_RTL_RETUNE_PREPARE` (the live read over a device with and without a stream), `IO_RTL_USB_RECOVERY` (a
+    read yields while a real recovery runs and the samples after it arrive; a slow stream with a command queued never
+    yields and decodes exactly as without one), `IO_RTL_STREAM_ORCHESTRATOR`, `ENGINE_IO_HOOKS_INSTALL`.
   - I/Q replay events on an idle pipeline (issue #572; "Replay events on an idle pipeline" in `rtl_sdr_fm.cpp`,
     `replay_dispatch_pending_events()` in `rtl_device.cpp`). The reader applies every event (RETUNE, MUTE, RESET) and a
     loop rewind only once the pipeline is idle, so it lands between the same two chunks and the same two decoder reads
@@ -7359,7 +7373,10 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
   access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
-  layout, Onboarding wording and Monitor geometry.
+  layout, Onboarding wording and Monitor geometry. A desktop RTL-SDR eligible for stall recovery is reset and reopened
+  once per stall before its session would end (IO, "USB stall recovery"); a brokered receiver is opened from a USB
+  descriptor and never recovered in place (stall recovery is off by design, logged at info level), so a stall ends its
+  session as described here.
   - `qml/DeviceStatus.qml` (a non-visual `QtObject`, in `qmldir` and the `qt_add_resources` list) is the one reading
     of the brokered receiver that Listen, Onboarding and the Monitor share, so one receiver is never named or worded two
     ways. `kind`: the connected source when ready; else the receiver of the session that just ended

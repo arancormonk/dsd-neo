@@ -102,6 +102,17 @@ Event objects contain:
 The integrity summary fields remain present. `contains_retunes` and `capture_retune_count` summarize retune activity, while
 the v2 `events` array provides the ordering needed for replay.
 
+A gap in a live stream on the same channel, an RTL-SDR stall recovery or an rtl_tcp reconnect (see `docs/cli.md`, "Stall
+recovery" and "rtl_tcp connections"), is recorded where the stream resumes as a `RETUNE` followed by a `RESET` at the
+same offset, both with reason `usb_recovery` or `tcp_reconnect`, on the centre that was in force; the capture goes on in
+the same file, and nothing from the outage is written. On replay those events restart the front end as any `RESET`
+does, on an idle pipeline (see Operational Limits), and they also mark the replay batch after them as a stream gap:
+every sample before them reaches the decoder first, in order, then the decoder resets what the gap cut, as it does
+live (the frame being decoded is dropped and calls end as after a fade, while the control channel and the call being
+followed stay), before it reads the first sample after them. That holds for the symbol-rate reader and for the analog
+monitor's one-sample reader, in fast and realtime replay alike, so a capture with a recovery in it decodes the same in
+every run.
+
 `data_bytes` is reconciled against the finished file at close, so it reports what is actually on disk rather than what
 the writer handed to `fwrite`. Anything the file system refused — a full disk, a size-limited file system — shows up in
 `capture_drops` alongside queue overruns, and `notes` says the capture ended early. Because event `byte_offset` is

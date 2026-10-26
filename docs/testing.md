@@ -2691,6 +2691,46 @@ default tuning and hashes the CPU target that GCC resolves `-march=native` to
 into its ccache keys (`CCACHE_EXTRAFILES`), because ccache before 4.12 hashes
 that flag literally.
 
+### RTL-SDR stall emulation (hardware)
+
+The USB stall recovery and the rtl_tcp reconnect run against fakes in CTest (`IO_RTL_USB_IDENTITY`, `IO_RTL_USB_SWAP`,
+`IO_RTL_USB_RECOVERY`, `IO_RTL_TCP_RECONNECT`, `DSP_SYMBOL_STREAM_GAP`, `ENGINE_STREAM_GAP`), which never open a real
+dongle. To check one on hardware, use a spare RTL-SDR that nothing else needs: the emulation stalls it until it is
+reset or replugged.
+
+The field stall left every bulk transfer pending in the kernel with no error, while the control endpoint still
+answered; closing and reopening the dongle brought no samples, and a USB port reset did. Holding the RTL2832U's
+endpoint-A FIFO in reset reproduces that profile: write 0x1002 to its `EPA_CTL` register (USB block, address 0x2148),
+as librtlsdr's `rtlsdr_reset_buffer()` does before it writes 0 again, and leave it there. It is a vendor control write on
+endpoint 0, which a second process can make while dsd-neo holds the dongle's interface: request type 0x40, request 0,
+value 0x2148 (the register), index 0x0110 (USB block, write), data `10 02` (big-endian). With pyusb, for example:
+
+```python
+import usb.core
+dev = usb.core.find(idVendor=0x0bda, idProduct=0x2838, serial_number="<serial of the spare dongle>")
+dev.ctrl_transfer(0x40, 0, 0x2148, 0x0110, b"\x10\x02")
+```
+
+Pick the dongle by its serial, not by bus order, and give two attached dongles different serials first
+(`rtl_eeprom -d <index> -s <serial>`), since recovery refuses a serial two devices share. Then:
+
+1. Start dsd-neo on the spare dongle (`-i rtl:<index>:<freq>:...`, with `--iq-capture` to check the capture side too)
+   and let it decode, then make the write.
+2. About 5 s later the log shows `RTL-SDR: the receiver sent no samples for 5000 ms; resetting the USB device` and
+   `RTL-SDR: the USB device was reset and reopened; the stream resumes`, the terminal shows the toast, and decoding
+   resumes on the same channel. Any other dongle's stream carries on untouched; the reset re-reads the serial on the
+   handle it resets through. A replay of the capture resets the decoder at the recorded gap.
+3. Repeat the write before any sample arrives after the reset, or within 60 s of it: the session ends with the cause
+   logged, as it does without recovery. A stall more than 60 s after a recovery that delivered samples recovers again.
+4. Press `q` while the dongle is stalled: the session ends at once.
+
+A build without libusb, or a dongle whose identity is not unique, logs `RTL-SDR: stall recovery is off for this
+receiver: <reason>` at open, and the same write ends the session after 5 s (the behaviour before recovery). For
+rtl_tcp, serve the spare dongle with `rtl_tcp -d <serial or index>`, point dsd-neo at it, and stop the server
+mid-session (kill it to drop the connection, `SIGSTOP` it to stall the stream past `DSD_NEO_TCP_MAX_TIMEOUTS` receive
+timeouts): while it is gone a menu input switch applies and a frequency change fails with `Failed: the rtl_tcp server
+is not connected`; once it is back the server holds the session's last settings and the stream is aligned.
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch

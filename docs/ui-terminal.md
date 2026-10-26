@@ -8,7 +8,8 @@ For CLI flags and inputs/outputs, see `docs/cli.md`.
 ## Start the UI
 
 - Enable UI: `dsd-neo --frontend terminal ...`
-- Quit: `q`
+- Quit: `q` (takes effect at once, also while the decoder waits on a receiver that stopped delivering samples or an
+  rtl_tcp server it is reconnecting to)
 - Open the menu overlay: `Enter`
 
 Tip: Many screens print a short hotkey hint line in the footer while you’re running.
