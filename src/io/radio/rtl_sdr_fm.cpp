@@ -6070,6 +6070,12 @@ controller_clear_active_ppm_request(struct controller_state* s, int ppm_pending)
     s->ppm_apply_in_progress.store(0, std::memory_order_release);
 }
 
+/* Whether the controller is to stop: the exit flag, or the stream ending. */
+static int
+controller_should_exit(void) {
+    return dsd_exitflag_load() || (g_stream && g_stream->should_exit.load());
+}
+
 /* Whether any work is queued for the controller (hop_m held). */
 static int
 controller_has_retune_work_locked(const struct controller_state* s) {
@@ -6124,10 +6130,10 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     work->manual_token = 0U;
     rtl_stream_clear_retune_profile(&work->manual_profile);
     dsd_mutex_lock(&s->hop_m);
-    while (!controller_has_retune_work_locked(s) && !demod_should_exit_requested()) {
+    while (!controller_has_retune_work_locked(s) && !controller_should_exit()) {
         dsd_cond_wait(&s->hop, &s->hop_m);
     }
-    if (demod_should_exit_requested()) {
+    if (controller_should_exit()) {
         dsd_mutex_unlock(&s->hop_m);
         return 0;
     }
@@ -6475,7 +6481,7 @@ static DSD_THREAD_RETURN_TYPE
     controller_thread_retune_loop(void* arg) {
     struct controller_state* s = static_cast<controller_state*>(arg);
 
-    while (!demod_should_exit_requested()) {
+    while (!controller_should_exit()) {
         ControllerRetuneWork work = {};
         if (!controller_wait_for_retune_work(s, &work)) {
             break;
