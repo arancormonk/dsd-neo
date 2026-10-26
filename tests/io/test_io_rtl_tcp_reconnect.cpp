@@ -52,6 +52,8 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -62,6 +64,10 @@
 namespace {
 
 constexpr uint64_t kWaitMs = 5000U;
+/* How soon a stop or an exit request takes effect where everything waits a 50 ms slice at a time: well inside this
+ * even under a sanitizer on a loaded runner, while a wait that cannot be cancelled (a back-off of up to 2 s, a send
+ * blocked for its whole 2 s budget) does not end inside it. */
+constexpr uint64_t kPromptMs = 1000U;
 /* rtl_device_set_gain()'s automatic gain (the device's AUTO_GAIN). */
 constexpr int kAutoGain = -100;
 /* The receive timeout and the run of timeouts that make a stall here (DSD_NEO_TCP_RCVTIMEO, _MAX_TIMEOUTS). */
@@ -926,7 +932,7 @@ test_stop_before_successful_connect(void) {
     dsd_sleep_ms(2500U);
     const uint64_t t0 = now_ms();
     (void)rtl_device_stop_async(r.dev);
-    assert(now_ms() - t0 < 400U);
+    assert(now_ms() - t0 < kPromptMs);
     rig_close(r);
     g_srv.up.store(1);
 }
@@ -949,7 +955,7 @@ test_stop_during_silent_header(void) {
     dsd_sleep_ms(300U);
     const uint64_t t0 = now_ms();
     (void)rtl_device_stop_async(r.dev);
-    assert(now_ms() - t0 < 400U);
+    assert(now_ms() - t0 < kPromptMs);
     assert(wait_until([] { return server_conn_get(1).ended != 0; }, kWaitMs));
     rig_close(r);
 }
@@ -1133,6 +1139,9 @@ test_old_sender_does_not_touch_replacement(void) {
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);
+    /* Every command read first, so the server closes cleanly and the held send meets a socket shut down here (EPIPE,
+     * which commands_raise_no_sigpipe needs), not the server's reset. */
+    (void)sync_server(r.dev, 0);
     g_old.rig = &r;
     g_old.armed.store(1);
     rtl_device_test_tcp_set_send_hook(hold_first_generation, nullptr);
@@ -1172,6 +1181,7 @@ stopper_main(void* arg) {
 }
 
 dsd_thread_t g_stopper{};
+std::atomic<int> g_stopper_started{0};
 
 void
 // NOLINTNEXTLINE(misc-const-correctness) -- The signature is the send hook's.
@@ -1181,6 +1191,7 @@ stop_at_replay(uint64_t generation, void* ctx) {
         return;
     }
     start_thread(&g_stopper, stopper_main, g_replay_rig);
+    g_stopper_started.store(1);
     assert(wait_until(
         [] {
             rtl_device_test_tcp_state st{};
@@ -1198,10 +1209,11 @@ test_stop_during_replay(void) {
     configure(r.dev);
     rig_start(r);
     g_replay_rig = &r;
+    g_stopper_started.store(0);
     g_replay_stop_armed.store(1);
     rtl_device_test_tcp_set_send_hook(stop_at_replay, nullptr);
     lose_connection(r);
-    assert(wait_until([] { return g_replay_stop_armed.load() == 0; }, kWaitMs));
+    assert(wait_until([] { return g_stopper_started.load() != 0; }, kWaitMs));
     const uint64_t t0 = now_ms();
     dsd_thread_join(g_stopper);
     assert(now_ms() - t0 < 1000U);
@@ -1276,18 +1288,101 @@ test_stop_during_backpressured_send(void) {
         },
         kWaitMs);
     assert(blocked);
-    DSD_FPRINTF(stderr, "backpressure: %llu sends, done=%d rc=%d\n", (unsigned long long)seen, fc.done.load(),
-                fc.last_rc.load());
     assert(fc.done.load() == 0);
     const uint64_t t0 = now_ms();
     (void)rtl_device_stop_async(r.dev);
-    assert(now_ms() - t0 < 500U);
-    assert(wait_until([&] { return fc.done.load() != 0; }, 500U));
+    assert(now_ms() - t0 < kPromptMs);
+    assert(wait_until([&] { return fc.done.load() != 0; }, kPromptMs));
     assert(fc.last_rc.load() != 0);
     dsd_thread_join(flood);
     rtl_device_test_tcp_set_send_hook(nullptr, nullptr);
     rtl_device_test_tcp_set_sndbuf(0);
     rig_close(r);
+}
+
+/* stop_cancels_queued_handoff: a stop cancels a hand-off the controller has not taken, so its reader stops at once
+ * even when it cannot see the stop itself (here held in its discard path until the hand-off leaves QUEUED, which only
+ * the stop's cancel does in time); the connection is closed and the controller can no longer take it. */
+dev_rig* g_queued_rig = nullptr;
+std::atomic<int> g_discard_entered{0};
+
+void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the discard hook's.
+hold_while_queued(void* ctx) {
+    (void)ctx;
+    g_discard_entered.store(1);
+    (void)wait_until(
+        [] {
+            rtl_device_test_tcp_state st{};
+            rtl_device_test_tcp_state_get(g_queued_rig->dev, &st);
+            return st.handoff != RTL_TEST_TCP_HANDOFF_QUEUED;
+        },
+        3000U);
+}
+
+void
+test_stop_cancels_queued_handoff(void) {
+    server_reset(default_script());
+    dev_rig r;
+    g_queued_rig = &r;
+    g_discard_entered.store(0);
+    rig_open(r, 0, 0);
+    r.hold.store(1);
+    rtl_device_test_tcp_set_discard_hook(hold_while_queued, nullptr);
+    rig_start(r);
+    lose_connection(r);
+    assert(wait_until([] { return g_discard_entered.load() != 0; }, kWaitMs));
+    const uint64_t t0 = now_ms();
+    (void)rtl_device_stop_async(r.dev);
+    assert(now_ms() - t0 < 1000U);
+    assert(rtl_device_tcp_handoff_take(r.dev) == 0);
+    assert(wait_until([] { return server_conn_count() >= 2U && server_conn_get(1).ended != 0; }, 1000U));
+    rig_close(r);
+    rtl_device_test_tcp_set_discard_hook(nullptr, nullptr);
+}
+
+/* lost_connection_bytes_never_reach_ring: the server's I/Q piles up in the socket while the reader is held; a command
+ * then fails, which takes that connection down; once the reader goes on, none of what the lost connection still held
+ * reaches the ring. */
+std::atomic<int> g_read_hold{0};
+std::atomic<int> g_read_held{0};
+
+void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the read hook's.
+hold_reader(void* ctx) {
+    (void)ctx;
+    while (g_read_hold.load() != 0) {
+        g_read_held.store(1);
+        dsd_sleep_ms(1U);
+    }
+}
+
+void
+test_lost_connection_bytes_never_reach_ring(void) {
+    server_reset(default_script());
+    dev_rig r;
+    rig_open(r, 0, 1);
+    rtl_device_test_tcp_set_read_hook(hold_reader, nullptr);
+    rig_start(r);
+    assert(wait_until([&] { return r.floats.load() >= 16384U; }, kWaitMs));
+    g_read_held.store(0);
+    g_read_hold.store(1);
+    assert(wait_until([] { return g_read_held.load() != 0; }, kWaitMs));
+    dsd_sleep_ms(100U); /* the server streams on into the socket */
+    g_srv.paused.store(1);
+    r.hold.store(1);
+    assert(wait_until([&] { return input_ring_used(&r.ring) == 0U; }, kWaitMs));
+    dsd_sleep_ms(20U);
+    const uint64_t floats_at_loss = r.floats.load();
+    rtl_device_test_tcp_fail_command(0x05);
+    assert(rtl_device_set_ppm(r.dev, 7) == RTL_DEVICE_ENOTCONN);
+    rtl_device_test_tcp_fail_command(-1);
+    g_read_hold.store(0);
+    dsd_sleep_ms(300U);
+    assert(r.floats.load() == floats_at_loss);
+    g_srv.paused.store(0);
+    rig_close(r);
+    rtl_device_test_tcp_set_read_hook(nullptr, nullptr);
 }
 
 /* ---- Discard path ---- */
@@ -1350,6 +1445,33 @@ test_discard_release_keeps_pair_alignment(void) {
     for (size_t i = 0; i < data.size(); ++i) {
         assert(((i & 1U) == 0U) == (data[i] >= 0x80U));
         assert(byte_phase(data[i]) != PHASE_PRE);
+    }
+    rig_remove_capture(r);
+}
+
+/* retune_keeps_pair_alignment: frequency commands while odd-sized chunks flow on one connection. Each makes the reader
+ * drop the bytes it buffered for the old frequency, which never leaves half a pair, so the ring and the capture keep
+ * their I/Q pairing. */
+void
+test_retune_keeps_pair_alignment(void) {
+    conn_script odd;
+    odd.chunks = {4095U, 3U, 1001U, 7U, 2049U};
+    odd.chunk_gap_ms = 1U;
+    server_reset(odd);
+    dev_rig r;
+    rig_open(r, 1, 1);
+    rig_start(r);
+    assert(wait_until([&] { return r.floats.load() >= 16384U; }, kWaitMs));
+    for (int i = 0; i < 60; ++i) {
+        assert(rtl_device_set_frequency(r.dev, 851000000U + (uint32_t)i * 12500U) == 0);
+        const uint64_t before = r.floats.load();
+        assert(wait_until([&] { return r.floats.load() > before + 1000U; }, kWaitMs));
+    }
+    rig_close(r);
+    assert(r.misaligned.load() == 0U);
+    const std::vector<unsigned char> data = read_file(r.data_path);
+    for (size_t i = 0; i < data.size(); ++i) {
+        assert(((i & 1U) == 0U) == (data[i] >= 0x80U));
     }
     rig_remove_capture(r);
 }
@@ -1446,6 +1568,32 @@ gain_failure_case(const dev_rig& r, int from_auto, int fail_cmd, uint64_t* gen) 
         return from_auto ? (m.gain_manual == 0 && m.reg19 == 0x25)
                          : (m.gain_manual == 1 && m.gain == 197 && m.reg19 == 0x05);
     });
+}
+
+/* partial_gain_unit_reasserted_on_reconnect: no gain ever took, and a manual gain change breaks after the digital AGC
+ * and manual mode went out; the record still holds the session's default (automatic, digital AGC as configured), and
+ * the reconnect asserts it, so the server ends in automatic gain rather than where the broken change left it. */
+void
+test_partial_gain_unit_reasserted_on_reconnect(void) {
+    server_reset(default_script());
+    dev_rig r;
+    rig_open(r, 0, 0);
+    rig_start(r);
+    rtl_device_test_tcp_fail_command(0x04);
+    assert(rtl_device_set_gain(r.dev, 280) == RTL_DEVICE_ENOTCONN);
+    rtl_device_test_tcp_fail_command(-1);
+    /* The server took the part before the break: digital AGC off, manual mode. */
+    (void)wait_model(0, [](const server_model& m) { return m.gain_manual == 1 && m.reg19 == 0x05; });
+    assert(server_params(0, 0x04).empty());
+    assert(rtl_device_is_auto_gain(r.dev) == 1);
+    wait_generation(r, 2U);
+    rtl_device_test_tcp_state st{};
+    rtl_device_test_tcp_state_get(r.dev, &st);
+    assert(st.gain_took == 0);
+    const int reg19 = st.digital_agc != 0 ? 0x25 : 0x05;
+    const server_model m = sync_server(r.dev, 1);
+    assert(m.gain_manual == 0 && m.reg19 == reg19);
+    rig_close(r);
 }
 
 void
@@ -1720,6 +1868,7 @@ stream_stopper(void* arg) {
 }
 
 dsd_thread_t g_stream_stopper{};
+std::atomic<int> g_stream_stopper_started{0}; /* set once g_stream_stopper holds the thread */
 
 void
 // NOLINTNEXTLINE(misc-const-correctness) -- The signature is the boundary probe's.
@@ -1730,6 +1879,7 @@ stop_at_gate(int step, void* ctx) {
     }
     rtl_device* dev = rtl_stream_test_device();
     start_thread(&g_stream_stopper, stream_stopper, nullptr);
+    g_stream_stopper_started.store(1);
     assert(wait_until(
         [&] {
             rtl_device_test_tcp_state st{};
@@ -1778,10 +1928,11 @@ test_stop_with_handoff_queued_and_claimed(void) {
     stream_open(r2, 0, 0);
     g_stop_ctx = r2.ctx;
     g_stop_done.store(0);
+    g_stream_stopper_started.store(0);
     g_stop_at_gate.store(1);
     rtl_stream_test_set_stream_boundary_probe(stop_at_gate, nullptr);
     server_kill();
-    assert(wait_until([] { return g_stop_done.load() != 0; }, kWaitMs));
+    assert(wait_until([] { return g_stop_done.load() != 0 && g_stream_stopper_started.load() != 0; }, kWaitMs));
     dsd_thread_join(g_stream_stopper);
     rtl_stream_test_set_stream_boundary_probe(nullptr, nullptr);
     assert(g_stop_at_gate.load() == 0);
@@ -1832,15 +1983,65 @@ test_quit_during_outage_exits(void) {
     dsd_sleep_ms(2500U);
     const uint64_t t0 = now_ms();
     dsd_exitflag_store(1);
-    assert(wait_until([&] { return r.reader.done.load() != 0; }, 500U));
+    assert(wait_until([&] { return r.reader.done.load() != 0; }, kPromptMs));
     dsd_thread_join(r.reader.thread);
     r.reader.started = 0;
     (void)rtl_stream_stop(r.ctx);
-    assert(now_ms() - t0 < 600U);
+    assert(now_ms() - t0 < kPromptMs + kPromptMs / 2U);
     (void)rtl_stream_destroy(r.ctx);
     r.ctx = nullptr;
     dsd_exitflag_store(0);
     g_srv.up.store(1);
+}
+
+/* retune_keeps_pair_alignment, through the stream: controller retunes, with their mutes (armed while chunks are being
+ * muted) and capture events, while odd-sized chunks flow; the capture keeps its I/Q pairing. */
+void
+test_stream_retune_keeps_pair_alignment(void) {
+    conn_script odd;
+    odd.chunks = {4095U, 3U, 1001U, 7U, 2049U};
+    odd.chunk_gap_ms = 1U;
+    server_reset(odd);
+    stream_rig r;
+    stream_open(r, 1, 1);
+    assert(wait_until([&] { return r.reader.samples.load() > 4096U; }, kWaitMs));
+    for (int i = 0; i < 8; ++i) {
+        assert(dsd_rtl_stream_test_request_retune(851000000L + (long)i * 25000L, 2000) == 0);
+        const uint64_t before = r.reader.samples.load();
+        assert(wait_until([&] { return r.reader.samples.load() > before + 2048U; }, kWaitMs));
+    }
+    stream_close(r);
+    const std::vector<unsigned char> data = read_file(r.data_path);
+    assert(data.size() > 65536U);
+    for (size_t i = 0; i < data.size(); ++i) {
+        assert(((i & 1U) == 0U) == (data[i] >= 0x80U));
+    }
+    assert(dsd_test_remove_temp_dir(r.dir, kCaptureFiles) == 0);
+}
+
+/* commands_raise_no_sigpipe: a command to a connection that is gone fails, and never raises SIGPIPE (MSG_NOSIGNAL, or
+ * SO_NOSIGPIPE where that is missing). The rest of this test ignores SIGPIPE, so a case that sends on a connection taken
+ * down (old_sender_does_not_touch_replacement) runs again in a child process of this binary with SIGPIPE's default
+ * disposition, which a raised SIGPIPE would kill. */
+const char* g_self = nullptr;
+
+void
+test_commands_raise_no_sigpipe(void) {
+    assert(g_self != nullptr);
+    const pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        /* This test binary again, as a fresh process: the case's threads do not survive fork(). */
+        // nosemgrep: dsd-neo.no-shell-exec
+        (void)execl(g_self, g_self, "old_sender_does_not_touch_replacement", "--sigpipe-default", (char*)nullptr);
+        _exit(127);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    if (WIFSIGNALED(status)) {
+        DSD_FPRINTF(stderr, "the child died of signal %d\n", WTERMSIG(status));
+    }
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 struct named_test {
@@ -1862,15 +2063,21 @@ const named_test kTests[] = {
     {"replay_failure_not_published", test_replay_failure_not_published},
     {"concurrent_partial_writes_never_interleave", test_concurrent_partial_writes_never_interleave},
     {"old_sender_does_not_touch_replacement", test_old_sender_does_not_touch_replacement},
+    {"commands_raise_no_sigpipe", test_commands_raise_no_sigpipe},
     {"stop_during_replay", test_stop_during_replay},
     {"stop_during_backpressured_send", test_stop_during_backpressured_send},
+    {"stop_cancels_queued_handoff", test_stop_cancels_queued_handoff},
+    {"lost_connection_bytes_never_reach_ring", test_lost_connection_bytes_never_reach_ring},
     {"discard_release_keeps_pair_alignment", test_discard_release_keeps_pair_alignment},
+    {"retune_keeps_pair_alignment", test_retune_keeps_pair_alignment},
+    {"stream_retune_keeps_pair_alignment", test_stream_retune_keeps_pair_alignment},
     {
         "nearest_manual_gain_sends_agc_off_and_survives_reconnect",
         test_nearest_manual_gain_sends_agc_off_and_survives_reconnect,
     },
     {"testmode_wins_over_gain_over_tcp", test_testmode_wins_over_gain_over_tcp},
     {"each_gain_command_failure_propagates", test_each_gain_command_failure_propagates},
+    {"partial_gain_unit_reasserted_on_reconnect", test_partial_gain_unit_reasserted_on_reconnect},
     {"unavailable_server_command_applies", test_unavailable_server_command_applies},
     {"preconfig_backlog_discarded", test_preconfig_backlog_discarded},
     {"stop_with_handoff_queued_and_claimed", test_stop_with_handoff_queued_and_claimed},
@@ -1880,11 +2087,15 @@ const named_test kTests[] = {
 
 } // namespace
 
-/* With no argument every case runs, in order; with one, only the case of that name. */
+/* With no argument every case runs, in order; with one, only the case of that name; with "--sigpipe-default" after
+ * it, with SIGPIPE's default disposition (commands_raise_no_sigpipe). */
 int
 // NOLINTNEXTLINE(misc-const-correctness) -- main's signature.
 main(int argc, char** argv) {
-    (void)signal(SIGPIPE, SIG_IGN);
+    g_self = argv[0];
+    /* An ignored signal stays ignored across exec, so the child sets the default itself. */
+    const int sigpipe_default = (argc > 2 && strcmp(argv[2], "--sigpipe-default") == 0) ? 1 : 0;
+    (void)signal(SIGPIPE, sigpipe_default != 0 ? SIG_DFL : SIG_IGN);
     assert(dsd_socket_init() == 0);
     assert(dsd_test_setenv("DSD_NEO_TCP_RCVTIMEO", "200", 1) == 0);
     assert(dsd_test_setenv("DSD_NEO_TCP_MAX_TIMEOUTS", "2", 1) == 0);

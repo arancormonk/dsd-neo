@@ -462,6 +462,9 @@ void rtl_device_test_tcp_set_send_hook(void (*hook)(uint64_t generation, void* c
 /* Call @p hook(@p ctx) in the reader's discard path, right before each of its receives; NULL removes it. Set while
  * no reader runs. */
 void rtl_device_test_tcp_set_discard_hook(void (*hook)(void* ctx), void* ctx);
+/* Call @p hook(@p ctx) in the reader's normal path, right before each of its receives; NULL removes it. Set while no
+ * reader runs. */
+void rtl_device_test_tcp_set_read_hook(void (*hook)(void* ctx), void* ctx);
 /* How many releases from the discard path left an odd byte for the reader to drop, process-wide. */
 uint64_t rtl_device_test_tcp_odd_drops(void);
 

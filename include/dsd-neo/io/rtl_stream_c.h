@@ -982,6 +982,16 @@ int rtl_stream_get_squelch_status(rtl_stream_squelch_status* out);
 int rtl_stream_set_bias_tee(int on);
 
 /**
+ * @brief Why the running stream's receiver cannot take a control right now, if the receiver itself is the cause.
+ *
+ * Decoder thread (where commands apply). See rtl_device_control_unavailable().
+ *
+ * @return RTL_DEVICE_EBUSY while a USB RTL-SDR is being reset and reopened (stall recovery), RTL_DEVICE_ENOTCONN while
+ *         an rtl_tcp input has no connection to its server, 0 otherwise (including with no stream).
+ */
+int rtl_stream_control_unavailable(void);
+
+/**
  * @brief Get the currently applied tuner gain.
  *
  * Returns the driver-reported tuner gain in tenths of a dB (e.g., 270 for

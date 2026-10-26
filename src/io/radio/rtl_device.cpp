@@ -376,6 +376,10 @@ struct rtl_tcp_conn {
  * the published one. A reconnect replays every control that took, as last taken. */
 struct rtl_tcp_took {
     int freq, rate, gain, ppm, direct_sampling, offset_tuning, bias_tee, testmode, xtal;
+    /* A gain (or test mode) change failed after part of it may have reached the server, which may then disagree with
+     * the record: the replay asserts the record's gain state (or test mode) even if none ever took (Task 4's USB rule
+     * for gain_state_unknown). */
+    int gain_unknown, testmode_unknown;
 };
 } // namespace
 
@@ -562,8 +566,8 @@ struct rtl_device {
     std::atomic<int> tcp_connected{0};
     int tcp_handoff = 0;
     int tcp_admission_closed = 0;
-    /* A retune went out: the reader restarts its capture state (partial slice, carry, rotation phase), which it owns,
-     * before its next chunk. */
+    /* A retune went out: the reader drops what it buffered for the old frequency (rtl_tcp_drop_buffered_for_retune()),
+     * which it owns, before its next chunk. */
     std::atomic<int> tcp_restart_pending{0};
     struct rtl_tcp_took tcp_took{};
     struct rtl_capture_u8_byte_carry iq_byte_carry{}; /* one buffered raw byte when a chunk ends mid-I/Q sample */
@@ -4851,6 +4855,8 @@ static void* g_test_tcp_send_hook_ctx = nullptr;
 static void (*g_test_tcp_discard_hook)(void* ctx) = nullptr;
 static void* g_test_tcp_discard_hook_ctx = nullptr;
 static std::atomic<uint64_t> g_test_tcp_odd_drops{0U};
+static void (*g_test_tcp_read_hook)(void* ctx) = nullptr;
+static void* g_test_tcp_read_hook_ctx = nullptr;
 #endif
 
 static void
@@ -4958,8 +4964,8 @@ tcp_connect_host(const char* host, int port, struct rtl_device* dev) {
 
 /* The options every connection gets before its header is read: a larger receive buffer (brief processing stalls),
  * no Nagle delay for the commands, the receive timeout that turns a silent server into a stall (DSD_NEO_TCP_RCVTIMEO,
- * default 2 s) and a one-slice send timeout, so a command blocked by a server that stopped reading checks for a stop
- * between slices. */
+ * default 2 s) and a send timeout as long as a command send may take: a send waits for room first
+ * (rtl_tcp_send_all()), so the timeout only bounds one that blocks all the same. */
 static void
 rtl_tcp_prepare_socket(dsd_socket_t sock) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -4969,7 +4975,7 @@ rtl_tcp_prepare_socket(dsd_socket_t sock) {
     (void)dsd_socket_setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     int to_ms = cfg ? cfg->tcp_rcvtimeo_ms : 2000;
     (void)dsd_socket_set_recv_timeout(sock, (unsigned int)to_ms);
-    (void)dsd_socket_set_send_timeout(sock, kRtlTcpSliceMs);
+    (void)dsd_socket_set_send_timeout(sock, kRtlTcpSendMs);
 #if defined(SO_NOSIGPIPE)
     /* Where MSG_NOSIGNAL does not exist, a command to a server that went away must fail, not raise SIGPIPE. */
     int nosigpipe = 1;
@@ -5100,9 +5106,34 @@ rtl_tcp_unpublish_locked(struct rtl_device* dev) {
     return conn;
 }
 
-/* Send @p len bytes on @p conn whole (its tx_lock held): a partial write goes on from where it stopped, each send call
- * waits at most a slice (the socket's send timeout) so @p cancelled is asked between slices, and the whole send gets
- * kRtlTcpSendMs. Returns 0, -ECANCELED, -ETIMEDOUT or -EIO. */
+/* A command send never waits inside send(): it waits for room (rtl_tcp_send_all()) and then sends what fits. Where a
+ * send can be asked not to block (MSG_DONTWAIT), a send that finds the room gone again just waits again. Elsewhere
+ * (Winsock) the socket stays blocking for its reader; its send timeout (kRtlTcpSendMs) only bounds a send that blocks
+ * after all, and a timed-out send leaves the socket in an unknown state (Winsock), so it ends the connection. */
+#if defined(MSG_DONTWAIT)
+static constexpr int kRtlTcpSendFlags = MSG_NOSIGNAL | MSG_DONTWAIT;
+static constexpr int kRtlTcpSendMayRetry = 1;
+#else
+static constexpr int kRtlTcpSendFlags = MSG_NOSIGNAL;
+static constexpr int kRtlTcpSendMayRetry = 0;
+#endif
+
+/* Whether a send that sent nothing only found no room (MSG_DONTWAIT) or a signal, so it may wait and go again. */
+static int
+rtl_tcp_send_would_block(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)kRtlTcpSendMayRetry;
+    return 0;
+#else
+    const int e = dsd_socket_get_error();
+    return (kRtlTcpSendMayRetry && (e == EAGAIN || ((EWOULDBLOCK != EAGAIN) && (e == EWOULDBLOCK)))) || e == EINTR;
+#endif
+}
+
+/* Send @p len bytes on @p conn whole (its tx_lock held): wait (a slice at a time, asking @p cancelled between slices)
+ * until the socket has room, send what fits, and go on from where a partial write stopped; the whole send gets
+ * kRtlTcpSendMs. Returns 0, -ECANCELED, -ETIMEDOUT or -EIO; any failure loses the connection, since part of a command
+ * may have gone out. */
 static int
 rtl_tcp_send_all(struct rtl_tcp_conn* conn, const uint8_t* buf, size_t len, int (*cancelled)(void*), void* ctx) {
     size_t sent = 0U;
@@ -5111,6 +5142,16 @@ rtl_tcp_send_all(struct rtl_tcp_conn* conn, const uint8_t* buf, size_t len, int 
         if (cancelled && cancelled(ctx)) {
             return -ECANCELED;
         }
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return -ETIMEDOUT;
+        }
+        const int ready = dsd_socket_wait(conn->sock, DSD_SOCKET_WAIT_WRITE, kRtlTcpSliceMs);
+        if (ready < 0) {
+            return -EIO;
+        }
+        if (ready == 0) {
+            continue;
+        }
         size_t want = len - sent;
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
         const size_t chunk = g_test_tcp_send_chunk.load(std::memory_order_relaxed);
@@ -5118,18 +5159,15 @@ rtl_tcp_send_all(struct rtl_tcp_conn* conn, const uint8_t* buf, size_t len, int 
             want = chunk;
         }
 #endif
-        const int n = dsd_socket_send(conn->sock, buf + sent, want, MSG_NOSIGNAL);
+        const int n = dsd_socket_send(conn->sock, buf + sent, want, kRtlTcpSendFlags);
         if (n > 0) {
             sent += (size_t)n;
             continue;
         }
-        if (n < 0 && rtl_tcp_recv_is_timeout(n)) {
-            if (dsd_realtime_mono_ms() >= deadline_ms) {
-                return -ETIMEDOUT;
-            }
+        if (n < 0 && rtl_tcp_send_would_block()) {
             continue;
         }
-        return -EIO;
+        return (n < 0 && rtl_tcp_recv_is_timeout(n)) ? -ETIMEDOUT : -EIO;
     }
     return 0;
 }
@@ -5169,12 +5207,12 @@ rtl_tcp_send_unit(struct rtl_device* dev, struct rtl_tcp_conn* conn, const struc
 /* Send one setter's commands (@p build fills them, under tcp_lock, from the record) as one unit on the published
  * connection, under its tx_lock and never under tcp_lock, then, still holding tx_lock so the record follows the order
  * the server saw, let @p commit record what took under tcp_lock, only while that connection is still the published
- * one. Returns 0; RTL_DEVICE_ENOTCONN with no published connection (nothing sent or recorded), when the connection
- * was lost or replaced meanwhile (nothing recorded), or when the send failed, which loses that connection and only
- * that one. */
-template <typename Build, typename Commit>
+ * one; when the send failed, @p failed notes (under tcp_lock) what part of it may have reached the server. Returns 0;
+ * RTL_DEVICE_ENOTCONN with no published connection (nothing sent or recorded), when the connection was lost or replaced
+ * meanwhile (nothing recorded), or when the send failed, which loses that connection and only that one. */
+template <typename Build, typename Commit, typename Failed>
 static int
-rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit) {
+rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit, Failed&& failed) {
     rtl_tcp_lock(dev);
     struct rtl_tcp_conn* conn = dev->tcp_conn;
     if (conn) {
@@ -5196,6 +5234,9 @@ rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit) {
     if (rc == 0 && current) {
         commit();
     } else {
+        if (rc != 0) {
+            failed();
+        }
         if (current) {
             lost = rtl_tcp_unpublish_locked(dev);
         }
@@ -5211,6 +5252,12 @@ rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit) {
     }
     rtl_tcp_conn_unref(conn);
     return rc;
+}
+
+template <typename Build, typename Commit>
+static int
+rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit) {
+    return rtl_tcp_apply(dev, build, commit, []() {});
 }
 
 /* One command with nothing to read from the record. */
@@ -5272,7 +5319,8 @@ rtl_tcp_set_gain(struct rtl_device* dev, int auto_gain, int gain) {
             dev->gain = auto_gain ? RTL_AUTO_GAIN : gain;
             dev->digital_agc_wanted = digital_agc;
             dev->tcp_took.gain = 1;
-        });
+        },
+        [&]() { dev->tcp_took.gain_unknown = 1; });
 }
 
 namespace {
@@ -5286,6 +5334,7 @@ struct rtl_tcp_loop_state {
     uint64_t prev_rdto;
     uint64_t prev_res_full;
     uint64_t auto_last_ns;
+    unsigned int recv_timeout_ms; /* the receive timeout (DSD_NEO_TCP_RCVTIMEO) */
     unsigned char* u8;
 };
 
@@ -5407,6 +5456,7 @@ rtl_tcp_init_loop_state(struct rtl_device* s, const dsdneoRuntimeConfig* cfg, st
         return 0;
     }
     st->waitall = rtl_tcp_cfg_waitall(s, cfg);
+    st->recv_timeout_ms = (cfg && cfg->tcp_rcvtimeo_ms > 0) ? (unsigned int)cfg->tcp_rcvtimeo_ms : 2000U;
     rtl_tcp_maybe_enable_autotune(s, cfg);
     rtl_tcp_init_adaptive_state(s, cfg, st);
     return 1;
@@ -5452,9 +5502,9 @@ rtl_tcp_replay_commands(const struct rtl_device* dev, struct rtl_tcp_cmd* cmds) 
     if (took.ppm) {
         cmds[n++] = {0x05, (uint32_t)dev->ppm_error};
     }
-    if (took.gain) {
+    if (took.gain || took.gain_unknown) {
         n = rtl_tcp_gain_commands(dev->agc_mode, dev->gain, dev->digital_agc_wanted, dev->testmode_on, cmds, n);
-    } else if (took.testmode) {
+    } else if (took.testmode || took.testmode_unknown) {
         cmds[n++] = {0x07, (uint32_t)(dev->testmode_on ? 1 : 0)};
         if (!dev->testmode_on) {
             cmds[n++] = {0x08, (uint32_t)(dev->digital_agc_wanted ? 1 : 0)};
@@ -5703,12 +5753,14 @@ rtl_tcp_handoff_and_wait(struct rtl_device* dev, struct rtl_tcp_conn* conn, stru
     return RTL_TCP_HANDOFF_RELEASED;
 }
 
-/* The reader lost @p lost (its reference is dropped here; NULL when it never had one): take it down if it is still the
- * published one, then reconnect until a new connection was published and released to the reader, which is returned
- * with the reader's reference, or the session ends (NULL). Each attempt connects, reads the header and hands the
- * connection over (rtl_tcp_handoff_and_wait()); all of it is bounded and cancellable. */
+/* The reader lost @p lost (its reference is dropped here; NULL when it never had one), for the reason @p why (logged;
+ * NULL when it was reported already): take it down if it is still the published one, then reconnect until a new
+ * connection was published and released to the reader, which is returned with the reader's reference, or the session
+ * ends (NULL). Each attempt connects, reads the header and hands the connection over (rtl_tcp_handoff_and_wait()); all
+ * of it is bounded and cancellable. */
 static struct rtl_tcp_conn*
-rtl_tcp_reconnect(struct rtl_device* s, struct rtl_tcp_conn* lost, struct rtl_tcp_loop_state* st, int* skip_odd) {
+rtl_tcp_reconnect(struct rtl_device* s, struct rtl_tcp_conn* lost, const char* why, struct rtl_tcp_loop_state* st,
+                  int* skip_odd) {
     rtl_tcp_lock(s);
     struct rtl_tcp_conn* dropped = (lost && s->tcp_conn == lost) ? rtl_tcp_unpublish_locked(s) : nullptr;
     rtl_tcp_unlock(s);
@@ -5717,7 +5769,9 @@ rtl_tcp_reconnect(struct rtl_device* s, struct rtl_tcp_conn* lost, struct rtl_tc
     if (!s->run.load() || rtl_tcp_cancelled(s)) {
         return nullptr;
     }
-    DSD_FPRINTF(stderr, "rtl_tcp: input stalled; attempting to reconnect to %s:%d...\n", s->host, s->port);
+    if (why) {
+        DSD_FPRINTF(stderr, "rtl_tcp: %s; attempting to reconnect to %s:%d...\n", why, s->host, s->port);
+    }
 
     int attempt = 0;
     while (s->run.load() && !rtl_tcp_cancelled(s)) {
@@ -6130,6 +6184,82 @@ rtl_tcp_periodic_maintenance(struct rtl_device* s, struct rtl_tcp_loop_state* st
     rtl_tcp_autotune_if_due(s, st, now_ns);
 }
 
+/* A retune went out on the connection the reader keeps reading (rtl_device_set_frequency()): drop the bytes it buffered
+ * for the old frequency on their way to the ring (a partial slice of whole pairs; the capture already holds them). The
+ * stream goes on, so the mute in flight and its byte phase are left alone; the rotation restarts at phase 0. */
+static void
+rtl_tcp_drop_buffered_for_retune(struct rtl_device* s) {
+    s->tcp_pending_len = 0U;
+    rtl_capture_u8_byte_carry_clear(&s->iq_byte_carry);
+    s->rot_phase = 0;
+    rtl_stream_input_level_reset();
+}
+
+/* One receive on @p conn into the loop buffer after its first @p held bytes; @p timed_out set when it ended for the
+ * receive timeout alone. Where a
+ * receive that timed out leaves the socket in an unknown state (Winsock, as for a send), the reader waits for data
+ * itself, a slice at a time (so a stop is seen), and receives only what is there; elsewhere the socket's receive
+ * timeout bounds a plain blocking receive. */
+static int
+rtl_tcp_reader_recv(const struct rtl_device* s, struct rtl_tcp_conn* conn, struct rtl_tcp_loop_state* st, size_t held,
+                    int* timed_out) {
+    *timed_out = 0;
+#if DSD_PLATFORM_WIN_NATIVE
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + st->recv_timeout_ms;
+    for (;;) {
+        if (!s->run.load() || conn->lost.load(std::memory_order_acquire)) {
+            return 0;
+        }
+        const int ready = dsd_socket_wait(conn->sock, DSD_SOCKET_WAIT_READ, kRtlTcpSliceMs);
+        if (ready < 0) {
+            return -1;
+        }
+        if (ready > 0) {
+            return dsd_socket_recv(conn->sock, st->u8 + held, st->bufsz - held, 0);
+        }
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            *timed_out = 1;
+            return -1;
+        }
+    }
+#else
+    (void)s;
+    const int r = dsd_socket_recv(conn->sock, st->u8 + held, st->bufsz - held, st->waitall ? MSG_WAITALL : 0);
+    *timed_out = (r < 0 && rtl_tcp_recv_is_timeout(r)) ? 1 : 0;
+    return r;
+#endif
+}
+
+/* The reader's pipeline for @p len bytes (whole I/Q pairs) at the front of the loop buffer: the mute and the capture
+ * hold, then the capture, the ring and the input level. */
+static void
+rtl_tcp_process_pairs(struct rtl_device* s, struct rtl_tcp_loop_state* st, uint32_t len) {
+    rtl_u8_transform_policy_state policy{};
+    rtl_tcp_load_transform_policy(s, &policy);
+    if (rtl_tcp_apply_mute_and_reconfigure(s, st->u8, &len, policy.fs4_shift_active)) {
+        return;
+    }
+    rtl_tcp_account_input_stats(s, len);
+    rtl_submit_capture_bytes(s, st->u8, len);
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_cu8_moments_reset(&moments);
+    rtl_tcp_reassemble_and_submit(s, st->u8, len, &policy, &moments);
+    rtl_publish_cu8_input_level_moments(s, &moments);
+    rtl_tcp_periodic_maintenance(s, st);
+}
+
+/* Why the reader lost @p conn, for the reconnect's log: NULL when a failed command took it down (which said so). */
+static const char*
+rtl_tcp_loss_reason(const struct rtl_tcp_conn* conn, int timed_out, int r) {
+    if (conn->lost.load(std::memory_order_acquire)) {
+        return nullptr;
+    }
+    if (timed_out) {
+        return "input stalled";
+    }
+    return (r == 0) ? "the server closed the connection" : "the connection failed";
+}
+
 /* The published connection, with a reference for the reader; NULL with none. */
 static struct rtl_tcp_conn*
 rtl_tcp_reader_take_published(struct rtl_device* s) {
@@ -6159,10 +6289,15 @@ static DSD_THREAD_RETURN_TYPE
     }
     /* Set by a reconnect whose discard path ended on an odd byte: the next byte is a Q sample and is dropped. */
     int skip_odd = 0;
+    /* What reaches the mute, the capture hold, the capture and the ring is whole I/Q pairs, as a USB reader's buffers
+     * are: TCP hands the reader chunks of any length, and the byte accounting those share with the controller (a mute
+     * armed while a chunk is being muted, the capture writer's half pair at an event) slips a pair on an odd chunk. An
+     * odd last byte waits at the front of the buffer (@c held, 0 or 1) for its Q. */
+    size_t held = 0U;
     /* A command may have lost the first connection before this thread ran: reconnect then. */
     struct rtl_tcp_conn* conn = rtl_tcp_reader_take_published(s);
     if (!conn) {
-        conn = rtl_tcp_reconnect(s, nullptr, &st, &skip_odd);
+        conn = rtl_tcp_reconnect(s, nullptr, "the first connection was lost before the reader started", &st, &skip_odd);
     }
     if (!conn) {
         free(st.u8);
@@ -6172,7 +6307,13 @@ static DSD_THREAD_RETURN_TYPE
 
     while (s->run.load() && dsd_exitflag_load() == 0) {
         rtl_tcp_apply_backpressure_if_needed(s);
-        int r = dsd_socket_recv(conn->sock, st.u8, st.bufsz, st.waitall ? MSG_WAITALL : 0);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        if (g_test_tcp_read_hook) {
+            g_test_tcp_read_hook(g_test_tcp_read_hook_ctx);
+        }
+#endif
+        int timed_out = 0;
+        int r = rtl_tcp_reader_recv(s, conn, &st, held, &timed_out);
         if (r > 0 && conn->lost.load(std::memory_order_acquire)) {
             r = 0;
         }
@@ -6180,52 +6321,51 @@ static DSD_THREAD_RETURN_TYPE
             if (!s->run.load() || dsd_exitflag_load()) {
                 break;
             }
-            if (r < 0 && rtl_tcp_recv_is_timeout(r) && ++st.consec_timeouts < st.timeout_limit) {
+            if (timed_out && ++st.consec_timeouts < st.timeout_limit) {
                 continue;
             }
             st.consec_timeouts = 0;
-            conn = rtl_tcp_reconnect(s, conn, &st, &skip_odd);
+            conn = rtl_tcp_reconnect(s, conn, rtl_tcp_loss_reason(conn, timed_out, r), &st, &skip_odd);
             if (!conn) {
                 break;
             }
+            held = 0U; /* a new stream: the old one's half pair goes */
             continue;
         }
 
         st.consec_timeouts = 0;
         if (!rtl_tcp_watchdog_allows_processing(s, r)) {
-            conn = rtl_tcp_reconnect(s, conn, &st, &skip_odd);
+            /* The watchdog reported it. */
+            conn = rtl_tcp_reconnect(s, conn, nullptr, &st, &skip_odd);
             if (!conn) {
                 break;
             }
+            held = 0U;
             continue;
         }
 
         if (s->tcp_restart_pending.load(std::memory_order_relaxed)
             && s->tcp_restart_pending.exchange(0, std::memory_order_acq_rel)) {
-            rtl_reset_capture_state_on_stream_boundary(s);
+            rtl_tcp_drop_buffered_for_retune(s);
         }
-        uint32_t len = (uint32_t)r;
+        uint32_t total = (uint32_t)held + (uint32_t)r;
         if (skip_odd) {
             skip_odd = 0;
-            DSD_MEMMOVE(st.u8, st.u8 + 1, len - 1U);
-            len--;
-            if (len == 0U) {
+            DSD_MEMMOVE(st.u8, st.u8 + 1, total - 1U);
+            total--;
+            if (total == 0U) {
                 continue;
             }
         }
-        rtl_u8_transform_policy_state policy{};
-        rtl_tcp_load_transform_policy(s, &policy);
-        if (rtl_tcp_apply_mute_and_reconfigure(s, st.u8, &len, policy.fs4_shift_active)) {
-            continue;
+        uint32_t len = total & ~1U;
+        held = total - len;
+        const unsigned char odd_byte = st.u8[total - 1U];
+        if (len > 0U) {
+            rtl_tcp_process_pairs(s, &st, len);
         }
-
-        rtl_tcp_account_input_stats(s, len);
-        rtl_submit_capture_bytes(s, st.u8, len);
-        dsd_input_level_cu8_moments moments;
-        dsd_input_level_cu8_moments_reset(&moments);
-        rtl_tcp_reassemble_and_submit(s, st.u8, len, &policy, &moments);
-        rtl_publish_cu8_input_level_moments(s, &moments);
-        rtl_tcp_periodic_maintenance(s, &st);
+        if (held != 0U) {
+            st.u8[0] = odd_byte;
+        }
     }
 
     rtl_tcp_conn_unref(conn);
@@ -7721,7 +7861,11 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     DSD_SNPRINTF(dev->host, sizeof(dev->host), "%s", host);
     dev->port = port;
     dev->run.store(0);
+    /* Before any gain change takes, the record holds the session's default: automatic gain with the digital AGC as
+       configured, which a reconnect asserts if a failed change may have moved the server off it. */
     dev->agc_mode = 1;
+    dev->gain = RTL_AUTO_GAIN;
+    dev->digital_agc_wanted = env_agc_want();
     dev->tcp_autotune = autotune_enabled ? 1 : 0;
     dev->offset_took = 0;
     dev->tcp_pending = NULL;
@@ -10041,6 +10185,14 @@ rtl_device_has_stream(const struct rtl_device* dev) {
     return 1;
 }
 
+int
+rtl_device_control_unavailable(const struct rtl_device* dev) {
+    if (!dev || rtl_device_has_stream(dev)) {
+        return 0;
+    }
+    return (dev->backend == RTL_BACKEND_TCP) ? RTL_DEVICE_ENOTCONN : RTL_DEVICE_EBUSY;
+}
+
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 /* A reader restarted on the streaming seam streams again until the next cancel. */
 static void
@@ -10085,6 +10237,12 @@ extern "C" void
 rtl_device_test_tcp_set_discard_hook(void (*hook)(void* ctx), void* ctx) {
     g_test_tcp_discard_hook_ctx = ctx;
     g_test_tcp_discard_hook = hook;
+}
+
+extern "C" void
+rtl_device_test_tcp_set_read_hook(void (*hook)(void* ctx), void* ctx) {
+    g_test_tcp_read_hook_ctx = ctx;
+    g_test_tcp_read_hook = hook;
 }
 
 extern "C" uint64_t
@@ -10493,7 +10651,8 @@ rtl_device_set_testmode(struct rtl_device* dev, int on) {
             [&]() {
                 dev->testmode_on = requested;
                 dev->tcp_took.testmode = 1;
-            });
+            },
+            [&]() { dev->tcp_took.testmode_unknown = 1; });
     } else if (dev->backend == RTL_BACKEND_SOAPY) {
         rc = DSD_ERR_NOT_SUPPORTED;
     } else {

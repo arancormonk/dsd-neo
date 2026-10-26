@@ -830,8 +830,10 @@ struct RtlSdrInternals {
        (demod_publish_replay_output_block()). Counted so a test sees a loss that would otherwise be silent. */
     std::atomic<uint64_t> replay_output_truncated{0U};
 
-    /* Watermark-based flow control for TCP lag resilience */
+    /* Watermark-based flow control for TCP lag resilience. The demod thread owns it; it is sized for the capture rate
+       there, before its next use, once startup or a retune that moved the rate asked (watermark_refresh_pending). */
     struct input_ring_watermark watermark{};
+    std::atomic<int> watermark_refresh_pending{0};
 };
 
 } // namespace
@@ -1407,12 +1409,15 @@ rtl_stream_set_digital_decode_modes(const dsd_opts* opts) {
     g_noted_digital_modes.store(rtl_stream_fsk_modes_from_opts(opts) | kFskModesNoted, std::memory_order_release);
 }
 
+/* Ask the demod thread to size the input-ring watermark for the capture rate now in force (it does so before its next
+ * use: demod_wait_for_watermark_if_needed()). Startup and the controller's retunes ask; neither writes the watermark
+ * itself, which the demod reads between them. */
 static void
 stream_refresh_watermark_for_current_rate(void) {
     if (!g_stream) {
         return;
     }
-    watermark_init(&g_stream->watermark, stream_steady_state_watermark_enabled(g_stream->opts), load_dongle_rate());
+    g_stream->watermark_refresh_pending.store(1, std::memory_order_release);
 }
 
 static const char*
@@ -2015,6 +2020,11 @@ rtl_stream_set_bias_tee(int on) {
         g_squelch_bias_tee.store(on ? 1 : 0, std::memory_order_relaxed);
     }
     return rc;
+}
+
+extern "C" int
+rtl_stream_control_unavailable(void) {
+    return rtl_device_control_unavailable(rtl_device_handle);
 }
 
 /* Export applied tuner gain for UI without exposing internals: the published copy (rtl_stream_publish_tuner_gain()),
@@ -2842,6 +2852,10 @@ demod_wait_for_watermark_if_needed(void) {
         return 0;
     }
     struct input_ring_watermark* wm = &g_stream->watermark;
+    if (g_stream->watermark_refresh_pending.load(std::memory_order_relaxed)
+        && g_stream->watermark_refresh_pending.exchange(0, std::memory_order_acq_rel)) {
+        watermark_init(wm, stream_steady_state_watermark_enabled(g_stream->opts), load_dongle_rate());
+    }
     watermark_periodic_adjust(wm, dsd_realtime_mono_ns());
     int control_work_pending = 0;
     while (1) {

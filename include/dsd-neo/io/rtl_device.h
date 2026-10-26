@@ -538,6 +538,14 @@ int rtl_device_resume_stream(struct rtl_device* dev);
 int rtl_device_has_stream(const struct rtl_device* dev);
 
 /**
+ * @brief Why the device cannot take a control right now, when it has no stream (rtl_device_has_stream()).
+ *
+ * @return RTL_DEVICE_EBUSY for a USB receiver being reset and reopened, RTL_DEVICE_ENOTCONN for rtl_tcp without a
+ *         connection to its server, 0 when the device has a stream or @p dev is NULL.
+ */
+int rtl_device_control_unavailable(const struct rtl_device* dev);
+
+/**
  * @brief Mute the incoming raw USB/TCP byte stream for a short duration.
  *
  * Note: The argument is in raw input BYTES (u8 I/Q interleaved), not int16
