@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # - Find libusb-1.0, for the RTL-SDR USB identity and reset unit
 #   (src/io/radio/rtl_usb_identity.cpp). librtlsdr links it already; dsd-neo
 #   calls it directly only to identify and reset the running dongle.
 # Once done this will define
 #  LIBUSB_FOUND - System has libusb-1.0
 #  LIBUSB_INCLUDE_DIR - The directory holding libusb.h
-#  LIBUSB_LIBRARY - The libusb-1.0 library
+#  LIBUSB_LIBRARY - The libusb-1.0 library (FreeBSD's base libusb as "usb")
 #  Libusb::Libusb - Imported target for both
 #
 # Searched with the hints FindRTLSDR.cmake uses (pkg-config for libusb-1.0 and
@@ -61,7 +62,7 @@ if(NOT LIBUSB_FOUND)
 
     find_library(
         LIBUSB_LIBRARY
-        NAMES usb-1.0 libusb-1.0
+        NAMES usb-1.0 libusb-1.0 usb
         HINTS
             ${PC_LIBUSB_LIBDIR}
             ${PC_LIBUSB_LIBRARY_DIRS}
