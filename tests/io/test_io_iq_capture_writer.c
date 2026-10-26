@@ -1302,7 +1302,11 @@ test_idle_partial_block_reaches_the_file_before_close(void) {
     char metadata_path[512];
     char err[256];
 
-    enum { kPayload = 8, kFlushMs = 20, kPollMs = 5, kPollTries = 200 };
+    /* kWaitMs is a wall-clock bound, not a count of sleeps: a hosted Windows
+     * runner has stalled this binary for tens of seconds, longer than the few
+     * seconds 200 short sleeps came to. The wait ends as soon as the block
+     * lands, so a passing run pays nothing for the headroom. */
+    enum { kPayload = 8, kFlushMs = 20, kPollMs = 5, kWaitMs = 30000 };
 
     if (mk_temp_dir(dir, sizeof(dir)) != 0) {
         return 1;
@@ -1331,11 +1335,15 @@ test_idle_partial_block_reaches_the_file_before_close(void) {
         /* Poll rather than sleep once: the assertion is "it lands without any
          * further help", not "it lands within exactly one interval". */
         uint64_t size_before_close = 0;
-        for (int i = 0; i < kPollTries; i++) {
+        const uint64_t deadline_ms = dsd_time_monotonic_ms() + (uint64_t)kWaitMs;
+        for (;;) {
             dsd_stat_t st;
             if (dsd_stat_path(data_path, &st) == 0 && st.st_size >= 0
                 && (uint64_t)st.st_size >= (uint64_t)sizeof(payload)) {
                 size_before_close = (uint64_t)st.st_size;
+                break;
+            }
+            if (dsd_time_monotonic_ms() >= deadline_ms) {
                 break;
             }
             dsd_sleep_ms(kPollMs);
