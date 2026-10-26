@@ -433,6 +433,69 @@ void rtl_device_test_set_recovery_post_hook(void (*hook)(struct rtl_device*, voi
  * its thread (under the device's lifecycle lock); NULL removes it. */
 void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 
+/* ---- rtl_tcp (issue #518 WP3) ---- */
+
+/* rtl_tcp_read_header()'s results. */
+enum {
+    RTL_TEST_TCP_HEADER_SUCCESS = 0,
+    RTL_TEST_TCP_HEADER_EOF = 1,
+    RTL_TEST_TCP_HEADER_INVALID = 2,
+    RTL_TEST_TCP_HEADER_CANCELLED = 3,
+    RTL_TEST_TCP_HEADER_TIMEOUT = 4,
+};
+
+/* Read an rtl_tcp header from @p sock (a dsd_socket_t) as the device does, within @p budget_ms, cancelled once
+ * @p cancelled(@p ctx) is nonzero. Returns an RTL_TEST_TCP_HEADER_* result and, on success, the tuner type and gain
+ * count. */
+int rtl_device_test_tcp_read_header(intptr_t sock, unsigned int budget_ms, int (*cancelled)(void* ctx), void* ctx,
+                                    uint32_t* out_tuner, uint32_t* out_gain_count);
+/* The next command unit (a setter's, or a reconnect's replay) holding command @p cmd sends what comes before it and
+ * then fails there, as a connection that broke mid-unit does; -1 clears it. */
+void rtl_device_test_tcp_fail_command(int cmd);
+/* Each send call writes at most @p max_bytes (0: no limit), so every command goes out in partial writes. */
+void rtl_device_test_tcp_set_send_chunk(size_t max_bytes);
+/* SO_SNDBUF for each connection made from now on (0: the system's). */
+void rtl_device_test_tcp_set_sndbuf(int bytes);
+/* Call @p hook(generation, @p ctx) in every command send (a setter's, or a replay's), once it holds its connection and
+ * that connection's send lock, before anything goes out; NULL removes it. Set while no command is sent. */
+void rtl_device_test_tcp_set_send_hook(void (*hook)(uint64_t generation, void* ctx), void* ctx);
+/* Call @p hook(@p ctx) in the reader's discard path, right before each of its receives; NULL removes it. Set while
+ * no reader runs. */
+void rtl_device_test_tcp_set_discard_hook(void (*hook)(void* ctx), void* ctx);
+/* How many releases from the discard path left an odd byte for the reader to drop, process-wide. */
+uint64_t rtl_device_test_tcp_odd_drops(void);
+
+/* rtl_tcp hand-off states (rtl_device_test_tcp_state::handoff). */
+enum {
+    RTL_TEST_TCP_HANDOFF_NONE = 0,
+    RTL_TEST_TCP_HANDOFF_QUEUED = 1,
+    RTL_TEST_TCP_HANDOFF_CLAIMED = 2,
+    RTL_TEST_TCP_HANDOFF_RELEASED = 3,
+    RTL_TEST_TCP_HANDOFF_FAILED = 4,
+    RTL_TEST_TCP_HANDOFF_CANCELLED = 5,
+};
+
+typedef struct {
+    uint64_t generation; /* the published connection's identity; 0 with none */
+    int handoff;         /* RTL_TEST_TCP_HANDOFF_* */
+    int stop_requested;  /* the stop latch */
+    int gain_took;       /* the effective record holds a gain state */
+    int digital_agc;     /* the digital AGC the gain state wants */
+} rtl_device_test_tcp_state;
+
+void rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state* out);
+
+/* The controller's work items (rtl_stream_test_set_controller_work_hook()). */
+enum {
+    RTL_STREAM_TEST_WORK_USB_RECOVERY = 1,
+    RTL_STREAM_TEST_WORK_TCP_HANDOFF = 2,
+    RTL_STREAM_TEST_WORK_RETUNE = 3,
+};
+
+/* Call @p hook(kind, @p ctx) on the controller thread once it took a work item, before it runs it; NULL removes it.
+ * Set while no stream runs. */
+void rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx), void* ctx);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */

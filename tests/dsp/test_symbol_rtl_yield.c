@@ -17,6 +17,8 @@
  *  - once consumed, reading resumes at the next sample, none lost.
  * The contracts beside it stay: a failed read (-1) asks for shutdown outside a search and is a search interruption
  * inside one, and an idle NFM monitor's empty read (0 samples) interrupts the hunt without standing.
+ * An rtl_tcp server that comes back between two reads (its reconnect moved the stream's discontinuity count) does not
+ * cut the yield short, and the gap it left is not lost behind it.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -56,6 +58,8 @@ static uint64_t g_next = 0U;
 static int g_instead = 1;
 static int g_reads = 0;
 static int g_search_running = 0;
+/* The stream's discontinuity count: a reconnect moves it before any sample after it can be read. */
+static uint64_t g_discontinuity = 0U;
 
 static void
 check(const char* label, int cond) {
@@ -146,6 +150,11 @@ fake_search_running(const dsd_state* state) {
     return g_search_running;
 }
 
+static uint64_t
+fake_discontinuity_seq(void) {
+    return g_discontinuity;
+}
+
 static int g_fake_rtl_context = 0;
 
 static void
@@ -157,6 +166,7 @@ install_fake_stream(void) {
         .output_kind = fake_output_kind,
         .symbol_profile = fake_symbol_profile,
         .stream_generation = fake_generation,
+        .discontinuity_seq = fake_discontinuity_seq,
     };
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     dsd_signal_search_active_set(fake_search_running);
@@ -179,6 +189,7 @@ reset_stream(dsd_opts* opts, dsd_state* state, int output_kind) {
     g_instead = 1;
     g_reads = 0;
     g_search_running = 0;
+    g_discontinuity = 0U;
     g_frame_sync_dsp_stub_shutdown_requests = 0;
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_decode_clock_use_replay(1788245497LL);
@@ -290,6 +301,59 @@ yield_resumes_at_the_next_sample(dsd_opts* opts, dsd_state* state, int output_ki
     check(label, in_order);
 }
 
+/* sticky_yield_across_reconnect: an rtl_tcp outage gave way to a queued command (the yield stands), and the server comes
+ * back between two reads, its reconnect having moved the stream's discontinuity count. The read after it still stands
+ * the yield: an unusable 0, nothing read from the stream. Once the engine consumed the yield, the next read raises the
+ * stream gap rather than letting it slip by, before any sample after it; once that is consumed, reading resumes at the
+ * next sample, none lost. */
+static void
+sticky_yield_across_reconnect(dsd_opts* opts, dsd_state* state, int output_kind, const char* name) {
+    char label[192];
+    reset_stream(opts, state, output_kind);
+    g_read_size = 37U;
+    uint64_t want = 1U;
+    int in_order = 1;
+    for (int i = 0; i < 100; i++) {
+        in_order &= reads_sample(getSymbol(opts, state, 0), want++);
+    }
+    g_instead = DSD_RTL_READ_YIELD;
+    int raised = 0;
+    for (int i = 0; i < 100 && !raised; i++) {
+        const float symbol = getSymbol(opts, state, 0);
+        raised = state->input_interrupted;
+        if (!raised) {
+            in_order &= reads_sample(symbol, want++);
+        }
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: the outage's read raises the yield", name);
+    check(label, raised && state->input_interrupt_reason == DSD_INTERRUPT_YIELD);
+
+    /* The server is back: samples flow and the count moved. */
+    g_instead = 1;
+    g_discontinuity = 1U;
+    const int reads = g_reads;
+    int sticky = 1;
+    for (int i = 0; i < 20; i++) {
+        state->symbol_replay_symbol_unusable = 0;
+        const float symbol = getSymbol(opts, state, 0);
+        sticky &= reads_sample(symbol, 0U) && state->symbol_replay_symbol_unusable == 1
+                  && state->input_interrupt_reason == DSD_INTERRUPT_YIELD;
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: the yield stands across the reconnect, reading nothing", name);
+    check(label, sticky && g_reads == reads);
+
+    engine_consumes(state);
+    (void)getSymbol(opts, state, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: the next read raises the reconnect's gap", name);
+    check(label, state->input_interrupted == 1 && state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP);
+    engine_consumes(state);
+    for (int i = 0; i < 60; i++) {
+        in_order &= reads_sample(getSymbol(opts, state, 0), want++) && state->input_interrupted == 0;
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: once consumed, reading resumes at the next sample, none lost", name);
+    check(label, in_order);
+}
+
 /* search_failure_contract_kept: a failed read is still a failure, never a yield: outside a search it asks for
    shutdown; inside a search visit it is the search's interruption, which stands only while the search runs. */
 static void
@@ -363,6 +427,8 @@ main(void) {
     yield_across(&opts, &state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
     yield_resumes_at_the_next_sample(&opts, &state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
     yield_resumes_at_the_next_sample(&opts, &state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
+    sticky_yield_across_reconnect(&opts, &state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
+    sticky_yield_across_reconnect(&opts, &state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
     test_search_failure_contract_kept(&opts, &state);
     test_analog_zero_read_contract_kept(&opts, &state);
 

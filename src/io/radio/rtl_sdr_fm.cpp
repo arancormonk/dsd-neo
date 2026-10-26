@@ -340,6 +340,9 @@ struct controller_state {
     /* A stall recovery the USB device's progress monitor asked for (controller_post_usb_recovery()); guarded by hop_m
        for the wake, taken by controller_wait_for_retune_work() ahead of any retune. */
     std::atomic<int> usb_recovery_pending{0};
+    /* A reconnected rtl_tcp connection the device's reader handed over (controller_post_tcp_handoff()); guarded by hop_m
+       for the wake, taken like a recovery, ahead of any retune. */
+    std::atomic<int> tcp_handoff_pending{0};
 };
 
 } // namespace
@@ -5508,6 +5511,9 @@ stream_gap_reason_name(int reason) {
 }
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Called by the controller once it took a work item (rtl_stream_test_set_controller_work_hook()). */
+static void (*g_test_controller_work_hook)(int kind, void* ctx) = nullptr;
+static void* g_test_controller_work_hook_ctx = nullptr;
 /* Called at each step of controller_stream_boundary() (rtl_stream_test_set_stream_boundary_probe()). */
 static void (*g_test_stream_boundary_probe)(int step, void* ctx) = nullptr;
 static void* g_test_stream_boundary_probe_ctx = nullptr;
@@ -5606,6 +5612,51 @@ controller_post_usb_recovery(void* ctx) {
     auto* s = static_cast<controller_state*>(ctx);
     dsd_mutex_lock(&s->hop_m);
     s->usb_recovery_pending.store(1, std::memory_order_release);
+    dsd_cond_signal(&s->hop);
+    dsd_mutex_unlock(&s->hop_m);
+}
+
+namespace {
+/* An rtl_tcp reconnect's device step (controller_stream_boundary()): the device, and why it failed. */
+struct TcpHandoffOp {
+    struct rtl_device* dev;
+    char why[256];
+};
+} // namespace
+
+static int
+controller_tcp_handoff_op(void* ctx) {
+    auto* op = static_cast<TcpHandoffOp*>(ctx);
+    const int rc = rtl_device_tcp_publish_handoff(op->dev, op->why, sizeof op->why);
+    if (rc == 0) {
+        /* The replay put the server's gain back; the frontends read it from the published copy. */
+        rtl_stream_publish_tuner_gain();
+    }
+    return rc;
+}
+
+/* Run the reconnect the rtl_tcp reader handed over, if it is still there to take (a stop cancels one not taken): the
+ * stream boundary around restoring the server's settings on the new connection and publishing it (issue #518 D1, B4).
+ * The boundary releases the reader only once the gap is noted. A failed replay leaves nothing published, and the
+ * reader reconnects again; a stop is silent. */
+static void
+controller_process_tcp_handoff(struct controller_state* s) {
+    struct rtl_device* dev = rtl_device_handle;
+    if (!rtl_device_tcp_handoff_take(dev)) {
+        return;
+    }
+    TcpHandoffOp op{};
+    op.dev = dev;
+    (void)controller_stream_boundary(s, kStreamGapTcpReconnect, controller_tcp_handoff_op, &op);
+}
+
+/* The rtl_tcp device's hand-off callback (rtl_device_set_recovery_callback()), on its reader's thread: queue the work
+ * for the controller. */
+static void
+controller_post_tcp_handoff(void* ctx) {
+    auto* s = static_cast<controller_state*>(ctx);
+    dsd_mutex_lock(&s->hop_m);
+    s->tcp_handoff_pending.store(1, std::memory_order_release);
     dsd_cond_signal(&s->hop);
     dsd_mutex_unlock(&s->hop_m);
 }
@@ -5975,6 +6026,7 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
 namespace {
 struct ControllerRetuneWork {
     int usb_recovery = 0;
+    int tcp_handoff = 0;
     int manual_pending = 0;
     uint32_t manual_freq_hz = 0U;
     uint64_t manual_token = 0U;
@@ -6009,6 +6061,7 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
         return 0;
     }
     work->usb_recovery = 0;
+    work->tcp_handoff = 0;
     work->manual_pending = 0;
     work->manual_freq_hz = 0;
     work->manual_token = 0U;
@@ -6016,7 +6069,8 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     dsd_mutex_lock(&s->hop_m);
     while (!s->manual_retune_pending.load(std::memory_order_acquire)
            && !s->ppm_change_pending.load(std::memory_order_acquire)
-           && !s->usb_recovery_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
+           && !s->usb_recovery_pending.load(std::memory_order_acquire)
+           && !s->tcp_handoff_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load())) {
         dsd_cond_wait(&s->hop, &s->hop_m);
     }
@@ -6024,10 +6078,15 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
         dsd_mutex_unlock(&s->hop_m);
         return 0;
     }
-    /* A recovery goes first and alone: a retune or PPM change queued behind it stays queued for the next pass, and lands
-       on the reopened dongle. */
+    /* A recovery (or an rtl_tcp reconnect) goes first and alone: a retune or PPM change queued behind it stays queued for
+       the next pass, and lands on the reopened dongle or the reconnected server. */
     work->usb_recovery = s->usb_recovery_pending.exchange(0, std::memory_order_acq_rel);
     if (work->usb_recovery) {
+        dsd_mutex_unlock(&s->hop_m);
+        return 1;
+    }
+    work->tcp_handoff = s->tcp_handoff_pending.exchange(0, std::memory_order_acq_rel);
+    if (work->tcp_handoff) {
         dsd_mutex_unlock(&s->hop_m);
         return 1;
     }
@@ -6361,8 +6420,20 @@ static DSD_THREAD_RETURN_TYPE
         if (!controller_wait_for_retune_work(s, &work)) {
             break;
         }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+        if (g_test_controller_work_hook) {
+            const int kind = work.usb_recovery  ? RTL_STREAM_TEST_WORK_USB_RECOVERY
+                             : work.tcp_handoff ? RTL_STREAM_TEST_WORK_TCP_HANDOFF
+                                                : RTL_STREAM_TEST_WORK_RETUNE;
+            g_test_controller_work_hook(kind, g_test_controller_work_hook_ctx);
+        }
+#endif
         if (work.usb_recovery) {
             controller_process_usb_recovery(s);
+            continue;
+        }
+        if (work.tcp_handoff) {
+            controller_process_tcp_handoff(s);
             continue;
         }
         if (controller_process_manual_retune(s, &work)) {
@@ -6596,6 +6667,7 @@ controller_init(struct controller_state* s) {
     s->last_applied_freq_hz.store(0, std::memory_order_release);
     s->reconfigure_seq.store(0, std::memory_order_release);
     s->usb_recovery_pending.store(0, std::memory_order_release);
+    s->tcp_handoff_pending.store(0, std::memory_order_release);
 }
 
 /**
@@ -6767,6 +6839,33 @@ stream_create_worker(dsd_thread_t* thread, dsd_thread_fn entry, void* context) {
     return dsd_thread_create(thread, entry, context);
 }
 
+/* Undo a pipeline start that failed part way: whatever started of the device's reader, the controller and the demod
+ * is stopped and joined before any caller can retry open and replace the stream state or its wait primitives. */
+static void
+stream_start_failed_teardown(void) {
+    if (g_stream) {
+        stream_set_lifecycle_flag(g_stream->should_exit, 1);
+    }
+    safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
+    safe_cond_signal(&controller.hop, &controller.hop_m);
+    safe_cond_signal(&demod.ready, &demod.ready_m);
+    safe_cond_signal(&output.space, &output.ready_m);
+    safe_cond_signal(&output.ready, &output.ready_m);
+    (void)rtl_device_stop_async(rtl_device_handle);
+    rtl_device_set_recovery_callback(rtl_device_handle, NULL, NULL);
+    if (g_stream) {
+        stream_set_lifecycle_flag(g_stream->async_started, 0);
+        if (g_stream->demod_thread_started.load(std::memory_order_acquire)) {
+            dsd_thread_join(demod.thread);
+            stream_set_lifecycle_flag(g_stream->demod_thread_started, 0);
+        }
+        if (g_stream->controller_thread_started.load(std::memory_order_acquire)) {
+            dsd_thread_join(controller.thread);
+            stream_set_lifecycle_flag(g_stream->controller_thread_started, 0);
+        }
+    }
+}
+
 /**
  * @brief Launch controller/demod threads and start async device capture.
  *
@@ -6813,29 +6912,7 @@ start_threads_and_async(void) {
     return 0;
 
 fail:
-    // A failed SDK start can follow either worker creation. Join before any
-    // caller can retry open and replace the stream state or its wait primitives.
-    if (g_stream) {
-        stream_set_lifecycle_flag(g_stream->should_exit, 1);
-    }
-    safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
-    safe_cond_signal(&controller.hop, &controller.hop_m);
-    safe_cond_signal(&demod.ready, &demod.ready_m);
-    safe_cond_signal(&output.space, &output.ready_m);
-    safe_cond_signal(&output.ready, &output.ready_m);
-    (void)rtl_device_stop_async(rtl_device_handle);
-    rtl_device_set_recovery_callback(rtl_device_handle, NULL, NULL);
-    if (g_stream) {
-        stream_set_lifecycle_flag(g_stream->async_started, 0);
-        if (g_stream->demod_thread_started.load(std::memory_order_acquire)) {
-            dsd_thread_join(demod.thread);
-            stream_set_lifecycle_flag(g_stream->demod_thread_started, 0);
-        }
-        if (g_stream->controller_thread_started.load(std::memory_order_acquire)) {
-            dsd_thread_join(controller.thread);
-            stream_set_lifecycle_flag(g_stream->controller_thread_started, 0);
-        }
-    }
+    stream_start_failed_teardown();
     return -1;
 }
 
@@ -8114,9 +8191,13 @@ stream_open_start_rtltcp_pipeline(const dsd_opts* opts) {
     double target_sec = (sample_rate_hz > 0) ? ((double)target / (2.0 * (double)sample_rate_hz)) : 0.0;
     LOG_INFO("rtltcp prebuffer target: %zu samples (%.3f s at %u Hz).\n", target, target_sec, (unsigned)sample_rate_hz);
 
+    /* The reader hands each reconnected server to the controller, which restores its settings around a stream boundary;
+       one posted before the controller runs waits for it. */
+    rtl_device_set_recovery_callback(rtl_device_handle, controller_post_tcp_handoff, &controller);
     LOG_INFO("Starting RTL async read (rtltcp prebuffer %d ms)...\n", pre_ms);
     if (rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH) != 0) {
         LOG_ERROR("Failed to start rtl_tcp async reader.\n");
+        stream_start_failed_teardown();
         return -1;
     }
     if (g_stream) {
@@ -8126,10 +8207,22 @@ stream_open_start_rtltcp_pipeline(const dsd_opts* opts) {
     stream_open_rtltcp_wait_for_prebuffer(target);
     LOG_INFO("rtltcp prebuffer filled: %zu/%zu samples in ring.\n", input_ring_used(&input_ring), target);
 
-    if (dsd_thread_create(&controller.thread, controller_thread_retune_loop, &controller) == 0 && g_stream) {
+    /* Without its controller the session could neither retune nor reconnect (B17): the start fails, as it does for
+       every other pipeline. */
+    if (stream_create_worker(&controller.thread, controller_thread_retune_loop, &controller) != 0) {
+        LOG_ERROR("Failed to start the rtl_tcp controller thread.\n");
+        stream_start_failed_teardown();
+        return -1;
+    }
+    if (g_stream) {
         stream_set_lifecycle_flag(g_stream->controller_thread_started, 1);
     }
-    if (dsd_thread_create(&demod.thread, demod_thread_fn, &demod) == 0 && g_stream) {
+    if (stream_create_worker(&demod.thread, demod_thread_fn, &demod) != 0) {
+        LOG_ERROR("Failed to start the rtl_tcp demod thread.\n");
+        stream_start_failed_teardown();
+        return -1;
+    }
+    if (g_stream) {
         stream_set_lifecycle_flag(g_stream->demod_thread_started, 1);
     }
     if (port != 0) {
@@ -11129,6 +11222,12 @@ extern "C" void
 rtl_stream_test_set_stream_boundary_probe(void (*probe)(int step, void* ctx), void* ctx) {
     g_test_stream_boundary_probe_ctx = ctx;
     g_test_stream_boundary_probe = probe;
+}
+
+extern "C" void
+rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx), void* ctx) {
+    g_test_controller_work_hook_ctx = ctx;
+    g_test_controller_work_hook = hook;
 }
 
 extern "C" struct rtl_device*

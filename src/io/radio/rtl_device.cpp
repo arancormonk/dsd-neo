@@ -44,6 +44,7 @@
 #include <errno.h>
 #include <iterator>
 #include <limits.h>
+#include <new>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -355,6 +356,27 @@ struct rtl_usb_effective {
         xtal_took;
     int gain_unknown; /* a failed gain change could not be rolled back: the recorded gain is re-applied */
 };
+
+/* One rtl_tcp connection (issue #518 WP3): its socket, the identity a command and its completion are bound to, and
+ * the lock that keeps one command (or one multi-command gain change) whole on the wire. Counted: the device holds a
+ * reference while the connection is published or handed off, the reader one while it reads it, a sender one while it
+ * sends; the last to let go closes the socket, so no thread uses a descriptor another closed. */
+struct rtl_tcp_conn {
+    dsd_socket_t sock;
+    uint64_t generation;
+    dsd_mutex_t tx_lock;
+    std::atomic<int> refs;
+    /* Taken down (a failed command, a stop): its reader stops reading it even while the server goes on sending,
+     * which a shutdown alone does not stop (queued and arriving data still reads after SHUT_RD). */
+    std::atomic<int> lost;
+};
+
+/* Which controls an rtl_tcp server took (D6), beside the values the device keeps for every backend (freq, rate, gain,
+ * agc_mode, digital_agc_wanted, ppm_error, ...): set only once the command went out on the connection that was still
+ * the published one. A reconnect replays every control that took, as last taken. */
+struct rtl_tcp_took {
+    int freq, rate, gain, ppm, direct_sampling, offset_tuning, bias_tee, testmode, xtal;
+};
 } // namespace
 
 // Internal RTL device structure
@@ -461,9 +483,9 @@ struct rtl_device {
     uint32_t soapy_mtu_elems = 0U;
     int rot_phase = 0;                   /* persistent j^n phase in [0..3] for capture-side FS/4 rotation */
     std::atomic<int> mute_byte_phase{0}; /* byte carry while an active mute span is discarded in fragments */
-    /* rtl_tcp connection */
-    dsd_socket_t sockfd{};
+    /* rtl_tcp: the server's port, and whether tcp_lock and tcp_cond (below) were made. */
     int port = 0;
+    int tcp_sync_inited = 0;
     std::atomic<int> run{0};
     /* The USB reader thread's progress, reset by each start: entered before it checks run and calls
      * rtlsdr_read_async(), exited once that returned (or was skipped). A stop cancels until it sees exited. */
@@ -526,6 +548,24 @@ struct rtl_device {
     std::atomic<uint64_t> recovery_silence_ms{0U};
     rtl_device_recovery_cb recovery_cb = nullptr;
     void* recovery_cb_ctx = nullptr;
+    /* rtl_tcp (issue #518 WP3). tcp_lock guards the published connection, the hand-off and the effective record (the
+     * values above with tcp_took); a command is sent under its connection's tx_lock, never under tcp_lock, and records
+     * what took under both (tx_lock first). tcp_connected mirrors "a connection is published" for lock-free reads. */
+    mutable dsd_mutex_t tcp_lock{};
+    dsd_cond_t tcp_cond{};
+    struct rtl_tcp_conn* tcp_conn = nullptr;
+    /* A reconnected connection on its way to publication: the reader posts it (QUEUED), the controller takes it
+     * (CLAIMED) and publishes it or gives it up (FAILED, CANCELLED), then releases the reader (RELEASED) until the
+     * reader acknowledges (NONE). Admission closes for good once the device stops. */
+    struct rtl_tcp_conn* tcp_handoff_conn = nullptr;
+    uint64_t tcp_generation = 0U;
+    std::atomic<int> tcp_connected{0};
+    int tcp_handoff = 0;
+    int tcp_admission_closed = 0;
+    /* A retune went out: the reader restarts its capture state (partial slice, carry, rotation phase), which it owns,
+     * before its next chunk. */
+    std::atomic<int> tcp_restart_pending{0};
+    struct rtl_tcp_took tcp_took{};
     struct rtl_capture_u8_byte_carry iq_byte_carry{}; /* one buffered raw byte when a chunk ends mid-I/Q sample */
 
     struct rtl_if_gain if_gains[16] = {};
@@ -4765,14 +4805,107 @@ static DSD_THREAD_RETURN_TYPE
 
 /* ---- rtl_tcp backend helpers ---- */
 
-static int
-tcp_connect_cancelled(void*) {
-    return dsd_exitflag_load();
+namespace {
+/* rtl_tcp_read_header()'s results. */
+enum rtl_tcp_header_result : int {
+    RTL_TCP_HEADER_SUCCESS = 0,
+    RTL_TCP_HEADER_EOF = 1,       /* the connection ended or failed before the whole header came */
+    RTL_TCP_HEADER_INVALID = 2,   /* twelve bytes came, without the "RTL0" magic */
+    RTL_TCP_HEADER_CANCELLED = 3, /* a stop latched, or the process is exiting */
+    RTL_TCP_HEADER_TIMEOUT = 4,   /* no whole header within the budget */
+};
+
+/* The hand-off of a reconnected connection (rtl_device::tcp_handoff). */
+enum : int {
+    RTL_TCP_HANDOFF_NONE = 0,
+    RTL_TCP_HANDOFF_QUEUED = 1,    /* posted by the reader; the device holds the connection */
+    RTL_TCP_HANDOFF_CLAIMED = 2,   /* the controller owns it, and publishes it or gives it up */
+    RTL_TCP_HANDOFF_RELEASED = 3,  /* published; the reader is to read it and acknowledge */
+    RTL_TCP_HANDOFF_FAILED = 4,    /* the replay failed: the controller closed it, the reader reconnects again */
+    RTL_TCP_HANDOFF_CANCELLED = 5, /* a stop came first: the reader stops */
+};
+
+/* One rtl_tcp protocol command: 1-byte id, 4-byte big-endian parameter. */
+struct rtl_tcp_cmd {
+    uint8_t id;
+    uint32_t param;
+};
+
+/* The most commands one unit sends: a manual gain change with test mode on, or a reconnect's replay. */
+constexpr size_t kRtlTcpMaxUnit = 32U;
+} // namespace
+
+/* The connect, the header and a whole command unit each get at most this long; between two checks of the
+ * cancellation token at most one slice passes. */
+static constexpr unsigned int kRtlTcpConnectMs = 10000U;
+static constexpr unsigned int kRtlTcpHeaderMs = 10000U;
+static constexpr unsigned int kRtlTcpSendMs = 2000U;
+static constexpr unsigned int kRtlTcpSliceMs = 50U;
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static std::atomic<int> g_test_tcp_fail_cmd{-1};
+static std::atomic<size_t> g_test_tcp_send_chunk{0U};
+static std::atomic<int> g_test_tcp_sndbuf{0};
+static void (*g_test_tcp_send_hook)(uint64_t generation, void* ctx) = nullptr;
+static void* g_test_tcp_send_hook_ctx = nullptr;
+static void (*g_test_tcp_discard_hook)(void* ctx) = nullptr;
+static void* g_test_tcp_discard_hook_ctx = nullptr;
+static std::atomic<uint64_t> g_test_tcp_odd_drops{0U};
+#endif
+
+static void
+rtl_tcp_lock(const struct rtl_device* dev) {
+    if (dev->tcp_sync_inited) {
+        (void)dsd_mutex_lock(&dev->tcp_lock);
+    }
 }
 
-/* Connect to rtl_tcp server */
+static void
+rtl_tcp_unlock(const struct rtl_device* dev) {
+    if (dev->tcp_sync_inited) {
+        (void)dsd_mutex_unlock(&dev->tcp_lock);
+    }
+}
+
+static void
+rtl_tcp_broadcast(struct rtl_device* dev) {
+    if (dev->tcp_sync_inited) {
+        (void)dsd_cond_broadcast(&dev->tcp_cond);
+    }
+}
+
+/* Wait (tcp_lock held) up to one slice for a hand-off change. */
+static void
+rtl_tcp_wait_slice(struct rtl_device* dev) {
+    if (dev->tcp_sync_inited) {
+        (void)dsd_cond_timedwait(&dev->tcp_cond, &dev->tcp_lock, kRtlTcpSliceMs);
+    }
+}
+
+/* The rtl_tcp cancellation token: a stop or destroy latched (stop_requested), or the process is exiting. Unlike run,
+ * it holds before the reader starts, so the session's first connect (made before any reader, with run still 0) can be
+ * cancelled without run == 0 cancelling it. */
+static int
+rtl_tcp_cancelled(void* ctx) {
+    const auto* dev = static_cast<const struct rtl_device*>(ctx);
+    return (dsd_exitflag_load() || (dev && dev->stop_requested.load(std::memory_order_acquire))) ? 1 : 0;
+}
+
+/* Whether a socket call's negative result @p r only means its timeout (or a signal) cut it short. */
+static int
+rtl_tcp_recv_is_timeout(int r) {
+#if DSD_PLATFORM_WIN_NATIVE
+    int e = dsd_socket_get_error();
+    return (r < 0) && (e == WSAEWOULDBLOCK || e == WSAETIMEDOUT || e == WSAEINTR);
+#else
+    int e = dsd_socket_get_error();
+    return (r < 0) && (e == EAGAIN || ((EWOULDBLOCK != EAGAIN) && (e == EWOULDBLOCK)) || e == EINTR);
+#endif
+}
+
+/* Connect to the rtl_tcp server, within kRtlTcpConnectMs, giving up once @p dev's cancellation token holds. */
 static dsd_socket_t
-tcp_connect_host(const char* host, int port) {
+tcp_connect_host(const char* host, int port, struct rtl_device* dev) {
     dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (sockfd == DSD_INVALID_SOCKET) {
         dsd_input_failure_report(DSD_INPUT_FAILURE_NETWORK, dsd_socket_get_error());
@@ -4810,10 +4943,12 @@ tcp_connect_host(const char* host, int port) {
     }
     int code = 0;
     if (dsd_socket_connect_bounded(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr),
-                                   10000U, tcp_connect_cancelled, nullptr, &code)
+                                   kRtlTcpConnectMs, rtl_tcp_cancelled, dev, &code)
         != 0) {
-        dsd_input_failure_report(dsd_input_failure_classify_socket(code), code);
-        DSD_FPRINTF(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);
+        if (!rtl_tcp_cancelled(dev)) {
+            dsd_input_failure_report(dsd_input_failure_classify_socket(code), code);
+            DSD_FPRINTF(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);
+        }
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
     }
@@ -4821,17 +4956,274 @@ tcp_connect_host(const char* host, int port) {
     return sockfd;
 }
 
-/* Send rtl_tcp command: 1 byte id + 4 byte big-endian value */
+/* The options every connection gets before its header is read: a larger receive buffer (brief processing stalls),
+ * no Nagle delay for the commands, the receive timeout that turns a silent server into a stall (DSD_NEO_TCP_RCVTIMEO,
+ * default 2 s) and a one-slice send timeout, so a command blocked by a server that stopped reading checks for a stop
+ * between slices. */
+static void
+rtl_tcp_prepare_socket(dsd_socket_t sock) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rcvbuf = cfg ? cfg->tcp_rcvbuf_bytes : (4 * 1024 * 1024);
+    (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    int nodelay = 1;
+    (void)dsd_socket_setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    int to_ms = cfg ? cfg->tcp_rcvtimeo_ms : 2000;
+    (void)dsd_socket_set_recv_timeout(sock, (unsigned int)to_ms);
+    (void)dsd_socket_set_send_timeout(sock, kRtlTcpSliceMs);
+#if defined(SO_NOSIGPIPE)
+    /* Where MSG_NOSIGNAL does not exist, a command to a server that went away must fail, not raise SIGPIPE. */
+    int nosigpipe = 1;
+    (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    const int sndbuf = g_test_tcp_sndbuf.load(std::memory_order_relaxed);
+    if (sndbuf > 0) {
+        (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+    }
+#endif
+}
+
+/* Read the server's header: exactly twelve bytes, "RTL0", the tuner type and the gain count (both big-endian), and
+ * nothing more: standard rtl_tcp sends no gain table, so the first byte after it is the first I sample (B13). The
+ * header may come in fragments across receive timeouts; each wait is one slice, between which @p cancelled is asked,
+ * and the whole read gets @p budget_ms. */
+static rtl_tcp_header_result
+rtl_tcp_read_header(dsd_socket_t sock, unsigned int budget_ms, int (*cancelled)(void*), void* ctx, uint32_t* out_tuner,
+                    uint32_t* out_gain_count) {
+    uint8_t hdr[12];
+    size_t got = 0U;
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + budget_ms;
+    while (got < sizeof hdr) {
+        if (cancelled && cancelled(ctx)) {
+            return RTL_TCP_HEADER_CANCELLED;
+        }
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return RTL_TCP_HEADER_TIMEOUT;
+        }
+        const int ready = dsd_socket_wait(sock, DSD_SOCKET_WAIT_READ, kRtlTcpSliceMs);
+        if (ready < 0) {
+            return RTL_TCP_HEADER_EOF;
+        }
+        if (ready == 0) {
+            continue;
+        }
+        const int n = dsd_socket_recv(sock, hdr + got, sizeof hdr - got, 0);
+        if (n == 0) {
+            return RTL_TCP_HEADER_EOF;
+        }
+        if (n < 0) {
+            if (rtl_tcp_recv_is_timeout(n)) {
+                continue;
+            }
+            return RTL_TCP_HEADER_EOF;
+        }
+        got += (size_t)n;
+    }
+    if (hdr[0] != 'R' || hdr[1] != 'T' || hdr[2] != 'L' || hdr[3] != '0') {
+        return RTL_TCP_HEADER_INVALID;
+    }
+    if (out_tuner) {
+        *out_tuner = ((uint32_t)hdr[4] << 24) | ((uint32_t)hdr[5] << 16) | ((uint32_t)hdr[6] << 8) | (uint32_t)hdr[7];
+    }
+    if (out_gain_count) {
+        *out_gain_count =
+            ((uint32_t)hdr[8] << 24) | ((uint32_t)hdr[9] << 16) | ((uint32_t)hdr[10] << 8) | (uint32_t)hdr[11];
+    }
+    return RTL_TCP_HEADER_SUCCESS;
+}
+
+static const char*
+rtl_tcp_header_failure_name(rtl_tcp_header_result r) {
+    switch (r) {
+        case RTL_TCP_HEADER_EOF: return "the connection closed first";
+        case RTL_TCP_HEADER_INVALID: return "it is not an rtl_tcp header";
+        case RTL_TCP_HEADER_TIMEOUT: return "none came within 10 s";
+        default: return "cancelled";
+    }
+}
+
+static struct rtl_tcp_conn*
+rtl_tcp_conn_new(dsd_socket_t sock) {
+    auto* conn = new (std::nothrow) rtl_tcp_conn{};
+    if (!conn) {
+        return nullptr;
+    }
+    if (dsd_mutex_init(&conn->tx_lock) != 0) {
+        delete conn;
+        return nullptr;
+    }
+    conn->sock = sock;
+    conn->generation = 0U;
+    conn->refs.store(1, std::memory_order_relaxed);
+    conn->lost.store(0, std::memory_order_relaxed);
+    return conn;
+}
+
+static void
+rtl_tcp_conn_ref(struct rtl_tcp_conn* conn) {
+    conn->refs.fetch_add(1, std::memory_order_relaxed);
+}
+
+/* Drop a reference; the last one closes the socket. */
+static void
+rtl_tcp_conn_unref(struct rtl_tcp_conn* conn) {
+    if (!conn || conn->refs.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+        return;
+    }
+    dsd_socket_shutdown(conn->sock, SHUT_RDWR);
+    dsd_socket_close(conn->sock);
+    (void)dsd_mutex_destroy(&conn->tx_lock);
+    delete conn;
+}
+
+/* Wake whoever waits on the connection's socket (the reader, a blocked sender): their next call fails. The socket
+ * stays open until the last reference goes. */
+static void
+rtl_tcp_conn_shutdown(struct rtl_tcp_conn* conn) {
+    if (conn) {
+        conn->lost.store(1, std::memory_order_release);
+        dsd_socket_shutdown(conn->sock, SHUT_RDWR);
+    }
+}
+
+/* Take the published connection down (tcp_lock held): no stream from here until another is published, and its socket
+ * shut down so the reader and any sender on it wake. Returns the device's reference for the caller to drop. */
+static struct rtl_tcp_conn*
+rtl_tcp_unpublish_locked(struct rtl_device* dev) {
+    struct rtl_tcp_conn* conn = dev->tcp_conn;
+    if (!conn) {
+        return nullptr;
+    }
+    dev->tcp_conn = nullptr;
+    dev->tcp_connected.store(0, std::memory_order_release);
+    rtl_tcp_conn_shutdown(conn);
+    return conn;
+}
+
+/* Send @p len bytes on @p conn whole (its tx_lock held): a partial write goes on from where it stopped, each send call
+ * waits at most a slice (the socket's send timeout) so @p cancelled is asked between slices, and the whole send gets
+ * kRtlTcpSendMs. Returns 0, -ECANCELED, -ETIMEDOUT or -EIO. */
 static int
-rtl_tcp_send_cmd(dsd_socket_t sockfd, uint8_t cmd, uint32_t param) {
-    uint8_t buf[5];
-    buf[0] = cmd;
-    buf[1] = (uint8_t)((param >> 24) & 0xFF);
-    buf[2] = (uint8_t)((param >> 16) & 0xFF);
-    buf[3] = (uint8_t)((param >> 8) & 0xFF);
-    buf[4] = (uint8_t)(param & 0xFF);
-    int n = dsd_socket_send(sockfd, buf, 5, MSG_NOSIGNAL);
-    return (n == 5) ? 0 : -1;
+rtl_tcp_send_all(struct rtl_tcp_conn* conn, const uint8_t* buf, size_t len, int (*cancelled)(void*), void* ctx) {
+    size_t sent = 0U;
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + kRtlTcpSendMs;
+    while (sent < len) {
+        if (cancelled && cancelled(ctx)) {
+            return -ECANCELED;
+        }
+        size_t want = len - sent;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        const size_t chunk = g_test_tcp_send_chunk.load(std::memory_order_relaxed);
+        if (chunk > 0U && want > chunk) {
+            want = chunk;
+        }
+#endif
+        const int n = dsd_socket_send(conn->sock, buf + sent, want, MSG_NOSIGNAL);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && rtl_tcp_recv_is_timeout(n)) {
+            if (dsd_realtime_mono_ms() >= deadline_ms) {
+                return -ETIMEDOUT;
+            }
+            continue;
+        }
+        return -EIO;
+    }
+    return 0;
+}
+
+/* Send @p n commands as one unit on @p conn (its tx_lock held). */
+static int
+rtl_tcp_send_unit(struct rtl_device* dev, struct rtl_tcp_conn* conn, const struct rtl_tcp_cmd* cmds, size_t n) {
+    uint8_t wire[kRtlTcpMaxUnit * 5U];
+    size_t len = 0U;
+    size_t fail_at = n;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_tcp_send_hook) {
+        g_test_tcp_send_hook(conn->generation, g_test_tcp_send_hook_ctx);
+    }
+    const int fail_cmd = g_test_tcp_fail_cmd.load(std::memory_order_relaxed);
+    for (size_t i = 0; fail_cmd >= 0 && i < n && fail_at == n; i++) {
+        if (cmds[i].id == (uint8_t)fail_cmd) {
+            fail_at = i;
+            g_test_tcp_fail_cmd.store(-1, std::memory_order_relaxed);
+        }
+    }
+#endif
+    for (size_t i = 0; i < n && i < fail_at && i < kRtlTcpMaxUnit; i++) {
+        wire[len++] = cmds[i].id;
+        wire[len++] = (uint8_t)((cmds[i].param >> 24) & 0xFFU);
+        wire[len++] = (uint8_t)((cmds[i].param >> 16) & 0xFFU);
+        wire[len++] = (uint8_t)((cmds[i].param >> 8) & 0xFFU);
+        wire[len++] = (uint8_t)(cmds[i].param & 0xFFU);
+    }
+    int rc = (len > 0U) ? rtl_tcp_send_all(conn, wire, len, rtl_tcp_cancelled, dev) : 0;
+    if (rc == 0 && fail_at < n) {
+        rc = -EIO;
+    }
+    return rc;
+}
+
+/* Send one setter's commands (@p build fills them, under tcp_lock, from the record) as one unit on the published
+ * connection, under its tx_lock and never under tcp_lock, then, still holding tx_lock so the record follows the order
+ * the server saw, let @p commit record what took under tcp_lock, only while that connection is still the published
+ * one. Returns 0; RTL_DEVICE_ENOTCONN with no published connection (nothing sent or recorded), when the connection
+ * was lost or replaced meanwhile (nothing recorded), or when the send failed, which loses that connection and only
+ * that one. */
+template <typename Build, typename Commit>
+static int
+rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit) {
+    rtl_tcp_lock(dev);
+    struct rtl_tcp_conn* conn = dev->tcp_conn;
+    if (conn) {
+        rtl_tcp_conn_ref(conn);
+    }
+    rtl_tcp_unlock(dev);
+    if (!conn) {
+        return RTL_DEVICE_ENOTCONN;
+    }
+    (void)dsd_mutex_lock(&conn->tx_lock);
+    struct rtl_tcp_cmd cmds[kRtlTcpMaxUnit];
+    rtl_tcp_lock(dev);
+    const size_t n = build(cmds);
+    rtl_tcp_unlock(dev);
+    int rc = rtl_tcp_send_unit(dev, conn, cmds, n);
+    struct rtl_tcp_conn* lost = nullptr;
+    rtl_tcp_lock(dev);
+    const int current = (dev->tcp_conn == conn) ? 1 : 0;
+    if (rc == 0 && current) {
+        commit();
+    } else {
+        if (current) {
+            lost = rtl_tcp_unpublish_locked(dev);
+        }
+        rc = RTL_DEVICE_ENOTCONN;
+    }
+    rtl_tcp_unlock(dev);
+    (void)dsd_mutex_unlock(&conn->tx_lock);
+    if (lost) {
+        if (!rtl_tcp_cancelled(dev)) {
+            DSD_FPRINTF(stderr, "rtl_tcp: a command to %s:%d failed; reconnecting.\n", dev->host, dev->port);
+        }
+        rtl_tcp_conn_unref(lost);
+    }
+    rtl_tcp_conn_unref(conn);
+    return rc;
+}
+
+/* One command with nothing to read from the record. */
+template <typename Commit>
+static int
+rtl_tcp_command(struct rtl_device* dev, uint8_t id, uint32_t param, Commit&& commit) {
+    return rtl_tcp_apply(
+        dev,
+        [&](struct rtl_tcp_cmd* cmds) {
+            cmds[0] = {id, param};
+            return (size_t)1U;
+        },
+        commit);
 }
 
 static int
@@ -4843,32 +5235,44 @@ env_agc_want(void) {
     return cfg->rtl_agc_enable ? 1 : 0;
 }
 
-/* Read and discard rtl_tcp header: 'RTL0' + tuner(4) + ngains(4) + ngains*4 */
-static void
-rtl_tcp_skip_header(dsd_socket_t sockfd) {
-    uint8_t hdr[12];
-    int n = dsd_socket_recv(sockfd, hdr, sizeof(hdr), MSG_WAITALL);
-    if (n != (int)sizeof(hdr)) {
-        return;
+/* The gain policy over rtl_tcp, the USB register-0x19 policy in protocol commands (B9, B16): manual gain is digital
+ * AGC off (0x08, left out while test mode is on, since the server writes that register for both), manual mode (0x03)
+ * and the gain (0x04); automatic gain is automatic mode and the digital AGC as wanted; test mode (0x07) wins and is
+ * asserted again after either. Appends to @p cmds at @p n and returns the new count. */
+static size_t
+rtl_tcp_gain_commands(int auto_gain, int gain, int digital_agc, int testmode, struct rtl_tcp_cmd* cmds, size_t n) {
+    if (auto_gain) {
+        cmds[n++] = {0x03, 0U};
+        cmds[n++] = testmode ? rtl_tcp_cmd{0x07, 1U} : rtl_tcp_cmd{0x08, (uint32_t)(digital_agc ? 1 : 0)};
+        return n;
     }
-    if (!(hdr[0] == 'R' && hdr[1] == 'T' && hdr[2] == 'L' && hdr[3] == '0')) {
-        return;
+    if (!testmode) {
+        cmds[n++] = {0x08, 0U};
     }
-    /* Parse ngains (last 4 bytes) as big-endian per rtl_tcp */
-    uint32_t ngains =
-        ((uint32_t)hdr[8] << 24) | ((uint32_t)hdr[9] << 16) | ((uint32_t)hdr[10] << 8) | (uint32_t)hdr[11];
-    if (ngains > 0 && ngains < 4096) {
-        size_t to_discard = (size_t)ngains * 4U;
-        uint8_t buf[1024];
-        while (to_discard > 0) {
-            size_t chunk = to_discard > sizeof(buf) ? sizeof(buf) : to_discard;
-            int r = dsd_socket_recv(sockfd, buf, chunk, MSG_WAITALL);
-            if (r <= 0) {
-                break;
-            }
-            to_discard -= (size_t)r;
-        }
+    cmds[n++] = {0x03, 1U};
+    cmds[n++] = {0x04, (uint32_t)gain};
+    if (testmode) {
+        cmds[n++] = {0x07, 1U};
     }
+    return n;
+}
+
+/* Change the gain as one unit (rtl_tcp_gain_commands()), recording mode, gain and the digital AGC only once all of it
+ * went out (B16). */
+static int
+rtl_tcp_set_gain(struct rtl_device* dev, int auto_gain, int gain) {
+    const int digital_agc = auto_gain ? env_agc_want() : 0;
+    return rtl_tcp_apply(
+        dev,
+        [&](struct rtl_tcp_cmd* cmds) {
+            return rtl_tcp_gain_commands(auto_gain, gain, digital_agc, dev->testmode_on, cmds, 0U);
+        },
+        [&]() {
+            dev->agc_mode = auto_gain ? 1 : 0;
+            dev->gain = auto_gain ? RTL_AUTO_GAIN : gain;
+            dev->digital_agc_wanted = digital_agc;
+            dev->tcp_took.gain = 1;
+        });
 }
 
 namespace {
@@ -4883,20 +5287,6 @@ struct rtl_tcp_loop_state {
     uint64_t prev_res_full;
     uint64_t auto_last_ns;
     unsigned char* u8;
-};
-
-struct rtl_tcp_reconnect_snapshot {
-    uint32_t freq;
-    uint32_t rate;
-    int gain;
-    int agc;
-    int ppm;
-    int direct_sampling;
-    int bias_tee_on;
-    int offset_tuning;
-    int testmode_on;
-    uint32_t rtl_xtal_hz;
-    uint32_t tuner_xtal_hz;
 };
 
 struct rtl_u8_transform_policy_state {
@@ -5016,7 +5406,6 @@ rtl_tcp_init_loop_state(struct rtl_device* s, const dsdneoRuntimeConfig* cfg, st
     if (!st->u8) {
         return 0;
     }
-    rtl_tcp_skip_header(s->sockfd);
     st->waitall = rtl_tcp_cfg_waitall(s, cfg);
     rtl_tcp_maybe_enable_autotune(s, cfg);
     rtl_tcp_init_adaptive_state(s, cfg, st);
@@ -5034,177 +5423,343 @@ rtl_tcp_apply_backpressure_if_needed(const struct rtl_device* s) {
     }
 }
 
-static inline void
-rtl_tcp_close_socket_if_open(struct rtl_device* s) {
-    if (!s || s->sockfd == DSD_INVALID_SOCKET) {
-        return;
+/* The effective record as one replay unit (tcp_lock held), in the order a USB recovery replays: crystals, direct
+ * sampling, frequency, rate, offset tuning, PPM, gain (with the digital AGC and test mode), IF gains, bias tee. Every
+ * control that took is replayed as last taken, a value its server's defaults may share or not: a server restarted
+ * with other defaults ends with the session's settings. Returns the count. */
+static size_t
+rtl_tcp_replay_commands(const struct rtl_device* dev, struct rtl_tcp_cmd* cmds) {
+    const struct rtl_tcp_took& took = dev->tcp_took;
+    size_t n = 0U;
+    if (took.xtal && dev->rtl_xtal_hz > 0U) {
+        cmds[n++] = {0x0B, dev->rtl_xtal_hz};
     }
-    dsd_socket_shutdown(s->sockfd, SHUT_RDWR);
-    dsd_socket_close(s->sockfd);
-    s->sockfd = DSD_INVALID_SOCKET;
-}
-
-static void
-rtl_tcp_capture_reconnect_snapshot(const struct rtl_device* s, struct rtl_tcp_reconnect_snapshot* snap) {
-    if (!s || !snap) {
-        return;
+    if (took.xtal && dev->tuner_xtal_hz > 0U) {
+        cmds[n++] = {0x0C, dev->tuner_xtal_hz};
     }
-    snap->freq = s->freq;
-    snap->rate = s->rate;
-    snap->gain = s->gain;
-    snap->agc = s->agc_mode;
-    snap->ppm = s->ppm_error;
-    snap->direct_sampling = s->direct_sampling;
-    snap->bias_tee_on = s->bias_tee_on;
-    snap->offset_tuning = s->offset_took;
-    snap->testmode_on = s->testmode_on;
-    snap->rtl_xtal_hz = s->rtl_xtal_hz;
-    snap->tuner_xtal_hz = s->tuner_xtal_hz;
-}
-
-static void
-rtl_tcp_apply_post_reconnect_socket_options(dsd_socket_t sockfd) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int rcvbuf = cfg ? cfg->tcp_rcvbuf_bytes : (4 * 1024 * 1024);
-    (void)dsd_socket_setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-    int nodelay = 1;
-    (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-    int to_ms = cfg ? cfg->tcp_rcvtimeo_ms : 2000;
-    (void)dsd_socket_set_recv_timeout(sockfd, (unsigned int)to_ms);
-}
-
-static inline void
-rtl_tcp_send_cmd_if_nonzero(dsd_socket_t sockfd, uint8_t cmd, uint32_t value) {
-    if (value == 0U) {
-        return;
+    if (took.direct_sampling) {
+        cmds[n++] = {0x09, (uint32_t)dev->direct_sampling};
     }
-    (void)rtl_tcp_send_cmd(sockfd, cmd, value);
-}
-
-static inline void
-rtl_tcp_send_cmd_if_enabled(dsd_socket_t sockfd, uint8_t cmd, int enabled) {
-    if (!enabled) {
-        return;
+    if (took.freq) {
+        cmds[n++] = {0x01, dev->freq};
     }
-    (void)rtl_tcp_send_cmd(sockfd, cmd, 1U);
-}
-
-static void
-rtl_tcp_replay_reconnect_state(struct rtl_device* s, const struct rtl_tcp_reconnect_snapshot* snap) {
-    if (!s || !snap) {
-        return;
+    if (took.rate) {
+        cmds[n++] = {0x02, dev->rate};
     }
-    rtl_tcp_send_cmd_if_nonzero(s->sockfd, 0x01, snap->freq);
-    rtl_tcp_send_cmd_if_nonzero(s->sockfd, 0x02, snap->rate);
-    if (snap->agc) {
-        (void)rtl_tcp_send_cmd(s->sockfd, 0x03, 0U);
-        (void)rtl_tcp_send_cmd(s->sockfd, 0x08, (uint32_t)env_agc_want());
-    } else {
-        (void)rtl_tcp_send_cmd(s->sockfd, 0x03, 1U);
-        (void)rtl_tcp_send_cmd(s->sockfd, 0x04, (uint32_t)snap->gain);
+    if (took.offset_tuning) {
+        cmds[n++] = {0x0A, (uint32_t)(dev->offset_took ? 1 : 0)};
     }
-    if (snap->ppm != 0) {
-        (void)rtl_tcp_send_cmd(s->sockfd, 0x05, (uint32_t)snap->ppm);
+    if (took.ppm) {
+        cmds[n++] = {0x05, (uint32_t)dev->ppm_error};
     }
-    if (snap->direct_sampling != 0) {
-        (void)rtl_tcp_send_cmd(s->sockfd, 0x09, (uint32_t)snap->direct_sampling);
-    }
-    rtl_tcp_send_cmd_if_enabled(s->sockfd, 0x0A, snap->offset_tuning);
-    rtl_tcp_send_cmd_if_enabled(s->sockfd, 0x0E, snap->bias_tee_on);
-    if (snap->testmode_on != 0) {
-        (void)rtl_tcp_send_cmd(s->sockfd, 0x07, (uint32_t)snap->testmode_on);
-    }
-    rtl_tcp_send_cmd_if_nonzero(s->sockfd, 0x0B, snap->rtl_xtal_hz);
-    rtl_tcp_send_cmd_if_nonzero(s->sockfd, 0x0C, snap->tuner_xtal_hz);
-    if (s->if_gain_count > 0) {
-        for (int i = 0; i < s->if_gain_count && i < 16; i++) {
-            uint32_t packed =
-                ((uint32_t)(s->if_gains[i].stage & 0xFFFF) << 16) | ((uint16_t)(s->if_gains[i].gain & 0xFFFF));
-            (void)rtl_tcp_send_cmd(s->sockfd, 0x06, packed);
+    if (took.gain) {
+        n = rtl_tcp_gain_commands(dev->agc_mode, dev->gain, dev->digital_agc_wanted, dev->testmode_on, cmds, n);
+    } else if (took.testmode) {
+        cmds[n++] = {0x07, (uint32_t)(dev->testmode_on ? 1 : 0)};
+        if (!dev->testmode_on) {
+            cmds[n++] = {0x08, (uint32_t)(dev->digital_agc_wanted ? 1 : 0)};
         }
     }
+    for (int i = 0; i < dev->if_gain_count && i < 16 && n < kRtlTcpMaxUnit - 1U; i++) {
+        cmds[n++] = {0x06, ((uint32_t)(dev->if_gains[i].stage & 0xFFFF) << 16)
+                               | ((uint16_t)(dev->if_gains[i].gain & 0xFFFF))};
+    }
+    if (took.bias_tee) {
+        cmds[n++] = {0x0E, (uint32_t)(dev->bias_tee_on ? 1 : 0)};
+    }
+    return n;
 }
 
-static int
-rtl_tcp_try_reconnect_once(struct rtl_device* s, const struct rtl_tcp_reconnect_snapshot* snap,
-                           struct rtl_tcp_loop_state* st, int attempt, int* out_r) {
-    if (!s || !snap || !st || !out_r) {
+int
+rtl_device_tcp_handoff_take(struct rtl_device* dev) {
+    if (!dev || dev->backend != RTL_BACKEND_TCP) {
         return 0;
     }
-    dsd_socket_t newsfd = tcp_connect_host(s->host, s->port);
-    if (newsfd == DSD_INVALID_SOCKET) {
-        return 0;
+    rtl_tcp_lock(dev);
+    const int took = (dev->tcp_handoff == RTL_TCP_HANDOFF_QUEUED && !dev->tcp_admission_closed) ? 1 : 0;
+    if (took) {
+        dev->tcp_handoff = RTL_TCP_HANDOFF_CLAIMED;
     }
-    s->sockfd = newsfd;
-    DSD_FPRINTF(stderr, "rtl_tcp: reconnected on attempt %d.\n", attempt);
-    rtl_tcp_skip_header(s->sockfd);
-    rtl_reset_capture_state_on_stream_boundary(s);
-    rtl_tcp_metrics_reset_device(s, s->rate);
-    rtl_tcp_apply_post_reconnect_socket_options(s->sockfd);
-    rtl_tcp_replay_reconnect_state(s, snap);
+    rtl_tcp_unlock(dev);
+    return took;
+}
 
-    int r = dsd_socket_recv(s->sockfd, st->u8, st->bufsz, st->waitall ? MSG_WAITALL : 0);
-    if (r > 0) {
-        *out_r = r;
-        return 1;
+int
+rtl_device_tcp_publish_handoff(struct rtl_device* dev, char* why, size_t why_size) {
+    if (!dev || dev->backend != RTL_BACKEND_TCP) {
+        return -EINVAL;
     }
-    rtl_tcp_close_socket_if_open(s);
+    rtl_tcp_lock(dev);
+    struct rtl_tcp_conn* conn = (dev->tcp_handoff == RTL_TCP_HANDOFF_CLAIMED) ? dev->tcp_handoff_conn : nullptr;
+    rtl_tcp_unlock(dev);
+    if (!conn) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "%s", "no connection was handed over");
+        }
+        return -EINVAL;
+    }
+    /* Nobody else can send on it yet: it is published only below. The record holds still meanwhile, since every setter
+     * fails while no connection is published and a command still in flight on the lost one records nothing. */
+    (void)dsd_mutex_lock(&conn->tx_lock);
+    struct rtl_tcp_cmd cmds[kRtlTcpMaxUnit];
+    rtl_tcp_lock(dev);
+    const size_t n = rtl_tcp_replay_commands(dev, cmds);
+    rtl_tcp_unlock(dev);
+    int rc = rtl_tcp_send_unit(dev, conn, cmds, n);
+    (void)dsd_mutex_unlock(&conn->tx_lock);
+    rtl_tcp_lock(dev);
+    if (rc == 0 && (dev->tcp_admission_closed || dev->stop_requested.load(std::memory_order_acquire))) {
+        rc = -ECANCELED;
+    }
+    if (rc == 0) {
+        /* The hand-off's reference becomes the published one. */
+        dev->tcp_conn = conn;
+        dev->tcp_connected.store(1, std::memory_order_release);
+        dev->tcp_handoff_conn = nullptr;
+    } else {
+        dev->tcp_handoff_conn = nullptr;
+        dev->tcp_handoff = (rc == -ECANCELED || dev->stop_requested.load(std::memory_order_acquire))
+                               ? RTL_TCP_HANDOFF_CANCELLED
+                               : RTL_TCP_HANDOFF_FAILED;
+        rtl_tcp_conn_shutdown(conn);
+        rtl_tcp_broadcast(dev);
+    }
+    const uint32_t rate = dev->rate;
+    rtl_tcp_unlock(dev);
+    if (rc != 0) {
+        rtl_tcp_conn_unref(conn);
+        if (rc == -ECANCELED || dev->stop_requested.load(std::memory_order_acquire)) {
+            rc = -ECANCELED;
+            if (why && why_size > 0U) {
+                DSD_SNPRINTF(why, why_size, "%s", "stopped");
+            }
+            return rc;
+        }
+        DSD_FPRINTF(stderr, "rtl_tcp: could not restore the settings on %s:%d (rc=%d); reconnecting again.\n",
+                    dev->host, dev->port, rc);
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "could not restore the server's settings (rc=%d)", rc);
+        }
+        return rc;
+    }
+    rtl_tcp_metrics_reset_device(dev, rate);
     return 0;
 }
 
+/* Release the reader onto the published connection (rtl_device_resume_stream()) and wait until it acknowledged. */
 static int
-rtl_tcp_reconnect_after_stall(struct rtl_device* s, struct rtl_tcp_loop_state* st, int* out_r) {
-    if (!s || !st || !out_r) {
+rtl_tcp_resume_reader(struct rtl_device* dev) {
+    rtl_tcp_lock(dev);
+    if (dev->tcp_handoff != RTL_TCP_HANDOFF_CLAIMED) {
+        rtl_tcp_unlock(dev);
         return 0;
+    }
+    if (!dev->tcp_conn) {
+        /* A command lost the published connection before the release: the reader reconnects again. */
+        dev->tcp_handoff = RTL_TCP_HANDOFF_FAILED;
+        rtl_tcp_broadcast(dev);
+        rtl_tcp_unlock(dev);
+        return RTL_DEVICE_ENOTCONN;
+    }
+    if (dev->tcp_admission_closed || rtl_tcp_cancelled(dev)) {
+        dev->tcp_handoff = RTL_TCP_HANDOFF_CANCELLED;
+        rtl_tcp_broadcast(dev);
+        rtl_tcp_unlock(dev);
+        return -ECANCELED;
+    }
+    dev->tcp_handoff = RTL_TCP_HANDOFF_RELEASED;
+    rtl_tcp_broadcast(dev);
+    int rc = 0;
+    while (dev->tcp_handoff == RTL_TCP_HANDOFF_RELEASED) {
+        if (rtl_tcp_cancelled(dev)) {
+            rc = -ECANCELED;
+            break;
+        }
+        rtl_tcp_wait_slice(dev);
+    }
+    rtl_tcp_unlock(dev);
+    return rc;
+}
+
+/* Stop an rtl_tcp device's connection handling, first thing in a stop or destroy (D1a): latch the stop (the
+ * cancellation token every connect, header read, send and hand-off wait checks), close hand-off admission for good,
+ * cancel a hand-off the controller has not taken (its waiter, the reader, closes the connection it still holds; one
+ * the controller took is the controller's to close, which it does at its next step) and shut the published socket
+ * down, which wakes the reader and any blocked sender. */
+static void
+rtl_tcp_stop(struct rtl_device* dev) {
+    dev->stop_requested.store(1, std::memory_order_release);
+    rtl_tcp_lock(dev);
+    dev->tcp_admission_closed = 1;
+    struct rtl_tcp_conn* withdrawn = nullptr;
+    if (dev->tcp_handoff == RTL_TCP_HANDOFF_QUEUED) {
+        withdrawn = dev->tcp_handoff_conn;
+        dev->tcp_handoff_conn = nullptr;
+        dev->tcp_handoff = RTL_TCP_HANDOFF_CANCELLED;
+    }
+    rtl_tcp_conn_shutdown(dev->tcp_conn);
+    rtl_tcp_broadcast(dev);
+    rtl_tcp_unlock(dev);
+    rtl_tcp_conn_unref(withdrawn);
+}
+
+/* Hand reconnected @p conn to the controller and drain it into a discard path while it restores the settings, so the
+ * server's I/Q from before then builds no backlog. Every received byte counts toward the I/Q pair; on release the
+ * reader acknowledges itself, after any receive still in flight: @p skip_odd tells it to drop the odd byte (if any)
+ * so ingestion resumes on an I sample, and the carry and partial slice from the lost connection are cleared. Returns
+ * RTL_TCP_HANDOFF_RELEASED (read @p conn from here), RTL_TCP_HANDOFF_FAILED (reconnect again) or
+ * RTL_TCP_HANDOFF_CANCELLED (stop). The caller keeps its own reference to @p conn either way. */
+static int
+rtl_tcp_handoff_and_wait(struct rtl_device* dev, struct rtl_tcp_conn* conn, struct rtl_tcp_loop_state* st,
+                         int* skip_odd) {
+    rtl_tcp_lock(dev);
+    if (dev->tcp_admission_closed || rtl_tcp_cancelled(dev)) {
+        rtl_tcp_unlock(dev);
+        return RTL_TCP_HANDOFF_CANCELLED;
+    }
+    conn->generation = ++dev->tcp_generation;
+    rtl_tcp_conn_ref(conn);
+    dev->tcp_handoff_conn = conn;
+    dev->tcp_handoff = RTL_TCP_HANDOFF_QUEUED;
+    rtl_tcp_unlock(dev);
+
+    rtl_usb_ctrl_lock(dev);
+    const rtl_device_recovery_cb cb = dev->recovery_cb;
+    void* cb_ctx = dev->recovery_cb_ctx;
+    rtl_usb_ctrl_unlock(dev);
+    if (cb) {
+        cb(cb_ctx);
+    } else if (rtl_device_tcp_handoff_take(dev) && rtl_device_tcp_publish_handoff(dev, NULL, 0U) == 0) {
+        /* No stream controller (the device on its own): it releases itself. */
+        rtl_tcp_lock(dev);
+        dev->tcp_handoff = RTL_TCP_HANDOFF_RELEASED;
+        rtl_tcp_unlock(dev);
+    }
+
+    unsigned int parity = 0U;
+    int dead = 0;
+    for (;;) {
+        rtl_tcp_lock(dev);
+        const int state = dev->tcp_handoff;
+        if (state == RTL_TCP_HANDOFF_RELEASED) {
+            rtl_tcp_unlock(dev);
+            break;
+        }
+        if (state == RTL_TCP_HANDOFF_FAILED || state == RTL_TCP_HANDOFF_CANCELLED) {
+            dev->tcp_handoff = RTL_TCP_HANDOFF_NONE;
+            rtl_tcp_unlock(dev);
+            return state;
+        }
+        if (state == RTL_TCP_HANDOFF_QUEUED && (dead || rtl_tcp_cancelled(dev) || !dev->run.load())) {
+            /* Not taken yet, and the connection died or the session is ending: withdraw it. */
+            struct rtl_tcp_conn* withdrawn = dev->tcp_handoff_conn;
+            dev->tcp_handoff_conn = nullptr;
+            dev->tcp_handoff = RTL_TCP_HANDOFF_NONE;
+            rtl_tcp_unlock(dev);
+            rtl_tcp_conn_unref(withdrawn);
+            return dead ? RTL_TCP_HANDOFF_FAILED : RTL_TCP_HANDOFF_CANCELLED;
+        }
+        if (dead) {
+            /* Claimed: the controller's replay fails on it, or publishes it; either way it says so. */
+            rtl_tcp_wait_slice(dev);
+            rtl_tcp_unlock(dev);
+            continue;
+        }
+        rtl_tcp_unlock(dev);
+        const int ready = dsd_socket_wait(conn->sock, DSD_SOCKET_WAIT_READ, kRtlTcpSliceMs);
+        if (ready < 0) {
+            dead = 1;
+            continue;
+        }
+        if (ready == 0) {
+            continue;
+        }
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        if (g_test_tcp_discard_hook) {
+            g_test_tcp_discard_hook(g_test_tcp_discard_hook_ctx);
+        }
+#endif
+        const int got = dsd_socket_recv(conn->sock, st->u8, st->bufsz, 0);
+        if (got > 0) {
+            parity ^= (unsigned int)got & 1U;
+        } else if (got == 0 || !rtl_tcp_recv_is_timeout(got)) {
+            dead = 1;
+        }
+    }
+
+    *skip_odd = (int)parity;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (parity) {
+        g_test_tcp_odd_drops.fetch_add(1U, std::memory_order_relaxed);
+    }
+#endif
+    rtl_reset_capture_state_on_stream_boundary(dev);
+    rtl_tcp_lock(dev);
+    const uint32_t rate = dev->rate;
+    dev->tcp_handoff = RTL_TCP_HANDOFF_NONE;
+    rtl_tcp_broadcast(dev);
+    rtl_tcp_unlock(dev);
+    rtl_tcp_metrics_reset_device(dev, rate);
+    return RTL_TCP_HANDOFF_RELEASED;
+}
+
+/* The reader lost @p lost (its reference is dropped here; NULL when it never had one): take it down if it is still the
+ * published one, then reconnect until a new connection was published and released to the reader, which is returned
+ * with the reader's reference, or the session ends (NULL). Each attempt connects, reads the header and hands the
+ * connection over (rtl_tcp_handoff_and_wait()); all of it is bounded and cancellable. */
+static struct rtl_tcp_conn*
+rtl_tcp_reconnect(struct rtl_device* s, struct rtl_tcp_conn* lost, struct rtl_tcp_loop_state* st, int* skip_odd) {
+    rtl_tcp_lock(s);
+    struct rtl_tcp_conn* dropped = (lost && s->tcp_conn == lost) ? rtl_tcp_unpublish_locked(s) : nullptr;
+    rtl_tcp_unlock(s);
+    rtl_tcp_conn_unref(dropped);
+    rtl_tcp_conn_unref(lost);
+    if (!s->run.load() || rtl_tcp_cancelled(s)) {
+        return nullptr;
     }
     DSD_FPRINTF(stderr, "rtl_tcp: input stalled; attempting to reconnect to %s:%d...\n", s->host, s->port);
-    struct rtl_tcp_reconnect_snapshot snap{};
-    rtl_tcp_capture_reconnect_snapshot(s, &snap);
-    rtl_tcp_close_socket_if_open(s);
 
     int attempt = 0;
-    while (s->run.load() && dsd_exitflag_load() == 0) {
+    while (s->run.load() && !rtl_tcp_cancelled(s)) {
         attempt++;
-        if (rtl_tcp_try_reconnect_once(s, &snap, st, attempt, out_r)) {
-            return 1;
+        dsd_socket_t sock = tcp_connect_host(s->host, s->port, s);
+        if (sock != DSD_INVALID_SOCKET) {
+            rtl_tcp_prepare_socket(sock);
+            const rtl_tcp_header_result hr =
+                rtl_tcp_read_header(sock, kRtlTcpHeaderMs, rtl_tcp_cancelled, s, nullptr, nullptr);
+            struct rtl_tcp_conn* conn = (hr == RTL_TCP_HEADER_SUCCESS) ? rtl_tcp_conn_new(sock) : nullptr;
+            if (!conn) {
+                dsd_socket_close(sock);
+                if (hr == RTL_TCP_HEADER_CANCELLED) {
+                    return nullptr;
+                }
+                if (hr != RTL_TCP_HEADER_SUCCESS) {
+                    DSD_FPRINTF(stderr, "rtl_tcp: %s:%d sent no rtl_tcp header (%s).\n", s->host, s->port,
+                                rtl_tcp_header_failure_name(hr));
+                }
+            } else {
+                const int handed = rtl_tcp_handoff_and_wait(s, conn, st, skip_odd);
+                if (handed == RTL_TCP_HANDOFF_RELEASED) {
+                    DSD_FPRINTF(stderr, "rtl_tcp: reconnected on attempt %d.\n", attempt);
+                    return conn;
+                }
+                rtl_tcp_conn_unref(conn);
+                if (handed == RTL_TCP_HANDOFF_CANCELLED) {
+                    return nullptr;
+                }
+            }
         }
-        int backoff_ms = 200 * (attempt < 10 ? attempt : 10);
-        dsd_sleep_ms((unsigned int)backoff_ms);
-    }
-    return 0;
-}
-
-static int
-rtl_tcp_recv_is_timeout(int r) {
-#if DSD_PLATFORM_WIN_NATIVE
-    int e = dsd_socket_get_error();
-    return (r < 0) && (e == WSAEWOULDBLOCK || e == WSAETIMEDOUT || e == WSAEINTR);
-#else
-    int e = dsd_socket_get_error();
-    return (r < 0) && (e == EAGAIN || ((EWOULDBLOCK != EAGAIN) && (e == EWOULDBLOCK)) || e == EINTR);
-#endif
-}
-
-static int
-rtl_tcp_handle_recv_failure(struct rtl_device* s, struct rtl_tcp_loop_state* st, int r, int* out_r) {
-    if (!s || !st || !out_r) {
-        return 0;
-    }
-    if (!s->run.load() || dsd_exitflag_load()) {
-        return 0;
-    }
-    if (rtl_tcp_recv_is_timeout(r)) {
-        st->consec_timeouts++;
-        if (st->consec_timeouts < st->timeout_limit) {
-            return 2;
+        /* Back off, a slice at a time so a stop is not kept waiting. */
+        const uint64_t until_ms = dsd_realtime_mono_ms() + (uint64_t)(200 * (attempt < 10 ? attempt : 10));
+        while (s->run.load() && !rtl_tcp_cancelled(s) && dsd_realtime_mono_ms() < until_ms) {
+            dsd_sleep_ms(10U);
         }
     }
-    if (!rtl_tcp_reconnect_after_stall(s, st, out_r)) {
-        return 0;
-    }
-    return 1;
+    return nullptr;
 }
 
+/* Whether a chunk of @p r bytes may be processed: the throughput watchdog (lag resilience) instead declares the
+ * connection lost when the server falls too far behind. */
 static int
 rtl_tcp_watchdog_allows_processing(struct rtl_device* s, int r) {
     if (!s) {
@@ -5215,8 +5770,6 @@ rtl_tcp_watchdog_allows_processing(struct rtl_device* s, int r) {
         return 1;
     }
     DSD_FPRINTF(stderr, "rtl_tcp: throughput watchdog triggered; reconnecting to %s:%d...\n", s->host, s->port);
-    rtl_tcp_close_socket_if_open(s);
-    rtl_tcp_metrics_reset_device(s, s->rate);
     return 0;
 }
 
@@ -5577,7 +6130,20 @@ rtl_tcp_periodic_maintenance(struct rtl_device* s, struct rtl_tcp_loop_state* st
     rtl_tcp_autotune_if_due(s, st, now_ns);
 }
 
-/* TCP reader thread: read u8 IQ, widen to float, push to ring */
+/* The published connection, with a reference for the reader; NULL with none. */
+static struct rtl_tcp_conn*
+rtl_tcp_reader_take_published(struct rtl_device* s) {
+    rtl_tcp_lock(s);
+    struct rtl_tcp_conn* conn = s->tcp_conn;
+    if (conn) {
+        rtl_tcp_conn_ref(conn);
+    }
+    rtl_tcp_unlock(s);
+    return conn;
+}
+
+/* TCP reader thread: read u8 IQ, widen to float, push to ring. A lost connection (an error, the server closing it,
+ * too many receive timeouts in a row, the throughput watchdog) is reconnected here (rtl_tcp_reconnect()). */
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -5588,33 +6154,65 @@ static DSD_THREAD_RETURN_TYPE
     maybe_set_thread_realtime_and_affinity("DONGLE");
     struct rtl_tcp_loop_state st{};
     if (!rtl_tcp_init_loop_state(s, cfg, &st)) {
-        if (s) {
-            s->run.store(0);
-        }
+        s->run.store(0);
+        DSD_THREAD_RETURN;
+    }
+    /* Set by a reconnect whose discard path ended on an odd byte: the next byte is a Q sample and is dropped. */
+    int skip_odd = 0;
+    /* A command may have lost the first connection before this thread ran: reconnect then. */
+    struct rtl_tcp_conn* conn = rtl_tcp_reader_take_published(s);
+    if (!conn) {
+        conn = rtl_tcp_reconnect(s, nullptr, &st, &skip_odd);
+    }
+    if (!conn) {
+        free(st.u8);
+        s->run.store(0);
         DSD_THREAD_RETURN;
     }
 
     while (s->run.load() && dsd_exitflag_load() == 0) {
         rtl_tcp_apply_backpressure_if_needed(s);
-        int r = dsd_socket_recv(s->sockfd, st.u8, st.bufsz, st.waitall ? MSG_WAITALL : 0);
+        int r = dsd_socket_recv(conn->sock, st.u8, st.bufsz, st.waitall ? MSG_WAITALL : 0);
+        if (r > 0 && conn->lost.load(std::memory_order_acquire)) {
+            r = 0;
+        }
         if (r <= 0) {
-            int recovered_r = 0;
-            int recv_action = rtl_tcp_handle_recv_failure(s, &st, r, &recovered_r);
-            if (recv_action == 0) {
+            if (!s->run.load() || dsd_exitflag_load()) {
                 break;
             }
-            if (recv_action == 2) {
+            if (r < 0 && rtl_tcp_recv_is_timeout(r) && ++st.consec_timeouts < st.timeout_limit) {
                 continue;
             }
-            r = recovered_r;
+            st.consec_timeouts = 0;
+            conn = rtl_tcp_reconnect(s, conn, &st, &skip_odd);
+            if (!conn) {
+                break;
+            }
+            continue;
         }
 
         st.consec_timeouts = 0;
         if (!rtl_tcp_watchdog_allows_processing(s, r)) {
+            conn = rtl_tcp_reconnect(s, conn, &st, &skip_odd);
+            if (!conn) {
+                break;
+            }
             continue;
         }
 
+        if (s->tcp_restart_pending.load(std::memory_order_relaxed)
+            && s->tcp_restart_pending.exchange(0, std::memory_order_acq_rel)) {
+            rtl_reset_capture_state_on_stream_boundary(s);
+        }
         uint32_t len = (uint32_t)r;
+        if (skip_odd) {
+            skip_odd = 0;
+            DSD_MEMMOVE(st.u8, st.u8 + 1, len - 1U);
+            len--;
+            if (len == 0U) {
+                continue;
+            }
+        }
         rtl_u8_transform_policy_state policy{};
         rtl_tcp_load_transform_policy(s, &policy);
         if (rtl_tcp_apply_mute_and_reconfigure(s, st.u8, &len, policy.fs4_shift_active)) {
@@ -5630,6 +6228,7 @@ static DSD_THREAD_RETURN_TYPE
         rtl_tcp_periodic_maintenance(s, &st);
     }
 
+    rtl_tcp_conn_unref(conn);
     free(st.u8);
     s->run.store(0);
     DSD_THREAD_RETURN;
@@ -6848,6 +7447,13 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     if (dsd_mutex_init(&dev->tcp_metrics_lock) == 0) {
         dev->tcp_metrics_lock_inited = 1;
     }
+    if (dsd_mutex_init(&dev->tcp_lock) == 0) {
+        if (dsd_cond_init(&dev->tcp_cond) == 0) {
+            dev->tcp_sync_inited = 1;
+        } else {
+            (void)dsd_mutex_destroy(&dev->tcp_lock);
+        }
+    }
     if (dsd_mutex_init(&dev->usb_lifecycle_lock) == 0) {
         if (dsd_mutex_init(&dev->usb_ctrl_lock) == 0) {
             dev->usb_locks_inited = 1;
@@ -6865,6 +7471,11 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
     if (dev->tcp_metrics_lock_inited) {
         (void)dsd_mutex_destroy(&dev->tcp_metrics_lock);
         dev->tcp_metrics_lock_inited = 0;
+    }
+    if (dev->tcp_sync_inited) {
+        (void)dsd_cond_destroy(&dev->tcp_cond);
+        (void)dsd_mutex_destroy(&dev->tcp_lock);
+        dev->tcp_sync_inited = 0;
     }
     if (dev->monitor_sync_inited) {
         (void)dsd_cond_destroy(&dev->monitor_wake);
@@ -7010,7 +7621,6 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     dev->soapy_mtu_elems = 0;
     dev->rot_phase = 0;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
-    dev->sockfd = DSD_INVALID_SOCKET;
     dev->host[0] = '\0';
     dev->port = 0;
     dev->run.store(0);
@@ -7108,7 +7718,6 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->soapy_mtu_elems = 0;
     dev->rot_phase = 0;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
-    dev->sockfd = DSD_INVALID_SOCKET;
     DSD_SNPRINTF(dev->host, sizeof(dev->host), "%s", host);
     dev->port = port;
     dev->run.store(0);
@@ -7123,26 +7732,34 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->tuner_xtal_hz = 0;
     dev->if_gain_count = 0;
 
-    dsd_socket_t sfd = tcp_connect_host(host, port);
+    /* The first connect and header read run before any reader (run is 0); an exit request cancels them. */
+    dsd_socket_t sfd = tcp_connect_host(host, port, dev);
     if (sfd == DSD_INVALID_SOCKET) {
         rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
-    /* Increase socket receive buffer to tolerate brief processing stalls */
-    {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        int rcvbuf = cfg ? cfg->tcp_rcvbuf_bytes : (4 * 1024 * 1024);
-        (void)dsd_socket_setsockopt(sfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-        int nodelay = 1;
-        (void)dsd_socket_setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-        /* Hard fix: apply a receive timeout so stalled connections don't appear
-           as a P25 wedge. Default 2 seconds; override via DSD_NEO_TCP_RCVTIMEO (ms). */
-        int to_ms = cfg ? cfg->tcp_rcvtimeo_ms : 2000;
-        (void)dsd_socket_set_recv_timeout(sfd, (unsigned int)to_ms);
+    rtl_tcp_prepare_socket(sfd);
+    uint32_t tuner_type = 0U;
+    uint32_t gain_count = 0U;
+    const rtl_tcp_header_result hr =
+        rtl_tcp_read_header(sfd, kRtlTcpHeaderMs, rtl_tcp_cancelled, dev, &tuner_type, &gain_count);
+    struct rtl_tcp_conn* conn = (hr == RTL_TCP_HEADER_SUCCESS) ? rtl_tcp_conn_new(sfd) : nullptr;
+    if (!conn) {
+        if (hr != RTL_TCP_HEADER_SUCCESS && hr != RTL_TCP_HEADER_CANCELLED) {
+            DSD_FPRINTF(stderr, "rtl_tcp: %s:%d sent no rtl_tcp header (%s).\n", host, port,
+                        rtl_tcp_header_failure_name(hr));
+        }
+        dsd_socket_close(sfd);
+        rtl_device_cleanup_common_state(dev);
+        free(dev);
+        return NULL;
     }
-    dev->sockfd = sfd;
-    DSD_FPRINTF(stderr, "rtl_tcp: Connected to %s:%d\n", host, port);
+    conn->generation = ++dev->tcp_generation;
+    dev->tcp_conn = conn;
+    dev->tcp_connected.store(1, std::memory_order_release);
+    DSD_FPRINTF(stderr, "rtl_tcp: Connected to %s:%d (tuner %s, %u gains)\n", host, port,
+                rtl_tuner_type_name((int)tuner_type), (unsigned)gain_count);
     /* Optional TCP stats: enable with DSD_NEO_TCP_STATS=1 */
     {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -7177,7 +7794,6 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring) {
     dev->backend = RTL_BACKEND_SOAPY;
     dev->soapy_format = SOAPY_FMT_NONE;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
-    dev->sockfd = DSD_INVALID_SOCKET;
     dev->host[0] = '\0';
     dev->run.store(0);
     dev->agc_mode = 1;
@@ -7423,7 +8039,6 @@ rtl_device_init_iq_replay_backend_state(struct rtl_device* dev, const dsd_iq_rep
     dev->soapy_mtu_elems = 0;
     dev->rot_phase = 0;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
-    dev->sockfd = DSD_INVALID_SOCKET;
     dev->host[0] = '\0';
     dev->port = 0;
     dev->run.store(0, std::memory_order_relaxed);
@@ -7626,9 +8241,6 @@ rtl_device_stop_streaming_backend_thread(struct rtl_device* dev) {
         return;
     }
     dev->run.store(0);
-    if (dev->backend == RTL_BACKEND_TCP && dev->sockfd != DSD_INVALID_SOCKET) {
-        dsd_socket_shutdown(dev->sockfd, SHUT_RDWR);
-    }
     rtl_device_signal_replay_forced_stop(dev);
     rtl_monitor_wake(dev);
 }
@@ -7684,8 +8296,15 @@ rtl_device_close_backend_resources(struct rtl_device* dev) {
     if (!dev) {
         return;
     }
-    if (dev->backend == RTL_BACKEND_TCP && dev->sockfd != DSD_INVALID_SOCKET) {
-        dsd_socket_close(dev->sockfd);
+    if (dev->backend == RTL_BACKEND_TCP) {
+        /* The reader is joined: no hand-off is in flight. Senders still holding the connection close it last. */
+        rtl_tcp_lock(dev);
+        struct rtl_tcp_conn* published = rtl_tcp_unpublish_locked(dev);
+        struct rtl_tcp_conn* handed = dev->tcp_handoff_conn;
+        dev->tcp_handoff_conn = nullptr;
+        rtl_tcp_unlock(dev);
+        rtl_tcp_conn_unref(published);
+        rtl_tcp_conn_unref(handed);
     }
     if (dev->backend == RTL_BACKEND_SOAPY) {
         soapy_stream_cleanup(dev, 1);
@@ -7733,6 +8352,13 @@ rtl_device_destroy(struct rtl_device* dev) {
         rtl_usb_reader_stop(dev);
         rtl_usb_close_retired(dev, rtl_usb_retire_handle(dev));
         rtl_usb_lifecycle_unlock(dev);
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rtl_tcp_stop(dev);
+        if (dev->thread_started) {
+            dev->run.store(0);
+            dsd_thread_join(dev->thread);
+            dev->thread_started = 0;
+        }
     } else if (dev->thread_started) {
         rtl_device_request_thread_stop(dev);
         dsd_thread_join(dev->thread);
@@ -8078,11 +8704,19 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_frequency(dev, frequency);
     }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        const int rc = rtl_tcp_command(dev, 0x01, frequency, [&]() {
+            dev->freq = frequency;
+            dev->tcp_took.freq = 1;
+        });
+        if (rc == 0) {
+            dev->tcp_restart_pending.store(1, std::memory_order_release);
+        }
+        return rc;
+    }
     int rc = -1;
     if (dev->backend == RTL_BACKEND_AIRSPY) {
         rc = airspy_source_frequency(dev->airspy, frequency);
-    } else if (dev->backend == RTL_BACKEND_TCP) {
-        rc = rtl_tcp_send_cmd(dev->sockfd, 0x01, frequency);
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         if (dev->replay_cfg.capture_center_frequency_hz > 0
             && (uint64_t)frequency != dev->replay_cfg.capture_center_frequency_hz) {
@@ -8102,9 +8736,6 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
     }
     if (rc == 0) {
         dev->freq = frequency;
-        if (dev->backend == RTL_BACKEND_TCP) {
-            rtl_reset_capture_state_on_stream_boundary(dev);
-        }
     }
     return rc;
 }
@@ -8131,17 +8762,22 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_sample_rate(dev, samp_rate);
     }
-    int rc = -1;
-    uint32_t applied_rate = samp_rate;
     if (dev->backend == RTL_BACKEND_TCP) {
-        rc = rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
+        const int rc = rtl_tcp_command(dev, 0x02, samp_rate, [&]() {
+            dev->rate = samp_rate;
+            dev->tcp_took.rate = 1;
+        });
         if (rc == 0) {
             /* The TCP device is created before the final stream rate is known.
              * Reset the metric windows when the rate is programmed so startup
              * delay cannot count against the first watchdog interval. */
             rtl_tcp_metrics_reset_device(dev, samp_rate);
         }
-    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        return rc;
+    }
+    int rc = -1;
+    uint32_t applied_rate = samp_rate;
+    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         rc = 0;
     } else {
 #ifdef USE_SOAPYSDR
@@ -8252,6 +8888,12 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return (int)dev->replay_cfg.sample_rate_hz;
     }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        rtl_tcp_lock(dev);
+        const uint32_t rate = dev->rate;
+        rtl_tcp_unlock(dev);
+        return (int)rate;
+    }
     if (dev->backend == RTL_BACKEND_SOAPY) {
 #ifdef USE_SOAPYSDR
         double actual = 0.0;
@@ -8293,27 +8935,6 @@ rtl_device_set_gain_usb(struct rtl_device* dev, int gain, int* out_applied_gain)
         *out_applied_gain = nearest;
     }
     return rc;
-}
-
-static int
-rtl_device_set_gain_tcp(struct rtl_device* dev, int gain) {
-    if (!dev) {
-        return -1;
-    }
-    if (gain == RTL_AUTO_GAIN) {
-        dev->agc_mode = 1;
-        int r = rtl_tcp_send_cmd(dev->sockfd, 0x03, 0);
-        if (r < 0) {
-            return r;
-        }
-        return rtl_tcp_send_cmd(dev->sockfd, 0x08, (uint32_t)env_agc_want());
-    }
-    dev->agc_mode = 0;
-    int r = rtl_tcp_send_cmd(dev->sockfd, 0x03, 1);
-    if (r < 0) {
-        return r;
-    }
-    return rtl_tcp_send_cmd(dev->sockfd, 0x04, (uint32_t)gain);
 }
 
 #ifdef USE_SOAPYSDR
@@ -8383,13 +9004,14 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
         /* The gain record took the applied gain under the lock. */
         return rtl_usb_set_gain(dev, gain);
     }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        return rtl_tcp_set_gain(dev, gain == RTL_AUTO_GAIN, gain);
+    }
     int rc = -1;
     int applied_gain = gain;
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         dev->agc_mode = 0;
         rc = 0;
-    } else if (dev->backend == RTL_BACKEND_TCP) {
-        rc = rtl_device_set_gain_tcp(dev, gain);
     } else {
 #ifdef USE_SOAPYSDR
         if (dev->backend == RTL_BACKEND_SOAPY) {
@@ -8424,16 +9046,15 @@ rtl_device_set_gain_nearest_usb(struct rtl_device* dev, int target_tenth_db, int
     return 0;
 }
 
+/* The server picks the nearest gain itself, so the target goes out as a manual gain change, with the same policy
+ * (digital AGC off) and the same record-on-success (B16). */
 static int
 rtl_device_set_gain_nearest_tcp(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db) {
-    if (!dev) {
-        return -1;
+    const int rc = rtl_tcp_set_gain(dev, 0, target_tenth_db);
+    if (rc == 0) {
+        *out_selected_tenth_db = target_tenth_db;
     }
-    (void)rtl_tcp_send_cmd(dev->sockfd, 0x03, 1U);
-    (void)rtl_tcp_send_cmd(dev->sockfd, 0x04, (uint32_t)target_tenth_db);
-    dev->gain = target_tenth_db;
-    *out_selected_tenth_db = target_tenth_db;
-    return 0;
+    return rc;
 }
 
 #ifdef USE_SOAPYSDR
@@ -8540,7 +9161,9 @@ rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db) {
         return rtl_usb_get_tuner_gain(dev, out_tenth_db);
     }
     if (dev->backend == RTL_BACKEND_TCP) {
+        rtl_tcp_lock(dev);
         *out_tenth_db = dev->agc_mode ? 0 : dev->gain;
+        rtl_tcp_unlock(dev);
         return 0;
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
@@ -8572,7 +9195,12 @@ rtl_device_is_auto_gain(const struct rtl_device* dev) {
         return is_auto;
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return 0;
-    } else if (dev->backend == RTL_BACKEND_TCP || dev->backend == RTL_BACKEND_SOAPY) {
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rtl_tcp_lock(dev);
+        const int is_auto = dev->agc_mode ? 1 : 0;
+        rtl_tcp_unlock(dev);
+        return is_auto;
+    } else if (dev->backend == RTL_BACKEND_SOAPY) {
         return dev->agc_mode ? 1 : 0;
     }
     return -1;
@@ -8593,6 +9221,12 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_ppm(dev, ppm_error);
     }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        return rtl_tcp_command(dev, 0x05, (uint32_t)ppm_error, [&]() {
+            dev->ppm_error = ppm_error;
+            dev->tcp_took.ppm = 1;
+        });
+    }
     /* Cache only the last correction that the backend accepted. Retries for a
      * previously failed value must still reach the driver/backend. */
     if (ppm_error == dev->ppm_error) {
@@ -8601,8 +9235,6 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
     int rc = -1;
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         rc = 0;
-    } else if (dev->backend == RTL_BACKEND_TCP) {
-        rc = rtl_tcp_send_cmd(dev->sockfd, 0x05, (uint32_t)ppm_error);
 #ifdef USE_SOAPYSDR
     } else if (dev->backend == RTL_BACKEND_SOAPY) {
         rc = soapy_call_locked(dev, "setFrequencyCorrection", [&]() -> int {
@@ -8665,10 +9297,14 @@ rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_direct_sampling(dev, on);
     }
-    int rc = -1;
     if (dev->backend == RTL_BACKEND_TCP) {
-        rc = rtl_tcp_send_cmd(dev->sockfd, 0x09, (uint32_t)on);
-    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        return rtl_tcp_command(dev, 0x09, (uint32_t)on, [&]() {
+            dev->direct_sampling = on;
+            dev->tcp_took.direct_sampling = 1;
+        });
+    }
+    int rc = -1;
+    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         rc = 0;
     } else if (dev->backend == RTL_BACKEND_SOAPY) {
         rc = DSD_ERR_NOT_SUPPORTED;
@@ -8696,8 +9332,12 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
     int r = -1;
     const int took = on ? 1 : 0;
     if (dev->backend == RTL_BACKEND_TCP) {
-        r = rtl_tcp_send_cmd(dev->sockfd, 0x0A, (uint32_t)(on ? 1 : 0));
-    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        return rtl_tcp_command(dev, 0x0A, (uint32_t)took, [&]() {
+            dev->offset_took = took;
+            dev->tcp_took.offset_tuning = 1;
+        });
+    }
+    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         r = 0;
     } else if (dev->backend == RTL_BACKEND_SOAPY) {
         r = DSD_ERR_NOT_SUPPORTED;
@@ -8712,6 +9352,12 @@ int
 rtl_device_get_offset_tuning(const struct rtl_device* dev) {
     if (!dev) {
         return 0;
+    }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        rtl_tcp_lock(dev);
+        const int took = dev->offset_took ? 1 : 0;
+        rtl_tcp_unlock(dev);
+        return took;
     }
     if (dev->backend != RTL_BACKEND_USB) {
         return dev->offset_took ? 1 : 0;
@@ -8992,14 +9638,15 @@ rtl_device_stop_async(struct rtl_device* dev) {
         rtl_reset_capture_state_on_stream_boundary(dev);
         return 0;
     }
+    if (dev && dev->backend == RTL_BACKEND_TCP) {
+        /* Latched and admission closed whether or not a reader runs, before it is joined (rtl_tcp_stop()). */
+        rtl_tcp_stop(dev);
+    }
     if (!dev || !dev->thread_started) {
         return -1;
     }
     if (dev->backend == RTL_BACKEND_TCP) {
         dev->run.store(0);
-        if (dev->sockfd != DSD_INVALID_SOCKET) {
-            dsd_socket_shutdown(dev->sockfd, SHUT_RDWR);
-        }
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         dev->run.store(0, std::memory_order_release);
         if (dev->replay_has_eof_state && dev->replay_eof.replay_forced_stop) {
@@ -9367,6 +10014,9 @@ rtl_device_resume_stream(struct rtl_device* dev) {
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_device_usb_resume_reader(dev);
     }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        return rtl_tcp_resume_reader(dev);
+    }
     return 0;
 }
 
@@ -9383,8 +10033,11 @@ rtl_device_has_stream(const struct rtl_device* dev) {
                    ? 1
                    : 0;
     }
-    /* rtl_tcp reports a stream until its reconnect tracks whether it is connected; a disconnected server then reads
-       here as no stream. Every other backend has one while it runs. */
+    if (dev->backend == RTL_BACKEND_TCP) {
+        /* From the loss of the connection until a reconnected one is published. */
+        return dev->tcp_connected.load(std::memory_order_acquire) ? 1 : 0;
+    }
+    /* Every other backend has one while it runs. */
     return 1;
 }
 
@@ -9399,6 +10052,62 @@ rtl_usb_test_reader_restarting(struct rtl_device* dev) {
         g_test_usb_reader_cancelled.store(0, std::memory_order_release);
         g_test_usb_reader_stream_return.store(0, std::memory_order_release);
     }
+}
+
+extern "C" int
+rtl_device_test_tcp_read_header(intptr_t sock, unsigned int budget_ms, int (*cancelled)(void* ctx), void* ctx,
+                                uint32_t* out_tuner, uint32_t* out_gain_count) {
+    return (int)rtl_tcp_read_header((dsd_socket_t)sock, budget_ms, cancelled, ctx, out_tuner, out_gain_count);
+}
+
+extern "C" void
+rtl_device_test_tcp_fail_command(int cmd) {
+    g_test_tcp_fail_cmd.store(cmd, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_tcp_set_send_chunk(size_t max_bytes) {
+    g_test_tcp_send_chunk.store(max_bytes, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_tcp_set_sndbuf(int bytes) {
+    g_test_tcp_sndbuf.store(bytes, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_tcp_set_send_hook(void (*hook)(uint64_t generation, void* ctx), void* ctx) {
+    g_test_tcp_send_hook_ctx = ctx;
+    g_test_tcp_send_hook = hook;
+}
+
+extern "C" void
+rtl_device_test_tcp_set_discard_hook(void (*hook)(void* ctx), void* ctx) {
+    g_test_tcp_discard_hook_ctx = ctx;
+    g_test_tcp_discard_hook = hook;
+}
+
+extern "C" uint64_t
+rtl_device_test_tcp_odd_drops(void) {
+    return g_test_tcp_odd_drops.load(std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state* out) {
+    if (!out) {
+        return;
+    }
+    *out = {};
+    if (!dev || dev->backend != RTL_BACKEND_TCP) {
+        return;
+    }
+    rtl_tcp_lock(dev);
+    out->generation = dev->tcp_conn ? dev->tcp_conn->generation : 0U;
+    out->handoff = dev->tcp_handoff;
+    out->gain_took = dev->tcp_took.gain;
+    out->digital_agc = dev->digital_agc_wanted;
+    rtl_tcp_unlock(dev);
+    out->stop_requested = dev->stop_requested.load(std::memory_order_acquire);
 }
 
 extern "C" void
@@ -9690,7 +10399,10 @@ rtl_device_set_bias_tee(struct rtl_device* dev, int on) {
         rc = 0;
     } else if (dev->backend == RTL_BACKEND_TCP) {
         /* rtl_tcp protocol command 0x0E toggles bias tee */
-        rc = rtl_tcp_send_cmd(dev->sockfd, 0x0E, (uint32_t)requested);
+        return rtl_tcp_command(dev, 0x0E, (uint32_t)requested, [&]() {
+            dev->bias_tee_on = requested;
+            dev->tcp_took.bias_tee = 1;
+        });
     } else if (dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_AIRSPY) {
         rc = DSD_ERR_NOT_SUPPORTED;
     } else {
@@ -9726,21 +10438,28 @@ rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t 
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_xtal_freq(dev, rtl_xtal_hz, tuner_xtal_hz);
     }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        return rtl_tcp_apply(
+            dev,
+            [&](struct rtl_tcp_cmd* cmds) {
+                size_t n = 0U;
+                if (rtl_xtal_hz > 0U) {
+                    cmds[n++] = {0x0B, rtl_xtal_hz};
+                }
+                if (tuner_xtal_hz > 0U) {
+                    cmds[n++] = {0x0C, tuner_xtal_hz};
+                }
+                return n;
+            },
+            [&]() {
+                dev->rtl_xtal_hz = rtl_xtal_hz;
+                dev->tuner_xtal_hz = tuner_xtal_hz;
+                dev->tcp_took.xtal = 1;
+            });
+    }
     dev->rtl_xtal_hz = rtl_xtal_hz;
     dev->tuner_xtal_hz = tuner_xtal_hz;
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        if (dev->sockfd == DSD_INVALID_SOCKET) {
-            return -1;
-        }
-        if (rtl_xtal_hz > 0) {
-            (void)rtl_tcp_send_cmd(dev->sockfd, 0x0B, rtl_xtal_hz);
-        }
-        if (tuner_xtal_hz > 0) {
-            (void)rtl_tcp_send_cmd(dev->sockfd, 0x0C, tuner_xtal_hz);
-        }
         return 0;
     }
     if (dev->backend == RTL_BACKEND_SOAPY) {
@@ -9759,10 +10478,22 @@ rtl_device_set_testmode(struct rtl_device* dev, int on) {
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         rc = 0;
     } else if (dev->backend == RTL_BACKEND_TCP) {
-        if (dev->sockfd == DSD_INVALID_SOCKET) {
-            return -1;
-        }
-        rc = rtl_tcp_send_cmd(dev->sockfd, 0x07, (uint32_t)requested);
+        /* The server writes register 0x19 for test mode and the digital AGC both (B9): turning test mode off puts the
+         * digital AGC back as the gain state wants it. */
+        return rtl_tcp_apply(
+            dev,
+            [&](struct rtl_tcp_cmd* cmds) {
+                size_t n = 0U;
+                cmds[n++] = {0x07, (uint32_t)requested};
+                if (!requested) {
+                    cmds[n++] = {0x08, (uint32_t)(dev->digital_agc_wanted ? 1 : 0)};
+                }
+                return n;
+            },
+            [&]() {
+                dev->testmode_on = requested;
+                dev->tcp_took.testmode = 1;
+            });
     } else if (dev->backend == RTL_BACKEND_SOAPY) {
         rc = DSD_ERR_NOT_SUPPORTED;
     } else {
@@ -9785,16 +10516,14 @@ rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
     if (dev->backend == RTL_BACKEND_USB) {
         return rtl_usb_set_if_gain(dev, stage, gain_tenth_db);
     }
+    if (dev->backend == RTL_BACKEND_TCP) {
+        uint32_t packed = ((uint32_t)(stage & 0xFFFF) << 16) | ((uint16_t)(gain_tenth_db & 0xFFFF));
+        return rtl_tcp_command(dev, 0x06, packed,
+                               [&]() { rtl_if_gain_upsert(dev->if_gains, &dev->if_gain_count, stage, gain_tenth_db); });
+    }
     rtl_if_gain_upsert(dev->if_gains, &dev->if_gain_count, stage, gain_tenth_db);
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return 0;
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        if (dev->sockfd == DSD_INVALID_SOCKET) {
-            return -1;
-        }
-        uint32_t packed = ((uint32_t)(stage & 0xFFFF) << 16) | ((uint16_t)(gain_tenth_db & 0xFFFF));
-        return rtl_tcp_send_cmd(dev->sockfd, 0x06, packed);
     }
     if (dev->backend == RTL_BACKEND_SOAPY) {
         return DSD_ERR_NOT_SUPPORTED;

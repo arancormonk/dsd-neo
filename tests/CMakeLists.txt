@@ -14569,6 +14569,42 @@ if(DSD_HAS_RADIO)
     add_test(NAME IO_RTL_USB_RECOVERY COMMAND dsd-neo_test_io_rtl_usb_recovery)
     set_tests_properties(IO_RTL_USB_RECOVERY PROPERTIES TIMEOUT 120)
 
+    # rtl_tcp connection handling against a scripted fake rtl_tcp server on loopback:
+    # the exact header parser, bounded and cancellable connects, header reads and
+    # command sends, the reconnect handed to the stream's controller with the last
+    # effective settings and the gain policy replayed, the discard path's I/Q pairing,
+    # commands while the server is gone, and stops at every point of it.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            io/test_io_rtl_tcp_reconnect.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/src/io/radio
+                ${PROJECT_SOURCE_DIR}/tests/test_support
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        )
+        target_link_libraries(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_io_iq
+                dsd-neo_core
+                dsd-neo_test_support
+                ${LIBS}
+        )
+        add_test(
+            NAME IO_RTL_TCP_RECONNECT
+            COMMAND dsd-neo_test_io_rtl_tcp_reconnect
+        )
+        set_tests_properties(IO_RTL_TCP_RECONNECT PROPERTIES TIMEOUT 180)
+    endif()
+
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
         dsd-neo_bench_usb_ingest

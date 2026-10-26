@@ -4517,6 +4517,47 @@ Key public headers:
     a probe, failure and stop, capture events; ASan/TSan), `IO_USB_PROGRESS_MONITOR` (ineligible with a callback),
     `IO_RTL_REPLAY_EOF_AND_CF32` (gap reasons replay as `StreamGap`), `APP_COMMAND_QUEUE` (the toast),
     `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
+  - rtl_tcp connections and reconnects (issue #518 WP3; B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends
+    exactly a 12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()`
+    reads those twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS,
+    EOF, INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
+    `rtl_tcp_conn` (socket, `generation`, its own `tx_lock`, `lost`); the last reference closes the socket. The
+    cancellation token is the stop latch (`stop_requested`, set first by stop and destroy) or the exit flag, never
+    `run`, so the session's first connect and header read (before any reader) are cancellable too. A command (or a
+    gain change's commands, as one unit) takes a reference to the published connection under `tcp_lock`, sends under
+    its `tx_lock` with `rtl_tcp_send_all()` (partial writes continued, 50 ms send slices between cancellation checks,
+    2 s in all) and, still under `tx_lock`, records what took in the effective record (D6: the device's values plus
+    `tcp_took`) under `tcp_lock` only while that connection is still the published one; `tcp_lock` is never held
+    while sending. With no published connection, or when the connection was lost or replaced meanwhile, a setter
+    returns `RTL_DEVICE_ENOTCONN` and records nothing; a failed send takes down only the connection it used
+    (unpublished, `lost` set, socket shut down, so its reader stops reading it even while the server still sends). Gain
+    follows the USB register-0x19 policy in commands: manual = 0x08 off (left out under test mode) + 0x03 manual +
+    0x04 gain; automatic = 0x03 auto + 0x08 as configured; test mode (0x07) is asserted after either and wins; turning
+    test mode off sends 0x08 as the gain state wants. The nearest-gain setter is a manual gain change (B16). The reader
+    (`tcp_thread_fn()`) treats an error, end of stream, `DSD_NEO_TCP_MAX_TIMEOUTS` receive timeouts in a row, the
+    throughput watchdog or a connection taken down as a loss: it unpublishes it (no stream from here,
+    `rtl_device_has_stream()`), then `rtl_tcp_reconnect()` connects, reads the header and hands the new connection
+    over (`rtl_tcp_handoff_and_wait()`): QUEUED with a new generation, posted through the recovery callback, which the
+    stream sets to `controller_post_tcp_handoff()` before the reader starts. While it waits the reader drains the
+    connection into a discard path, counting the bytes modulo the I/Q pair, so the server's I/Q from before its
+    settings are restored builds no backlog. The controller takes it (`rtl_device_tcp_handoff_take()`, CLAIMED; first
+    and alone, like a USB recovery) and runs `controller_stream_boundary(s, kStreamGapTcpReconnect, ...)` with
+    `rtl_device_tcp_publish_handoff()` as its device step: the effective record replayed as one unit (crystals, direct
+    sampling, frequency, rate, offset tuning, PPM, gain policy, IF gains, bias tee; every control that took, as last
+    taken, so a server restarted with other defaults ends with the session's settings), then published, or closed
+    (FAILED, the reader reconnects again; CANCELLED on a stop). The boundary's `rtl_device_resume_stream()` releases
+    the reader (RELEASED) and waits until it acknowledged after any receive in flight: it drops the odd byte the
+    discard left (a Q byte), clears its carry and partial slice (`rtl_reset_capture_state_on_stream_boundary()`), and
+    from there its bytes meet the post-reset mute and the capture. Stop and destroy run `rtl_tcp_stop()` first: latch,
+    admission closed for good, a QUEUED hand-off cancelled (the reader, its waiter, closes the connection it still
+    holds; a CLAIMED one is the controller's, which gives it up at its next step), the published socket shut down
+    (waking the reader and any blocked sender); only then is the reader joined. Reconnect back-off sleeps in 10 ms
+    slices. A frequency command leaves the reader-owned capture restart to the reader (`tcp_restart_pending`). The
+    rtl_tcp pipeline start fails when its controller or demod thread cannot start (B17), as every other pipeline's
+    does.
+    Tests: `IO_RTL_TCP_RECONNECT` (a scripted fake rtl_tcp server on loopback; device level with the test as the
+    controller and stream level through the real controller; ASan/TSan), `DSP_SYMBOL_RTL_YIELD`
+    (`sticky_yield_across_reconnect`).
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is
@@ -5043,8 +5084,9 @@ Notes:
     RESET marks none, every batch read whole in order; a gap noted while a capture is written replays as the same gap).
   - Reads while the device has no stream (issue #518 D4, B3). `rtl_device_has_stream()` says whether the device has a
     stream at all, as against one that is only slow: a USB receiver has none from its progress monitor's recovery
-    request until the recovery finished (`recovery_request` not IDLE, or `recovering`); rtl_tcp and the other backends
-    report one (rtl_tcp until its reconnect tracks its connection). `rtl_stream_read_live_samples()` asks it only after
+    request until the recovery finished (`recovery_request` not IDLE, or `recovering`); rtl_tcp has none from the loss
+    of its connection until a reconnected one is published (`tcp_connected`); the other backends report one.
+    `rtl_stream_read_live_samples()` asks it only after
     an empty poll (`rtl_live_read_no_stream()`), so a read that finds samples asks nothing. With no stream, a reader
     that asks for it (`want_no_stream`, through `dsd_rtl_stream_read_ex()`, `RtlSdrOrchestrator::read()`,
     `rtl_stream_read_ex2()` and the runtime hook's `read_ex2`) gets `DSD_RTL_READ_NO_STREAM` once a 10 ms wait slice
