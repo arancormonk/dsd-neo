@@ -4081,6 +4081,12 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
         dsd_mutex_unlock(&g_mu);
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
     }
+    /* The decoder thread may sit in a read that never returns, so the queue is not drained to apply a quit. Raised
+     * here, after admission, a late submission to a closed session has no effect, and an eviction below cannot take
+     * the quit back. The command is still queued: its handler stores the same flag. */
+    if (cmd_id == DSD_APP_CMD_QUIT) {
+        dsd_exitflag_store(1);
+    }
     if (ui_cmd_is_coalescible_setter(cmd_id)) {
         struct dsd_app_command* pending = ui_cmd_find_pending_tail_unlocked(cmd_id);
         if (ui_cmd_coalesces_with(pending, cmd_id, payload, payload_sz)) {

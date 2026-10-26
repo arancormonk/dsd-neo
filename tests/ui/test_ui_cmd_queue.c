@@ -65,6 +65,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -7173,6 +7174,42 @@ test_session_queue_cancellation(void) {
     return rc;
 }
 
+/* B2: a decoder blocked in a read never drains the queue, so an accepted QUIT raises the exit flag at submit. A
+   submission the closed session refuses has no such side effect, and an eviction cannot take the flag back. */
+static int
+test_quit_takes_effect_at_submit(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+
+    dsd_app_frontend_runtime_stop(); // a late submission meets a closed session
+    dsd_exitflag_store(0);
+    rc |= expect_int("closed session rejects quit", dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("rejected quit leaves the flag down", (int)dsd_exitflag_load(), 0);
+
+    dsd_app_frontend_runtime_start(&opts, &state);
+    rc |= expect_true("quit queued", dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0) > 0);
+    rc |= expect_int("accepted quit raises the flag before any drain", (int)dsd_exitflag_load(), 1);
+    dsd_app_frontend_runtime_stop();
+
+    /* The flood evicts the QUIT; the flag raised at its submit is what keeps the exit. */
+    dsd_exitflag_store(0);
+    dsd_app_frontend_runtime_start(&opts, &state);
+    (void)dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0);
+    for (int i = 0; i < 200; i++) {
+        (void)dsd_app_command_submit(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0);
+    }
+    rc |= expect_int("evicted quit still exits", (int)dsd_exitflag_load(), 1);
+    dsd_app_frontend_runtime_stop();
+
+    dsd_exitflag_store(0);
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+
 /* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
    command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks); a command that mixes both
    is judged by its payload. Asked through the hook the session installs, over the real queue. */
@@ -7233,6 +7270,7 @@ test_commands_that_need_the_frame_loop(void) {
         }
         /* The session's stop discards the queue unapplied. */
         dsd_app_frontend_runtime_stop();
+        dsd_exitflag_store(0); // an accepted quit raises it at submit
         rc |= expect_int("stopped session needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
     }
     freeState(&state);
@@ -19946,6 +19984,7 @@ main(void) {
     }
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
+    rc |= test_quit_takes_effect_at_submit();
     rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
