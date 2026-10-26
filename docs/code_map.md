@@ -4456,7 +4456,9 @@ Key public headers:
     place into a buffer no reader holds and makes it current, and a reader holds the current buffer while it copies it,
     so nothing is copied to publish) and the output rate (the metrics hook's; the snapshot's `rtl_ctx` is never
     dereferenced). `rtl_device_handle` and `g_stream` are cleared before the objects they point at are destroyed. Test:
-    `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan).
+    `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan). The spectrum fold walks contiguous halves under strict floating-point
+    rules; fast-math builds keep the original vector-libm loop to preserve its rounding. `IO_RTL_SPECTRUM_FRAMES`
+    compares both in-place and out-of-place folds bit for bit with the original walk.
   - Input level freshness (B6): the producer stamps every level it measures on the real-time monotonic clock
     (`updated_ms`, in place of the wall read moments finalization used to take, so no new clock read on the sample
     path). `dsd_input_level_is_stale()` (`runtime/input_level.c`, `DSD_INPUT_LEVEL_STALE_MS` = 2 s) is the one rule:
@@ -4466,7 +4468,11 @@ Key public headers:
     a stale or missing level reads `No input` with no readings. The decoder keeps a stale live level but warns about
     nothing (`dsd_input_level_publish()`); an I/Q replay (`opts->iq_replay_active`) keeps every warning its capture
     calls for, so a paused replay prints the same advisories in every run. PCM inputs keep the decoder's level. Tests:
-    `IO_INPUT_LEVEL_METRICS`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
+    `IO_INPUT_LEVEL_METRICS`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`. CU8 moments keep
+    64-bit totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening
+    reduces its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These
+    integer reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`,
+    `IO_INPUT_LEVEL_METRICS`).
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
     `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never a
     second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes the

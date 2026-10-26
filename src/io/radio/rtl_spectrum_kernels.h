@@ -89,8 +89,23 @@ iq_window_dc_removed(const float* iq_interleaved, int start, int n, const float*
     }
 }
 
+/* A contiguous half of the shifted spectrum. Keeping the wrap and seed decisions outside the per-bin loop leaves
+ * the same arithmetic on each bin, including on builds that preserve IEEE rounding. */
+template <bool Seed>
+inline void
+spectrum_fold_db_span(const float* z, int n, float new_weight, const float* prev_db, float* out_db) {
+    const float eps = 1e-12f;
+    const float old_weight = 1.0f - new_weight;
+    for (int k = 0; k < n; k++) {
+        const float re = z[static_cast<size_t>(k) << 1];
+        const float im = z[(static_cast<size_t>(k) << 1) + 1];
+        const float db = 10.0f * log10f(re * re + im * im + eps);
+        out_db[k] = Seed ? db : (new_weight * db + old_weight * prev_db[k]);
+    }
+}
+
 /**
- * @brief Fold an ordered transform into @p inout_db as smoothed dB, fftshifted.
+ * @brief Fold an ordered transform into @p out_db as smoothed dB, fftshifted.
  *
  * fftshift as it goes: bin 0 becomes center - rate/2 and bin n/2 becomes DC,
  * which is the order both taps' consumers expect of the arrays they read.
@@ -107,10 +122,12 @@ iq_window_dc_removed(const float* iq_interleaved, int start, int n, const float*
  */
 inline void
 spectrum_fold_db(const float* z, int n, float new_weight, bool seed, const float* prev_db, float* out_db) {
-    if (z == nullptr || prev_db == nullptr || out_db == nullptr) {
+    if (z == nullptr || prev_db == nullptr || out_db == nullptr || n <= 0) {
         return;
     }
-    /* Never zero: a bin with no energy would otherwise be log10(0). */
+#if defined(__FAST_MATH__) || defined(_MSC_VER)
+    /* Keep the vector-libm loop's shape under relaxed floating-point rules: splitting it changes contraction and
+       rounding on those builds. The strict-math path below keeps the same arithmetic without a wrap per bin. */
     const float eps = 1e-12f;
     const float old_weight = 1.0f - new_weight;
     for (int k = 0; k < n; k++) {
@@ -123,6 +140,17 @@ spectrum_fold_db(const float* z, int n, float new_weight, bool seed, const float
         const float db = 10.0f * log10f(re * re + im * im + eps);
         out_db[k] = seed ? db : (new_weight * db + old_weight * prev_db[k]);
     }
+#else
+    const int half = n >> 1;
+    const int first = n - half;
+    if (seed) {
+        spectrum_fold_db_span<true>(z + 2U * (size_t)half, first, new_weight, prev_db, out_db);
+        spectrum_fold_db_span<true>(z, half, new_weight, prev_db + first, out_db + first);
+    } else {
+        spectrum_fold_db_span<false>(z + 2U * (size_t)half, first, new_weight, prev_db, out_db);
+        spectrum_fold_db_span<false>(z, half, new_weight, prev_db + first, out_db + first);
+    }
+#endif
 }
 
 } // namespace dsd_io

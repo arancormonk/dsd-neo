@@ -115,9 +115,10 @@ struct Cu8VectorMoments {
         const __m128i hi = _mm_unpackhi_epi8(bytes, zero);
         squares = _mm_add_epi32(squares, _mm_add_epi32(_mm_madd_epi16(lo, lo), _mm_madd_epi16(hi, hi)));
         const __m128i ones = _mm_set1_epi8(1);
-        const __m128i low = _mm_cmpeq_epi8(_mm_min_epu8(bytes, ones), bytes);
-        const __m128i high = _mm_cmpeq_epi8(_mm_max_epu8(bytes, _mm_set1_epi8(-2)), bytes);
-        const __m128i clipped = _mm_and_si128(_mm_or_si128(low, high), ones);
+        /* Wrapping by two maps both clipping edges (254, 255, 0, 1) to the contiguous unsigned interval 0..3. */
+        const __m128i shifted = _mm_add_epi8(bytes, _mm_set1_epi8(2));
+        const __m128i edge = _mm_cmpeq_epi8(_mm_min_epu8(shifted, _mm_set1_epi8(3)), shifted);
+        const __m128i clipped = _mm_and_si128(edge, ones);
         clips = _mm_add_epi64(clips, _mm_sad_epu8(clipped, zero));
     }
 
@@ -141,18 +142,17 @@ struct Cu8VectorMoments {
 
 static inline void
 merge_vector_extrema(__m128i min_bytes, __m128i max_bytes, dsd_input_level_cu8_moments* local) {
-    alignas(16) unsigned char mins[16];
-    alignas(16) unsigned char maxes[16];
-    _mm_store_si128(reinterpret_cast<__m128i*>(mins), min_bytes);
-    _mm_store_si128(reinterpret_cast<__m128i*>(maxes), max_bytes);
-    for (unsigned int lane = 0U; lane < 16U; lane++) {
-        if (mins[lane] < local->min_sample) {
-            local->min_sample = mins[lane];
-        }
-        if (maxes[lane] > local->max_sample) {
-            local->max_sample = maxes[lane];
-        }
-    }
+    /* The vector prefix precedes the scalar tail; reduce it without a byte-at-a-time stack walk. */
+    min_bytes = _mm_min_epu8(min_bytes, _mm_srli_si128(min_bytes, 8));
+    max_bytes = _mm_max_epu8(max_bytes, _mm_srli_si128(max_bytes, 8));
+    min_bytes = _mm_min_epu8(min_bytes, _mm_srli_si128(min_bytes, 4));
+    max_bytes = _mm_max_epu8(max_bytes, _mm_srli_si128(max_bytes, 4));
+    min_bytes = _mm_min_epu8(min_bytes, _mm_srli_si128(min_bytes, 2));
+    max_bytes = _mm_max_epu8(max_bytes, _mm_srli_si128(max_bytes, 2));
+    min_bytes = _mm_min_epu8(min_bytes, _mm_srli_si128(min_bytes, 1));
+    max_bytes = _mm_max_epu8(max_bytes, _mm_srli_si128(max_bytes, 1));
+    local->min_sample = (uint8_t)(_mm_cvtsi128_si32(min_bytes) & 255);
+    local->max_sample = (uint8_t)(_mm_cvtsi128_si32(max_bytes) & 255);
 }
 
 } /* namespace */

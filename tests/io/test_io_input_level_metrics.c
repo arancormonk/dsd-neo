@@ -235,6 +235,43 @@ test_cu8_moment_guards_and_overflow(void) {
     assert(dsd_input_level_cu8_moments_merge(&moments, NULL) == -1);
 }
 
+/* Compare the bounded reductions with independent 64-bit totals, including a block whose squares exceed 32 bits. */
+static void
+test_cu8_moment_reduction_boundaries(void) {
+    const size_t lengths[] = {15U, 16U, 17U, 65535U, 65536U, 65537U, 131073U};
+    uint8_t* storage = (uint8_t*)malloc(131074U);
+    assert(storage != NULL);
+    uint8_t* samples = storage + 1U;
+    for (size_t pattern = 0U; pattern < 3U; pattern++) {
+        for (size_t i = 0U; i < 131073U; i++) {
+            samples[i] = pattern == 0U ? 255U : (pattern == 1U ? 37U : (uint8_t)(i * 73U + i / 251U));
+        }
+        for (size_t size = 0U; size < sizeof(lengths) / sizeof(lengths[0]); size++) {
+            dsd_input_level_cu8_moments expected;
+            dsd_input_level_cu8_moments_reset(&expected);
+            expected.count = lengths[size];
+            for (size_t i = 0U; i < lengths[size]; i++) {
+                const uint8_t sample = samples[i];
+                expected.sum += sample;
+                expected.sum_sq += (uint64_t)sample * sample;
+                expected.clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
+                if (sample < expected.min_sample) {
+                    expected.min_sample = sample;
+                }
+                if (sample > expected.max_sample) {
+                    expected.max_sample = sample;
+                }
+            }
+            dsd_input_level_cu8_moments got;
+            dsd_input_level_cu8_moments_reset(&got);
+            const int rc = dsd_input_level_cu8_moments_accumulate(&got, samples, lengths[size]);
+            assert(rc == 0);
+            assert_cu8_moments_equal(&got, &expected);
+        }
+    }
+    free(storage);
+}
+
 static void
 test_cs16_metrics(void) {
     int16_t hot[1000] = {0};
@@ -405,6 +442,7 @@ main(void) {
     test_pcm_f32_i16_scale_metrics_nonfinite_and_guards();
     test_cu8_metrics();
     test_cu8_integer_moments();
+    test_cu8_moment_reduction_boundaries();
     test_cu8_moment_guards_and_overflow();
     test_cs16_metrics();
     test_cf32_metrics();

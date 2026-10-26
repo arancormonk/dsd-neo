@@ -305,17 +305,35 @@ dsd_input_level_cu8_moments_accumulate(dsd_input_level_cu8_moments* moments, con
     dsd_input_level_cu8_moments add;
     dsd_input_level_cu8_moments_reset(&add);
     add.count = (uint64_t)count;
-    for (size_t i = 0U; i < count; i++) {
-        const uint8_t sample = samples[i];
-        add.sum += (uint64_t)sample;
-        add.sum_sq += (uint64_t)sample * (uint64_t)sample;
-        add.clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
-        if (sample < add.min_sample) {
-            add.min_sample = sample;
+    /* 65536 * 255^2 fits in 32 bits. Bounded integer reductions let baseline CPUs accumulate several samples per
+       vector without widening every addition to 64 bits, while the public totals keep their full range. */
+    for (size_t offset = 0U; offset < count;) {
+        const size_t remaining = count - offset;
+        const size_t take = remaining < 65536U ? remaining : 65536U;
+        uint32_t sum = 0U, sum_sq = 0U, clipped = 0U;
+        uint8_t low = UINT8_MAX, high = 0U;
+        for (size_t i = 0U; i < take; i++) {
+            const uint8_t sample = samples[offset + i];
+            sum += sample;
+            sum_sq += (uint32_t)sample * (uint32_t)sample;
+            clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
+            if (sample < low) {
+                low = sample;
+            }
+            if (sample > high) {
+                high = sample;
+            }
         }
-        if (sample > add.max_sample) {
-            add.max_sample = sample;
+        add.sum += sum;
+        add.sum_sq += sum_sq;
+        add.clipped += clipped;
+        if (low < add.min_sample) {
+            add.min_sample = low;
         }
+        if (high > add.max_sample) {
+            add.max_sample = high;
+        }
+        offset += take;
     }
     return dsd_input_level_cu8_moments_merge(moments, &add);
 }

@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
+#include "rtl_spectrum_kernels.h"
 #include "rtl_stream_test_support.h"
 
 namespace {
@@ -34,6 +35,56 @@ check(const char* label, int cond) {
     if (!cond) {
         DSD_FPRINTF(stderr, "FAIL: %s\n", label);
         g_failures++;
+    }
+}
+
+/* The original bin walk, kept separate from the span implementation so its wrap and smoothing order are pinned. */
+void
+fold_reference(const float* z, int n, float weight, bool seed, const float* prev, float* out) {
+    for (int k = 0; k < n; k++) {
+        int kk = k + (n >> 1);
+        if (kk >= n) {
+            kk -= n;
+        }
+        const float re = z[2U * (size_t)kk];
+        const float im = z[2U * (size_t)kk + 1U];
+        const float db = 10.0f * log10f(re * re + im * im + 1e-12f);
+        out[k] = seed ? db : weight * db + (1.0f - weight) * prev[k];
+    }
+}
+
+void
+test_fold_is_bit_exact(void) {
+    for (int n : {64, 128, 256, 512, 1024}) {
+        std::vector<float> z((size_t)n * 2U), previous((size_t)n), want((size_t)n), got((size_t)n);
+        uint32_t random = 19U;
+        for (float& value : z) {
+            random = random * 1664525U + 1013904223U;
+            value = (float)((int32_t)(random >> 16) - 32768) / 32768.0f;
+        }
+        for (int k = 0; k < n; k++) {
+            previous[(size_t)k] = (float)(k % 111) - 100.0f;
+        }
+        for (float weight : {0.2f, 0.6f}) {
+            for (bool seed : {false, true}) {
+                fold_reference(z.data(), n, weight, seed, previous.data(), want.data());
+                dsd_io::spectrum_fold_db(z.data(), n, weight, seed, previous.data(), got.data());
+                for (int k = 0; k < n; k++) {
+                    uint32_t want_bits = 0U, got_bits = 0U;
+                    DSD_MEMCPY(&want_bits, &want[(size_t)k], sizeof want_bits);
+                    DSD_MEMCPY(&got_bits, &got[(size_t)k], sizeof got_bits);
+                    check("fold: out-of-place bits", want_bits == got_bits);
+                }
+                got = previous;
+                dsd_io::spectrum_fold_db(z.data(), n, weight, seed, got.data(), got.data());
+                for (int k = 0; k < n; k++) {
+                    uint32_t want_bits = 0U, got_bits = 0U;
+                    DSD_MEMCPY(&want_bits, &want[(size_t)k], sizeof want_bits);
+                    DSD_MEMCPY(&got_bits, &got[(size_t)k], sizeof got_bits);
+                    check("fold: in-place bits", want_bits == got_bits);
+                }
+            }
+        }
     }
 }
 
@@ -123,6 +174,7 @@ test_held_spares_fold_into_the_writers_own(const std::vector<float>& x, const st
 
 int
 main(void) {
+    test_fold_is_bit_exact();
     (void)rtl_stream_spectrum_set_size(kBins);
     const std::vector<float> x = make_iq(37.0, 1U);
     const std::vector<float> y = make_iq(-91.0, 2U);
