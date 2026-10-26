@@ -4448,8 +4448,8 @@ Key public headers:
     `stop_requested` is clear, after recording `progress_baseline` and bumping `watch_rearm_seq`. Stop and destroy set
     `stop_requested` first, whatever runs, then take `usb_lifecycle_lock`; the swap checks the latch between steps
     (the reset polls it) and returns `-ECANCELED`, so either the reader restarted before the stop (which joins it) or
-    it never starts. A dongle found on another port is recorded there; an identity no longer unique turns recovery off
-    from then on. Test: `IO_RTL_USB_SWAP` (a whole fake dongle, `rtl_device_test_usb_dongle_install()`, over a fake
+    it never starts. A dongle found on another port is recorded there; a triple that after the reset no longer leads to
+    exactly one device (index or resolution) fails the recovery before any open and turns recovery off from then on. Test: `IO_RTL_USB_SWAP` (a whole fake dongle, `rtl_device_test_usb_dongle_install()`, over a fake
     device list; ASan/TSan).
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a

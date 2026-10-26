@@ -405,7 +405,8 @@ int rtl_device_usb_recovery_eligible(const struct rtl_device* dev);
  * @brief Reset and reopen a stalled USB dongle in place, and restore its settings.
  *
  * Stops the reader (its return is silent) and joins it, retires and closes the librtlsdr handle, resets the device's
- * USB port, reopens it by its identity, checks the reopened handle is the same device and replays the settings the
+ * USB port, finds it again (exactly one device with its strings, or the recovery fails before any open and recovery
+ * stays off), reopens it, checks the reopened handle is the same device and replays the settings the
  * dongle had taken, in order: crystal, direct sampling, frequency, sample rate, offset tuning, tuner bandwidth, PPM,
  * frequency, gain (with test mode and digital AGC), IF gains, bias tee; then resets the FIFO. A control that never
  * took is left at the fresh dongle's default; one that took and cannot be restored fails the recovery. Only then is

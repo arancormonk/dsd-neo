@@ -8921,20 +8921,15 @@ rtl_usb_replay_effective(const struct rtl_device* dev, rtlsdr_dev_t* handle, con
 
 /* Check the reopened @p handle is the identified device, record where the dongle is now, and replay its settings. */
 static int
-rtl_usb_restore_handle(struct rtl_device* dev, rtlsdr_dev_t* handle, rtl_usb_id_result resolved,
-                       const struct rtl_usb_identity* fresh, char* why, size_t why_size) {
+rtl_usb_restore_handle(struct rtl_device* dev, rtlsdr_dev_t* handle, const struct rtl_usb_identity* fresh, char* why,
+                       size_t why_size) {
     const rtl_usb_id_result verified = rtl_usb_identity_verify_handle(handle, &dev->identity);
     if (verified != RTL_USB_ID_OK) {
         DSD_SNPRINTF(why, why_size, "the reopened receiver: %s", rtl_usb_identity_off_reason(verified));
         return -EIO;
     }
-    /* It may have come back on another port; the next reset goes there. An identity no longer unique (a twin turned
-     * up) ends recovery for this receiver, though this one goes on: the handle carries the strings. */
-    if (resolved == RTL_USB_ID_OK) {
-        dev->identity = *fresh;
-    } else {
-        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(resolved));
-    }
+    /* It may have come back on another port; the next reset goes there. */
+    dev->identity = *fresh;
     const char* failed = "";
     const int rc = rtl_usb_replay_effective(dev, handle, &dev->usb_eff, &failed);
     if (rc != 0 && rc != -ECANCELED) {
@@ -8967,16 +8962,24 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
         DSD_SNPRINTF(why, why_size, "the USB reset failed: %s", rtl_usb_identity_off_reason(reset));
         return -EIO;
     }
+    /* Found again, uniquely, before anything is opened (D3): string verification cannot tell identical dongles apart,
+     * so a triple that no longer leads to exactly one device fails the recovery, and recovery stays off from then on,
+     * rather than open a dongle that may not be this one. */
     const int index = rtl_usb_identity_index(&dev->identity);
     if (index < 0) {
-        DSD_SNPRINTF(why, why_size, "%s", "the receiver was not found after the USB reset");
+        rtl_usb_recovery_off(dev, "no single receiver carries its USB strings after the reset");
+        DSD_SNPRINTF(why, why_size, "%s", "after the USB reset no single receiver carries its USB strings");
         return -ENODEV;
     }
-    /* Resolved before the open, as at the first open (D3). */
     struct rtl_usb_identity fresh{};
     const rtl_usb_id_result resolved = rtl_usb_identity_resolve(index, &fresh);
     if (rtl_usb_stop_latched(dev)) {
         return -ECANCELED;
+    }
+    if (resolved != RTL_USB_ID_OK) {
+        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(resolved));
+        DSD_SNPRINTF(why, why_size, "after the USB reset: %s", rtl_usb_identity_off_reason(resolved));
+        return -ENODEV;
     }
     rtlsdr_dev_t* handle = nullptr;
     int rc = rtl_usb_open_index(&handle, (uint32_t)index);
@@ -8985,7 +8988,7 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
         DSD_SNPRINTF(why, why_size, "could not reopen the receiver after the USB reset (rc=%d)", rc);
         return (rc < 0) ? rc : -EIO;
     }
-    rc = rtl_usb_restore_handle(dev, handle, resolved, &fresh, why, why_size);
+    rc = rtl_usb_restore_handle(dev, handle, &fresh, why, why_size);
     if (rc == 0) {
         /* Published only now, and not at all once a stop latched: the stop found no handle and closes nothing. */
         rtl_usb_ctrl_lock(dev);

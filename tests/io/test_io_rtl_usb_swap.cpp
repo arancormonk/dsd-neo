@@ -60,6 +60,8 @@ struct usb_world {
     int rtl_count = 0;
     std::atomic<uint64_t> now_ms{1000U};
     void (*on_step)(int step) = nullptr;
+    int twin_on_reset = 0;     /* the reset brings up a second device with the dongle's strings (another VID:PID) */
+    int twin_in_librtlsdr = 0; /* ... one librtlsdr lists too */
 };
 
 usb_world g_usb;
@@ -156,6 +158,16 @@ fake_reset(void* handle) {
         g_usb.on_step(kStepReset);
     }
     d->resets.fetch_add(1);
+    if (g_usb.twin_on_reset) {
+        usb_dev& twin = g_usb.devs[1];
+        twin.info = d->info;
+        twin.info.pid = 0x2832;
+        twin.info.bus = 3;
+        twin.serial = d->serial;
+        twin.hidden = 0;
+        g_usb.dev_count = 2;
+        g_usb.rtl_count = g_usb.twin_in_librtlsdr ? 2 : 1;
+    }
     if (!d->gone_on_reset) {
         return RTL_USB_OP_OK;
     }
@@ -206,6 +218,8 @@ usb_world_reset(int duplicate) {
         d.resets.store(0);
     }
     g_usb.on_step = nullptr;
+    g_usb.twin_on_reset = 0;
+    g_usb.twin_in_librtlsdr = 0;
     usb_dev& a = g_usb.devs[0];
     a.info.vid = 0x0bda;
     a.info.pid = 0x2838;
@@ -1219,6 +1233,50 @@ test_reset_not_back_fails(void) {
     usb_world_reset(0);
 }
 
+/* A twin with the dongle's strings turns up in the reset: the dongle can no longer be told from it, so the recovery
+ * fails before anything is opened, and recovery stays off. Twin listed by libusb only (resolution refuses it) and by
+ * librtlsdr too (no single index). */
+void
+test_reopen_with_duplicate_triple_fails_recovery(void) {
+    for (int in_librtlsdr = 0; in_librtlsdr < 2; in_librtlsdr++) {
+        usb_world_reset(0);
+        rig r;
+        rig_open(r, 1);
+        rig_configure(r, settings{});
+        rig_start(r);
+        (void)log_take();
+        g_usb.twin_on_reset = 1;
+        g_usb.twin_in_librtlsdr = in_librtlsdr;
+        const int opens = r.dongle.calls[RTL_TEST_DONGLE_OPEN];
+        std::string why;
+        const int rc = recover(r, &why);
+        assert(rc < 0 && rc != -ECANCELED);
+        assert(g_usb.devs[0].resets.load() == 1 && g_usb.devs[1].resets.load() == 0);
+        /* No rtlsdr_open() of any index. */
+        assert(r.dongle.calls[RTL_TEST_DONGLE_OPEN] == opens);
+        assert(r.dongle.open_handles == 0);
+        const char* cause = in_librtlsdr ? "no single receiver carries its USB strings"
+                                         : "another device has the same serial (set a unique one with rtl_eeprom)";
+        if (why.find(cause) == std::string::npos) {
+            DSD_FPRINTF(stderr, "duplicate after reset (librtlsdr %d): why=\"%s\"\n", in_librtlsdr, why.c_str());
+        }
+        assert(why.find(cause) != std::string::npos);
+        const std::string log = log_take();
+        assert(log.find(std::string("RTL-SDR: stall recovery is off for this receiver: ") + cause)
+               != std::string::npos);
+        /* Recovery stays off, and the reader is not restarted. */
+        rtl_device_test_usb_swap_state st = swap_state(r);
+        assert(!st.recovery_on && !st.has_handle && !st.thread_started && !st.reader_running && !st.recovering);
+        assert(rtl_device_usb_resume_reader(r.dev) < 0);
+        assert(!swap_state(r).thread_started);
+        std::string again;
+        assert(recover(r, &again) == -ENOTSUP);
+        assert(again.find(cause) != std::string::npos);
+        rig_close(r);
+    }
+    usb_world_reset(0);
+}
+
 /* A receiver whose identity is not unique is never reset; its open logs why, once. */
 void
 test_ineligible_recovery_off_reason_logged(void) {
@@ -1298,6 +1356,7 @@ main(void) {
         test_previously_effective_control_restore_failure_fails();
         test_reenumerated_port_recorded();
         test_reset_not_back_fails();
+        test_reopen_with_duplicate_triple_fails_recovery();
     }
 
     rtl_device_test_set_progress_limit_ms(0U);
