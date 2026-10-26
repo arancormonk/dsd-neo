@@ -2395,7 +2395,7 @@ static std::atomic<double> g_input_level_rms_dbfs{-120.0};
 static std::atomic<double> g_input_level_peak_dbfs{-120.0};
 static std::atomic<double> g_input_level_clip_pct{0.0};
 static std::atomic<uint64_t> g_input_level_sample_count{0U};
-static std::atomic<long long> g_input_level_updated{0};
+static std::atomic<uint64_t> g_input_level_updated_ms{0U};
 
 static std::atomic<int> g_decode_health_valid{0};
 static std::atomic<uint32_t> g_decode_health_generation{0};
@@ -2440,7 +2440,7 @@ input_level_store_fields(int valid, const dsd_input_level_snapshot* snapshot) {
     g_input_level_peak_dbfs.store(snapshot->peak_dbfs, std::memory_order_relaxed);
     g_input_level_clip_pct.store(snapshot->clip_pct, std::memory_order_relaxed);
     g_input_level_sample_count.store(snapshot->sample_count, std::memory_order_relaxed);
-    g_input_level_updated.store((long long)snapshot->updated, std::memory_order_relaxed);
+    g_input_level_updated_ms.store(snapshot->updated_ms, std::memory_order_relaxed);
 }
 
 void
@@ -2483,7 +2483,7 @@ rtl_stream_input_level_read(dsd_input_level_snapshot* out) {
         copy.peak_dbfs = g_input_level_peak_dbfs.load(std::memory_order_relaxed);
         copy.clip_pct = g_input_level_clip_pct.load(std::memory_order_relaxed);
         copy.sample_count = g_input_level_sample_count.load(std::memory_order_relaxed);
-        copy.updated = (time_t)g_input_level_updated.load(std::memory_order_relaxed);
+        copy.updated_ms = g_input_level_updated_ms.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
         if (g_input_level_seq.load(std::memory_order_relaxed) != seq) {
             continue;

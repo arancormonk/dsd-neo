@@ -203,7 +203,7 @@ fake_input_level(dsd_input_level_snapshot* out) {
         out->peak_dbfs = -0.5;
         out->clip_pct = 0.0;
         out->sample_count = 4096U;
-        out->updated = 12345;
+        out->updated_ms = 12345U;
     }
     return -9;
 }
@@ -532,7 +532,7 @@ main(void) {
         .peak_dbfs = 0.0,
         .clip_pct = 50.0,
         .sample_count = 99U,
-        .updated = 77,
+        .updated_ms = 77U,
     };
     assert(dsd_rtl_stream_metrics_hook_input_level(&input_level) == 0);
     assert(input_level.status == DSD_INPUT_LEVEL_UNKNOWN);
@@ -645,7 +645,7 @@ main(void) {
     assert(input_level.status == DSD_INPUT_LEVEL_HOT);
     assert(input_level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(input_level.sample_count == 4096U);
-    assert(input_level.updated == 12345);
+    assert(input_level.updated_ms == 12345U);
 
     assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == 8);
     assert(g_apply_demod_profile_calls == 1);

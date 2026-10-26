@@ -13,8 +13,8 @@
 
 #include <dsd-neo/platform/platform.h>
 
+#include <stddef.h>
 #include <stdint.h>
-#include <time.h>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -48,8 +48,13 @@ typedef struct dsd_input_level_snapshot {
     double peak_dbfs;
     double clip_pct;
     uint64_t sample_count;
-    time_t updated; /* real time the level was measured at; the warning cooldown runs on decode time instead */
+    /* When the level was measured, on the real-time monotonic clock (dsd_realtime_mono_ms()): what says whether it is
+       still the input's (dsd_input_level_is_stale()). The warning cooldown runs on decode time instead. */
+    uint64_t updated_ms;
 } dsd_input_level_snapshot;
+
+/** @brief Real time after its measurement that a level stops describing the input (dsd_input_level_is_stale()). */
+#define DSD_INPUT_LEVEL_STALE_MS 2000U
 
 /**
  * @brief Exact integer moments for unsigned 8-bit interleaved I/Q bytes.
@@ -83,6 +88,17 @@ int dsd_input_level_source_is_rf(dsd_input_level_source source);
 
 void dsd_input_level_classify(dsd_input_level_snapshot* snapshot, double low_warn_db);
 
+/**
+ * @brief Whether @p snapshot no longer describes its input at real-time monotonic @p now_ms.
+ *
+ * Stale when there is no level (NULL, no samples) or it was measured more than DSD_INPUT_LEVEL_STALE_MS before
+ * @p now_ms: a receiver that stopped delivering samples (a stalled USB dongle, an rtl_tcp server gone quiet) keeps its
+ * last level, and nothing but its age tells it from one that is quiet. A stamp after @p now_ms (a reader whose clock
+ * read came before the producer's) is fresh. Frontends show such a level as "No input"; a live input's warnings hold
+ * while it is stale (dsd_input_level_publish()).
+ */
+int dsd_input_level_is_stale(const dsd_input_level_snapshot* snapshot, uint64_t now_ms);
+
 int dsd_input_level_metrics_from_pcm_i16(const int16_t* samples, size_t count, size_t step,
                                          dsd_input_level_source source, dsd_input_level_snapshot* out);
 int dsd_input_level_metrics_from_pcm_f32_i16_scale(const float* samples, size_t count, size_t step,
@@ -107,6 +123,10 @@ int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, ch
  * A repeat of a warning waits out `opts->input_warn_cooldown_sec` of decode time, measured from the decode time of the
  * last one (`state->input_level_last_toast_time`), unless the status worsens. The decoder prints it, so a replay
  * prints it at the same capture time in every run. The toast stays up for real time (`state->ui_msg_expire`).
+ *
+ * A live input's level that is stale (dsd_input_level_is_stale()) is kept but warns about nothing: it is the last
+ * level of a receiver that stopped. An I/Q replay (`opts->iq_replay_active`) warns as its capture says whatever the
+ * real-time age, so a replay that pauses still prints the same warnings in every run.
  */
 void dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                              unsigned int notify_mask);

@@ -502,6 +502,11 @@ The input section shows a persistent advisory line when recent input-level metri
 samples measured before demodulation. The line is advisory only; DSD-neo never changes input volume, RF gain, AGC, or
 filtering automatically.
 
+On a radio input the line follows the receiver's samples, not the decoder: when no samples have arrived for 2 seconds
+(a stalled dongle, an rtl_tcp server that went quiet) or none have arrived yet, it reads `| RF Level: No input` with no
+readings instead of the last level. A live receiver's stale level prints no warning either; an I/Q replay prints the
+warnings its capture calls for, however long it pauses.
+
 The channel row under the RTL input and the audio inputs (Pulse, TCP, UDP, WAV and stdin) shows the SQL setting,
 reading `off` when the squelch is disabled, but does not duplicate channel power. Under the auto squelch the row shows
 the margin and what the squelch is doing: `SQL: auto +10 dB (floor  -78.3 dB)`, `(learning)` until it has a floor, or

@@ -768,6 +768,23 @@ static int g_channel_analog_kind = DSD_ANALOG_DEMOD_FM;
 /* How often a line fetched the metrics: the audio input lines read none (issue #621). */
 static int g_metrics_calls;
 
+/* The radio input level app-control presents (dsd_app_frontend_input_level()): g_presented_level when
+   g_presented_level_result is 1, else a blank copy. */
+static int g_presented_level_result;
+static dsd_input_level_snapshot g_presented_level;
+static int g_presented_level_calls;
+
+int
+dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    g_presented_level_calls++;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (g_presented_level_result == 1) {
+        *out = g_presented_level;
+    }
+    return g_presented_level_result;
+}
+
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
     g_metrics_calls++;
@@ -1621,8 +1638,11 @@ test_receiver_rows_fixed_width(void) {
    rounds to zero has no sign. */
 static void
 test_input_level_row_fixed_width(void) {
+    static dsd_opts opts;
     static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_PULSE;
     state.input_level.source = DSD_INPUT_LEVEL_SOURCE_PCM;
     state.input_level.sample_count = 100U;
     state.input_level.status = DSD_INPUT_LEVEL_OK;
@@ -1631,7 +1651,7 @@ test_input_level_row_fixed_width(void) {
     state.input_level.clip_pct = 0.0;
     g_stub_max_x = 200;
     reset_printw_capture();
-    ui_render_input_level_status(&state);
+    ui_render_input_level_status(&opts, &state);
     assert_capture_equals("| Input Level: OK      rms  -23.4 dBFS peak    0.0 dBFS clip   0.0%\n");
     const int rms_col = capture_column_of(" rms");
     const int peak_col = capture_column_of(" peak");
@@ -1645,21 +1665,68 @@ test_input_level_row_fixed_width(void) {
         state.input_level.peak_dbfs = levels[(i + 1U) % 5U];
         state.input_level.clip_pct = (i == 2U) ? 100.0 : 1.25;
         reset_printw_capture();
-        ui_render_input_level_status(&state);
+        ui_render_input_level_status(&opts, &state);
         assert(capture_column_of(" rms") == rms_col);
         assert(capture_column_of(" peak") == peak_col);
         assert(capture_column_of(" clip") == clip_col);
         assert(strstr(g_printw_capture, "-0.0") == NULL);
     }
-    state.input_level.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
-    state.input_level.status = DSD_INPUT_LEVEL_CLIPPING;
-    state.input_level.rms_dbfs = -3.0;
-    state.input_level.peak_dbfs = 0.0;
-    state.input_level.clip_pct = 100.0;
+    /* A radio input's row is the level app-control presents, not the decoder's copy. */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    g_presented_level_result = 1;
+    DSD_MEMSET(&g_presented_level, 0, sizeof(g_presented_level));
+    g_presented_level.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+    g_presented_level.sample_count = 16384U;
+    g_presented_level.status = DSD_INPUT_LEVEL_CLIPPING;
+    g_presented_level.rms_dbfs = -3.0;
+    g_presented_level.peak_dbfs = 0.0;
+    g_presented_level.clip_pct = 100.0;
     reset_printw_capture();
-    ui_render_input_level_status(&state);
+    ui_render_input_level_status(&opts, &state);
     assert_capture_equals("| RF Level: CLIP    rms   -3.0 dBFS peak    0.0 dBFS clip 100.0% lower RF gain or add "
                           "filtering/attenuation\n");
+    g_presented_level_result = 0;
+    g_stub_max_x = 80;
+}
+
+/* Issue B6: a receiver that stops delivering samples (a stalled USB dongle, an rtl_tcp server gone quiet) reads
+   "No input", with no readings, rather than its last level forever; so does one that has delivered none yet. */
+static void
+test_input_level_row_no_input(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.input_warn_db = -40.0;
+    /* The decoder's last copy, from before the receiver stopped. */
+    state.input_level.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+    state.input_level.sample_count = 16384U;
+    state.input_level.status = DSD_INPUT_LEVEL_OK;
+    state.input_level.rms_dbfs = -29.0;
+    state.input_level.peak_dbfs = -10.0;
+    g_stub_max_x = 200;
+
+    g_presented_level_result = 0;
+    g_presented_level_calls = 0;
+    reset_printw_capture();
+    ui_render_input_level_status(&opts, &state);
+    assert_capture_equals("| RF Level: No input\n");
+    assert(g_presented_level_calls == 1);
+
+    /* Never received: no decoder copy either. */
+    DSD_MEMSET(&state.input_level, 0, sizeof(state.input_level));
+    reset_printw_capture();
+    ui_render_input_level_status(&opts, &state);
+    assert_capture_equals("| RF Level: No input\n");
+
+    /* A PCM input keeps the decoder's level, which it measures as it reads, and asks app-control for none. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    g_presented_level_calls = 0;
+    reset_printw_capture();
+    ui_render_input_level_status(&opts, &state);
+    assert_capture_equals("");
+    assert(g_presented_level_calls == 0);
     g_stub_max_x = 80;
 }
 
@@ -4402,6 +4469,7 @@ main(void) {
     test_rtl_auto_ppm_status_rendering();
     test_receiver_rows_fixed_width();
     test_input_level_row_fixed_width();
+    test_input_level_row_no_input();
     test_output_rows_fixed_width();
     test_am_channel_field_rendering();
     test_demod_symbol_rate_helpers();

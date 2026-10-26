@@ -121,7 +121,7 @@ input_level_fill(dsd_input_level_snapshot* out, dsd_input_level_source source, d
     out->peak_dbfs = input_level_peak_to_dbfs(peak);
     out->clip_pct = (count > 0U) ? ((double)clipped * 100.0 / (double)count) : 0.0;
     out->sample_count = count;
-    out->updated = dsd_realtime_time();
+    out->updated_ms = dsd_realtime_mono_ms();
 }
 
 static int
@@ -150,6 +150,14 @@ dsd_input_level_classify(dsd_input_level_snapshot* snapshot, double low_warn_db)
         return;
     }
     snapshot->status = DSD_INPUT_LEVEL_OK;
+}
+
+int
+dsd_input_level_is_stale(const dsd_input_level_snapshot* snapshot, uint64_t now_ms) {
+    if (!snapshot || snapshot->sample_count == 0U) {
+        return 1;
+    }
+    return now_ms > snapshot->updated_ms && now_ms - snapshot->updated_ms > DSD_INPUT_LEVEL_STALE_MS;
 }
 
 int
@@ -551,12 +559,18 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
 
     /* Whether the warning prints is a decode decision: the decoder prints it, among its own lines, so its cooldown
        runs on decode time, against the decode time of the last warning. A replay then prints it at the same capture
-       time in every run, however fast it runs; live, decode time is the system's. The snapshot's `updated` stays the
-       real time it was measured at, and the toast stays up for real time (ui_msg_expire below). */
+       time in every run, however fast it runs; live, decode time is the system's. The snapshot's `updated_ms` stays
+       the real time it was measured at, and the toast stays up for real time (ui_msg_expire below). */
     const time_t decode_now = dsd_decode_time();
     int notify = input_level_should_suppress_tcp_pcm_toast(opts, state, &next)
                      ? 0
                      : input_level_should_notify(opts, state, &next, notify_mask, decode_now);
+    /* A live receiver's level that real time has left behind is the last one of a receiver that stopped: no warning
+       about it. A replay's levels keep their warnings, which follow the capture: one that pauses (a slow decoder, a
+       jittered read) prints the same ones in every run. Read only when a warning would print. */
+    if (notify && !(opts && opts->iq_replay_active) && dsd_input_level_is_stale(&next, dsd_realtime_mono_ms())) {
+        notify = 0;
+    }
     state->input_level = next;
     if (!notify) {
         return;

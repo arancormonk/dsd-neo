@@ -160,7 +160,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - The terminal input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
   `--input-level-warn-db`; `HOT` means peak at or above `-1.0 dBFS`; `CLIP` means at least `0.1%` clipped or near-rail
   samples. TCP PCM idle/search level advisories are status-only to avoid console spam. These advisories never adjust
-  gain automatically.
+  gain automatically. A radio input whose receiver has delivered no samples for 2 s reads `RF Level: No input`, and
+  its last level warns about nothing.
 - For RTL-family inputs, the optional DSP panel shows post-channel-filter `Squelch` power against the SQL threshold.
   This is separate from the raw receiver `RF Level` health line.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`

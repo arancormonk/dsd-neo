@@ -5,9 +5,15 @@
 
 #include <assert.h>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 #include "dsd-neo/core/safe_api.h"
 
@@ -277,6 +283,120 @@ test_cf32_metrics(void) {
     assert(dsd_input_level_metrics_from_cf32(hot, 1000U, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, NULL) == -1);
 }
 
+/* Issue B6: a level is stamped on the real-time monotonic clock in milliseconds when it is measured, so a frontend
+   can tell a receiver that stopped from one that is quiet. */
+static void
+test_levels_stamped_on_realtime_monotonic_ms(void) {
+    dsd_input_level_snapshot snapshot;
+    const uint8_t cu8[] = {127U, 128U, 120U, 135U};
+    const uint64_t before = dsd_realtime_mono_ms();
+    assert(dsd_input_level_metrics_from_cu8(cu8, sizeof cu8, DSD_INPUT_LEVEL_SOURCE_RTL_CU8, &snapshot) == 0);
+    const uint64_t after = dsd_realtime_mono_ms();
+    assert(snapshot.updated_ms >= before && snapshot.updated_ms <= after);
+}
+
+static void
+test_stale_predicate(void) {
+    dsd_input_level_snapshot snapshot;
+    DSD_MEMSET(&snapshot, 0, sizeof(snapshot));
+    snapshot.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+    snapshot.updated_ms = 50000U;
+
+    /* Never received: no level at all, whatever its stamp. */
+    assert(dsd_input_level_is_stale(NULL, 50000U) == 1);
+    assert(dsd_input_level_is_stale(&snapshot, 50000U) == 1);
+
+    snapshot.sample_count = 1024U;
+    assert(dsd_input_level_is_stale(&snapshot, 50000U) == 0);
+    assert(dsd_input_level_is_stale(&snapshot, 50000U + DSD_INPUT_LEVEL_STALE_MS) == 0);
+    assert(dsd_input_level_is_stale(&snapshot, 50000U + DSD_INPUT_LEVEL_STALE_MS + 1U) == 1);
+    /* A reader whose clock read came before the producer's stamp sees a fresh level, not an ancient one. */
+    assert(dsd_input_level_is_stale(&snapshot, 49990U) == 0);
+}
+
+static dsd_input_level_snapshot
+rf_clipping_level(uint64_t updated_ms) {
+    dsd_input_level_snapshot snapshot;
+    DSD_MEMSET(&snapshot, 0, sizeof(snapshot));
+    snapshot.status = DSD_INPUT_LEVEL_UNKNOWN;
+    snapshot.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+    snapshot.rms_dbfs = -6.0;
+    snapshot.peak_dbfs = -0.1;
+    snapshot.clip_pct = 0.5;
+    snapshot.sample_count = 4096U;
+    snapshot.updated_ms = updated_ms;
+    return snapshot;
+}
+
+/* A live receiver's level that is more than DSD_INPUT_LEVEL_STALE_MS old describes a receiver that stopped: the decoder
+   keeps it, but does not warn about it. A fresh one still warns. */
+static void
+test_stale_live_warning_suppressed(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->input_warn_db = -40.0;
+    opts->input_warn_cooldown_sec = 10;
+    opts->iq_replay_active = 0;
+    dsd_decode_clock_use_test(1000ULL * 1000000000ULL);
+
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
+    dsd_input_level_snapshot stale = rf_clipping_level(now_ms - DSD_INPUT_LEVEL_STALE_MS - 500U);
+    dsd_input_level_publish(opts, state, &stale, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    assert(state->input_level_last_toast_time == 0);
+    assert(opts->last_input_warn_time == 0);
+
+    dsd_input_level_snapshot fresh = rf_clipping_level(dsd_realtime_mono_ms());
+    dsd_input_level_publish(opts, state, &fresh, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(state->input_level_last_toast_time == 1000);
+
+    dsd_decode_clock_use_system();
+    free(state);
+    free(opts);
+}
+
+/* A replay's advisories follow capture time, so every run prints the same ones: a replay paused for longer than
+   DSD_INPUT_LEVEL_STALE_MS of real time (a slow decoder, a debugger, a jittered read) still prints the warning its
+   level calls for, at the decode time the capture says. */
+static void
+test_replay_paused_over_2s_keeps_advisories(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->input_warn_db = -40.0;
+    opts->input_warn_cooldown_sec = 10;
+    opts->iq_replay_active = 1;
+    const time_t capture_s = 1262304000; /* 2010-01-01Z */
+    dsd_decode_clock_use_test((uint64_t)capture_s * 1000000000ULL);
+
+    dsd_input_level_snapshot paused = rf_clipping_level(dsd_realtime_mono_ms() - DSD_INPUT_LEVEL_STALE_MS - 500U);
+    dsd_input_level_publish(opts, state, &paused, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(state->input_level_last_toast_time == capture_s);
+    assert(opts->last_input_warn_time == capture_s);
+
+    /* The repeat waits out its cooldown on capture time, however stale the real-time stamp. */
+    DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
+    dsd_decode_clock_test_set_ns((uint64_t)(capture_s + 5) * 1000000000ULL);
+    dsd_input_level_publish(opts, state, &paused, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    dsd_decode_clock_test_set_ns((uint64_t)(capture_s + 10) * 1000000000ULL);
+    dsd_input_level_publish(opts, state, &paused, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(state->input_level_last_toast_time == capture_s + 10);
+
+    dsd_decode_clock_use_system();
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_pcm_i16_metrics_with_step_and_guards();
@@ -286,5 +406,9 @@ main(void) {
     test_cu8_moment_guards_and_overflow();
     test_cs16_metrics();
     test_cf32_metrics();
+    test_levels_stamped_on_realtime_monotonic_ms();
+    test_stale_predicate();
+    test_stale_live_warning_suppressed();
+    test_replay_paused_over_2s_keeps_advisories();
     return 0;
 }

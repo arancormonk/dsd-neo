@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -105,6 +106,32 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->snr_c4fm_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
     out->snr_cqpsk_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
     out->snr_gfsk_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
+}
+
+/*
+ * The receiver's level from the stream's own copy, which the producer publishes with every block it delivers (B6). The
+ * decoder's copy (state->input_level) refreshes only every 64 decoded symbols, so it holds its last reading whenever the
+ * decoder stops, and the stream's copy holds it when the receiver stops: only the measurement's age says which. The
+ * classification is the decoder's own, against the user's threshold, so the row and the warnings agree.
+ */
+int
+dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!frontend_input_is_radio(opts)) {
+        return -1;
+    }
+    dsd_input_level_snapshot level;
+    DSD_MEMSET(&level, 0, sizeof(level));
+    if (dsd_rtl_stream_metrics_hook_input_level(&level) != 0
+        || dsd_input_level_is_stale(&level, dsd_realtime_mono_ms())) {
+        return 0;
+    }
+    dsd_input_level_classify(&level, opts->input_warn_db);
+    *out = level;
+    return 1;
 }
 
 static void

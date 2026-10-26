@@ -155,6 +155,22 @@ int dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, u
 int dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
                                               unsigned int snr_fallbacks);
 
+/**
+ * @brief The radio input level a frontend shows.
+ *
+ * Built from the stream's own copy of the level, which the receiver's producer publishes with every block (never the
+ * decoder's `state->input_level`, which refreshes only while it decodes), and classified by the classifier the
+ * decoder warns with, against `opts->input_warn_db`. A level more than DSD_INPUT_LEVEL_STALE_MS old is a receiver
+ * that stopped delivering samples (dsd_input_level_is_stale()).
+ *
+ * @param opts Options snapshot (dsd_app_get_latest_opts_snapshot()).
+ * @param out  Receives the level; blank (status UNKNOWN, no samples, no readings) unless the result is 1.
+ * @return 1 with a fresh level in @p out; 0 when the radio input has no fresh level (stopped, stalled, or none
+ *         received yet), which a frontend shows as "No input" with no readings; -1 when the input is not a radio
+ *         (a PCM input's level is the decoder's, measured as it reads) or @p out is NULL.
+ */
+int dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out);
+
 /** @brief One SNR reading, and whether an estimator actually produced it. */
 typedef struct {
     double snr_db; /**< Reading in dB. Only meaningful while @c valid is nonzero. */

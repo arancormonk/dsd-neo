@@ -1790,7 +1790,8 @@ suite runs under this compiler.
     ages those stamps (`call_view`, `notification_status`, `p25_network`, the ncurses printer and P25 display,
     the Qt metrics model). Qt and QML read decode time through `MetricsModel::decodeNowMs` (wall-clock ms, the scale of
     a JavaScript time value). Real time drives device, socket and ring waits, replay pacing, auto-gain and auto-PPM, the
-    analog tap's input-pause deadline and backlog skip, the input-level snapshot's measurement stamp (`updated`),
+    analog tap's input-pause deadline and backlog skip, the input-level snapshot's measurement stamp (`updated_ms`,
+    real-time monotonic, and the staleness it ages into: `dsd_input_level_is_stale()`),
     RadioReference dates and perf, and in `src/core`, `src/app_control` and `src/ui` the `ui_msg_expire` (the
     input-level warning's toast included) and terminal status toasts, the audible-audio stamp and its age, UI frame and
     publish throttles, the `.bin` symbol-file pacing (`dsd_dibit.c`), the received-tone input-pause check, the Qt
@@ -4451,6 +4452,16 @@ Key public headers:
     requested PPM (published under its mutex), the narrow spectrum (a seqlock copy of the demod's bins) and the output
     rate (the metrics hook's; the snapshot's `rtl_ctx` is never dereferenced). `rtl_device_handle` and `g_stream` are
     cleared before the objects they point at are destroyed. Test: `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan).
+  - Input level freshness (B6): the producer stamps every level it measures on the real-time monotonic clock
+    (`updated_ms`, in place of the wall read moments finalization used to take, so no new clock read on the sample
+    path). `dsd_input_level_is_stale()` (`runtime/input_level.c`, `DSD_INPUT_LEVEL_STALE_MS` = 2 s) is the one rule:
+    frontends show a radio input's level through `dsd_app_frontend_input_level()` (`app_control/frontend.c`), built
+    from the stream's seqlock copy (`rtl_stream_get_input_level()`), never the decoder's `state->input_level`, which
+    refreshes only every 64 decoded symbols, and classified with `opts->input_warn_db` by `dsd_input_level_classify()`;
+    a stale or missing level reads `No input` with no readings. The decoder keeps a stale live level but warns about
+    nothing (`dsd_input_level_publish()`); an I/Q replay (`opts->iq_replay_active`) keeps every warning its capture
+    calls for, so a paused replay prints the same advisories in every run. PCM inputs keep the decoder's level. Tests:
+    `IO_INPUT_LEVEL_METRICS`, `APP_CONTROL_FRONTEND_METRICS`, `UI_NCURSES_PRINTER_HELPERS{,_RADIO}`.
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
     `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never
     a second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes

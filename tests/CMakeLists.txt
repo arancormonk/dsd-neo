@@ -4854,6 +4854,9 @@ add_executable(
     dsd-neo_test_app_control_frontend_metrics
     ui/test_ui_frontend_metrics.c
     ${PROJECT_SOURCE_DIR}/src/app_control/frontend.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
 )
 target_include_directories(
