@@ -102,12 +102,12 @@ iq_window_dc_removed(const float* iq_interleaved, int start, int n, const float*
  * @param seed True to write the new frame outright instead of blending. The
  *             first frame has nothing to blend with, and after a retune the old
  *             band must not bleed into the new one.
- * @param inout_db Destination of @p n floats, read as the previous frame unless
- *                 @p seed is set.
+ * @param prev_db The previous frame, @p n floats, read unless @p seed is set.
+ * @param out_db Destination of @p n floats; may be @p prev_db (in place).
  */
 inline void
-spectrum_fold_db(const float* z, int n, float new_weight, bool seed, float* inout_db) {
-    if (z == nullptr || inout_db == nullptr) {
+spectrum_fold_db(const float* z, int n, float new_weight, bool seed, const float* prev_db, float* out_db) {
+    if (z == nullptr || prev_db == nullptr || out_db == nullptr) {
         return;
     }
     /* Never zero: a bin with no energy would otherwise be log10(0). */
@@ -121,7 +121,7 @@ spectrum_fold_db(const float* z, int n, float new_weight, bool seed, float* inou
         const float re = z[static_cast<size_t>(kk) << 1];
         const float im = z[(static_cast<size_t>(kk) << 1) + 1];
         const float db = 10.0f * log10f(re * re + im * im + eps);
-        inout_db[k] = seed ? db : (new_weight * db + old_weight * inout_db[k]);
+        out_db[k] = seed ? db : (new_weight * db + old_weight * prev_db[k]);
     }
 }
 

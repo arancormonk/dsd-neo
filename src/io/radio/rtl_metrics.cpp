@@ -30,17 +30,30 @@
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
 static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
-/* The smoothed bins, demod-thread private (the peak search reads them in place). */
-static float g_spec_db[kSpecMaxN];
-/* The bins as last published, for rtl_stream_spectrum_get() on any thread (the frontends' spectrum, the autogain
- * gate): a copy under a sequence count that is odd while the demod thread, the only writer, publishes, so a reader
- * takes one frame whole. The payload is relaxed-atomic, as the wideband spectrum's is. */
-static std::atomic<uint32_t> g_spec_seq{0U};
-static std::atomic<float> g_spec_pub_db[kSpecMaxN];
-static std::atomic<int> g_spec_pub_n{0};
-/* A reader that keeps meeting the writer reports no frame rather than a torn one. */
+
+/* The smoothed bins, which rtl_stream_spectrum_get() hands out on any thread (the frontends' spectrum, the autogain
+ * gate). The demod thread, the only writer, folds each new frame out of place, from its last frame into a buffer no
+ * reader holds, then makes that buffer current (g_spec_cur); a reader holds the current buffer (g_spec_holds) while it
+ * copies it. So no buffer is written while it is read, and publishing a frame copies nothing. Should every buffer but
+ * the current one be held, the frame goes to the writer's own buffer and the next one is published. */
+namespace {
+struct rtl_spec_frame {
+    float db[kSpecMaxN];
+    int n;
+    int rate_hz;
+};
+} // namespace
+
+static const int kSpecFrames = 4;
+static rtl_spec_frame g_spec_frames[kSpecFrames];
+static std::atomic<int> g_spec_holds[kSpecFrames];
+static std::atomic<int> g_spec_cur{-1}; /* none yet */
+/* Demod thread only: its own buffer, and the frame it folded last (the one the next blends with, and the bins the
+ * peak search reads). */
+static rtl_spec_frame g_spec_writer;
+static const rtl_spec_frame* g_spec_last = &g_spec_writer;
+/* A reader that keeps losing the current buffer to the writer reports no frame. */
 static const int kSpecReadAttempts = 4;
-static std::atomic<int> g_spec_rate_hz{0};
 static std::atomic<int> g_spec_ready{0};
 static std::atomic<int> g_spec_N{256}; /* default N */
 std::atomic<double> g_spec_peak_db{-100.0};
@@ -248,19 +261,31 @@ rtl_metrics_phase_cfo_hz(const float* iq_interleaved, const rtl_metrics_fft_fram
  * frame is a gain step taken for no reason. */
 static const float kSpecEmaNewWeight = 0.2f;
 
+/* A buffer to fold the next frame into: one that is not current and that no reader holds, else the writer's own. A
+ * reader that took a hold after this check also finds the buffer no longer current, and lets go without reading it
+ * (rtl_stream_spectrum_get()). */
+static rtl_spec_frame*
+rtl_metrics_spec_free_frame(void) {
+    const int cur = g_spec_cur.load(std::memory_order_relaxed);
+    for (int i = 0; i < kSpecFrames; i++) {
+        if (i != cur && g_spec_holds[i].load(std::memory_order_seq_cst) == 0) {
+            return &g_spec_frames[i];
+        }
+    }
+    return &g_spec_writer;
+}
+
 static void
 rtl_metrics_smooth_spectrum_bins(int N, int out_rate_hz, const float* z) {
     const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
-    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, first, g_spec_db);
-    const uint32_t seq = g_spec_seq.load(std::memory_order_relaxed);
-    g_spec_seq.store(seq + 1U, std::memory_order_release); /* odd: writer active */
-    std::atomic_thread_fence(std::memory_order_release);
-    for (int i = 0; i < N; i++) {
-        g_spec_pub_db[i].store(g_spec_db[i], std::memory_order_relaxed);
+    rtl_spec_frame* out = rtl_metrics_spec_free_frame();
+    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, first, g_spec_last->db, out->db);
+    out->n = N;
+    out->rate_hz = out_rate_hz;
+    g_spec_last = out;
+    if (out != &g_spec_writer) {
+        g_spec_cur.store((int)(out - g_spec_frames), std::memory_order_seq_cst);
     }
-    g_spec_pub_n.store(N, std::memory_order_relaxed);
-    g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
-    g_spec_seq.store(seq + 2U, std::memory_order_release); /* even: frame complete */
     g_spec_ready.store(1, std::memory_order_release);
 }
 
@@ -284,10 +309,11 @@ rtl_metrics_peak_search_bounds(int N, int* k_center_i, int* i_lo, int* i_hi) {
 static void
 rtl_metrics_peak_find_bin(int i_lo, int i_hi, int* i_max, float* p_max) {
     *i_max = i_lo;
-    *p_max = g_spec_db[i_lo];
+    const float* db = g_spec_last->db;
+    *p_max = db[i_lo];
     for (int k = i_lo + 1; k <= i_hi; k++) {
-        if (g_spec_db[k] > *p_max) {
-            *p_max = g_spec_db[k];
+        if (db[k] > *p_max) {
+            *p_max = db[k];
             *i_max = k;
         }
     }
@@ -299,7 +325,7 @@ rtl_metrics_peak_noise_snr(int i_lo, int i_hi, int i_max, float p_max) {
     int noise_count = 0;
     for (int k = i_lo; k <= i_hi; k++) {
         if (k < i_max - 2 || k > i_max + 2) {
-            noise_bins[noise_count++] = g_spec_db[k];
+            noise_bins[noise_count++] = g_spec_last->db[k];
         }
     }
     if (noise_count < 16) {
@@ -315,7 +341,8 @@ rtl_metrics_peak_center_tone_filter(int N, int k_center_i, int i_max, float p_ma
     if (N < 3 || i_max <= 0 || i_max + 1 >= N || i_max != k_center_i) {
         return spec_snr_db;
     }
-    float side_max = (g_spec_db[i_max - 1] > g_spec_db[i_max + 1]) ? g_spec_db[i_max - 1] : g_spec_db[i_max + 1];
+    const float* db = g_spec_last->db;
+    float side_max = (db[i_max - 1] > db[i_max + 1]) ? db[i_max - 1] : db[i_max + 1];
     if ((p_max - side_max) > 12.0f) {
         return -100.0f;
     }
@@ -423,7 +450,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
  *
  * Returns the number of bins copied (clamped to both the published frame's FFT
  * size and `max_bins`). Optionally returns the sample rate that frame's FFT ran
- * at. Any thread: the frame is copied whole under the publish sequence.
+ * at. Any thread: the frame is copied whole while the writer folds into another buffer.
  *
  * @param out_db   [out] Destination buffer for power values in dB.
  * @param max_bins Maximum bins to copy.
@@ -438,30 +465,27 @@ rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     if (g_spec_ready.load(std::memory_order_acquire) == 0) {
         return 0;
     }
-    /* Staged, so the caller's buffer only ever receives one published frame whole. */
-    alignas(16) float staged[kSpecMaxN];
     for (int attempt = 0; attempt < kSpecReadAttempts; attempt++) {
-        const uint32_t seq = g_spec_seq.load(std::memory_order_acquire);
-        if ((seq & 1U) != 0U) {
-            continue; /* writer mid-frame */
+        const int cur = g_spec_cur.load(std::memory_order_seq_cst);
+        if (cur < 0) {
+            return 0;
         }
-        int N = g_spec_pub_n.load(std::memory_order_relaxed);
-        N = (N < 0) ? 0 : ((N > kSpecMaxN) ? kSpecMaxN : N);
-        const int n = (max_bins < N) ? max_bins : N;
-        for (int i = 0; i < n; i++) {
-            staged[i] = g_spec_pub_db[i].load(std::memory_order_relaxed);
-        }
-        const int rate = g_spec_rate_hz.load(std::memory_order_relaxed);
-        std::atomic_thread_fence(std::memory_order_acquire);
-        if (g_spec_seq.load(std::memory_order_relaxed) != seq) {
+        g_spec_holds[cur].fetch_add(1, std::memory_order_seq_cst);
+        if (g_spec_cur.load(std::memory_order_seq_cst) != cur) {
+            /* The writer moved on meanwhile and may be folding into it already. */
+            g_spec_holds[cur].fetch_sub(1, std::memory_order_seq_cst);
             continue;
         }
+        const rtl_spec_frame* frame = &g_spec_frames[cur];
+        const int N = (frame->n < 0) ? 0 : ((frame->n > kSpecMaxN) ? kSpecMaxN : frame->n);
+        const int n = (max_bins < N) ? max_bins : N;
         for (int i = 0; i < n; i++) {
-            out_db[i] = staged[i];
+            out_db[i] = frame->db[i];
         }
         if (out_rate) {
-            *out_rate = rate;
+            *out_rate = frame->rate_hz;
         }
+        g_spec_holds[cur].fetch_sub(1, std::memory_order_seq_cst);
         return n;
     }
     return 0;

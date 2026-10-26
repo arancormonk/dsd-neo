@@ -1512,18 +1512,39 @@ soapy_copy_cs16_samples(float* dst, const int16_t* src_iq, size_t elem_count, fl
     if (!dst || !src_iq || elem_count == 0U) {
         return;
     }
-    for (size_t i = 0U; i < elem_count; i++) {
-        size_t sample_idx = i * 2U;
-        float i_in = (float)src_iq[sample_idx + 0U] * scale;
-        float q_in = (float)src_iq[sample_idx + 1U] * scale;
-        if (apply_rot && phase) {
-            rtl_apply_j4_rotation(i_in, q_in, *phase, &dst[(i * 2U) + 0U], &dst[(i * 2U) + 1U]);
-            *phase = (*phase + 1) & 3;
-        } else {
-            dst[(i * 2U) + 0U] = i_in;
-            dst[(i * 2U) + 1U] = q_in;
+    if (!apply_rot || !phase) {
+        for (size_t k = 0U; k < elem_count * 2U; k++) {
+            dst[k] = (float)src_iq[k] * scale;
         }
+        return;
     }
+    /* Sample i is rotated at phase *phase + i (rtl_apply_j4_rotation()): one at a time up to the next phase-0 sample,
+     * then four at a time, each at its fixed phase, so the loop carries no per-sample phase switch, then the rest. */
+    int p = *phase & 3;
+    size_t i = 0U;
+    for (; i < elem_count && p != 0; i++) {
+        rtl_apply_j4_rotation((float)src_iq[2U * i] * scale, (float)src_iq[(2U * i) + 1U] * scale, p, &dst[2U * i],
+                              &dst[(2U * i) + 1U]);
+        p = (p + 1) & 3;
+    }
+    for (; i + 4U <= elem_count; i += 4U) {
+        const int16_t* s = src_iq + (2U * i);
+        float* d = dst + (2U * i);
+        d[0] = (float)s[0] * scale; /* phase 0: (I, Q) */
+        d[1] = (float)s[1] * scale;
+        d[2] = -((float)s[3] * scale); /* phase 1: (-Q, I) */
+        d[3] = (float)s[2] * scale;
+        d[4] = -((float)s[4] * scale); /* phase 2: (-I, -Q) */
+        d[5] = -((float)s[5] * scale);
+        d[6] = (float)s[7] * scale; /* phase 3: (Q, -I) */
+        d[7] = -((float)s[6] * scale);
+    }
+    for (; i < elem_count; i++) {
+        rtl_apply_j4_rotation((float)src_iq[2U * i] * scale, (float)src_iq[(2U * i) + 1U] * scale, p, &dst[2U * i],
+                              &dst[(2U * i) + 1U]);
+        p = (p + 1) & 3;
+    }
+    *phase = p;
 }
 #endif
 

@@ -14658,6 +14658,40 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
 
+    # The decoder's symbol reads through the production live reader of a running rtl_tcp stream (not a test).
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_bench_rtl_consumer
+            EXCLUDE_FROM_ALL
+            io/bench_rtl_consumer.cpp
+        )
+        target_include_directories(
+            dsd-neo_bench_rtl_consumer
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/engine
+        )
+        if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+            target_link_libraries(
+                dsd-neo_bench_rtl_consumer
+                PRIVATE
+                    "-Wl,--start-group"
+                    dsd-neo_engine
+                    dsd-neo_io_radio
+                    dsd-neo_io_iq
+                    "-Wl,--end-group"
+                    dsd-neo_app_control
+                    dsd-neo_core
+                    ${LIBS}
+            )
+        else()
+            target_link_libraries(
+                dsd-neo_bench_rtl_consumer
+                PRIVATE dsd-neo_engine dsd-neo_app_control dsd-neo_core ${LIBS}
+            )
+        endif()
+    endif()
+
     # Paced SoapySDR ingest benchmark (not a test); run under perf stat.
     add_executable(
         dsd-neo_bench_soapy_ingest
