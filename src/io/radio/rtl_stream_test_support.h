@@ -216,7 +216,8 @@ void rtl_device_test_set_progress_period_ms(uint32_t period_ms);
 /* The next receiver verdict that passed its checks waits @p ms before it claims the report, so that a racing verdict
  * passes its own checks meanwhile. One-shot. */
 void rtl_device_test_pause_next_verdict_ms(uint32_t ms);
-/* While set, the RTL-SDR's progress monitor thread fails to start, as a refused thread creation does. */
+/* While set, the RTL-SDR's or SoapySDR device's progress monitor thread fails to start, as a refused thread creation
+ * does. */
 void rtl_device_test_refuse_progress_monitor(int refuse);
 /* How many receiver verdicts began waiting out the unplug-owner grace, ever: a test polls it to know a verdict is
  * pending. */
@@ -237,6 +238,52 @@ void rtl_device_test_usb_stream_return(int rc);
 int rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev);
 /* Stop the device (rtl_device_stop_async()) and destroy it. */
 void rtl_device_test_usb_stream_stop(struct rtl_device* dev);
+
+/* SoapySDR's readStream() results the seam below returns, as SoapySDR/Errors.h numbers them. */
+enum {
+    RTL_DEVICE_TEST_SOAPY_TIMEOUT = -1,
+    RTL_DEVICE_TEST_SOAPY_STREAM_ERROR = -2,
+    RTL_DEVICE_TEST_SOAPY_OVERFLOW = -4,
+    /* Not SoapySDR's: the seam throws a std::runtime_error, as a driver's call can. */
+    RTL_DEVICE_TEST_SOAPY_THROW = -1000,
+};
+
+/* A SoapySDR driver's stream calls, in place of the device's (SoapySDR::Device). The device's own reader runs against
+ * them: its setup, its locked read loop and its read-result handling. Both are called under the device's soapy_lock. */
+typedef struct {
+    /* In place of setupStream(), getStreamMTU() and activateStream(): 0 when the stream runs (@p mtu_elems, preset to
+     * the reader's default, may be changed), a negative SoapySDR error code when activation failed, or
+     * RTL_DEVICE_TEST_SOAPY_THROW. */
+    int (*setup)(void* ctx, size_t* mtu_elems);
+    /* In place of readStream() into @p buff (@p elems complex samples of the stream's format): the elements read, a
+     * SoapySDR error code, or RTL_DEVICE_TEST_SOAPY_THROW. @p timeout_us is the reader's. */
+    int (*read)(void* ctx, void* buff, size_t elems, long timeout_us);
+    void* ctx;
+    int cs16; /* the stream's format: CS16 when set, else CF32 */
+} rtl_device_test_soapy_driver;
+
+/* A SoapySDR device into @p ring whose stream calls reach @p driver (kept by the caller until the device is freed), not
+ * started: rtl_device_start_async() starts it and rtl_device_stop_async() stops it as any SoapySDR device.
+ * rtl_device_test_soapy_device_free() ends it. One at a time; NULL when the build has no SoapySDR. */
+struct rtl_device* rtl_device_test_soapy_device(struct input_ring_state* ring,
+                                                const rtl_device_test_soapy_driver* driver);
+/* rtl_device_destroy() it, and detach the driver. */
+void rtl_device_test_soapy_device_free(struct rtl_device* dev);
+/* Run one control transaction on @p dev that holds its soapy_lock for @p ms, as a slow driver call does. 0 on
+ * success. */
+int rtl_device_test_soapy_control_hold(struct rtl_device* dev, unsigned int ms);
+
+/* A SoapySDR device's reader and monitor, and its stream. */
+typedef struct {
+    int reader_entered;         /* the reader's stream was activated */
+    int reader_exited;          /* the reader thread is done */
+    int monitor_started;        /* its progress monitor thread runs (or is not joined yet) */
+    int stream_open;            /* the stream is set up and not closed */
+    unsigned int stream_closes; /* streams the seam closed since the device was made */
+} rtl_device_test_soapy_state;
+
+/* The state of @p dev; read by the thread that starts and stops it. */
+void rtl_device_test_soapy_state_get(struct rtl_device* dev, rtl_device_test_soapy_state* out);
 
 /* A control of the fake dongle below that fails: every call from the fail_from_call-th on (0: never), and every write
  * of fail_value while fail_value_set. */

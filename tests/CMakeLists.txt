@@ -14484,6 +14484,27 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_USB_PROGRESS_MONITOR PROPERTIES TIMEOUT 120)
 
+    # A SoapySDR receiver that stops delivering, or a reader that ends by itself,
+    # ends the session and is reported once; a stop is silent. The device's reader
+    # runs against a stand-in driver. Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_soapy_stream_loss
+        io/test_io_soapy_stream_loss.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_soapy_stream_loss
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_soapy_stream_loss
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_SOAPY_STREAM_LOSS
+        COMMAND dsd-neo_test_io_soapy_stream_loss
+    )
+    set_tests_properties(IO_SOAPY_STREAM_LOSS PROPERTIES TIMEOUT 120)
+
     # Which USB device an RTL-SDR runs on and a reset of only that device, over a
     # fake device list. Without libusb the unit is a stub and the test checks that;
     # with it, the stub is also built from the same source and checked on its own.
@@ -14631,6 +14652,21 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_bench_usb_ingest
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+
+    # Paced SoapySDR ingest benchmark (not a test); run under perf stat.
+    add_executable(
+        dsd-neo_bench_soapy_ingest
+        EXCLUDE_FROM_ALL
+        io/bench_soapy_ingest.cpp
+    )
+    target_include_directories(
+        dsd-neo_bench_soapy_ingest
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_bench_soapy_ingest
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
 

@@ -103,6 +103,7 @@ enum : int {
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
 #include <exception>
+#include <stdexcept>
 
 namespace SoapySDR {
 class Stream;
@@ -416,8 +417,9 @@ struct rtl_device {
     /* SoapySDR backend */
     SoapySDR::Device* soapy_dev = nullptr;
     SoapySDR::Stream* soapy_stream = nullptr;
-    uint64_t soapy_overflow_count = 0U;
-    uint64_t soapy_timeout_count = 0U;
+    /* Written by the reader, read by its progress monitor for the silence verdict's cause. */
+    std::atomic<uint64_t> soapy_overflow_count{0U};
+    std::atomic<uint64_t> soapy_timeout_count{0U};
     uint64_t soapy_read_errors = 0U;
     uint64_t soapy_last_overflow_log_ns = 0U;
     int soapy_profile_id = 0;
@@ -439,6 +441,9 @@ struct rtl_device {
     char soapy_requested_settings[1024] = {};
     char soapy_requested_gains[512] = {};
     char soapy_requested_stream_format[16] = {};
+    /* Set while a control or setup transaction holds soapy_lock (never a read): the progress monitor does not count
+     * that time as silence, since the reader cannot read meanwhile. */
+    std::atomic<int> soapy_control_hold{0};
     /* TCP stats (optional) */
     uint64_t tcp_bytes_total = 0U;
     uint64_t tcp_bytes_window = 0U;
@@ -467,8 +472,8 @@ struct rtl_device {
     /* Tuner bandwidth a USB dongle last took (0: driver automatic). */
     uint32_t tuner_bw_hz = 0U;
     std::atomic<int> mute{0};
-    /* Sample progress: counted first thing by every librtlsdr callback with bytes, read by the progress monitor.
-     * (An Airspy's count is its source's, airspy_source_progress().) */
+    /* Sample progress: counted first thing by every librtlsdr callback with bytes, and by every SoapySDR read with
+     * samples, read by the progress monitor. (An Airspy's count is its source's, airspy_source_progress().) */
     std::atomic<uint64_t> progress{0U};
     int thread_started = 0;
     std::atomic<uint32_t> capture_retune_count{0U};
@@ -492,15 +497,16 @@ struct rtl_device {
     int tcp_sync_inited = 0;
     std::atomic<int> run{0};
     /* The USB reader thread's progress, reset by each start: entered before it checks run and calls
-     * rtlsdr_read_async(), exited once that returned (or was skipped). A stop cancels until it sees exited. */
+     * rtlsdr_read_async(), exited once that returned (or was skipped). A stop cancels until it sees exited. The
+     * SoapySDR reader's: entered once its stream is active, exited once it left its read loop (or never got there). */
     std::atomic<int> reader_entered{0};
     std::atomic<int> reader_exited{0};
     /* Taken by the verdict that ends the session for its receiver, so a reader exit and the progress monitor that race
      * report it once. Reset by each start. */
     std::atomic<int> receiver_end_claimed{0};
-    /* The USB sample-progress monitor: the RTL-SDR's own thread (the Airspy's is the device thread), the flag that
-     * stops it, and the lock and condition a stop wakes either with. The lock and condition are made by the first
-     * USB or Airspy start and freed with the device. */
+    /* The sample-progress monitor: the RTL-SDR's or the SoapySDR device's own thread (the Airspy's is the device
+     * thread), the flag that stops it, and the lock and condition a stop wakes either with. The lock and condition are
+     * made by the first start and freed with the device. */
     dsd_thread_t progress_monitor{};
     int progress_monitor_started = 0;
     std::atomic<int> progress_monitor_run{0};
@@ -3144,7 +3150,8 @@ static void* g_test_recovery_post_hook_ctx = nullptr;
  * starts. */
 static void (*g_test_reader_restart_hook)(struct rtl_device*, void*) = nullptr;
 static void* g_test_reader_restart_hook_ctx = nullptr;
-/* rtl_device_test_refuse_progress_monitor(): the RTL monitor's thread creation fails as a refused one does. */
+/* rtl_device_test_refuse_progress_monitor(): the RTL or SoapySDR monitor's thread creation fails as a refused one
+ * does. */
 static std::atomic<int> g_test_refuse_progress_monitor{0};
 /* rtl_device_test_pause_next_verdict_ms(): one verdict, past its checks, waits this long before it claims the
  * report. */
@@ -3760,21 +3767,28 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
-/* Start the RTL-SDR's progress monitor thread; a test can refuse it as a failed thread create does. */
+/* A test refuses a progress monitor thread as a failed thread create does: its error, else 0. */
 static int
-rtl_usb_progress_monitor_create(struct rtl_device* dev) {
+rtl_progress_monitor_refused(void) {
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     if (g_test_refuse_progress_monitor.load(std::memory_order_acquire)) {
         return EAGAIN;
     }
 #endif
-    return dsd_thread_create(&dev->progress_monitor, rtl_usb_progress_monitor, dev);
+    return 0;
 }
 
-/* Stop and join the RTL-SDR's progress monitor, if it runs. One waiting out the unplug-owner grace returns once run
- * is clear. */
+/* Start the RTL-SDR's progress monitor thread. */
+static int
+rtl_usb_progress_monitor_create(struct rtl_device* dev) {
+    const int refused = rtl_progress_monitor_refused();
+    return refused != 0 ? refused : dsd_thread_create(&dev->progress_monitor, rtl_usb_progress_monitor, dev);
+}
+
+/* Stop and join the RTL-SDR's or the SoapySDR device's progress monitor, if it runs. One waiting out the unplug-owner
+ * grace returns once run is clear. */
 static void
-rtl_usb_progress_monitor_stop(struct rtl_device* dev) {
+rtl_progress_monitor_stop(struct rtl_device* dev) {
     if (!dev->progress_monitor_started) {
         return;
     }
@@ -3806,7 +3820,7 @@ rtl_usb_reader_cancel_and_join(struct rtl_device* dev) {
 static void
 rtl_usb_reader_stop(struct rtl_device* dev) {
     dev->run.store(0, std::memory_order_release);
-    rtl_usb_progress_monitor_stop(dev);
+    rtl_progress_monitor_stop(dev);
     if (dev->thread_started) {
         rtl_usb_reader_cancel_and_join(dev);
     }
@@ -3837,16 +3851,29 @@ soapy_trim_copy(const std::string& value) {
 #endif
 
 #ifdef USE_SOAPYSDR
+/* Mark a control or setup transaction holding soapy_lock (soapy_control_hold), once the lock is held: one still
+ * waiting behind a hung read must not pause the silence count. */
+static void
+soapy_control_hold_mark(struct rtl_device* dev, int held) {
+    dev->soapy_control_hold.store(held, std::memory_order_relaxed);
+}
+
 template <typename Fn>
 static int
 soapy_call_locked(struct rtl_device* dev, const char* op, Fn&& fn) {
-    if (!dev || !dev->soapy_dev || !dev->soapy_lock_inited) {
+    if (!dev || !dev->soapy_lock_inited) {
         return -1;
     }
     if (dsd_mutex_lock(&dev->soapy_lock) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for %s.\n", op);
         return -1;
     }
+    /* Looked at under the lock: a reader whose stream failed releases the device under it. */
+    if (!dev->soapy_dev) {
+        (void)dsd_mutex_unlock(&dev->soapy_lock);
+        return -1;
+    }
+    soapy_control_hold_mark(dev, 1);
     int ret = -1;
     try {
         ret = fn();
@@ -3854,6 +3881,7 @@ soapy_call_locked(struct rtl_device* dev, const char* op, Fn&& fn) {
         DSD_FPRINTF(stderr, "SoapySDR: exception in %s: %s\n", op, e.what());
         ret = -1;
     }
+    soapy_control_hold_mark(dev, 0);
     (void)dsd_mutex_unlock(&dev->soapy_lock);
     return ret;
 }
@@ -4304,6 +4332,40 @@ soapy_apply_named_gains_locked(struct rtl_device* dev) {
 }
 #endif
 
+#if defined(USE_SOAPYSDR) && defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The SoapySDR stream seam (rtl_stream_test_support.h): while a driver is attached, the device's stream calls reach it
+ * in place of its SoapySDR::Device, which is a sentinel never dereferenced. */
+static std::atomic<const rtl_device_test_soapy_driver*> g_test_soapy_driver{nullptr};
+static std::atomic<unsigned int> g_test_soapy_stream_closes{0U};
+
+static int
+soapy_test_driver_result(int rc) {
+    if (rc == RTL_DEVICE_TEST_SOAPY_THROW) {
+        throw std::runtime_error("test driver failure");
+    }
+    return rc;
+}
+
+/* The seam's stream close: the sentinels are dropped, so the driver's own close finds nothing to do. */
+static void
+soapy_test_close_stream_locked(struct rtl_device* dev, int unmake_device) {
+    if (!g_test_soapy_driver.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (dev->soapy_stream) {
+        g_test_soapy_stream_closes.fetch_add(1U, std::memory_order_relaxed);
+        dev->soapy_stream = NULL;
+    }
+    if (unmake_device) {
+        dev->soapy_dev = NULL;
+    }
+}
+
+static_assert(RTL_DEVICE_TEST_SOAPY_TIMEOUT == SOAPY_SDR_TIMEOUT, "seam timeout code");
+static_assert(RTL_DEVICE_TEST_SOAPY_STREAM_ERROR == SOAPY_SDR_STREAM_ERROR, "seam stream error code");
+static_assert(RTL_DEVICE_TEST_SOAPY_OVERFLOW == SOAPY_SDR_OVERFLOW, "seam overflow code");
+#endif
+
 static void
 soapy_stream_cleanup(struct rtl_device* dev, int unmake_device) {
 #ifdef USE_SOAPYSDR
@@ -4314,6 +4376,10 @@ soapy_stream_cleanup(struct rtl_device* dev, int unmake_device) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for cleanup.\n");
         return;
     }
+    soapy_control_hold_mark(dev, 1);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    soapy_test_close_stream_locked(dev, unmake_device);
+#endif
     if (dev->soapy_dev && dev->soapy_stream) {
         try {
             int rc = dev->soapy_dev->deactivateStream(dev->soapy_stream, 0, 0);
@@ -4338,6 +4404,7 @@ soapy_stream_cleanup(struct rtl_device* dev, int unmake_device) {
         }
         dev->soapy_dev = NULL;
     }
+    soapy_control_hold_mark(dev, 0);
     (void)dsd_mutex_unlock(&dev->soapy_lock);
 #else
     (void)dev;
@@ -4360,51 +4427,68 @@ soapy_capture_event_bytes(const struct rtl_device* dev, size_t elements) {
     return 0U;
 }
 
+/* Set up and activate the RX stream, under soapy_lock: 0, activateStream()'s error code, or -EIO for any other
+ * failure. @p io_mtu_elems takes the stream's MTU when the driver reports one. Throws what the driver throws. */
+static int
+soapy_open_stream_locked(struct rtl_device* dev, size_t* io_mtu_elems) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (const rtl_device_test_soapy_driver* fake = g_test_soapy_driver.load(std::memory_order_acquire)) {
+        const int rc = soapy_test_driver_result(fake->setup(fake->ctx, io_mtu_elems));
+        if (rc == 0) {
+            /* Never dereferenced: the seam's cleanup closes it. */
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            dev->soapy_stream = reinterpret_cast<SoapySDR::Stream*>(static_cast<uintptr_t>(1U));
+            dev->soapy_mtu_elems = (uint32_t)(*io_mtu_elems);
+        }
+        return rc;
+    }
+#endif
+    std::string stream_format;
+    if (!dev->soapy_dev || soapy_refresh_stream_format_locked(dev, &stream_format) != 0) {
+        return -EIO;
+    }
+    std::vector<size_t> channels(1, 0);
+    SoapySDR::Kwargs args;
+    dev->soapy_stream = dev->soapy_dev->setupStream(SOAPY_SDR_RX, stream_format, channels, args);
+    if (!dev->soapy_stream) {
+        DSD_FPRINTF(stderr, "SoapySDR: setupStream returned null.\n");
+        return -EIO;
+    }
+    size_t mtu = dev->soapy_dev->getStreamMTU(dev->soapy_stream);
+    if (mtu > 0U) {
+        *io_mtu_elems = mtu;
+    }
+    dev->soapy_mtu_elems = (uint32_t)(*io_mtu_elems);
+    int rc = dev->soapy_dev->activateStream(dev->soapy_stream, 0, 0, 0);
+    if (rc < 0) {
+        DSD_FPRINTF(stderr, "SoapySDR: activateStream failed: %s (%d).\n", SoapySDR::errToStr(rc), rc);
+        return rc;
+    }
+    return 0;
+}
+
+/* The reader's stream setup, as a control transaction holds soapy_lock: 0 once the stream is active, else the
+ * failure's native code (soapy_open_stream_locked(); -EIO for an exception). */
 static int
 soapy_setup_stream(struct rtl_device* dev, size_t* io_mtu_elems) {
     if (!dev || !io_mtu_elems) {
-        return -1;
+        return -EIO;
     }
     if (dsd_mutex_lock(&dev->soapy_lock) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for stream setup.\n");
-        return -1;
+        return -EIO;
     }
-
-    int fatal = 0;
-    std::string stream_format;
+    soapy_control_hold_mark(dev, 1);
+    int rc = -EIO;
     try {
-        if (soapy_refresh_stream_format_locked(dev, &stream_format) != 0) {
-            fatal = 1;
-        }
-        if (!fatal) {
-            std::vector<size_t> channels(1, 0);
-            SoapySDR::Kwargs args;
-            dev->soapy_stream = dev->soapy_dev->setupStream(SOAPY_SDR_RX, stream_format, channels, args);
-            if (!dev->soapy_stream) {
-                DSD_FPRINTF(stderr, "SoapySDR: setupStream returned null.\n");
-                fatal = 1;
-            }
-        }
-        if (!fatal && dev->soapy_stream) {
-            size_t mtu = dev->soapy_dev->getStreamMTU(dev->soapy_stream);
-            if (mtu > 0U) {
-                *io_mtu_elems = mtu;
-            }
-            dev->soapy_mtu_elems = (uint32_t)(*io_mtu_elems);
-        }
-        if (!fatal && dev->soapy_stream) {
-            int rc = dev->soapy_dev->activateStream(dev->soapy_stream, 0, 0, 0);
-            if (rc < 0) {
-                DSD_FPRINTF(stderr, "SoapySDR: activateStream failed: %s (%d).\n", SoapySDR::errToStr(rc), rc);
-                fatal = 1;
-            }
-        }
+        rc = soapy_open_stream_locked(dev, io_mtu_elems);
     } catch (const std::exception& e) {
         DSD_FPRINTF(stderr, "SoapySDR: exception during stream setup: %s\n", e.what());
-        fatal = 1;
+        rc = -EIO;
     }
+    soapy_control_hold_mark(dev, 0);
     (void)dsd_mutex_unlock(&dev->soapy_lock);
-    return fatal ? -1 : 0;
+    return rc;
 }
 
 static int
@@ -4456,11 +4540,19 @@ soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elem
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for readStream.\n");
         return INT_MIN;
     }
+    /* No control hold here: a read that hangs, or keeps timing out, holding the lock is the silence the progress
+     * monitor watches for. */
     int ret = INT_MIN;
     try {
         int flags = 0;
         long long time_ns = 0;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        const rtl_device_test_soapy_driver* fake = g_test_soapy_driver.load(std::memory_order_acquire);
+        ret = fake ? soapy_test_driver_result(fake->read(fake->ctx, buffs[0], mtu_elems, 15000))
+                   : dev->soapy_dev->readStream(dev->soapy_stream, buffs, mtu_elems, flags, time_ns, 15000);
+#else
         ret = dev->soapy_dev->readStream(dev->soapy_stream, buffs, mtu_elems, flags, time_ns, 15000);
+#endif
     } catch (const std::exception& e) {
         DSD_FPRINTF(stderr, "SoapySDR: exception in readStream: %s\n", e.what());
     }
@@ -4473,15 +4565,18 @@ soapy_handle_read_result(struct rtl_device* dev, int ret) {
     if (!dev) {
         return -1;
     }
+    /* Only the reader writes the counts. */
     if (ret == SOAPY_SDR_TIMEOUT) {
-        dev->soapy_timeout_count++;
+        dev->soapy_timeout_count.store(dev->soapy_timeout_count.load(std::memory_order_relaxed) + 1U,
+                                       std::memory_order_relaxed);
         return 1;
     }
     if (ret == SOAPY_SDR_OVERFLOW) {
-        dev->soapy_overflow_count++;
+        const uint64_t overflows = dev->soapy_overflow_count.load(std::memory_order_relaxed) + 1U;
+        dev->soapy_overflow_count.store(overflows, std::memory_order_relaxed);
         uint64_t now_ns = dsd_realtime_mono_ns();
         if ((now_ns - dev->soapy_last_overflow_log_ns) > 1000000000ULL) {
-            DSD_FPRINTF(stderr, "SoapySDR: RX overflow count=%llu.\n", (unsigned long long)dev->soapy_overflow_count);
+            DSD_FPRINTF(stderr, "SoapySDR: RX overflow count=%llu.\n", (unsigned long long)overflows);
             dev->soapy_last_overflow_log_ns = now_ns;
         }
         return 1;
@@ -4561,8 +4656,88 @@ soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elem
     rtl_publish_cs16_input_level(src, kept_elems * 2U);
     (void)soapy_write_cs16_to_ring(dev, src, kept_elems, apply_rot);
 }
+
+/* The SoapySDR reader's loop, while the device runs and the session does not end: 0 once either stopped it, else the
+ * native code of the failure that ended it (a fatal read result's SoapySDR code; -EIO for a read that threw). A read
+ * with samples counts as progress (one relaxed increment) before a retune mute or a reconfigure hold can drop them:
+ * the receiver delivered. Timeouts, overflows and empty reads do not. */
+static int
+soapy_read_loop(struct rtl_device* s, size_t mtu_elems, std::vector<std::complex<float>>* cf32_buf,
+                std::vector<int16_t>* cs16_buf) {
+    while (s->run.load() && dsd_exitflag_load() == 0) {
+        void* buffs[1] = {NULL};
+        if (soapy_prepare_read_buffer(s, cf32_buf, cs16_buf, buffs) != 0) {
+            return -EIO;
+        }
+
+        int ret = soapy_read_stream_locked(s, buffs, mtu_elems);
+        if (ret == INT_MIN) {
+            return -EIO;
+        }
+        int read_status = soapy_handle_read_result(s, ret);
+        if (read_status > 0) {
+            continue;
+        }
+        if (read_status < 0) {
+            return ret;
+        }
+        s->progress.fetch_add(1U, std::memory_order_relaxed);
+
+        const int apply_rot = fs4_shift_capture_active(s);
+        size_t frame_elems = (size_t)ret;
+        size_t drop_elems = 0U;
+        int mute_status = soapy_consume_mute_prefix(s, frame_elems, apply_rot, &drop_elems);
+        if (mute_status < 0) {
+            return -EIO;
+        }
+        if (mute_status > 0) {
+            continue;
+        }
+
+        size_t kept_elems = frame_elems - drop_elems;
+        if (soapy_handle_reconfigure_hold(s, kept_elems, apply_rot)) {
+            continue;
+        }
+        soapy_submit_samples(s, drop_elems, kept_elems, *cf32_buf, *cs16_buf, apply_rot);
+    }
+    return 0;
+}
+
+/* What the SoapySDR reader's end, with @p native_code (0: a stop or the session's end asked for it, which is left
+ * alone), means for the session. A start that failed in the reader (@p streamed clear: the stream could not be set
+ * up or activated, or its read buffers could not be allocated) is the driver's or the host's, not a receiver that
+ * stopped: it is reported at once as a device failure, without the unplug-owner grace and without committing the
+ * receiver's ending, as librtlsdr's -ENOMEM is. A read that failed while the stream ran ends the session for its
+ * receiver (rtl_device_end_for_receiver()). Either raises the exit flag and wakes the demod waiting on the input ring;
+ * of it and the progress monitor's verdict, only the first reports. */
+static void
+soapy_reader_finished(struct rtl_device* s, int streamed, int native_code) {
+    if (native_code == 0 || !s->run.load(std::memory_order_acquire) || dsd_exitflag_load()) {
+        return;
+    }
+    if (streamed) {
+        char cause[96];
+        DSD_SNPRINTF(cause, sizeof cause, "SoapySDR: reading the receiver's stream failed; the stream stops (rc=%d)",
+                     native_code);
+        (void)rtl_device_end_for_receiver(s, native_code, rtl_device_sample_progress(s), cause);
+        return;
+    }
+    if (s->receiver_end_claimed.exchange(1, std::memory_order_acq_rel) != 0) {
+        return;
+    }
+    LOG_ERROR("SoapySDR: could not %s; the stream does not start (rc=%d)\n",
+              native_code == -ENOMEM ? "allocate the stream's read buffers" : "set up and activate the RX stream",
+              native_code);
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, native_code);
+    dsd_exitflag_store(1);
+    replay_signal_input_waiters(s);
+}
 #endif
 
+/* The SoapySDR reader thread: sets the stream up, then reads it into the input ring until a stop or the session's end.
+ * It publishes reader_entered once the stream is active (the progress monitor watches from then on) and reader_exited
+ * once it left its loop, and reports an end nobody asked for (soapy_reader_finished()) before it closes the stream,
+ * which a lost device can hold up. */
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -4573,71 +4748,66 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 #else
     struct rtl_device* s = static_cast<rtl_device*>(arg);
-    if (!s || !s->soapy_dev) {
-        DSD_THREAD_RETURN;
-    }
     maybe_set_thread_realtime_and_affinity("DONGLE");
 
     size_t mtu_elems = 16384;
-    if (soapy_setup_stream(s, &mtu_elems) != 0) {
-        soapy_stream_cleanup(s, 1);
-        s->run.store(0);
-        DSD_THREAD_RETURN;
-    }
-
     std::vector<std::complex<float>> cf32_buf;
     std::vector<int16_t> cs16_buf;
-    if (soapy_allocate_thread_buffers(s, mtu_elems, &cf32_buf, &cs16_buf) != 0) {
-        soapy_stream_cleanup(s, 1);
-        s->run.store(0);
-        DSD_THREAD_RETURN;
+    int streamed = 0;
+    int rc = soapy_setup_stream(s, &mtu_elems);
+    if (rc == 0 && soapy_allocate_thread_buffers(s, mtu_elems, &cf32_buf, &cs16_buf) != 0) {
+        rc = -ENOMEM;
     }
-
-    int fatal = 0;
-    while (s->run.load() && dsd_exitflag_load() == 0) {
-        void* buffs[1] = {NULL};
-        if (soapy_prepare_read_buffer(s, &cf32_buf, &cs16_buf, buffs) != 0) {
-            fatal = 1;
-            break;
-        }
-
-        int ret = soapy_read_stream_locked(s, buffs, mtu_elems);
-        if (ret == INT_MIN) {
-            fatal = 1;
-            break;
-        }
-        int read_status = soapy_handle_read_result(s, ret);
-        if (read_status > 0) {
-            continue;
-        }
-        if (read_status < 0) {
-            fatal = 1;
-            break;
-        }
-
-        const int apply_rot = fs4_shift_capture_active(s);
-        size_t frame_elems = (size_t)ret;
-        size_t drop_elems = 0U;
-        int mute_status = soapy_consume_mute_prefix(s, frame_elems, apply_rot, &drop_elems);
-        if (mute_status < 0) {
-            fatal = 1;
-            break;
-        }
-        if (mute_status > 0) {
-            continue;
-        }
-
-        size_t kept_elems = frame_elems - drop_elems;
-        if (soapy_handle_reconfigure_hold(s, kept_elems, apply_rot)) {
-            continue;
-        }
-        soapy_submit_samples(s, drop_elems, kept_elems, cf32_buf, cs16_buf, apply_rot);
+    if (rc == 0) {
+        streamed = 1;
+        s->reader_entered.store(1, std::memory_order_release);
+        rc = soapy_read_loop(s, mtu_elems, &cf32_buf, &cs16_buf);
     }
-
-    soapy_stream_cleanup(s, fatal ? 1 : 0);
+    s->reader_exited.store(1, std::memory_order_release);
+    soapy_reader_finished(s, streamed, rc);
+    soapy_stream_cleanup(s, rc != 0 ? 1 : 0);
     s->run.store(0);
     DSD_THREAD_RETURN;
 #endif
+}
+
+/* The SoapySDR device's sample-progress monitor, started with its reader. A driver whose reads keep timing out or
+ * overflowing, or one read that hangs, delivers nothing and returns nothing fatal, so nothing else notices; the USB
+ * receivers' silence rule applies. Silence accrues while the reader streams (its stream active and its loop not
+ * left) and no control or setup transaction holds the driver lock, which keeps the reader from reading (a read
+ * holding it accrues); at the limit the session ends for its receiver. The verdict waits out the unplug-owner grace
+ * here, never on the reader, which keeps reading: samples meanwhile drop it. A reader that left its loop reports for
+ * itself (soapy_reader_finished()). */
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    soapy_progress_monitor(void* arg) {
+    struct rtl_device* s = static_cast<rtl_device*>(arg);
+    rtl_progress_watch watch;
+    rtl_progress_watch_begin(&watch, s->progress.load(std::memory_order_relaxed));
+    while (rtl_monitor_running(s)) {
+        rtl_monitor_wait(s);
+        if (!rtl_monitor_running(s)) {
+            break;
+        }
+        const int streaming =
+            s->reader_entered.load(std::memory_order_acquire) && !s->reader_exited.load(std::memory_order_acquire);
+        const int accruing = streaming && !s->soapy_control_hold.load(std::memory_order_relaxed);
+        if (!rtl_progress_watch_step(&watch, s->progress.load(std::memory_order_relaxed), accruing)) {
+            continue;
+        }
+        char cause[192];
+        DSD_SNPRINTF(cause, sizeof cause,
+                     "SoapySDR: the receiver sent no samples for %" PRIu64 " ms (%" PRIu64 " read timeouts, %" PRIu64
+                     " overflows); the stream stops",
+                     watch.silence_ms, s->soapy_timeout_count.load(std::memory_order_relaxed),
+                     s->soapy_overflow_count.load(std::memory_order_relaxed));
+        if (rtl_device_end_for_receiver(s, -ETIMEDOUT, watch.progress, cause)) {
+            break;
+        }
+    }
+    DSD_THREAD_RETURN;
 }
 
 /* libairspy's single consumer owns sample ingestion; the monitor only observes
@@ -8505,6 +8675,7 @@ rtl_device_destroy(struct rtl_device* dev) {
         }
     } else if (dev->thread_started) {
         rtl_device_request_thread_stop(dev);
+        rtl_progress_monitor_stop(dev);
         dsd_thread_join(dev->thread);
         dev->thread_started = 0;
     }
@@ -9668,6 +9839,37 @@ rtl_airspy_start_stream(struct rtl_device* dev) {
     return r;
 }
 
+/* Start the SoapySDR reader thread and its sample-progress monitor, the monitor first: without it a receiver that stops
+ * would go unnoticed, so a monitor that cannot start fails the start before the reader sets the stream up. Nonzero
+ * when either did not start; a monitor that started is stopped and joined again then. */
+static int
+soapy_start_reader(struct rtl_device* dev) {
+    if (rtl_monitor_sync_init(dev) != 0) {
+        return -1;
+    }
+    dev->reader_entered.store(0, std::memory_order_relaxed);
+    dev->reader_exited.store(0, std::memory_order_relaxed);
+    dev->receiver_end_claimed.store(0, std::memory_order_relaxed);
+    dev->progress_monitor_run.store(1, std::memory_order_relaxed);
+    dev->run.store(1, std::memory_order_release);
+    int r = rtl_progress_monitor_refused();
+    if (r == 0) {
+        r = dsd_thread_create(&dev->progress_monitor, soapy_progress_monitor, dev);
+    }
+    if (r != 0) {
+        LOG_ERROR("SoapySDR: could not start the sample-progress monitor (rc=%d); the stream does not start\n", r);
+        dev->run.store(0, std::memory_order_release);
+        return r;
+    }
+    dev->progress_monitor_started = 1;
+    r = dsd_thread_create(&dev->thread, soapy_thread_fn, dev);
+    if (r != 0) {
+        dev->run.store(0, std::memory_order_release);
+        rtl_progress_monitor_stop(dev);
+    }
+    return r;
+}
+
 /* Start the RTL-SDR's USB reader thread and its sample-progress monitor. Nonzero when either did not start; a reader
  * that started is stopped and joined again then. */
 static int
@@ -9746,8 +9948,7 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
             dev->thread_started = 0;
             return -1;
         }
-        dev->run.store(1);
-        r = dsd_thread_create(&dev->thread, soapy_thread_fn, dev);
+        r = soapy_start_reader(dev);
     } else {
         dev->thread_started = 0;
         return -1;
@@ -9800,6 +10001,8 @@ rtl_device_stop_async(struct rtl_device* dev) {
     } else if (dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_AIRSPY) {
         dev->run.store(0);
         rtl_monitor_wake(dev);
+        /* A SoapySDR device's monitor (an Airspy's is its device thread): joined before the device can be freed. */
+        rtl_progress_monitor_stop(dev);
     } else {
         return -1;
     }
@@ -10349,7 +10552,7 @@ rtl_device_test_usb_reader_end(struct rtl_device** dev, const rtl_device_test_us
     if (!request->stop_while_reading && request->stop_after_ms <= 0 && hold == RTL_TEST_USB_HOLD_NONE) {
         /* The reader returns by itself; the session's stop comes after it. */
         dsd_thread_join((*dev)->thread);
-        rtl_usb_progress_monitor_stop(*dev);
+        rtl_progress_monitor_stop(*dev);
         (*dev)->thread_started = 0;
         return 0;
     }
@@ -10477,6 +10680,83 @@ rtl_device_test_usb_gain_device_free(struct rtl_device* dev) {
         dev->dev = nullptr;
         rtl_device_destroy(dev);
     }
+}
+
+extern "C" struct rtl_device*
+rtl_device_test_soapy_device(struct input_ring_state* ring, const rtl_device_test_soapy_driver* driver) {
+#ifdef USE_SOAPYSDR
+    if (!ring || !driver || !driver->setup || !driver->read) {
+        return nullptr;
+    }
+    const rtl_device_test_soapy_driver* expected = nullptr;
+    if (!g_test_soapy_driver.compare_exchange_strong(expected, driver, std::memory_order_acq_rel)) {
+        return nullptr;
+    }
+    g_test_soapy_stream_closes.store(0U, std::memory_order_relaxed);
+    struct rtl_device* dev = rtl_device_alloc_soapy_base(ring);
+    if (dev && dsd_mutex_init(&dev->soapy_lock) != 0) {
+        rtl_device_cleanup_common_state(dev);
+        free(dev);
+        dev = nullptr;
+    }
+    if (!dev) {
+        g_test_soapy_driver.store(nullptr, std::memory_order_release);
+        return nullptr;
+    }
+    dev->soapy_lock_inited = 1;
+    dev->soapy_format = driver->cs16 ? SOAPY_FMT_CS16 : SOAPY_FMT_CF32;
+    /* Never dereferenced: every driver call reaches the seam while it is attached. */
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    dev->soapy_dev = reinterpret_cast<SoapySDR::Device*>(static_cast<uintptr_t>(1U));
+    return dev;
+#else
+    (void)ring;
+    (void)driver;
+    return nullptr;
+#endif
+}
+
+extern "C" void
+rtl_device_test_soapy_device_free(struct rtl_device* dev) {
+    rtl_device_destroy(dev);
+#ifdef USE_SOAPYSDR
+    g_test_soapy_driver.store(nullptr, std::memory_order_release);
+#endif
+}
+
+extern "C" int
+rtl_device_test_soapy_control_hold(struct rtl_device* dev, unsigned int ms) {
+#ifdef USE_SOAPYSDR
+    return soapy_call_locked(dev, "test control", [&]() -> int {
+        dsd_sleep_ms(ms);
+        return 0;
+    });
+#else
+    (void)dev;
+    (void)ms;
+    return -1;
+#endif
+}
+
+extern "C" void
+rtl_device_test_soapy_state_get(struct rtl_device* dev, rtl_device_test_soapy_state* out) {
+    if (!out) {
+        return;
+    }
+    *out = {};
+    if (!dev) {
+        return;
+    }
+    out->reader_entered = dev->reader_entered.load(std::memory_order_acquire);
+    out->reader_exited = dev->reader_exited.load(std::memory_order_acquire);
+    out->monitor_started = dev->progress_monitor_started;
+#ifdef USE_SOAPYSDR
+    if (dev->soapy_lock_inited && dsd_mutex_lock(&dev->soapy_lock) == 0) {
+        out->stream_open = dev->soapy_stream ? 1 : 0;
+        (void)dsd_mutex_unlock(&dev->soapy_lock);
+    }
+    out->stream_closes = g_test_soapy_stream_closes.load(std::memory_order_relaxed);
+#endif
 }
 
 extern "C" void

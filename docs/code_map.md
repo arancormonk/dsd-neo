@@ -4370,7 +4370,7 @@ Key public headers:
     latched first, decides what the UI shows. Tests:
     `IO_RTL_READER_EXIT`, and `VENDORED_LIBRTLSDR_ASYNC_ALLOC` and `VENDORED_LIBRTLSDR_TRANSFERS` for the vendored
     allocation path and transfer accounting.
-  - USB sample-progress monitor (RTL-SDR and Airspy only; replay, rtl_tcp and SoapySDR have none): a receiver can
+  - USB sample-progress monitor (RTL-SDR and Airspy; SoapySDR's is below; replay and rtl_tcp have none): a receiver can
     stay enumerated and stop delivering with nothing returning (system librtlsdr drops a transfer for good on each
     error status and waits forever once none is left, where the vendored copy returns -1; a device that stops
     completing transfers, which have no timeout,
@@ -4391,6 +4391,21 @@ Key public headers:
     progress since then drops it, never a restart or an SDK that says it streams, and the deadline never restarts. Of
     verdicts that race (a reader exit and the monitor), the first reports (`receiver_end_claimed`). Tests:
     `IO_USB_PROGRESS_MONITOR`; bench: `dsd-neo_bench_usb_ingest`.
+  - SoapySDR stream loss: the reader (`soapy_thread_fn()`) counts every read with samples in `rtl_device::progress`
+    before a retune mute or a reconfigure hold can drop them (timeouts, overflows and empty reads do not count), and
+    publishes `reader_entered` once its stream is active and `reader_exited` once it left its loop. Its own monitor
+    thread (`soapy_progress_monitor()`), started by `rtl_device_start_async()` before the reader (a monitor that
+    cannot start fails the start) and stopped and joined by `rtl_device_stop_async()` and `rtl_device_destroy()`
+    before the reader, applies the rule above: silence accrues while the reader streams and no control or setup
+    transaction holds `soapy_lock` (`soapy_control_hold`, set once the lock is held by `soapy_call_locked()`, the
+    stream setup and its cleanup, never by a read, so a read that hangs or keeps timing out accrues), and the verdict
+    waits out the grace on the monitor while the reader keeps reading. An end of the reader nobody asked for reports
+    once (`soapy_reader_finished()`): a failed setup or buffer allocation at once as a device failure without the
+    grace or the committed ending (as `-ENOMEM` above), a read that threw (`-EIO`) or returned a fatal code through
+    `rtl_device_end_for_receiver()`; either raises the exit flag and wakes the demod, and a stop is silent. A read hung
+    inside the driver cannot be cancelled: the session ends, and its stop waits for the driver to return. Tests:
+    `IO_SOAPY_STREAM_LOSS` (the reader runs against a stand-in driver, `rtl_device_test_soapy_device()`); bench:
+    `dsd-neo_bench_soapy_ingest`.
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
   `include/dsd-neo/io/m17_udp.h`
 - UDP control API: `include/dsd-neo/io/udp_control.h`
