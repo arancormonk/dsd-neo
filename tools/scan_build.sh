@@ -174,10 +174,10 @@ count_reports_but_clang_header_false_positives() {
       continue
     fi
     while IFS= read -r -d '' report; do
-      if [[ -n "$resource_dir" ]] \
-        && grep -q -F -x "<!-- BUGFILE $resource_dir/include/cetintrin.h -->" "$report" \
-        && grep -q -F -x "<!-- BUGTYPE Uninitialized argument value -->" "$report" \
-        && grep -q -E -x "<!-- FUNCTIONNAME _rdssp(d_i32|q_i64) -->" "$report"; then
+      if [[ -n "$resource_dir" ]] &&
+        grep -q -F -x "<!-- BUGFILE $resource_dir/include/cetintrin.h -->" "$report" &&
+        grep -q -F -x "<!-- BUGTYPE Uninitialized argument value -->" "$report" &&
+        grep -q -E -x "<!-- FUNCTIONNAME _rdssp(d_i32|q_i64) -->" "$report"; then
         echo "Not counting Clang header false positive: $report" >&2
         continue
       fi
