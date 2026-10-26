@@ -898,6 +898,9 @@ enum {
     /* The cache holds an I/Q replay's first batch after a change, labelled with what it ran on, which the caller's
        work context has yet to follow (rtl_symbol_cache_fill_replay_batch()). */
     RTL_SYMBOL_CACHE_REFRESH = 3,
+    /* A gap in the stream stands before the cached samples (issue #518 D5): they are kept, and handed out once the
+       engine has consumed the gap (symbol_rtl_stream_gap()). */
+    RTL_SYMBOL_CACHE_GAP = 4,
 };
 
 static inline int
@@ -1042,6 +1045,10 @@ rtl_symbol_cache_pop(dsd_state* state, uint32_t generation, float* sample_out) {
     if (dsd_rtl_stream_metrics_hook_stream_generation() != generation) {
         rtl_symbol_cache_reset_pending(state);
         return RTL_SYMBOL_CACHE_RETRY;
+    }
+    /* Only a fill sets the count the cached samples carry, so this holds before their first, never between two. */
+    if (state->rtl_symbol_cache_boundary_seq != state->rtl_stream_gap_seq) {
+        return RTL_SYMBOL_CACHE_GAP;
     }
     const int pos = state->rtl_symbol_cache_pos++;
     float sample = state->rtl_symbol_cache[pos];
@@ -1200,6 +1207,9 @@ rtl_symbol_cache_fill_replay_batch(dsd_state* state, int got, const dsd_rtl_stre
     state->rtl_symbol_cache_media_count = batch->output_count;
     state->rtl_symbol_cache_media_first_index = batch->first_index;
     state->rtl_symbol_cache_center_hz = batch->center_frequency_hz;
+    /* A gap the capture recorded before this batch reaches the decoder at its first sample: the samples the cache
+       handed out before it were all of earlier batches. */
+    state->rtl_symbol_cache_boundary_seq = batch->boundary_seq;
     rtl_symbol_cache_publish_pending(state);
     if (batch->generation != read_generation || batch->output_kind != output_kind
         || batch_channel_profile != channel_profile || batch_symbol_rate_hz != symbol_rate_hz
@@ -1229,7 +1239,10 @@ rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, 
     }
 
     /* A live read carries no labels. A generation that moved while it waited may have flushed what it returned, so the
-       batch is dropped; a profile that moved is only seen at the next refresh, which drops the rest. */
+       batch is dropped; a profile that moved is only seen at the next refresh, which drops the rest. The stream's
+       discontinuity count is read after the read: the stream moves it before any sample past a gap can be read, so a
+       read that returned one sees it moved, and the gap is raised before any of the read's samples is handed out. */
+    state->rtl_symbol_cache_boundary_seq = dsd_rtl_stream_metrics_hook_discontinuity_seq();
     uint32_t fill_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     if (fill_generation != read_generation) {
         if (generation) {
@@ -2295,10 +2308,60 @@ symbol_refresh_rtl_profile_after_take(dsd_state* state, symbol_work_ctx* work, i
 static inline void
 symbol_rtl_read_failed(dsd_opts* opts, dsd_state* state) {
     if (dsd_signal_search_is_running(state)) {
-        state->input_interrupted = 1;
+        dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
     } else {
         dsd_request_shutdown(opts, state);
     }
+}
+
+/* The samples a read returned come after a gap in the stream (issue #518 D5: a USB recovery, an rtl_tcp reconnect, or
+   one an I/Q replay's capture recorded), whose discontinuity count is @p gap_seq. The decoder takes the count up and
+   raises the stream-gap interruption, which stands for every symbol read until the engine loop consumes it and resets
+   the decoding the gap cut (DSD_CARRIER_BOUNDARY_STREAM_GAP): the frame being decoded finishes on erasures, as a
+   Signal search leaves one. The samples are kept, to be read once it is consumed; the analog block part-collected
+   before the gap is dropped, since they do not follow on from it. */
+static inline void
+symbol_rtl_stream_gap(dsd_state* state, uint64_t gap_seq) {
+    state->rtl_stream_gap_seq = gap_seq;
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_STREAM_GAP);
+    state->symbol_replay_symbol_unusable = 1;
+    symbol_drop_analog_block(state);
+}
+
+/* One sample of the stream for the one-sample reader: the sample a read past a gap held back, once the gap is
+   consumed and while the stream it came off still runs, else a read. The stream's discontinuity count is checked
+   after every read, so the read that returns the first sample past a gap raises the gap and holds the sample back.
+   Returns 1 with a sample, 0 with none. */
+static int
+symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
+    if (state->rtl_gap_held) {
+        state->rtl_gap_held = 0U;
+        if (state->rtl_gap_held_generation == dsd_rtl_stream_metrics_hook_stream_generation()) {
+            *sample_out = state->rtl_gap_held_sample;
+            work->sample_flag = state->rtl_gap_held_flag;
+            return 1;
+        }
+    }
+    int got = 0;
+    const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got);
+    if (read_rc == 0 && got == 0 && dsd_analog_tone_detection_active(opts)) {
+        state->input_interrupted = 1;
+        return 0;
+    }
+    if (read_rc < 0 || got != 1) {
+        symbol_rtl_read_failed(opts, state);
+        return 0;
+    }
+    const uint64_t gap_seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(state->rtl_stream_gap_seq);
+    if (gap_seq != state->rtl_stream_gap_seq) {
+        state->rtl_gap_held = 1U;
+        state->rtl_gap_held_sample = *sample_out;
+        state->rtl_gap_held_flag = work->sample_flag;
+        state->rtl_gap_held_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+        symbol_rtl_stream_gap(state, gap_seq);
+        return 0;
+    }
+    return 1;
 }
 
 static inline int
@@ -2309,6 +2372,10 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
                                   work->rtl_symbol_levels, &work->rtl_stream_generation, sample_out);
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             return 1;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_GAP) {
+            symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);
+            return 0;
         }
         if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
             symbol_rtl_read_failed(opts, state);
@@ -2342,14 +2409,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
         return 1;
     }
-    int got = 0;
-    const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got);
-    if (read_rc == 0 && got == 0 && dsd_analog_tone_detection_active(opts)) {
-        state->input_interrupted = 1;
-        return 0;
-    }
-    if (read_rc < 0 || got != 1) {
-        symbol_rtl_read_failed(opts, state);
+    if (!symbol_rtl_read_one(opts, state, sample_out, work)) {
         return 0;
     }
     work->rtl_sample_generation = dsd_rtl_stream_metrics_hook_stream_generation();
@@ -2665,6 +2725,10 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
                                   work->rtl_symbol_levels, &work->rtl_stream_generation, &work->sample);
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             break;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_GAP) {
+            symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);
+            return -1;
         }
         if (cache_status != RTL_SYMBOL_CACHE_RETRY && cache_status != RTL_SYMBOL_CACHE_REFRESH) {
             symbol_rtl_read_failed(opts, state);
@@ -3153,25 +3217,34 @@ symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symb
     return symbol;
 }
 
-/* Whether a search visit takes the decoder back from a long protocol reader. The yield check runs every 64 symbols; an
-   interruption a read recorded (symbol_rtl_read_failed()) stands for every symbol until the engine loop consumes it,
+/* Whether an interruption a read recorded stands for every symbol until the engine loop consumes it: a stream gap or a
+   yield (symbol_rtl_stream_gap()) always, one a search visit made (symbol_rtl_read_failed()) while the search runs,
    since that read counted no symbol and the count may sit off the throttle for the rest of the frame. */
 static inline int
+symbol_interruption_stands(const dsd_state* state) {
+    return state->input_interrupted
+           && (state->input_interrupt_reason >= DSD_INTERRUPT_YIELD || dsd_signal_search_is_running(state));
+}
+
+/* Whether a search visit takes the decoder back from a long protocol reader. The yield check runs every 64 symbols. */
+static inline int
 symbol_search_yields(const dsd_opts* opts, dsd_state* state) {
-    if (state->input_interrupted && dsd_signal_search_is_running(state)) {
-        return 1;
-    }
     return (state->symbolcnt & 63) == 0 && dsd_frame_sync_hook_signal_search_should_yield(opts, state);
 }
 
 static float
 symbol_read(dsd_opts* opts, dsd_state* state, int have_sync) {
-    /* Long protocol readers also leave a search visit at its deadline, or once a read gave up on a stalled input.
-       Completing their bounded frame with unusable symbols lets the engine regain its tick guard safely. The recorded
-       interruption marks them on every input: the frame decoders drop the frame it cut (dsd_state_frame_read_lost())
-       and two-level reliability gives them no confidence, so none plays, publishes or counts as evidence. */
+    /* Long protocol readers also leave a search visit at its deadline, or once a read gave up on a stalled input, and
+       leave the frame a gap in the radio stream cut. Completing their bounded frame with unusable symbols lets the
+       engine regain its tick guard safely. The recorded interruption marks them on every input: the frame decoders
+       drop the frame it cut (dsd_state_frame_read_lost()) and two-level reliability gives them no confidence, so none
+       plays, publishes or counts as evidence. */
+    if (symbol_interruption_stands(state)) {
+        state->symbol_replay_symbol_unusable = 1;
+        return 0.0f;
+    }
     if (symbol_search_yields(opts, state)) {
-        state->input_interrupted = 1;
+        dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
         state->symbol_replay_symbol_unusable = 1;
         return 0.0f;
     }

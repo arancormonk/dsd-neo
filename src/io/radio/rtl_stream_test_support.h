@@ -396,6 +396,12 @@ enum {
 int rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int* out_published_rc,
                                int* out_published_gain, int* out_published_auto);
 
+/* Note a stream gap (rtl_stream_note_discontinuity(@p reason)) with @p dev as the open device, on channel centre
+ * @p center_hz, capture centre @p capture_hz and capture rate @p rate_hz; the stream's own state comes back afterwards.
+ * Returns 0, or -1 while a stream runs or for a NULL @p dev. */
+int rtl_stream_test_note_discontinuity(struct rtl_device* dev, uint32_t center_hz, uint32_t capture_hz,
+                                       uint32_t rate_hz, const char* reason);
+
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
    device open to force another rate. Returns 0, -1 on bad arguments, -2 while a device is open. */

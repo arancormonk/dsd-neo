@@ -635,6 +635,7 @@ init_state_audio_output_buffers(dsd_state* state) {
 static void
 init_state_sync_and_stream_defaults(dsd_state* state) {
     state->input_interrupted = 0;
+    state->input_interrupt_reason = DSD_INTERRUPT_NONE;
     state->input_boundary = 0;
     state->input_fallback_pending = 0;
     state->center = 0;

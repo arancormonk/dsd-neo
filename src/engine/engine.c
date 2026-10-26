@@ -2701,14 +2701,14 @@ dsd_engine_trunk_receive_release_due(const dsd_opts* opts, const dsd_state* stat
 }
 
 /* Whether a boundary of @p kind can run while the P25 or DMR state machine ticks, so that it must hold the P25 SM tick
-   guard: a tune, a source change or an input switch, which a trunking session can make. A scan step runs under
-   conventional scanning and a replay retune with trunking off, where neither recovery tick runs
+   guard: a tune, a source change, an input switch or a stream gap, which a trunking session can meet. A scan step runs
+   under conventional scanning and a replay retune with trunking off, where neither recovery tick runs
    (dsd_trunk_p25_recovery_allowed(), dsd_trunk_dmr_recovery_allowed()), no state machine follows a voice channel, and
    the caller's hold is not known (a replay retune runs inside a sample read, possibly under processFrame()'s). */
 static int
 carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
     return kind == DSD_CARRIER_BOUNDARY_TUNE || kind == DSD_CARRIER_BOUNDARY_SOURCE
-           || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH;
+           || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH || kind == DSD_CARRIER_BOUNDARY_STREAM_GAP;
 }
 
 /* Step 1 of the carrier boundary: the voice channel a trunking state machine followed, if one is held, is released while
@@ -2861,6 +2861,24 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     state->symbol_clock_epoch++;
 }
 
+/* A gap in the radio stream on the same carrier (issue #518 D5): the samples the decoders were reading stopped and
+   others followed, so what was being decoded across the gap cannot go on. The calls end as on a sync loss, after the
+   P25 Phase 2 playout takes their verdicts; the DMR confirmation restarts (candidate, lock, voice gate), apart from the
+   colour code it published, which dsd_engine_forget_carrier_codes() would forget with it; the evidence and the
+   multi-frame assemblies go, with every buffered burst through the carrier count. The carrier stays: its codes, its
+   received identity, the voice channel a trunking session follows and trunk-scan ownership are kept, and the hangtime
+   and visit timers decide what follows, as after a fade. Unlike noCarrier(), nothing here waits on a pending scan
+   tune. */
+static void
+carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
+    dsd_p25p2_playout_note_policy(opts, state);
+    no_carrier_finalize_canonical_calls(opts, state, 0);
+    dmr_confidence_reset(state);
+    dsd_engine_forget_carrier_decoding(opts, state);
+    state->carrier_seq++;
+    dsd_state_note_carrier_change(state);
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     if (!opts || !state) {
@@ -2872,6 +2890,13 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     const int take_guard = carrier_boundary_takes_guard(kind) && !guard_held;
     if (take_guard) {
         p25_sm_tick_guard_enter();
+    }
+    if (kind == DSD_CARRIER_BOUNDARY_STREAM_GAP) {
+        carrier_boundary_stream_gap(opts, state);
+        if (take_guard) {
+            p25_sm_tick_guard_leave();
+        }
+        return;
     }
     // The calls end below before the P25 Phase 2 playout drains (step 3): it takes their talkgroup verdict while they
     // are still active (issue #651).
@@ -2938,6 +2963,11 @@ dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) 
         return;
     }
     const uint64_t key = carrier_source_key(opts);
+#ifdef USE_RADIO
+    /* The decoder takes the stream's discontinuity count up at every start: a gap is raised only for samples read
+       past it on this stream (issue #518 D5). */
+    state->rtl_stream_gap_seq = dsd_rtl_stream_metrics_hook_discontinuity_seq();
+#endif
     if (state->carrier_source_key != 0U
         && (key != state->carrier_source_key || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev))) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SOURCE, guard_held);
@@ -3327,7 +3357,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
         if (dsd_engine_signal_search_should_yield(opts, state)) {
-            state->input_interrupted = 1;
+            dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
             state->synctype = DSD_SYNC_NONE;
             break;
         }
@@ -3485,7 +3515,15 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         /* A hunt read that left a silent input's wait for a queued command (issue #634) ended no reception: unless the
            command replaced the input, the pass resumes without noCarrier(). */
         const int interrupted = state->input_interrupted;
+        const int interrupt_reason = state->input_interrupt_reason;
         state->input_interrupted = 0;
+        state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+        if (interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
+            /* A gap in the radio stream cut what was being decoded (issue #518 D5): reset it here, outside the frame
+               the gap ended, before anything this pass may wait on (a pending scan tune). The boundary takes the tick
+               guard. */
+            dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+        }
         if (dsd_engine_input_fallback(opts, state) != 0) {
             continue;
         }

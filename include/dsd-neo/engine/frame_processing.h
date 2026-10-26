@@ -75,6 +75,10 @@ typedef enum {
     DSD_CARRIER_BOUNDARY_SCAN_STEP,
     /* An I/Q replay read adopted a retune its capture recorded, with trunking off. */
     DSD_CARRIER_BOUNDARY_REPLAY_RETUNE,
+    /* The radio stream had a gap on the same carrier (issue #518 D5): a USB recovery, an rtl_tcp reconnect, or one a
+       capture recorded. Not a move to another carrier: the boundary resets the decoding the gap cut and keeps the
+       carrier (see dsd_engine_carrier_boundary()). */
+    DSD_CARRIER_BOUNDARY_STREAM_GAP,
 } dsd_carrier_boundary_kind;
 
 /** The one carrier boundary (issue #575): every place the receiver leaves a carrier for another runs it, in one order.
@@ -91,18 +95,26 @@ typedef enum {
  *  4. With trunking off, what the trunking-off no-carrier pass forgets of it goes too
  *     (dsd_engine_forget_untrunked_carrier_state()).
  *  5. state->carrier_seq moves, so a decoder that buffered the left carrier's bursts drops them.
+ * A stream gap (DSD_CARRIER_BOUNDARY_STREAM_GAP) leaves no carrier, so it runs only what the gap cut: the calls end as
+ * on a sync loss (after the P25 Phase 2 playout takes their verdicts), the DMR confirmation restarts
+ * (dmr_confidence_reset(): candidate, lock, voice gate), the carrier's decoding is forgotten
+ * (dsd_engine_forget_carrier_decoding()), and the carrier count moves. The carrier's codes (the colour code, RAN, NAC,
+ * the Phase 2 seed's proof), the received identity, the followed voice channel and trunk-scan ownership stay: the
+ * hangtime and scan visit timers decide what follows, as after a fade.
  * @p guard_held is 1 exactly when the calling thread holds the P25 SM tick guard and 0 when it does not; the guard is not
  * re-entrant, so the value must be exact. A tune, a source change or an input switch can run beside the watchdog's
  * ticks, which write the state machines, the followed assignment and the call state under that guard: the boundary then
  * holds it from its first inspection through its last step, taking it when the caller does not hold it. A scan step and
  * a replay retune run where no P25 or DMR recovery tick runs (conventional scanning, trunking off), inspect no state
- * machine and take no guard: a replay retune runs inside a sample read, whose caller may hold it (processFrame()).
+ * machine and take no guard: a replay retune runs inside a sample read, whose caller may hold it (processFrame()). A
+ * stream gap takes it as a tune does: the engine loop runs it outside any frame, once the sticky interruption that
+ * ended the frame is consumed.
  * Callers: the tune services (svc_rtl_set_freq() 0, svc_rtl_set_freq_locked() 1), the stream start
  * (dsd_engine_note_stream_source(): svc_rtl_start_locked() 1, the engine's own start 0), the channel cycles (1 when
  * run_manual_retune_guarded() took the guard), a config apply and a RadioReference import (1, guarded commands), the
- * engine's input switch (0), the scan steps and the replay hook. Exempt, and never routed here: retunes within a system
- * under trunking, trunk-scan target switches, and retunes an external controller makes over the RTL UDP port. Decoder
- * thread. */
+ * engine's input switch and stream gap (0), the scan steps and the replay hook. Exempt, and never routed here: retunes
+ * within a system under trunking, trunk-scan target switches, and retunes an external controller makes over the RTL
+ * UDP port. Decoder thread. */
 void dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held);
 
 /** The stream the decoder read was replaced (an input switch, a radio row's stream taking over, a config reopen, the

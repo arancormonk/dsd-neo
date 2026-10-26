@@ -45,6 +45,10 @@ typedef struct dsd_rtl_stream_replay_batch {
     uint32_t first_index;       /**< Index in the batch of the first sample the last read returned. */
     /** Channel centre in Hz the batch was captured on, which a recorded RETUNE moves (issue #575). */
     uint32_t center_frequency_hz;
+    /** The stream's discontinuity count the batch was demodulated under
+        (dsd_rtl_stream_metrics_hook_discontinuity_seq()): a recorded USB recovery or rtl_tcp reconnect moves it for the
+        batches after it. */
+    uint64_t boundary_seq;
 } dsd_rtl_stream_replay_batch;
 
 typedef struct {
@@ -90,6 +94,8 @@ typedef struct {
     /* The batch the decoder's last read took its samples from, while the input is an I/Q replay; 1 with it filled,
        anything else when there is none (dsd_rtl_stream_metrics_hook_replay_batch()). Decoder thread only. */
     int (*replay_batch)(dsd_rtl_stream_replay_batch* out);
+    /* The stream's discontinuity count (dsd_rtl_stream_metrics_hook_discontinuity_seq()). */
+    uint64_t (*discontinuity_seq)(void);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -241,6 +247,30 @@ int dsd_rtl_stream_metrics_hook_replay_batch(dsd_rtl_stream_replay_batch* out);
  * @return 1 when it set the media time; 0 when there is no replay batch (a live input, or no hook installed).
  */
 int dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(uint32_t* center_hz_out);
+
+/**
+ * @brief The radio stream's discontinuity count: how many times it has had a gap on the same carrier (a USB recovery,
+ * an rtl_tcp reconnect, issue #518 D5).
+ *
+ * The stream moves it after the gap's purge and before any sample past the gap can be read, so a read that returned
+ * such a sample sees it moved when it reads the count afterwards. It never goes back, across streams included.
+ *
+ * @return The count; 0 with no hook installed.
+ */
+uint64_t dsd_rtl_stream_metrics_hook_discontinuity_seq(void);
+
+/**
+ * @brief The discontinuity count the samples the decoder's last RTL read returned carry.
+ *
+ * Under an I/Q replay, the count their batch was demodulated under (dsd_rtl_stream_replay_batch::boundary_seq), so a
+ * gap the capture recorded reaches the decoder at the first sample after it; on a live input, the stream's count read
+ * now, after that read. While the stream's count is still @p consumed, no gap stands between the caller and those
+ * samples and no batch is asked for: the cost per read is one load. Decoder thread.
+ *
+ * @param consumed The count the caller has taken up to (dsd_state::rtl_stream_gap_seq).
+ * @return The samples' count: @p consumed when no gap came before them.
+ */
+uint64_t dsd_rtl_stream_metrics_hook_read_discontinuity_seq(uint64_t consumed);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);

@@ -27,6 +27,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -148,6 +149,38 @@ int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size
 int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_analog_audio_process_s(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, short* buf,
+                                      size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_analog_audio_process_s(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, short* buf,
+                                      size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags);
+
+/* Issue #518 D5: the analog chain's blocks while g_process_watch is set, in order: whether each started the chain over,
+   and whether it held any sound. */
+enum { EDACS_PROCESS_LOG_CAP = 64 };
+
+static int g_process_watch = 0;
+static int g_process_count = 0;
+static unsigned char g_process_reset[EDACS_PROCESS_LOG_CAP];
+static unsigned char g_process_loud[EDACS_PROCESS_LOG_CAP];
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_analog_audio_process_s(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, short* buf,
+                                  size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags) {
+    if (g_process_watch && g_process_count < EDACS_PROCESS_LOG_CAP) {
+        int loud = 0;
+        for (size_t i = 0; i < n && buf != NULL; i++) {
+            loud |= buf[i] != 0;
+        }
+        g_process_reset[g_process_count] = (flags & DSD_ANALOG_AUDIO_RESET) != 0U;
+        g_process_loud[g_process_count] = (unsigned char)loud;
+        g_process_count++;
+    }
+    return __real_dsd_analog_audio_process_s(opts, state, chain, buf, n, source, rate_hz, flags);
+}
 
 /* Issue #574: the blocks written to the local output while g_audio_write_capture is set. */
 static int g_audio_write_capture = 0;
@@ -2731,6 +2764,91 @@ edacs_run_tune_completion_race_case(void) {
 }
 #endif
 
+#ifdef USE_RADIO
+/* The sample index the stream's gap sits before (issue #518 D5): the stream's count moves before that sample can be
+   read, so the read that returns it sees the count moved. -1: no gap. */
+static long g_call_gap_at = -1;
+
+static uint64_t
+edacs_call_discontinuity_seq(void) {
+    return (g_call_gap_at >= 0 && (long)g_rtl_read_count > g_call_gap_at) ? 1U : 0U;
+}
+
+/* Issue #518 D5: a gap in the RTL stream (a USB recovery, an rtl_tcp reconnect) during an analog call. The call loop
+   reads the stream itself, so it takes the gap up there, and the symbol reader never raises it again: the triplet the
+   gap cut plays as silence, the first one after it starts the analog chain over, and the call goes on to the end of
+   the stream, the gap counting as no more than silence. */
+static int
+edacs_run_analog_gap_case(void) {
+    static int call_dibit_buf[900256];
+    static int call_payload_buf[900256];
+    static int rtl_ctx_token;
+    edacs_reset_audio_hook_state();
+    edacs_setup_state_fixture(0);
+    edacs_call_defaults(5L * EDACS_ANALOG_TRIPLET_SAMPLES, 48000U);
+    g_call_cap = g_call_drop;
+    g_call_gap_at = EDACS_ANALOG_TRIPLET_SAMPLES + 1000L;
+    g_opts.trunk_tune_group_calls = 1;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.audio_out = 1;
+    g_opts.audio_out_type = 8;
+    g_opts.slot1_on = 1;
+    g_opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    g_opts.rtl_squelch_level = dB_to_pwr(-60.0);
+    g_state.rtl_ctx = (struct RtlSdrContext*)&rtl_ctx_token;
+    g_state.synctype = DSD_SYNC_EDACS_POS;
+    g_state.dibit_buf = call_dibit_buf;
+    g_state.dmr_payload_buf = call_payload_buf;
+    g_state.dibit_buf_p = call_dibit_buf + 200;
+    g_state.dmr_payload_p = call_payload_buf + 200;
+    g_state.rtl_stream_gap_seq = 0U;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = edacs_call_read,
+        .return_pwr = edacs_call_return_pwr,
+        .read_ex = edacs_call_read_ex,
+        .squelch_status = edacs_call_squelch_status,
+    });
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.output_rate_hz = edacs_call_output_rate_hz;
+    hooks.discontinuity_seq = edacs_call_discontinuity_seq;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast_analog = edacs_call_blast_analog});
+    g_call_noise = 1U;
+    g_call_blasted = 0;
+    g_process_count = 0;
+    g_process_watch = 1;
+
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(0, 4, 321, 1234),
+                              edacs_standard_group_msg2(1234));
+
+    g_process_watch = 0;
+    int resets = 0;
+    int first_loud_after = -1;
+    for (int i = 0; i < g_process_count; i++) {
+        resets += g_process_reset[i];
+        if (i >= 3 && first_loud_after < 0 && g_process_loud[i]) {
+            first_loud_after = i;
+        }
+    }
+    int rc = 0;
+    rc |= edacs_expect(g_state.rtl_stream_gap_seq == 1U && g_state.input_interrupted == 0, "analog-gap", "taken-up",
+                       "the call loop takes the gap up itself, leaving no interruption for the symbol reader");
+    rc |= edacs_expect((long)g_rtl_read_count == g_call_cap, "analog-gap", "call-goes-on",
+                       "the gap ends no call: it reads on to the end of the stream");
+    rc |= edacs_expect(first_loud_after >= 3 && g_process_reset[first_loud_after], "analog-gap", "silence-then-reset",
+                       "the triplet the gap cut plays no sound, and the first sound after it starts the chain over");
+    rc |=
+        edacs_expect(resets == 2, "analog-gap", "resets", "the chain starts over at the call's start and the gap only");
+    dsd_exitflag_store(0);
+    g_call_gap_at = -1;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    edacs_reset_audio_hook_state();
+    dsd_state_ext_free_all(&g_state);
+    return rc;
+}
+#endif
+
 /* FNV-1a over @p n bytes. */
 static uint64_t
 edacs_fnv1a(uint64_t h, const void* data, size_t n) {
@@ -2966,6 +3084,7 @@ main(void) {
     rc |= edacs_run_analog_call_real_tracker_cases();
     rc |= edacs_run_rtl_rate_switch_case();
     rc |= edacs_run_tune_completion_race_case();
+    rc |= edacs_run_analog_gap_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

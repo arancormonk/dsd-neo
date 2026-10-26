@@ -266,6 +266,13 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* fla
         dsd_request_shutdown(opts, state);
         return 0;
     }
+    /* A gap in the stream (issue #518 D5: a USB recovery, an rtl_tcp reconnect): the analog call loop reads the stream
+       itself, so it takes the gap up here, and the symbol reader never raises it again. The loop sees the count move
+       across the triplet and plays that triplet as silence (edacs_analog_call()). */
+    const uint64_t gap_seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(state->rtl_stream_gap_seq);
+    if (gap_seq != state->rtl_stream_gap_seq) {
+        state->rtl_stream_gap_seq = gap_seq;
+    }
     /* An I/Q replay's sample runs the decode clock to its capture time (issue #572) and notes the centre it was
        captured on (issue #575). */
     uint32_t replay_center_hz = 0U;
@@ -1155,6 +1162,21 @@ edacs_analog_squelch_count(edacs_analog_ctx* call, const uint8_t* sql_flags, int
     return edacs_gate_count(call->gate_closed_run, edacs_gate_hold_samples(rate_hz));
 }
 
+/* A triplet a gap in the RTL stream cut (issue #518 D5): what it holds from either side of the gap is not one signal,
+   so it stands as silence: no sound, every sample closed to the dynamic squelch and no RF power for the level squelch,
+   so it counts toward the call's end as a silent triplet would. The converter drops what it held from before the gap,
+   and the analog chain starts over at the next triplet (edacs_analog_call()). */
+static void
+edacs_analog_gap_triplet(edacs_analog_ctx* call, short* analog1, short* analog2, short* analog3, uint8_t* sql_flags,
+                         double* pwr) {
+    DSD_MEMSET(analog1, 0, (size_t)EDACS_ANALOG_BLOCK_SAMPLES * sizeof(short));
+    DSD_MEMSET(analog2, 0, (size_t)EDACS_ANALOG_BLOCK_SAMPLES * sizeof(short));
+    DSD_MEMSET(analog3, 0, (size_t)EDACS_ANALOG_BLOCK_SAMPLES * sizeof(short));
+    DSD_MEMSET(sql_flags, DSD_SQUELCH_FLAG_CLOSED, (size_t)EDACS_ANALOG_TRIPLET_SAMPLES);
+    *pwr = 0.0;
+    dsd_rate_converter_clear(&call->conv);
+}
+
 /* A triplet of the call: decoded for the release marker, played, recorded and counted. Returns the squelch count. */
 static int
 edacs_analog_play_triplet(dsd_opts* opts, dsd_state* state, edacs_analog_ctx* call, short* analog1, short* analog2,
@@ -1240,8 +1262,13 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
         /* The audio chain notes the reception the triplet begins in, so a retune landing while it is collected drops
            all three blocks rather than play the old channel's samples (dsd_analog_audio_process_f()). */
         dsd_analog_audio_block_begin(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS);
+        const uint64_t gap_seq = state->rtl_stream_gap_seq;
         if (!edacs_collect_analog_triplet_flags(opts, state, &call.conv, analog1, analog2, analog3, sql_flags, &pwr)) {
             break;
+        }
+        const int gap = state->rtl_stream_gap_seq != gap_seq;
+        if (gap) {
+            edacs_analog_gap_triplet(&call, analog1, analog2, analog3, sql_flags, &pwr);
         }
         /* The tune gate before the reception: a tune that completes after the gate moves the generation, so the
            triplet it was collected under still reads as moved. */
@@ -1254,9 +1281,12 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
         edacs_analog_note_squelch(opts, state, &call);
         if (moved || tune == EDACS_TUNE_WAIT) {
             count = edacs_analog_discard_triplet(&call, count);
-            continue;
+        } else {
+            count = edacs_analog_play_triplet(opts, state, &call, analog1, analog2, analog3, sql_flags, pwr, count);
         }
-        count = edacs_analog_play_triplet(opts, state, &call, analog1, analog2, analog3, sql_flags, pwr, count);
+        if (gap) {
+            call.first_of_call = 1;
+        }
     }
     dsd_rate_converter_free(&call.conv);
     edacs_analog_leave_input_staging(opts);

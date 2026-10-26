@@ -499,6 +499,11 @@ static std::atomic<int> g_retune_diag_blocks_remaining{0};
 static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
+/* Gaps the stream had on the same carrier (issue #518 D5): a USB recovery or rtl_tcp reconnect
+ * (rtl_stream_note_discontinuity()), or one a replayed capture recorded (rtl_replay_on_reset_event()). Process-wide and
+ * value-only: it outlives the stream, and never goes back, so the decoder compares a count read on one stream with one
+ * read on the next. */
+static std::atomic<uint64_t> g_rtl_discontinuity_seq{0U};
 static std::atomic<int> g_fsk_reacquire_pending{0};
 static std::atomic<int> g_cqpsk_reacquire_pending{0};
 static std::atomic<int> g_fsk_modem_reset_pending{0};
@@ -4211,6 +4216,10 @@ demod_replay_batch_tag(const DemodInputSpan* span, const struct output_state* o)
     tag.media_duration_ns = span->chunk.media_end_ns > span->chunk.media_start_ns
                                 ? span->chunk.media_end_ns - span->chunk.media_start_ns
                                 : 0U;
+    /* A recorded stream gap moves the count on the same idle pipeline (rtl_replay_on_reset_event()), before the reader
+     * commits the chunk after it: every block of a chunk before the gap is tagged before it, every block after it
+     * after. */
+    tag.boundary_seq = g_rtl_discontinuity_seq.load(std::memory_order_acquire);
     return tag;
 }
 
@@ -5558,6 +5567,14 @@ rtl_replay_on_mute_event(const dsd_iq_event* event, void* user) {
     g_replay_event_mute_count.fetch_add(1U, std::memory_order_acq_rel);
 }
 
+/* Whether a recorded RESET's @p reason is a stream gap on the same carrier (rtl_stream_note_discontinuity()). */
+static int
+replay_reset_is_stream_gap(const char* reason) {
+    return reason
+           && (strcmp(reason, RTL_STREAM_GAP_REASON_USB_RECOVERY) == 0
+               || strcmp(reason, RTL_STREAM_GAP_REASON_TCP_RECONNECT) == 0);
+}
+
 static void
 rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     UNUSED(user);
@@ -5599,6 +5616,12 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     }
     controller_end_reconfigure(&controller);
     replay_wait_for_input_purge_applied(purge_mark);
+    /* A recorded USB recovery or rtl_tcp reconnect is the gap the live stream had: the batches of the chunks after it
+     * carry the moved count (demod_replay_batch_tag()), and the ones before it, which the decoder may still hold, do
+     * not. */
+    if (replay_reset_is_stream_gap(event->reason)) {
+        g_rtl_discontinuity_seq.fetch_add(1U, std::memory_order_acq_rel);
+    }
     g_replay_event_last_reset_reason.store((int)reset_reason, std::memory_order_release);
     g_replay_event_last_frequency_hz.store(center_hz, std::memory_order_release);
     g_replay_event_reset_count.fetch_add(1U, std::memory_order_acq_rel);
@@ -9158,6 +9181,24 @@ rtl_stream_output_generation(void) {
     return g_rtl_output_generation.load(std::memory_order_acquire);
 }
 
+extern "C" uint64_t
+rtl_stream_discontinuity_seq(void) {
+    return g_rtl_discontinuity_seq.load(std::memory_order_acquire);
+}
+
+extern "C" void
+rtl_stream_note_discontinuity(const char* reason) {
+    const char* gap_reason = reason ? reason : RTL_STREAM_GAP_REASON_USB_RECOVERY;
+    /* The events first, then the count: both precede every sample past the gap, which the producer only resumes
+       delivering after this returns, in the capture and in the output the decoder reads. */
+    const uint32_t center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    rtl_device_record_capture_retune(rtl_device_handle, center_hz, load_dongle_frequency(), load_dongle_rate(),
+                                     gap_reason);
+    rtl_device_record_capture_reset(rtl_device_handle, center_hz, load_dongle_frequency(), load_dongle_rate(),
+                                    gap_reason);
+    g_rtl_discontinuity_seq.fetch_add(1U, std::memory_order_acq_rel);
+}
+
 extern "C" int
 rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
     /* The three mirrors are read independently, so a caller racing a profile
@@ -10863,6 +10904,28 @@ rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int
     g_squelch_tuner_gain.store(saved_squelch_gain, std::memory_order_relaxed);
     rtl_stream_publish_tuner_gain();
     return rc;
+}
+
+extern "C" int
+rtl_stream_test_note_discontinuity(struct rtl_device* dev, uint32_t center_hz, uint32_t capture_hz, uint32_t rate_hz,
+                                   const char* reason) {
+    if (!dev || g_stream) {
+        return -1;
+    }
+    struct rtl_device* saved_handle = rtl_device_handle;
+    const uint32_t saved_center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    const uint32_t saved_capture_hz = load_dongle_frequency();
+    const uint32_t saved_rate_hz = load_dongle_rate();
+    rtl_device_handle = dev;
+    controller.last_applied_freq_hz.store(center_hz, std::memory_order_release);
+    store_dongle_frequency(capture_hz);
+    store_dongle_rate(rate_hz);
+    rtl_stream_note_discontinuity(reason);
+    rtl_device_handle = saved_handle;
+    controller.last_applied_freq_hz.store(saved_center_hz, std::memory_order_release);
+    store_dongle_frequency(saved_capture_hz);
+    store_dongle_rate(saved_rate_hz);
+    return 0;
 }
 #endif
 

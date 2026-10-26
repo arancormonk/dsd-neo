@@ -216,6 +216,29 @@ dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(uint32_t* center_hz_out)
     return 1;
 }
 
+uint64_t
+dsd_rtl_stream_metrics_hook_discontinuity_seq(void) {
+    if (g_rtl_stream_metrics_hooks.discontinuity_seq) {
+        return g_rtl_stream_metrics_hooks.discontinuity_seq();
+    }
+    return 0U;
+}
+
+uint64_t
+dsd_rtl_stream_metrics_hook_read_discontinuity_seq(uint64_t consumed) {
+    const uint64_t stream_seq = dsd_rtl_stream_metrics_hook_discontinuity_seq();
+    if (stream_seq == consumed) {
+        return consumed;
+    }
+    /* A replay moves the count when it applies a recorded gap, on an idle pipeline: the samples read before it carry
+       their batch's count, the gap reaches the decoder with the first batch after it. */
+    dsd_rtl_stream_replay_batch batch;
+    if (dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 1) {
+        return batch.boundary_seq;
+    }
+    return stream_seq;
+}
+
 int
 dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (g_rtl_stream_metrics_hooks.cqpsk_status) {

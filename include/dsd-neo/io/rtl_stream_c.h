@@ -255,6 +255,32 @@ uint32_t rtl_stream_output_rate(const RtlSdrContext* ctx);
 uint32_t rtl_stream_output_generation(void);
 
 /**
+ * @brief Return the stream's discontinuity count (issue #518 D5): how many gaps on the same carrier it has had (a USB
+ * recovery, an rtl_tcp reconnect), and, under an I/Q replay, how many such gaps the capture recorded and the replay
+ * applied. It is process-wide and never goes back, so a value read on one stream compares with one read on the next.
+ */
+uint64_t rtl_stream_discontinuity_seq(void);
+
+/** The capture event reasons of the stream gaps rtl_stream_note_discontinuity() records, which an I/Q replay of the
+ *  capture applies as gaps again. */
+#define RTL_STREAM_GAP_REASON_USB_RECOVERY  "usb_recovery"
+#define RTL_STREAM_GAP_REASON_TCP_RECONNECT "tcp_reconnect"
+
+/**
+ * @brief Note a gap in the running stream on the same carrier (issue #518 D5): a USB recovery or an rtl_tcp reconnect.
+ *
+ * Records the gap in the I/Q capture, when one is being written, as a RETUNE and a RESET on the centre in force with
+ * @p reason, which a replay of the capture applies as the same gap, then moves the discontinuity count
+ * (rtl_stream_discontinuity_seq()), which every read the decoder makes checks. The caller is the stream's controller
+ * inside its boundary transaction, after the purge and before the producer resumes, so no sample past the gap can be
+ * read before the count moves, nor captured before the events.
+ *
+ * @param reason RTL_STREAM_GAP_REASON_USB_RECOVERY or RTL_STREAM_GAP_REASON_TCP_RECONNECT; NULL records a USB
+ *               recovery's.
+ */
+void rtl_stream_note_discontinuity(const char* reason);
+
+/**
  * @brief What one demod block of an I/Q replay ran on, and where its output sits in capture time.
  *
  * Under `--iq-replay` the decoder paces the demod: the demod publishes each block's output as one batch, into an empty
@@ -280,6 +306,9 @@ typedef struct rtl_stream_replay_batch {
     /** Channel centre in Hz the chunk was captured on: the capture's opening centre, then each recorded RETUNE's, and
         the opening one again after a loop rewind. */
     uint32_t center_frequency_hz;
+    /** rtl_stream_discontinuity_seq() when the block was demodulated: a recorded USB recovery or rtl_tcp reconnect the
+        replay applied moves it for every batch after the event, never for one before it. */
+    uint64_t boundary_seq;
 } rtl_stream_replay_batch;
 
 /** What a run-time change of the decode mode or DSP bandwidth does to a running I/Q replay (issue #701). */

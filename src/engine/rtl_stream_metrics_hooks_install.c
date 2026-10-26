@@ -44,9 +44,9 @@ rtl_stream_metrics_set_channel_squelch_setting(const dsd_squelch_setting* settin
     rtl_stream_set_channel_squelch_setting(setting);
 }
 
-/* The fields DSP reads of the replay batch tag: the labels, the media span its samples run the decode clock on, and the
- * centre they were captured on (issue #575). The decoder thread calls it while the stream is open, the one thread
- * rtl_stream_get_replay_batch() may be called on. */
+/* The fields DSP reads of the replay batch tag: the labels, the media span its samples run the decode clock on, the
+ * centre they were captured on (issue #575) and the stream gaps recorded before them (issue #518). The decoder thread
+ * calls it while the stream is open, the one thread rtl_stream_get_replay_batch() may be called on. */
 static int
 rtl_stream_metrics_replay_batch(dsd_rtl_stream_replay_batch* out) {
     rtl_stream_replay_batch tag;
@@ -63,6 +63,7 @@ rtl_stream_metrics_replay_batch(dsd_rtl_stream_replay_batch* out) {
     out->output_count = tag.output_count;
     out->first_index = tag.first_index;
     out->center_frequency_hz = tag.center_frequency_hz;
+    out->boundary_seq = tag.boundary_seq;
     return 1;
 }
 #endif
@@ -99,6 +100,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.set_channel_squelch = rtl_stream_metrics_set_channel_squelch;
     hooks.set_channel_squelch_setting = rtl_stream_metrics_set_channel_squelch_setting;
     hooks.replay_batch = rtl_stream_metrics_replay_batch;
+    hooks.discontinuity_seq = rtl_stream_discontinuity_seq;
 #endif
     dsd_rtl_stream_metrics_hooks_set(&hooks);
 }

@@ -6957,6 +6957,32 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_INPUT_BOUNDARY
         COMMAND dsd-neo_test_engine_input_boundary
     )
+    # The engine loop's side of a gap in the radio stream (issue #518 D5): a frame it cuts
+    # unwinds, and the stream-gap carrier boundary resets the decoding and keeps the carrier.
+    # The gap reaches the decoder through the RTL symbol reader, which only a radio build has.
+    if(DSD_HAS_RADIO)
+        add_executable(
+            dsd-neo_test_engine_stream_gap
+            engine/test_engine_stream_gap.c
+        )
+        target_include_directories(
+            dsd-neo_test_engine_stream_gap
+            PRIVATE ${PROJECT_SOURCE_DIR}/include
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_stream_gap
+            PRIVATE
+                "-Wl,--wrap=getFrameSync"
+                "-Wl,--wrap=dsd_engine_channel_scan_pending"
+                "-Wl,--wrap=dmr_confidence_reset"
+                "-Wl,--start-group"
+                dsd-neo_engine
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+        add_test(NAME ENGINE_STREAM_GAP COMMAND dsd-neo_test_engine_stream_gap)
+    endif()
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick
         engine/test_engine_synced_trunk_scan_tick.c
@@ -10570,6 +10596,28 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_rtl_symbol_replay_clock
     )
 
+    # Issue #518 (D5): a gap in the radio stream reaches the symbol reader in order,
+    # through the symbol cache and the one-sample reader, live and replayed.
+    add_executable(
+        dsd-neo_test_dsp_symbol_stream_gap
+        dsp/test_symbol_stream_gap.c
+        test_support/frame_sync_dsp_stubs.c
+    )
+    target_include_directories(
+        dsd-neo_test_dsp_symbol_stream_gap
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_dsp_symbol_stream_gap
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME DSP_SYMBOL_STREAM_GAP
+        COMMAND dsd-neo_test_dsp_symbol_stream_gap
+    )
+
     add_executable(
         dsd-neo_test_frame_sync_p25p2_rtl
         dsp/test_frame_sync_p25p2_rtl.c
@@ -12551,6 +12599,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=open_wav_file"
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_output_health_get"
+            "-Wl,--wrap=dsd_analog_audio_process_s"
     )
     add_test(
         NAME EDACS_GRANT_TUNE_MATRIX

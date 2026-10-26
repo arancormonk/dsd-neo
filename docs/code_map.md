@@ -1927,7 +1927,10 @@ suite runs under this compiler.
     `DSD_NEO_CQPSK` there, issue #583), and what the I/Q replay batch the decoder's last read took its samples from ran
     on (`replay_batch`, `dsd_rtl_stream_replay_batch`: generation, output kind, channel profile, symbol rate and
     levels, the media span, output count and first sample's index the decode clock runs on, and the channel centre
-    the batch was captured on, issue #575; decoder thread only, while the stream is open; issue #572); the engine
+    the batch was captured on, issue #575, and the stream gaps recorded before it, `boundary_seq`, issue #518; decoder
+    thread only, while the stream is open; issue #572), and the stream's discontinuity count (`discontinuity_seq`,
+    `rtl_stream_discontinuity_seq()`, issue #518; `dsd_rtl_stream_metrics_hook_read_discontinuity_seq()` gives the count
+    the last read's samples carry: the batch's under a replay, the stream's read after the read live); the engine
     installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
@@ -3536,6 +3539,19 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   pass through the pop. The cache keeps the batch's capture centre too (`rtl_symbol_cache_center_hz`, 0 after a live
   read), which its readers publish into `opts->iq_replay_center_freq` after each sample they take (issue #575; see IO,
   "I/Q replay tuned frequency"). Tests: `RTL_SYMBOL_CACHE_GENERATION`, `RTL_SYMBOL_REPLAY_CLOCK`.
+- Stream gaps (issue #518 D5). `dsd_state::rtl_stream_gap_seq` is the stream discontinuity count the decoder has taken
+  up to; the engine sets it to the stream's at every stream start (`dsd_engine_note_stream_source()`). A cache fill
+  keeps the count its samples carry (`rtl_symbol_cache_boundary_seq`: a replay batch's own, or the stream's read after
+  a live read), and the pop answers `RTL_SYMBOL_CACHE_GAP` while it differs, before the first sample of that fill;
+  the one-sample reader (`symbol_rtl_read_one()`) checks after every read and holds back the sample that showed the
+  gap (`rtl_gap_held*`, dropped if the stream generation moves meanwhile). Either way the decoder takes the count up
+  and raises `DSD_INTERRUPT_STREAM_GAP` (`symbol_rtl_stream_gap()`), and `getSymbol()` stands unusable zeros in for
+  every read until the engine loop consumes it (`dsd_state::input_interrupt_reason`: a stream gap or a yield is sticky
+  until consumed, a Signal search's while the search runs; `dsd_state_raise_input_interrupt()` never lowers a
+  reason). The held or cached samples come next. The EDACS analog call loop and the M17 encoder read the stream
+  themselves and take the gap up there (the triplet it cut plays as silence and the chain starts over; the block it cut
+  is dropped with the input filter's memory), so the symbol reader never raises it again. Tests:
+  `DSP_SYMBOL_STREAM_GAP`, `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
@@ -4967,6 +4983,17 @@ Notes:
     MUTE omitted at its boundary; a block's output held unpublished stays out of the decoder's reach, and every read's
     tag describes its samples; bounded stops at each wait; zero-output and empty replays; a reader-start failure at
     the first demand wait), `IO_RTL_REPLAY_EOF_AND_CF32`.
+  - Stream gaps on the same carrier (issue #518 D5: a USB recovery, an rtl_tcp reconnect). The stream counts them in a
+    process-wide, value-only `g_rtl_discontinuity_seq` (`rtl_stream_discontinuity_seq()`), which never goes back.
+    `rtl_stream_note_discontinuity(reason)`, which the controller runs inside its boundary transaction after the purge
+    and before the producer resumes, records a RETUNE and a RESET with the reason (`RTL_STREAM_GAP_REASON_*`) on the
+    centre in force in the capture, then moves the count: no sample past the gap can be read or captured before
+    either. Under a replay, a RESET with one of those reasons moves the count once it is applied on the idle pipeline
+    (`rtl_replay_on_reset_event()`), and `demod_replay_batch_tag()` tags every batch with the count
+    (`rtl_stream_replay_batch::boundary_seq`): the batches of chunks before the gap carry the old one, those after it
+    the new. The decoder side is in DSP (`dsd_symbol.c`, stream gaps) and Engine (`DSD_CARRIER_BOUNDARY_STREAM_GAP`).
+    Tests: `IO_RTL_REPLAY_DETERMINISM` (recovery and reconnect events mark exactly the batches after them, a frequency
+    RESET marks none, every batch read whole in order; a gap noted while a capture is written replays as the same gap).
   - I/Q replay events on an idle pipeline (issue #572; "Replay events on an idle pipeline" in `rtl_sdr_fm.cpp`,
     `replay_dispatch_pending_events()` in `rtl_device.cpp`). The reader applies every event (RETUNE, MUTE, RESET) and a
     loop rewind only once the pipeline is idle, so it lands between the same two chunks and the same two decoder reads
@@ -5586,6 +5613,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
 
+  A stream gap (`DSD_CARRIER_BOUNDARY_STREAM_GAP`, issue #518 D5: a USB recovery, an rtl_tcp reconnect, or one a
+  capture recorded) leaves no carrier and runs only what the gap cut (`carrier_boundary_stream_gap()`): the Phase 2
+  playout takes the calls' verdicts, the calls end as on a sync loss, the DMR confirmation restarts
+  (`dmr_confidence_reset()`: candidate, lock, voice gate, without the colour code
+  `dsd_engine_forget_carrier_codes()` would take with it), `dsd_engine_forget_carrier_decoding()` runs, and the
+  carrier count moves with the carrier change noted. The codes, the received identity, the followed voice channel and
+  trunk-scan ownership stay; the hangtime and visit timers decide as after a fade. It takes the tick guard as a tune
+  does. The engine loop runs it when it consumes a `DSD_INTERRUPT_STREAM_GAP` interruption, first in its pass and
+  outside any frame, so a pending scan tune (which makes `noCarrier()` return early) never skips it. Tests:
+  `ENGINE_STREAM_GAP`.
+
   The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
   publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit
   read whole before it would decode after the boundary ended its calls. Each notes `carrier_seq` where it starts reading
@@ -5622,7 +5660,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 
   An input interruption drops the same units: each guard is `dsd_state_frame_read_lost()`, true when the count moved or
   `dsd_state::input_interrupted` is set. A Signal search sets the flag inside a frame when it leaves it (a deadline,
-  Skip, Pause or any queued command) or a live read gives up on a stalled input, and `getSymbol()` then stands erasures
+  Skip, Pause or any queued command) or a live read gives up on a stalled input, and so does a gap in the radio stream
+  (`DSD_INTERRUPT_STREAM_GAP`, see DSP, "Stream gaps"), and `getSymbol()` then stands erasures
   in for every symbol until the engine loop consumes it, so the flag stays set wherever a guard sits, also for a frame a
   decoder starts after the cut. The stood-in zeros slice to one constant dibit, which the BCH, Golay, Hamming, QR and
   Reed-Solomon codes can take for their all-zero codeword, so units the count leaves unguarded check the flag too,
@@ -5637,7 +5676,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   withholds a cut frame's SPS-hunt verdict (`DSD_FRAME_VERDICT_WITHHELD`: the cut was the engine's), the MBE capture
   refuses its frames, `dsd_audio_play_decoded_pcm16()` (M17's Codec2 voice) plays nothing, the search ignores evidence
   noted while the flag stands, and `dsd_two_level_symbol_reliability()` gives the stood-in symbols no confidence.
-  Nothing sets the flag inside a frame outside a search, so none of this changes decoding there or symbol-file replay.
+  Nothing sets the flag inside a frame outside a search or a stream gap, so none of this changes decoding there or
+  symbol-file replay.
 
   It runs at the lowest-level primitives where the carrier changes, so a new command that reaches one is covered:
   - An accepted tune the user asked for: `svc_rtl_set_freq()`/`svc_rtl_set_freq_locked()` (`svc_rtl_tune()`) run it

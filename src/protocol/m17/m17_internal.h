@@ -91,7 +91,8 @@ void m17_encoder_input_init(m17_encoder_input* in, int input_rate_hz);
 /* Read @p nsam 8 kHz samples from the configured audio input into @p out: PCM inputs as they are after the input volume,
    RTL monitor audio scaled to PCM16 by the analog chain's RTL monitor gain after the `vol` trim. Returns 1 when read, 0
    when the input stopped, -1 on an input the encoder cannot read, and 2 when a silent UDP input left the read for a
-   queued command, with nothing read (m17.c, issue #634). */
+   queued command, with nothing read (m17.c, issue #634), or a gap in the RTL stream cut the block, which is dropped
+   with the input filter's memory (issue #518). */
 int m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam);
 
 /* Whether a 40 ms encoder read counts as heard for the VOX (issue #625): @p flags_heard (any sample the stream's gate
