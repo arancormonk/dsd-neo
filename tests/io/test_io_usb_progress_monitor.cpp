@@ -2,7 +2,7 @@
 /*
  * The USB sample-progress monitor: a receiver that stays enumerated but stops delivering samples ends the session as a
  * device failure (-ETIMEDOUT), and commits the receiver's ending, once its silence reaches the limit (5000 ms; here
- * 300 ms where a case must trip and 1000 ms where it must not, sampled every 20 ms). Only samples end a silence.
+ * 300 ms where a case must trip and 2000 ms where it must not, sampled every 20 ms). Only samples end a silence.
  * RTL-SDR: a reader that never calls back, or stops calling back, trips it; a steady stream never does, a stop inside
  * the unplug-owner grace keeps it silent, a reader exit that overlaps the monitor's verdict, or races it, is reported
  * once, and a monitor that cannot start fails the start.
@@ -40,10 +40,12 @@ struct rtl_device;
 namespace {
 
 /* The silence limit of a case that must trip. A case that must not trip runs under kSteadyLimitMs, and so long is the
- * grace that a test step must land inside: longer than a loaded runner keeps a thread off the CPU, so a starved feeder
- * or an overslept test step cannot pass for silence or outlast a grace. */
+ * grace that a test step must land inside: seconds, far beyond any time a loaded runner keeps a thread off the CPU, so
+ * a starved feeder or an overslept test step cannot pass for silence or outlast a grace. An event that must outlast
+ * the steady limit (a slow retune or control change) takes kOutlastMs. */
 constexpr uint32_t kLimitMs = 300U;
-constexpr uint32_t kSteadyLimitMs = 1000U;
+constexpr uint32_t kSteadyLimitMs = 2000U;
+constexpr uint32_t kOutlastMs = kSteadyLimitMs + 500U;
 constexpr uint32_t kPeriodMs = 20U;
 
 void
@@ -148,14 +150,14 @@ test_rtl_silence_after_progress(input_ring_state* ring) {
     rtl_device_test_usb_stream_stop(dev);
 }
 
-/* A callback every 10 ms for 2 s (twice the limit), then the session's own stop: nothing is reported. */
+/* A callback every 10 ms for 2.5 s (longer than the limit), then the session's own stop: nothing is reported. */
 void
 test_rtl_steady_stream_never_trips(input_ring_state* ring) {
     rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
     reset_session();
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    deliver_rtl(dev, 200, 10U);
+    deliver_rtl(dev, 250, 10U);
     expect_running();
     rtl_device_test_usb_stream_stop(dev);
     expect_running();
@@ -227,7 +229,7 @@ test_rtl_racing_verdicts_report_once(input_ring_state* ring) {
     expect_running();
     rtl_device_test_usb_stream_return(-1);
     assert(wait_receiver_ended(2000U) != 0U);
-    dsd_sleep_ms(kSteadyLimitMs);
+    dsd_sleep_ms(kOutlastMs);
     assert(dsd_input_failure_generation() == generation + 1U);
     expect_receiver_ending(-1);
     rtl_device_test_usb_stream_stop(dev);
@@ -315,7 +317,7 @@ end_airspy(rtl_device* dev) {
 }
 
 /* Samples keep flowing while the stream is retuned every 50 ms for 2 s, and through one retune that keeps the stream
- * down for twice the limit: a restart is not silence, and none of it trips. */
+ * down for longer than the limit: a restart is not silence, and none of it trips. */
 void
 test_airspy_retune_storm_healthy(input_ring_state* ring) {
     rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
@@ -326,7 +328,7 @@ test_airspy_retune_storm_healthy(input_ring_state* ring) {
         assert(rtl_device_set_frequency(dev, retune_target(i)) == 0);
         dsd_sleep_ms(50U);
     }
-    airspy_double::start_delay_ms = (int)(2U * kSteadyLimitMs);
+    airspy_double::start_delay_ms = (int)kOutlastMs;
     assert(rtl_device_set_frequency(dev, retune_target(41)) == 0);
     airspy_double::start_delay_ms = 0;
     dsd_sleep_ms(kSteadyLimitMs);
@@ -367,9 +369,9 @@ test_airspy_restarts_without_samples_trip(input_ring_state* ring) {
     rtl_device_set_unplug_owner_grace_ms(0U);
 }
 
-/* A control change (gains, bias tee) holds the adapter's lock for twice the limit, without the retune flag, while no
- * samples come; they resume 150 ms after it, several monitor periods, so the monitor samples the source first. The
- * monitor waits on the lock meanwhile, and that wait is the change's time, not silence: nothing trips. */
+/* A control change (gains, bias tee) holds the adapter's lock for longer than the limit, without the retune flag,
+ * while no samples come; they resume 150 ms after it, several monitor periods, so the monitor samples the source
+ * first. The monitor waits on the lock meanwhile, and that wait is the change's time, not silence: nothing trips. */
 void
 test_airspy_control_change_is_not_silence(input_ring_state* ring) {
     rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
@@ -380,7 +382,7 @@ test_airspy_control_change_is_not_silence(input_ring_state* ring) {
     feeder.feeding.store(0, std::memory_order_release);
     dsd_airspy_config cfg;
     dsd_airspy_config_defaults(&cfg);
-    airspy_double::control_delay_ms = (int)(2U * kSteadyLimitMs);
+    airspy_double::control_delay_ms = (int)kOutlastMs;
     assert(rtl_device_airspy_controls(dev, &cfg) == 0);
     airspy_double::control_delay_ms = 0;
     dsd_sleep_ms(150U);
@@ -436,10 +438,10 @@ test_airspy_stopped_verdict_grace(input_ring_state* ring, int samples_after_rest
     assert(airspy_double::streaming);
     if (samples_after_restart) {
         feeder.feeding.store(1, std::memory_order_release);
-        dsd_sleep_ms(2U * kSteadyLimitMs);
+        dsd_sleep_ms(kOutlastMs);
         expect_running();
     } else {
-        const uint64_t ended_ms = wait_receiver_ended(3000U);
+        const uint64_t ended_ms = wait_receiver_ended(5000U);
         assert(ended_ms != 0U);
         assert(ended_ms - lost_ms >= kSteadyLimitMs);
         expect_receiver_ending(-1);

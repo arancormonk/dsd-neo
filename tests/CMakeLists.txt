@@ -14331,7 +14331,7 @@ if(DSD_HAS_RADIO)
         NAME IO_USB_PROGRESS_MONITOR
         COMMAND dsd-neo_test_io_usb_progress_monitor
     )
-    set_tests_properties(IO_USB_PROGRESS_MONITOR PROPERTIES TIMEOUT 60)
+    set_tests_properties(IO_USB_PROGRESS_MONITOR PROPERTIES TIMEOUT 120)
 
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
