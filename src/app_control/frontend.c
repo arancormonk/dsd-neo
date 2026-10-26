@@ -122,8 +122,14 @@ frontend_metrics_add_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_f
 }
 
 #ifdef USE_RADIO
+/*
+ * Every reading here is a value the stream published (B15, B18): frontends poll from their own threads while the
+ * decoder thread soft-stops the stream or replaces the input, which frees the device, the stream internals and the
+ * stream context. A snapshot's state->rtl_ctx is a copy of that pointer, never dereferenced here; the output rate is
+ * the metrics hook's (frontend_metrics_from_runtime_hooks()).
+ */
 static void
-frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
+frontend_metrics_from_radio(const dsd_opts* opts, dsd_frontend_metrics* out) {
     int iq_dc_k = 0;
     out->iq_balance = rtl_stream_get_iq_balance();
     out->iq_dc_enabled = rtl_stream_get_iq_dc(&iq_dc_k);
@@ -179,9 +185,6 @@ frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_fr
         out->decode_health.p25p2_sacch_err = health.p25p2_sacch_err;
         out->decode_health.p25p2_voice_err = health.p25p2_voice_err;
     }
-    if (state && state->rtl_ctx) {
-        out->output_rate_hz = rtl_stream_output_rate(state->rtl_ctx);
-    }
 }
 #endif
 
@@ -200,10 +203,9 @@ frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_
     }
     frontend_metrics_from_runtime_hooks(out);
 #ifdef USE_RADIO
-    frontend_metrics_from_radio(opts, state, out);
-#else
-    (void)state;
+    frontend_metrics_from_radio(opts, out);
 #endif
+    (void)state;
     return 0;
 }
 

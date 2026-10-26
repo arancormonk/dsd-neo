@@ -30,7 +30,16 @@
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
 static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
+/* The smoothed bins, demod-thread private (the peak search reads them in place). */
 static float g_spec_db[kSpecMaxN];
+/* The bins as last published, for rtl_stream_spectrum_get() on any thread (the frontends' spectrum, the autogain
+ * gate): a copy under a sequence count that is odd while the demod thread, the only writer, publishes, so a reader
+ * takes one frame whole. The payload is relaxed-atomic, as the wideband spectrum's is. */
+static std::atomic<uint32_t> g_spec_seq{0U};
+static std::atomic<float> g_spec_pub_db[kSpecMaxN];
+static std::atomic<int> g_spec_pub_n{0};
+/* A reader that keeps meeting the writer reports no frame rather than a torn one. */
+static const int kSpecReadAttempts = 4;
 static std::atomic<int> g_spec_rate_hz{0};
 static std::atomic<int> g_spec_ready{0};
 static std::atomic<int> g_spec_N{256}; /* default N */
@@ -243,7 +252,15 @@ static void
 rtl_metrics_smooth_spectrum_bins(int N, int out_rate_hz, const float* z) {
     const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
     dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, first, g_spec_db);
+    const uint32_t seq = g_spec_seq.load(std::memory_order_relaxed);
+    g_spec_seq.store(seq + 1U, std::memory_order_release); /* odd: writer active */
+    std::atomic_thread_fence(std::memory_order_release);
+    for (int i = 0; i < N; i++) {
+        g_spec_pub_db[i].store(g_spec_db[i], std::memory_order_relaxed);
+    }
+    g_spec_pub_n.store(N, std::memory_order_relaxed);
     g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
+    g_spec_seq.store(seq + 2U, std::memory_order_release); /* even: frame complete */
     g_spec_ready.store(1, std::memory_order_release);
 }
 
@@ -404,8 +421,9 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
 /**
  * @brief Copy the smoothed spectrum into the caller's buffer.
  *
- * Returns the number of bins copied (clamped to both the configured FFT size
- * and `max_bins`). Optionally returns the current sample rate used for the FFT.
+ * Returns the number of bins copied (clamped to both the published frame's FFT
+ * size and `max_bins`). Optionally returns the sample rate that frame's FFT ran
+ * at. Any thread: the frame is copied whole under the publish sequence.
  *
  * @param out_db   [out] Destination buffer for power values in dB.
  * @param max_bins Maximum bins to copy.
@@ -420,21 +438,33 @@ rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     if (g_spec_ready.load(std::memory_order_acquire) == 0) {
         return 0;
     }
-    int N = g_spec_N.load(std::memory_order_relaxed);
-    if (N < 64) {
-        N = 64;
+    /* Staged, so the caller's buffer only ever receives one published frame whole. */
+    alignas(16) float staged[kSpecMaxN];
+    for (int attempt = 0; attempt < kSpecReadAttempts; attempt++) {
+        const uint32_t seq = g_spec_seq.load(std::memory_order_acquire);
+        if ((seq & 1U) != 0U) {
+            continue; /* writer mid-frame */
+        }
+        int N = g_spec_pub_n.load(std::memory_order_relaxed);
+        N = (N < 0) ? 0 : ((N > kSpecMaxN) ? kSpecMaxN : N);
+        const int n = (max_bins < N) ? max_bins : N;
+        for (int i = 0; i < n; i++) {
+            staged[i] = g_spec_pub_db[i].load(std::memory_order_relaxed);
+        }
+        const int rate = g_spec_rate_hz.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (g_spec_seq.load(std::memory_order_relaxed) != seq) {
+            continue;
+        }
+        for (int i = 0; i < n; i++) {
+            out_db[i] = staged[i];
+        }
+        if (out_rate) {
+            *out_rate = rate;
+        }
+        return n;
     }
-    if (N > kSpecMaxN) {
-        N = kSpecMaxN;
-    }
-    int n = (max_bins < N) ? max_bins : N;
-    for (int i = 0; i < n; i++) {
-        out_db[i] = g_spec_db[i];
-    }
-    if (out_rate) {
-        *out_rate = g_spec_rate_hz.load(std::memory_order_relaxed);
-    }
-    return n;
+    return 0;
 }
 
 /**

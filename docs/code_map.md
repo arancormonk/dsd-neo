@@ -4370,6 +4370,16 @@ Key public headers:
     gain writes `"tuner_gain_known": false` with a gain of 0 (`dsd_iq_capture_config::tuner_gain_unknown`); replay
     reads it, and a legacy Airspy sidecar without it, as `dsd_iq_replay_config::tuner_gain_unknown`, and then reports
     no gain. Test: `IO_RTL_REPLAY_EOF_AND_CF32`.
+  - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
+    threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
+    internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path
+    reads a process-lifetime atomic or a seqlock copy the stream published: the tuner gain (read back from the device
+    by the thread that applied it, `dongle_note_gain()`, and published as no reading before the device goes), the
+    stream activity (`stream_set_lifecycle_flag()`), the input level (a multi-writer seqlock: reader, demod, controller
+    and decoder all write it; dropped at stream start and stop), the decode health, the IQ controls and TED gain, the
+    requested PPM (published under its mutex), the narrow spectrum (a seqlock copy of the demod's bins) and the output
+    rate (the metrics hook's; the snapshot's `rtl_ctx` is never dereferenced). `rtl_device_handle` and `g_stream` are
+    cleared before the objects they point at are destroyed. Test: `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan).
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is

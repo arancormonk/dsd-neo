@@ -14034,6 +14034,45 @@ if(DSD_HAS_RADIO)
     endif()
     add_test(NAME IO_RTL_ANALOG_OPEN COMMAND dsd-neo_test_io_rtl_analog_open)
 
+    # Frontend telemetry polled from another thread across soft stops and input replacements (B15, B18): the
+    # frontend getter in app-control over the real stream, with the engine's metrics hooks installed.
+    add_executable(
+        dsd-neo_test_io_rtl_frontend_telemetry
+        io/test_io_rtl_frontend_telemetry.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_frontend_telemetry
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_io_rtl_frontend_telemetry
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_engine
+                dsd-neo_io_radio
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                dsd-neo_app_control
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_io_rtl_frontend_telemetry
+            PRIVATE
+                dsd-neo_engine
+                dsd-neo_app_control
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_FRONTEND_TELEMETRY
+        COMMAND dsd-neo_test_io_rtl_frontend_telemetry
+    )
+    set_tests_properties(IO_RTL_FRONTEND_TELEMETRY PROPERTIES TIMEOUT 120)
+
     add_executable(
         dsd-neo_test_io_rtl_retune_mute_window
         io/test_io_rtl_retune_mute_window.cpp
