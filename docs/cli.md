@@ -2030,21 +2030,21 @@ does.
 
 Stall recovery (`-i rtl`)
 
-- A dongle can stay plugged in and stop delivering samples with no error anywhere (its USB transfers all left
-  pending; closing and reopening it does not help, a USB port reset does). After 5 s with no samples DSD-neo resets
-  that dongle's USB device, reopens it, restores what it had taken (crystal, direct sampling, sample rate, offset
-  tuning, tuner bandwidth, PPM, frequency, gain mode and gain, test mode or the RTL AGC, IF gains, bias tee) and
-  resumes on the same channel. The log shows `RTL-SDR: the receiver sent no samples for 5000 ms; resetting the USB
-  device` and then `RTL-SDR: the USB device was reset and reopened; the stream resumes`, and the terminal UI and the Qt
-  app show the toast `RTL-SDR stopped sending samples; reset and reopened`. Decoding picks up after the gap as after a
-  fade: the frame or call it cut ends, while the control channel, the voice channel being followed and trunk-scan
-  ownership stay, and hangtime decides as usual. An `--iq-capture` keeps recording across the reset and marks the gap
-  (see IQ Capture And Replay).
-- One reset per stall: if the reopened dongle sends nothing either, or it stalls again within 60 s of the last reset,
-  or the reset or the restore fails, the session ends as it does when the receiver is unplugged, with the reason in the
-  log (`RTL-SDR: the receiver sent no samples for 5000 ms, none since it was reset and reopened; the stream stops`,
-  `... ms after it was last reset; the stream stops`, `... resetting it failed: <step>; the stream stops`). A dongle
-  that only a power cycle clears ends the session this way.
+- A dongle can stay plugged in and stop delivering samples with no error anywhere (its USB transfers all left pending;
+  closing and reopening it does not help, a USB port reset does). After 5 s with no samples DSD-neo resets that dongle's
+  USB device, reopens it, restores what it had taken (crystal, direct sampling, sample rate, offset tuning, tuner
+  bandwidth, PPM, frequency, gain mode and gain, test mode or the RTL AGC, IF gains, bias tee) and resumes on the same
+  channel. The log shows `RTL-SDR: the receiver sent no samples for <ms> ms; resetting the USB device`, where `<ms>` is
+  the silence the receiver accrued (about 5000; the measured value prints), and then `RTL-SDR: the USB device was reset
+  and reopened; the stream resumes`, and the terminal UI and the Qt app show the toast `RTL-SDR stopped sending samples;
+  reset and reopened`. Decoding picks up after the gap as after a fade: the frame or call it cut ends, while the control
+  channel, the voice channel being followed and trunk-scan ownership stay, and hangtime decides as usual. An
+  `--iq-capture` keeps recording across the reset and marks the gap (see IQ Capture And Replay).
+- One reset per stall: if the reopened dongle sends nothing either, or it stalls again within 60 s of the last reset, or
+  the reset or the restore fails, the session ends as it does when the receiver is unplugged, with the reason in the log
+  (`RTL-SDR: the receiver sent no samples for <ms> ms, none since it was reset and reopened; the stream stops`, `... ms
+  after it was last reset; the stream stops`, `... resetting it failed: <step>; the stream stops`). A dongle that only a
+  power cycle clears ends the session this way.
 - Recovery runs only when DSD-neo can tell which USB device the dongle is, so that a reset never reaches another
   dongle (one another program may be streaming from): the dongle must report a serial that no other attached device
   of the RTL-SDR's vendor-specific USB class (whatever its VID:PID) shares, every such device must be readable, and the

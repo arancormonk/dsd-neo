@@ -2716,10 +2716,11 @@ Pick the dongle by its serial, not by bus order, and give two attached dongles d
 
 1. Start dsd-neo on the spare dongle (`-i rtl:<index>:<freq>:...`, with `--iq-capture` to check the capture side too)
    and let it decode, then make the write.
-2. About 5 s later the log shows `RTL-SDR: the receiver sent no samples for 5000 ms; resetting the USB device` and
-   `RTL-SDR: the USB device was reset and reopened; the stream resumes`, the terminal shows the toast, and decoding
-   resumes on the same channel. Any other dongle's stream carries on untouched; the reset re-reads the serial on the
-   handle it resets through. A replay of the capture resets the decoder at the recorded gap.
+2. About 5 s later the log shows `RTL-SDR: the receiver sent no samples for <ms> ms; resetting the USB device` (the
+   silence it accrued, about 5000 ms) and `RTL-SDR: the USB device was reset and reopened; the stream resumes`, the
+   terminal shows the toast, and decoding resumes on the same channel. Any other dongle's stream carries on untouched;
+   the reset re-reads the serial on the handle it resets through. A replay of the capture resets the decoder at the
+   recorded gap.
 3. Repeat the write before any sample arrives after the reset, or within 60 s of it: the session ends with the cause
    logged, as it does without recovery. A stall more than 60 s after a recovery that delivered samples recovers again.
 4. Press `q` while the dongle is stalled: the session ends at once.
