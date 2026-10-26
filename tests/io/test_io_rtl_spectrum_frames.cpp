@@ -40,7 +40,7 @@ check(const char* label, int cond) {
 /* A tone at @p cycles per block with a little deterministic noise. */
 std::vector<float>
 make_iq(double cycles, uint32_t seed) {
-    std::vector<float> iq(2U * kPairs);
+    std::vector<float> iq(static_cast<size_t>(2U) * kPairs);
     uint32_t lcg = seed;
     for (int k = 0; k < kPairs; k++) {
         lcg = (lcg * 1664525U) + 1013904223U;
