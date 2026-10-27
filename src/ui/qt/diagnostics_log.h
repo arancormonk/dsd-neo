@@ -86,8 +86,10 @@ class DiagnosticsLog {
     // flush() of the published log; a negative timeout waits without bound, otherwise the timeout also bounds the wait
     // for the publish. False if the log was not published in time.
     static bool flushDiagnostics(int timeoutMs);
-    // Test seam: whether installTap()'s publish has happened.
+    // Test seams: whether installTap()'s publish has happened, and the thread that resolved the log's directory (the
+    // one QStandardPaths call).
     static bool installedForTest();
+    static std::thread::id directoryResolvedOnForTest();
     // Explicit directory supports isolated stores in restart/retention tests.
     explicit DiagnosticsLog(const QString& directory);
     DiagnosticsLog(const QString& directory, TestOptions options);
@@ -149,6 +151,11 @@ class DiagnosticsLog {
 
   private:
     static constexpr int kAttemptDedupeMs = 60000;
+
+    static DiagnosticsLog* create();
+    // Under the host lock, once installTap() has run: the process line, the records held for the log, a held
+    // startup-window request; then the log is ready.
+    static void publish(DiagnosticsLog& log);
 
     // One append-only segment pair (previous, then current) and its writer state: the main tail, or the host records'
     // own pair. Only the writer step touches it, except stats, which are under m_statsMutex.

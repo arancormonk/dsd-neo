@@ -1811,11 +1811,13 @@ static std::condition_variable g_loadChanged;
 static bool g_loadEntered = false;
 static bool g_loadReleased = false;
 static bool g_loadDone = false;
+static std::thread::id g_loadThread;
 
 static void
 blockedLoad() {
     std::unique_lock<std::mutex> lock(g_loadMutex);
     g_loadEntered = true;
+    g_loadThread = std::this_thread::get_id();
     g_loadChanged.notify_all();
     // Bounded: where the submit below waits for the load, the load ends after this and the check reports it.
     g_loadChanged.wait_for(lock, std::chrono::seconds(3), [] { return g_loadReleased; });
@@ -1840,9 +1842,32 @@ installTapDoesNotWaitForTheLoad() {
     }
     check(entered, "the log's load did not start");
     check(!DiagnosticsLog::installedForTest(), "the log was published before its load finished");
+    {
+        // On Android QStandardPaths' cache has no lock, and the Qt thread resolves its own paths meanwhile: the build
+        // thread must not resolve any.
+        std::lock_guard<std::mutex> lock(g_loadMutex);
+        check(g_loadThread != std::this_thread::get_id()
+                  && DiagnosticsLog::directoryResolvedOnForTest() == std::this_thread::get_id(),
+              "the log's directory was not resolved on installTap()'s calling thread");
+    }
     DiagnosticsLog::submitHostDiagnostic(QStringLiteral("usb: reported during the load"));
     DiagnosticsLog::armStartupDiagnostics();
     dsd_neo_log_write(LOG_LEVEL_INFO, "decoder line during the load\n");
+    // Held records keep the producer-line exemptions: they are formatted with their source and level, as submitted.
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("service: engine configuration returned -2"));
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("engine run returned -1"));
+    dsd_neo_log_write(LOG_LEVEL_INFO, "NOTICE: PPM correction request -12 failed (rc=-1); keeping applied value -2.\n");
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "libusb: error [handle_events] backend handle_events failed with error -1\n");
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("service: args -2 1A2B"));
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "engine run returned -1 -H 1A2B\n");
+    // A thread that writes to the log directly (the stderr pump) waits for its construction: it must then write
+    // after this run's process line and the records held for it.
+    bool publishedFirst = false;
+    std::thread direct([&publishedFirst] {
+        auto& log = DiagnosticsLog::instance();
+        publishedFirst = DiagnosticsLog::installedForTest();
+        log.submit("stderr", "info", "direct line during the load");
+    });
     check(!DiagnosticsLog::flushDiagnostics(50), "a flush reported durable before the log was published");
     // A flush asked for before the publish is honoured once it happens, within its bound.
     bool flushed = false;
@@ -1854,7 +1879,9 @@ installTapDoesNotWaitForTheLoad() {
     }
     g_loadChanged.notify_all();
     flusher.join();
+    direct.join();
     check(flushed, "a flush asked for during the load was not honoured");
+    check(publishedFirst, "a direct writer got the log before it was published");
     DiagnosticsLog::setLoadHookForTest(nullptr);
     check(DiagnosticsLog::installedForTest(), "the log was not published");
     auto& log = DiagnosticsLog::instance();
@@ -1867,6 +1894,30 @@ installTapDoesNotWaitForTheLoad() {
               && !host.contains(QStringLiteral("decoder line during the load")),
           "a decoder record that arrived during the load was not kept once");
     check(log.startupWindowOpenForTest(), "a startup-window request made during the load was lost");
+    const QStringList verbatim = {
+        QStringLiteral("[host] [info] service: engine configuration returned -2"),
+        QStringLiteral("[host] [info] engine run returned -1"),
+        QStringLiteral(
+            "[decoder] [info] NOTICE: PPM correction request -12 failed (rc=-1); keeping applied value -2. "),
+        QStringLiteral("[decoder] [error] libusb: error [handle_events] backend handle_events failed with error -1 "),
+    };
+    const auto rows = log.snapshot();
+    for (const auto& line : verbatim) {
+        check(rows.contains(line), "a producer line held during the load was not kept verbatim");
+    }
+    check(!ring.contains(QStringLiteral("1A2B")) && !host.contains(QStringLiteral("1A2B"))
+              && ring.count(QLatin1String(kDropped)) >= 2,
+          "a key-bearing record held during the load was kept");
+    qsizetype process = -1;
+    for (qsizetype i = 0; i < rows.size() && process < 0; ++i) {
+        if (rows.at(i).startsWith(QStringLiteral("[process] [info] pid "))) {
+            process = i;
+        }
+    }
+    const auto heldAt = rows.indexOf(QStringLiteral("[host] [info] usb: reported during the load"));
+    const auto directAt = rows.indexOf(QStringLiteral("[stderr] [info] direct line during the load"));
+    check(process >= 0 && process < heldAt && heldAt < directAt,
+          "a record written during the build came before this run's process line or the held records");
 }
 
 // A host pair that cannot rotate notes it where the host records are read, so decoder output cannot evict the note.

@@ -8013,10 +8013,13 @@ Qt Quick frontend (`src/ui/qt`):
   rotates, clears and loads by the same rules, so a change to those rules applies to both. `ioStats()` counts the main
   tail only. `hostSnapshot()` returns the host ring, the previous run's records first under their divider.
   `DiagnosticsLogModel::allText()` (Copy and Share) emits it under `--- host and session records ---`, then the ring
-  under `--- all records ---`; the screen shows only the ring. `installTap()` installs the runtime tap and returns at once:
-  a detached thread constructs the singleton (directory, both loads) outside the host lock, then publishes it under that
-  lock (process line, pending records, a pending startup-window request, `ready`). On Android the caller can be the
-  main thread (the service's `nativeInit`). Until the publish, the tap, `submitHostDiagnostic()` and
+  under `--- all records ---`; the screen shows only the ring. `installTap()` resolves the log's directory (the one
+  `QStandardPaths` call: Android's location cache has no lock, and the Qt thread resolves its own paths meanwhile),
+  installs the runtime tap and returns at once. A detached thread constructs the singleton (both loads, file I/O only)
+  outside the host lock, and the construction ends by publishing it under that lock (`publish()`: process line, held
+  records, a held startup-window request, `ready`), so a thread that waited for the construction (the stderr pump, a
+  session note) writes after them. Held records are formatted as `submit()` would format them, prefix included, so the
+  producer-line exemptions apply to them. On Android the caller can be the main thread (the service's `nativeInit`). Until the publish, the tap, `submitHostDiagnostic()` and
   `armStartupDiagnostics()` only touch the bounded pending state, and `flushDiagnostics()` waits for the publish within
   its own bound. Android's main-thread entry points (`nativeHostDiagnostic`, `nativeArmStartupDiagnostics`,
   `nativeFlushDiagnostics`) and `DecoderHostAndroid::hostDiagnostic` use these. The remaining direct `instance()` users

@@ -50,17 +50,23 @@ std::atomic<DiagnosticsLog::LoadHook> g_loadHook{nullptr};
 constexpr QByteArrayView kProcessPrefix = "[process] [info] pid ";
 constexpr QByteArrayView kSessionPrefix = "[session] [info] --- session starting";
 
-// A record that arrived before installTap() published the log: already redacted and bounded.
+// A record that arrived before installTap() published the log, formatted (prefix, redaction, bound) exactly as a
+// submit() would have, so the producer-line rules see the same record.
 struct PendingRecord {
-    QString source;
-    QString level;
-    QString text;
+    QByteArray record;
+    bool host = false;
 };
 
 struct HostDiagnostics {
     std::mutex mutex;
     std::condition_variable published;
     QList<PendingRecord> pending;
+    // Set by installTap(), on its calling thread: what the publish records, and where the log lives.
+    bool installed = false;
+    QString facts;
+    QStringList following;
+    QString directory;
+    std::thread::id directoryThread;
     // A startup-window request that arrived before the publish.
     bool armPending = false;
     // Set once, under the mutex, after the pending records are in; read without it on the fast path.
@@ -377,7 +383,7 @@ droppedContext(const QList<QByteArray>& lines, std::initializer_list<qsizetype> 
 }
 
 /**
- * @brief Until installTap() has published the log, keeps a bounded, redacted copy of the record and returns true.
+ * @brief Until installTap() has published the log, keeps the record as submit() would format it and returns true.
  *
  * Do not resolve AppDataLocation before Qt has its application identity, and do not wait for the log's construction:
  * only bounded, redacted records survive until the publish.
@@ -388,11 +394,13 @@ holdUntilPublished(const QString& source, const QString& level, const QString& t
     if (host.ready.load(std::memory_order_acquire)) {
         return false;
     }
+    // Formatted outside the lock: redaction is the costly part.
+    PendingRecord held{formatRecord(source, level, text), isHostSource(source)};
     std::lock_guard<std::mutex> lock(host.mutex);
     if (host.ready.load(std::memory_order_relaxed)) {
         return false;
     }
-    host.pending.append({source, level, DiagnosticsLog::redact(text).left(512)});
+    host.pending.append(std::move(held));
     if (host.pending.size() > 2000) {
         host.pending.removeFirst();
     }
@@ -411,17 +419,63 @@ capture(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
 }
 
-/** @brief Builds the log (directory, saved records), then makes it the destination of everything held for it. */
-void
-publish(const QString& facts, const QStringList& following) {
+/**
+ * @brief The log's directory, resolved on the calling thread.
+ *
+ * QStandardPaths is resolved only here. On Android its location cache has no lock, and the Qt thread resolves its own
+ * paths at the same time, so installTap() resolves this on its calling thread and the build only reads the result.
+ */
+QString
+resolveDirectory() {
+    const QString directory =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/diagnostics");
     auto& host = hostDiagnostics();
-    // Outside the host lock: the construction is file I/O, and records arriving meanwhile only need the lock.
-    auto& log = DiagnosticsLog::instance();
     std::lock_guard<std::mutex> lock(host.mutex);
+    host.directoryThread = std::this_thread::get_id();
+    return directory;
+}
+
+/** @brief The directory installTap() resolved, or one resolved here when the log is built before installTap(). */
+QString
+logDirectory() {
+    {
+        auto& host = hostDiagnostics();
+        std::lock_guard<std::mutex> lock(host.mutex);
+        if (!host.directory.isEmpty()) {
+            return host.directory;
+        }
+    }
+    return resolveDirectory();
+}
+} // namespace
+
+DiagnosticsLog&
+DiagnosticsLog::instance() {
+    // Intentionally process-lifetime: producers and the installed tap can outlive Qt UI objects.
+    static DiagnosticsLog* log = create();
+    return *log;
+}
+
+DiagnosticsLog*
+DiagnosticsLog::create() {
+    auto* log = new DiagnosticsLog(logDirectory());
+    // Published as part of the construction once installTap() has run: a thread that waited for the construction (the
+    // stderr pump, a session note) then writes after this run's process line and the records held for it.
+    publish(*log);
+    return log;
+}
+
+void
+DiagnosticsLog::publish(DiagnosticsLog& log) {
+    auto& host = hostDiagnostics();
+    std::lock_guard<std::mutex> lock(host.mutex);
+    if (!host.installed || host.ready.load(std::memory_order_relaxed)) {
+        return;
+    }
     // The process line first: it is where this run starts in the saved tail.
-    log.noteProcess(facts, following);
-    for (const auto& record : host.pending) {
-        log.submit(record.source, record.level, record.text);
+    log.noteProcess(host.facts, host.following);
+    for (const auto& held : host.pending) {
+        log.enqueue(held.record, held.host);
     }
     host.pending.clear();
     if (host.armPending) {
@@ -430,15 +484,6 @@ publish(const QString& facts, const QStringList& following) {
     }
     host.ready.store(true, std::memory_order_release);
     host.published.notify_all();
-}
-} // namespace
-
-DiagnosticsLog&
-DiagnosticsLog::instance() {
-    // Intentionally process-lifetime: producers and the installed tap can outlive Qt UI objects.
-    static auto* log = new DiagnosticsLog(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                                          + QStringLiteral("/diagnostics"));
-    return *log;
 }
 
 void
@@ -468,15 +513,27 @@ DiagnosticsLog::installTap() {
             }
             following = std::move(extra.second);
         }
+        // Everything Qt-specific the build needs is resolved here, on the calling thread; the build thread only does
+        // file I/O on the result.
+        const QString directory = resolveDirectory();
+        {
+            std::lock_guard<std::mutex> lock(host.mutex);
+            host.installed = true;
+            host.facts = std::move(facts);
+            host.following = std::move(following);
+            host.directory = directory;
+        }
         // From here LOG_* records are captured: held until the publish, then submitted.
         dsd_neo_log_set_tap(capture, nullptr);
         // The log is built on a thread of its own. Creating the directory and loading the saved records is file I/O,
         // and on Android the caller can be the main thread (the service's nativeInit). Until the publish, records,
-        // startup-window requests and flushes wait in the host state, bounded.
+        // startup-window requests and flushes wait in the host state, bounded. A log built before this call is
+        // published by the thread.
+        const auto build = [] { publish(instance()); };
         try {
-            std::thread(publish, facts, following).detach();
+            std::thread(build).detach();
         } catch (const std::system_error&) {
-            publish(facts, following);
+            build();
         }
     });
 }
@@ -528,6 +585,13 @@ DiagnosticsLog::flushDiagnostics(int timeoutMs) {
 bool
 DiagnosticsLog::installedForTest() {
     return hostDiagnostics().ready.load(std::memory_order_acquire);
+}
+
+std::thread::id
+DiagnosticsLog::directoryResolvedOnForTest() {
+    auto& host = hostDiagnostics();
+    std::lock_guard<std::mutex> lock(host.mutex);
+    return host.directoryThread;
 }
 
 QString
