@@ -3563,7 +3563,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   fill. If a direct reader has already acknowledged a newer gap, the older cache is dropped without lowering the
   consumed count. Equal counts use one boundary comparison per cached sample;
   the one-sample reader (`symbol_rtl_read_one()`) checks after every read and holds back the sample that showed the
-  gap (`rtl_gap_held*`, dropped if the stream generation moves meanwhile). Either way the decoder takes the count up
+  gap (`rtl_gap_held*`, dropped if the stream generation moves meanwhile). A live sample is held only when the
+  generation did not move since its read began (`symbol_rtl_read_past_gap()`): a gap completing between a read and its
+  check left a pre-gap sample, which is dropped; a replay's batch label places the sample itself. Either way the decoder takes the count up
   and raises `DSD_INTERRUPT_STREAM_GAP` (`symbol_rtl_stream_gap()`), and `getSymbol()` stands unusable zeros in for
   every read until the engine loop consumes it (`dsd_state::input_interrupt_reason`: a stream gap or a yield is sticky
   until consumed, a Signal search's while the search runs; `dsd_state_raise_input_interrupt()` never lowers a

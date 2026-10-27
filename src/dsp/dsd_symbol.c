@@ -2349,9 +2349,26 @@ symbol_rtl_stream_gap(dsd_state* state, uint64_t gap_seq) {
     symbol_drop_analog_block(state);
 }
 
+/* Whether the sample a read that began under @p read_generation returned, which found the stream's count moved, lies
+   past the gap. An I/Q replay's batch label places it there already (dsd_rtl_stream_metrics_hook_read_discontinuity_seq()
+   reports the batch's count). A live stream's gap clears the output, moving the generation, before it moves the count,
+   so a live sample is known past the gap only when its read began under the generation still current; one read before
+   the clear, whose count check came after the gap was noted, is not. A read that waited through the clear loses its
+   first sample past the gap with it, which the decoder, reset at the gap, does not miss. */
+static int
+symbol_rtl_read_past_gap(uint32_t read_generation) {
+    dsd_rtl_stream_replay_batch batch;
+    if (dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 1) {
+        return 1;
+    }
+    return read_generation == dsd_rtl_stream_metrics_hook_stream_generation();
+}
+
 /* One sample of the stream for the one-sample reader: the sample a read past a gap held back, once the gap is
    consumed and while the stream it came off still runs, else a read. The stream's discontinuity count is checked
    after every read, so the read that returns the first sample past a gap raises the gap and holds the sample back.
+   A live gap can also complete between a read and that check (a recovery or reconnect finishing meanwhile); the
+   read's sample then came off the stream before the gap and is dropped, not held (symbol_rtl_read_past_gap()).
    Returns 1 with a sample, 0 with none. */
 static int
 symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
@@ -2363,6 +2380,8 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
             return 1;
         }
     }
+    /* The generation before the read: a live sample past a gap is held only while it has not moved since. */
+    const uint32_t read_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     int got = 0;
     const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got);
     if (read_rc == DSD_RTL_READ_YIELD) {
@@ -2379,10 +2398,12 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
     }
     const uint64_t gap_seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(state->rtl_stream_gap_seq);
     if (gap_seq != state->rtl_stream_gap_seq) {
-        state->rtl_gap_held = 1U;
-        state->rtl_gap_held_sample = *sample_out;
-        state->rtl_gap_held_flag = work->sample_flag;
-        state->rtl_gap_held_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+        if (symbol_rtl_read_past_gap(read_generation)) {
+            state->rtl_gap_held = 1U;
+            state->rtl_gap_held_sample = *sample_out;
+            state->rtl_gap_held_flag = work->sample_flag;
+            state->rtl_gap_held_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+        }
         symbol_rtl_stream_gap(state, gap_seq);
         return 0;
     }
