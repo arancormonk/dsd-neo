@@ -135,17 +135,32 @@ typedef struct rtlsdr_dev rtlsdr_dev_t;
 #define RTLSDR_TUNER_R828D   6
 #endif
 
+/* What the stand-ins below answer: a failure, and no reading. Each makes a round trip through a volatile object, as
+ * <dsd-neo/platform/fp_opaque.h> does, so like a real librtlsdr call's result it is a runtime value, not a constant
+ * the code checking it can be judged against: the checks are the same runtime checks in every build. */
+static int
+rtl_sdr_unavailable_status(void) {
+    volatile int status = -1;
+    return status;
+}
+
+static uint32_t
+rtl_sdr_unavailable_reading(void) {
+    volatile uint32_t reading = 0U;
+    return reading;
+}
+
 static int
 rtlsdr_open(rtlsdr_dev_t** dev, uint32_t index) {
     (void)dev;
     (void)index;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_close(rtlsdr_dev_t* dev) {
     (void)dev;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
@@ -156,54 +171,54 @@ rtlsdr_read_async(rtlsdr_dev_t* dev, void (*cb)(unsigned char*, uint32_t, void*)
     (void)ctx;
     (void)buf_num;
     (void)buf_len;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_cancel_async(rtlsdr_dev_t* dev) {
     (void)dev;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_tuner_gain_mode(rtlsdr_dev_t* dev, int manual) {
     (void)dev;
     (void)manual;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_get_tuner_gains(rtlsdr_dev_t* dev, int* gains) {
     (void)dev;
     (void)gains;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_center_freq(rtlsdr_dev_t* dev, uint32_t freq) {
     (void)dev;
     (void)freq;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static uint32_t
 rtlsdr_get_center_freq(rtlsdr_dev_t* dev) {
     (void)dev;
-    return 0U;
+    return rtl_sdr_unavailable_reading();
 }
 
 static int
 rtlsdr_set_sample_rate(rtlsdr_dev_t* dev, uint32_t rate) {
     (void)dev;
     (void)rate;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_direct_sampling(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
@@ -216,59 +231,59 @@ static int
 rtlsdr_set_tuner_bandwidth(rtlsdr_dev_t* dev, int bw_hz) {
     (void)dev;
     (void)bw_hz;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_agc_mode(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_tuner_gain(rtlsdr_dev_t* dev, int gain) {
     (void)dev;
     (void)gain;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_freq_correction(rtlsdr_dev_t* dev, int ppm) {
     (void)dev;
     (void)ppm;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_reset_buffer(rtlsdr_dev_t* dev) {
     (void)dev;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static uint32_t
 rtlsdr_get_sample_rate(rtlsdr_dev_t* dev) {
     (void)dev;
-    return 0U;
+    return rtl_sdr_unavailable_reading();
 }
 
 static int
 rtlsdr_get_tuner_gain(rtlsdr_dev_t* dev) {
     (void)dev;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_offset_tuning(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_get_offset_tuning(rtlsdr_dev_t* dev) {
     (void)dev;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
@@ -276,14 +291,14 @@ rtlsdr_set_xtal_freq(rtlsdr_dev_t* dev, uint32_t rtl, uint32_t tuner) {
     (void)dev;
     (void)rtl;
     (void)tuner;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
 rtlsdr_set_testmode(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 static int
@@ -291,7 +306,7 @@ rtlsdr_set_tuner_if_gain(rtlsdr_dev_t* dev, int stage, int gain) {
     (void)dev;
     (void)stage;
     (void)gain;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 
 #ifdef USE_RTLSDR_BIAS_TEE
@@ -299,7 +314,7 @@ static int
 rtlsdr_set_bias_tee(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return -1;
+    return rtl_sdr_unavailable_status();
 }
 #endif
 #endif
@@ -4438,6 +4453,8 @@ soapy_apply_named_gains_locked(struct rtl_device* dev) {
  * in place of its SoapySDR::Device, which is a sentinel never dereferenced. */
 static std::atomic<const rtl_device_test_soapy_driver*> g_test_soapy_driver{nullptr};
 static std::atomic<unsigned int> g_test_soapy_stream_closes{0U};
+/* What the seam's device and stream point at while it is attached: a distinct address each, never dereferenced. */
+static unsigned char g_test_soapy_handle_tokens[2];
 static std::atomic<int> g_test_soapy_internal_read_failure{0};
 static std::atomic<int> g_test_soapy_refuse_reader{0};
 
@@ -4539,8 +4556,7 @@ soapy_open_stream_locked(struct rtl_device* dev, size_t* io_mtu_elems) {
         const int rc = soapy_test_driver_result(fake->setup(fake->ctx, io_mtu_elems));
         if (rc == 0) {
             /* Never dereferenced: the seam's cleanup closes it. */
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            dev->soapy_stream = reinterpret_cast<SoapySDR::Stream*>(static_cast<uintptr_t>(1U));
+            dev->soapy_stream = reinterpret_cast<SoapySDR::Stream*>(&g_test_soapy_handle_tokens[1]);
             dev->soapy_mtu_elems = (uint32_t)(*io_mtu_elems);
         }
         return rc;
@@ -7361,13 +7377,11 @@ rtl_device_test_usb_dongle_install(rtl_device_test_usb_dongle* fake) {
 static int
 nearest_gain(rtlsdr_dev_t* dev, int target_gain, int* out_gain) {
     int count = rtl_usb_ctl_get_tuner_gains(dev, NULL);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (count <= 0) {
         return -1;
     }
     std::vector<int> gains((size_t)count);
     int filled = rtl_usb_ctl_get_tuner_gains(dev, gains.data());
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (filled <= 0) {
         return -1;
     }
@@ -7514,7 +7528,6 @@ rtl_usb_verify_sample_rate(rtl_usb_sample_rate_apply_ctx* ctx) {
         return -1;
     }
     uint32_t actual = rtl_usb_ctl_get_sample_rate(ctx->dev);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build always reports no sample rate.
     if (!rtl_usb_sample_rate_readback_is_usable(actual)) {
         return -1;
     }
@@ -7561,7 +7574,6 @@ rtl_usb_write_tuner_gain(rtlsdr_dev_t* handle, int gain) {
         return rtl_usb_ctl_set_tuner_gain_mode(handle, 0);
     }
     const int r = rtl_usb_ctl_set_tuner_gain_mode(handle, 1);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
     return (r != 0) ? r : rtl_usb_ctl_set_tuner_gain(handle, gain);
 }
 
@@ -7585,11 +7597,9 @@ rtl_usb_apply_gain_record(struct rtl_device* dev) {
     int r = 0;
     if (dev->gain == RTL_AUTO_GAIN) {
         r = rtl_usb_write_tuner_gain(dev->dev, RTL_AUTO_GAIN);
-        // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
         return (r != 0) ? r : rtl_usb_apply_register19(dev);
     }
     r = rtl_usb_apply_register19(dev);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses always-unavailable stubs.
     return (r != 0) ? r : rtl_usb_write_tuner_gain(dev->dev, dev->gain);
 }
 
@@ -7701,7 +7711,6 @@ rtl_usb_apply_xtal(rtl_usb_xtal_apply_ctx* ctx) {
 
 static int
 rtl_usb_verify_offset_tuning_on(rtl_usb_int_apply_ctx* ctx) {
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     return (ctx && ctx->dev && rtl_usb_ctl_get_offset_tuning(ctx->dev) == 1) ? 0 : -1;
 }
 
@@ -8030,7 +8039,6 @@ static int
 verbose_reset_buffer(rtlsdr_dev_t* dev) {
     int r;
     r = rtl_usb_ctl_reset_buffer(dev);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r < 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to reset buffers.\n");
     }
@@ -8344,7 +8352,6 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     /* The USB device behind the index, read before the open (D3); the opened handle is checked against it below. */
     const rtl_usb_id_result identified = rtl_usb_identity_resolve(dev_index, &dev->identity);
     r = rtl_usb_open_index(&dev->dev, (uint32_t)dev_index);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r < 0) {
         g_last_usb_open_error.store(r, std::memory_order_release);
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
@@ -9133,7 +9140,6 @@ rtl_usb_get_sample_rate(struct rtl_device* dev) {
     int rate = -1;
     if (dev->dev) {
         const uint32_t actual = rtl_usb_ctl_get_sample_rate(dev->dev);
-        // cppcheck-suppress unsignedLessThanZero -- The no-RTL optional build always reports a zero sample rate.
         if (actual > 0U) {
             dev->rate = actual;
         }
@@ -9240,9 +9246,7 @@ rtl_usb_set_offset_tuning(struct rtl_device* dev, int on) {
 #endif
     if (r == 0) {
         rtl_usb_log_retry_attempts("offset tuning apply", attempts);
-        // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
         const int took = dev->offset_took;
-        // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
         if (took) {
             DSD_FPRINTF(stderr, "Offset tuning mode enabled.\n");
         } else if (on) {
@@ -9326,7 +9330,6 @@ rtl_usb_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t tun
         return r;
     }
     r = rtl_usb_ctl_set_xtal_freq(dev->dev, rtl_xtal_hz, tuner_xtal_hz);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r == 0) {
         if (rtl_xtal_hz != 0U) {
             dev->rtl_xtal_hz = rtl_xtal_hz;
@@ -9339,7 +9342,6 @@ rtl_usb_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t tun
         dev->usb_eff.xtal_took = 1;
     }
     rtl_usb_control_end(dev);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set xtal freq (rtl=%u, tuner=%u).\n", rtl_xtal_hz, tuner_xtal_hz);
         return -1;
@@ -9384,13 +9386,11 @@ rtl_usb_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
         return r;
     }
     r = rtl_usb_ctl_set_tuner_if_gain(dev->dev, stage, gain_tenth_db);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r == 0) {
         rtl_if_gain_upsert(dev->if_gains, &dev->if_gain_count, stage, gain_tenth_db);
         rtl_if_gain_upsert(dev->usb_eff.if_gains, &dev->usb_eff.if_gain_count, stage, gain_tenth_db);
     }
     rtl_usb_control_end(dev);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set IF gain: stage=%d, gain=%d (0.1 dB).\n", stage, gain_tenth_db);
         return -1;
@@ -10539,7 +10539,6 @@ rtl_usb_replay_offset_and_bandwidth(const struct rtl_device* dev, rtlsdr_dev_t* 
     if (e->offset_took) {
         rtl_usb_int_apply_ctx offset{handle, 1};
         rc = rtl_usb_replay_step(dev, 1, "offset tuning", rtl_usb_apply_offset_tuning, NULL, &offset, failed);
-        // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
         if (rc == 0 && rtl_usb_verify_offset_tuning_on(&offset) != 0) {
             *failed = "offset tuning";
             rc = -EIO;
@@ -10710,10 +10709,8 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
     }
     rtlsdr_dev_t* handle = nullptr;
     rc = rtl_usb_open_index(&handle, (uint32_t)index);
-    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (rc < 0 || !handle) {
         DSD_SNPRINTF(why, why_size, "could not reopen the receiver after the USB reset (rc=%d)", rc);
-        // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
         return (rc < 0) ? rc : -EIO;
     }
     rc = rtl_usb_restore_handle(dev, handle, &fresh, why, why_size);
@@ -11338,8 +11335,7 @@ rtl_device_test_soapy_device(struct input_ring_state* ring, const rtl_device_tes
     dev->soapy_lock_inited = 1;
     dev->soapy_format = driver->cs16 ? SOAPY_FMT_CS16 : SOAPY_FMT_CF32;
     /* Never dereferenced: every driver call reaches the seam while it is attached. */
-    // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    dev->soapy_dev = reinterpret_cast<SoapySDR::Device*>(static_cast<uintptr_t>(1U));
+    dev->soapy_dev = reinterpret_cast<SoapySDR::Device*>(&g_test_soapy_handle_tokens[0]);
     return dev;
 #else
     (void)ring;
