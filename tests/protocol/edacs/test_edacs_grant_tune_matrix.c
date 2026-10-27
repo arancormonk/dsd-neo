@@ -165,6 +165,29 @@ enum { EDACS_PROCESS_LOG_CAP = 64 };
 
 static int g_process_watch = 0;
 static int g_process_count = 0;
+static int g_gap_converter_clears = 0;
+static int g_gap_converter_clean = 0;
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_dsd_rate_converter_clear(dsd_rate_converter* converter);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __wrap_dsd_rate_converter_clear(dsd_rate_converter* converter);
+
+void
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_rate_converter_clear(dsd_rate_converter* converter) {
+    __real_dsd_rate_converter_clear(converter);
+    if (g_process_watch && g_state.rtl_stream_gap_seq == 1U && converter->mode == DSD_RATE_CONVERTER_CONVERTING) {
+        g_gap_converter_clears++;
+        int clean = converter->carry_len == 0 && converter->carry_pos == 0 && converter->carry_tag == 0U
+                    && converter->rs.phase == 0 && converter->rs.hist_head == 0;
+        for (int i = 0; i < converter->rs.taps_per_phase * 2; i++) {
+            clean &= fabsf(converter->rs.hist[i]) < 1.0e-9f;
+        }
+        g_gap_converter_clean += clean;
+    }
+}
+
 static unsigned char g_process_reset[EDACS_PROCESS_LOG_CAP];
 static unsigned char g_process_loud[EDACS_PROCESS_LOG_CAP];
 
@@ -2781,15 +2804,15 @@ edacs_call_discontinuity_seq(void) {
    gap cut plays as silence, the first one after it starts the analog chain over, and the call goes on to the end of
    the stream, the gap counting as no more than silence. */
 static int
-edacs_run_analog_gap_case(void) {
+edacs_run_analog_gap_case(unsigned int rate_hz) {
     static int call_dibit_buf[900256];
     static int call_payload_buf[900256];
     static int rtl_ctx_token;
     edacs_reset_audio_hook_state();
     edacs_setup_state_fixture(0);
-    edacs_call_defaults(5L * EDACS_ANALOG_TRIPLET_SAMPLES, 48000U);
+    edacs_call_defaults(5L * edacs_triplet_reads(rate_hz), rate_hz);
     g_call_cap = g_call_drop;
-    g_call_gap_at = EDACS_ANALOG_TRIPLET_SAMPLES + 1000L;
+    g_call_gap_at = edacs_triplet_reads(rate_hz) + 1000L;
     g_opts.trunk_tune_group_calls = 1;
     g_opts.audio_in_type = AUDIO_IN_RTL;
     g_opts.audio_out = 1;
@@ -2820,6 +2843,8 @@ edacs_run_analog_gap_case(void) {
     g_call_blasted = 0;
     g_process_count = 0;
     g_process_watch = 1;
+    g_gap_converter_clears = 0;
+    g_gap_converter_clean = 0;
 
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(0, 4, 321, 1234),
                               edacs_standard_group_msg2(1234));
@@ -2834,6 +2859,10 @@ edacs_run_analog_gap_case(void) {
         }
     }
     int rc = 0;
+    if (rate_hz != EDACS_ANALOG_RATE_HZ) {
+        rc |= edacs_expect(g_gap_converter_clears == 1 && g_gap_converter_clean == 1, "analog-gap", "converter",
+                           "the gap clears carried outputs, filter history and phase before sound resumes");
+    }
     rc |= edacs_expect(g_state.rtl_stream_gap_seq == 1U && g_state.input_interrupted == 0, "analog-gap", "taken-up",
                        "the call loop takes the gap up itself, leaving no interruption for the symbol reader");
     rc |= edacs_expect((long)g_rtl_read_count == g_call_cap, "analog-gap", "call-goes-on",
@@ -2862,9 +2891,18 @@ static int g_no_stream_asks = 0;
 static int g_no_stream_returned = 0;
 static int g_plain_reads_after_drop = 0;
 static uint64_t g_no_stream_from_ms = 0U;
+static uint64_t g_first_slice_paid = 0U;
+
+static uint64_t
+edacs_no_stream_since_ms(void) {
+    return g_no_stream_from_ms;
+}
 
 static int
 edacs_no_stream_read_ex2(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream) {
+    if (g_no_stream_returned == 1) {
+        g_first_slice_paid = g_state.edacs_no_stream_paid;
+    }
     if (want_no_stream) {
         g_no_stream_asks++;
     }
@@ -2938,6 +2976,7 @@ edacs_run_no_stream_case(unsigned int rate_hz, int mode, const char* name) {
         .read_ex = edacs_no_stream_read_ex,
         .squelch_status = edacs_call_squelch_status,
         .read_ex2 = edacs_no_stream_read_ex2,
+        .no_stream_since_ms = edacs_no_stream_since_ms,
     });
     dsd_rtl_stream_metrics_hooks rates;
     DSD_MEMSET(&rates, 0, sizeof(rates));
@@ -2950,6 +2989,7 @@ edacs_run_no_stream_case(unsigned int rate_hz, int mode, const char* name) {
     g_no_stream_returned = 0;
     g_plain_reads_after_drop = 0;
     g_no_stream_from_ms = 0U;
+    g_first_slice_paid = 0U;
 
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(0, 4, 321, 1234),
                               edacs_standard_group_msg2(1234));
@@ -2957,6 +2997,8 @@ edacs_run_no_stream_case(unsigned int rate_hz, int mode, const char* name) {
     const uint64_t outage_ms = g_no_stream_from_ms != 0U ? ended_ms - g_no_stream_from_ms : 0U;
 
     int rc = 0;
+    rc |= edacs_expect(g_first_slice_paid >= (uint64_t)rate_hz * 2U / 1000U, name, "first-slice",
+                       "the first wait slice pays for silence before another read");
     rc |= edacs_expect(g_no_stream_asks > 0 && g_plain_reads_after_drop == 0, name, "asks",
                        "the call loop reads the stream asking for DSD_RTL_READ_NO_STREAM");
     rc |= edacs_expect(dsd_exitflag_load() == 0, name, "no-shutdown",
@@ -3230,7 +3272,8 @@ main(void) {
     rc |= edacs_run_analog_call_real_tracker_cases();
     rc |= edacs_run_rtl_rate_switch_case();
     rc |= edacs_run_tune_completion_race_case();
-    rc |= edacs_run_analog_gap_case();
+    rc |= edacs_run_analog_gap_case(48000U);
+    rc |= edacs_run_analog_gap_case(24000U);
     rc |= edacs_run_no_stream_cases();
 #endif
 

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/analog_width_view.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_input_switch.h>
@@ -2011,6 +2012,14 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     if (!opts || !state) {
         return -1;
     }
+    dsd_app_rtl_gain_view view;
+    (void)dsd_app_rtl_gain_view_get(opts, state, &view);
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && !view.row_override) {
+        const int unavailable = rtl_stream_control_unavailable();
+        if (unavailable != 0) {
+            return unavailable;
+        }
+    }
     if (value < 0) {
         value = 0;
     }
@@ -2214,11 +2223,15 @@ svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
-    opts->rtl_bias_tee = on ? 1 : 0;
+    const int requested = on ? 1 : 0;
     if (state && state->rtl_ctx) {
         /* Apply live when RTL stream is active */
-        return rtl_stream_set_bias_tee(opts->rtl_bias_tee);
+        const int rc = rtl_stream_set_bias_tee(requested);
+        if (rc != 0) {
+            return rc;
+        }
     }
+    opts->rtl_bias_tee = requested;
     return 0;
 }
 

@@ -18,10 +18,12 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <memory>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
@@ -1639,8 +1641,10 @@ live_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_op
  * command queued, a search's read with no stream yields at once like any other, and with a stream still fails. */
 static int
 test_live_read_without_stream(void) {
-    static dsd_opts digital;
-    static dsd_opts nfm;
+    auto digital_storage = std::make_unique<dsd_opts>();
+    dsd_opts& digital = *digital_storage;
+    auto nfm_storage = std::make_unique<dsd_opts>();
+    dsd_opts& nfm = *nfm_storage;
     DSD_MEMSET(&digital, 0, sizeof digital);
     digital.audio_in_type = AUDIO_IN_RTL;
     nfm = digital;
@@ -1696,6 +1700,12 @@ test_live_read_without_stream(void) {
                             live_read(dev, 0U, &digital, 1, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
     failed |= expect_int_eq("a reader that asks gets DSD_RTL_READ_NO_STREAM, not a yield", got, DSD_RTL_READ_NO_STREAM);
     failed |= expect_waited("a no-stream read (one wait slice)", waited_ms, 5U, 1000U);
+    const uint64_t slice_start = rtl_stream_no_stream_since_ms();
+    const uint64_t slice_end = dsd_realtime_mono_ms();
+    failed |= expect_int_eq("no-stream slice carries its start",
+                            slice_start > 0U && slice_start <= slice_end && slice_end - slice_start >= 5U
+                                && slice_end - slice_start < 2000U,
+                            1);
     g_live_commands_pending.store(0);
     failed |= expect_int_eq("no-stream read without a command",
                             live_read(dev, 0U, &digital, 1, 3000, nullptr, nullptr, 1, &got, &waited_ms), 0);
@@ -2151,6 +2161,66 @@ test_usb_rollback_failure_marks_unknown(void) {
     return failed;
 }
 
+static int
+test_autogain_target_commits_applied_gain(void) {
+    usb_gain_set_digital_agc(1);
+    rtl_device_test_usb_gain_fake fake{};
+    usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        return expect_int_eq("supervisor device", 0, 1);
+    }
+    int failed = 0;
+    for (int stage = 0; stage < 3; stage++) {
+        fake.gain_fault.fail_value_set = 1;
+        fake.gain_fault.fail_value = 280;
+        const int initial = stage == 2 ? 330 : 197;
+        const int seed = stage == 1 ? 280 : 330;
+        failed |= expect_int_eq("refused supervisor gain keeps target",
+                                rtl_stream_test_autogain_target(dev, stage, initial, seed), initial);
+        fake.gain_fault.fail_value_set = 0;
+        failed |= expect_int_eq("supervisor target uses quantized gain",
+                                rtl_stream_test_autogain_target(dev, stage, 250, stage == 1 ? 200 : 250), 197);
+    }
+    rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+static int
+test_soapy_gain_readback(void) {
+    int failed = 0;
+    for (int named = 0; named < 2; named++) {
+        rtl_device_test_soapy_gain_fake fake{19.7, 28.0, 0, 0};
+        struct rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, named);
+        if (!dev) {
+            return failed; /* SoapySDR is optional. */
+        }
+        const int expected = named ? 197 : 280;
+        int selected = -999;
+        failed |= expect_int_eq("Soapy nearest result", rtl_device_set_gain_nearest(dev, 270, &selected), 0);
+        failed |= expect_int_eq("Soapy nearest actual gain", selected, expected);
+        failed |= expect_int_eq("Soapy explicit stages preserved", fake.writes, named ? 0 : 1);
+        int published_rc = -1;
+        int published_gain = 0;
+        int published_auto = -1;
+        failed |= expect_int_eq("Soapy manual retune result",
+                                rtl_stream_test_apply_gain(dev, RTL_STREAM_TEST_GAIN_RETUNE_MANUAL, 270, &published_rc,
+                                                           &published_gain, &published_auto),
+                                0);
+        failed |= expect_published_gain("Soapy retune readback", published_rc, published_gain, published_auto, 0, 0,
+                                        expected);
+        if (!named) {
+            fake.refuse = 1;
+            selected = -999;
+            failed |=
+                expect_int_eq("Soapy refused gain status", rtl_device_set_gain_nearest(dev, 300, &selected) < 0, 1);
+            failed |= expect_int_eq("Soapy refused gain leaves output", selected, -999);
+        }
+        rtl_device_test_soapy_gain_device_free(dev);
+    }
+    return failed;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -2168,7 +2238,7 @@ main(void) {
      */
     int rc = rtl_stream_test_prepare_reconfigure_input(8U, &used_after, &generation_before, &generation_after);
 
-    int failed = 0;
+    int failed = test_autogain_target_commits_applied_gain() | test_soapy_gain_readback();
     failed |= expect_int_eq("prepare reconfigure input rc", rc, 0);
     failed |= expect_size_eq("retune gate clears queued output", used_after, 0U);
     failed |= expect_generation_changed("retune gate bumps output generation", generation_before, generation_after);

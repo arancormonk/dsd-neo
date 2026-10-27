@@ -142,7 +142,8 @@ make_device(input_ring_state* ring) {
 rtl_device*
 start_device(input_ring_state* ring) {
     rtl_device* dev = make_device(ring);
-    assert(rtl_device_start_async(dev, kBufLen) == 0);
+    const int started = rtl_device_start_async(dev, kBufLen);
+    assert(started == 0);
     return dev;
 }
 
@@ -351,7 +352,8 @@ long_control_hold_does_not_accrue(input_ring_state* ring) {
     while (g_fake.sample_reads.load() < 5) {
         dsd_sleep_ms(1U);
     }
-    assert(rtl_device_test_soapy_control_hold(dev, kOutlastMs) == 0);
+    const int held = rtl_device_test_soapy_control_hold(dev, kOutlastMs);
+    assert(held == 0);
     const int after_hold = g_fake.sample_reads.load();
     dsd_sleep_ms(300U);
     assert(g_fake.sample_reads.load() > after_hold);
@@ -461,7 +463,8 @@ expect_read_failure(input_ring_state* ring, int mode, int native_code) {
         dsd_sleep_ms(1U);
     }
     g_fake.mode.store(mode);
-    assert(wait_receiver_ended(3000U) != 0U);
+    const uint64_t ended = wait_receiver_ended(3000U);
+    assert(ended != 0U);
     expect_reported_once(generation, native_code, 1);
     expect_waiter_woken(&waiter);
     wait_reader_exited(dev);
@@ -490,7 +493,8 @@ monitor_create_failure_fails_start(input_ring_state* ring) {
     const unsigned int generation = dsd_input_failure_generation();
     rtl_device* dev = make_device(ring);
     rtl_device_test_refuse_progress_monitor(1);
-    assert(rtl_device_start_async(dev, kBufLen) != 0);
+    const int started = rtl_device_start_async(dev, kBufLen);
+    assert(started != 0);
     rtl_device_test_refuse_progress_monitor(0);
     dsd_sleep_ms(100U);
     assert(g_fake.setup_calls.load() == 0);
@@ -514,7 +518,8 @@ expect_stop_during_setup(input_ring_state* ring, int setup_result) {
     while (!g_fake.setup_entered.load()) {
         dsd_sleep_ms(1U);
     }
-    assert(rtl_device_stop_async(dev) == 0);
+    const int stopped = rtl_device_stop_async(dev);
+    assert(stopped == 0);
     const rtl_device_test_soapy_state state = device_state(dev);
     assert(state.reader_exited == 1);
     assert(state.monitor_started == 0);
@@ -566,7 +571,8 @@ intentional_stop_silent(input_ring_state* ring) {
         dsd_sleep_ms(1U);
     }
     assert(device_state(dev).reader_entered == 1);
-    assert(rtl_device_stop_async(dev) == 0);
+    const int stopped = rtl_device_stop_async(dev);
+    assert(stopped == 0);
     rtl_device_test_soapy_state state = device_state(dev);
     assert(state.reader_exited == 1);
     assert(state.monitor_started == 0);
@@ -585,12 +591,104 @@ intentional_stop_silent(input_ring_state* ring) {
     expect_running(generation);
 }
 
+void
+internal_read_failure_is_not_receiver_loss(input_ring_state* ring) {
+    rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
+    rtl_device_set_unplug_owner_grace_ms(kSteadyLimitMs);
+    reset_session();
+    reset_fake(READ_SAMPLES);
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device_test_soapy_internal_read_failure(1);
+    const uint64_t start = dsd_realtime_mono_ms();
+    rtl_device* dev = start_device(ring);
+    const uint64_t reported = wait_reported(generation, 3000U);
+    assert(reported > 0U && reported - start < 1000U);
+    expect_reported_once(generation, -EIO, 0);
+    end_device(dev);
+    rtl_device_test_soapy_internal_read_failure(0);
+    rtl_device_set_unplug_owner_grace_ms(0U);
+}
+
+void
+restart_clears_stream_counters(input_ring_state* ring) {
+    rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
+    reset_session();
+    reset_fake(READ_TIMEOUT);
+    rtl_device* dev = start_device(ring);
+    for (int i = 0; i < 1000 && g_fake.reads.load() < 6; i++) {
+        dsd_sleep_ms(1);
+    }
+    const int timeout_reads = g_fake.reads.load();
+    g_fake.mode.store(READ_OVERFLOW);
+    for (int i = 0; i < 1000 && g_fake.reads.load() < timeout_reads + 7; i++) {
+        dsd_sleep_ms(1);
+    }
+    const int stopped = rtl_device_stop_async(dev);
+    assert(stopped == 0);
+    const auto before = device_state(dev);
+    assert(before.timeouts >= 5U && before.overflows >= 5U);
+    reset_fake(READ_SAMPLES);
+    const int started = rtl_device_start_async(dev, kBufLen);
+    assert(started == 0);
+    for (int i = 0; i < 1000 && g_fake.sample_reads.load() < 5; i++) {
+        dsd_sleep_ms(1);
+    }
+    assert(g_fake.sample_reads.load() >= 5);
+    const int stopped_again = rtl_device_stop_async(dev);
+    assert(stopped_again == 0);
+    const auto after = device_state(dev);
+    assert(after.timeouts == 0U && after.overflows == 0U);
+    end_device(dev);
+}
+
+void
+reader_create_failure_joins_monitor(input_ring_state* ring) {
+    reset_session();
+    reset_fake(READ_SAMPLES);
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device* dev = make_device(ring);
+    rtl_device_test_soapy_refuse_reader(1);
+    const int started = rtl_device_start_async(dev, kBufLen);
+    rtl_device_test_soapy_refuse_reader(0);
+    assert(started != 0);
+    const auto state = device_state(dev);
+    assert(state.monitor_started == 0 && state.reader_entered == 0 && state.stream_open == 0);
+    assert(g_fake.setup_calls.load() == 0);
+    expect_running(generation);
+    end_device(dev);
+}
+
+void
+exception_during_monitor_grace_reports_once(input_ring_state* ring) {
+    rtl_device_test_set_progress_limit_ms(kLimitMs);
+    rtl_device_set_unplug_owner_grace_ms(kLimitMs);
+    reset_session();
+    reset_fake(READ_TIMEOUT);
+    const unsigned int generation = dsd_input_failure_generation();
+    const unsigned int in_grace = rtl_device_test_verdicts_in_grace();
+    rtl_device* dev = start_device(ring);
+    wait_verdict_in_grace(in_grace);
+    g_fake.mode.store(READ_THROW);
+    const uint64_t ended = wait_receiver_ended(3000U);
+    assert(ended != 0U);
+    end_device(dev);
+    dsd_input_failure failure{};
+    dsd_input_failure_get(&failure);
+    assert(failure.native_code == -ETIMEDOUT || failure.native_code == -EIO);
+    expect_reported_once(generation, failure.native_code, 1);
+    rtl_device_set_unplug_owner_grace_ms(0U);
+}
+
 struct test_case {
     const char* name;
     void (*run)(input_ring_state* ring);
 };
 
 const test_case kCases[] = {
+    {"internal_read_failure_is_not_receiver_loss", internal_read_failure_is_not_receiver_loss},
+    {"restart_clears_stream_counters", restart_clears_stream_counters},
+    {"reader_create_failure_joins_monitor", reader_create_failure_joins_monitor},
+    {"exception_during_monitor_grace_reports_once", exception_during_monitor_grace_reports_once},
     {"timeouts_past_limit_end_session", timeouts_past_limit_end_session},
     {"overflows_past_limit_end_session", overflows_past_limit_end_session},
     {"resumed_samples_during_grace_cancel", resumed_samples_during_grace_cancel},
@@ -611,7 +709,8 @@ const test_case kCases[] = {
 int
 main(int argc, char** argv) {
     auto ring = std::make_unique<input_ring_state>();
-    assert(input_ring_init(ring.get(), 1U << 16) == 0);
+    const int initialized = input_ring_init(ring.get(), 1U << 16);
+    assert(initialized == 0);
     rtl_device* probe = rtl_device_test_soapy_device(ring.get(), &g_driver);
     if (!probe) {
         DSD_FPRINTF(stderr, "SKIP: SoapySDR stream loss: no SoapySDR in this build\n");

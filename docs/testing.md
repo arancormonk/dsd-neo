@@ -2700,7 +2700,8 @@ reset or replugged.
 
 The field stall left every bulk transfer pending in the kernel with no error, while the control endpoint still
 answered; closing and reopening the dongle brought no samples, and a USB port reset did. Holding the RTL2832U's
-endpoint-A FIFO in reset reproduces that profile: write 0x1002 to its `EPA_CTL` register (USB block, address 0x2148),
+endpoint-A FIFO in reset exercises detection and recovery: write 0x1002 to its `EPA_CTL` register (USB block, address
+0x2148),
 as librtlsdr's `rtlsdr_reset_buffer()` does before it writes 0 again, and leave it there. It is a vendor control write on
 endpoint 0, which a second process can make while dsd-neo holds the dongle's interface: request type 0x40, request 0,
 value 0x2148 (the register), index 0x0110 (USB block, write), data `10 02` (big-endian). With pyusb, for example:
@@ -2711,16 +2712,22 @@ dev = usb.core.find(idVendor=0x0bda, idProduct=0x2838, serial_number="<serial of
 dev.ctrl_transfer(0x40, 0, 0x2148, 0x0110, b"\x10\x02")
 ```
 
+This emulation can be cleared by an ordinary close and reopen, which releases the FIFO; it cannot prove that
+a USB reset is necessary for the field failure. Recovery releases the retired handle's FIFO before the USB reset
+so that reopening cannot deliver a repeating stale transfer.
+
 Pick the dongle by its serial, not by bus order, and give two attached dongles different serials first
-(`rtl_eeprom -d <index> -s <serial>`), since recovery refuses a serial two devices share. Then:
+(`rtl_eeprom -d <index> -s <serial>`), since otherwise identical dongles with the same manufacturer/product/serial
+triple cannot be distinguished. Then:
 
 1. Start dsd-neo on the spare dongle (`-i rtl:<index>:<freq>:...`, with `--iq-capture` to check the capture side too)
    and let it decode, then make the write.
 2. About 5 s later the log shows `RTL-SDR: the receiver sent no samples for <ms> ms; resetting the USB device` (the
-   silence it accrued, about 5000 ms) and `RTL-SDR: the USB device was reset and reopened; the stream resumes`, the
-   terminal shows the toast, and decoding resumes on the same channel. Any other dongle's stream carries on untouched;
-   the reset re-reads the serial on the handle it resets through. A replay of the capture resets the decoder at the
-   recorded gap.
+   silence it accrued, about 5000 ms). Once the reset and reopen finish, the log shows
+   `RTL-SDR: the USB device was reset and reopened; the stream resumes`, the terminal shows the toast, and decoding
+   resumes on the same channel. Any other dongle's stream carries on untouched;
+   the reset re-reads the complete manufacturer/product/serial triple on the handle it resets through. A replay of the
+   capture resets the decoder at the recorded gap.
 3. Repeat the write before any sample arrives after the reset, or within 60 s of it: the session ends with the cause
    logged, as it does without recovery. A stall more than 60 s after a recovery that delivered samples recovers again.
 4. Press `q` while the dongle is stalled: the session ends at once.
@@ -2731,6 +2738,12 @@ rtl_tcp, serve the spare dongle with `rtl_tcp -d <serial or index>`, point dsd-n
 mid-session (kill it to drop the connection, `SIGSTOP` it to stall the stream past `DSD_NEO_TCP_MAX_TIMEOUTS` receive
 timeouts): while it is gone a menu input switch applies and a frequency change fails with `Failed: the rtl_tcp server
 is not connected`; once it is back the server holds the session's last settings and the stream is aligned.
+
+`IO_RTL_USB_SWAP` runs reset/reopen and effective-setting replay cases only with libusb; other builds verify the
+ineligible-device paths. `IO_RTL_CONTROL_EDGES` covers unset-center refusal, test stream activity publication and
+unsupported operations on narrow fake devices. `RUNTIME_STREAM_NOTICE_INIT_FAILURE` covers a failed notice lock
+initialization. The benchmark harnesses also have bounded smoke checks: `dsd-neo_bench_rtl_consumer --check-stop`
+and `dsd-neo_bench_soapy_ingest --check-exit` / `--check-report-math`.
 
 ## Continuous Integration
 

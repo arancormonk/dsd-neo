@@ -2944,14 +2944,18 @@ fake_rtl_gap_seq(void) {
    samples after the gap. The symbol reader is left nothing to raise. */
 static int
 test_m17_encoder_gap_drops_partial_block(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    dsd_state* fresh_state = calloc(1, sizeof(*fresh_state));
+    assert(fresh_state != NULL);
     static int token;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtl_volume_multiplier = 1;
-    state.rtl_ctx = (struct RtlSdrContext*)&token;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_volume_multiplier = 1;
+    state->rtl_ctx = (struct RtlSdrContext*)&token;
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
         .read = fake_rtl_gap_read,
         .return_pwr = fake_rtl_return_pwr,
@@ -2964,31 +2968,32 @@ test_m17_encoder_gap_drops_partial_block(void) {
     m17_encoder_input_init(&in, 48000);
     short out[160];
     int rc = 0;
-    rc |= expect_int("gap: a block before the gap reads", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    rc |= expect_int("gap: a block before the gap reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
     /* The gap, part way into the next block. */
     g_gap_at = g_gap_next + 300U;
-    rc |=
-        expect_int("gap: the block the gap cuts is given up", m17_encoder_read_block(&opts, &state, &in, out, 160U), 2);
+    rc |= expect_int("gap: the block the gap cuts is given up", m17_encoder_read_block(opts, state, &in, out, 160U), 2);
     rc |= expect_int("gap: the read that met it was the last", (int)(g_gap_next - g_gap_at), 1);
-    rc |= expect_int("gap: the encoder took the gap up", (int)state.rtl_stream_gap_seq, 1);
-    rc |= expect_int("gap: no interruption is left for the symbol reader", state.input_interrupted, 0);
+    rc |= expect_int("gap: the encoder took the gap up", (int)state->rtl_stream_gap_seq, 1);
+    rc |= expect_int("gap: no interruption is left for the symbol reader", state->input_interrupted, 0);
     const uint64_t resume_at = g_gap_next;
-    rc |= expect_int("gap: the next block reads", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    rc |= expect_int("gap: the next block reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
 
     /* A fresh input over the same samples after the gap. */
-    static dsd_state fresh_state;
-    DSD_MEMSET(&fresh_state, 0, sizeof fresh_state);
-    fresh_state.rtl_ctx = (struct RtlSdrContext*)&token;
-    fresh_state.rtl_stream_gap_seq = 1U;
+    DSD_MEMSET(fresh_state, 0, sizeof(*fresh_state));
+    fresh_state->rtl_ctx = (struct RtlSdrContext*)&token;
+    fresh_state->rtl_stream_gap_seq = 1U;
     m17_encoder_input fresh;
     m17_encoder_input_init(&fresh, 48000);
     short want[160];
     g_gap_next = resume_at;
-    rc |= expect_int("gap: the fresh input reads", m17_encoder_read_block(&opts, &fresh_state, &fresh, want, 160U), 1);
+    rc |= expect_int("gap: the fresh input reads", m17_encoder_read_block(opts, fresh_state, &fresh, want, 160U), 1);
     rc |= expect_int("gap: the block after the gap starts from a fresh filter", memcmp(out, want, sizeof out) == 0, 1);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    free(fresh_state);
+    free(state);
+    free(opts);
     return rc;
 }
 #endif
@@ -3015,14 +3020,16 @@ fake_rtl_yield_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
    command before it reads again, and reads on from the next sample. */
 static int
 test_m17_encoder_survives_yield(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
     static int token;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtl_volume_multiplier = 1;
-    state.rtl_ctx = (struct RtlSdrContext*)&token;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_volume_multiplier = 1;
+    state->rtl_ctx = (struct RtlSdrContext*)&token;
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
         .read = fake_rtl_yield_read,
         .return_pwr = fake_rtl_return_pwr,
@@ -3036,18 +3043,20 @@ test_m17_encoder_survives_yield(void) {
     m17_encoder_input_init(&in, 48000);
     short out[160];
     int rc = 0;
-    rc |= expect_int("yield: a block before it reads", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    rc |= expect_int("yield: a block before it reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
     rc |= expect_int("yield: the block it cuts is given up for the command",
-                     m17_encoder_read_block(&opts, &state, &in, out, 160U), 2);
+                     m17_encoder_read_block(opts, state, &in, out, 160U), 2);
     rc |= expect_int("yield: no shutdown", dsd_exitflag_load(), 0);
-    rc |= expect_int("yield: no interruption is left for the symbol reader", state.input_interrupted, 0);
+    rc |= expect_int("yield: no interruption is left for the symbol reader", state->input_interrupted, 0);
     const uint64_t next = g_gap_next;
-    rc |= expect_int("yield: the next block reads", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    rc |= expect_int("yield: the next block reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
     rc |= expect_int("yield: it reads on from the next sample", (int)(g_gap_next - next), 960);
     rc |= expect_int("yield: still no shutdown", dsd_exitflag_load(), 0);
     g_yield_at = UINT64_MAX;
     dsd_exitflag_store(0);
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    free(state);
+    free(opts);
     return rc;
 }
 #endif

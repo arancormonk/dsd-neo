@@ -186,10 +186,11 @@ test_rtl_zero_length_callbacks_do_not_count_as_progress(input_ring_state* ring) 
     rtl_device_test_usb_stream_stop(dev);
     assert(dsd_input_failure_generation() == generation + 1U);
 
+    rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
     reset_session();
     dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    for (int i = 0; i < 12; ++i) {
+    for (int i = 0; i < (int)(kOutlastMs / 50U); ++i) {
         rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, (i & 1) ? 0U : (uint32_t)sizeof g_rtl_buffer);
         dsd_sleep_ms(50U);
     }

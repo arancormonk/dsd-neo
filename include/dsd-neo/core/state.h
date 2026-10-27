@@ -603,13 +603,6 @@ typedef struct {
 /** Capacity of the user-supplied P25 band plan: four systems' worth of 16 identifiers. */
 #define DSD_P25_BANDPLAN_MAX_ROWS 64
 
-/**
- * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
- *
- * `entry` is a ready-to-copy IDEN entry (trust 1, populated, rfss/site 0); `entry.wacn`/`sysid`
- * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
- * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
- */
 /* Why an input interruption stands (dsd_state::input_interrupt_reason). The values rank: a raise never lowers the
    reason that stands (dsd_state_raise_input_interrupt()). */
 typedef enum {
@@ -657,6 +650,13 @@ typedef struct {
     uint8_t gap;
 } dsd_nxdn_call_identity;
 
+/**
+ * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
+ *
+ * `entry` is a ready-to-copy IDEN entry (trust 1, populated, rfss/site 0); `entry.wacn`/`sysid`
+ * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
+ * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
+ */
 typedef struct p25_bandplan_row {
     uint8_t iden;    // identifier 0-15
     uint8_t is_tdma; // 1 seeds p25_iden_tdma, 0 seeds p25_iden_fdma

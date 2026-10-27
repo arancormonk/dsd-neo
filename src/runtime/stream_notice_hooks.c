@@ -9,28 +9,31 @@
    the lock; a sink is a function of the process, so a post that took it just before a clear still calls valid code. */
 static dsd_stream_notice_fn g_stream_notice_fn = NULL;
 static dsd_mutex_t g_stream_notice_mu;
-static atomic_int g_stream_notice_mu_state = 0; // 0=uninit, 1=initing, 2=init
+static atomic_int g_stream_notice_mu_state = 0; // 0=uninit, 1=initing, 2=init, -1=failed
 
-static void
+static int
 ensure_stream_notice_mu_init(void) {
-    if (atomic_load(&g_stream_notice_mu_state) == 2) {
-        return;
+    int state = atomic_load(&g_stream_notice_mu_state);
+    if (state == 2 || state == -1) {
+        return state == 2;
     }
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_stream_notice_mu_state, &expected, 1)) {
-        (void)dsd_mutex_init(&g_stream_notice_mu);
-        atomic_store(&g_stream_notice_mu_state, 2);
-        return;
+        const int ready = dsd_mutex_init(&g_stream_notice_mu) == 0;
+        atomic_store(&g_stream_notice_mu_state, ready ? 2 : -1);
+        return ready;
     }
-    while (atomic_load(&g_stream_notice_mu_state) != 2) {
+    while ((state = atomic_load(&g_stream_notice_mu_state)) == 1) {
         dsd_thread_yield();
     }
+    return state == 2;
 }
 
 void
 dsd_runtime_stream_notice_set(dsd_stream_notice_fn fn) {
-    ensure_stream_notice_mu_init();
-    dsd_mutex_lock(&g_stream_notice_mu);
+    if (!ensure_stream_notice_mu_init() || dsd_mutex_lock(&g_stream_notice_mu) != 0) {
+        return;
+    }
     g_stream_notice_fn = fn;
     dsd_mutex_unlock(&g_stream_notice_mu);
 }
@@ -40,8 +43,9 @@ dsd_runtime_stream_notice_post(int kind) {
     if (kind == DSD_STREAM_NOTICE_NONE) {
         return;
     }
-    ensure_stream_notice_mu_init();
-    dsd_mutex_lock(&g_stream_notice_mu);
+    if (!ensure_stream_notice_mu_init() || dsd_mutex_lock(&g_stream_notice_mu) != 0) {
+        return;
+    }
     const dsd_stream_notice_fn fn = g_stream_notice_fn;
     dsd_mutex_unlock(&g_stream_notice_mu);
     if (fn) {

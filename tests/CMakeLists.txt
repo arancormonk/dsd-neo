@@ -2575,6 +2575,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
@@ -5242,6 +5243,31 @@ target_link_libraries(
 add_test(
     NAME RUNTIME_RTL_STREAM_METRICS_HOOKS
     COMMAND dsd-neo_test_runtime_rtl_stream_metrics_hooks
+)
+
+add_executable(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    runtime/test_runtime_stream_notice_init_failure.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/stream_notice_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    PRIVATE
+        dsd_mutex_init=dsd_test_notice_mutex_init
+        dsd_mutex_lock=dsd_test_notice_mutex_lock
+        dsd_mutex_unlock=dsd_test_notice_mutex_unlock
+)
+target_link_libraries(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_STREAM_NOTICE_INIT_FAILURE
+    COMMAND dsd-neo_test_runtime_stream_notice_init_failure
 )
 
 add_executable(
@@ -12639,6 +12665,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_output_health_get"
             "-Wl,--wrap=dsd_analog_audio_process_s"
+            "-Wl,--wrap=dsd_rate_converter_clear"
     )
     add_test(
         NAME EDACS_GRANT_TUNE_MATRIX
@@ -14045,6 +14072,29 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME IO_RTL_RETUNE_PREPARE
         COMMAND dsd-neo_test_io_rtl_retune_prepare
+    )
+
+    add_executable(
+        dsd-neo_test_io_rtl_control_edges
+        io/test_io_rtl_control_edges.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_control_edges
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_control_edges
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_control_edges
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_CONTROL_EDGES
+        COMMAND dsd-neo_test_io_rtl_control_edges
     )
 
     # RTL-SDR hardware offset tuning from the real sample rate, the capture centre it gives,

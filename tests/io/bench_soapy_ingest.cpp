@@ -59,6 +59,7 @@ struct PacedDriver {
     uint64_t delivered = 0U;
     uint64_t last_ns = 0U;
     std::atomic<int> done{0};
+    int check_exit = 0;
 };
 
 int
@@ -74,6 +75,10 @@ int
 driver_read(void* ctx, void* buff, size_t elems, long timeout_us) {
     auto* driver = static_cast<PacedDriver*>(ctx);
     (void)timeout_us;
+    if (driver->check_exit) {
+        dsd_exitflag_store(1);
+        return RTL_DEVICE_TEST_SOAPY_STREAM_ERROR;
+    }
     if (driver->done.load(std::memory_order_relaxed)) {
         dsd_sleep_ms(1U);
         return RTL_DEVICE_TEST_SOAPY_TIMEOUT;
@@ -171,6 +176,15 @@ parse_options(int argc, char** argv, BenchOptions* options) {
     return 0;
 }
 
+static uint64_t
+samples_per_second(uint64_t samples, uint64_t elapsed_ns) {
+    if (elapsed_ns == 0U) {
+        return 0U;
+    }
+    const long double rate = (long double)samples * 1000000000.0L / (long double)elapsed_ns;
+    return rate >= (long double)UINT64_MAX ? UINT64_MAX : (uint64_t)rate;
+}
+
 /* Run the device until the driver delivered its run, then stop it. 0, -1 when the device did not start, 1 when the
  * build has no SoapySDR. */
 int
@@ -198,12 +212,12 @@ bench_soapy(PacedDriver* driver, input_ring_state* ring) {
         rtl_device_test_soapy_device_free(dev);
         return -1;
     }
-    while (!driver->done.load(std::memory_order_acquire)) {
+    while (!driver->done.load(std::memory_order_acquire) && !dsd_exitflag_load()) {
         dsd_sleep_ms(10U);
     }
     (void)rtl_device_stop_async(dev);
     rtl_device_test_soapy_device_free(dev);
-    return 0;
+    return driver->done.load(std::memory_order_acquire) ? 0 : -1;
 }
 
 } // namespace
@@ -211,7 +225,11 @@ bench_soapy(PacedDriver* driver, input_ring_state* ring) {
 int
 main(int argc, char** argv) {
     auto driver = std::make_unique<PacedDriver>();
-    if (parse_options(argc, argv, &driver->options) != 0) {
+    if (argc == 2 && std::strcmp(argv[1], "--check-report-math") == 0) {
+        return samples_per_second(100000000000000ULL, 1000000000ULL) == 100000000000000ULL ? 0 : 1;
+    }
+    driver->check_exit = argc == 2 && std::strcmp(argv[1], "--check-exit") == 0;
+    if (!driver->check_exit && parse_options(argc, argv, &driver->options) != 0) {
         print_usage(argv[0]);
         return 2;
     }
@@ -233,6 +251,9 @@ main(int argc, char** argv) {
     dsd_thread_join(consumer.thread);
     dsd_exitflag_store(0);
     input_ring_destroy(ring.get());
+    if (driver->check_exit) {
+        return rc < 0 ? 0 : 1;
+    }
     if (rc == 1) {
         DSD_FPRINTF(stderr, "bench_soapy_ingest: no SoapySDR in this build\n");
         return 1;
@@ -241,14 +262,14 @@ main(int argc, char** argv) {
         DSD_FPRINTF(stderr, "bench_soapy_ingest: the SoapySDR device did not start\n");
         return 1;
     }
-    /* Integer rates, so nothing divides by a value read from the command line unchecked. */
+    /* Reporting runs after the timed work; the wide intermediate keeps large unpaced runs from wrapping. */
     const uint64_t reads = driver->delivered;
     const uint64_t samples = reads * driver->options.elems;
     const uint64_t elapsed_ns = driver->last_ns - driver->started_ns;
-    uint64_t samples_per_second = 0U;
+    uint64_t rate_per_second = 0U;
     uint64_t ns_per_read_x10 = 0U;
     if (elapsed_ns > 0U) {
-        samples_per_second = samples * 1000000000ULL / elapsed_ns;
+        rate_per_second = samples_per_second(samples, elapsed_ns);
     }
     if (reads > 0U) {
         ns_per_read_x10 = elapsed_ns * 10U / reads;
@@ -256,7 +277,7 @@ main(int argc, char** argv) {
     std::printf("format=%s elems=%u mode=%s reads=%llu samples=%llu (%llu samples/s) ns_per_read=%llu.%llu "
                 "consumed=%llu floats\n",
                 driver->options.format, driver->options.elems, driver->options.unpaced > 0U ? "unpaced" : "paced",
-                (unsigned long long)reads, (unsigned long long)samples, (unsigned long long)samples_per_second,
+                (unsigned long long)reads, (unsigned long long)samples, (unsigned long long)rate_per_second,
                 (unsigned long long)(ns_per_read_x10 / 10U), (unsigned long long)(ns_per_read_x10 % 10U),
                 (unsigned long long)consumer.consumed.load(std::memory_order_relaxed));
     return 0;

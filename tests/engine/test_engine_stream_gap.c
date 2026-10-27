@@ -378,15 +378,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
             seed_carrier(state);
             return DSD_SYNC_P25P1_POS;
         case 2:
-            /* The synced-frames loop's next hunt: the interruption outlived the frame, and the real hunt would return
-               at once on it. */
             expect("unwind: the frame was decoded", g_frame_calls == 1);
-            expect("unwind: the interruption outlives the frame",
-                   state->input_interrupted == 1 && state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP);
-            expect("unwind: nothing is reset before the engine loop consumes it",
-                   state->carrier_seq == g_frame_seq && g_resets == 0);
-            return DSD_SYNC_NONE;
-        case 3:
             expect("unwind: the engine loop consumed the gap",
                    state->input_interrupted == 0 && state->input_interrupt_reason == DSD_INTERRUPT_NONE);
             expect("unwind: the boundary ran once, outside the frame, under the tick guard",
@@ -408,7 +400,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    reads_sample(read_symbols(opts, state, 1, 0), 0) && state->input_interrupted == 1
                        && state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP);
             return DSD_SYNC_NONE;
-        case 4:
+        case 3:
             expect("between frames: the boundary ran", g_resets == 2 && g_resets_unguarded == 0);
             expect("between frames: the carrier count moved", state->carrier_seq == g_seq_before + 1U);
             expect("between frames: the call ended as on a sync loss", call_ended_as_sync_loss(state));
@@ -428,7 +420,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    reads_sample(read_symbols(opts, state, 1, 0), 0)
                        && state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP);
             return DSD_SYNC_NONE;
-        case 5:
+        case 4:
             expect("pending scan tune: the reset ran before the loop waited on the tune", g_pending_after_reset == 1);
             expect("pending scan tune: the boundary ran", g_resets == 3 && state->carrier_seq >= g_seq_before + 1U);
             expect("pending scan tune: the call ended", !call_active(state));
@@ -446,7 +438,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
                    reads_sample(read_symbols(opts, state, 1, 0), 0) && state->input_interrupted == 1
                        && state->input_interrupt_reason == DSD_INTERRUPT_YIELD && g_yields == 1);
             return DSD_SYNC_NONE;
-        case 6:
+        case 5:
             expect("yield: the engine loop applied the command", g_applied == 1 && g_command_queued == 0);
             expect("yield: it consumed the yield before it applied the command", g_applied_after_consume == 1);
             expect("yield: the interruption is consumed",
@@ -652,7 +644,7 @@ main(void) {
 
     const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     expect("the engine ran", rc == 0);
-    expect("the script ran to its end", g_step == 6);
+    expect("the script ran to its end", g_step == 5);
     dsd_exitflag_store(0);
 
     test_gap_resets_evidence_and_assemblies(opts, state);

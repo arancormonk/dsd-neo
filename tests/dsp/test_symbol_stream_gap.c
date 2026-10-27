@@ -32,6 +32,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -83,6 +84,9 @@ fake_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_g
     if (n > count) {
         n = count;
     }
+    if (g_next < g_gap_at && g_gap_at - g_next < n) {
+        n = (size_t)(g_gap_at - g_next);
+    }
     for (size_t i = 0; i < n; i++) {
         out[i] = (float)(g_next + i + 1U);
         if (flags) {
@@ -98,7 +102,7 @@ fake_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_g
         .output_count = g_batch,
         .first_index = (uint32_t)(g_next - batch_first),
         .center_frequency_hz = 851012500U,
-        .boundary_seq = batch_first >= g_gap_at ? 1U : 0U,
+        .boundary_seq = g_next >= g_gap_at ? 1U : 0U,
     };
     g_have_batch = 1;
     g_next += (uint64_t)n;
@@ -299,12 +303,11 @@ test_recovery_events_reset_decoder_one_sample_reader(dsd_opts* opts, dsd_state* 
 }
 
 /* A live stream through the cache: the count is read after every read, so the read that returns the first sample past
-   the gap raises it, before any of that read's samples is handed out. They follow once it is consumed; the samples of
-   that read before the gap with them, never one past the gap before it. */
+   the gap raises it, before any of that read's samples is handed out. They follow once it is consumed; the fake, like the real output ring, ends each read at the gap. */
 static void
 test_live_gap_checked_after_each_cached_read(dsd_opts* opts, dsd_state* state) {
     reset_stream(opts, state, 0, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, 64U, 100U);
-    read_across_the_gap(opts, state, "live, cached reader", 64U);
+    read_across_the_gap(opts, state, "live, cached reader", 100U);
 }
 
 static void
@@ -324,23 +327,46 @@ test_no_gap_reads_through(dsd_opts* opts, dsd_state* state) {
     check("no gap: every sample reads through", clean);
 }
 
+/* A direct reader can acknowledge a gap while an older symbol cache still exists in the same generation. */
+static void
+test_direct_reader_acknowledgment_drops_old_cache(dsd_opts* opts, dsd_state* state) {
+    reset_stream(opts, state, 0, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, 64U, UINT64_MAX);
+    check("old cache starts before the gap", reads_sample(getSymbol(opts, state, 0), 1U));
+    check("old cache has unread samples", state->rtl_symbol_cache_pos < state->rtl_symbol_cache_len);
+    const uint64_t next = g_next + 1U;
+    g_gap_at = g_next;
+    state->rtl_stream_gap_seq = 1U;
+    const float symbol = getSymbol(opts, state, 0);
+    check("direct acknowledgment discards old samples", reads_sample(symbol, next));
+    check("direct acknowledgment never moves backwards", state->rtl_stream_gap_seq == 1U);
+    check("direct acknowledgment is not raised again", state->input_interrupted == 0);
+}
+
 int
 main(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
     install_fake_stream();
 
-    test_no_gap_reads_through(&opts, &state);
-    test_recovery_events_reset_decoder_cached_reader(&opts, &state);
-    test_recovery_events_reset_decoder_one_sample_reader(&opts, &state);
-    test_live_gap_checked_after_each_cached_read(&opts, &state);
-    test_live_gap_checked_after_each_one_sample_read(&opts, &state);
+    test_direct_reader_acknowledgment_drops_old_cache(opts, state);
+    test_no_gap_reads_through(opts, state);
+    test_recovery_events_reset_decoder_cached_reader(opts, state);
+    test_recovery_events_reset_decoder_one_sample_reader(opts, state);
+    test_live_gap_checked_after_each_cached_read(opts, state);
+    test_live_gap_checked_after_each_one_sample_read(opts, state);
 
     dsd_decode_clock_use_system();
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d stream gap check(s) failed\n", g_failures);
         return 1;

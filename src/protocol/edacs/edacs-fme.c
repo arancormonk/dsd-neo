@@ -262,7 +262,8 @@ edacs_no_stream_pay(const dsd_opts* opts, dsd_state* state) {
     const uint64_t now_ms = dsd_realtime_mono_ms();
     if (!state->edacs_no_stream_active) {
         state->edacs_no_stream_active = 1U;
-        state->edacs_no_stream_since_ms = now_ms;
+        const uint64_t since_ms = dsd_rtl_stream_io_hook_no_stream_since_ms();
+        state->edacs_no_stream_since_ms = since_ms != 0U && since_ms <= now_ms ? since_ms : now_ms;
         state->edacs_no_stream_paid = 0U;
     }
     const uint64_t rate_hz = (uint64_t)edacs_analog_input_rate_hz(opts);

@@ -217,6 +217,38 @@ test_unpublished_first_frame_still_seeds(const std::vector<float>& x, const std:
     check("unpublished: first publication carries the average", same_bins(read_bins("unpublished: read"), want));
 }
 
+struct competing_frames {
+    const std::vector<float>* iq = nullptr;
+    int attempts = 0;
+};
+
+void
+publish_after_pin(void* ctx) {
+    auto* frames = static_cast<competing_frames*>(ctx);
+    frames->attempts++;
+    rtl_metrics_update_spectrum_from_iq(frames->iq->data(), (int)frames->iq->size(), kRateHz);
+}
+
+void
+test_competing_publications_keep_a_frame(const std::vector<float>& iq, const std::vector<float>& raw) {
+    rtl_metrics_test_spectrum_reset();
+    rtl_metrics_update_spectrum_from_iq(iq.data(), (int)iq.size(), kRateHz);
+    competing_frames frames{&iq};
+    rtl_metrics_test_spectrum_set_pin_hook(publish_after_pin, &frames);
+    const std::vector<float> bins = read_bins("competing: always returns the published frame");
+    rtl_metrics_test_spectrum_set_pin_hook(nullptr, nullptr);
+    check("competing: bounded pinning", frames.attempts > 1 && frames.attempts <= 5);
+    check("competing: complete bins", same_bins(bins, raw));
+    check("competing: no leaked holds", rtl_metrics_test_spectrum_hold_count() == 0);
+    rtl_metrics_update_spectrum_from_iq(iq.data(), (int)iq.size(), kRateHz);
+    check("competing: publication resumes", same_bins(read_bins("competing: next frame"), raw));
+    (void)rtl_stream_spectrum_set_size(kBins * 2);
+    float enlarged[kBins * 2];
+    const int published_bins = rtl_stream_spectrum_get(enlarged, kBins * 2, nullptr);
+    check("size change: getter keeps the published bin count", published_bins == kBins);
+    (void)rtl_stream_spectrum_set_size(kBins);
+}
+
 } // namespace
 
 int
@@ -229,6 +261,7 @@ main(void) {
     const std::vector<float> raw_x = raw_frame(x);
     const std::vector<float> raw_y = raw_frame(y);
     check("raw frames differ", !same_bins(raw_x, raw_y));
+    test_competing_publications_keep_a_frame(x, raw_x);
     test_average_carries_across_buffers(x, y, raw_x, raw_y);
     test_held_spares_fold_into_the_writers_own(x, y, raw_x, raw_y);
     test_unpublished_first_frame_still_seeds(x, y, raw_x, raw_y);

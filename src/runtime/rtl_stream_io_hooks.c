@@ -91,3 +91,8 @@ dsd_rtl_stream_io_hook_squelch_status(const dsd_state* state, dsd_rtl_squelch_st
     }
     return g_rtl_stream_io_hooks.squelch_status((const void*)state->rtl_ctx, out);
 }
+
+uint64_t
+dsd_rtl_stream_io_hook_no_stream_since_ms(void) {
+    return g_rtl_stream_io_hooks.no_stream_since_ms ? g_rtl_stream_io_hooks.no_stream_since_ms() : 0U;
+}

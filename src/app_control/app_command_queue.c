@@ -1935,6 +1935,16 @@ ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, 
 }
 
 /* The toast a frequency entry's tune leaves, from svc_rtl_set_freq()'s result. */
+static int
+ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
+    const char* unavailable = svc_radio_control_unavailable_text(rc);
+    if (!unavailable) {
+        return 0;
+    }
+    ui_set_toast(state, 4, "Failed: %s", unavailable);
+    return 1;
+}
+
 static void
 ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner) {
     if (rc == 0) {
@@ -1944,9 +1954,7 @@ ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner
                      stop_scanner ? " (scanner stopped)" : "");
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-    } else if (svc_radio_control_unavailable_text(rc)) {
-        ui_set_toast(state, 4, "Failed: %s", svc_radio_control_unavailable_text(rc));
-    } else {
+    } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
         ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
     }
 }
@@ -2041,9 +2049,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         }
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-    } else if (svc_radio_control_unavailable_text(rc)) {
-        ui_set_toast(state, 4, "Failed: %s", svc_radio_control_unavailable_text(rc));
-    } else {
+    } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
         ui_set_toast(state, 4, "Failed: tune -> %u Hz", v);
     }
     return result;
@@ -2064,7 +2070,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
             ui_set_toast(state, 3, "%s", notice);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
-        } else {
+        } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
             ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
         }
     }
@@ -2214,9 +2220,7 @@ ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct ds
             ui_set_toast(state, 3, "Applied: RTL bias tee -> %s", on ? "On" : "Off");
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: bias tee control not available on active backend");
-        } else if (svc_radio_control_unavailable_text(rc)) {
-            ui_set_toast(state, 4, "Failed: %s", svc_radio_control_unavailable_text(rc));
-        } else {
+        } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
             ui_set_toast(state, 4, "Failed: RTL bias tee update");
         }
     }
@@ -4098,7 +4102,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     /* The decoder thread may sit in a read that never returns, so the queue is not drained to apply a quit. Raised
      * here, after admission, a late submission to a closed session has no effect, and an eviction below cannot take
      * the quit back. The command is still queued: its handler stores the same flag. */
-    if (cmd_id == DSD_APP_CMD_QUIT) {
+    if (cmd_id == DSD_APP_CMD_QUIT && payload_sz == 0U) {
         dsd_exitflag_store(1);
     }
     if (ui_cmd_is_coalescible_setter(cmd_id)) {
@@ -7973,6 +7977,16 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 }
 
 static int
+ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+#ifdef USE_RADIO
+    if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_radio_unavailable_toast(state, 0)) {
+        return UI_CMD_APPLY_FAILED;
+    }
+#endif
+    return ui_cmd_dispatch(opts, state, c);
+}
+
+static int
 apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
         apply_cmd_basic_a,          apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
@@ -7990,7 +8004,7 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         }
         return UI_CMD_APPLY_UNSUPPORTED;
     }
-    int r = ui_cmd_dispatch(opts, state, c);
+    int r = ui_cmd_dispatch_available(opts, state, c);
     if (r) {
         return r;
     }

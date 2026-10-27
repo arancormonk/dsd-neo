@@ -20,6 +20,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <mutex>
+#include <numeric>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,6 +30,7 @@
 #include "rtl_stream_shared.hpp"
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 #include "rtl_stream_test_support.h"
+#include "rtl_test_hook.h"
 #endif
 
 #if defined(_MSC_VER)
@@ -64,8 +66,21 @@ static std::atomic<int> g_spec_cur{-1}; /* none yet */
 static rtl_spec_frame g_spec_writer;
 static const rtl_spec_frame* g_spec_last = &g_spec_writer;
 static bool g_spec_seed = true;
-/* A reader that keeps losing the current buffer to the writer reports no frame. */
-static const int kSpecReadAttempts = 4;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static RtlTestHook<> g_test_spectrum_pin_hook;
+
+extern "C" void
+rtl_metrics_test_spectrum_set_pin_hook(void (*hook)(void*), void* ctx) {
+    g_test_spectrum_pin_hook.set(hook, ctx);
+}
+
+extern "C" int
+rtl_metrics_test_spectrum_hold_count(void) {
+    return std::accumulate(g_spec_holds, g_spec_holds + kSpecFrames, 0, [](int holds, const std::atomic<int>& count) {
+        return holds + count.load(std::memory_order_seq_cst);
+    });
+}
+#endif
 static std::atomic<int> g_spec_N{256}; /* default N */
 std::atomic<double> g_spec_peak_db{-100.0};
 std::atomic<double> g_spec_snr_db{-100.0};
@@ -457,6 +472,34 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
 }
 
 /* Spectrum and carrier diagnostics query helpers. */
+static int
+rtl_metrics_pin_spectrum_frame(void) {
+    unsigned int held = 0U;
+    int cur;
+    for (;;) {
+        cur = g_spec_cur.load(std::memory_order_seq_cst);
+        if (cur < 0 || (held & (1U << cur))) {
+            break;
+        }
+        g_spec_holds[cur].fetch_add(1, std::memory_order_seq_cst);
+        held |= 1U << cur;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        g_test_spectrum_pin_hook.invoke();
+#endif
+        if (g_spec_cur.load(std::memory_order_seq_cst) == cur) {
+            break;
+        }
+        /* Keep raced candidates pinned. After at most four pins the writer must use its private scratch frame,
+         * so publication cannot starve this reader. Seeing a previously pinned frame current proves its write ended. */
+    }
+    for (int i = 0; i < kSpecFrames; i++) {
+        if (i != cur && (held & (1U << i))) {
+            g_spec_holds[i].fetch_sub(1, std::memory_order_seq_cst);
+        }
+    }
+    return cur;
+}
+
 /**
  * @brief Copy the smoothed spectrum into the caller's buffer.
  *
@@ -474,30 +517,21 @@ rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     if (!out_db || max_bins <= 0) {
         return 0;
     }
-    for (int attempt = 0; attempt < kSpecReadAttempts; attempt++) {
-        const int cur = g_spec_cur.load(std::memory_order_seq_cst);
-        if (cur < 0) {
-            return 0;
-        }
-        g_spec_holds[cur].fetch_add(1, std::memory_order_seq_cst);
-        if (g_spec_cur.load(std::memory_order_seq_cst) != cur) {
-            /* The writer moved on meanwhile and may be folding into it already. */
-            g_spec_holds[cur].fetch_sub(1, std::memory_order_seq_cst);
-            continue;
-        }
-        const rtl_spec_frame* frame = &g_spec_frames[cur];
-        const int N = (frame->n < 0) ? 0 : ((frame->n > kSpecMaxN) ? kSpecMaxN : frame->n);
-        const int n = (max_bins < N) ? max_bins : N;
-        for (int i = 0; i < n; i++) {
-            out_db[i] = frame->db[i];
-        }
-        if (out_rate) {
-            *out_rate = frame->rate_hz;
-        }
-        g_spec_holds[cur].fetch_sub(1, std::memory_order_seq_cst);
-        return n;
+    const int cur = rtl_metrics_pin_spectrum_frame();
+    if (cur < 0) {
+        return 0;
     }
-    return 0;
+    const rtl_spec_frame* frame = &g_spec_frames[cur];
+    const int N = (frame->n < 0) ? 0 : ((frame->n > kSpecMaxN) ? kSpecMaxN : frame->n);
+    const int n = (max_bins < N) ? max_bins : N;
+    for (int i = 0; i < n; i++) {
+        out_db[i] = frame->db[i];
+    }
+    if (out_rate) {
+        *out_rate = frame->rate_hz;
+    }
+    g_spec_holds[cur].fetch_sub(1, std::memory_order_seq_cst);
+    return n;
 }
 
 /**

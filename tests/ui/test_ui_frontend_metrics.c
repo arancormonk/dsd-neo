@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -608,31 +609,35 @@ install_stream_level(double rms_dbfs, double peak_dbfs, double clip_pct, uint64_
    threshold (opts->input_warn_db), not the default. */
 static void
 test_input_level_fresh_levels_classified_with_custom_threshold(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    fill_metric_inputs(&opts, &state);
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    fill_metric_inputs(opts, state);
     dsd_input_level_snapshot level;
 
     install_stream_level(-50.0, -20.0, 0.0, 0U);
-    opts.input_warn_db = -40.0;
-    assert(dsd_app_frontend_input_level(&opts, &level) == 1);
+    opts->input_warn_db = -40.0;
+    assert(dsd_app_frontend_input_level(opts, &level) == 1);
     assert(level.status == DSD_INPUT_LEVEL_LOW);
     assert(level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(level.sample_count == 16384U);
     assert(db_near(level.rms_dbfs, -50.0));
     assert(db_near(level.peak_dbfs, -20.0));
 
-    opts.input_warn_db = -60.0;
-    assert(dsd_app_frontend_input_level(&opts, &level) == 1);
+    opts->input_warn_db = -60.0;
+    assert(dsd_app_frontend_input_level(opts, &level) == 1);
     assert(level.status == DSD_INPUT_LEVEL_OK);
 
     install_stream_level(-20.0, -0.5, 0.0, 0U);
-    assert(dsd_app_frontend_input_level(&opts, &level) == 1);
+    assert(dsd_app_frontend_input_level(opts, &level) == 1);
     assert(level.status == DSD_INPUT_LEVEL_HOT);
     install_stream_level(-20.0, -0.5, 0.2, 0U);
-    assert(dsd_app_frontend_input_level(&opts, &level) == 1);
+    assert(dsd_app_frontend_input_level(opts, &level) == 1);
     assert(level.status == DSD_INPUT_LEVEL_CLIPPING);
     dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
 }
 
 /* The decoder copies the stream's level into its state only every 64 decoded symbols, so it goes quiet whenever the
@@ -640,90 +645,102 @@ test_input_level_fresh_levels_classified_with_custom_threshold(void) {
    samples, the level stays fresh whatever the decoder's copy says. */
 static void
 test_input_level_producer_samples_without_decoder_stay_fresh(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    fill_metric_inputs(&opts, &state);
-    opts.input_warn_db = -40.0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    fill_metric_inputs(opts, state);
+    opts->input_warn_db = -40.0;
     /* The decoder's copy: published long ago, before it stopped publishing. */
-    state.input_level.status = DSD_INPUT_LEVEL_LOW;
-    state.input_level.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
-    state.input_level.rms_dbfs = -70.0;
-    state.input_level.sample_count = 16384U;
-    state.input_level.updated_ms = 1U;
+    state->input_level.status = DSD_INPUT_LEVEL_LOW;
+    state->input_level.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+    state->input_level.rms_dbfs = -70.0;
+    state->input_level.sample_count = 16384U;
+    state->input_level.updated_ms = 1U;
 
     install_stream_level(-29.0, -10.0, 0.0, 0U);
     g_stream_level_calls = 0;
     dsd_input_level_snapshot level;
     for (int i = 0; i < 3; i++) {
-        assert(dsd_app_frontend_input_level(&opts, &level) == 1);
+        assert(dsd_app_frontend_input_level(opts, &level) == 1);
         assert(level.status == DSD_INPUT_LEVEL_OK);
         assert(db_near(level.rms_dbfs, -29.0));
     }
     assert(g_stream_level_calls == 3);
     dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
 }
 
 /* A receiver that stops delivering keeps its last level in the stream's copy: older than DSD_INPUT_LEVEL_STALE_MS it
    is "No input", with no readings and no status, never its last reading. */
 static void
 test_input_level_silence_shows_no_input(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    fill_metric_inputs(&opts, &state);
-    opts.input_warn_db = -40.0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    fill_metric_inputs(opts, state);
+    opts->input_warn_db = -40.0;
     dsd_input_level_snapshot level;
 
     install_stream_level(-29.0, -10.0, 0.0, DSD_INPUT_LEVEL_STALE_MS - 500U);
-    assert(dsd_app_frontend_input_level(&opts, &level) == 1);
+    assert(dsd_app_frontend_input_level(opts, &level) == 1);
     assert(level.status == DSD_INPUT_LEVEL_OK);
 
     install_stream_level(-29.0, -10.0, 0.0, DSD_INPUT_LEVEL_STALE_MS + 500U);
     DSD_MEMSET(&level, 0x5a, sizeof(level));
-    assert(dsd_app_frontend_input_level(&opts, &level) == 0);
+    assert(dsd_app_frontend_input_level(opts, &level) == 0);
     assert(level.status == DSD_INPUT_LEVEL_UNKNOWN);
     assert(level.sample_count == 0U);
     assert(db_near(level.rms_dbfs, 0.0) && db_near(level.peak_dbfs, 0.0) && db_near(level.clip_pct, 0.0));
 
     /* A stale level that would classify as a warning is no warning either. */
     install_stream_level(-6.0, -0.1, 0.5, DSD_INPUT_LEVEL_STALE_MS + 500U);
-    assert(dsd_app_frontend_input_level(&opts, &level) == 0);
+    assert(dsd_app_frontend_input_level(opts, &level) == 0);
     assert(level.status == DSD_INPUT_LEVEL_UNKNOWN);
     dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
 }
 
 /* No level yet (the stream has not started, or dropped its level at a stop): blank, never a LOW made up from the
    empty copy's -120 dBFS. Not a radio: no RF level at all, and the decoder's PCM path stays the frontend's. */
 static void
 test_input_level_never_received_is_blank(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    fill_metric_inputs(&opts, &state);
-    opts.input_warn_db = -40.0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    fill_metric_inputs(opts, state);
+    opts->input_warn_db = -40.0;
     dsd_input_level_snapshot level;
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
-    assert(dsd_app_frontend_input_level(&opts, &level) == 0);
+    assert(dsd_app_frontend_input_level(opts, &level) == 0);
     assert(level.status == DSD_INPUT_LEVEL_UNKNOWN);
     assert(level.sample_count == 0U);
 
     install_stream_level(-120.0, -120.0, 0.0, 0U);
     g_stream_level.source = DSD_INPUT_LEVEL_SOURCE_UNKNOWN;
     g_stream_level.sample_count = 0U;
-    assert(dsd_app_frontend_input_level(&opts, &level) == 0);
+    assert(dsd_app_frontend_input_level(opts, &level) == 0);
     assert(level.status == DSD_INPUT_LEVEL_UNKNOWN);
     assert(level.sample_count == 0U);
     assert(db_near(level.rms_dbfs, 0.0));
 
     install_stream_level(-29.0, -10.0, 0.0, 0U);
-    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts->audio_in_type = AUDIO_IN_PULSE;
     g_stream_level_calls = 0;
-    assert(dsd_app_frontend_input_level(&opts, &level) == -1);
+    assert(dsd_app_frontend_input_level(opts, &level) == -1);
     assert(level.status == DSD_INPUT_LEVEL_UNKNOWN);
     assert(level.sample_count == 0U);
     assert(g_stream_level_calls == 0);
     assert(dsd_app_frontend_input_level(NULL, &level) == -1);
-    assert(dsd_app_frontend_input_level(&opts, NULL) == -1);
+    assert(dsd_app_frontend_input_level(opts, NULL) == -1);
     dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
 }
 
 int

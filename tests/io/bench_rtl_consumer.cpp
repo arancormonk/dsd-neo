@@ -40,6 +40,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <memory>
+#include <mutex>
 #include <netinet/in.h>
 #include <stdint.h>
 #include <sys/resource.h>
@@ -70,6 +71,9 @@ struct BenchOptions {
 struct Server {
     int listen_fd = -1;
     int port = 0;
+    std::mutex client_lock;
+    int client_fd = -1;
+    int small_send_buffer = 0;
     std::atomic<int> stop{0};
     std::atomic<uint32_t> rate{1536000U};
     dsd_thread_t thread{};
@@ -119,6 +123,15 @@ server_take_commands(Server* srv, int fd, std::vector<uint8_t>* pending) {
     pending->erase(pending->begin(), pending->begin() + (std::ptrdiff_t)at);
 }
 
+void
+server_close_client(Server* srv) {
+    std::lock_guard<std::mutex> lock(srv->client_lock);
+    if (srv->client_fd >= 0) {
+        close(srv->client_fd);
+        srv->client_fd = -1;
+    }
+}
+
 DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
 __stdcall
@@ -129,9 +142,21 @@ serve(void* arg) {
     if (fd < 0) {
         DSD_THREAD_RETURN;
     }
+    {
+        std::lock_guard<std::mutex> lock(srv->client_lock);
+        if (srv->stop.load(std::memory_order_relaxed)) {
+            close(fd);
+            DSD_THREAD_RETURN;
+        }
+        srv->client_fd = fd;
+    }
+    if (srv->small_send_buffer) {
+        const int bytes = 1024;
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bytes, sizeof bytes);
+    }
     const uint8_t header[12] = {'R', 'T', 'L', '0', 0, 0, 0, 5, 0, 0, 0, 0};
     if (send(fd, header, sizeof header, MSG_NOSIGNAL) != (ssize_t)sizeof header) {
-        close(fd);
+        server_close_client(srv);
         DSD_THREAD_RETURN;
     }
     std::vector<uint8_t> pending;
@@ -161,7 +186,7 @@ serve(void* arg) {
         offset += kChunkBytes;
         sent_pairs += kChunkBytes / 2U;
     }
-    close(fd);
+    server_close_client(srv);
     DSD_THREAD_RETURN;
 }
 
@@ -185,14 +210,61 @@ server_start(Server* srv) {
         return -1;
     }
     srv->port = ntohs(addr.sin_port);
-    return dsd_thread_create(&srv->thread, serve, srv);
+    const int rc = dsd_thread_create(&srv->thread, serve, srv);
+    if (rc != 0) {
+        close(srv->listen_fd);
+    }
+    return rc;
 }
 
 void
 server_stop(Server* srv) {
     srv->stop.store(1, std::memory_order_relaxed);
+    (void)shutdown(srv->listen_fd, SHUT_RDWR);
+    {
+        std::lock_guard<std::mutex> lock(srv->client_lock);
+        if (srv->client_fd >= 0) {
+            (void)shutdown(srv->client_fd, SHUT_RDWR);
+        }
+    }
     dsd_thread_join(srv->thread);
     close(srv->listen_fd);
+}
+
+int
+check_server_stop(void) {
+    for (int connected = 0; connected < 2; connected++) {
+        Server server;
+        server.small_send_buffer = connected;
+        if (server_start(&server) != 0) {
+            return 1;
+        }
+        int peer = -1;
+        if (connected) {
+            peer = socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            addr.sin_port = htons((uint16_t)server.port);
+            if (peer < 0 || connect(peer, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) {
+                if (peer >= 0) {
+                    close(peer);
+                }
+                server_stop(&server);
+                return 1;
+            }
+            dsd_sleep_ms(250U);
+        }
+        const uint64_t start = dsd_realtime_mono_ms();
+        server_stop(&server);
+        if (peer >= 0) {
+            close(peer);
+        }
+        if (dsd_realtime_mono_ms() - start >= 1000U) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* The decode modes that give each reader its output (rtl_demod_config.cpp, demod_apply_output_kind()). */
@@ -294,6 +366,9 @@ read_symbols(dsd_opts* opts, dsd_state* state, uint64_t until_ns, float* sink, u
 
 int
 main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--check-stop") == 0) {
+        return check_server_stop();
+    }
     BenchOptions options;
     if (parse_options(argc, argv, &options) != 0) {
         std::printf("Usage: %s [--path cqpsk|fsk|monitor] [--seconds N] [--warmup N]\n", argv[0]);
@@ -327,6 +402,9 @@ main(int argc, char** argv) {
     RtlSdrContext* ctx = nullptr;
     if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
         DSD_FPRINTF(stderr, "bench_rtl_consumer: the stream did not start\n");
+        if (ctx) {
+            rtl_stream_destroy(ctx);
+        }
         server_stop(&srv);
         return 1;
     }

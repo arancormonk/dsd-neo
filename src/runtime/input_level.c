@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/number_text.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
 #include <time.h>
 
@@ -575,6 +576,22 @@ input_level_publish_notifies(const dsd_opts* opts, const dsd_state* state, const
     return (opts && opts->iq_replay_active) || !dsd_input_level_is_stale(next, dsd_realtime_mono_ms());
 }
 
+static void
+input_level_refresh_live(const dsd_opts* opts, dsd_input_level_snapshot* next) {
+    if (!opts || opts->iq_replay_active || !dsd_input_level_source_is_rf(next->source)) {
+        return;
+    }
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    if (dsd_input_level_is_stale(next, now_ms)) {
+        /* Backlogged demodulation does not describe the receiver's current level. */
+        dsd_input_level_snapshot live;
+        if (dsd_rtl_stream_metrics_hook_input_level(&live) == 0 && dsd_input_level_source_is_rf(live.source)
+            && !dsd_input_level_is_stale(&live, now_ms)) {
+            *next = live;
+        }
+    }
+}
+
 void
 dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                         unsigned int notify_mask) {
@@ -583,6 +600,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
 
     dsd_input_level_snapshot next = *snapshot;
+    input_level_refresh_live(opts, &next);
     double low_warn_db = opts ? opts->input_warn_db : -40.0;
     dsd_input_level_classify(&next, low_warn_db);
 

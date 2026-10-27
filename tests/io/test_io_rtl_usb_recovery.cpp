@@ -20,6 +20,7 @@
  * does, and decodes exactly as the same samples fed without a queued command.
  */
 
+#include <algorithm>
 #include <assert.h>
 #include <atomic>
 #include <dsd-neo/core/opts.h>
@@ -59,11 +60,7 @@ struct rtl_device;
 
 namespace {
 
-#ifdef DSD_HAVE_LIBUSB
-constexpr int kHaveLibusb = 1;
-#else
-constexpr int kHaveLibusb = 0;
-#endif
+int g_have_libusb = 0;
 
 constexpr uint32_t kLimitMs = 300U;
 constexpr uint32_t kPeriodMs = 20U;
@@ -73,13 +70,13 @@ constexpr uint64_t kWaitMs = 5000U;
 /* ---- Fake USB device list (the identity unit's driver ops) ---- */
 
 struct usb_dev {
-    rtl_usb_device_info info;
-    const char* serial;
+    rtl_usb_device_info info{};
+    const char* serial = nullptr;
     std::atomic<int> resets{0};
 };
 
 struct usb_world {
-    usb_dev devs[2];
+    usb_dev devs[2]{};
     int dev_count = 0;
     std::atomic<uint64_t> now_ms{1000U};
     /* Called by the reset on the thread running it (the controller), before it resets. */
@@ -424,6 +421,39 @@ play_controller(const rig& r) {
 
 /* ---- Device-level tests ---- */
 
+/* A request queued before a quit or receiver ending must never begin a USB reset during teardown. */
+void
+test_ending_session_refuses_pending_recovery(void) {
+    usb_world_reset(0);
+    rig r;
+    rig_open(r, 1);
+    (void)wait_posted(r, 1);
+    dsd_exitflag_store(1);
+    const int taken = rtl_device_usb_recovery_take(r.dev);
+    assert(taken == 0);
+    assert(g_usb.devs[0].resets.load() == 0);
+    rig_close(r);
+}
+
+void
+quit_after_take(rtl_device*, void*) {
+    dsd_exitflag_store(1);
+}
+
+void
+test_quit_racing_recovery_take(void) {
+    usb_world_reset(0);
+    rig r;
+    rig_open(r, 1);
+    (void)wait_posted(r, 1);
+    rtl_device_test_set_recovery_take_hook(quit_after_take, nullptr);
+    const int taken = rtl_device_usb_recovery_take(r.dev);
+    rtl_device_test_set_recovery_take_hook(nullptr, nullptr);
+    assert(taken == 0);
+    assert(g_usb.devs[0].resets.load() == 0);
+    rig_close(r);
+}
+
 /* A request the controller does not take within the bound is withdrawn and ends the session; it cannot be taken
  * afterwards and nothing is reset. */
 void
@@ -582,7 +612,7 @@ test_ineligible_device_ends_as_before(void) {
         (void)log_take();
         rig r;
         rig_open(r, duplicate);
-        assert(rtl_device_usb_recovery_eligible(r.dev) == (duplicate == 0 ? kHaveLibusb : 0));
+        assert(rtl_device_usb_recovery_eligible(r.dev) == (duplicate == 0 ? g_have_libusb : 0));
         deliver(r, 5, 10U);
         assert(wait_receiver_ended(kWaitMs) != 0U);
         expect_receiver_ending(-ETIMEDOUT);
@@ -687,11 +717,8 @@ boundary_take(void) {
 /* The steps, in order, the boundary ran. */
 std::vector<int>
 step_ids(const std::vector<step_view>& steps) {
-    std::vector<int> ids;
-    ids.reserve(steps.size());
-    for (const step_view& v : steps) {
-        ids.push_back(v.step);
-    }
+    std::vector<int> ids(steps.size());
+    std::transform(steps.begin(), steps.end(), ids.begin(), [](const step_view& v) { return v.step; });
     return ids;
 }
 
@@ -1266,9 +1293,16 @@ main(void) {
     rtl_device_test_set_progress_limit_ms(kLimitMs);
     rtl_device_test_set_progress_period_ms(kPeriodMs);
 
+    usb_world_reset(0);
+    rtl_usb_identity identity{};
+    const int eligibility = rtl_usb_identity_resolve(0U, &identity);
+    assert(eligibility == RTL_USB_ID_OK || eligibility == RTL_USB_ID_NO_LIBUSB);
+    g_have_libusb = eligibility == RTL_USB_ID_OK;
     test_ineligible_device_ends_as_before();
     /* Without libusb no receiver is eligible; the case above is all there is. */
-    if (kHaveLibusb != 0) {
+    if (g_have_libusb != 0) {
+        test_ending_session_refuses_pending_recovery();
+        test_quit_racing_recovery_take();
         test_request_not_taken_ends_session();
         test_second_stall_without_samples_ends_session();
         test_cooldown_both_sides();

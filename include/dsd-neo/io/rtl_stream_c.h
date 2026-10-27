@@ -245,6 +245,11 @@ int rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t co
  * that found nothing for one wait slice while the device has no stream returns it, and never DSD_RTL_READ_YIELD.
  */
 int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
+
+/** @brief Start of the last NO_STREAM wait slice on this reader thread, in real monotonic milliseconds.
+ * Read only after DSD_RTL_READ_NO_STREAM; 0 if no slice has been recorded. */
+uint64_t rtl_stream_no_stream_since_ms(void);
+
 /**
  * @brief Get the current output sample rate in Hz.
  * @param ctx Stream context.
@@ -1336,7 +1341,8 @@ int rtl_stream_constellation_get(float* out_xy, int max_points);
  * Returns up to max_bins bins in out_db, equally spaced across the complex
  * baseband Nyquist span, with DC-centered ordering (i.e., out_db[0] ~ -Fs/2,
  * mid ~ DC, last ~ +Fs/2). Values are smoothed and approximately in dBFS.
- * Optionally returns the current demod output sample rate via out_rate.
+ * The count and out_rate belong to the published frame. After an FFT-size change, the previous frame
+ * and its bin count remain available until the next frame is published; max_bins may truncate that count.
  *
  * @param out_db Destination buffer for spectrum bins (float dB). Must not be NULL.
  * @param max_bins Maximum number of bins to write.

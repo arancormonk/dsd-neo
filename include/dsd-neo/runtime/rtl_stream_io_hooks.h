@@ -58,9 +58,14 @@ typedef struct {
     /* read_ex that returns DSD_RTL_READ_NO_STREAM to a reader that asks for it (@p want_no_stream). Optional: without
        it, dsd_rtl_stream_io_hook_read_ex2() reads through read_ex. */
     int (*read_ex2)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
+    /* Start of the last NO_STREAM wait slice on this reader thread, in real monotonic milliseconds; 0 if unknown. */
+    uint64_t (*no_stream_since_ms)(void);
 } dsd_rtl_stream_io_hooks;
 
 void dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks hooks);
+
+/** @brief Start of the last NO_STREAM wait slice, or 0 without the optional hook. */
+uint64_t dsd_rtl_stream_io_hook_no_stream_since_ms(void);
 
 int dsd_rtl_stream_io_hook_read(dsd_state* state, float* out, size_t count, int* out_got);
 

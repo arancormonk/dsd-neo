@@ -97,6 +97,11 @@ rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count,
     return 5;
 }
 
+uint64_t
+rtl_stream_no_stream_since_ms(void) {
+    return 1234U;
+}
+
 static int g_rtl_read_ex2_calls = 0;
 static int g_last_want_no_stream = -1;
 
@@ -236,6 +241,7 @@ test_rtl_stream_io_installer(void) {
     assert(g_rtl_read_ex_calls == 1 && g_rtl_read_calls == 1);
     assert(g_last_rtl_count == 2U && got == 1 && sample == 4.5f && flag == 1U);
 
+    assert(dsd_rtl_stream_io_hook_no_stream_since_ms() == 1234U);
     /* A reader that takes no-stream reads (issue #518 D4) goes to rtl_stream_read_ex2() with its ask, and gets
        DSD_RTL_READ_NO_STREAM back as it is. */
     assert(dsd_rtl_stream_io_hook_read_ex2(&state, &sample, &flag, 1U, &got, 1) == DSD_RTL_READ_NO_STREAM);

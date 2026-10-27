@@ -7,6 +7,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <math.h>
 #include <stddef.h>
@@ -446,6 +447,17 @@ rf_clipping_level(uint64_t updated_ms) {
 
 /* A live receiver's level that is more than DSD_INPUT_LEVEL_STALE_MS old describes a receiver that stopped: the decoder
    keeps it, but does not warn about it. A fresh one still warns. */
+static uint64_t
+stale_measurement_ms(void) {
+    const uint64_t age = DSD_INPUT_LEVEL_STALE_MS + 500U;
+    uint64_t now = dsd_realtime_mono_ms();
+    while (now < age) {
+        dsd_sleep_ms((unsigned int)(age - now));
+        now = dsd_realtime_mono_ms();
+    }
+    return now - age;
+}
+
 static void
 test_stale_live_warning_suppressed(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -457,9 +469,8 @@ test_stale_live_warning_suppressed(void) {
     opts->iq_replay_active = 0;
     dsd_decode_clock_use_test(1000ULL * 1000000000ULL);
 
-    const uint64_t now_ms = dsd_realtime_mono_ms();
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
-    dsd_input_level_snapshot stale = rf_clipping_level(now_ms - DSD_INPUT_LEVEL_STALE_MS - 500U);
+    dsd_input_level_snapshot stale = rf_clipping_level(stale_measurement_ms());
     dsd_input_level_publish(opts, state, &stale, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
@@ -491,7 +502,7 @@ test_replay_paused_over_2s_keeps_advisories(void) {
     const time_t capture_s = 1262304000; /* 2010-01-01Z */
     dsd_decode_clock_use_test((uint64_t)capture_s * 1000000000ULL);
 
-    dsd_input_level_snapshot paused = rf_clipping_level(dsd_realtime_mono_ms() - DSD_INPUT_LEVEL_STALE_MS - 500U);
+    dsd_input_level_snapshot paused = rf_clipping_level(stale_measurement_ms());
     dsd_input_level_publish(opts, state, &paused, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);

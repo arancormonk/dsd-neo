@@ -49,17 +49,17 @@ constexpr int kStepVerify = 101;
 /* ---- Fake USB device list (the identity unit's driver ops) ---- */
 
 struct usb_dev {
-    rtl_usb_device_info info;
-    const char* serial;
-    int hidden;         /* absent from enumerations: -1 for ever */
-    int gone_on_reset;  /* the reset makes it re-enumerate (GONE) */
-    uint8_t port_after; /* ... back on this port (0: its own) */
-    int never_back;     /* ... and it never comes back */
+    rtl_usb_device_info info{};
+    const char* serial = "";
+    int hidden = 0;         /* absent from enumerations: -1 for ever */
+    int gone_on_reset = 0;  /* the reset makes it re-enumerate (GONE) */
+    uint8_t port_after = 0; /* ... back on this port (0: its own) */
+    int never_back = 0;     /* ... and it never comes back */
     std::atomic<int> resets{0};
 };
 
 struct usb_world {
-    usb_dev devs[2];
+    usb_dev devs[2]{};
     int dev_count = 0;
     int rtl_count = 0;
     std::atomic<uint64_t> now_ms{1000U};
@@ -267,7 +267,7 @@ start_thread(dsd_thread_t* thread, dsd_thread_fn fn, void* arg) {
 struct log_capture {
     dsd_mutex_t lock;
     std::string text;
-    int off_level; /* the level the last "stall recovery is off" line was logged at, -1 for none */
+    int off_level = -1; /* the level the last "stall recovery is off" line was logged at, -1 for none */
 };
 
 log_capture g_log;
@@ -503,6 +503,26 @@ expect_dongle_holds(const rtl_device_test_usb_dongle& d, const settings& s, int 
 
 /* ---- Tests ---- */
 
+void
+test_required_synchronization_failure_refuses_open(void) {
+    usb_world_reset(0);
+    auto ring = std::make_unique<input_ring_state>();
+    const int ring_rc = input_ring_init(ring.get(), 4096U);
+    assert(ring_rc == 0);
+    rtl_device_test_usb_dongle dongle{};
+    rtl_device_test_usb_dongle_install(&dongle);
+    for (int step = 1; step <= 5; step++) {
+        rtl_device_test_refuse_common_sync(step);
+        rtl_device* dev = rtl_device_create(0, ring.get());
+        assert(dev == nullptr);
+        assert(dongle.calls[RTL_TEST_DONGLE_OPEN] == 0);
+        assert(dongle.open_handles == 0);
+    }
+    rtl_device_test_refuse_common_sync(0);
+    rtl_device_test_usb_dongle_install(nullptr);
+    input_ring_destroy(ring.get());
+}
+
 struct fifo_close_probe {
     rtl_device_test_usb_dongle* dongle = nullptr;
     bool retired_closed = false;
@@ -603,6 +623,10 @@ test_replay_restores_effective_not_initial(void) {
     rig_configure(r, s);
     rig_start(r);
     /* Changes while it streams: a retune, a new gain, PPM, bias tee, an IF gain and test mode. */
+    s.rtl_xtal = 28800300U;
+    assert(rtl_device_set_xtal_freq(r.dev, s.rtl_xtal, 0U) == 0);
+    s.tuner_xtal = 28800400U;
+    assert(rtl_device_set_xtal_freq(r.dev, 0U, s.tuner_xtal) == 0);
     s.freq = 853037500U;
     assert(rtl_device_set_frequency(r.dev, s.freq) == 0);
     s.gain = 340;
@@ -798,10 +822,10 @@ test_setter_during_swap_returns_busy(void) {
 /* ---- A setter that took just before the handle was retired ---- */
 
 struct held_setter {
-    rtl_device* dev;
+    rtl_device* dev = nullptr;
     std::atomic<int> inside{0};
     std::atomic<int> release{0};
-    int rc;
+    int rc = 0;
 };
 
 held_setter g_held;
@@ -830,8 +854,8 @@ held_setter_thread(void* arg) {
 }
 
 struct recover_call {
-    rig* r;
-    int rc;
+    rig* r = nullptr;
+    int rc = 0;
     std::atomic<int> done{0};
 };
 
@@ -901,7 +925,7 @@ test_setter_before_retire_is_replayed(void) {
  * they never race it. */
 
 struct hammer {
-    rtl_device* dev;
+    rtl_device* dev = nullptr;
     std::atomic<int> run{1};
     std::atomic<int> bad{0};
     std::atomic<int> busy{0};
@@ -1391,7 +1415,8 @@ test_android_recovery_off_logged_at_info(void) {
     const std::string log = log_take();
     assert(log.find("RTL-SDR: stall recovery is off for this receiver: opened from an Android descriptor")
            != std::string::npos);
-    assert(log_off_level_take() == (int)LOG_LEVEL_INFO);
+    const int descriptor_level = log_off_level_take();
+    assert(descriptor_level == (int)LOG_LEVEL_INFO);
     assert(rtl_device_usb_recovery_eligible(dev) == 0);
     rtl_device_destroy(dev);
     input_ring_destroy(ring.get());
@@ -1402,7 +1427,8 @@ test_android_recovery_off_logged_at_info(void) {
     usb_world_reset(1);
     rig r;
     rig_open(r, 1);
-    assert(log_off_level_take() == (int)LOG_LEVEL_WARN);
+    const int warning_level = log_off_level_take();
+    assert(warning_level == (int)LOG_LEVEL_WARN);
     rig_close(r);
     usb_world_reset(0);
 }
@@ -1467,15 +1493,14 @@ main(void) {
     rtl_device_test_set_progress_limit_ms(3600000U);
     usb_world_reset(0);
 
+    test_required_synchronization_failure_refuses_open();
     test_ineligible_recovery_off_reason_logged();
     test_android_recovery_off_logged_at_info();
-#ifdef DSD_HAVE_LIBUSB
-    const int have_libusb = 1;
-#else
-    const int have_libusb = 0;
-#endif
+    rtl_usb_identity identity{};
+    const auto capability = rtl_usb_identity_resolve(0, &identity);
+    assert(capability == RTL_USB_ID_OK || capability == RTL_USB_ID_NO_LIBUSB);
     /* Without libusb no receiver is eligible; the report above is all there is. */
-    if (have_libusb != 0) {
+    if (capability == RTL_USB_ID_OK) {
         test_retired_fifo_released_before_usb_reset();
         test_swap_configures_before_reader_runs();
         test_replay_restores_effective_not_initial();

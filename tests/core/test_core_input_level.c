@@ -11,6 +11,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -477,7 +478,7 @@ test_warning_cooldown_runs_on_the_decode_clock(void) {
     /* Measured 20 s of real time before the next one. */
     const uint64_t measured_ms = dsd_realtime_mono_ms();
     timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.5, 0.0, capture_s);
-    hot.level.updated_ms = measured_ms - 20000U;
+    hot.level.updated_ms = measured_ms > 20000U ? measured_ms - 20000U : 0U;
     const time_t real_before = dsd_realtime_time();
     dsd_input_level_publish(opts, state, &hot.level, DSD_INPUT_LEVEL_NOTIFY_RF);
     const time_t real_after = dsd_realtime_time();
@@ -504,8 +505,53 @@ test_warning_cooldown_runs_on_the_decode_clock(void) {
     free(opts);
 }
 
+static dsd_input_level_snapshot g_producer_level;
+
+static int
+producer_level(dsd_input_level_snapshot* out) {
+    *out = g_producer_level;
+    return 0;
+}
+
+/* A backlog describes old samples; a live advisory must describe the receiver's current input. Replay stays tied
+   to the recorded sample even when a live producer hook happens to be installed. */
+static void
+test_lagging_decoder_uses_fresh_receiver_level(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->input_warn_db = -40.0;
+    const dsd_rtl_stream_metrics_hooks hooks = {.input_level = producer_level};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    const timed_level healthy = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -25.0, -3.0, 0.0, 100);
+    const timed_level clipped = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -6.0, -0.1, 1.0, 101);
+    timed_level old = healthy;
+    old.level.updated_ms = 0U;
+    g_producer_level = clipped.level;
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "sentinel");
+    old = clipped;
+    old.level.updated_ms = 0U;
+    g_producer_level = healthy.level;
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_OK);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    opts->iq_replay_active = 1;
+    old.decode_s += 100;
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_lagging_decoder_uses_fresh_receiver_level();
     test_warning_cooldown_runs_on_the_decode_clock();
     test_classifier_thresholds();
     test_pcm_publish_backfills_rtl_power_but_rf_publish_does_not();

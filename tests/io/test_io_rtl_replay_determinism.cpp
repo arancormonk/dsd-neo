@@ -97,9 +97,9 @@ remove_fixture_dirs(void) {
 namespace {
 /* An event a capture records (make_capture_with_events()). */
 struct CaptureEvent {
-    uint64_t offset; /* the capture bytes before it */
-    dsd_iq_event_kind kind;
-    uint64_t value;               /* a RETUNE's or RESET's channel centre in Hz; a MUTE's omitted bytes */
+    uint64_t offset = 0U; /* the capture bytes before it */
+    dsd_iq_event_kind kind = DSD_IQ_EVENT_RETUNE;
+    uint64_t value = 0U;          /* a RETUNE's or RESET's channel centre in Hz; a MUTE's omitted bytes */
     const char* reason = nullptr; /* a RETUNE's or RESET's reason; NULL: "frequency", a retune's */
 };
 } // namespace
@@ -2133,6 +2133,12 @@ expect_gaps_mark_the_next_batch(const char* label, const char* metadata_path, si
             rc |= expect_true(what, 0);
             break;
         }
+        if (tag.chunk_sequence == 0U || tag.chunk_sequence > outputs.size()
+            || tag.chunk_sequence > gaps_before.size()) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: the batch identifies a recorded chunk", label);
+            rc |= expect_true(what, 0);
+            break;
+        }
         if (tag.chunk_sequence == last_sequence) {
             batch_taken += (uint64_t)got;
             continue;
@@ -2148,7 +2154,7 @@ expect_gaps_mark_the_next_batch(const char* label, const char* metadata_path, si
         }
         DSD_SNPRINTF(what, sizeof(what), "%s: the batches come in chunk order", label);
         rc |= expect_u64_eq(what, tag.chunk_sequence, (uint64_t)want_chunk + 1U);
-        if (tag.chunk_sequence >= 1U && tag.chunk_sequence <= layout.size()) {
+        if (tag.chunk_sequence <= layout.size()) {
             DSD_SNPRINTF(what, sizeof(what), "%s: chunk %llu's batch carries the gaps recorded before it", label,
                          (unsigned long long)tag.chunk_sequence);
             rc |= expect_u64_eq(what, tag.boundary_seq, seq_before + gaps_before[tag.chunk_sequence - 1U]);
@@ -2156,6 +2162,10 @@ expect_gaps_mark_the_next_batch(const char* label, const char* metadata_path, si
         want_chunk = (size_t)tag.chunk_sequence;
         last_sequence = tag.chunk_sequence;
         batch_taken = (uint64_t)got;
+    }
+    if (last_sequence != 0U) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: the last batch was read whole", label);
+        rc |= expect_u64_eq(what, batch_taken, outputs[last_sequence - 1U]);
     }
     (void)stop_replay(ctx);
     DSD_SNPRINTF(what, sizeof(what), "%s: every sample was delivered", label);

@@ -10,6 +10,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
+#include <numeric>
 #include <stdint.h>
 #include <string.h>
 #include <vector>
@@ -21,21 +22,21 @@
 namespace {
 
 struct fake_dev {
-    rtl_usb_device_info info;
-    const char* manufacturer;
-    const char* product;
-    const char* serial;
-    int open_rc;     /* RTL_USB_OP_* from usb_open */
-    int read_rc;     /* RTL_USB_OP_* from usb_read_strings */
-    int rtl_read_rc; /* librtlsdr's string read for its index */
-    int reset_rc;    /* RTL_USB_OP_* from usb_reset */
-    int resets;      /* reset calls that reached this device */
-    int hidden;      /* enumerations it is absent from */
-    int gone_hidden; /* after a GONE reset: enumerations to stay absent, -1 for ever */
-    int gone_port;   /* after a GONE reset: the port it comes back on (0 keeps its port) */
-    int deny_opens;  /* opens to refuse with ACCESS, -1 for ever (udev not yet done) */
-    int describe_rc; /* RTL_USB_OP_* from usb_describe (info still filled, as the real op does) */
-    int gone_deny;   /* after a GONE reset: deny_opens */
+    rtl_usb_device_info info{};
+    const char* manufacturer = nullptr;
+    const char* product = nullptr;
+    const char* serial = nullptr;
+    int open_rc = 0;     /* RTL_USB_OP_* from usb_open */
+    int read_rc = 0;     /* RTL_USB_OP_* from usb_read_strings */
+    int rtl_read_rc = 0; /* librtlsdr's string read for its index */
+    int reset_rc = 0;    /* RTL_USB_OP_* from usb_reset */
+    int resets = 0;      /* reset calls that reached this device */
+    int hidden = 0;      /* enumerations it is absent from */
+    int gone_hidden = 0; /* after a GONE reset: enumerations to stay absent, -1 for ever */
+    int gone_port = 0;   /* after a GONE reset: the port it comes back on (0 keeps its port) */
+    int deny_opens = 0;  /* opens to refuse with ACCESS, -1 for ever (udev not yet done) */
+    int describe_rc = 0; /* RTL_USB_OP_* from usb_describe (info still filled, as the real op does) */
+    int gone_deny = 0;   /* after a GONE reset: deny_opens */
 };
 
 struct fake_world {
@@ -84,7 +85,7 @@ fake_rtl_index_strings(uint32_t index, char* m, char* p, char* s) {
 
 int
 fake_rtl_handle_strings(rtlsdr_dev_t* dev, char* m, char* p, char* s) {
-    const fake_dev* d = reinterpret_cast<const fake_dev*>(dev);
+    const fake_dev* d = reinterpret_cast<fake_dev*>(dev);
     if (d->rtl_read_rc != 0) {
         return -1;
     }
@@ -120,7 +121,7 @@ fake_close_session(void* session) {
 
 int
 fake_describe(void* session, int i, rtl_usb_device_info* out) {
-    auto* sess = static_cast<fake_session*>(session);
+    const auto* sess = static_cast<fake_session*>(session);
     const fake_dev& d = g_world.devs[(size_t)sess->visible[(size_t)i]];
     *out = d.info;
     return d.describe_rc;
@@ -128,7 +129,7 @@ fake_describe(void* session, int i, rtl_usb_device_info* out) {
 
 int
 fake_open(void* session, int i, void** handle) {
-    auto* sess = static_cast<fake_session*>(session);
+    const auto* sess = static_cast<fake_session*>(session);
     fake_dev& d = g_world.devs[(size_t)sess->visible[(size_t)i]];
     if (d.deny_opens != 0) {
         if (d.deny_opens > 0) {
@@ -150,7 +151,7 @@ fake_close(void* handle) {
 
 int
 fake_read_strings(void* handle, char* m, char* p, char* s) {
-    const fake_dev* d = static_cast<const fake_dev*>(handle);
+    const fake_dev* d = static_cast<fake_dev*>(handle);
     if (d->read_rc != RTL_USB_OP_OK) {
         return d->read_rc;
     }
@@ -240,11 +241,8 @@ reset_world(void) {
 
 int
 total_resets(void) {
-    int n = 0;
-    for (const fake_dev& d : g_world.devs) {
-        n += d.resets;
-    }
-    return n;
+    return std::accumulate(g_world.devs.begin(), g_world.devs.end(), 0,
+                           [](int n, const fake_dev& d) { return n + d.resets; });
 }
 
 #if defined(DSD_HAVE_LIBUSB) && defined(USE_RTLSDR)

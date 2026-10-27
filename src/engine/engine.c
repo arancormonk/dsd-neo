@@ -3311,6 +3311,9 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
          * field, so the skip has to stamp it itself. */
         state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
     }
+    if (state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
+        return frame_dispatchable;
+    }
     /* A TETRA carrier syncs on every burst, so the synced-frames loop may never hand back to the outer one: the TETRA
      * state machine settles its tune and runs its hangtime here too, withheld frames included. */
     dsd_engine_tetra_trunk_tick_locked(opts, state);
@@ -3355,6 +3358,14 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         p25_sm_tick_guard_enter();
         const int frame_dispatchable = live_scanner_dispatch_synced_frame_locked(opts, state, frame_tune_generation);
         p25_sm_tick_guard_leave();
+        if (state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
+            /* Finish the cut frame before resetting, but retire its state before any trunk or scan tick can use it.
+             * Keep the interrupted flag for the outer loop so it does not run a second carrier-loss boundary. */
+            state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+            dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         dsd_trunk_scan_hook_tick(opts, state);
         if (dsd_engine_signal_search_should_yield(opts, state)) {
             dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);

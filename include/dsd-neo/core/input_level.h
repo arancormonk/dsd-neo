@@ -94,8 +94,8 @@ void dsd_input_level_classify(dsd_input_level_snapshot* snapshot, double low_war
  * Stale when there is no level (NULL, no samples) or it was measured more than DSD_INPUT_LEVEL_STALE_MS before
  * @p now_ms: a receiver that stopped delivering samples (a stalled USB dongle, an rtl_tcp server gone quiet) keeps its
  * last level, and nothing but its age tells it from one that is quiet. A stamp after @p now_ms (a reader whose clock
- * read came before the producer's) is fresh. Frontends show such a level as "No input"; a live input's warnings hold
- * while it is stale (dsd_input_level_publish()).
+ * read came before the producer's) is fresh. Frontends show a stale or missing level as "No input"; warnings
+ * require a fresh live measurement (dsd_input_level_publish()).
  */
 int dsd_input_level_is_stale(const dsd_input_level_snapshot* snapshot, uint64_t now_ms);
 
@@ -124,9 +124,10 @@ int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, ch
  * last one (`state->input_level_last_toast_time`), unless the status worsens. The decoder prints it, so a replay
  * prints it at the same capture time in every run. The toast stays up for real time (`state->ui_msg_expire`).
  *
- * A live input's level that is stale (dsd_input_level_is_stale()) is kept but warns about nothing: it is the last
- * level of a receiver that stopped. An I/Q replay (`opts->iq_replay_active`) warns as its capture says whatever the
- * real-time age, so a replay that pauses still prints the same warnings in every run.
+ * A stale live RF level is replaced by a fresh producer measurement when available. Without one it is kept
+ * but warns about nothing: it is the last level of a receiver that stopped. An I/Q replay (`opts->iq_replay_active`)
+ * warns as its capture says whatever the real-time age, so a replay that pauses still prints the same warnings in
+ * every run.
  */
 void dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                              unsigned int notify_mask);

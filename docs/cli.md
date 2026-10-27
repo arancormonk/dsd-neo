@@ -2046,15 +2046,16 @@ Stall recovery (`-i rtl`)
   after it was last reset; the stream stops`, `... resetting it failed: <step>; the stream stops`). A dongle that only a
   power cycle clears ends the session this way.
 - Recovery runs only when DSD-neo can tell which USB device the dongle is, so that a reset never reaches another
-  dongle (one another program may be streaming from): the dongle must report a serial that no other attached device
-  of the RTL-SDR's vendor-specific USB class (whatever its VID:PID) shares, every such device must be readable, and the
-  build needs libusb-1.0 (configure prints `libusb for RTL-SDR stall recovery: ON`). Otherwise the open logs
+  dongle (one another program may be streaming from): the dongle must report a nonempty serial, and its complete
+  manufacturer/product/serial triple must identify one readable device of the RTL-SDR's vendor-specific USB class
+  (whatever its VID:PID). Unreadable candidates refuse recovery, except devices this process cannot open for lack
+  of permission or a usable driver, as described in [the code map](code_map.md). The build needs libusb-1.0 (configure prints `libusb for RTL-SDR stall recovery: ON`). Otherwise the open logs
   `RTL-SDR: stall recovery is off for this receiver: <reason>` (for example `another device has the same serial (set a
   unique one with rtl_eeprom)`: many dongles ship with serial `00000001`; `rtl_eeprom -d <index> -s <serial>` gives
   each its own) and a stall ends the session as before. The Android app never resets the dongle: a stalled receiver
   ends the session there, and Reconnect starts it again (see `android/README.md`). On Windows a WinUSB reset may not
   be a full port reset; whether it worked is judged by the samples that follow.
-- While the dongle is being reset, a frequency, PPM or bias-tee change from a frontend or the control API is refused
+- While the dongle is being reset, a frequency, gain, PPM or bias-tee change from a frontend or the control API is refused
   with `Failed: the RTL-SDR is being reset; try again in a moment` and changes nothing; every other command (menus, an
   input switch, quit) applies as soon as it is queued.
 - A receiver that has gone quiet but is not yet past the 5 s limit still counts as streaming, so a command queued then

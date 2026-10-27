@@ -62,6 +62,7 @@ dsd_engine_rtl_stream_io_hooks_install(void) {
     hooks.read_ex = rtl_stream_io_read_ex;
     hooks.squelch_status = rtl_stream_io_squelch_status;
     hooks.read_ex2 = rtl_stream_io_read_ex2;
+    hooks.no_stream_since_ms = rtl_stream_no_stream_since_ms;
 #endif
     dsd_rtl_stream_io_hooks_set(hooks);
 }

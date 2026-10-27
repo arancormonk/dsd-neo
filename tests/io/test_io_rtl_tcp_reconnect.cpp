@@ -491,7 +491,8 @@ server_kill(void) {
 std::vector<uint32_t>
 server_params(size_t idx, uint8_t id) {
     std::vector<uint32_t> out;
-    for (const cmd_rec& c : server_conn_get(idx).cmds) {
+    const server_conn connection = server_conn_get(idx);
+    for (const cmd_rec& c : connection.cmds) {
         if (c.id == id) {
             out.push_back(c.param);
         }
@@ -970,6 +971,26 @@ test_stop_during_silent_header(void) {
 
 /* ---- Settings across a reconnect (D6) ---- */
 
+void
+test_read_buffer_failure_ends_session(void) {
+    server_reset(default_script());
+    dev_rig r;
+    rig_open(r, 0, 0);
+    dsd_input_failure_clear();
+    rtl_device_test_tcp_refuse_read_buffer(1);
+    rig_start(r);
+    const bool ended = wait_until([] { return dsd_exitflag_load() != 0; }, kPromptMs);
+    assert(ended);
+    dsd_input_failure failure{};
+    dsd_input_failure_get(&failure);
+    assert(failure.kind == DSD_INPUT_FAILURE_DEVICE && failure.native_code == -ENOMEM);
+    assert(dsd_input_failure_receiver_ended() == 0);
+    rig_close(r);
+    rtl_device_test_tcp_refuse_read_buffer(0);
+    dsd_exitflag_store(0);
+    dsd_input_failure_clear();
+}
+
 /* The session's settings on the first connection. */
 void
 configure(rtl_device* dev) {
@@ -1022,6 +1043,8 @@ test_latest_effective_settings_replayed(void) {
     assert(rtl_device_set_ppm(r.dev, 0) == 0);
     assert(rtl_device_set_bias_tee(r.dev, 0) == 0);
     assert(rtl_device_set_frequency(r.dev, 854000000U) == 0);
+    assert(rtl_device_set_xtal_freq(r.dev, 28800300U, 0U) == 0);
+    assert(rtl_device_set_xtal_freq(r.dev, 0U, 28800400U) == 0);
     rig_start(r);
     lose_connection(r);
     wait_generation(r, 2U);
@@ -1030,6 +1053,10 @@ test_latest_effective_settings_replayed(void) {
                && m.gain == 280 && m.reg19 == 0x05;
     });
     assert(server_params(1, 0x01).size() == 1U);
+    const std::vector<uint32_t> rtl_xtal{28800300U};
+    const std::vector<uint32_t> tuner_xtal{28800400U};
+    assert(server_params(1, 0x0B) == rtl_xtal);
+    assert(server_params(1, 0x0C) == tuner_xtal);
     rig_close(r);
 }
 
@@ -1060,8 +1087,8 @@ test_replay_failure_not_published(void) {
 /* ---- Sends ---- */
 
 struct sender_ctx {
-    rtl_device* dev;
-    int which;
+    rtl_device* dev = nullptr;
+    int which = 0;
     std::atomic<int> failures{0};
 };
 
@@ -1120,7 +1147,7 @@ test_concurrent_partial_writes_never_interleave(void) {
 /* old_sender_does_not_touch_replacement: a setter holding the first connection when it is lost and replaced fails on
  * it; it neither takes the replacement down nor records anything, and the replacement never gets its command. */
 struct old_sender {
-    dev_rig* rig;
+    dev_rig* rig = nullptr;
     std::atomic<int> armed{0};
     std::atomic<int> held{0};
     std::atomic<int> rc{1};
@@ -1172,6 +1199,71 @@ test_old_sender_does_not_touch_replacement(void) {
     rig_close(r);
 }
 
+/* A complete unit may reach the old server just before its connection is replaced. It is still an uncommitted
+   gain change, so the next replay must reassert the last effective policy even if no gain previously took. */
+void
+test_gain_send_replaced_before_commit(void) {
+    server_reset(default_script());
+    dev_rig r;
+    rig_open(r, 0, 0);
+    rig_start(r);
+    g_old.rig = &r;
+    g_old.held.store(0);
+    g_old.armed.store(1);
+    rtl_device_test_tcp_set_commit_hook(hold_first_generation, nullptr);
+    const int rc = rtl_device_set_gain(r.dev, 280);
+    rtl_device_test_tcp_set_commit_hook(nullptr, nullptr);
+    assert(rc == RTL_DEVICE_ENOTCONN && g_old.held.load() == 1);
+    rtl_device_test_tcp_state st{};
+    rtl_device_test_tcp_state_get(r.dev, &st);
+    assert(st.gain_unknown == 1 && st.gain_took == 0);
+    lose_connection(r);
+    wait_generation(r, 3U);
+    const server_model model = sync_server(r.dev, 2U);
+    assert(model.gain_manual == 0 && model.reg19 == (st.digital_agc ? 0x25 : 0x05));
+    rig_close(r);
+}
+
+struct hook_context {
+    int id = 0;
+    std::atomic<int> calls{0};
+};
+
+void
+read_hook_one(void* ctx) {
+    auto* context = static_cast<hook_context*>(ctx);
+    assert(context && context->id == 1);
+    context->calls.fetch_add(1);
+}
+
+void
+read_hook_two(void* ctx) {
+    auto* context = static_cast<hook_context*>(ctx);
+    assert(context && context->id == 2);
+    context->calls.fetch_add(1);
+}
+
+void
+test_concurrent_hook_replacement(void) {
+    server_reset(default_script());
+    dev_rig r;
+    rig_open(r, 0, 0);
+    hook_context one{1};
+    hook_context two{2};
+    rtl_device_test_tcp_set_read_hook(read_hook_one, &one);
+    rig_start(r);
+    assert(wait_until([&] { return one.calls.load() > 0; }, kWaitMs));
+    const uint64_t end = now_ms() + 200U;
+    while (now_ms() < end) {
+        rtl_device_test_tcp_set_read_hook(read_hook_two, &two);
+        rtl_device_test_tcp_set_read_hook(read_hook_one, &one);
+    }
+    rtl_device_test_tcp_set_read_hook(read_hook_two, &two);
+    assert(wait_until([&] { return two.calls.load() > 0; }, kWaitMs));
+    rig_close(r);
+    rtl_device_test_tcp_set_read_hook(nullptr, nullptr);
+}
+
 /* stop_during_replay: a stop that comes while the replay runs ends it: nothing is published, the connection is closed,
  * and the reader joins. */
 std::atomic<int> g_replay_stop_armed{0};
@@ -1183,7 +1275,7 @@ __stdcall
 #endif
 // NOLINTNEXTLINE(misc-const-correctness) -- The signature is a thread entry's.
 stopper_main(void* arg) {
-    const auto* r = static_cast<const dev_rig*>(arg);
+    const auto* r = static_cast<dev_rig*>(arg);
     (void)rtl_device_stop_async(r->dev);
     DSD_THREAD_RETURN;
 }
@@ -1230,6 +1322,7 @@ test_stop_during_replay(void) {
     assert(rtl_device_has_stream(r.dev) == 0);
     assert(wait_until([] { return server_conn_count() >= 2U && server_conn_get(1).ended != 0; }, kWaitMs));
     rig_close(r);
+    g_replay_rig = nullptr;
 }
 
 /* stop_during_backpressured_send: the server stops reading commands until a setter blocks in its send; a stop wakes
@@ -1245,7 +1338,7 @@ count_sends(uint64_t generation, void* ctx) {
 }
 
 struct flood_ctx {
-    rtl_device* dev;
+    rtl_device* dev = nullptr;
     std::atomic<int> last_rc{0};
     std::atomic<int> done{0};
 };
@@ -1346,6 +1439,7 @@ test_stop_cancels_queued_handoff(void) {
     assert(rtl_device_tcp_handoff_take(r.dev) == 0);
     assert(wait_until([] { return server_conn_count() >= 2U && server_conn_get(1).ended != 0; }, 1000U));
     rig_close(r);
+    g_queued_rig = nullptr;
     rtl_device_test_tcp_set_discard_hook(nullptr, nullptr);
 }
 
@@ -1441,6 +1535,7 @@ test_discard_release_keeps_pair_alignment(void) {
     const uint64_t floats_at_release = r.floats.load();
     assert(wait_until([&] { return r.floats.load() >= floats_at_release + 65536U; }, kWaitMs));
     rig_close(r);
+    g_discard_rig = nullptr;
     rtl_device_test_tcp_set_discard_hook(nullptr, nullptr);
     g_release_in_receive.store(0);
     assert(server_conn_get(1).pre_sent == kDiscardBytes);
@@ -2058,6 +2153,9 @@ struct named_test {
 };
 
 const named_test kTests[] = {
+    {"read_buffer_failure_ends_session", test_read_buffer_failure_ends_session},
+    {"gain_send_replaced_before_commit", test_gain_send_replaced_before_commit},
+    {"concurrent_hook_replacement", test_concurrent_hook_replacement},
     {"header_has_no_gain_table", test_header_has_no_gain_table},
     {"header_fragmented_across_timeouts", test_header_fragmented_across_timeouts},
     {

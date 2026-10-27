@@ -194,6 +194,9 @@ int rtl_device_test_soapy_cs16_copy(float* dst, const int16_t* src_iq, size_t el
  * as readers do, hold (@p hold set) or let go of every buffer but the current one. Returns the buffers changed. Call
  * with no other spectrum reader or writer running. */
 void rtl_metrics_test_spectrum_reset(void);
+/* Publish a competing frame after the getter pins its candidate, before it validates publication. */
+void rtl_metrics_test_spectrum_set_pin_hook(void (*hook)(void*), void* ctx);
+int rtl_metrics_test_spectrum_hold_count(void);
 int rtl_metrics_test_spectrum_hold_spares(int hold);
 
 struct input_ring_state;
@@ -290,7 +293,13 @@ typedef struct {
     int monitor_started;        /* its progress monitor thread runs (or is not joined yet) */
     int stream_open;            /* the stream is set up and not closed */
     unsigned int stream_closes; /* streams the seam closed since the device was made */
+    uint64_t timeouts;
+    uint64_t overflows;
 } rtl_device_test_soapy_state;
+
+/* Faults in the host reader, separate from a driver failure. Restore after the device stops. */
+void rtl_device_test_soapy_internal_read_failure(int on);
+void rtl_device_test_soapy_refuse_reader(int on);
 
 /* The state of @p dev; read by the thread that starts and stops it. */
 void rtl_device_test_soapy_state_get(struct rtl_device* dev, rtl_device_test_soapy_state* out);
@@ -339,6 +348,10 @@ typedef struct {
     uint32_t filter_bw;    /* bandwidth the tuner's filter was last set to */
     int direct_sampling;   /* direct sampling mode: offset tuning is refused with -3 while it is on */
     int rate_without_freq; /* a rate was set while no frequency was (an R82xx tuner then retunes to 0 Hz) */
+    int offset_result;     /* failure after librtlsdr changed its LO offset */
+    uint32_t actual_rate;  /* a nonzero sample-rate readback different from the requested rate */
+    int frequency_calls;
+    int fail_frequency_from_call;
 } rtl_device_test_usb_tuner_fake;
 
 /* A USB device, never opened, whose tuning controls (centre frequency, sample rate, direct sampling, offset tuning,
@@ -439,7 +452,8 @@ int rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_op
 /* Run the start's programming as above, then a controller retune's to @p retune_center_hz; @p out holds the
  * retune's. */
 int rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
-                                           uint32_t retune_center_hz, rtl_stream_test_capture_result* out);
+                                           uint32_t retune_center_hz, int retune_rate_in_hz,
+                                           rtl_stream_test_capture_result* out);
 
 /* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
 enum {
@@ -447,6 +461,19 @@ enum {
     RTL_STREAM_TEST_GAIN_RETUNE_MANUAL = 1, /* a retune profile's manual gain, nearest supported */
     RTL_STREAM_TEST_GAIN_AUTOGAIN = 2,      /* the tuner autogain supervisor's nearest manual gain */
 };
+
+/* Run one supervisor decision (0: clipping probe, 1: bootstrap, 2: manual step), preserving stream state. */
+int rtl_stream_test_autogain_target(struct rtl_device* dev, int stage, int initial, int seed);
+
+typedef struct {
+    double gain_db;
+    double selected_db;
+    int writes;
+    int refuse;
+} rtl_device_test_soapy_gain_fake;
+/* A control-only Soapy driver with quantized gain readback. NULL without SoapySDR. */
+struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);
+void rtl_device_test_soapy_gain_device_free(struct rtl_device* dev);
 
 /* Run one of the stream's tuner-gain callers with @p dev as the open device and report the tuner gain it left
  * published (rtl_stream_get_gain()'s result, value and auto flag); the previous device handle and its published gain
@@ -459,6 +486,11 @@ int rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db,
  * Returns 0, or -1 while a stream runs or for a NULL @p dev. */
 int rtl_stream_test_note_discontinuity(struct rtl_device* dev, uint32_t center_hz, uint32_t capture_hz,
                                        uint32_t rate_hz, const char* reason);
+
+/* Exercise a boundary with no applied center; report whether the device step ran. */
+int rtl_stream_test_boundary_without_center(int* calls);
+/* Configure, clear and restore a simulated stream; bit 0 active, bit 1 cleared, bit 2 restored. */
+int rtl_stream_test_activity_swaps(void);
 
 /* The steps of a stream boundary (controller_stream_boundary()), in order; the last three run only after its device
  * step succeeded. */
@@ -489,6 +521,8 @@ void rtl_device_test_set_recovery_take_ms(uint32_t take_ms);
 void rtl_device_test_set_recovery_post_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 /* Call @p hook(dev, @p ctx) when rtl_device_usb_resume_reader() has taken the reader's baseline and is about to start
  * its thread (under the device's lifecycle lock); NULL removes it. */
+/* Called after recovery_take claims the request, before its final teardown check. */
+void rtl_device_test_set_recovery_take_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 
 /* ---- rtl_tcp (issue #518 WP3) ---- */
@@ -517,6 +551,12 @@ void rtl_device_test_tcp_set_sndbuf(int bytes);
 /* Call @p hook(generation, @p ctx) in every command send (a setter's, or a replay's), once it holds its connection and
  * that connection's send lock, before anything goes out; NULL removes it. Set while no command is sent. */
 void rtl_device_test_tcp_set_send_hook(void (*hook)(uint64_t generation, void* ctx), void* ctx);
+/* After a complete setter send, before its connection is checked for commitment. */
+void rtl_device_test_tcp_set_commit_hook(void (*hook)(uint64_t generation, void* ctx), void* ctx);
+/* Refuse the TCP reader's receive-buffer allocation. */
+void rtl_device_test_tcp_refuse_read_buffer(int refuse);
+/* Fail the numbered common synchronization initializer (1..5); 0 restores platform initialization. */
+void rtl_device_test_refuse_common_sync(int step);
 /* Call @p hook(@p ctx) in the reader's discard path, right before each of its receives; NULL removes it. Set while
  * no reader runs. */
 void rtl_device_test_tcp_set_discard_hook(void (*hook)(void* ctx), void* ctx);
@@ -542,6 +582,7 @@ typedef struct {
     int stop_requested;  /* the stop latch */
     int gain_took;       /* the effective record holds a gain state */
     int digital_agc;     /* the digital AGC the gain state wants */
+    int gain_unknown;    /* a failed gain unit may have reached a retired connection */
 } rtl_device_test_tcp_state;
 
 void rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state* out);

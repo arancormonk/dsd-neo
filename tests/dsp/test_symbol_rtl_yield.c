@@ -21,6 +21,7 @@
  * cut the yield short, and the gap it left is not lost behind it.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -34,6 +35,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -418,29 +420,35 @@ test_analog_zero_read_contract_kept(dsd_opts* opts, dsd_state* state) {
 
 int
 main(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
     install_fake_stream();
 
-    yield_across(&opts, &state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
-    yield_across(&opts, &state, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "FSK discriminator cache");
-    yield_across(&opts, &state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
-    yield_resumes_at_the_next_sample(&opts, &state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
-    yield_resumes_at_the_next_sample(&opts, &state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
-    sticky_yield_across_reconnect(&opts, &state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
-    sticky_yield_across_reconnect(&opts, &state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
-    test_search_failure_contract_kept(&opts, &state);
-    test_analog_zero_read_contract_kept(&opts, &state);
+    yield_across(opts, state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
+    yield_across(opts, state, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "FSK discriminator cache");
+    yield_across(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
+    yield_resumes_at_the_next_sample(opts, state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
+    yield_resumes_at_the_next_sample(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
+    sticky_yield_across_reconnect(opts, state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK, "CQPSK symbol cache");
+    sticky_yield_across_reconnect(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, "one-sample reader");
+    test_search_failure_contract_kept(opts, state);
+    test_analog_zero_read_contract_kept(opts, state);
 
     dsd_signal_search_active_set(NULL);
     dsd_decode_clock_use_system();
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d RTL yield check(s) failed\n", g_failures);
+        free(state);
+        free(opts);
         return 1;
     }
+    free(state);
+    free(opts);
     return 0;
 }
