@@ -93,10 +93,12 @@ class DiagnosticsLog {
     bool pump();
     void setIoFaultForTest(IoFault fault);
     static QString redact(QString text);
+    // Test seam: how many producer error lines are listed, and how many have only %d and %u conversions and so count.
+    static std::pair<int, int> producerLineCountsForTest();
 
     // Splits a captured byte stream (Android's redirected stdout and stderr) into records of one source. A key value
-    // can run on past the line that names its option, so after a dropped record the lines that hold only key
-    // characters are dropped too.
+    // can run on past the line that names its option, so after a dropped record the lines that could still be that
+    // value are dropped too: a single token, key characters only, or the rest of a quoted string.
     class StreamCapture {
       public:
         StreamCapture(DiagnosticsLog& log, QString source);
@@ -106,12 +108,16 @@ class DiagnosticsLog {
 
       private:
         void emitLine();
+        bool continuesValue(const QString& text);
 
         DiagnosticsLog& m_log;
         QString m_source;
         std::string m_line;
         bool m_oversized = false;
         bool m_afterDropped = false;
+        // The quote a dropped record left open (0: none), and how much of the quoted value has been dropped since.
+        char16_t m_quote = 0;
+        qsizetype m_quotedSize = 0;
     };
 
   private:

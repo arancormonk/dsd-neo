@@ -1422,6 +1422,33 @@ producerErrorLinesSurvive() {
         checkLabelled(DiagnosticsLog::redact(expected) == expected,
                       "stored decoder template not verbatim: " + line.text);
     }
+    // The Android service's results, which name a failed run's code (#782: "engine run returned -1").
+    for (const auto& line :
+         {QStringLiteral("engine run returned -1"), QStringLiteral("service: engine configuration returned -2")}) {
+        DiagnosticsLog::submitHostDiagnostic(line);
+        const auto ring = log.snapshot();
+        const QString expected = QStringLiteral("[host] [info] ") + line;
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "host template not verbatim: " + line.toUtf8());
+        checkLabelled(DiagnosticsLog::redact(expected) == expected,
+                      "stored host template not verbatim: " + line.toUtf8());
+    }
+    // Every listed producer line has only %d and %u conversions, so each one counts.
+    const auto counts = DiagnosticsLog::producerLineCountsForTest();
+    check(counts.first == 28 && counts.second == counts.first, "a producer line was left out or the list changed");
+}
+
+/* A decimal is no option cluster (getopt stops at the '.'), so measurements keep their negative values; a digit cluster
+ * that getopt would read as options still drops. */
+static void
+negativeDecimalsSurvive() {
+    for (const auto& record :
+         {QStringLiteral("[stderr] [info] SNR -3.2 dB"), QStringLiteral("[decoder] [info] Input level -48.9 dBFS "),
+          QStringLiteral("[stderr] [info] offset -0.5 ppm")}) {
+        checkLabelled(DiagnosticsLog::redact(record) == record, "negative decimal dropped: " + record.toUtf8());
+    }
+    for (const auto& record : {QStringLiteral("[stderr] [info] level -35"), QStringLiteral("[stderr] [info] -ZT1F")}) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped, "option cluster kept: " + record.toUtf8());
+    }
 }
 
 /* Only a whole producer record is exempt: anything around or inside it, or the same text from another producer,
@@ -1435,6 +1462,11 @@ producerErrorLinesDoNotCarryKeys() {
         QStringLiteral("[stderr] [info] usb_claim_interface error -1\n-b197"),
         QStringLiteral("[stderr] [info] usb_claim_interface error -1 key"),
         QStringLiteral("[stderr] [info] usb_claim_interface error -91234"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -9123"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1234"),
+        QStringLiteral("[host] [info] engine run returned -1 -b197"),
+        QStringLiteral("[host] [info] engine run returned -1234"),
+        QStringLiteral("[stderr] [info] engine run returned -1"),
         QStringLiteral("[decoder] [error] libusb: error [op_open] failed with error -91234\n"),
         QStringLiteral("[stderr] [info] rtlsdr_i2c_write_reg failed with -1"),
         QStringLiteral("[host] [info] usb_claim_interface error -1"),
@@ -1464,6 +1496,8 @@ everyKeyOptionFormIsDropped() {
                                      "--m17-scrambler-key", "--api-token",    "--rdio-api-key"};
     const QString first = QStringLiteral("1A2B");
     const QString second = QStringLiteral("3C4D");
+    // String-valued options (API credentials) take any text, so their values need not look like keys.
+    const QString word = QStringLiteral("s3cretValue");
 
     struct Form {
         const char* name;
@@ -1510,17 +1544,29 @@ everyKeyOptionFormIsDropped() {
                              {"multiline", flag + ' ' + first + '\n' + second},
                              {"multiline CRLF", flag + ' ' + first + QStringLiteral("\r\n") + second},
                              {"value on the next line", flag + '\n' + first + ' ' + second},
+                             {"text value on the next line", flag + '\n' + word},
+                             {"text value split across lines", flag + ' ' + word + '\n' + word},
+                             {"quoted value on the next line", flag + QStringLiteral("\n'my ") + word + " phrase'"},
+                             {"quoted value split across lines",
+                              flag + QStringLiteral(" 'my ") + word + QStringLiteral("\nphrase ") + word + '\''},
                          });
     }
     for (const auto& option : longOptions) {
-        checkForms(option, {
-                               {"attached", option + '=' + first},
-                               {"separated", option + ' ' + first},
-                               {"quoted multi-word", option + QStringLiteral(" '") + first + ' ' + second + '\''},
-                               {"list", '[' + option + QStringLiteral(", ") + first + ']'},
-                               {"multiline", option + ' ' + first + '\n' + second},
-                               {"value on the next line", option + '\n' + first + ' ' + second},
-                           });
+        checkForms(option,
+                   {
+                       {"attached", option + '=' + first},
+                       {"separated", option + ' ' + first},
+                       {"quoted multi-word", option + QStringLiteral(" '") + first + ' ' + second + '\''},
+                       {"list", '[' + option + QStringLiteral(", ") + first + ']'},
+                       {"multiline", option + ' ' + first + '\n' + second},
+                       {"value on the next line", option + '\n' + first + ' ' + second},
+                       {"text value on the next line", option + '\n' + word},
+                       {"text value attached and split", option + '=' + word + '\n' + word},
+                       {"text value split across lines", option + ' ' + word + '\n' + word},
+                       {"quoted value on the next line", option + QStringLiteral("\n\"my ") + word + " phrase\""},
+                       {"quoted value split across lines",
+                        option + QStringLiteral(" 'my ") + word + QStringLiteral("\nphrase ") + word + '\''},
+                   });
     }
 }
 
@@ -1531,7 +1577,12 @@ streamCaptureLineRules() {
     QTemporaryDir dir;
     QByteArray bytes = "first\r\nsecond\n\nthird\r";
     bytes += QByteArray(1100, 'x') + "\n" + "3C4D\n";
-    bytes += "-2 1A2B\n3C4D 5E6F\n0x 11, 22\n\x1b[1m3C4D\x1b[0m\tAB\nTuner gain set to 30 dB.\n5E6F\nlast";
+    bytes += "-2 1A2B\n3C4D 5E6F\n0x 11, 22\n\x1b[1m3C4D\x1b[0m\tAB\nTuner gain set to 30 dB.\n5E6F\n";
+    // A quote opened in a dropped record runs on to its close, but no further than one record's bound.
+    bytes += "--api-token 'never closed\n" + QByteArray(600, 'w').replace(100, 1, " ") + "\n"
+             + QByteArray(600, 'v').replace(100, 1, " ") + "\nSampling at 1536000 S/s.\n";
+    // An apostrophe inside a word opens no quote.
+    bytes += "Invalid key: don't\nTuner gain set to 30 dB.\nlast";
     const auto records = streamRecords(bytes, dir.path());
     const QStringList expected = {
         QStringLiteral("[stderr] [info] first"),
@@ -1545,6 +1596,12 @@ streamCaptureLineRules() {
         kDropped,
         QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
         QStringLiteral("[stderr] [info] 5E6F"),
+        kDropped,
+        kDropped,
+        kDropped,
+        QStringLiteral("[stderr] [info] Sampling at 1536000 S/s."),
+        kDropped,
+        QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
         QStringLiteral("[stderr] [info] last"),
     };
     check(records == expected, "stream capture line rules changed");
@@ -1570,6 +1627,7 @@ main(int argc, char** argv) {
     realKeySources();
     producerErrorLinesSurvive();
     producerErrorLinesDoNotCarryKeys();
+    negativeDecimalsSurvive();
     everyKeyOptionFormIsDropped();
     streamCaptureLineRules();
     appendKeepsTheFile();

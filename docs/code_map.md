@@ -7988,12 +7988,16 @@ Qt Quick frontend (`src/ui/qt`):
   the pause.
   Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
   platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
-  Android's stderr pump splits its stream with `DiagnosticsLog::StreamCapture`, which drops the key-value-only lines
-  that follow a dropped record (a value split at a newline). `redact()` drops a whole record that carries a key word
-  or any key-taking CLI option, attached, separate or bundled. The one exemption is a record that is wholly one
-  producer's error line: the librtlsdr and dsd-neo rtl/usb lines in `kProducerLines`, or a libusb log line
-  (`libusb: ` header) whose text before its code has no key label. Keep `kProducerLines` in step with those producers'
-  format strings and the key-option pattern in step with `src/runtime/cli/args.c`.
+  Android's stderr pump splits its stream with `DiagnosticsLog::StreamCapture`. After a dropped record it also drops
+  the lines that could still be its value, split off at a newline: a single token, key characters only, or the rest of
+  a quoted string (to its close, at most one record's 1024 bytes). An unquoted multi-word value continued on a later
+  line is not recognised. `redact()` drops a whole record that carries a key word or any key-taking CLI option,
+  attached, separate or bundled behind option letters (a decimal such as `-3.2 dB` is no option cluster). The one
+  exemption is a record that is wholly one producer's error line: the librtlsdr, dsd-neo rtl/usb and Android service
+  lines in `kProducerLines` (only `%d`, bounded to three digits, and `%u` fields), or a libusb log line (`libusb: `
+  header) whose text before its code has no key label. A producer line whose code is a key option with a value of at
+  most two digits would still be kept. Keep `kProducerLines` in step with those producers' format strings
+  (`UI_QT_DIAGNOSTICS_LOG` counts them) and the key-option pattern in step with `src/runtime/cli/args.c`.
   The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains
   every 250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything

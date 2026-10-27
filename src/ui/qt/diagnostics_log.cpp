@@ -123,22 +123,24 @@ const char kDroppedRecord[] = "[redacted sensitive diagnostic]";
  * @brief What marks a record as key-bearing: a key word, or a key-taking CLI option.
  *
  * getopt takes a short option's value attached or as the next argument, and bundles it behind options that take none
- * (`-ZT1F`), so any dash-led token holding a key option's letter counts. A host may echo arguments as a list or quoted,
- * so a quote, `[` or `,` can lead the token too. The long options without a key word in their name are listed.
+ * (`-ZT1F`), so a dash-led token counts when a key option's letter follows only characters that can be option letters.
+ * A decimal such as "-3.2 dB" is no option cluster: getopt stops at the '.'. A host may echo arguments as a list or
+ * quoted, so a quote, `[` or `,` can lead the token too. The long options without a key word in their name are listed.
  */
 const QRegularExpression&
 keyLabel() {
     static const QRegularExpression labelled(QStringLiteral(
         "(?i)(key|secret|password|token|\\b(?:K[1-4]|RC4|AES|Hytera|scrambler)\\b|(?:^|\\s)-(?:H|b|R|1|!)\\S*"
         "|--dmr-(?:baofeng-pc5|csi-ee72)"
-        "|(?-i:(?:^|[\\s\"'\\[,])-(?!-)\\S*?[12!@59ASHRb]))"));
+        "|(?-i:(?:^|[\\s\"'\\[,])-[A-Za-z0-9~^_!@]*?[12!@59ASHRb]))"));
     return labelled;
 }
 
 /*
  * Lines that name why a USB receiver failed, which the key rule would drop for their negative code (" error -1"
  * reads as option -1). Each is one producer's fixed text, whole: the source and level formatRecord() gives it, then
- * the producer's format, in which only the numeric fields (%d, %u) vary. A record matching one cannot carry a key.
+ * the producer's format, in which only the numeric fields vary. %d and %u are the only conversions accepted; an entry
+ * with any other is left out (producerLineCountsForTest() reports it).
  */
 struct ProducerLine {
     const char* record;
@@ -177,6 +179,9 @@ const ProducerLine kProducerLines[] = {
     {"[decoder] [error] ", "RTL-SDR: could not allocate USB transfer buffers (rc=%d)"},
     {"[stderr] [info] ", "WARNING: Failed to read the tuner's gain table (rc=%d); gain unchanged."},
     {"[decoder] [error] ", "RTL-SDR: could not start the sample-progress monitor (rc=%d); the stream does not start"},
+    // The Android service's run and configure results (DecoderService.kt), through nativeHostDiagnostic().
+    {"[host] [info] ", "engine run returned %d"},
+    {"[host] [info] ", "service: engine configuration returned %d"},
 };
 
 /*
@@ -187,39 +192,67 @@ const ProducerLine kProducerLines[] = {
  */
 constexpr char kLibusbRecordPrefix[] = "libusb: ";
 
+// The runtime log's newline ends a fresh record; a saved one has it as the space redact() makes of it.
+const char kRecordEnd[] = "(?:\\n| )?\\z";
+/* Error codes, errno values and PPM corrections (clamped to +/-200) fit in three digits. The bound keeps a signed field
+ * from passing for a short key option with a longer digit-only value attached ("-91234"). What remains: a producer
+ * line whose code is a key option with a value of at most two digits ("error -912") would be kept. */
+const char kSignedField[] = "-?[0-9]{1,3}";
+
+struct ProducerTemplates {
+    QRegularExpression fixed;
+    int listed = 0;
+    int accepted = 0;
+};
+
+/** @brief The producer lines as one anchored pattern; an entry with a conversion other than %d or %u is left out. */
+const ProducerTemplates&
+producerTemplates() {
+    static const ProducerTemplates templates = [] {
+        ProducerTemplates built;
+        QStringList alternatives;
+        for (const auto& line : kProducerLines) {
+            ++built.listed;
+            QString pattern = QRegularExpression::escape(QLatin1String(line.record));
+            const QString format = QLatin1String(line.format);
+            bool accepted = true;
+            qsizetype literal = 0;
+            for (qsizetype at = format.indexOf(QLatin1Char('%')); at >= 0 && accepted;
+                 at = format.indexOf(QLatin1Char('%'), literal)) {
+                pattern += QRegularExpression::escape(format.mid(literal, at - literal));
+                const QChar conversion = at + 1 < format.size() ? format.at(at + 1) : QChar();
+                if (conversion == QLatin1Char('d')) {
+                    pattern += QLatin1String(kSignedField);
+                } else if (conversion == QLatin1Char('u')) {
+                    pattern += QStringLiteral("[0-9]{1,10}");
+                } else {
+                    accepted = false;
+                }
+                literal = at + 2;
+            }
+            if (accepted) {
+                ++built.accepted;
+                alternatives.append(pattern + QRegularExpression::escape(format.mid(literal)));
+            }
+        }
+        built.fixed = QRegularExpression(QStringLiteral("\\A(?:") + alternatives.join(QLatin1Char('|'))
+                                         + QStringLiteral(")") + QLatin1String(kRecordEnd));
+        return built;
+    }();
+    return templates;
+}
+
 /** @brief Whether @p text is one whole producer error line (see kProducerLines and kLibusbRecordPrefix). */
 bool
 isProducerErrorLine(const QString& text) {
-    // The runtime log's newline ends a fresh record; a saved one has it as the space redact() makes of it.
-    static const QString end = QStringLiteral("(?:\\n| )?\\z");
-    // Error codes, errno values and PPM corrections fit in four digits. The bound keeps a signed field from passing
-    // for a short option with a long digit-only value attached ("-91234").
-    static const QString signedField = QStringLiteral("-?[0-9]{1,4}");
-    static const QRegularExpression fixed([] {
-        QStringList alternatives;
-        for (const auto& line : kProducerLines) {
-            QString pattern = QRegularExpression::escape(QLatin1String(line.record));
-            const QString format = QLatin1String(line.format);
-            qsizetype literal = 0;
-            for (qsizetype at = format.indexOf(QLatin1Char('%')); at >= 0;
-                 at = format.indexOf(QLatin1Char('%'), literal)) {
-                pattern += QRegularExpression::escape(format.mid(literal, at - literal));
-                pattern += format.at(at + 1) == QLatin1Char('d') ? signedField : QStringLiteral("[0-9]{1,10}");
-                literal = at + 2;
-            }
-            alternatives.append(pattern + QRegularExpression::escape(format.mid(literal)));
-        }
-        return QRegularExpression(QStringLiteral("\\A(?:") + alternatives.join(QLatin1Char('|')) + QStringLiteral(")")
-                                  + end);
-    }());
-    if (fixed.match(text).hasMatch()) {
+    if (producerTemplates().fixed.match(text).hasMatch()) {
         return true;
     }
     static const QRegularExpression libusb(QStringLiteral("\\A\\[decoder\\] \\[(?:error|warn)\\] ")
                                            + QRegularExpression::escape(QLatin1String(kLibusbRecordPrefix))
                                            + QStringLiteral("(?:error|warning) \\[[A-Za-z_][A-Za-z0-9_]*\\] "
                                                             "(.*?)(?:errno=|(?=-))")
-                                           + signedField + end);
+                                           + QLatin1String(kSignedField) + QLatin1String(kRecordEnd));
     const auto match = libusb.match(text);
     return match.hasMatch() && !match.captured(1).contains(keyLabel());
 }
@@ -238,6 +271,42 @@ bool
 isKeyContinuation(const QString& text) {
     static const QRegularExpression continuation(QStringLiteral("\\A[\\s\\p{Cc}0-9A-Fa-fxX,:;._'\"()\\[\\]-]*\\z"));
     return continuation.match(withoutAnsi(text)).hasMatch();
+}
+
+/** @brief Whether a captured line is one token, which a string-valued option (an API token) takes whole. */
+bool
+isSingleToken(const QString& text) {
+    static const QRegularExpression token(QStringLiteral("\\A\\s*\\S+\\s*\\z"));
+    return token.match(text).hasMatch();
+}
+
+/** @brief Whether a captured line starts a quoted string, as a multi-word value given on the next line does. */
+bool
+startsQuoted(const QString& text) {
+    const QString trimmed = text.trimmed();
+    return trimmed.startsWith(QLatin1Char('\'')) || trimmed.startsWith(QLatin1Char('"'));
+}
+
+/**
+ * @brief The quote left open at the end of @p text, starting inside @p open (0: none).
+ *
+ * A quote opens only at the start of a token, so an apostrophe inside a word ("don't") opens nothing; it closes at the
+ * same character anywhere.
+ */
+char16_t
+quoteLeftOpen(const QString& text, char16_t open) {
+    for (qsizetype i = 0; i < text.size(); ++i) {
+        const char16_t c = text.at(i).unicode();
+        if (open != 0) {
+            if (c == open) {
+                open = 0;
+            }
+        } else if ((c == u'\'' || c == u'"')
+                   && (i == 0 || text.at(i - 1).isSpace() || QStringLiteral("=[,(").contains(text.at(i - 1)))) {
+            open = c;
+        }
+    }
+    return open;
 }
 
 QByteArray
@@ -374,6 +443,11 @@ DiagnosticsLog::redact(QString text) {
     text.replace(QChar('\r'), QChar(' '));
     text.replace(QChar('\n'), QChar(' '));
     return text;
+}
+
+std::pair<int, int>
+DiagnosticsLog::producerLineCountsForTest() {
+    return {producerTemplates().listed, producerTemplates().accepted};
 }
 
 DiagnosticsLog::DiagnosticsLog(const QString& directory) : DiagnosticsLog(directory, TestOptions{}) {}
@@ -634,13 +708,38 @@ DiagnosticsLog::StreamCapture::emitLine() {
     QByteArray record = formatRecord(m_source, QStringLiteral("info"), text);
     if (record == kDroppedRecord) {
         m_afterDropped = true;
-    } else if (m_afterDropped && isKeyContinuation(text)) {
+        m_quote = quoteLeftOpen(withoutAnsi(text), 0);
+        m_quotedSize = 0;
+    } else if (continuesValue(text)) {
         // The rest of the dropped record's value, split off at a newline before redaction could see it whole.
         record = kDroppedRecord;
     } else {
         m_afterDropped = false;
     }
     m_log.enqueue(record);
+}
+
+bool
+DiagnosticsLog::StreamCapture::continuesValue(const QString& text) {
+    if (!m_afterDropped) {
+        return false;
+    }
+    const QString plain = withoutAnsi(text);
+    if (m_quote != 0) {
+        m_quote = quoteLeftOpen(plain, m_quote);
+        // A quote that never closes ends with the bound a single line has: past it, the lines are judged one by one.
+        m_quotedSize += plain.size();
+        if (m_quotedSize > 1024) {
+            m_quote = 0;
+        }
+        return true;
+    }
+    if (isKeyContinuation(plain) || isSingleToken(plain) || startsQuoted(plain)) {
+        m_quote = quoteLeftOpen(plain, 0);
+        m_quotedSize = 0;
+        return true;
+    }
+    return false;
 }
 
 void

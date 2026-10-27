@@ -1276,9 +1276,11 @@ Qt's initialized application-data location.
 A process-lifetime runtime log tap, the stderr pump, and host messages all enter
 `DiagnosticsLog::submit()`. It filters sensitive records before ring insertion and
 queues only redacted bytes to one asynchronous writer. Oversized stderr lines
-are omitted rather than split into potentially unlabelled secret fragments, and a
-stderr line holding only key characters after a dropped line is dropped with it.
-librtlsdr's, libusb's and dsd-neo's own rtl/usb error lines keep their negative codes
+are omitted rather than split into potentially unlabelled secret fragments, and the
+stderr lines after a dropped line that could still be its value (one token, key
+characters only, or the rest of a quoted string) are dropped with it.
+librtlsdr's, libusb's and dsd-neo's own rtl/usb error lines, and the service's
+`engine run returned` and `engine configuration returned` lines, keep their negative codes
 (`usb_claim_interface error -1`): a record that is wholly one of those producers' fixed
 lines is exempt from the key-option rule.
 
