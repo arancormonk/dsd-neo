@@ -14,9 +14,11 @@ typedef enum {
 
 typedef void (*dsd_stream_notice_fn)(int kind);
 
-/** Install the notice sink (app-control at session start; NULL at its end). Thread-safe. */
+/** Install the notice sink (app-control at session start; NULL at its end). Thread-safe. Once it returned, no post
+ * delivers to the sink it replaced: a post in progress finishes first. */
 void dsd_runtime_stream_notice_set(dsd_stream_notice_fn fn);
-/** Post a notice from any thread (the stream's controller). Without a sink installed it is dropped. */
+/** Post a notice from any thread (the stream's controller). Without a sink installed it is dropped. The sink runs under
+ * the module's lock: it must return promptly and must not call dsd_runtime_stream_notice_set() or _post(). */
 void dsd_runtime_stream_notice_post(int kind);
 #ifdef __cplusplus
 }

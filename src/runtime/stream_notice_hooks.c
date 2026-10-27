@@ -5,8 +5,10 @@
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <stddef.h>
 
-/* The sink, under a lock: the stream's controller posts while app-control installs or clears it. It is called outside
-   the lock; a sink is a function of the process, so a post that took it just before a clear still calls valid code. */
+/* The sink, under a lock: the stream's controller posts while app-control installs or clears it. It is called under the
+   lock too, so once dsd_runtime_stream_notice_set() returned no post can still deliver to the sink it replaced: a post
+   that took the old sink before a session's end has delivered before the end clears what the sink holds, and cannot
+   carry the notice into the next session. A sink is short and never calls back into this module. */
 static dsd_stream_notice_fn g_stream_notice_fn = NULL;
 static dsd_mutex_t g_stream_notice_mu;
 static atomic_int g_stream_notice_mu_state = 0; // 0=uninit, 1=initing, 2=init, -1=failed
@@ -47,8 +49,8 @@ dsd_runtime_stream_notice_post(int kind) {
         return;
     }
     const dsd_stream_notice_fn fn = g_stream_notice_fn;
-    dsd_mutex_unlock(&g_stream_notice_mu);
     if (fn) {
         fn(kind);
     }
+    dsd_mutex_unlock(&g_stream_notice_mu);
 }

@@ -7391,6 +7391,92 @@ test_notice_toast_without_failure_latch(void) {
     return rc;
 }
 
+/* A post that took the session's sink and was then held off the CPU, delivering only after the session ended: the
+   sink below stands in for app-control's (dsd_app_stream_notice_post()) and pauses where a preempted post would, after
+   it took the sink and before the notice lands. Its notice belongs to the ended session and never reaches the next. */
+struct stale_notice {
+    atomic_int posting;
+    atomic_int release;
+    atomic_int stopped;
+};
+
+static struct stale_notice g_stale_notice;
+
+static void
+paused_notice_sink(int kind) {
+    atomic_store(&g_stale_notice.posting, 1);
+    while (!atomic_load(&g_stale_notice.release)) {
+        dsd_sleep_ms(1);
+    }
+    dsd_app_stream_notice_post(kind);
+}
+
+static DSD_THREAD_RETURN_TYPE
+stale_notice_post(void* opaque) {
+    (void)opaque;
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    DSD_THREAD_RETURN;
+}
+
+static DSD_THREAD_RETURN_TYPE
+stale_notice_stop(void* opaque) {
+    (void)opaque;
+    dsd_app_frontend_runtime_stop();
+    atomic_store(&g_stale_notice.stopped, 1);
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_stale_notice_post_stays_in_its_session(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    init_test_context(opts, state);
+    int rc = 0;
+    atomic_init(&g_stale_notice.posting, 0);
+    atomic_init(&g_stale_notice.release, 0);
+    atomic_init(&g_stale_notice.stopped, 0);
+    dsd_runtime_stream_notice_set(paused_notice_sink);
+    dsd_thread_t poster;
+    dsd_thread_t stopper;
+    rc |= expect_true("poster started", dsd_thread_create(&poster, stale_notice_post, NULL) == 0);
+    for (int i = 0; i < 5000 && !atomic_load(&g_stale_notice.posting); ++i) {
+        dsd_sleep_ms(1);
+    }
+    rc |= expect_true("the post holds the sink", atomic_load(&g_stale_notice.posting));
+    /* The session ends while the post is held. A stop that does not wait for it is let finish before the post goes on;
+       one that waits is given a while, then the post goes on and the stop finishes after it. */
+    rc |= expect_true("stopper started", dsd_thread_create(&stopper, stale_notice_stop, NULL) == 0);
+    for (int i = 0; i < 300 && !atomic_load(&g_stale_notice.stopped); ++i) {
+        dsd_sleep_ms(1);
+    }
+    atomic_store(&g_stale_notice.release, 1);
+    dsd_thread_join(poster);
+    dsd_thread_join(stopper);
+
+    dsd_app_frontend_runtime_start(opts, state);
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("a notice posted for the ended session never reaches the next", state->ui_msg, "");
+
+    /* The new session's own notice still shows, once. */
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |=
+        expect_str("the session's notice toast", state->ui_msg, "RTL-SDR stopped sending samples; reset and reopened");
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("shown once", state->ui_msg, "");
+    dsd_app_frontend_runtime_stop();
+
+    freeState(state);
+    DSD_SECURE_ZERO(state, sizeof(*state));
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
    command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks); a command that mixes both
    is judged by its payload. Asked through the hook the session installs, over the real queue. */
@@ -20170,6 +20256,7 @@ main(void) {
     rc |= test_radio_control_unavailable_toasts();
 #endif
     rc |= test_notice_toast_without_failure_latch();
+    rc |= test_stale_notice_post_stays_in_its_session();
     rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)

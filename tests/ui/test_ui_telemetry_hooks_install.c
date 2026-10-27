@@ -142,12 +142,14 @@ main(void) {
     /* A silent input's wait asks the queue whether a command waits (issue #634). */
     assert(g_controls_pending == dsd_app_commands_pending);
     assert(g_controls_need_frame_loop == dsd_app_commands_need_frame_loop);
-    /* The stream's notices (a stalled RTL-SDR recovered) reach the decoder's drain while the session runs. */
+    /* The stream's notices (a stalled RTL-SDR recovered) reach the decoder's drain while the session runs, from an
+       empty slot: whatever an earlier session left there was cleared first. */
     assert(g_stream_notice_sink == dsd_app_stream_notice_post);
+    assert(g_stream_notice_clears == 1);
     dsd_app_frontend_runtime_stop();
     /* ... and none is left for the next session. */
     assert(g_stream_notice_sink == NULL);
-    assert(g_stream_notice_clears == 1);
+    assert(g_stream_notice_clears == 2);
     assert(g_notification_resets == 1);
     /* So does a Signal search status a rejected start left with no coordinator to stop it. */
     assert(g_search_session_ends == 1);

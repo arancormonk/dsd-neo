@@ -1943,7 +1943,9 @@ suite runs under this compiler.
     the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`), posted from the stream's controller with
     `dsd_runtime_stream_notice_post()` into the sink app-control installs at session start
     (`dsd_app_stream_notice_post()`: one slot, which the next `dsd_app_drain_cmds()` shows as a toast; NULL at session
-    end); with no sink it is dropped, and nothing is latched in the input failure. A failed notice-mutex initialization
+    end); with no sink it is dropped, and nothing is latched in the input failure. The sink runs under the hook's lock,
+    so a post that took a session's sink has delivered before the sink's removal returns; the slot is cleared after
+    that removal and again at session start, so a late post never reaches the next session. A failed notice-mutex initialization
     leaves the sink disabled without accessing an uninitialized lock (`RUNTIME_STREAM_NOTICE_INIT_FAILURE`).
     `rtl_stream_io_hooks.h` gives a live read two results beside a count and -1: `DSD_RTL_READ_YIELD` (no stream and a command queued) and, for a
     reader that asks through `read_ex2` (`want_no_stream`), `DSD_RTL_READ_NO_STREAM` (see IO, "Reads while the device
