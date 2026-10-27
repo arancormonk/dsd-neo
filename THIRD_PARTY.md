@@ -10,13 +10,13 @@ not a finding that every component is cleared for redistribution.
 
 ## Vendored Libraries
 
-- **mbelib-neo** (linked vocoder; pinned release 2.6.2, GPL-2.0-or-later project
+- **mbelib-neo** (linked vocoder; pinned release 2.6.5, GPL-2.0-or-later project
   contributions with ISC/PFFFT components and unresolved ETSI table terms) —
   <https://github.com/arancormonk/mbelib-neo>. Its full installed notices and
   legal records accompany packages in `licenses/mbelib-neo/`. TETRA table
   permission/GPL compatibility and patent questions remain open; do not label
   the entire dependency as cleared GPL code. See its pinned
-  [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.2/legal/status.md).
+  [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.5/legal/status.md).
 
 - **ezpwd Reed-Solomon** (`src/third_party/ezpwd`, target `dsd-neo_ezpwd`; Hard Consulting Corporation; vendored from https://github.com/arancormonk/ezpwd-reed-solomon) - GPL-3.0-or-later; `rs_base` is LGPL-2.1-or-later (per upstream notice). LGPL text: `src/third_party/ezpwd/lesser.txt` (installed as `share/doc/dsd-neo/licenses/ezpwd-LGPL-2.1-or-later.txt`).
 - **PFFFT** (target `dsd-neo_pffft`; Julien Pommier and contributors, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) — downloaded from <https://github.com/arancormonk/pffft> at the immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. The BSD-like license and compiled backend notices are installed as `share/doc/dsd-neo/licenses/pffft-LICENSE.txt` and `pffft-NOTICES.txt`. See `docs/dependencies.md` for offline builds and updates.

@@ -220,7 +220,7 @@ stale pins for migrated sources. It also accepts older releases that still carry
 their FFT. Both AUR CI jobs use it; recipe-only updates increment `pkgrel`.
 Neither DSD nor mbelib needs a separate PFFFT dependency package.
 
-The mbelib vcpkg overlay pins release 2.6.2. It acquires
+The mbelib vcpkg overlay pins release 2.6.5. It acquires
 mbelib's FFT through vcpkg's verified download/cache mechanism and passes an
 offline override. Its independent `MBELIB_PFFFT_*` pins are mirrored in
 `vcpkg-ports/mbe-neo/pffft.cmake` by `tools/check_vcpkg_overlay_pins.sh --fix`.

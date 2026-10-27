@@ -6356,9 +6356,11 @@ Private per-protocol modules worth knowing about:
   `dsd_vocoder_soft_bit` frame to `processMbeFrameSoft()`; the 24 cells the interleave never reaches are bit 0 at
   reliability 0, which the decoder never reads. `mbe_process_dstar()` passes the soft frame's bits through unchanged,
   so an invalid cell fails as on the hard decode, and hands the decode's `mbe_process_result` to
-  `mbe_processAmbe2400Dataf()` unchanged: its C0 error count decides whether a tone frame is played (fewer than two)
-  or replaced with comfort noise. `CORE_MBE_TRANSFORM_CONTEXT` pins the live path, hard and soft, to mbelib's own
-  D-STAR frame API through a tone frame, repeats and muting, and `DSTAR_PROCESS` pins each cell's bit and
+  `mbe_processAmbe2400Dataf()` unchanged: mbelib 2.6.5's uncorrectable-C0 flag makes a frame play as lost even when
+  soft decisions recover its parameters with a correction cost rounded to zero. Correction counts include parity
+  and soft counts weight each correction by reliability. `CORE_MBE_TRANSFORM_CONTEXT` pins the live path, hard and
+  soft, to mbelib's own D-STAR frame API through an uncorrectable tone frame, repeats and muting; a reference that
+  drops the decode context must play the tone instead. `DSTAR_PROCESS` pins each cell's bit and
   reliability through the reader. `dstar_confirm` never reads vocoder output, so soft decoding leaves it unchanged.
 - `src/protocol/dpmr/dpmr_confirm.{c,h}` — the same shape for dPMR, gating both audio and the hunt (issue #407). The
   check is the CCH CRC-7, which was there all along: it covers the 41 payload bits behind all six Hamming(12,8)
