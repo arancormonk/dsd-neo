@@ -27,6 +27,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
 
+struct rtl_device;
+
 namespace {
 
 constexpr uint32_t kCenterHz = 851012500U;

@@ -17,7 +17,10 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#ifndef __cplusplus
+/* In C, a tag first declared in a parameter list has only prototype scope. */
 struct p25_bandplan_row;
+#endif
 
 #ifdef __cplusplus
 extern "C" {

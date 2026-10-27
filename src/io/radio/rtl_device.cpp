@@ -22,7 +22,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <cinttypes>
 #include <cmath>
 #include <complex>
 #include <dsd-neo/core/constants.h>

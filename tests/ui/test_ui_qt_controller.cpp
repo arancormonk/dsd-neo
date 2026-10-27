@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMap>
+#include <QMetaType>
 #include <QObject>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -48,6 +49,7 @@
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <memory>
 #include <stdint.h>
+#include <time.h>
 #include <utility>
 #include "../../android/local_device_state.h"
 #include "../../src/app_control/commands_internal.h"

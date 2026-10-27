@@ -11,6 +11,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/received_identity.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <utility>
@@ -27,7 +28,6 @@
 #include <cmath>
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/call_view.h>
-#include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/dmr_ras_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/receive_view.h>

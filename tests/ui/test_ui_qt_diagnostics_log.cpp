@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -35,6 +36,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
+#include <functional>
 #include <string.h>
 #include <thread>
 #include <utility>

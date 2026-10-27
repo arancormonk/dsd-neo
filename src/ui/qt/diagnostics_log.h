@@ -9,7 +9,6 @@
 #include <QStringList>
 #include <QtGlobal>
 #include <condition_variable>
-#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -108,8 +107,8 @@ class DiagnosticsLog {
     bool clearFiles();
     static void trimFragment(const QString& path);
     bool writeBatch(const std::deque<QByteArray>& batch);
-    QByteArray headerExcluding(std::deque<QByteArray>::const_iterator from,
-                               std::deque<QByteArray>::const_iterator end) const;
+    QByteArray headerExcluding(const std::deque<QByteArray>::const_iterator& from,
+                               const std::deque<QByteArray>::const_iterator& end) const;
     // Which of this run's identity lines a record is, if any: the ring pins that very line, not its text.
     enum class Pin { None, Process, Session };
 

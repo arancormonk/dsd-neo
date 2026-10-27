@@ -83,7 +83,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/fsk_modem.h"
-#include "dsd-neo/platform/platform.h"
 #include "rtl_auto_ppm.h"
 #include "rtl_finite.h"
 #include "rtl_perf.h"

@@ -22,6 +22,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>

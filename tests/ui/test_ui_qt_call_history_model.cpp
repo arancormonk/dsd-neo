@@ -38,6 +38,7 @@
 #include <QList>
 #include <QMetaType>
 #include <QModelIndex>
+#include <QObject>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -56,7 +57,6 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <initializer_list>
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>

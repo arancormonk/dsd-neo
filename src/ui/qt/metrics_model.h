@@ -34,6 +34,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <stdint.h>
 
 namespace dsd_qt {
 
