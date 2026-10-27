@@ -55,7 +55,10 @@ endif()
 # is here because its bounds must round like decode_clock.c, which divides
 # ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
 # audio2 test because its mono-mixer stub divides by a slot count, which Clang
-# turns into an approximate reciprocal under fast-math.
+# turns into an approximate reciprocal under fast-math. Production sources that
+# src/runtime builds with IEEE semantics keep them when a test compiles them
+# directly: a source property set there does not reach targets in this
+# directory.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         core/test_core_audio2_helpers.c
@@ -84,6 +87,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
@@ -115,6 +120,8 @@ elseif(MSVC)
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
