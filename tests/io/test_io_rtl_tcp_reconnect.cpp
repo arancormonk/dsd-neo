@@ -181,6 +181,9 @@ struct conn_script {
     std::vector<size_t> chunks; /* the I/Q in chunks of these sizes, in turn (empty: 4096) */
     unsigned int chunk_gap_ms = 2U;
     int read_commands = 1;
+    /* The listener's receive buffer (0: the system default), taken from the script server_reset() is given. It is set
+     * before any connection is accepted: a buffer shrunk after the handshake leaves the window already advertised
+     * open (macOS), so a server that stops reading would take that much longer to push back. */
     int rcvbuf = 0;
 };
 
@@ -199,9 +202,11 @@ struct fake_server {
     std::atomic<int> quit{0};
     std::atomic<int> up{1};
     std::atomic<int> kill{0};
-    std::atomic<int> paused{0};    /* the connection stays, its I/Q stops */
-    std::atomic<int> listening{0}; /* the listener is open */
-    std::atomic<int> connected{0}; /* serving a connection */
+    std::atomic<int> paused{0};        /* the connection stays, its I/Q stops */
+    std::atomic<int> listening{0};     /* the listener is open */
+    std::atomic<int> connected{0};     /* serving a connection */
+    std::atomic<int> want_rcvbuf{0};   /* the listener's receive buffer server_reset() asked for */
+    std::atomic<int> listen_rcvbuf{0}; /* the receive buffer the open listener was made with */
     std::vector<conn_script> scripts;
     conn_script fallback;
     std::vector<server_conn> conns;
@@ -211,13 +216,16 @@ struct fake_server {
 fake_server g_srv;
 
 dsd_socket_t
-open_listener(int port, int* out_port) {
+open_listener(int port, int rcvbuf, int* out_port) {
     const dsd_socket_t s = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (s == DSD_INVALID_SOCKET) {
         return s;
     }
     int one = 1;
     (void)dsd_socket_setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (rcvbuf > 0) {
+        (void)dsd_socket_setsockopt(s, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof rcvbuf);
+    }
     struct sockaddr_in addr;
     DSD_MEMSET(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
@@ -269,9 +277,6 @@ server_send(dsd_socket_t sock, const unsigned char* buf, size_t len, size_t* out
 void
 server_serve(dsd_socket_t sock, const conn_script& sc, size_t idx) {
     (void)dsd_socket_set_send_timeout(sock, 20U);
-    if (sc.rcvbuf > 0) {
-        (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &sc.rcvbuf, sizeof sc.rcvbuf);
-    }
     if (sc.send_header != 0) {
         unsigned char hdr[12] = {'R', 'T', 'L', '0', 0, 0, 0, 5, 0, 0, 0, 0};
         if (sc.magic_ok == 0) {
@@ -383,8 +388,16 @@ __stdcall
 server_main(void* arg) {
     (void)arg;
     while (g_srv.quit.load() == 0) {
+        if (g_srv.listener != DSD_INVALID_SOCKET && g_srv.listen_rcvbuf.load() != g_srv.want_rcvbuf.load()) {
+            dsd_socket_close(g_srv.listener);
+            g_srv.listener = DSD_INVALID_SOCKET;
+        }
         if (g_srv.up.load() != 0 && g_srv.listener == DSD_INVALID_SOCKET) {
-            g_srv.listener = open_listener(g_srv.port, nullptr);
+            const int rcvbuf = g_srv.want_rcvbuf.load();
+            g_srv.listener = open_listener(g_srv.port, rcvbuf, nullptr);
+            if (g_srv.listener != DSD_INVALID_SOCKET) {
+                g_srv.listen_rcvbuf.store(rcvbuf);
+            }
         }
         if (g_srv.up.load() == 0 && g_srv.listener != DSD_INVALID_SOCKET) {
             dsd_socket_close(g_srv.listener);
@@ -423,7 +436,7 @@ server_main(void* arg) {
 void
 server_start(void) {
     assert(dsd_mutex_init(&g_srv.lock) == 0);
-    g_srv.listener = open_listener(0, &g_srv.port);
+    g_srv.listener = open_listener(0, 0, &g_srv.port);
     assert(g_srv.listener != DSD_INVALID_SOCKET && g_srv.port > 0);
     start_thread(&g_srv.thread, server_main, nullptr);
 }
@@ -443,8 +456,10 @@ server_reset(const conn_script& fallback) {
     if (g_srv.connected.load() != 0) {
         server_kill();
     }
+    g_srv.want_rcvbuf.store(fallback.rcvbuf);
     g_srv.up.store(1);
-    assert(wait_until([] { return g_srv.listening.load() != 0; }, kWaitMs));
+    assert(wait_until(
+        [] { return g_srv.listening.load() != 0 && g_srv.listen_rcvbuf.load() == g_srv.want_rcvbuf.load(); }, kWaitMs));
     dsd_mutex_lock(&g_srv.lock);
     g_srv.scripts.clear();
     g_srv.fallback = fallback;
