@@ -3559,7 +3559,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - Stream gaps (issue #518 D5). `dsd_state::rtl_stream_gap_seq` is the stream discontinuity count the decoder has taken
   up to; the engine sets it to the stream's at every stream start (`dsd_engine_note_stream_source()`). A cache fill
   keeps the count its samples carry (`rtl_symbol_cache_boundary_seq`: a replay batch's own, or the stream's read after
-  a live read), and the pop answers `RTL_SYMBOL_CACHE_GAP` while it differs, before the first sample of that fill;
+  a live read), and the pop answers `RTL_SYMBOL_CACHE_GAP` while that count is newer, before the first sample of that
+  fill. If a direct reader has already acknowledged a newer gap, the older cache is dropped without lowering the
+  consumed count. Equal counts use one boundary comparison per cached sample;
   the one-sample reader (`symbol_rtl_read_one()`) checks after every read and holds back the sample that showed the
   gap (`rtl_gap_held*`, dropped if the stream generation moves meanwhile). Either way the decoder takes the count up
   and raises `DSD_INTERRUPT_STREAM_GAP` (`symbol_rtl_stream_gap()`), and `getSymbol()` stands unusable zeros in for

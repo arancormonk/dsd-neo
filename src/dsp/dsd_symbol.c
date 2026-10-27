@@ -1049,14 +1049,15 @@ rtl_symbol_cache_pop(dsd_state* state, uint32_t generation, float* sample_out) {
         rtl_symbol_cache_reset_pending(state);
         return RTL_SYMBOL_CACHE_RETRY;
     }
-    /* A direct analog reader can consume a gap without changing the stream generation. Its acknowledgment makes
-       an older symbol cache stale; it must never lower the consumed count or replay that gap. */
-    if (state->rtl_symbol_cache_boundary_seq < state->rtl_stream_gap_seq) {
-        rtl_symbol_cache_reset_pending(state);
-        return RTL_SYMBOL_CACHE_RETRY;
-    }
-    /* Only a fill sets the count the cached samples carry, so this holds before their first, never between two. */
+    /* A fill carrying a newer boundary must announce it before handing out its first sample. */
     if (state->rtl_symbol_cache_boundary_seq != state->rtl_stream_gap_seq) {
+        /* A direct analog reader can consume a gap without changing the stream generation. Its acknowledgment makes
+           an older symbol cache stale; it must never lower the consumed count or replay that gap. Check that only
+           when the counts differ, so ordinary cached samples need one boundary comparison. */
+        if (state->rtl_symbol_cache_boundary_seq < state->rtl_stream_gap_seq) {
+            rtl_symbol_cache_reset_pending(state);
+            return RTL_SYMBOL_CACHE_RETRY;
+        }
         return RTL_SYMBOL_CACHE_GAP;
     }
     const int pos = state->rtl_symbol_cache_pos++;
