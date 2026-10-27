@@ -568,12 +568,13 @@ struct rtl_device {
     std::atomic<int> recovery_request{0};
     std::atomic<uint32_t> recovery_epoch{0U};
     /* Which USB reader is which: reader_incarnation moves before each reader thread starts, and the thread keeps the
-     * value it found. recovery_reader is the reader a taken recovery restarted, until that recovery finishes (0: none);
-     * recovery_reader_failed holds its incarnation, and recovery_reader_rc its result, when it returned meanwhile, so
-     * the recovery's finish reports it (rtl_usb_recovery_reader_handoff()). */
+     * value it found. recovery_handoff carries the reader a recovery restarted (its incarnation, high 32 bits) and
+     * where its return stands (rtl_usb_handoff_state, low 32 bits); every transition is one compare-and-swap, so the
+     * restarted reader and the recovery's finish agree on who reports its return (rtl_usb_recovery_reader_handoff(),
+     * rtl_device_usb_recovery_finish()). recovery_reader_rc is that return's result, written by the one reader thread
+     * there is before its handoff. */
     std::atomic<uint32_t> reader_incarnation{0U};
-    std::atomic<uint32_t> recovery_reader{0U};
-    std::atomic<uint32_t> recovery_reader_failed{0U};
+    std::atomic<uint64_t> recovery_handoff{0U};
     std::atomic<int> recovery_reader_rc{0};
     std::atomic<uint64_t> recovery_silence_ms{0U};
     rtl_device_recovery_cb recovery_cb = nullptr;
@@ -3187,6 +3188,9 @@ static RtlTestHook<struct rtl_device*> g_test_recovery_post_hook;
  * starts. */
 static RtlTestHook<struct rtl_device*> g_test_reader_restart_hook;
 static RtlTestHook<struct rtl_device*> g_test_recovery_take_hook;
+/* rtl_device_test_set_recovery_finish_hook(): called inside rtl_device_usb_recovery_finish(), between the request's
+ * move to idle and the hand-off's close, the window a restarted reader's return must not fall through. */
+static RtlTestHook<struct rtl_device*> g_test_recovery_finish_hook;
 /* rtl_device_test_refuse_progress_monitor(): the RTL or SoapySDR monitor's thread creation fails as a refused one
  * does. */
 static std::atomic<int> g_test_refuse_progress_monitor{0};
@@ -3219,6 +3223,11 @@ rtl_device_test_set_recovery_take_hook(void (*hook)(struct rtl_device*, void*), 
 extern "C" void
 rtl_device_test_set_recovery_take_ms(uint32_t take_ms) {
     g_test_recovery_take_ms.store(take_ms, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_device_test_set_recovery_finish_hook(void (*hook)(struct rtl_device*, void*), void* ctx) {
+    g_test_recovery_finish_hook.set(hook, ctx);
 }
 
 extern "C" void
@@ -3481,24 +3490,46 @@ rtl_usb_reader_end_session(struct rtl_device* s, int rc) {
     (void)rtl_device_end_for_receiver(s, rc, rtl_device_sample_progress(s), cause);
 }
 
+/* Where the return of the reader a recovery restarted stands (recovery_handoff's low half): NONE, no such reader;
+ * PENDING, its recovery has not finished and it has not returned; FAILED, it returned first, and the finish reports
+ * it; CLOSED, the finish came first, and a return from now on reports itself, with the request idle. */
+namespace {
+enum rtl_usb_handoff_state : uint32_t {
+    RTL_USB_HANDOFF_NONE = 0U,
+    RTL_USB_HANDOFF_PENDING = 1U,
+    RTL_USB_HANDOFF_FAILED = 2U,
+    RTL_USB_HANDOFF_CLOSED = 3U,
+};
+} // namespace
+
+static uint64_t
+rtl_usb_handoff_word(uint32_t incarnation, uint32_t state) {
+    return ((uint64_t)incarnation << 32) | (uint64_t)state;
+}
+
+static uint32_t
+rtl_usb_handoff_state_of(uint64_t word) {
+    return (uint32_t)(word & 0xFFFFFFFFU);
+}
+
 /* The reader a stall recovery restarted (incarnation @p incarnation) can return, @p rc, before that recovery
  * finishes. Its verdict would then be dropped as the recovery's own (rtl_device_recovery_supersedes(), there for the
- * retired reader), and the recovery would report success with no reader running. Hand it to the recovery's finish
- * instead (rtl_device_usb_recovery_finish()). Returns 1 when this return is handled (the finish reports it, or already
- * took it), 0 when the caller reports it: another reader's return, or one after the recovery finished. Both sides use
- * sequentially consistent order: either the finish sees the failure, or this sees the recovery idle. */
+ * retired reader), and the recovery would report success with no reader running. One compare-and-swap of its own
+ * hand-off, PENDING to FAILED, decides it, whatever the request says: done, the finish reports it
+ * (rtl_device_usb_recovery_finish()); not done, the hand-off was closed (or belongs to another reader) and the caller
+ * reports it. Returns 1 when the finish reports it. */
 static int
 rtl_usb_recovery_reader_handoff(struct rtl_device* s, int rc, uint32_t incarnation) {
-    if (incarnation == 0U || s->recovery_reader.load(std::memory_order_seq_cst) != incarnation) {
+    if (incarnation == 0U) {
         return 0;
     }
     s->recovery_reader_rc.store(rc, std::memory_order_relaxed);
-    s->recovery_reader_failed.store(incarnation, std::memory_order_seq_cst);
-    if (s->recovery_request.load(std::memory_order_seq_cst) == RTL_USB_RECOVERY_TAKEN) {
-        return 1;
-    }
-    /* The recovery finished meanwhile; whichever side takes the failure reports it. */
-    return (s->recovery_reader_failed.exchange(0U, std::memory_order_seq_cst) == incarnation) ? 0 : 1;
+    uint64_t expected = rtl_usb_handoff_word(incarnation, RTL_USB_HANDOFF_PENDING);
+    return s->recovery_handoff.compare_exchange_strong(expected,
+                                                       rtl_usb_handoff_word(incarnation, RTL_USB_HANDOFF_FAILED),
+                                                       std::memory_order_acq_rel, std::memory_order_acquire)
+               ? 1
+               : 0;
 }
 
 static void
@@ -10253,8 +10284,7 @@ rtl_usb_start_reader(struct rtl_device* dev) {
     dev->reader_entered.store(0, std::memory_order_relaxed);
     dev->reader_exited.store(0, std::memory_order_relaxed);
     dev->receiver_end_claimed.store(0, std::memory_order_relaxed);
-    dev->recovery_reader.store(0U, std::memory_order_relaxed);
-    dev->recovery_reader_failed.store(0U, std::memory_order_relaxed);
+    dev->recovery_handoff.store(0U, std::memory_order_relaxed);
     (void)rtl_usb_next_reader_incarnation(dev);
     dev->progress_monitor_run.store(1, std::memory_order_relaxed);
     /* Cleared by a stop request, before it cancels the reader. */
@@ -10754,15 +10784,15 @@ rtl_device_usb_resume_reader(struct rtl_device* dev) {
         dev->reader_entered.store(0, std::memory_order_relaxed);
         dev->reader_exited.store(0, std::memory_order_relaxed);
         /* Until the recovery that restarts it finishes, this reader's return is that recovery's to report. */
-        dev->recovery_reader_failed.store(0U, std::memory_order_relaxed);
-        dev->recovery_reader.store(rtl_usb_next_reader_incarnation(dev), std::memory_order_seq_cst);
+        dev->recovery_handoff.store(rtl_usb_handoff_word(rtl_usb_next_reader_incarnation(dev), RTL_USB_HANDOFF_PENDING),
+                                    std::memory_order_release);
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
         rtl_usb_test_reader_restarting(dev);
 #endif
         if (dsd_thread_create(&dev->thread, dongle_thread_fn, dev) == 0) {
             dev->thread_started = 1;
         } else {
-            dev->recovery_reader.store(0U, std::memory_order_seq_cst);
+            dev->recovery_handoff.store(0U, std::memory_order_release);
             rc = -EAGAIN;
         }
     }
@@ -10815,13 +10845,25 @@ rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why) 
     if (!dev || dev->backend != RTL_BACKEND_USB) {
         return 0;
     }
-    /* The restarted reader stops handing its return over, then idle: the ending below is this recovery's own verdict,
-     * which nothing supersedes. Then the failure of the restarted reader, if it returned meanwhile
-     * (rtl_usb_recovery_reader_handoff()). */
-    const uint32_t restarted = dev->recovery_reader.exchange(0U, std::memory_order_seq_cst);
+    /* Idle first: the ending below is this recovery's own verdict, which nothing supersedes, and so is the restarted
+     * reader's once the hand-off is closed. */
     dev->recovery_request.store(RTL_USB_RECOVERY_IDLE, std::memory_order_seq_cst);
-    const uint32_t failed = dev->recovery_reader_failed.exchange(0U, std::memory_order_seq_cst);
-    const int restarted_failed = (restarted != 0U && failed == restarted) ? 1 : 0;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    g_test_recovery_finish_hook.invoke(dev);
+#endif
+    /* Then close the restarted reader's hand-off in one compare-and-swap, against the one it makes when it returns
+     * (rtl_usb_recovery_reader_handoff()). FAILED: it returned first, so this reports it. PENDING: nothing returned,
+     * and a return from now on finds CLOSED and reports itself, the request being idle already. */
+    uint64_t handoff = dev->recovery_handoff.load(std::memory_order_acquire);
+    while (rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_PENDING
+           || rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_FAILED) {
+        const uint64_t closed = rtl_usb_handoff_word((uint32_t)(handoff >> 32), RTL_USB_HANDOFF_CLOSED);
+        if (dev->recovery_handoff.compare_exchange_weak(handoff, closed, std::memory_order_acq_rel,
+                                                        std::memory_order_acquire)) {
+            break;
+        }
+    }
+    const int restarted_failed = (rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_FAILED) ? 1 : 0;
     if (rc == 0 && !restarted_failed) {
         LOG_INFO("RTL-SDR: the USB device was reset and reopened; the stream resumes\n");
         return 1;

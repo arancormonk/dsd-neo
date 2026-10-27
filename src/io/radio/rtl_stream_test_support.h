@@ -525,6 +525,9 @@ void rtl_device_test_set_recovery_post_hook(void (*hook)(struct rtl_device*, voi
  * its thread (under the device's lifecycle lock); NULL removes it. */
 /* Called after recovery_take claims the request, before its final teardown check. */
 void rtl_device_test_set_recovery_take_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+/* Call @p hook(dev, @p ctx) inside rtl_device_usb_recovery_finish(), between the request's move to idle and the close
+ * of the restarted reader's hand-off (on the controller's thread); NULL removes it. */
+void rtl_device_test_set_recovery_finish_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 
 /* ---- rtl_tcp (issue #518 WP3) ---- */

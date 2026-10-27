@@ -4567,10 +4567,13 @@ Key public headers:
     or taken, or when one was posted since it was made (a reader-exit verdict waiting out the unplug-owner grace);
     `rtl_device_usb_recovery_finish()` reports the recovery's own result: 0 resumes, a stop is silent, anything else
     ends the session for the receiver with the failed step in the cause. Each USB reader thread keeps the
-    `reader_incarnation` it started with; the reader a recovery restarted (`recovery_reader`) hands a return made
-    before the finish to it (`rtl_usb_recovery_reader_handoff()`), as that verdict alone would be dropped, so a 0 then
-    ends the session as the reader's return would, and the controller posts the recovered notice only when the finish
-    returns 1 (`IO_RTL_USB_RECOVERY`). The controller side (`rtl_sdr_fm.cpp`): the
+    `reader_incarnation` it started with. The reader a recovery restarted gets a hand-off (`recovery_handoff`: its
+    incarnation and PENDING), as its verdict alone would be dropped while the request is taken. Its return moves the
+    hand-off PENDING to FAILED in one compare-and-swap (`rtl_usb_recovery_reader_handoff()`), never looking at the
+    request; the finish moves the request to idle and then closes the hand-off in one compare-and-swap. A FAILED
+    hand-off makes a 0 end the session as the reader's return would; after CLOSED the reader reports itself with the
+    request already idle. The controller posts the recovered notice only when the finish returns 1
+    (`IO_RTL_USB_RECOVERY`, including a return forced between the finish's two steps). The controller side (`rtl_sdr_fm.cpp`): the
     callback queues `usb_recovery_pending` on `hop_m`; `controller_wait_for_retune_work()` takes it alone, ahead of a
     queued retune or PPM change, and `controller_process_usb_recovery()` runs `controller_stream_boundary(s, reason,
     device_op, ctx)` (`reason`: the gap's, `kStreamGap*`). An unset channel center fails before any device or gate

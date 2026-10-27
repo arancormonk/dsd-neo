@@ -1033,6 +1033,50 @@ probe_fail_replacement(int step, void* ctx) {
     assert(rtl_device_test_usb_reader_returns() == returns + 1U);
 }
 
+/* Inside the recovery's finish, mid-transition: make the restarted reader return by itself and wait until the device
+ * handled its return, so the return lands in exactly the window between the finish's two steps. */
+void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the finish hook's.
+fail_replacement_in_finish(rtl_device* dev, void* ctx) {
+    (void)dev;
+    (void)ctx;
+    const unsigned int returns = rtl_device_test_usb_reader_returns();
+    rtl_device_test_usb_stream_return(-1);
+    for (uint64_t waited = 0; waited < kWaitMs && rtl_device_test_usb_reader_returns() == returns; ++waited) {
+        dsd_sleep_ms(1);
+    }
+    assert(rtl_device_test_usb_reader_returns() == returns + 1U);
+}
+
+/* replacement_reader_failure_in_finish_ends_session: as below, with the restarted reader's return landing inside the
+ * recovery's finish, between its hand-off transition's steps. It is not lost: the session ends with it, once. */
+void
+test_replacement_reader_failure_in_finish_ends_session(void) {
+    usb_world_reset(0);
+    (void)log_take();
+    g_notices.store(0);
+    (void)boundary_take();
+    stream_rig r;
+    stream_open(r, 0, 0);
+    rtl_device_test_set_recovery_finish_hook(fail_replacement_in_finish, nullptr);
+    stream_deliver(r, 20, 5U);
+    const uint64_t ended = wait_receiver_ended(kWaitMs + kWaitMs);
+    rtl_device_test_set_recovery_finish_hook(nullptr, nullptr);
+    assert(ended != 0U);
+    wait_step(RTL_STREAM_TEST_BOUNDARY_END);
+    expect_receiver_ending(-1);
+    assert(g_usb.devs[0].resets.load() == 1);
+    const std::string log = log_take();
+    assert(log_has(log, "RTL-SDR: the USB device was lost; the stream stops (rc=-1)"));
+    const size_t first = log.find("the stream stops");
+    assert(log.find("the stream stops", first + 1U) == std::string::npos);
+    assert(log.find("the stream resumes") == std::string::npos);
+    assert(g_notices.load() == 0);
+    stream_close(r);
+    reset_session();
+    (void)boundary_take();
+}
+
 /* replacement_reader_failure_ends_session: the reader a recovery restarted returns (-1) before the recovery finishes.
  * Its failure is not taken for the retired reader's return: the recovery does not report success or post the notice,
  * and the session ends for the receiver with the reader's failure, logged once. */
@@ -1364,6 +1408,7 @@ main(void) {
         test_silence_posts_recovery_and_reader_return_is_silent();
         test_recovery_failure_runs_the_tail_and_ends();
         test_replacement_reader_failure_ends_session();
+        test_replacement_reader_failure_in_finish_ends_session();
         test_stop_during_recovery_is_silent();
         test_yield_reaches_decoder_during_recovery();
         test_delayed_stream_never_yields();
