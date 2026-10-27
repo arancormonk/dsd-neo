@@ -199,8 +199,14 @@ cancellation before callbacks, rejected dispatch and missing Activity context, n
 notification work, task removal without Activity destruction, a user Stop during a lifecycle drain (each stop passing
 its own cause), the lifecycle record carrying its own session's ending and receiver, a refused native
 stop remaining retryable, a delayed stop after a subsequent start, and ordered cancellation during configure or before
-start delivery. Worker completion cases hold `stopSelf(id)` while the next run starts, and finish the old run while
-an arriving START is promoting its notification; both check the old id stays attached to the completed run.
+start delivery. Worker completion cases hold the old run's end on the main queue while the next run starts, and finish
+the old run while an arriving START is promoting its notification; both check the old id stays attached to the
+completed run. A platform stub models the shade and `ActiveServices`: `stopSelf()` for the newest start takes the
+foreground notification down at once and `onDestroy()` comes later, which the #782 cases replay with a status tick
+already queued for a normal end and a failed open, and for failed and refused starts, a service destroyed while running,
+a replacement instance fronting a draining run, and a duplicate START; no notification may remain. Further cases check
+the intent receipt log (a stamped delay from the direct senders, none for an aged notification Stop, a Stop finding
+IDLE) and that a slow wake-lock acquire blocks neither `lifecycleStatus()` nor `stopDecoder()`.
 These tests exercise the service path the desktop host fixture replaces; they do not
 model vendor scheduling, Binder latency or an attached SDR.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an

@@ -31,7 +31,7 @@ open class Context {
     val packageName = "io.github.arancormonk.dsdneo"
     val packageManager = PackageManager()
     val power = PowerManager()
-    val notifications = NotificationManager()
+    val notifications: NotificationManager get() = NotificationManager.device
     val intents = ConcurrentLinkedQueue<Intent>()
     var dispatchFailure: RuntimeException? = null
     var dispatchReturnsNull = false

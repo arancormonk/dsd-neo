@@ -27,6 +27,9 @@ class PowerManager {
 
     val created = mutableListOf<WakeLock>()
 
+    /** Runs inside every acquire(), so a test can hold one there. */
+    @Volatile var acquireHook: (() -> Unit)? = null
+
     fun newWakeLock(levelAndFlags: Int, tag: String): WakeLock =
         WakeLock(this, levelAndFlags, tag).also { created += it }
 
@@ -46,6 +49,8 @@ class PowerManager {
         }
 
         fun acquire(timeout: Long = 0L) {
+            // The platform's acquire is a binder call into the power manager, which can take its time.
+            owner.acquireHook?.invoke()
             acquireTimeouts += timeout
             count = if (referenceCounted) count + 1 else 1
             if (levelAndFlags and WAKEUP_FLAG != 0 && !owner.wakeupRefused) {

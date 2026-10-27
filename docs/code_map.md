@@ -1812,7 +1812,7 @@ suite runs under this compiler.
     there). REPLAY is entered only there, at a run's start, on a state fresh from `initState()`, and the engine enforces
     that: `dsd_state::engine_fresh`, set by `initState()` and cleared by the run once it has made the choice, says no
     run has used the state. A replay run on a state an earlier run used (the Android service's reuse when a start races
-    `stopSelfLatest()`) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
+    `stopSelf()`) stays on SYSTEM with one `LOG_WARN`, since the stamps that run left (such as
     `slco_sfrag_last`) are on the system clock and no rebase reaches them; its decode times are then not the
     capture's. The system clock only moves forward, so those stamps stay behind now, with one exception: an earlier
     replay of a capture stamped ahead of the device's clock (recorded elsewhere, or on a clock that is behind) leaves
@@ -7589,7 +7589,7 @@ Qt Quick frontend (`src/ui/qt`):
     rows again, even if the seen store lost them. The position means something only in its own ring, so the mark also
     names that ring (`Event_History_I::instance`, `callHistory/clear/ring`), and the ring, not the session, is the
     binding. A start usually brings a fresh ring, but an embedding host can reuse the last run's state, ring, rows and
-    push count included (the Android service does when a start races `stopSelfLatest()`). So `beginSession()` keeps a
+    push count included (the Android service does when a start races `stopSelf()`). So `beginSession()` keeps a
     mark that names its ring, and keeps the last read position, which names the ring it was read in. A clear after a
     start, before the next read, therefore covers what the last read found: a reused ring's cleared rows stay cleared,
     in the new session and across a relaunch. A read of any other ring drops the mark, whatever its position: a fresh
@@ -8652,10 +8652,23 @@ startup latch covers the gap before the decode loop. The deferred intent carries
 already exists; a stale stop cannot cancel a subsequent run. Missing context and refused dispatch are diagnosed and
 do not undo native cancellation. `onStartCommand()` signals notification stops before notification binder work;
 `onTaskRemoved()` requests a user stop even without Activity destruction. Repeated stops reach native code, allowing
-a user Stop to abandon a lifecycle drain. A START publishes `lastStartId` with its locked start/reject decision; the
-worker captures it under the lock publishing IDLE and passes that value to `stopSelf()`, so completion cannot read
-and stop a newer start. `ANDROID_ENGINE_STOP_JVM` now runs the actual service against a deferred-intent transport,
-a controlled native worker and platform stubs.
+a user Stop to abandon a lifecycle drain. A START publishes `lastStart` (its start id, and which service instance it was
+handed to) with its locked start/reject decision; the worker captures it under the lock publishing IDLE and hands it,
+with its session id, to `routeSessionEnd()`, so completion cannot read and stop a newer start. `ANDROID_ENGINE_STOP_JVM`
+now runs the actual service against a deferred-intent transport, a controlled native worker and platform stubs.
+
+Session end and the notification (issue #782): `stopSelf()` makes ActiveServices cancel the foreground notification
+and only then schedule `onDestroy()` on the main looper, so a status tick queued in between that called `notify()`
+posted an ordinary ongoing "Stopping…" that nothing removed. A run's end now reaches the main thread through
+`routeSessionEnd()`, on the live instance (`current`, set in `onCreate()`, cleared in `onDestroy()`), which may be a
+replacement created after a timed-out join; `finishSession()` stops the poll, leaves the foreground and cancels the
+notification, unless a newer accepted run owns the service again, and only then calls `stopSelf()`. That call is made
+only on the instance the start was handed to: start ids restart with each service record, and the platform matches
+`stopSelf()` to the calling instance's token. Failed, refused and one-shot starts take the same path (`finishIdle()`).
+The poll's not-RUNNING tail never posts, and `onDestroy()` cancels the notification unless another live instance holds
+it. Every `onStartCommand()` logs its action, start id and state, with the delivery delay when the sender stamped
+`EXTRA_SENT_UPTIME` (`startDecoder()`, `stopDecoder()`); the notification's immutable Stop `PendingIntent` has none
+and logs "delay unavailable". The wake lock is acquired outside the service lock and published under it.
 
 Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker

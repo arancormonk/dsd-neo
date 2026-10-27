@@ -17,7 +17,14 @@ object DsdNative {
     var enteredRun = CountDownLatch(1)
     var finishRun = CountDownLatch(1)
     var configureHook: (() -> Unit)? = null
+    var configureCode = STATUS_OK
     var nativeStopCode = STATUS_OK
+    /** Runs after every nativeStop, as a run that honours the stop at once would. */
+    var stopHook: (() -> Unit)? = null
+    /** What nativeRun returns once released. */
+    @Volatile var runCode = STATUS_OK
+    /** The notification status record the service polls. */
+    @Volatile var notificationStatus: String? = null
     val stops = CopyOnWriteArrayList<Boolean>()
     val stopCauses = CopyOnWriteArrayList<String>()
     val diagnostics = CopyOnWriteArrayList<String>()
@@ -25,28 +32,37 @@ object DsdNative {
         enteredRun = CountDownLatch(1)
         finishRun = CountDownLatch(1)
         configureHook = null
+        configureCode = STATUS_OK
         nativeStopCode = STATUS_OK
+        stopHook = null
+        runCode = STATUS_OK
+        notificationStatus = null
         stops.clear()
         stopCauses.clear()
         lifecycle = null
         diagnostics.clear()
     }
     fun nativeInit(config: String, cache: String) = STATUS_OK
-    fun nativeConfigure(args: Array<String>, id: Long): Int { configureHook?.invoke(); return STATUS_OK }
+    fun nativeConfigure(args: Array<String>, id: Long): Int { configureHook?.invoke(); return configureCode }
     fun nativeRun(): Int {
         val finish = finishRun
         enteredRun.countDown()
         check(finish.await(5, TimeUnit.SECONDS)) { "test did not release the engine" }
-        return STATUS_OK
+        return runCode
     }
-    fun nativeStop(userRequested: Boolean, cause: String): Int { stops += userRequested; stopCauses += cause; return nativeStopCode }
+    fun nativeStop(userRequested: Boolean, cause: String): Int {
+        stops += userRequested
+        stopCauses += cause
+        stopHook?.invoke()
+        return nativeStopCode
+    }
     fun nativeDestroy() = STATUS_OK
     @Volatile var lifecycle: LongArray? = null
     fun nativeLifecycleStatus(): LongArray? = lifecycle
     fun nativeHostDiagnostic(line: String) { diagnostics += line }
     fun nativeArmStartupDiagnostics() {}
     fun nativeFlushDiagnostics() {}
-    fun nativeNotificationStatus(): String? = null
+    fun nativeNotificationStatus(): String? = notificationStatus
 }
 
 object ProcessFacts {
