@@ -48,7 +48,7 @@ jobs:
 
       - name: Initialize CodeQL
         if: matrix.build-mode == ''
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: ${{ matrix.language }}
           config-file: ./.github/codeql/codeql-config.yml
@@ -58,7 +58,7 @@ jobs:
         # Overlay analysis cannot trace a manual C/C++ build.
         env:
           CODEQL_OVERLAY_DATABASE_MODE: none
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -111,7 +111,7 @@ jobs:
       # A traced C/C++ build analyzes every file it compiles, paths-ignore or
       # not, so the results are filtered against the config before upload.
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           upload: failure-only
           output: ${{ runner.temp }}/codeql-sarif
@@ -122,6 +122,6 @@ jobs:
         run: python3 tools/sarif_drop_ignored_paths.py --config .github/codeql/codeql-config.yml "$SARIF_DIR"
 
       - name: Upload CodeQL results
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: ${{ runner.temp }}/codeql-sarif
