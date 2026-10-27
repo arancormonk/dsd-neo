@@ -99,7 +99,6 @@ fake_rtl_index_strings(uint32_t index, char* m, char* p, char* s) {
 }
 
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_rtl_handle_strings(rtlsdr_dev_t* dev, char* m, char* p, char* s) {
     (void)dev;
     if (g_usb.on_step != nullptr) {
@@ -146,13 +145,11 @@ fake_usb_open(void* session, int i, void** handle) {
 }
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_usb_close(void* handle) {
     (void)handle;
 }
 
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_read_strings(void* handle, char* m, char* p, char* s) {
     fill_strings(*static_cast<const usb_dev*>(handle), m, p, s);
     return RTL_USB_OP_OK;
@@ -766,7 +763,6 @@ int g_busy_at = -1;
 int g_busy_ran = 0;
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the fake dongle's on_op hook.
 busy_on_op(void* ctx, int op) {
     (void)ctx;
     if (op != g_busy_at || (g_busy_ran != 0)) {
@@ -834,7 +830,6 @@ struct held_setter {
 held_setter g_held;
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the fake dongle's on_op hook.
 hold_gain_write(void* ctx, int op) {
     (void)ctx;
     if (op != RTL_TEST_DONGLE_GAIN || (g_held.inside.load() != 0)) {
@@ -1077,7 +1072,6 @@ stop_on_step(int step) {
 }
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the fake dongle's on_op hook.
 stop_on_op(void* ctx, int op) {
     (void)ctx;
     stop_on_step(op);

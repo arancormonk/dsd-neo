@@ -380,7 +380,6 @@ DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
 __stdcall
 #endif
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is a thread entry's.
 server_main(void* arg) {
     (void)arg;
     while (g_srv.quit.load() == 0) {
@@ -531,7 +530,6 @@ struct dev_rig {
 };
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the recovery callback's.
 rig_post(void* ctx) {
     (void)ctx;
 }
@@ -813,7 +811,6 @@ DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
 __stdcall
 #endif
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is a thread entry's.
 kill_when_served(void* arg) {
     (void)arg;
     (void)wait_until([] { return g_srv.connected.load() != 0; }, kWaitMs);
@@ -827,7 +824,6 @@ DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
 __stdcall
 #endif
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is a thread entry's.
 exit_when_served(void* arg) {
     (void)arg;
     (void)wait_until([] { return g_srv.connected.load() != 0; }, kWaitMs);
@@ -837,7 +833,6 @@ exit_when_served(void* arg) {
 }
 
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the cancellation test's.
 header_cancelled(void* ctx) {
     (void)ctx;
     return g_header_cancel;
@@ -1170,7 +1165,6 @@ struct old_sender {
 old_sender g_old;
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the send hook's.
 hold_first_generation(uint64_t generation, void* ctx) {
     (void)ctx;
     if (generation != 1U || g_old.armed.exchange(0) == 0) {
@@ -1295,7 +1289,6 @@ DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
 __stdcall
 #endif
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is a thread entry's.
 stopper_main(void* arg) {
     const auto* r = static_cast<dev_rig*>(arg);
     (void)rtl_device_stop_async(r->dev);
@@ -1306,7 +1299,6 @@ dsd_thread_t g_stopper{};
 std::atomic<int> g_stopper_started{0};
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the send hook's.
 stop_at_replay(uint64_t generation, void* ctx) {
     (void)ctx;
     if (generation != 2U || g_replay_stop_armed.exchange(0) == 0) {
@@ -1353,7 +1345,6 @@ test_stop_during_replay(void) {
 std::atomic<uint64_t> g_send_calls{0U};
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the send hook's.
 count_sends(uint64_t generation, void* ctx) {
     (void)generation;
     (void)ctx;
@@ -1432,7 +1423,6 @@ dev_rig* g_queued_rig = nullptr;
 std::atomic<int> g_discard_entered{0};
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the discard hook's.
 hold_while_queued(void* ctx) {
     (void)ctx;
     g_discard_entered.store(1);
@@ -1475,7 +1465,6 @@ std::atomic<int> g_read_hold{0};
 std::atomic<int> g_read_held{0};
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the read hook's.
 hold_reader(void* ctx) {
     (void)ctx;
     while (g_read_hold.load() != 0) {
@@ -1524,7 +1513,6 @@ dev_rig* g_discard_rig = nullptr;
 constexpr uint64_t kDiscardBytes = 4095U + 3U + 1U + 7U + 1U;
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the discard hook's.
 release_during_receive(void* ctx) {
     (void)ctx;
     if (g_release_in_receive.load() != 1 || server_conn_get(1).sent < kDiscardBytes) {
@@ -1923,7 +1911,6 @@ std::atomic<int> g_hold_retune{0};
 std::atomic<int> g_retune_held{0};
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the controller work hook's.
 hold_retune(int kind, void* ctx) {
     (void)ctx;
     if (kind != RTL_STREAM_TEST_WORK_RETUNE || g_hold_retune.load() == 0) {
@@ -1994,7 +1981,6 @@ DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
 __stdcall
 #endif
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is a thread entry's.
 stream_stopper(void* arg) {
     (void)arg;
     (void)rtl_stream_stop(g_stop_ctx);
@@ -2006,7 +1992,6 @@ dsd_thread_t g_stream_stopper{};
 std::atomic<int> g_stream_stopper_started{0}; /* set once g_stream_stopper holds the thread */
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the boundary probe's.
 stop_at_gate(int step, void* ctx) {
     (void)ctx;
     if (step != RTL_STREAM_TEST_BOUNDARY_GATE || g_stop_at_gate.exchange(0) == 0) {
@@ -2238,7 +2223,6 @@ const named_test kTests[] = {
 /* With no argument every case runs, in order; with one, only the case of that name. Either way, when
  * commands_raise_no_sigpipe is among them, its child runs first (fork_sigpipe_child()). */
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- main's signature.
 main(int argc, char** argv) {
     const char* only = (argc > 1) ? argv[1] : nullptr;
     int sigpipe_child = 0;

@@ -20,6 +20,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frame_sync_dsp_stubs.h"
 
 dsd_socket_t
 Connect(char* hostname, int portno) {
@@ -40,8 +41,6 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
     return 0;
 }
 
-/* Shutdown requests, counted (nothing else happens), so a test can tell a reader asked for one. */
-// NOLINTNEXTLINE(misc-use-internal-linkage) -- Tests read it through an extern declaration.
 int g_frame_sync_dsp_stub_shutdown_requests = 0;
 
 void

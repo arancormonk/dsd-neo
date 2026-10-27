@@ -117,7 +117,6 @@ fake_rtl_index_strings(uint32_t index, char* m, char* p, char* s) {
 }
 
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_rtl_handle_strings(rtlsdr_dev_t* dev, char* m, char* p, char* s) {
     (void)dev;
     fill_strings(g_usb.devs[0], m, p, s);
@@ -132,13 +131,11 @@ fake_open_session(void** session, int* count) {
 }
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_close_session(void* session) {
     (void)session;
 }
 
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_describe(void* session, int i, rtl_usb_device_info* out) {
     (void)session;
     *out = g_usb.devs[i].info;
@@ -146,7 +143,6 @@ fake_describe(void* session, int i, rtl_usb_device_info* out) {
 }
 
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_usb_open(void* session, int i, void** handle) {
     (void)session;
     *handle = &g_usb.devs[i];
@@ -154,13 +150,11 @@ fake_usb_open(void* session, int i, void** handle) {
 }
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_usb_close(void* handle) {
     (void)handle;
 }
 
 int
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the driver-ops table's.
 fake_read_strings(void* handle, char* m, char* p, char* s) {
     fill_strings(*static_cast<const usb_dev*>(handle), m, p, s);
     return RTL_USB_OP_OK;
@@ -579,7 +573,6 @@ test_rearm_with_delayed_first_samples(void) {
 /* Callbacks between the restarted reader's baseline and its thread start are samples since the reset: the silence
  * after them is a new stall (here recovered again: the cooldown is 1 ms), not the same one. */
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the restart hook's.
 deliver_one_at_restart(rtl_device* dev, void* ctx) {
     (void)ctx;
     rtl_device_test_usb_stream_deliver(dev, g_buffer, 512U);
@@ -630,7 +623,6 @@ test_ineligible_device_ends_as_before(void) {
 /* A receiver verdict already waiting out the unplug-owner grace when the recovery is requested (the reader returned by
  * itself just before) stays silent once the recovery succeeded. */
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the post hook's.
 reader_returns_before_post(rtl_device* dev, void* ctx) {
     (void)dev;
     (void)ctx;
@@ -687,7 +679,6 @@ struct boundary_log {
 boundary_log g_boundary;
 
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the boundary probe's.
 probe_boundary(int step, void* ctx) {
     (void)ctx;
     step_view v{};
@@ -1019,7 +1010,6 @@ test_recovery_failure_runs_the_tail_and_ends(void) {
 /* Once the recovery restarted the reader, make the new reader return by itself, as one whose transfers cannot be
  * submitted after the reopen does, and wait until the device handled its return, all before the recovery finishes. */
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the boundary probe's.
 probe_fail_replacement(int step, void* ctx) {
     probe_boundary(step, ctx);
     if (step != RTL_STREAM_TEST_BOUNDARY_RESUME) {
@@ -1036,7 +1026,6 @@ probe_fail_replacement(int step, void* ctx) {
 /* Inside the recovery's finish, mid-transition: make the restarted reader return by itself and wait until the device
  * handled its return, so the return lands in exactly the window between the finish's two steps. */
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the finish hook's.
 fail_replacement_in_finish(rtl_device* dev, void* ctx) {
     (void)dev;
     (void)ctx;
@@ -1313,7 +1302,6 @@ recording_reader* g_yield_reader = nullptr;
 /* At the boundary's first step the recovery owns the receiver: queue a command, and hold the controller until the
  * decoder's read has given way to it. */
 void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the boundary probe's.
 probe_yield(int step, void* ctx) {
     probe_boundary(step, ctx);
     recording_reader* reader = g_yield_reader;

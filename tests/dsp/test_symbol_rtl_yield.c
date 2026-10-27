@@ -36,6 +36,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../test_support/frame_sync_dsp_stubs.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -47,9 +48,6 @@ enum {
 };
 
 static int g_failures = 0;
-
-/* The shared stubs' count of shutdown requests (frame_sync_dsp_stubs.c). */
-extern int g_frame_sync_dsp_stub_shutdown_requests;
 
 /* The fake live stream: its output kind, the most a read returns, the next sample it hands out (0-based; the value is
    one more), what a read returns instead of samples while set (DSD_RTL_READ_YIELD, -1, or 0 for an empty read), and

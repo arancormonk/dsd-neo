@@ -1604,7 +1604,6 @@ live_commands_pending(void) {
 }
 
 static void
-// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the producer event's.
 live_queue_command(void* ctx) {
     (void)ctx;
     g_live_commands_pending.store(1);
