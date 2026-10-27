@@ -305,9 +305,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     uint64_t m_device_error_session = 0;
     uint64_t m_retried_device_session = 0;
     // #647 B11: the receiver the claim error came from; it is shown only while that receiver is the ready one.
+    // #782: identified by the connection the session took (attachment and connection generation, from the session's
+    // record) when the record names one, else by source and serial as before.
     uint64_t m_device_error_owner = 0;
     QString m_device_error_source;
     QString m_device_error_serial;
+    QString m_device_error_device;
+    qint64 m_device_error_epoch = 0;
+    qint64 m_device_error_connection = 0;
     LocalDeviceState m_usb;
     // UsbSourceManager.attachedSource(), polled with the USB record.
     QString m_attached_source;

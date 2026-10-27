@@ -90,6 +90,20 @@ object DsdNative {
     external fun nativeSetAirspyUsbFd(fd: Int): Int
 
     /**
+     * Whether the next RTL-SDR open from the descriptor resets the device first (#782). [UsbSourceManager] hands it
+     * with every descriptor it publishes; false unless the attachment owes a reset.
+     */
+    external fun nativeSetUsbResetFirst(resetFirst: Boolean)
+
+    /**
+     * The descriptors the engine holds, as { RTL-SDR, Airspy }, each -1 when none; null when the call failed (#782).
+     *
+     * A descriptor is held from just before libusb wraps it until the device is closed. [UsbSourceManager] closes a
+     * released connection once its own descriptor is no longer held, whatever a later session holds.
+     */
+    external fun nativeHeldUsbFds(): IntArray?
+
+    /**
      * Whether the engine currently has the descriptor wrapped in libusb.
      *
      * The window this reports is narrower than a run: the engine takes the

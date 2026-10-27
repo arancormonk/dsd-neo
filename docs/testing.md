@@ -181,7 +181,13 @@ to the next Airspy under the same request code; an attach replaces the diagnosti
 awaited receiver, never over a live connection, while the attachment is still recorded with its kind; a plain Connect
 keeps the request's kind and serial; a switch while running reads `refused` and the next ready request rewrites
 "Ready: <device>"; and a detach of the connection stops the engine only for a session that uses the receiver or holds
-its descriptor, releasing the connection either way. A source check first reads
+its descriptor, releasing the connection either way. #782 adds the session's take: a second session reopens the
+device without a prompt and publishes the new descriptor; a device gone, permission revoked or a failed reopen fails the
+start with its kind and leaves the broker not ready; a start while the previous session holds the receiver is refused;
+the Airspy gets the same rule; a serial request keeps its serial; a configured session refuses a switch; the Qt
+thread's switches run in order on the main thread; a released connection waits only on its own descriptor; a bus
+listing made stale by an attach, a replug or a detach is dropped; and a serial read held up inside an attach blocks
+neither the poll nor another broadcast. A source check first reads
 `UsbSourceManager.kt` for the same wiring (the generation as every permission `PendingIntent`'s request code, no
 `FLAG_UPDATE_CURRENT`, the detach's ownership test, the poll's expiry, the ready rewrite), and checks that every failure
 kind the broker writes is one `android/local_device_state.h` maps (`refused` to no device failure).
@@ -212,6 +218,10 @@ Dismiss runs nothing, a timeout then Retry runs only the retry, a timeout then a
 leaves it alone when the old START arrives; a retirement during `nativeConfigure()` or just before the worker would be
 published cancels the configured session (no run, one `nativeDiscardConfigured()`, a cancelled record); a retirement
 computed from an IDLE record the service has since left finds the run published and leaves it running.
+`DecoderServiceUsbTest.kt` (#782) scripts the USB broker's take (a stub `UsbSourceManager` in `ServiceNative.kt`): an
+RTL-SDR or Airspy start takes its receiver while STARTING and before configure, and its record names the connection;
+an rtl_tcp start takes none; a failed take ends the start before configure with its kind and text; a retirement before
+or during the take configures nothing.
 These tests exercise the service path the desktop host fixture replaces; they do not
 model vendor scheduling, Binder latency or an attached SDR.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an

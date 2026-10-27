@@ -857,6 +857,34 @@ on the main thread, and by then the native record names the session's receiver.
 Unplugging a retained receiver no session uses, or one during an rtl_tcp session,
 stops nothing.
 
+One serialized owner holds the broker's state (#782): every change runs on the
+main thread, where the USB broadcasts and the service's start arrive, and the Qt
+thread's Connect, Retry and pill requests are posted there. The broker's lock only
+makes its record readable from the Qt thread's poll and is never held across a
+binder call: the bus listing and the serial reads come first, and the poll's own
+listing for an attachment is dropped when an attach or detach was applied while it
+was taken, so it can never clear a newer attachment.
+
+Each session gets a connection of its own (#782). The first session after an open
+takes that connection; every later start of a local receiver, on the main thread
+between STARTING and `nativeConfigure()`, closes the connection the last session
+used, opens the same `UsbDevice` again (no prompt while permission holds) and
+publishes the new descriptor, so a descriptor a session left unusable (the
+reporter's "Failed to open rtlsdr device from descriptor") is never handed on.
+A start finding the previous session still configured or still holding its
+descriptor is refused as "previous session still stopping". If the device is no
+longer listed (or another serial now carries its name), permission was revoked, or
+Android cannot open it, the start fails before configure (`usb_gone`,
+`usb_permission`, `usb_open_failed`), the broker reads not ready, and Connect or
+Retry takes the normal request path. A switch to another receiver is refused while
+a session is configured, not only while it runs. The broker's record names the
+ready connection (`device`, `epoch`: the attach it came from, `connection`), each
+session's record names the connection it took, and the host shows a session's claim
+error only while that same connection is ready: two dongles with the same or no
+serial, or a replacement connection to the same dongle, never show another's.
+libusb's own error and warning lines reach the diagnostics through its log callback
+(`rtl_usb_log_install()`, set before every descriptor open).
+
 `ANDROID_USB_BROKER_JVM` runs `UsbRequestState.kt` and the real
 `UsbSourceManager.kt` on the JVM against stubs of the USB service and its prompts.
 The request-code identity itself is checked against the Android documentation and
@@ -884,11 +912,13 @@ Java keeps ownership of the descriptor throughout: `libusb_wrap_sys_device()` do
 not take it over. Closing the `UsbDeviceConnection` while the engine still has the
 descriptor wrapped is a use-after-close, so `UsbSourceManager.release()` clears the
 native slot immediately — that only affects the *next* open — and then hands the
-close to a background thread. That thread waits while the engine has the descriptor
-wrapped (`nativeIsUsbFdInUse()`) or a session configured for the local receiver has
-not ended (`nativeSessionUsesLocalReceiver()`, which covers one that has not taken
-the descriptor yet); an rtl_tcp, UDP or file session never takes it, so a receiver
-unplugged during one is closed at once. Both callers (a detach broadcast, a source
+close to a background thread. That thread waits only while the engine holds that
+connection's own descriptor (`nativeHeldUsbFds()`, #782): native marks a descriptor
+held in the same locked step that takes it from the slot, so once the slot is
+cleared a session that has not taken it never will, and a later session on a
+replacement connection, holding another descriptor, keeps nothing waiting. An
+rtl_tcp, UDP or file session never takes it, so a receiver unplugged during one is
+closed at once. Both callers (a detach broadcast, a source
 switch while stopped) therefore return without blocking. If the engine never lets
 go within 10 s, the connection is deliberately leaked: one
 descriptor held for the rest of the process's life beats pulling it out from under

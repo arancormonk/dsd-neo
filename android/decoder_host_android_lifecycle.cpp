@@ -80,8 +80,17 @@ DecoderHostAndroid::localDeviceReady() const {
 
 bool
 DecoderHostAndroid::deviceErrorApplies() const {
-    return m_device_error != 0 && m_usb.ready && m_usb.source == m_device_error_source
-           && m_usb.serial == m_device_error_serial;
+    if (m_device_error == 0 || !m_usb.ready || m_usb.source != m_device_error_source) {
+        return false;
+    }
+    // #782: the connection the session took. A blank or shared serial cannot tell two dongles apart, and a
+    // replacement connection to the same dongle is a fresh one: the error is shown only while that connection is
+    // the ready one.
+    if (m_device_error_connection != 0) {
+        return m_usb.connection == m_device_error_connection && m_usb.device == m_device_error_device
+               && m_usb.epoch == m_device_error_epoch;
+    }
+    return m_usb.serial == m_device_error_serial;
 }
 
 QString
@@ -225,6 +234,11 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
         m_device_error_owner = session;
         m_device_error_source = source.isEmpty() ? m_usb.source : source;
         m_device_error_serial = m_usb.source == m_device_error_source ? m_usb.serial : QString();
+        // #782: the connection the session took, from its own record; a result arriving after a replacement
+        // connection keeps naming the old one.
+        m_device_error_device = status.value(QStringLiteral("usbDevice")).toString();
+        m_device_error_epoch = status.value(QStringLiteral("usbEpoch")).toInteger();
+        m_device_error_connection = status.value(QStringLiteral("usbConnection")).toInteger();
         device_changed = true;
     }
     if (device_changed) {

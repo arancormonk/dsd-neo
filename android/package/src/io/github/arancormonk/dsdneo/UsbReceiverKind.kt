@@ -47,6 +47,35 @@ internal object UsbReceiverKind {
      */
     fun isKnown(vendorId: Int, productId: Int): Boolean = KNOWN_IDS.contains(id(vendorId, productId))
 
+    /**
+     * The local receiver a start's arguments name: "usb" for an RTL-SDR, "airspy", or empty for any other input
+     * (rtl_tcp included). Read as the engine's option parser reads "-i": the last one wins, separate or attached, and
+     * nothing after "--" is an option. The engine's own classifier is dsd_opts_audio_in_dev_is_rtl_spec() and
+     * _is_airspy_spec() (include/dsd-neo/core/opts.h): the exact name, or the name and a colon.
+     */
+    fun sourceOfArgs(args: Array<String>): String {
+        var input: String? = null
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            when {
+                arg == "--" -> break
+                arg == "-i" -> {
+                    input = args.getOrNull(index + 1)
+                    index += 1
+                }
+                arg.startsWith("-i") -> input = arg.substring(2)
+            }
+            index += 1
+        }
+        return when {
+            input == null -> ""
+            input == "rtl" || input.startsWith("rtl:") -> RTL
+            input == "airspy" || input.startsWith("airspy:") -> AIRSPY
+            else -> ""
+        }
+    }
+
     /** "airspy" for an Airspy, else "usb"; meaningful only for a device [isKnown] accepts. */
     fun sourceOf(vendorId: Int, productId: Int): String = if (id(vendorId, productId) == AIRSPY_ID) AIRSPY else RTL
 

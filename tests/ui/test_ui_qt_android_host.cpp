@@ -18,6 +18,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
+#include <initializer_list>
 #include <stdint.h>
 #include <utility>
 #include "../../android/decoder_host_android.h"
@@ -826,6 +827,134 @@ check_claim_error_scope() {
     retained_record() = QJsonObject();
 }
 
+/* A broker record of a ready RTL-SDR connection: its attachment (device name, attach epoch) and connection number. */
+static QJsonObject
+rtl_connection(const char* device, qint64 epoch, qint64 connection, const char* serial) {
+    return {{"ready", true},     {"source", "usb"},          {"serial", serial},
+            {"name", "RTL-SDR"}, {"text", "Ready: RTL-SDR"}, {"device", device},
+            {"epoch", epoch},    {"connection", connection}};
+}
+
+/* A failed RTL-SDR session's terminal record, naming the connection the session took. */
+static QJsonObject
+claim_failure(int session, const char* device, qint64 epoch, qint64 connection) {
+    using namespace dsd_android;
+    QJsonObject failed = lifecycle_record(session, "IDLE", kRunFailed, kEndNone, kReceiverRtl);
+    failed.insert("deviceError", -6);
+    failed.insert("lastError", "Decoder run failed (1); USB open/claim error -6");
+    failed.insert("usbDevice", device);
+    failed.insert("usbEpoch", epoch);
+    failed.insert("usbConnection", connection);
+    return failed;
+}
+
+/* #782: a session's claim error belongs to the connection that session took, not to whatever shares its kind and
+ * serial: two dongles with the same (or no) serial, and a replacement connection to the same dongle, never show it. */
+static void
+check_claim_error_connection() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const char* kA = "/dev/bus/usb/001/002";
+    const char* kB = "/dev/bus/usb/001/003";
+    for (const char* serial : {"00000001", ""}) {
+        DecoderHostAndroid host;
+        usb_record() = rtl_connection(kA, 1, 1, serial);
+        retained_record() = {{"sessionId", 120}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        retained_record() = claim_failure(121, kA, 1, 1);
+        host.refresh();
+        check(host.localDeviceFailureKind() == DecoderHost::DeviceBusy, "the claim error shows for its own dongle");
+        // Another dongle of the same kind, with the same serial or none, is connected instead.
+        usb_record() = rtl_connection(kB, 2, 2, serial);
+        host.refresh();
+        check(host.localDeviceFailureKind() == DecoderHost::NoDeviceFailure
+                  && host.localDeviceStatus() == QStringLiteral("Ready: RTL-SDR"),
+              *serial ? "a dongle with the same serial never shows another's claim error"
+                      : "a dongle with no serial never shows another's claim error");
+        usb_record() = rtl_connection(kA, 1, 1, serial);
+        host.refresh();
+        check(host.localDeviceFailureKind() == DecoderHost::DeviceBusy, "it shows again for its own connection");
+    }
+
+    /* The session's terminal result arrives after the next start reopened the same dongle (a new connection): it
+     * concerns the connection the session took, which is gone. */
+    DecoderHostAndroid host;
+    usb_record() = rtl_connection(kA, 1, 3, "00000001");
+    retained_record() = {{"sessionId", 130}, {"state", "IDLE"}};
+    host.refresh();
+    QJsonObject run = lifecycle_record(131, "RUNNING", kRunPending, kEndNone, kReceiverRtl);
+    run.insert("usbDevice", kA);
+    run.insert("usbEpoch", 1);
+    run.insert("usbConnection", 3);
+    retained_record() = run;
+    running = true;
+    host.refresh();
+    usb_record() = rtl_connection(kA, 1, 4, "00000001");
+    retained_record() = claim_failure(131, kA, 1, 3);
+    running = false;
+    host.refresh();
+    check(host.localDeviceFailureKind() == DecoderHost::NoDeviceFailure
+              && host.localDeviceStatus() == QStringLiteral("Ready: RTL-SDR"),
+          "a late result never lands on the replacement connection");
+
+    usb_record() = QJsonObject();
+    retained_record() = QJsonObject();
+}
+
+/* #782: the service's own failure of a start that could not take its USB receiver: the attempt's kind and text reach
+ * QML, and the broker's record, now not ready, says what the receiver needs. */
+static void
+check_receiver_take_failures() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+
+    struct Case {
+        const char* wire;
+        int kind;
+        const char* text;
+        const char* broker_kind;
+        int pill;
+    };
+
+    const Case cases[] = {
+        {"usb_gone", kAttemptUsbGone, "The USB receiver is no longer connected", "detached",
+         DecoderHost::DeviceDetached},
+        {"usb_permission", kAttemptUsbPermission, "The USB receiver needs permission again", "permission",
+         DecoderHost::DevicePermission},
+        {"usb_open_failed", kAttemptUsbOpenFailed, "The USB receiver could not be reopened", "open_failed",
+         DecoderHost::DeviceOpenFailed},
+        {"previous_stopping", kAttemptPreviousStopping, "A previous session is still stopping", "", -1},
+    };
+    for (const Case& c : cases) {
+        DecoderHostAndroid host;
+        usb_record() = rtl_connection("/dev/bus/usb/001/002", 1, 1, "00000001");
+        retained_record() = {{"sessionId", 140}, {"state", "IDLE"}, {"reason", kRunCompleted}};
+        running = false;
+        host.refresh();
+        check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the start is dispatched");
+        retained_record() = {{"sessionId", 141},      {"state", "IDLE"},
+                             {"reason", kRunFailed},  {"attemptId", (qint64)lastStartAttempt},
+                             {"failureKind", c.wire}, {"lastError", c.text}};
+        if (c.pill >= 0) {
+            usb_record() = {{"ready", false}, {"source", ""}, {"text", "Device detached"}, {"kind", c.broker_kind}};
+        }
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == c.kind
+                  && host.inputFailureCode() == 0 && host.failureText() == QLatin1String(c.text),
+              "the service's take failure is the attempt's failure, with its kind and text");
+        if (c.pill >= 0) {
+            check(!host.localDeviceReady() && host.localDeviceFailureKind() == c.pill,
+                  "the broker reads not ready, with what the receiver needs");
+        }
+        host.dismissFailure();
+    }
+    usb_record() = QJsonObject();
+    retained_record() = QJsonObject();
+}
+
 /* The USB record's outstanding access request reaches QML through the host (#647 WP3). */
 static void
 check_request_record() {
@@ -1080,6 +1209,8 @@ main(int argc, char** argv) {
     check_stop_publishes_stopping();
     check_receiver_health();
     check_claim_error_scope();
+    check_claim_error_connection();
+    check_receiver_take_failures();
     check_request_record();
     check_undelivered_start_after_network_failure();
     check_refused_start();

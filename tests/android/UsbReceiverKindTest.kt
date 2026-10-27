@@ -52,7 +52,24 @@ private fun aLabelBelongsToItsKindOfReceiver() {
     check(UsbReceiverKind.labelFor("usb", "usb", null) == null) { "nothing opened yet, no label" }
 }
 
+// #782: the receiver a start takes is read from its arguments as the engine reads "-i" (opts.h rtl/airspy specs).
+private fun aStartsReceiverComesFromItsInput() {
+    fun of(vararg args: String) = UsbReceiverKind.sourceOfArgs(arrayOf(*args))
+    check(of("-i", "rtl:0:851.0125M:0:0:24") == "usb" && of("-i", "rtl") == "usb") { "an RTL-SDR spec" }
+    check(of("-i", "airspy:26a464dc:0:0:0", "--airspy-serial", "26A464DC") == "airspy" && of("-iairspy") == "airspy") {
+        "an Airspy spec, separate or attached"
+    }
+    check(of("-i", "rtltcp:127.0.0.1:1234") == "" && of("-i", "rtlx") == "" && of("-i", "udp:0.0.0.0:7355") == "") {
+        "rtl_tcp and other inputs take no USB receiver"
+    }
+    check(of("-i", "rtl:0", "-i", "rtltcp:10.0.0.2:1234") == "" && of("-i", "rtltcp:h:1", "-i", "rtl:0") == "usb") {
+        "the last -i wins"
+    }
+    check(of("-i") == "" && of() == "" && of("--", "-i", "rtl:0") == "") { "no input, or none before --" }
+}
+
 fun main() {
+    aStartsReceiverComesFromItsInput()
     airspyBesideUnrelatedDevicesIsAirspy()
     twoRtlDonglesAreUsb()
     rtlAndAirspyAreBoth()

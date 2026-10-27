@@ -50,6 +50,7 @@ object DsdNative {
         configured.clear()
         discards = 0
         diagnosticHook = null
+        UsbSourceManager.reset()
     }
     fun nativeInit(config: String, cache: String) = STATUS_OK
     fun nativeConfigure(args: Array<String>, id: Long): Int {
@@ -80,6 +81,22 @@ object DsdNative {
     fun nativeArmStartupDiagnostics() {}
     fun nativeFlushDiagnostics() {}
     fun nativeNotificationStatus(): String? = notificationStatus
+}
+
+// The USB broker as the service's start sees it (#782): each take of a local receiver is recorded and answered as the
+// test scripted, on the thread that asked.
+object UsbSourceManager {
+    /** The receiver kind of every take, in order. */
+    val takes = CopyOnWriteArrayList<String>()
+    @Volatile internal var answer: (String) -> UsbSessionTake = { UsbSessionTake() }
+    fun reset() {
+        takes.clear()
+        answer = { UsbSessionTake() }
+    }
+    internal fun takeForSession(context: Context, source: String): UsbSessionTake {
+        takes += source
+        return answer(source)
+    }
 }
 
 object ProcessFacts {
@@ -113,5 +130,8 @@ object R {
         const val notif_separator = 17
         const val notif_slot = 18
         const val notif_unit = 19
+        const val error_usb_gone = 20
+        const val error_usb_permission = 21
+        const val error_usb_open_failed = 22
     }
 }

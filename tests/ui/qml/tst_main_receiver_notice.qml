@@ -425,6 +425,65 @@ Item {
             verify(retry.enabled);
         }
 
+        // #782: a start that could not take its USB receiver before the
+        // session began, as the service reports it (kinds 10-12, with its own
+        // text) and the broker then reads it (not ready, and why), for each
+        // kind of start Listen makes.
+        function receiverTakeFailure(kind, source) {
+            var service = {10: "The USB receiver needs permission again", 11: "The USB receiver could not be reopened", 12: "The USB receiver is no longer connected"};
+            var broker = {10: 4, 11: 2, 12: 3};
+            testContext.setDongleStatus(false, broker[kind], receiverName(source) + " not ready");
+            testContext.setLifecycleFailureKind(kind);
+            testContext.setLifecycleFailure(service[kind]);
+            testContext.setLifecyclePhase(4);
+        }
+        function test_receiver_take_failure_data() {
+            var rows = [];
+            var texts = {
+                10: "%1 needs USB permission again, so the session was not started. Tap Retry, then allow access when asked.",
+                11: "%1 could not be reopened, so the session was not started. Tap Retry, or unplug it and plug it back in if this keeps happening.",
+                12: "%1 is no longer connected, so the session was not started. Plug it back in, then tap Retry."
+            };
+            for (var kind = 10; kind <= 12; ++kind) {
+                for (var target of ["saved", "scan", "explore"]) {
+                    for (var source of ["usb", "airspy"])
+                        rows.push({tag: target + " " + source + " kind " + kind, target: target, source: source, kind: kind,
+                            text: texts[kind].replace("%1", receiverName(source))});
+                }
+            }
+            return rows;
+        }
+        function test_receiver_take_failure(data) {
+            startTarget(data.target, data.source);
+            receiverTakeFailure(data.kind, data.source);
+            tryCompare(card(), "visible", true);
+            compare(card().message, data.text);
+            var retry = findChild(card(), "failureRetry");
+            compare(retry.text, "Retry");
+            verify(retry.enabled);
+        }
+        function test_receiver_take_failure_in_signal_search_data() {
+            return [
+                {tag: "permission", kind: 10, text: "RTL-SDR needs USB permission again, so Signal search was not started. Start the search again, then allow access when asked."},
+                {tag: "reopen failed", kind: 11, text: "RTL-SDR could not be reopened, so Signal search was not started. Start the search again, or unplug it and plug it back in if this keeps happening."},
+                {tag: "gone", kind: 12, text: "RTL-SDR is no longer connected, so Signal search was not started. Plug it back in, then start the search again."}
+            ];
+        }
+        function test_receiver_take_failure_in_signal_search(data) {
+            connect("usb");
+            app.attemptedSource = {kind: "explore", uid: "", remember: false,
+                system: {name: "Signal search", sourceType: "usb", signalSearch: true}};
+            home().signalSearch();
+            verify(app.signalSearchOpen);
+            receiverTakeFailure(data.kind, "usb");
+            var search = findChild(app, "signalSearchScreen");
+            tryCompare(findChild(search, "searchMessage"), "text", data.text);
+            // Closed, the failure is Listen's card, worded for its Retry.
+            app.signalSearchOpen = false;
+            tryCompare(card(), "visible", true);
+            verify(card().message.indexOf("Tap Retry") >= 0 || card().message.indexOf("tap Retry") >= 0, card().message);
+        }
+
         function test_dismiss_gives_up_the_attempt() {
             startTarget("saved", "usb");
             testContext.setLifecycleFailureKind(9);

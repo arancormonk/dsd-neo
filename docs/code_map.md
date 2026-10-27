@@ -8631,18 +8631,22 @@ accepted `start()` clears the health; an access request clears it only once no s
 Monitor's LOST stays) and, for a session that ended Failed by that same ending, acknowledges the failure first, so
 Listen shows one card. Each acknowledgement is also handed to `DecoderService.acknowledgeReceiverEnding()`, and a host
 takes the service's `endingAcknowledged` mark from every record, so a recreated Activity's host starts from it. A native
-claim error is kept with the receiver of the session it came from (source, and the ready connection's serial when the
-error is first seen) and shown only while that receiver is the ready one. The USB record also carries the broker's
+claim error is kept with the receiver of the session it came from and shown only while that receiver is the ready one.
+#782: the receiver is the connection the session took (the record's `usbDevice`, `usbEpoch`, `usbConnection`, from
+`UsbSourceManager.takeForSession()`), compared with the broker record's `device`, `epoch`, `connection`; a record
+without one falls back to source and the ready connection's serial when the error is first seen. The run record's error
+is the session's own receiver's latch (`receiver_open_error()`: the RTL-SDR's, or the Airspy's
+`rtl_device_airspy_last_open_error()`). The USB record also carries the broker's
 request (`pending`, `requestedSource`, `requestedSerial`, empty before the first request; `LocalDeviceState`), published
 as `localDeviceRequestPending`/`localDeviceRequestedSource`; kind `refused` (the switch refusal) maps to no device
 failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request generations and their 60 s
 expiry, scoped attachment diagnostics, detach ownership) is described in `android/README.md` "USB-OTG". Known limits:
 `receiverHealth` carries no Airspy serial, so the notice names only the kind and a recreated Reconnect asks for access
-by kind (with two Airspys it may prompt for the other); a claim error's serial is the ready connection's when the error
-is first seen, a proxy, so after a swap between two Airspys it can be kept with the wrong unit. Tests:
+by kind (with two Airspys it may prompt for the other). Tests:
 `UI_QT_SESSION_STATE` (`test_receiver_end_holds_stopping_through_long_running`), `IO_RTL_RUN_RESULT` (causes, sources,
-the grace), `UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`, `check_request_record`),
-`UI_QT_CONTROLLER`, `ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`.
+the grace, the receiver's own open error), `UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`,
+`check_claim_error_connection`, `check_receiver_take_failures`, `check_request_record`), `UI_QT_CONTROLLER`,
+`ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`, `IO_RTL_FD_HELD`, `IO_RTL_USB_LOG`.
 
 Stop delivery (PR #723 follow-up): `DecoderService.stopDecoder()` also calls `requestEngineStop()` synchronously
 under the service lock, before posting the intent, for RUNNING and STOPPING. The JNI stop only raises atomics; the

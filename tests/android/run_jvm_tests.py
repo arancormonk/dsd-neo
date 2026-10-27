@@ -320,6 +320,7 @@ SUITES = {
                     "UsbRequestState.kt",
                     "UsbAttachmentTracker.kt",
                     "UsbReceiverKind.kt",
+                    "UsbSessionTake.kt",
                     "EngineStop.kt",
                 ),
                 tests=("UsbSourceManagerTest.kt",),
@@ -344,8 +345,9 @@ SUITES = {
         builds=(
             Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),
             Build(
-                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt"),
-                tests=("DecoderServiceStopTest.kt", "DecoderServiceAttemptTest.kt"),
+                # UsbSourceManager is the stub in ServiceNative.kt: the service's take of its receiver is scripted.
+                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt", "UsbReceiverKind.kt", "UsbSessionTake.kt"),
+                tests=("DecoderServiceStopTest.kt", "DecoderServiceAttemptTest.kt", "DecoderServiceUsbTest.kt"),
                 stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
                        "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),
             ),

@@ -14,6 +14,8 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
@@ -27,10 +29,20 @@ import org.json.JSONObject
  * then wraps it instead of enumerating, which is why the engine also skips its own
  * device scan while a descriptor is set.
  *
- * The connection outlives a single decode run and is released on detach or a stopped-session source switch: Java
+ * The connection is released on detach or a stopped-session source switch: Java
  * keeps ownership of the descriptor for as long as the engine might use it, and the
  * decoder service deliberately leaves it alone when it is destroyed, which happens
  * at the end of every session. Whatever survives that is closed by process death.
+ * Each session gets a connection of its own (#782): the first takes the one opened
+ * for it, and every later one reopens the device ([takeForSession]), so a descriptor
+ * a session left unusable is never handed to the next.
+ *
+ * One serialized owner (#782): every change to this state runs on the main thread,
+ * where the USB broadcasts and the service's start arrive; the Qt thread's access
+ * requests are posted there ([onMain]). [lock] only makes the state readable from
+ * other threads, and is never held across a binder call: the bus listing and serial
+ * reads come before the change they feed, and a listing older than an attach or
+ * detach applied since is discarded ([events]).
  */
 object UsbSourceManager {
     private const val TAG = "dsd-neo"
@@ -65,6 +77,28 @@ object UsbSourceManager {
     /** Set while [open] is between claiming the slot and installing a connection. */
     private var opening = false
 
+    /** Attach and detach events applied so far; a bus listing taken before the newest one is stale (#782). */
+    private var events = 0L
+    /** Validated attach edges seen so far, and each attached device's at its edge: the attach epoch (#782). */
+    private var attaches = 0L
+    private val attachEpochs = HashMap<String, Long>()
+    /** Connections installed so far; the current one's number, its attach epoch and how many sessions took it. */
+    private var connections = 0L
+    private var connectionId = 0L
+    private var connectedEpoch = 0L
+    private var sessionsTaken = 0
+
+    private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
+
+    /** Runs [work] on the main thread, the broker's one owner: at once when already there, else posted. */
+    private fun onMain(work: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            work()
+        } else {
+            mainHandler.post { work() }
+        }
+    }
+
     /**
      * Guards receiver registration only.
      *
@@ -95,6 +129,8 @@ object UsbSourceManager {
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = usbDeviceExtra(intent)
+                    // Listed before the state change, never under the lock: the listing is a binder call (#782).
+                    val current = currentDevices(context)
                     val (attached, requestedGone) = synchronized(lock) {
                         // The requested device going before it was opened retires its prompt, so Connect prompts
                         // again at once after a re-plug instead of waiting out the old one (B9).
@@ -102,8 +138,10 @@ object UsbSourceManager {
                         if (device != null) {
                             UsbAttachmentTracker.detach(identity(device))
                             requests.onDetach(device.deviceName)
+                            attachEpochs.remove(device.deviceName)
                         }
-                        UsbAttachmentTracker.reconcile(currentDevices(context))
+                        UsbAttachmentTracker.reconcile(current)
+                        events += 1
                         attachedName to unopened
                     }
                     // The filter sees every device on the bus, so an unresolvable
@@ -151,18 +189,27 @@ object UsbSourceManager {
         ensureReceiver(app)
     }
 
+    /** An attach edge, from the broadcast or the Activity's launch intent; main thread. */
     fun reportAttachment(context: Context, intent: Intent?) {
         if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
         val device = usbDeviceExtra(intent) ?: return
         if (!isKnown(device)) return
+        // Both binder calls come before the state change, never under the lock (#782): a slow serial read must not
+        // hold up the host's poll or another broadcast.
+        val current = currentDevices(context)
+        val serial = serialOf(device)
         synchronized(lock) {
+            events += 1
             // Every validated edge is recorded for auto-start; the shown diagnostic is replaced only by the receiver
             // the request is waiting for, or by any receiver when nothing is asked and nothing connected (#647 B2).
-            if (UsbAttachmentTracker.report(identity(device), currentDevices(context)) &&
-                requests.attachReplacesDiagnostic(sourceOf(device), serialOf(device), connection != null)) {
-                // Cold Activity startup may precede native library initialization.
-                status = "${describe(device)} attached"
-                failureKind = ""
+            if (UsbAttachmentTracker.report(identity(device), current)) {
+                attaches += 1
+                attachEpochs[device.deviceName] = attaches
+                if (requests.attachReplacesDiagnostic(sourceOf(device), serial, connection != null)) {
+                    // Cold Activity startup may precede native library initialization.
+                    status = "${describe(device)} attached"
+                    failureKind = ""
+                }
             }
         }
     }
@@ -183,7 +230,10 @@ object UsbSourceManager {
             JSONObject().put("ready", connection != null).put("text", status)
                 .put("kind", failureKind).put("name", deviceLabel).put("source", connectedSource).put("serial", connectedSerial)
                 .put("pending", requests.pending).put("requestedSource", requests.requestedSource)
-                .put("requestedSerial", requests.requestedSerial).toString()
+                .put("requestedSerial", requests.requestedSerial)
+                // #782: which connection is ready, so the host shows a session's receiver error only for its own.
+                .put("device", attachedName.orEmpty()).put("epoch", if (connection != null) connectedEpoch else 0L)
+                .put("connection", if (connection != null) connectionId else 0L).toString()
         }
         if (expired) logStatus(NO_ANSWER)
         return record
@@ -207,9 +257,14 @@ object UsbSourceManager {
      * "usb" or "airspy", so auto-start can match the receiver that was plugged in (#647 D3), or empty.
      */
     @JvmStatic
-    fun takeAttachment(): String = synchronized(lock) {
-        val context = attachmentContext ?: return@synchronized ""
-        UsbAttachmentTracker.take(currentDevices(context))
+    fun takeAttachment(): String {
+        // The Qt thread's poll: the bus is listed outside the lock, and a listing older than an attach or detach
+        // applied meanwhile is dropped rather than applied, so it can never clear a newer pending edge (#782). The
+        // next poll, 250 ms later, lists again.
+        val (context, seen) = synchronized(lock) { attachmentContext to events }
+        if (context == null) return ""
+        val current = currentDevices(context)
+        return synchronized(lock) { if (events != seen) "" else UsbAttachmentTracker.take(current) }
     }
 
     private fun identity(device: UsbDevice) =
@@ -232,17 +287,21 @@ object UsbSourceManager {
      */
     @JvmStatic
     fun requestAccess(context: Context) {
-        // The request already made comes first (its serial included), then the connected receiver, then the bus
-        // (#647 B10): a plain Connect after an Airspy request never opens whichever RTL-SDR happens to be listed first.
-        val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-        val bus = manager.deviceList.values.filter { isKnown(it) }.map { sourceOf(it) }
-        val (source, serial) = synchronized(lock) { requests.accessTarget(if (connection != null) connectedSource else "", bus) }
-        requestAccessForSource(context, source, serial)
+        // From the Qt thread: run by the broker's owner, so it cannot change the connection in the middle of a
+        // session's swap or a broadcast (#782).
+        onMain {
+            // The request already made comes first (its serial included), then the connected receiver, then the bus
+            // (#647 B10): a plain Connect after an Airspy request never opens whichever RTL-SDR happens to be listed first.
+            val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+            val bus = manager.deviceList.values.filter { isKnown(it) }.map { sourceOf(it) }
+            val (source, serial) = synchronized(lock) { requests.accessTarget(if (connection != null) connectedSource else "", bus) }
+            requestDevice(context, source, serial, hop = false)
+        }
     }
 
     @JvmStatic
     fun requestAccessForSource(context: Context, source: String, serial: String) {
-        requestDevice(context, source, serial, hop = false)
+        onMain { requestDevice(context, source, serial, hop = false) }
     }
 
     /**
@@ -251,9 +310,11 @@ object UsbSourceManager {
      */
     private fun requestDevice(context: Context, source: String, serial: String, hop: Boolean) {
         if (source != "usb" && source != "airspy") return
-        val running = DsdNative.nativeIsRunning()
+        // A configured session owns its receiver before it runs (#782), as the detach and the swap ask too.
+        val owned = DsdNative.nativeIsRunning() || DsdNative.nativeSessionUsesLocalReceiver() ||
+            DsdNative.nativeIsUsbFdInUse()
         val switch = synchronized(lock) {
-            UsbRequestState.switchFor(if (connection != null) connectedSource else "", connectedSerial, source, serial, running)
+            UsbRequestState.switchFor(if (connection != null) connectedSource else "", connectedSerial, source, serial, owned)
         }
         when (switch) {
             UsbRequestState.Switch.REFUSE -> {
@@ -331,6 +392,17 @@ object UsbSourceManager {
      */
     @JvmStatic
     fun release() {
+        val open = detachConnection() ?: return
+        val fd = open.fileDescriptor
+        Thread({ closeWhenReleased(open, fd) }, "dsd-neo-usb-release").start()
+    }
+
+    /**
+     * Forgets the connection and clears both native slots; returns it, or null when there was none. The slots are
+     * cleared before anything closes it: once they are, the engine either holds the descriptor (and the held query
+     * says so) or can no longer take it.
+     */
+    private fun detachConnection(): UsbDeviceConnection? {
         val open = synchronized(lock) {
             val current = connection
             connection = null
@@ -338,35 +410,33 @@ object UsbSourceManager {
             connectedSource = ""
             connectedSerial = ""
             connectedLabel = ""
+            connectionId = 0L
+            connectedEpoch = 0L
+            sessionsTaken = 0
             current
-        }
-        if (open == null) {
-            return
-        }
+        } ?: return null
         DsdNative.nativeSetUsbFd(-1)
         DsdNative.nativeSetAirspyUsbFd(-1)
-        Thread({ closeWhenEngineStops(open) }, "dsd-neo-usb-release").start()
+        return open
     }
 
     /**
-     * Waits for the engine to let go of the descriptor, then closes the connection.
+     * Waits for the engine to let go of [fd], the released connection's own descriptor, then closes the connection.
      *
-     * Both conditions matter. [DsdNative.nativeIsUsbFdInUse] is the precise one — it
-     * brackets exactly the period during which libusb has the descriptor wrapped —
-     * while [DsdNative.nativeSessionUsesLocalReceiver] additionally covers a session
-     * configured for the local receiver that has not reached input setup yet, and
-     * holds until its run's result is in. Whether the engine runs at all is not
-     * asked: an rtl_tcp, UDP or file session never takes the descriptor, and waiting
-     * for it to end would leak the connection of a receiver unplugged during it
-     * (#647).
+     * Bound to that descriptor (#782): [DsdNative.nativeHeldUsbFds] names the descriptor libusb has wrapped, from
+     * just before the wrap until the device is closed, and the slot was cleared first, so a session that has not
+     * taken it yet never will. A later session on a replacement connection holds another descriptor and keeps
+     * nothing here waiting; global "a session uses the receiver" flags would, and would leak the connection after
+     * the timeout. Nor is it asked whether the engine runs: an rtl_tcp, UDP or file session never takes the
+     * descriptor (#647).
      *
      * If it never lets go the connection is deliberately leaked: one file descriptor
      * held for the rest of the process's life is a far better outcome than pulling it
      * out from under an in-flight USB transfer.
      */
-    private fun closeWhenEngineStops(open: UsbDeviceConnection) {
+    private fun closeWhenReleased(open: UsbDeviceConnection, fd: Int) {
         var waited = 0L
-        while (DsdNative.nativeIsUsbFdInUse() || DsdNative.nativeSessionUsesLocalReceiver()) {
+        while (isHeld(fd)) {
             if (waited >= RELEASE_TIMEOUT_MS) {
                 Log.e(TAG, "engine still using the receiver after ${RELEASE_TIMEOUT_MS}ms; leaking the USB connection")
                 return
@@ -382,6 +452,12 @@ object UsbSourceManager {
         }
         open.close()
         Log.i(TAG, "usb: connection closed")
+    }
+
+    /** Whether the engine holds [fd]; an unreadable answer counts as held, so nothing closes under a transfer. */
+    private fun isHeld(fd: Int): Boolean {
+        val held = DsdNative.nativeHeldUsbFds() ?: return true
+        return held.any { it == fd }
     }
 
     private fun open(context: Context, device: UsbDevice) {
@@ -475,13 +551,17 @@ object UsbSourceManager {
                 !requests.satisfiedBy(sourceOf(device), serial)) {
                 DsdNative.STATUS_ERROR
             } else {
-                val result = if (sourceOf(device) == "airspy") DsdNative.nativeSetAirspyUsbFd(fd) else DsdNative.nativeSetUsbFd(fd)
+                val result = publish(sourceOf(device), fd)
                 if (result == DsdNative.STATUS_OK) {
                     connection = opened
                     attachedName = device.deviceName
                     connectedSource = sourceOf(device)
                     connectedSerial = serial
                     connectedLabel = describe(device)
+                    connections += 1
+                    connectionId = connections
+                    connectedEpoch = attachEpochs[device.deviceName] ?: 0L
+                    sessionsTaken = 0
                 }
                 result
             }
@@ -492,6 +572,135 @@ object UsbSourceManager {
             return
         }
         setStatus("Ready: ${describe(device)}")
+    }
+
+    /**
+     * Hands the engine [fd] for a receiver of kind [source]. [resetFirst] asks the next RTL-SDR open to reset the
+     * device before it opens it, for an attachment that owes a reset; false unless the caller knows it does.
+     */
+    private fun publish(source: String, fd: Int, resetFirst: Boolean = false): Int =
+        if (source == UsbReceiverKind.AIRSPY) {
+            DsdNative.nativeSetAirspyUsbFd(fd)
+        } else {
+            DsdNative.nativeSetUsbResetFirst(resetFirst)
+            DsdNative.nativeSetUsbFd(fd)
+        }
+
+    /** The connection a start found, read in one locked step. */
+    private class Held(
+        val name: String,
+        val serial: String,
+        val label: String,
+        val epoch: Long,
+        val id: Long,
+        val sessions: Int,
+    )
+
+    /**
+     * A start's take of its local receiver [source] ("usb" or "airspy"), on the main thread between the service's
+     * IDLE->STARTING and nativeConfigure() (#782). Nothing else can change the broker meanwhile: the broadcasts and
+     * the Qt thread's requests run on this thread too.
+     *
+     * - No connection of that kind: nothing to take, and the start goes on as before.
+     * - The previous session still owns a receiver (configured, or the descriptor still wrapped): refused, as
+     *   "previous session still stopping".
+     * - A connection no session took yet: this session takes it.
+     * - One a session already took: one transaction closes it and opens the same UsbDevice again (no prompt while
+     *   permission holds), then publishes the new descriptor. A descriptor the last session left unusable is never
+     *   reused (the reporter's "Failed to open rtlsdr device from descriptor"). If the device is gone, permission was
+     *   revoked or the open fails, the start fails before configure with that kind, and the broker reads not ready:
+     *   Connect or Retry takes the normal request path.
+     */
+    internal fun takeForSession(context: Context, source: String): UsbSessionTake {
+        if (source != UsbReceiverKind.RTL && source != UsbReceiverKind.AIRSPY) return UsbSessionTake()
+        val held = synchronized(lock) {
+            if (connection == null || connectedSource != source) {
+                null
+            } else {
+                Held(attachedName.orEmpty(), connectedSerial, connectedLabel, connectedEpoch, connectionId, sessionsTaken)
+            }
+        } ?: return UsbSessionTake()
+        if (DsdNative.nativeSessionUsesLocalReceiver() || DsdNative.nativeIsUsbFdInUse()) {
+            return UsbSessionTake.failed(
+                UsbSessionTake.PREVIOUS_STOPPING,
+                "usb: ${held.label} is still held by the previous session; not reopened"
+            )
+        }
+        if (held.sessions == 0) {
+            synchronized(lock) { sessionsTaken = 1 }
+            DsdNative.nativeHostDiagnostic("usb: the session takes ${held.label} (connection ${held.id})")
+            return UsbSessionTake(device = held.name, epoch = held.epoch, connection = held.id)
+        }
+        return reopen((synchronized(lock) { attachmentContext } ?: context.applicationContext), source, held)
+    }
+
+    /** Body of [takeForSession] for a connection a session already took: close it, open the device again, publish. */
+    private fun reopen(context: Context, source: String, held: Held): UsbSessionTake {
+        val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        // Binder calls, all before the state changes below and none under the lock.
+        val listed = manager.deviceList[held.name]?.takeIf { isKnown(it) && sourceOf(it) == source }
+        val permitted = listed != null && manager.hasPermission(listed)
+        // The serial, readable only with permission, tells a device that took over the name since from this one.
+        val device = listed?.takeIf { !permitted || held.serial.isEmpty() || matchesSerial(it, held.serial) }
+        // The old connection goes first whatever comes next: the engine is idle (checked above), so nothing holds it.
+        detachConnection()?.close()
+        if (device == null) {
+            setStatus("Device detached: ${held.label}", "detached")
+            return UsbSessionTake.failed(UsbSessionTake.USB_GONE, "usb: ${held.label} is no longer attached; not reopened")
+        }
+        if (!permitted) {
+            setStatus("No permission for ${describe(device)}", "permission")
+            return UsbSessionTake.failed(UsbSessionTake.USB_PERMISSION, "usb: no permission to reopen ${held.label}")
+        }
+        val label = String.format("%s %04x:%04x", describe(device), device.vendorId, device.productId)
+        DsdNative.nativeArmStartupDiagnostics()
+        DsdNative.nativeHostDiagnostic("usb: reopening $label for the new session")
+        val opened = try {
+            manager.openDevice(device)
+        } catch (_: SecurityException) {
+            null
+        }
+        if (opened == null) {
+            // As openClaimed() rechecks: a detach or a revocation can race the open.
+            return when {
+                !manager.deviceList.containsKey(device.deviceName) -> {
+                    setStatus("Device detached: ${describe(device)}", "detached")
+                    UsbSessionTake.failed(UsbSessionTake.USB_GONE, "usb: $label went away while it was reopened")
+                }
+                !manager.hasPermission(device) -> {
+                    setStatus("No permission for ${describe(device)}", "permission")
+                    UsbSessionTake.failed(UsbSessionTake.USB_PERMISSION, "usb: no permission to reopen $label")
+                }
+                else -> {
+                    setStatus("Android could not open ${describe(device)} (open_failed).", "open_failed")
+                    UsbSessionTake.failed(UsbSessionTake.USB_OPEN_FAILED, "usb: Android could not reopen $label")
+                }
+            }
+        }
+        val fd = opened.fileDescriptor
+        val installed = fd >= 0 && synchronized(lock) {
+            val rc = publish(source, fd)
+            if (rc == DsdNative.STATUS_OK) {
+                connection = opened
+                attachedName = device.deviceName
+                connectedSource = source
+                connectedSerial = held.serial
+                connectedLabel = held.label
+                connections += 1
+                connectionId = connections
+                connectedEpoch = held.epoch
+                sessionsTaken = 1
+            }
+            rc == DsdNative.STATUS_OK
+        }
+        if (!installed) {
+            opened.close()
+            setStatus("No descriptor for ${describe(device)} (open_failed)", "open_failed")
+            return UsbSessionTake.failed(UsbSessionTake.USB_OPEN_FAILED, "usb: no usable descriptor for $label")
+        }
+        val id = synchronized(lock) { connectionId }
+        DsdNative.nativeHostDiagnostic("usb: the session takes $label (connection $id, reopened)")
+        return UsbSessionTake(device = device.deviceName, epoch = held.epoch, connection = id)
     }
 
     private fun ensureReceiver(context: Context) {

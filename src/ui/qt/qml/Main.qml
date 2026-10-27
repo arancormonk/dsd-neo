@@ -65,7 +65,37 @@ Window {
             return qsTr("The previous session is still stopping. Tap Retry to start this one once it has stopped.");
         if (kind === 9)
             return qsTr("The decoder did not respond in time, so the session was not started. Tap Retry, or open Details if this keeps happening.");
+        var receiverFailure = receiverStartFailure(false);
+        if (receiverFailure.length)
+            return receiverFailure;
         return awaitingUsbAccess ? usbAccessText : qsTr("The source could not be started. Review its settings or open Details.");
+    }
+    /**
+     * A start that could not take its USB receiver before the session began
+     * (kinds 10-12, android/run_status.h): the receiver went away, lost its
+     * permission, or could not be reopened. Worded for the card, whose Retry
+     * asks for the receiver again, or for Signal search's own screen (@p search),
+     * where the search is started again from its controls. Empty for any other
+     * failure.
+     */
+    function receiverStartFailure(search) {
+        var kind = decoderHost ? decoderHost.inputFailureKind || 0 : 0;
+        if (kind < 10 || kind > 12)
+            return "";
+        var type = attemptedSource && attemptedSource.system ? attemptedSource.system.sourceType : "";
+        var receiver = type === "airspy" ? qsTr("Airspy") : type === "usb" ? qsTr("RTL-SDR") : qsTr("The receiver");
+        if (search) {
+            if (kind === 10)
+                return qsTr("%1 needs USB permission again, so Signal search was not started. Start the search again, then allow access when asked.").arg(receiver);
+            if (kind === 11)
+                return qsTr("%1 could not be reopened, so Signal search was not started. Start the search again, or unplug it and plug it back in if this keeps happening.").arg(receiver);
+            return qsTr("%1 is no longer connected, so Signal search was not started. Plug it back in, then start the search again.").arg(receiver);
+        }
+        if (kind === 10)
+            return qsTr("%1 needs USB permission again, so the session was not started. Tap Retry, then allow access when asked.").arg(receiver);
+        if (kind === 11)
+            return qsTr("%1 could not be reopened, so the session was not started. Tap Retry, or unplug it and plug it back in if this keeps happening.").arg(receiver);
+        return qsTr("%1 is no longer connected, so the session was not started. Plug it back in, then tap Retry.").arg(receiver);
     }
     // #647 D2a: the host's word on the last session's receiver, scoped to that
     // session. Listen gives it a notice once the session is over; while it
@@ -1346,8 +1376,9 @@ Window {
         sessionActive: decoderHost.sessionActive
         leaving: mainRoot.leavingSearch
         sessionSource: metrics.radioSource || ({})
-        // A receiver's ending is worded for this screen: the search starts again from here.
-        failure: mainRoot.receiverNoticeShown ? mainRoot.receiverNotice(true) : mainRoot.failureText
+        // A receiver's ending, and a start that could not take its receiver, are
+        // worded for this screen: the search starts again from here.
+        failure: mainRoot.receiverNoticeShown ? mainRoot.receiverNotice(true) : mainRoot.failureText === mainRoot.hostFailure && mainRoot.receiverStartFailure(true).length > 0 ? mainRoot.receiverStartFailure(true) : mainRoot.failureText
         onBackRequested: mainRoot.requestBack()
         onClosed: {
             mainRoot.abandonSignalSearchStart();

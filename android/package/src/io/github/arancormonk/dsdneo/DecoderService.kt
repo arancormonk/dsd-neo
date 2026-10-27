@@ -207,6 +207,7 @@ class DecoderService : Service() {
             cancelRequested = false
             attemptRan = false
             failureKind = ""
+            receiverTake = UsbSessionTake()
             sessionId
         }
         rejectedIn?.let { found ->
@@ -230,6 +231,27 @@ class DecoderService : Service() {
                 return
             }
             initialized = true
+        }
+
+        // A retirement that landed since IDLE->STARTING ends the start here, before it reopens a receiver or pays for
+        // a bootstrap (#782).
+        if (cancelledBeforeConfigure(attempt)) {
+            return
+        }
+        // The start's local receiver gets a connection of its own: the first session takes the one opened for it,
+        // and every later one reopens the device (#782). Here, on the main thread with the USB broadcasts, so no
+        // detach or access request lands in the middle; the engine is idle, since the service was IDLE.
+        val receiver = UsbReceiverKind.sourceOfArgs(args)
+        if (receiver.isNotEmpty()) {
+            val take = UsbSourceManager.takeForSession(this, receiver)
+            if (take.failureKind.isNotEmpty()) {
+                failStart(take.reason, receiverFailureText(take.failureKind), take.failureKind)
+                return
+            }
+            synchronized(lock) { receiverTake = take }
+            if (cancelledBeforeConfigure(attempt)) {
+                return
+            }
         }
 
         DsdNative.nativeHostDiagnostic("service: configuring the engine")
@@ -326,6 +348,34 @@ class DecoderService : Service() {
         }
         finishIdle()
     }
+
+    /**
+     * Ends a start whose attempt the host retired before configuration (#782): nothing native was configured, so
+     * there is nothing to discard. Checked under the lock retireAttempts() latches the cancellation under.
+     */
+    private fun cancelledBeforeConfigure(attempt: Long): Boolean {
+        if (!synchronized(lock) { cancelRequested }) {
+            return false
+        }
+        DsdNative.nativeHostDiagnostic("service: start attempt $attempt retired before configuration; cancelled")
+        releaseWakeLock()
+        synchronized(lock) {
+            terminalReason = DsdNative.RUN_CANCELLED
+            state = State.IDLE
+        }
+        finishIdle()
+        return true
+    }
+
+    /** What the UI shows for a start that could not take its receiver (an [UsbSessionTake] failure kind). */
+    private fun receiverFailureText(kind: String): String = getString(
+        when (kind) {
+            UsbSessionTake.USB_GONE -> R.string.error_usb_gone
+            UsbSessionTake.USB_PERMISSION -> R.string.error_usb_permission
+            UsbSessionTake.USB_OPEN_FAILED -> R.string.error_usb_open_failed
+            else -> R.string.error_busy
+        }
+    )
 
     /**
      * Abandons a start. [reason] goes to logcat; [userMessage] is what the UI shows,
@@ -978,6 +1028,8 @@ class DecoderService : Service() {
          * failure kind (attempt_failure_from_wire()); "" when it did not. Published as the record's "failureKind".
          */
         private var failureKind = ""
+        /** The USB connection the current session took, or none; see [UsbSourceManager.takeForSession]. */
+        private var receiverTake = UsbSessionTake()
 
         /**
          * The live service instance, which a session's end reaches; null between an
@@ -1190,7 +1242,10 @@ class DecoderService : Service() {
                 .put("receiverSource", if (matches && fields.size >= 9) fields[8].toInt() else 0)
                 .put("endingAcknowledged", endingAcknowledged)
                 // #782: the attempt this session was started for, and its attempt-scoped failure.
-                .put("attemptId", attemptId).put("failureKind", failureKind).toString()
+                .put("attemptId", attemptId).put("failureKind", failureKind)
+                // #782: the USB connection the session took (UsbSessionTake), which its receiver error belongs to.
+                .put("usbDevice", receiverTake.device).put("usbEpoch", receiverTake.epoch)
+                .put("usbConnection", receiverTake.connection).toString()
         }
 
         /**
