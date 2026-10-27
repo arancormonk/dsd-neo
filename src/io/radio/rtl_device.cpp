@@ -7316,8 +7316,14 @@ struct rtl_usb_apply_policy {
     int attempts;
 };
 
-typedef int (*rtl_usb_apply_fn)(void* ctx);
-typedef int (*rtl_usb_verify_fn)(void* ctx);
+/* A control's apply and verify take the context type that control is applied with, so the retry and replay helpers
+ * are instantiated per context type and no control's context reaches another control's callback through a shared
+ * untyped pointer. Ctx is deduced from the context argument alone, so a NULL verify still converts. */
+template <typename Ctx>
+struct rtl_usb_apply_ops {
+    typedef int (*apply_fn)(Ctx* ctx);
+    typedef int (*verify_fn)(Ctx* ctx);
+};
 
 static struct rtl_usb_apply_policy
 rtl_usb_apply_policy_from_runtime(void) {
@@ -7337,9 +7343,10 @@ rtl_usb_apply_policy_from_runtime(void) {
     return policy;
 }
 
+template <typename Ctx>
 static int
-rtl_usb_apply_with_retry(const struct rtl_usb_apply_policy* policy, rtl_usb_apply_fn apply, rtl_usb_verify_fn verify,
-                         void* ctx, int* out_attempts) {
+rtl_usb_apply_with_retry(const struct rtl_usb_apply_policy* policy, typename rtl_usb_apply_ops<Ctx>::apply_fn apply,
+                         typename rtl_usb_apply_ops<Ctx>::verify_fn verify, Ctx* ctx, int* out_attempts) {
     if (!policy || !apply) {
         return -1;
     }
@@ -7377,10 +7384,12 @@ rtl_usb_apply_with_retry(const struct rtl_usb_apply_policy* policy, rtl_usb_appl
     return (last_rc < 0) ? last_rc : -1;
 }
 
+template <typename Ctx>
 static int
-rtl_usb_apply_with_runtime_retry(rtl_usb_apply_fn apply, rtl_usb_verify_fn verify, void* ctx, int* out_attempts) {
+rtl_usb_apply_with_runtime_retry(typename rtl_usb_apply_ops<Ctx>::apply_fn apply,
+                                 typename rtl_usb_apply_ops<Ctx>::verify_fn verify, Ctx* ctx, int* out_attempts) {
     struct rtl_usb_apply_policy policy = rtl_usb_apply_policy_from_runtime();
-    return rtl_usb_apply_with_retry(&policy, apply, verify, ctx, out_attempts);
+    return rtl_usb_apply_with_retry<Ctx>(&policy, apply, verify, ctx, out_attempts);
 }
 
 static void
@@ -7396,14 +7405,12 @@ struct rtl_usb_frequency_apply_ctx {
 };
 
 static int
-rtl_usb_apply_center_freq(void* opaque) {
-    rtl_usb_frequency_apply_ctx* ctx = static_cast<rtl_usb_frequency_apply_ctx*>(opaque);
+rtl_usb_apply_center_freq(rtl_usb_frequency_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_center_freq(ctx->dev, ctx->frequency) : -1;
 }
 
 static int
-rtl_usb_verify_center_freq(void* opaque) {
-    rtl_usb_frequency_apply_ctx* ctx = static_cast<rtl_usb_frequency_apply_ctx*>(opaque);
+rtl_usb_verify_center_freq(rtl_usb_frequency_apply_ctx* ctx) {
     if (!ctx || !ctx->dev) {
         return -1;
     }
@@ -7422,14 +7429,12 @@ rtl_usb_sample_rate_readback_is_usable(uint32_t actual_rate) {
 }
 
 static int
-rtl_usb_apply_sample_rate(void* opaque) {
-    rtl_usb_sample_rate_apply_ctx* ctx = static_cast<rtl_usb_sample_rate_apply_ctx*>(opaque);
+rtl_usb_apply_sample_rate(rtl_usb_sample_rate_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_sample_rate(ctx->dev, ctx->requested_rate) : -1;
 }
 
 static int
-rtl_usb_verify_sample_rate(void* opaque) {
-    rtl_usb_sample_rate_apply_ctx* ctx = static_cast<rtl_usb_sample_rate_apply_ctx*>(opaque);
+rtl_usb_verify_sample_rate(rtl_usb_sample_rate_apply_ctx* ctx) {
     if (!ctx || !ctx->dev) {
         return -1;
     }
@@ -7466,8 +7471,8 @@ rtl_usb_apply_register19(struct rtl_device* dev) {
 }
 
 static int
-rtl_usb_apply_register19_once(void* opaque) {
-    return rtl_usb_apply_register19(static_cast<struct rtl_device*>(opaque));
+rtl_usb_apply_register19_once(struct rtl_device* dev) {
+    return rtl_usb_apply_register19(dev);
 }
 
 /* The tuner's side of a gain state on @p handle: its gain mode and, for a manual @p gain, the gain. Shared by the gain
@@ -7498,8 +7503,7 @@ rtl_usb_verify_tuner_gain_on(rtlsdr_dev_t* handle, int gain) {
  * manual mode and the gain; automatic gain is the tuner's automatic mode and the digital AGC as wanted. Register 0x19
  * is resolved with test mode, so a gain change never ends test mode. */
 static int
-rtl_usb_apply_gain_record(void* opaque) {
-    struct rtl_device* dev = static_cast<struct rtl_device*>(opaque);
+rtl_usb_apply_gain_record(struct rtl_device* dev) {
     if (!dev || !dev->dev) {
         return -1;
     }
@@ -7515,8 +7519,7 @@ rtl_usb_apply_gain_record(void* opaque) {
 }
 
 static int
-rtl_usb_verify_gain_record(void* opaque) {
-    const struct rtl_device* dev = static_cast<struct rtl_device*>(opaque);
+rtl_usb_verify_gain_record(struct rtl_device* dev) {
     return dev ? rtl_usb_verify_tuner_gain_on(dev->dev, dev->gain) : -1;
 }
 
@@ -7577,20 +7580,17 @@ struct rtl_usb_int_apply_ctx {
 };
 
 static int
-rtl_usb_apply_direct_sampling(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+rtl_usb_apply_direct_sampling(rtl_usb_int_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_direct_sampling(ctx->dev, ctx->value) : -1;
 }
 
 static int
-rtl_usb_apply_ppm(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+rtl_usb_apply_ppm(rtl_usb_int_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_freq_correction(ctx->dev, ctx->value) : -1;
 }
 
 static int
-rtl_usb_apply_offset_tuning(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+rtl_usb_apply_offset_tuning(rtl_usb_int_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_offset_tuning(ctx->dev, ctx->value ? 1 : 0) : -1;
 }
 
@@ -7600,15 +7600,13 @@ struct rtl_usb_u32_apply_ctx {
 };
 
 static int
-rtl_usb_apply_tuner_bandwidth(void* opaque) {
-    rtl_usb_u32_apply_ctx* ctx = static_cast<rtl_usb_u32_apply_ctx*>(opaque);
+rtl_usb_apply_tuner_bandwidth(rtl_usb_u32_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_tuner_bandwidth(ctx->dev, ctx->value) : -1;
 }
 
 #ifdef USE_RTLSDR_BIAS_TEE
 static int
-rtl_usb_apply_bias_tee(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+rtl_usb_apply_bias_tee(rtl_usb_int_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_bias_tee(ctx->dev, ctx->value) : -1;
 }
 #endif
@@ -7622,28 +7620,24 @@ struct rtl_usb_xtal_apply_ctx {
 };
 
 static int
-rtl_usb_apply_xtal(void* opaque) {
-    rtl_usb_xtal_apply_ctx* ctx = static_cast<rtl_usb_xtal_apply_ctx*>(opaque);
+rtl_usb_apply_xtal(rtl_usb_xtal_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_xtal_freq(ctx->dev, ctx->rtl_xtal_hz, ctx->tuner_xtal_hz) : -1;
 }
 
 static int
-rtl_usb_verify_offset_tuning_on(void* opaque) {
-    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+rtl_usb_verify_offset_tuning_on(rtl_usb_int_apply_ctx* ctx) {
     // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     return (ctx && ctx->dev && rtl_usb_ctl_get_offset_tuning(ctx->dev) == 1) ? 0 : -1;
 }
 
 /* The tuner's gain mode and, when manual, its gain, as the gain transaction writes them. */
 static int
-rtl_usb_apply_tuner_gain(void* opaque) {
-    const rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+rtl_usb_apply_tuner_gain(rtl_usb_int_apply_ctx* ctx) {
     return ctx ? rtl_usb_write_tuner_gain(ctx->dev, ctx->value) : -1;
 }
 
 static int
-rtl_usb_verify_tuner_gain(void* opaque) {
-    const rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+rtl_usb_verify_tuner_gain(rtl_usb_int_apply_ctx* ctx) {
     return ctx ? rtl_usb_verify_tuner_gain_on(ctx->dev, ctx->value) : -1;
 }
 
@@ -7654,8 +7648,7 @@ struct rtl_usb_register19_apply_ctx {
 };
 
 static int
-rtl_usb_apply_register19_values(void* opaque) {
-    rtl_usb_register19_apply_ctx* ctx = static_cast<rtl_usb_register19_apply_ctx*>(opaque);
+rtl_usb_apply_register19_values(rtl_usb_register19_apply_ctx* ctx) {
     return ctx ? rtl_usb_write_register19(ctx->dev, ctx->testmode, ctx->digital_agc) : -1;
 }
 
@@ -7666,14 +7659,12 @@ struct rtl_usb_if_gain_apply_ctx {
 };
 
 static int
-rtl_usb_apply_if_gain(void* opaque) {
-    rtl_usb_if_gain_apply_ctx* ctx = static_cast<rtl_usb_if_gain_apply_ctx*>(opaque);
+rtl_usb_apply_if_gain(rtl_usb_if_gain_apply_ctx* ctx) {
     return (ctx && ctx->dev) ? rtl_usb_ctl_set_tuner_if_gain(ctx->dev, ctx->stage, ctx->gain) : -1;
 }
 
 static int
-rtl_usb_apply_reset_buffer(void* opaque) {
-    rtlsdr_dev_t* dev = static_cast<rtlsdr_dev_t*>(opaque);
+rtl_usb_apply_reset_buffer(rtlsdr_dev_t* dev) {
     return dev ? rtl_usb_ctl_reset_buffer(dev) : -1;
 }
 
@@ -7689,8 +7680,7 @@ struct rtl_usb_retry_test_ctx {
 };
 
 static int
-rtl_usb_retry_test_apply(void* opaque) {
-    rtl_usb_retry_test_ctx* ctx = static_cast<rtl_usb_retry_test_ctx*>(opaque);
+rtl_usb_retry_test_apply(rtl_usb_retry_test_ctx* ctx) {
     if (!ctx) {
         return -1;
     }
@@ -7699,8 +7689,7 @@ rtl_usb_retry_test_apply(void* opaque) {
 }
 
 static int
-rtl_usb_retry_test_verify(void* opaque) {
-    rtl_usb_retry_test_ctx* ctx = static_cast<rtl_usb_retry_test_ctx*>(opaque);
+rtl_usb_retry_test_verify(rtl_usb_retry_test_ctx* ctx) {
     if (!ctx) {
         return -1;
     }
@@ -10408,16 +10397,18 @@ rtl_usb_close_swapped(const struct rtl_device* dev, rtlsdr_dev_t* handle) {
 
 /* One replay step: nothing when the control is not @p wanted, else apply (and verify) it, naming it in @p failed when
  * it does not take. Returns 0, -ECANCELED once a stop latched, or -EIO. */
+template <typename Ctx>
 static int
-rtl_usb_replay_step(const struct rtl_device* dev, int wanted, const char* name, rtl_usb_apply_fn apply,
-                    rtl_usb_verify_fn verify, void* ctx, const char** failed) {
+rtl_usb_replay_step(const struct rtl_device* dev, int wanted, const char* name,
+                    typename rtl_usb_apply_ops<Ctx>::apply_fn apply, typename rtl_usb_apply_ops<Ctx>::verify_fn verify,
+                    Ctx* ctx, const char** failed) {
     if (!wanted) {
         return 0;
     }
     if (rtl_usb_session_ending(dev)) {
         return -ECANCELED;
     }
-    if (rtl_usb_apply_with_runtime_retry(apply, verify, ctx, NULL) != 0) {
+    if (rtl_usb_apply_with_runtime_retry<Ctx>(apply, verify, ctx, NULL) != 0) {
         *failed = name;
         return -EIO;
     }
