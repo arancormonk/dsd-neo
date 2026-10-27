@@ -1987,6 +1987,8 @@ test_preconfig_backlog_discarded(void) {
     server_reset(default_script());
     conn_script pre;
     pre.pre_until_command = 1;
+    /* Large chunks: the backlog below takes a few dozen sleeps, not hundreds a slow runner's timer stretches. */
+    pre.chunks = {65536U};
     server_queue(conn_script{});
     server_queue(pre);
     rtl_stream_test_set_controller_work_hook(hold_retune, nullptr);
