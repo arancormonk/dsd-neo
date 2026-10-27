@@ -87,6 +87,14 @@ set_property(
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_MIN_SDK_VERSION 29)
 
+# The app's package name, which build.gradle also takes as its namespace. AGP
+# ignores a package attribute in the source manifest (and warns about it), so
+# androiddeployqt reads the name from here instead.
+set_property(
+    TARGET dsd-neo-app
+    PROPERTY QT_ANDROID_PACKAGE_NAME "io.github.arancormonk.dsdneo"
+)
+
 # The UI's QML ships as plain qt_add_resources from src/ui/qt (no qt_add_qml_module),
 # and this directory has no .qml files of its own — androiddeployqt's default scan
 # root. Point qmlimportscanner at the real QML sources, or it sees no imports and

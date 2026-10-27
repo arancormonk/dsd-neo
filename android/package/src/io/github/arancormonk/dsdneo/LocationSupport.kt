@@ -199,7 +199,7 @@ object LocationSupport {
             val best = request.bestFix
             if (usableFix(best, true)
                 && (best!!.accuracy <= SITE_TARGET_ACCURACY_M || request.pendingProviders.isEmpty())) {
-                gotFix(request, best!!)
+                gotFix(request, best)
             } else if (request.pendingProviders.isEmpty()) {
                 finish(request, false, "", "", "No current location fix available. Try again or choose a site manually.")
             }
