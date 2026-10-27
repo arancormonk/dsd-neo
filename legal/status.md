@@ -2,8 +2,8 @@
 # Licensing review for DSD-neo 2.11.4
 
 Version 2.11.4 carries forward the 2.11.1 findings below. It pins mbelib-neo
-**2.6.2**, commit `6fef211cfbc4e050cf3901be83ba68cfbd891021`, and PFFFT
-`77a7ecda1f58f041168636c99be3e6e968d984d7`, also embedded by that mbelib release.
+**2.6.5**, commit `77a9a33b93eff910bc2bcade18c1e76fce1b7105`, and PFFFT
+`316f0b01e3bdd327e89933891ea2c0be2d10c75e`, also embedded by that mbelib release.
 The updated dependency notices are packaged; the unresolved findings remain open.
 
 Originally reviewed 2026-10-17 from `de4212ad1` for preparation of 2.11.1, with
@@ -28,7 +28,7 @@ was rewritten, and this review does not authorize publication.
 | BCH-NONCOMMERCIAL | `src/protocol/edacs/edacs-bch3.c` includes Robert Morelos-Zaragoza's noncommercial restriction and requires written permission for commercial use. Its former sole ISC identifier did not describe those terms. The original notice is retained and the identifier now includes `LicenseRef-BCH3-Noncommercial`. | Obtain a compatible grant from the relevant rights holders or replace the implementation using an independently documented basis. Relabeling the file does not resolve the restriction. |
 | GOLAY-PERMISSION | `include/dsd-neo/fec/Golay24.hpp` names Hank Wallace's article and incorporates its implementation. The reviewed article identifies copyright but supplies no explicit redistribution grant. The repository's ISC identifier is not evidence of a grant by that author. | Establish the applicable grant and retain it, or replace the implementation. Assessment stays `NOASSERTION`; no public-domain inference is made from publication on a website. |
 | MIXED-PROVENANCE | `src/fec/ez.cpp`, `src/protocol/p25/phase2/p25p2_frame.c`, `src/protocol/p25/p25_crc.c`, `src/protocol/ysf/ysf.c` have ISC identifiers but identify other origins. `src/core/util/dsd_misc.c` contains an explicit GPL-3.0-or-later OP25 notice; its identifier now preserves both licenses. | Trace the remaining fragments to exact upstream revisions, retain their notices and reconcile file identifiers. GPLv3 OP25 material can be combined with this project's GPLv3 code; the unsupported ISC-only characterization still needs correction. |
-| MBELIB-ETSI | mbelib-neo 2.6.2 retains TETRA ACELP table data with unresolved copyright permission and GPL compatibility under its `ETSI-RETAIN-1` disclosure. Its GPLv2-or-later project grant and conformance tests do not resolve those data rights. | Follow the pinned dependency's [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.2/legal/status.md). Carry its notices and `NOASSERTION` conclusions downstream. No new exception or permission is inferred here. |
+| MBELIB-ETSI | mbelib-neo 2.6.5 retains TETRA ACELP table data with unresolved copyright permission and GPL compatibility under its `ETSI-RETAIN-1` disclosure. Its GPLv2-or-later project grant and conformance tests do not resolve those data rights. | Follow the pinned dependency's [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.5/legal/status.md). Carry its notices and `NOASSERTION` conclusions downstream. No new exception or permission is inferred here. |
 | FIXTURE-PERMISSION | Signal Identification Wiki recordings and derivatives are tracked under `tests/fixtures/iq`; no explicit redistribution license has been established. Attribution, short duration and off-air origin alone do not establish permission. Other contributed audio needs asset-specific evidence as well. | Obtain permission for the particular recordings, replace them with synthetic or expressly licensed fixtures, or remove them from public distribution. Keep acquisition URLs and hashes, but do not treat those as authorization. |
 | CORRESPONDING-SOURCE | Current GitHub source snapshots omit downloaded PFFFT and TETRA_crypto source. Portable binaries also bundle mbelib and platform-dependent libraries. No verified, complete corresponding-source delivery for each binary is established by the current workflow. | Assemble the exact source, modifications, build scripts and applicable installation information for each distributed binary; verify a fresh offline rebuild and provide the source through an appropriate distribution method. See [source delivery](source-delivery.md). |
 | RUNTIME-NOTICES | The existing license-file checklist covers only selected dependencies. Copying mbelib's notices fixes that omission, but does not establish notice/source coverage for every Homebrew, vcpkg, AppImage or Qt runtime library. | Compare each final binary's actual dependency closure and SBOM with its notice and source inventory, including Qt modules/plugins and their selected license terms. |
@@ -40,7 +40,7 @@ rights and distribution issues before claiming GPL-compliant redistribution.
 
 ## Remediation in this preparation
 
-- Pin the signed mbelib-neo v2.6.2 source and its independently downloaded
+- Pin the signed mbelib-neo v2.6.5 source and its independently downloaded
   archive checksum in CI and the Windows overlay. Require 2.6 or later so
   builds use the implementation remediation and installed legal records.
 - Retain full ISC, Unlicense, gqrx-scanner MIT and custom Rockliff/BCH notices, and correct the
@@ -58,7 +58,7 @@ rights and distribution issues before claiming GPL-compliant redistribution.
 
 ## Patent assessment
 
-The mbelib [patent research](https://github.com/arancormonk/mbelib-neo/blob/v2.6.2/legal/patents.md)
+The mbelib [patent research](https://github.com/arancormonk/mbelib-neo/blob/v2.6.5/legal/patents.md)
 flags US 8,359,197 (including decoder/tone claims), US 8,595,002, regenerated
 phase and voicing-smoothing references, and ETSI TETRA declarations. This
 decoder invokes the reviewed AMBE+2 and TETRA paths. Its separate FEC, framing
@@ -87,7 +87,7 @@ advice is needed for conclusions this engineering evidence cannot establish.
   retrieved 2026-10-17: both rights URL and rights text are empty.
 - The repository's `LICENSE`, especially GPLv3 sections 1, 5, 6 and 10,
   for corresponding source, notices and additional restrictions.
-- The [mbelib release](https://github.com/arancormonk/mbelib-neo/releases/tag/v2.6.2)
+- The [mbelib release](https://github.com/arancormonk/mbelib-neo/releases/tag/v2.6.5)
   and its pinned component, reference-data and patent records.
 
 This review checked current-tree notices, selected provenance history and

@@ -4,8 +4,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/mbelib-neo
-    REF 6fef211cfbc4e050cf3901be83ba68cfbd891021
-    SHA512 583e20b08a80678ceb4df4d27a4c99ff446aada27dcf91a2f7021120d96a080f6e13d5cf38c5593abca374986d722b1d90693de2e0ef0a643ef1d0d40b2a2dd9
+    REF 77a9a33b93eff910bc2bcade18c1e76fce1b7105
+    SHA512 e43b27c763182df8c4547dbd15da50702de0aa68b135b6375e4f5b1ad2751170e40dc7db076bd0c46ceb78801111fb2b1e8e083d1eacb40c6cf349cc3cde994b
 )
 
 set(_mbe_pffft_options)

@@ -4862,8 +4862,8 @@ test_process_mbe_frame_provoice_matches_library_frame_api(void) {
 
 /*
  * D-STAR soft decoding (issue #599). Frames come from mbelib's own AMBE 3600x2400 encoder (build_dstar_voice_frame()).
- * Error counts cover data bits only, hard and soft alike, so channel errors go on data bits: C0's are fr[0][12..23]
- * and C1's fr[1][11..22]. The rest of each Golay word is parity.
+ * D-STAR error counts include parity; soft counts weight corrections by reliability. C0's data bits are
+ * fr[0][12..23] and C1's fr[1][11..22]. The rest of each Golay word is parity.
  */
 static void
 dstar_soft_from_hard(char hard[4][24], dsd_vocoder_soft_bit soft[4][24], uint8_t reliability) {
@@ -5033,8 +5033,8 @@ test_process_mbe_frame_soft_dstar_erasures_recover_hard_miscorrection(void) {
     rc |= expect_eq_int("erasure-dstar clean fixture", build_dstar_voice_frame(1, clean), 0);
     rc |= run_dstar_frame(clean, NULL, &clean_run);
 
-    /* Four data bits. Soft recovers the parameters and counts all four; with more than three errors mbelib then
-     * repeats the previous frame rather than playing this one. */
+    /* Four data bits. Soft recovers the parameters; their low reliability rounds the correction cost to zero.
+     * C1 corrections do not make the frame unplayable: it must sound like the clean frame. */
     static const int data_flips[] = {12, 15, 18, 21};
     DSD_MEMCPY(corrupted, clean, sizeof(corrupted));
     for (size_t i = 0; i < sizeof(data_flips) / sizeof(data_flips[0]); i++) {
@@ -5051,8 +5051,9 @@ test_process_mbe_frame_soft_dstar_erasures_recover_hard_miscorrection(void) {
     rc |= run_dstar_frame(NULL, soft, &soft_run);
     rc |= expect_eq_mem("erasure-dstar soft recovers params", soft_run.params, clean_run.params,
                         sizeof(clean_run.params));
-    rc |= expect_eq_int("erasure-dstar soft counts the four", soft_run.errs2, 4);
-    rc |= expect_eq_int("erasure-dstar soft repeats", strchr(soft_run.err_str, 'R') != NULL, 1);
+    rc |= expect_eq_int("erasure-dstar soft weights the four corrections", soft_run.errs2, 0);
+    rc |= expect_eq_int("erasure-dstar soft plays the frame", strchr(soft_run.err_str, 'R') == NULL, 1);
+    rc |= expect_eq_mem("erasure-dstar soft sounds clean", soft_run.audio, clean_run.audio, sizeof(clean_run.audio));
 
     /* The reliabilities are what recover it: the same bits at full confidence decode as the hard path does. */
     dstar_soft_from_hard(corrupted, soft, 255U);
@@ -5060,7 +5061,7 @@ test_process_mbe_frame_soft_dstar_erasures_recover_hard_miscorrection(void) {
     rc |= expect_eq_mem("erasure-dstar uniform follows hard", uniform_run.params, hard_run.params,
                         sizeof(hard_run.params));
 
-    /* Two data bits and two parity bits. Soft counts only the two data bits, so it plays the recovered frame, which
+    /* Two data bits and two parity bits. Soft weights all four corrections and plays the recovered frame, which
      * sounds as the clean frame does; the hard decode plays its miscorrection. */
     static const int mixed_flips[] = {2, 7, 13, 19};
     DSD_MEMCPY(corrupted, clean, sizeof(corrupted));
@@ -5077,7 +5078,7 @@ test_process_mbe_frame_soft_dstar_erasures_recover_hard_miscorrection(void) {
     rc |= run_dstar_frame(NULL, soft, &soft_run);
     rc |= expect_eq_mem("erasure-dstar mixed soft recovers params", soft_run.params, clean_run.params,
                         sizeof(clean_run.params));
-    rc |= expect_eq_int("erasure-dstar mixed soft counts the data bits", soft_run.errs2, 2);
+    rc |= expect_eq_int("erasure-dstar mixed soft weights all corrections", soft_run.errs2, 0);
     rc |= expect_eq_int("erasure-dstar mixed soft plays the frame", strchr(soft_run.err_str, 'R') == NULL, 1);
     rc |= expect_eq_mem("erasure-dstar mixed soft sounds clean", soft_run.audio, clean_run.audio,
                         sizeof(clean_run.audio));
@@ -5088,13 +5089,13 @@ test_process_mbe_frame_soft_dstar_erasures_recover_hard_miscorrection(void) {
 }
 
 /* The live path must give exactly what mbelib's own D-STAR frame API gives, frame after frame, through repeats and
- * into muting. The result context that matters for AMBE 2400 is the C0 error count: a tone frame plays only with
- * fewer than two C0 errors, and is replaced with comfort noise otherwise. So the sequence carries a tone frame with
- * two C0 errors, and a parallel reference with MBE_PROCESS_FLAG_C0_VALID cleared, which plays the tone, must differ
- * there, or this comparison could not catch the context being dropped.
+ * into muting. An uncorrectable C0 word makes even a recovered tone frame play as lost. A parallel reference with
+ * the decode context cleared plays the tone and must differ there, or this comparison could not catch the context
+ * being dropped. On the soft path the damaged tone bits have low confidence: its weighted correction count is zero,
+ * so the uncorrectable-C0 verdict must reach synthesis independently of the count.
  *
  * The sequence is a clean frame, random frames at random confidence, that tone frame, then frames carrying three
- * errors in each Golay word: mbelib repeats a frame with more than three errors, and mutes once four repeats run. */
+ * C0 parity errors plus the extended parity error: each C0 word is uncorrectable, and four repeats reach muting. */
 enum {
     DSTAR_PARITY_RANDOM_FRAMES = 6,
     DSTAR_PARITY_TONE_FRAME = DSTAR_PARITY_RANDOM_FRAMES + 1,
@@ -5115,6 +5116,15 @@ build_dstar_tone_frame(char frame[4][24]) {
         ambe_d[i] = 1;
     }
     return mbe_encodeAmbe3600x2400Frame(ambe_d, frame);
+}
+
+/* Three errors in the Golay(23,12) parity and one in the extended parity bit: the data still decodes correctly,
+ * but the received Golay(24,12) word is at distance four and must be reported as uncorrectable. */
+static void
+add_uncorrectable_dstar_c0_errors(char frame[4][24]) {
+    for (int bit = 0; bit < 4; bit++) {
+        frame[0][bit] ^= 1;
+    }
 }
 
 static int
@@ -5167,18 +5177,15 @@ run_dstar_library_parity(int soft_path, int synctype) {
             fill_random_dstar_frame(&rng, hard, soft);
         } else if (frame == DSTAR_PARITY_TONE_FRAME) {
             rc |= expect_eq_int("dstar-parity tone fixture", build_dstar_tone_frame(hard), 0);
-            hard[0][14] ^= 1;
-            hard[0][20] ^= 1;
+            add_uncorrectable_dstar_c0_errors(hard);
             dstar_soft_from_hard(hard, soft, 200U);
+            for (int bit = 0; bit < 4; bit++) {
+                soft[0][bit].reliability = 8U;
+            }
         } else {
             rc |= expect_eq_int("dstar-parity clean fixture", build_dstar_voice_frame(frame, hard), 0);
             if (frame > DSTAR_PARITY_TONE_FRAME) {
-                static const int c0_flips[] = {13, 17, 22};
-                static const int c1_flips[] = {12, 16, 20};
-                for (int k = 0; k < 3; k++) {
-                    hard[0][c0_flips[k]] ^= 1;
-                    hard[1][c1_flips[k]] ^= 1;
-                }
+                add_uncorrectable_dstar_c0_errors(hard);
             }
             dstar_soft_from_hard(hard, soft, 200U);
         }
@@ -5198,7 +5205,7 @@ run_dstar_library_parity(int soft_path, int synctype) {
                            ? mbe_decodeAmbe3600x2400SoftFrame((const mbe_soft_bit(*)[24])lib_soft, ambe_d, &bare_result)
                            : mbe_decodeAmbe3600x2400Frame((const char (*)[24])hard, ambe_d, &bare_result);
         if (bare_ret >= 0) {
-            bare_result.flags &= ~MBE_PROCESS_FLAG_C0_VALID;
+            bare_result.flags &= MBE_PROCESS_FLAG_SOFT_INPUT;
             bare_ret =
                 mbe_processAmbe2400Dataf(bare_audio, &bare_result, ambe_d, &bare_cur, &bare_prev, &bare_prev_enhanced);
         }
@@ -5226,8 +5233,12 @@ run_dstar_library_parity(int soft_path, int synctype) {
         DSD_SNPRINTF(label, sizeof(label), "%s frame %d status", tag, frame);
         rc |= expect_eq_int(label, strcmp(state.err_str, expected_err_str), 0);
         if (frame == DSTAR_PARITY_TONE_FRAME) {
-            DSD_SNPRINTF(label, sizeof(label), "%s tone frame counts two C0 errors", tag);
-            rc |= expect_eq_int(label, state.errs, 2);
+            DSD_SNPRINTF(label, sizeof(label), "%s tone frame C0 correction cost", tag);
+            rc |= expect_eq_int(label, state.errs, soft_path ? 0 : 4);
+            DSD_SNPRINTF(label, sizeof(label), "%s tone frame repeats", tag);
+            rc |= expect_flag(label, lib_result.flags, MBE_PROCESS_FLAG_REPEAT, 1);
+            DSD_SNPRINTF(label, sizeof(label), "%s tone frame plays without the C0 context", tag);
+            rc |= expect_flag(label, bare_result.flags, MBE_PROCESS_FLAG_REPEAT, 0);
             DSD_SNPRINTF(label, sizeof(label), "%s tone frame differs without the C0 context", tag);
             rc |= expect_eq_int(label, audio_frames_differ(bare_audio, lib_audio), 1);
         }
