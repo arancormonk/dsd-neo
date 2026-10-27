@@ -2156,23 +2156,33 @@ test_stream_retune_keeps_pair_alignment(void) {
 
 /* commands_raise_no_sigpipe: a command to a connection that is gone fails, and never raises SIGPIPE (MSG_NOSIGNAL, or
  * SO_NOSIGPIPE where that is missing). The rest of this test ignores SIGPIPE, so a case that sends on a connection
- * taken down (old_sender_does_not_touch_replacement) runs again in a child process of this binary with SIGPIPE's
- * default disposition, which a raised SIGPIPE would kill. */
-const char* g_self = nullptr;
+ * taken down (old_sender_does_not_touch_replacement) runs again in a child process with SIGPIPE's default
+ * disposition, which a raised SIGPIPE would kill. main() forks that child before this process starts any thread (a
+ * case's threads do not survive fork()) and waits for it; this case checks how it ended. */
+const char* const kSigpipeCase = "old_sender_does_not_touch_replacement";
+int g_sigpipe_child_ran = 0;
+int g_sigpipe_child_status = 0;
 
-void
-test_commands_raise_no_sigpipe(void) {
-    assert(g_self != nullptr);
+/* Fork the SIGPIPE child. Returns 1 in the child, which then runs kSigpipeCase alone with SIGPIPE's default
+ * disposition; 0 in this process once the child ended, its status kept. */
+int
+fork_sigpipe_child(void) {
     const pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
-        /* This test binary again, as a fresh process: the case's threads do not survive fork(). */
-        // nosemgrep: dsd-neo.no-shell-exec
-        (void)execl(g_self, g_self, "old_sender_does_not_touch_replacement", "--sigpipe-default", (char*)nullptr);
-        _exit(127);
+        return 1;
     }
     int status = 0;
     assert(waitpid(child, &status, 0) == child);
+    g_sigpipe_child_status = status;
+    g_sigpipe_child_ran = 1;
+    return 0;
+}
+
+void
+test_commands_raise_no_sigpipe(void) {
+    assert(g_sigpipe_child_ran != 0);
+    const int status = g_sigpipe_child_status;
     if (WIFSIGNALED(status)) {
         DSD_FPRINTF(stderr, "the child died of signal %d\n", WTERMSIG(status));
     }
@@ -2225,15 +2235,21 @@ const named_test kTests[] = {
 
 } // namespace
 
-/* With no argument every case runs, in order; with one, only the case of that name; with "--sigpipe-default" after
- * it, with SIGPIPE's default disposition (commands_raise_no_sigpipe). */
+/* With no argument every case runs, in order; with one, only the case of that name. Either way, when
+ * commands_raise_no_sigpipe is among them, its child runs first (fork_sigpipe_child()). */
 int
 // NOLINTNEXTLINE(misc-const-correctness) -- main's signature.
 main(int argc, char** argv) {
-    g_self = argv[0];
-    /* An ignored signal stays ignored across exec, so the child sets the default itself. */
-    const int sigpipe_default = (argc > 2 && strcmp(argv[2], "--sigpipe-default") == 0) ? 1 : 0;
-    (void)signal(SIGPIPE, sigpipe_default != 0 ? SIG_DFL : SIG_IGN);
+    const char* only = (argc > 1) ? argv[1] : nullptr;
+    int sigpipe_child = 0;
+    if (only == nullptr || strcmp(only, "commands_raise_no_sigpipe") == 0) {
+        sigpipe_child = fork_sigpipe_child();
+    }
+    if (sigpipe_child != 0) {
+        only = kSigpipeCase;
+    }
+    /* The child sets the default itself: it may have inherited SIGPIPE ignored. */
+    (void)signal(SIGPIPE, sigpipe_child != 0 ? SIG_DFL : SIG_IGN);
     assert(dsd_socket_init() == 0);
     assert(dsd_test_setenv("DSD_NEO_TCP_RCVTIMEO", "200", 1) == 0);
     assert(dsd_test_setenv("DSD_NEO_TCP_MAX_TIMEOUTS", "2", 1) == 0);
@@ -2243,7 +2259,7 @@ main(int argc, char** argv) {
 
     int ran = 0;
     for (const named_test& t : kTests) {
-        if (argc > 1 && strcmp(argv[1], t.name) != 0) {
+        if (only != nullptr && strcmp(only, t.name) != 0) {
             continue;
         }
         DSD_FPRINTF(stderr, "-- %s\n", t.name);
