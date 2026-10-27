@@ -8816,41 +8816,42 @@ auto_ppm_maybe_adjust(dsd_opts* opts, const dsd_state* state) {
 
     int enabled = auto_ppm_effective_enabled(opts);
     int applied_ppm = load_dongle_ppm_error();
-    uint64_t now_ms = auto_ppm_now_ms();
     uint32_t applied_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
-    double spec_snr_db = g_spec_snr_db.load(std::memory_order_relaxed);
-    dsd::io::radio::RtlAutoPpmConfig config = auto_ppm_make_config(opts);
-
-    dsd::io::radio::RtlAutoPpmSignalMetrics metrics = {};
-    /* Decode-thread path (rtl_stream_read_live): use the published mirror. */
-    metrics.cqpsk_enable = g_pub_cqpsk_enable.load(std::memory_order_relaxed);
-    metrics.tracking_enable = metrics.cqpsk_enable;
-    metrics.carrier_lock = rtl_stream_get_carrier_lock();
-    metrics.nco_cfo_hz = rtl_stream_get_cfo_hz();
-    double fsk_phase_cfo_hz = 0.0;
-    if (auto_ppm_fsk_phase_cfo_hz(&fsk_phase_cfo_hz)) {
-        metrics.tracking_enable = 1;
-        metrics.phase_cfo_hz = fsk_phase_cfo_hz;
-    } else {
-        metrics.phase_cfo_hz = g_resid_cfo_phase_hz.load(std::memory_order_relaxed);
-    }
-
     dsd::io::radio::RtlAutoPpmInputs inputs = {};
-    inputs.now_ms = now_ms;
     inputs.enabled = enabled;
-    /* Auto-PPM must train against the correction the tuner has actually
-     * applied, not a queued request that may still be waiting on the
-     * controller thread. */
     inputs.current_ppm = applied_ppm;
-    inputs.requested_ppm = snapshot_requested_ppm_state(opts).ppm;
-    dsd::io::radio::RtlPpmControllerRequestsSnapshot controller_requests = snapshot_controller_ppm_request_state();
-    inputs.controller_queued_request = controller_requests.queued_request;
-    inputs.controller_active_request = controller_requests.active_request;
     inputs.tuned_freq_hz = applied_freq_hz;
-    inputs.signal_power_db = g_spec_peak_db.load(std::memory_order_relaxed);
-    inputs.gate_snr_db = auto_ppm_pick_demod_snr_db(now_ms);
-    inputs.spec_snr_db = spec_snr_db;
-    inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
+    dsd::io::radio::RtlAutoPpmConfig config = {};
+    /* Disabled updates only synchronize the applied setting and clear training state. Avoid the clock, signal
+       estimates and request locks on every sample when the controller cannot use them. Still run update() so a
+       disable after training preserves the same status and re-enable behavior. */
+    if (enabled) {
+        const uint64_t now_ms = auto_ppm_now_ms();
+        config = auto_ppm_make_config(opts);
+        dsd::io::radio::RtlAutoPpmSignalMetrics metrics = {};
+        /* Decode-thread path (rtl_stream_read_live): use the published mirror. */
+        metrics.cqpsk_enable = g_pub_cqpsk_enable.load(std::memory_order_relaxed);
+        metrics.tracking_enable = metrics.cqpsk_enable;
+        metrics.carrier_lock = rtl_stream_get_carrier_lock();
+        metrics.nco_cfo_hz = rtl_stream_get_cfo_hz();
+        double fsk_phase_cfo_hz = 0.0;
+        if (auto_ppm_fsk_phase_cfo_hz(&fsk_phase_cfo_hz)) {
+            metrics.tracking_enable = 1;
+            metrics.phase_cfo_hz = fsk_phase_cfo_hz;
+        } else {
+            metrics.phase_cfo_hz = g_resid_cfo_phase_hz.load(std::memory_order_relaxed);
+        }
+        inputs.now_ms = now_ms;
+        /* Train against the correction actually applied, not a request still waiting on the controller. */
+        inputs.requested_ppm = snapshot_requested_ppm_state(opts).ppm;
+        const dsd::io::radio::RtlPpmControllerRequestsSnapshot requests = snapshot_controller_ppm_request_state();
+        inputs.controller_queued_request = requests.queued_request;
+        inputs.controller_active_request = requests.active_request;
+        inputs.signal_power_db = g_spec_peak_db.load(std::memory_order_relaxed);
+        inputs.gate_snr_db = auto_ppm_pick_demod_snr_db(now_ms);
+        inputs.spec_snr_db = g_spec_snr_db.load(std::memory_order_relaxed);
+        inputs.estimate = dsd::io::radio::rtl_auto_ppm_select_estimate(metrics);
+    }
 
     /* P25 status-symbol classification is advisory by default; only enforce it
      * when explicitly enabled because status-derived direction is unreliable on

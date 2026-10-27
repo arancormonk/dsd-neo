@@ -744,9 +744,50 @@ test_locked_session_ignores_external_ppm_change(void) {
     return rc;
 }
 
+/* Disabled updates must produce exactly the same status with only the applied setting supplied. Exercise disable
+ * from training and a carried lock, repeated disabled updates, and re-enable so skipping unused live measurements
+ * cannot change the next training session either. */
+static int
+test_disabled_update_needs_only_applied_setting(void) {
+    int rc = 0;
+    RtlAutoPpmController full_controller;
+    RtlAutoPpmController lean_controller;
+    RtlAutoPpmConfig config = {};
+    config.min_power_db = -65.0;
+    const int enabled[] = {0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1};
+    for (size_t i = 0; i < sizeof(enabled) / sizeof(enabled[0]); ++i) {
+        auto full = make_inputs(i * 5000U, -8, 851000000U, 0.02, RtlAutoPpmSource::CarrierTotal);
+        full.enabled = enabled[i];
+        auto lean = full;
+        RtlAutoPpmConfig lean_config = config;
+        if (!full.enabled) {
+            lean = {};
+            lean.current_ppm = full.current_ppm;
+            lean.tuned_freq_hz = full.tuned_freq_hz;
+            lean_config = {};
+            full.requested_ppm = 15;
+            full.controller_queued_request = make_request_state(1, 15, 77U);
+            full.controller_active_request = make_request_state(1, 9, 76U);
+        }
+        const auto a = full_controller.update(config, full);
+        const auto b = lean_controller.update(lean_config, lean);
+        rc |= expect_true("minimal disabled inputs preserve control status",
+                          a.apply_ppm == b.apply_ppm && a.new_ppm == b.new_ppm && a.locked == b.locked
+                              && a.training == b.training && a.last_dir == b.last_dir
+                              && a.cooldown_ticks == b.cooldown_ticks && a.lock_ppm == b.lock_ppm);
+        rc |= expect_double_close("minimal disabled inputs preserve SNR", a.snr_db, b.snr_db, 0.0);
+        rc |= expect_double_close("minimal disabled inputs preserve CFO", a.df_hz, b.df_hz, 0.0);
+        rc |= expect_double_close("minimal disabled inputs preserve estimate", a.est_ppm, b.est_ppm, 0.0);
+        rc |= expect_double_close("minimal disabled inputs preserve lock SNR", a.lock_snr_db, b.lock_snr_db, 0.0);
+        rc |= expect_double_close("minimal disabled inputs preserve lock CFO", a.lock_df_hz, b.lock_df_hz, 0.0);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_disabled_update_needs_only_applied_setting();
     rc |= test_select_estimate_accepts_large_finite_cqpsk_nco();
     rc |= test_select_estimate_rejects_nonfinite_cfo();
     rc |= test_nonfinite_estimate_never_applies();
