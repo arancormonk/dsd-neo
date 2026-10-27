@@ -25,10 +25,12 @@
 #include <atomic>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -722,6 +724,131 @@ test_verdict_in_grace_yields_to_recovery(void) {
     rig_close(r);
     rtl_device_test_set_progress_limit_ms(kLimitMs);
     rtl_device_set_unplug_owner_grace_ms(0U);
+}
+
+/* recovery_restarts_iq_pairing: the last callback before the stall ends on an I byte. The recovery's reopened dongle
+ * is a fresh stream, which starts on an I byte: with the post-recovery mute the stream's controller arms, its first
+ * samples are I-first in the input ring and in the capture, and every pair after them is whole. The bytes are I 0xA0,
+ * Q 0x60 (I above zero, Q below once widened); offset tuning is on, so nothing rotates the ring's I/Q. */
+unsigned char g_pairs[512];
+const char* const kPairCaptureFiles[] = {"capture.iq", "capture.iq.json", nullptr};
+
+/* Read everything in @p ring; the number of floats, and in *@p misaligned how many broke the I-first pairing. */
+size_t
+drain_pairs(input_ring_state* ring, size_t* misaligned) {
+    std::vector<float> block(8192U);
+    size_t index = 0U;
+    for (;;) {
+        if (input_ring_used(ring) == 0U) {
+            return index;
+        }
+        const int got = input_ring_read_block(ring, block.data(), block.size());
+        for (int i = 0; i < got; ++i, ++index) {
+            const float v = block[(size_t)i];
+            const bool is_i = (index & 1U) == 0U;
+            if ((is_i && !(v > 0.0f)) || (!is_i && !(v < 0.0f))) {
+                ++*misaligned;
+            }
+        }
+    }
+}
+
+void
+test_recovery_restarts_iq_pairing(void) {
+    for (size_t i = 0; i < sizeof g_pairs; ++i) {
+        g_pairs[i] = (i & 1U) ? 0x60U : 0xA0U;
+    }
+    usb_world_reset(0);
+    rig r;
+    r.ring = std::make_unique<input_ring_state>();
+    assert(input_ring_init(r.ring.get(), 1U << 18) == 0);
+    dongle_init(r.dongle.get());
+    rtl_device_test_usb_dongle_install(r.dongle.get());
+    r.dev = rtl_device_create(0, r.ring.get());
+    assert(r.dev != nullptr);
+    assert(rtl_device_set_frequency(r.dev, 851012500U) == 0);
+    assert(rtl_device_set_sample_rate(r.dev, 1536000U) == 0);
+    assert(rtl_device_set_gain(r.dev, 240) == 0);
+    assert(rtl_device_set_offset_tuning_enabled(r.dev, 1) == 0);
+    char dir[DSD_TEST_PATH_MAX] = {};
+    char data_path[DSD_TEST_PATH_MAX] = {};
+    char meta_path[DSD_TEST_PATH_MAX] = {};
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_usb_pairing") != nullptr);
+    assert(dsd_test_path_join(data_path, sizeof data_path, dir, "capture.iq") == 0);
+    assert(dsd_test_path_join(meta_path, sizeof meta_path, dir, "capture.iq.json") == 0);
+    dsd_iq_capture_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    DSD_SNPRINTF(cfg.data_path, sizeof cfg.data_path, "%s", data_path);
+    DSD_SNPRINTF(cfg.metadata_path, sizeof cfg.metadata_path, "%s", meta_path);
+    cfg.format = DSD_IQ_FORMAT_CU8;
+    DSD_SNPRINTF(cfg.capture_stage, sizeof cfg.capture_stage, "%s", "post_mute_pre_widen");
+    cfg.sample_rate_hz = 1536000U;
+    cfg.center_frequency_hz = 851012500U;
+    cfg.capture_center_frequency_hz = 851012500U;
+    cfg.rtl_dsp_bw_khz = 48;
+    cfg.base_decimation = 32U;
+    cfg.post_downsample = 1U;
+    cfg.demod_rate_hz = 48000U;
+    cfg.muted_bytes_excluded = 1;
+    DSD_SNPRINTF(cfg.source_backend, sizeof cfg.source_backend, "%s", "rtl_usb");
+    char err[256] = {};
+    dsd_iq_capture_writer* writer = nullptr;
+    assert(dsd_iq_capture_open(&cfg, &writer, err, sizeof err) == DSD_IQ_OK && writer != nullptr);
+    rtl_device_set_iq_capture_writer(r.dev, writer);
+    rtl_device_set_recovery_callback(r.dev, note_post, &r.posted);
+    rtl_device_test_usb_stream_attach();
+    reset_session();
+    assert(rtl_device_start_async(r.dev, 16U * 32U * 512U) == 0);
+
+    /* Whole pairs, then one byte more: the stall comes with an I byte left over. */
+    for (int i = 0; i < 4; ++i) {
+        rtl_device_test_usb_stream_deliver(r.dev, g_pairs, (uint32_t)sizeof g_pairs);
+    }
+    rtl_device_test_usb_stream_deliver(r.dev, g_pairs, (uint32_t)sizeof g_pairs - 1U);
+    (void)wait_posted(r, 1);
+    size_t misaligned = 0U;
+    assert(drain_pairs(r.ring.get(), &misaligned) > 0U && misaligned == 0U);
+
+    /* The recovery as the stream's controller runs it: the post-recovery mute is armed before the reader restarts. */
+    assert(rtl_device_usb_recovery_take(r.dev) == 1);
+    char why[256] = {};
+    assert(rtl_device_usb_recover_handle(r.dev, why, sizeof why) == 0);
+    rtl_device_mute(r.dev, 1024);
+    assert(rtl_device_usb_resume_reader(r.dev) == 0);
+    rtl_device_usb_recovery_finish(r.dev, 0, why);
+    for (int i = 0; i < 8; ++i) {
+        rtl_device_test_usb_stream_deliver(r.dev, g_pairs, (uint32_t)sizeof g_pairs);
+    }
+    const size_t after = drain_pairs(r.ring.get(), &misaligned);
+    if (misaligned != 0U) {
+        DSD_FPRINTF(stderr, "after the recovery: %zu of %zu floats break the I-first pairing\n", misaligned, after);
+    }
+    assert(after > 0U && misaligned == 0U);
+
+    (void)rtl_device_stop_async(r.dev);
+    rtl_device_set_recovery_callback(r.dev, nullptr, nullptr);
+    rtl_device_set_iq_capture_writer(r.dev, nullptr);
+    const dsd_iq_capture_final_stats stats{};
+    dsd_iq_capture_close(writer, &stats);
+    rig_close(r);
+    std::vector<unsigned char> data;
+    FILE* f = dsd_fopen_private(data_path, "rb");
+    assert(f != nullptr);
+    unsigned char buf[4096];
+    size_t n = 0U;
+    while ((n = fread(buf, 1U, sizeof buf, f)) > 0U) {
+        data.insert(data.end(), buf, buf + n);
+    }
+    (void)fclose(f);
+    size_t broken = 0U;
+    for (size_t i = 0; i < data.size(); ++i) {
+        broken += (((i & 1U) == 0U) == (data[i] == 0xA0U)) ? 0U : 1U;
+    }
+    if (broken != 0U) {
+        DSD_FPRINTF(stderr, "capture: %zu of %zu bytes break the I-first pairing\n", broken, data.size());
+    }
+    assert(data.size() > 4U * sizeof g_pairs && broken == 0U);
+    assert(dsd_test_remove_temp_dir(dir, kPairCaptureFiles) == 0);
 }
 
 /* ---- Stream level: the real controller ---- */
@@ -1467,6 +1594,7 @@ main(void) {
         test_rearm_with_delayed_first_samples();
         test_callbacks_before_thread_start_count_for_rearm();
         test_verdict_in_grace_yields_to_recovery();
+        test_recovery_restarts_iq_pairing();
 
         rtl_stream_test_set_stream_boundary_probe(probe_boundary, nullptr);
         test_silence_posts_recovery_and_reader_return_is_silent();

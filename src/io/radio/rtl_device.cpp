@@ -44,6 +44,7 @@
 #include <errno.h>
 #include <iterator>
 #include <limits.h>
+#include <mutex>
 #include <new>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
@@ -3312,6 +3313,11 @@ static std::atomic<int> g_test_usb_reader_stream{0};
 static std::atomic<int> g_test_usb_reader_stream_return{0};
 /* USB reader returns rtl_usb_reader_finished() has handled. */
 static std::atomic<unsigned int> g_test_usb_reader_returns{0U};
+/* The callbacks a test delivers stand for the streaming reader's (rtl_device_test_usb_stream_deliver()), but run on the
+ * test's thread: each runs under this lock, and the streaming fake takes it before it returns, so that every callback
+ * delivered for a reader is ordered before its return, and through the join before whatever follows it, as a real
+ * reader's callbacks are, on its own thread. */
+static std::mutex g_test_usb_deliver_lock;
 
 /* Whether the seam stands in for librtlsdr's async state (its streaming and cancel). */
 static int
@@ -3364,6 +3370,7 @@ rtl_usb_read_async(struct rtl_device* s) {
                 dsd_sleep_ms(1);
             }
             g_test_usb_reader_streaming.store(0, std::memory_order_release);
+            { const std::lock_guard<std::mutex> delivered(g_test_usb_deliver_lock); }
             return g_test_usb_reader_cancelled.load(std::memory_order_acquire)
                        ? 0
                        : g_test_usb_reader_rc.load(std::memory_order_acquire);
@@ -10774,6 +10781,10 @@ rtl_device_usb_resume_reader(struct rtl_device* dev) {
     } else if (!dev->dev || !rtl_usb_reader_available(dev)) {
         rc = -ENODEV;
     } else {
+        /* The reopened dongle is a fresh stream, as at a start (rtl_device_start_async()) and an rtl_tcp reconnect: the
+         * old reader's byte carry, fs/4 phase and mute alignment end with it, so the new one starts on an I byte, and
+         * the input level starts over. The old reader was joined by the swap. */
+        rtl_reset_capture_state_on_stream_boundary(dev);
         /* The progress monitor watches the restarted reader afresh from this baseline (D2), taken before the thread
          * starts so its first callbacks count. */
         dev->progress_baseline.store(dev->progress.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -11170,6 +11181,7 @@ rtl_device_test_usb_stream_start(struct input_ring_state* ring) {
 
 extern "C" void
 rtl_device_test_usb_stream_deliver(struct rtl_device* dev, unsigned char* buf, uint32_t len) {
+    const std::lock_guard<std::mutex> delivering(g_test_usb_deliver_lock);
     rtlsdr_callback(buf, len, dev);
 }
 

@@ -4571,7 +4571,10 @@ Key public headers:
     or taken, or when one was posted since it was made (a reader-exit verdict waiting out the unplug-owner grace);
     `rtl_device_usb_recovery_finish()` reports the recovery's own result: 0 resumes, a stop is silent, anything else
     ends the session for the receiver with the failed step in the cause. Each USB reader thread keeps the
-    `reader_incarnation` it started with. The reader a recovery restarted gets a hand-off (`recovery_handoff`: its
+    `reader_incarnation` it started with. `rtl_device_usb_resume_reader()` starts the reopened dongle as a fresh
+    stream, as a start and an rtl_tcp reconnect do (`rtl_reset_capture_state_on_stream_boundary()`: byte carry, fs/4
+    phase, mute alignment, input level), so a stall that cut a pair leaves the new stream I-first. The reader a recovery
+    restarted gets a hand-off (`recovery_handoff`: its
     incarnation and PENDING), as its verdict alone would be dropped while the request is taken. Its return moves the
     hand-off PENDING to FAILED in one compare-and-swap (`rtl_usb_recovery_reader_handoff()`), never looking at the
     request; the finish moves the request to idle and then closes the hand-off in one compare-and-swap. A FAILED
