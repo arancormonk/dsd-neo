@@ -249,6 +249,8 @@ void rtl_device_test_usb_stream_deliver(struct rtl_device* dev, unsigned char* b
 void rtl_device_test_usb_stream_return(int rc);
 /* Whether the device's reader has returned: a cancel reached it, or it returned by itself. */
 int rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev);
+/* How many USB reader returns the device has handled (reported, handed to a recovery or left alone), all devices. */
+unsigned int rtl_device_test_usb_reader_returns(void);
 /* Stop the device (rtl_device_stop_async()) and destroy it. */
 void rtl_device_test_usb_stream_stop(struct rtl_device* dev);
 

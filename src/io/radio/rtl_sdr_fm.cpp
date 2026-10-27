@@ -5610,8 +5610,7 @@ controller_process_usb_recovery(struct controller_state* s) {
     if (rc != 0 && rc != -ECANCELED && op.why[0] == '\0') {
         DSD_SNPRINTF(op.why, sizeof op.why, "could not restart the USB reader (rc=%d)", rc);
     }
-    rtl_device_usb_recovery_finish(dev, rc, op.why);
-    if (rc == 0) {
+    if (rtl_device_usb_recovery_finish(dev, rc, op.why)) {
         dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
     }
 }

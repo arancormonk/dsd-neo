@@ -1016,6 +1016,52 @@ test_recovery_failure_runs_the_tail_and_ends(void) {
     reset_session();
 }
 
+/* Once the recovery restarted the reader, make the new reader return by itself, as one whose transfers cannot be
+ * submitted after the reopen does, and wait until the device handled its return, all before the recovery finishes. */
+void
+// NOLINTNEXTLINE(misc-const-correctness) -- The signature is the boundary probe's.
+probe_fail_replacement(int step, void* ctx) {
+    probe_boundary(step, ctx);
+    if (step != RTL_STREAM_TEST_BOUNDARY_RESUME) {
+        return;
+    }
+    const unsigned int returns = rtl_device_test_usb_reader_returns();
+    rtl_device_test_usb_stream_return(-1);
+    for (uint64_t waited = 0; waited < kWaitMs && rtl_device_test_usb_reader_returns() == returns; ++waited) {
+        dsd_sleep_ms(1);
+    }
+    assert(rtl_device_test_usb_reader_returns() == returns + 1U);
+}
+
+/* replacement_reader_failure_ends_session: the reader a recovery restarted returns (-1) before the recovery finishes.
+ * Its failure is not taken for the retired reader's return: the recovery does not report success or post the notice,
+ * and the session ends for the receiver with the reader's failure, logged once. */
+void
+test_replacement_reader_failure_ends_session(void) {
+    usb_world_reset(0);
+    (void)log_take();
+    g_notices.store(0);
+    (void)boundary_take();
+    stream_rig r;
+    stream_open(r, 0, 0);
+    rtl_stream_test_set_stream_boundary_probe(probe_fail_replacement, nullptr);
+    stream_deliver(r, 20, 5U);
+    assert(wait_receiver_ended(kWaitMs + kWaitMs) != 0U);
+    wait_step(RTL_STREAM_TEST_BOUNDARY_END);
+    rtl_stream_test_set_stream_boundary_probe(probe_boundary, nullptr);
+    expect_receiver_ending(-1);
+    assert(g_usb.devs[0].resets.load() == 1);
+    const std::string log = log_take();
+    assert(log_has(log, "RTL-SDR: the USB device was lost; the stream stops (rc=-1)"));
+    const size_t first = log.find("the stream stops");
+    assert(log.find("the stream stops", first + 1U) == std::string::npos);
+    assert(log.find("the stream resumes") == std::string::npos);
+    assert(g_notices.load() == 0);
+    stream_close(r);
+    reset_session();
+    (void)boundary_take();
+}
+
 /* A stop while the dongle is being reset: the recovery gives up, the tail runs, nothing restarts, and the session
  * reports nothing. */
 std::atomic<int> g_stop_requested{0};
@@ -1317,6 +1363,7 @@ main(void) {
         rtl_stream_test_set_stream_boundary_probe(probe_boundary, nullptr);
         test_silence_posts_recovery_and_reader_return_is_silent();
         test_recovery_failure_runs_the_tail_and_ends();
+        test_replacement_reader_failure_ends_session();
         test_stop_during_recovery_is_silent();
         test_yield_reaches_decoder_during_recovery();
         test_delayed_stream_never_yields();

@@ -480,11 +480,14 @@ int rtl_device_usb_recovery_take(struct rtl_device* dev);
 /**
  * @brief Finish a recovery taken with rtl_device_usb_recovery_take().
  *
- * @p rc 0: the receiver was reset, reopened and its reader restarted; the progress monitor watches it afresh.
+ * @p rc 0: the receiver was reset, reopened and its reader restarted; the progress monitor watches it afresh, unless
+ * the restarted reader already returned, which ends the session for the receiver as that reader's return would.
  * -ECANCELED (or any result once the device was stopped): silent. Anything else ends the session for the receiver
  * as a device failure, with @p why (the step that failed) in the logged cause.
+ *
+ * @return 1 when the stream resumed (the caller tells the decoder), else 0.
  */
-void rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why);
+int rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why);
 
 /**
  * @brief Take the reconnected rtl_tcp connection the device's reader handed over, on the controller's thread.

@@ -567,6 +567,14 @@ struct rtl_device {
      * set and read under usb_ctrl_lock and called outside it. */
     std::atomic<int> recovery_request{0};
     std::atomic<uint32_t> recovery_epoch{0U};
+    /* Which USB reader is which: reader_incarnation moves before each reader thread starts, and the thread keeps the
+     * value it found. recovery_reader is the reader a taken recovery restarted, until that recovery finishes (0: none);
+     * recovery_reader_failed holds its incarnation, and recovery_reader_rc its result, when it returned meanwhile, so
+     * the recovery's finish reports it (rtl_usb_recovery_reader_handoff()). */
+    std::atomic<uint32_t> reader_incarnation{0U};
+    std::atomic<uint32_t> recovery_reader{0U};
+    std::atomic<uint32_t> recovery_reader_failed{0U};
+    std::atomic<int> recovery_reader_rc{0};
     std::atomic<uint64_t> recovery_silence_ms{0U};
     rtl_device_recovery_cb recovery_cb = nullptr;
     void* recovery_cb_ctx = nullptr;
@@ -3278,6 +3286,8 @@ static std::atomic<int> g_test_usb_reader_streamed{0};
 static std::atomic<int> g_test_usb_reader_cancelled{0};
 static std::atomic<int> g_test_usb_reader_stream{0};
 static std::atomic<int> g_test_usb_reader_stream_return{0};
+/* USB reader returns rtl_usb_reader_finished() has handled. */
+static std::atomic<unsigned int> g_test_usb_reader_returns{0U};
 
 /* Whether the seam stands in for librtlsdr's async state (its streaming and cancel). */
 static int
@@ -3461,9 +3471,38 @@ rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verd
  * of them leaves the session waiting on samples that never come, so it ends the session for its receiver
  * (rtl_device_end_for_receiver(), after the unplug-owner grace that lets Android's USB detach broadcast own an
  * unplug). -ENOMEM is the host's: librtlsdr could not allocate its transfers, so it is reported at once, without the
- * grace and without committing the receiver's ending. A cancel's return is left alone. */
+ * grace and without committing the receiver's ending. A cancel's return is left alone, and the return of a reader a
+ * recovery restarted, before that recovery finished, is the recovery's to report. */
 static void
-rtl_usb_reader_finished(struct rtl_device* s, int rc) {
+rtl_usb_reader_end_session(struct rtl_device* s, int rc) {
+    char cause[96];
+    DSD_SNPRINTF(cause, sizeof cause, "RTL-SDR: the USB %s; the stream stops (rc=%d)",
+                 rc == -1 ? "device was lost" : "reader stopped unexpectedly", rc);
+    (void)rtl_device_end_for_receiver(s, rc, rtl_device_sample_progress(s), cause);
+}
+
+/* The reader a stall recovery restarted (incarnation @p incarnation) can return, @p rc, before that recovery
+ * finishes. Its verdict would then be dropped as the recovery's own (rtl_device_recovery_supersedes(), there for the
+ * retired reader), and the recovery would report success with no reader running. Hand it to the recovery's finish
+ * instead (rtl_device_usb_recovery_finish()). Returns 1 when this return is handled (the finish reports it, or already
+ * took it), 0 when the caller reports it: another reader's return, or one after the recovery finished. Both sides use
+ * sequentially consistent order: either the finish sees the failure, or this sees the recovery idle. */
+static int
+rtl_usb_recovery_reader_handoff(struct rtl_device* s, int rc, uint32_t incarnation) {
+    if (incarnation == 0U || s->recovery_reader.load(std::memory_order_seq_cst) != incarnation) {
+        return 0;
+    }
+    s->recovery_reader_rc.store(rc, std::memory_order_relaxed);
+    s->recovery_reader_failed.store(incarnation, std::memory_order_seq_cst);
+    if (s->recovery_request.load(std::memory_order_seq_cst) == RTL_USB_RECOVERY_TAKEN) {
+        return 1;
+    }
+    /* The recovery finished meanwhile; whichever side takes the failure reports it. */
+    return (s->recovery_reader_failed.exchange(0U, std::memory_order_seq_cst) == incarnation) ? 0 : 1;
+}
+
+static void
+rtl_usb_reader_finished(struct rtl_device* s, int rc, uint32_t incarnation) {
     /* A recovery cancelled it: the swap reports for itself. */
     if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()
         || s->recovering.load(std::memory_order_acquire)) {
@@ -3476,10 +3515,10 @@ rtl_usb_reader_finished(struct rtl_device* s, int rc) {
         replay_signal_input_waiters(s);
         return;
     }
-    char cause[96];
-    DSD_SNPRINTF(cause, sizeof cause, "RTL-SDR: the USB %s; the stream stops (rc=%d)",
-                 rc == -1 ? "device was lost" : "reader stopped unexpectedly", rc);
-    (void)rtl_device_end_for_receiver(s, rc, rtl_device_sample_progress(s), cause);
+    if (rtl_usb_recovery_reader_handoff(s, rc, incarnation)) {
+        return;
+    }
+    rtl_usb_reader_end_session(s, rc);
 }
 
 /**
@@ -3493,6 +3532,8 @@ static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 dongle_thread_fn(void* arg) {
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
+    /* No other reader starts before this one is joined, so the value is this reader's. */
+    const uint32_t incarnation = s->reader_incarnation.load(std::memory_order_acquire);
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     rtl_usb_test_hold_reader(RTL_TEST_USB_HOLD_BEFORE_ENTRY);
 #endif
@@ -3516,7 +3557,10 @@ dongle_thread_fn(void* arg) {
 #endif
     }
     s->reader_exited.store(1, std::memory_order_release);
-    rtl_usb_reader_finished(s, rc);
+    rtl_usb_reader_finished(s, rc, incarnation);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    g_test_usb_reader_returns.fetch_add(1U, std::memory_order_acq_rel);
+#endif
     DSD_THREAD_RETURN;
 }
 
@@ -10188,6 +10232,17 @@ soapy_start_reader(struct rtl_device* dev) {
     return r;
 }
 
+/* Move the incarnation the next USB reader thread finds, skipping 0 (no reader); returns it. */
+static uint32_t
+rtl_usb_next_reader_incarnation(struct rtl_device* dev) {
+    uint32_t next = dev->reader_incarnation.load(std::memory_order_relaxed) + 1U;
+    if (next == 0U) {
+        next = 1U;
+    }
+    dev->reader_incarnation.store(next, std::memory_order_release);
+    return next;
+}
+
 /* Start the RTL-SDR's USB reader thread and its sample-progress monitor. Nonzero when either did not start; a reader
  * that started is stopped and joined again then. */
 static int
@@ -10198,6 +10253,9 @@ rtl_usb_start_reader(struct rtl_device* dev) {
     dev->reader_entered.store(0, std::memory_order_relaxed);
     dev->reader_exited.store(0, std::memory_order_relaxed);
     dev->receiver_end_claimed.store(0, std::memory_order_relaxed);
+    dev->recovery_reader.store(0U, std::memory_order_relaxed);
+    dev->recovery_reader_failed.store(0U, std::memory_order_relaxed);
+    (void)rtl_usb_next_reader_incarnation(dev);
     dev->progress_monitor_run.store(1, std::memory_order_relaxed);
     /* Cleared by a stop request, before it cancels the reader. */
     dev->run.store(1, std::memory_order_release);
@@ -10695,12 +10753,16 @@ rtl_device_usb_resume_reader(struct rtl_device* dev) {
         dev->watch_rearm_seq.fetch_add(1U, std::memory_order_release);
         dev->reader_entered.store(0, std::memory_order_relaxed);
         dev->reader_exited.store(0, std::memory_order_relaxed);
+        /* Until the recovery that restarts it finishes, this reader's return is that recovery's to report. */
+        dev->recovery_reader_failed.store(0U, std::memory_order_relaxed);
+        dev->recovery_reader.store(rtl_usb_next_reader_incarnation(dev), std::memory_order_seq_cst);
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
         rtl_usb_test_reader_restarting(dev);
 #endif
         if (dsd_thread_create(&dev->thread, dongle_thread_fn, dev) == 0) {
             dev->thread_started = 1;
         } else {
+            dev->recovery_reader.store(0U, std::memory_order_seq_cst);
             rc = -EAGAIN;
         }
     }
@@ -10748,26 +10810,37 @@ rtl_device_usb_recovery_take(struct rtl_device* dev) {
     return 1;
 }
 
-void
+int
 rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why) {
     if (!dev || dev->backend != RTL_BACKEND_USB) {
-        return;
+        return 0;
     }
-    /* Idle first: the ending below is this recovery's own verdict, which nothing supersedes. */
-    dev->recovery_request.store(RTL_USB_RECOVERY_IDLE, std::memory_order_release);
-    if (rc == 0) {
+    /* The restarted reader stops handing its return over, then idle: the ending below is this recovery's own verdict,
+     * which nothing supersedes. Then the failure of the restarted reader, if it returned meanwhile
+     * (rtl_usb_recovery_reader_handoff()). */
+    const uint32_t restarted = dev->recovery_reader.exchange(0U, std::memory_order_seq_cst);
+    dev->recovery_request.store(RTL_USB_RECOVERY_IDLE, std::memory_order_seq_cst);
+    const uint32_t failed = dev->recovery_reader_failed.exchange(0U, std::memory_order_seq_cst);
+    const int restarted_failed = (restarted != 0U && failed == restarted) ? 1 : 0;
+    if (rc == 0 && !restarted_failed) {
         LOG_INFO("RTL-SDR: the USB device was reset and reopened; the stream resumes\n");
-        return;
+        return 1;
     }
     /* A stop or an exit request during the recovery ends it silently. */
     if (rc == -ECANCELED || dev->stop_requested.load(std::memory_order_acquire)) {
-        return;
+        return 0;
+    }
+    if (rc == 0) {
+        /* Reset and reopened, but the restarted reader returned already: the session ends as for any reader's. */
+        rtl_usb_reader_end_session(dev, dev->recovery_reader_rc.load(std::memory_order_relaxed));
+        return 0;
     }
     char cause[320];
     DSD_SNPRINTF(cause, sizeof cause,
                  "RTL-SDR: the receiver sent no samples and resetting it failed: %s; the stream stops",
                  (why && why[0] != '\0') ? why : "unknown error");
     (void)rtl_device_end_for_receiver(dev, rc, rtl_device_sample_progress(dev), cause);
+    return 0;
 }
 
 int
@@ -11070,6 +11143,11 @@ rtl_device_test_usb_stream_return(int rc) {
 extern "C" int
 rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev) {
     return dev && dev->reader_exited.load(std::memory_order_acquire);
+}
+
+extern "C" unsigned int
+rtl_device_test_usb_reader_returns(void) {
+    return g_test_usb_reader_returns.load(std::memory_order_acquire);
 }
 
 extern "C" void
