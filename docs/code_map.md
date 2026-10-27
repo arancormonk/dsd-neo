@@ -4524,7 +4524,10 @@ Key public headers:
     `RTL_USB_ID_MISMATCH` and no reset); a device that re-enumerates is found again by its triple within 5000 ms
     (cancellable, twins refused, unreadable candidates waited out; refused devices of another VID:PID are left out, a
     refused one with the recorded VID:PID, the dongle before udev has applied its permissions, is waited for).
-    `rtl_usb_identity_index()` is the librtlsdr index by triple, -1 unless unique. `rtl_usb_identity_off_reason()` gives
+    `rtl_usb_identity_index()` is the librtlsdr index by triple, -1 unless unique. librtlsdr's index scan (resolution
+    and `rtl_usb_identity_index()`) follows the same rule: librtlsdr passes `libusb_open()`'s error through for an index
+    (2.0.x, system and vendored), so an index refused with ACCESS or NOT_SUPPORTED (a second dongle still on its Windows
+    TV driver) is left out, and any other failure to read an index's strings refuses. `rtl_usb_identity_off_reason()` gives
     the "stall recovery is off" text. Every libusb/librtlsdr call goes through `struct rtl_usb_driver_ops`
     (`rtl_usb_identity_set_driver_ops()`, test hooks only). CMake defines `DSD_HAVE_LIBUSB` (`cmake/FindLibusb.cmake`:
     header, library and a `libusb_reset_device` link check) privately on `dsd-neo_io_radio` and its test mirror, only

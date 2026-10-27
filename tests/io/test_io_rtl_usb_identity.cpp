@@ -28,7 +28,7 @@ struct fake_dev {
     const char* serial = nullptr;
     int open_rc = 0;     /* RTL_USB_OP_* from usb_open */
     int read_rc = 0;     /* RTL_USB_OP_* from usb_read_strings */
-    int rtl_read_rc = 0; /* librtlsdr's string read for its index */
+    int rtl_read_rc = 0; /* RTL_USB_OP_* from librtlsdr's string read for its index (and, nonzero, of its handle) */
     int reset_rc = 0;    /* RTL_USB_OP_* from usb_reset */
     int resets = 0;      /* reset calls that reached this device */
     int hidden = 0;      /* enumerations it is absent from */
@@ -71,11 +71,11 @@ fake_rtl_count(void) {
 int
 fake_rtl_index_strings(uint32_t index, char* m, char* p, char* s) {
     if (index >= g_world.rtl_order.size()) {
-        return -1;
+        return RTL_USB_OP_ERROR;
     }
     const fake_dev& d = g_world.devs[(size_t)g_world.rtl_order[index]];
-    if (d.rtl_read_rc != 0) {
-        return -1;
+    if (d.rtl_read_rc != RTL_USB_OP_OK) {
+        return d.rtl_read_rc;
     }
     copy_str(m, d.manufacturer);
     copy_str(p, d.product);
@@ -328,7 +328,7 @@ unreadable_vendor_candidate_refused(void) {
 
     /* Another librtlsdr index whose strings cannot be read. */
     reset_world();
-    g_world.devs[1].rtl_read_rc = -1;
+    g_world.devs[1].rtl_read_rc = RTL_USB_OP_ERROR;
     assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_UNREADABLE);
     assert(id.valid == 0);
 
@@ -393,6 +393,42 @@ not_supported_candidate_ignored(void) {
     assert(total_resets() == 0);
 }
 
+/* A receiver librtlsdr lists but this process may not open (a second dongle still on its Windows TV driver: librtlsdr
+ * hands back libusb_open()'s ACCESS or NOT_SUPPORTED for its index) cannot be the running dongle, as for the libusb scan
+ * above: the identity resolves, and the reopen finds the usable dongle's index wherever the refused one is listed. Any
+ * other failure to read an index's strings still refuses both. */
+void
+refused_rtl_index_ignored(void) {
+    for (const int refusal : {RTL_USB_OP_ACCESS, RTL_USB_OP_UNSUPPORTED}) {
+        reset_world();
+        fake_dev tv = make_dev(0x0bda, 0x2832, 1, 4, "00000002", 1);
+        tv.open_rc = refusal;
+        tv.rtl_read_rc = refusal;
+        g_world.devs.push_back(tv); /* devs[3], after the HID device */
+        g_world.rtl_order = {3, 0, 1};
+        rtl_usb_identity id;
+        assert(rtl_usb_identity_resolve(1, &id) == RTL_USB_ID_OK);
+        assert(id.valid == 1 && id.bus == 1 && id.ports[1] == 2 && strcmp(id.serial, "56435444") == 0);
+        assert(rtl_usb_identity_index(&id) == 1);
+        /* Listed after the dongle once the receivers re-enumerate. */
+        g_world.rtl_order = {0, 1, 3};
+        assert(rtl_usb_identity_index(&id) == 0);
+        assert(total_resets() == 0);
+    }
+    for (const int failure : {RTL_USB_OP_ERROR, RTL_USB_OP_GONE}) {
+        reset_world();
+        g_world.devs.push_back(make_dev(0x0bda, 0x2832, 1, 4, "00000002", 1));
+        g_world.rtl_order = {3, 0, 1};
+        rtl_usb_identity id;
+        assert(rtl_usb_identity_resolve(1, &id) == RTL_USB_ID_OK);
+        g_world.devs[3].rtl_read_rc = failure;
+        assert(rtl_usb_identity_index(&id) == -1);
+        rtl_usb_identity again;
+        assert(rtl_usb_identity_resolve(1, &again) == RTL_USB_ID_UNREADABLE);
+        assert(again.valid == 0);
+    }
+}
+
 void
 cross_vid_twin_with_active_unreadable_refused(void) {
     /* librtlsdr reads the running dongle, but libusb cannot; a twin of another VID reads fine. Taking the one
@@ -425,7 +461,7 @@ empty_strings_refused(void) {
 
     /* librtlsdr cannot read the receiver's strings at all. */
     reset_world();
-    g_world.devs[0].rtl_read_rc = -1;
+    g_world.devs[0].rtl_read_rc = RTL_USB_OP_ERROR;
     assert(rtl_usb_identity_resolve(0, &id) == RTL_USB_ID_UNREADABLE);
     assert(id.valid == 0);
 
@@ -451,7 +487,7 @@ handle_mismatch_detected(void) {
     g_world.devs[1].product = "Blog V4";
     assert(rtl_usb_identity_verify_handle(handle_b, &id) == RTL_USB_ID_MISMATCH);
 
-    g_world.devs[0].rtl_read_rc = -1;
+    g_world.devs[0].rtl_read_rc = RTL_USB_OP_ERROR;
     assert(rtl_usb_identity_verify_handle(handle_a, &id) == RTL_USB_ID_UNREADABLE);
     assert(rtl_usb_identity_verify_handle(nullptr, &id) == RTL_USB_ID_FAILED);
 
@@ -678,7 +714,7 @@ index_follows_identity_after_reorder(void) {
     g_world.devs[1].serial = "56435444";
     assert(rtl_usb_identity_index(&id) == -1);
     g_world.devs[1].serial = "00000001";
-    g_world.devs[1].rtl_read_rc = -1;
+    g_world.devs[1].rtl_read_rc = RTL_USB_OP_ERROR;
     assert(rtl_usb_identity_index(&id) == -1);
     g_world.devs[1].rtl_read_rc = 0;
     assert(rtl_usb_identity_index(&id) == 0);
@@ -743,6 +779,7 @@ main(void) {
     unreadable_vendor_candidate_refused();
     access_denied_candidate_ignored();
     not_supported_candidate_ignored();
+    refused_rtl_index_ignored();
     cross_vid_twin_with_active_unreadable_refused();
     empty_strings_refused();
     handle_mismatch_detected();

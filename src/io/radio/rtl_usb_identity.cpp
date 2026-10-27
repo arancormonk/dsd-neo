@@ -63,9 +63,15 @@ real_rtl_get_device_count(void) {
     return rtlsdr_get_device_count();
 }
 
+/* librtlsdr's read of index @p index's strings, as an RTL_USB_OP_* result. librtlsdr (2.0.x: the system library and
+ * the vendored android/third_party copy alike) opens the device with libusb_open() and, when that fails, returns its
+ * error unchanged: LIBUSB_ERROR_ACCESS or LIBUSB_ERROR_NOT_SUPPORTED for a device this process may not open. A failed
+ * libusb_init() is passed on the same way, and -1 (LIBUSB_ERROR_IO's value) when the opened device's descriptor cannot
+ * be read; both map to ERROR. */
 int
 real_rtl_get_device_usb_strings(uint32_t index, char* manufacturer, char* product, char* serial) {
-    return rtlsdr_get_device_usb_strings(index, manufacturer, product, serial);
+    const int rc = rtlsdr_get_device_usb_strings(index, manufacturer, product, serial);
+    return rc == 0 ? RTL_USB_OP_OK : map_libusb(rc);
 }
 
 int
@@ -260,7 +266,10 @@ read_rtl_index(const rtl_usb_driver_ops* o, uint32_t index, triple* t) {
     return rc;
 }
 
-/* librtlsdr's indexes that carry a triple. */
+/* librtlsdr's indexes that carry a triple. An index this process may not open (ACCESS, NOT_SUPPORTED) is left out, as
+ * in the libusb scan (refused_is_skipped(), identity resolution): a device this process cannot open is not the dongle
+ * it opened or is about to reopen (should the dongle's own index be refused, it simply matches nothing and the reopen is
+ * refused). Any other failure counts as unreadable: that index might carry the triple. */
 struct rtl_scan {
     int matches = 0;
     int index = -1;
@@ -273,7 +282,11 @@ scan_rtl_indexes(const rtl_usb_driver_ops* o, const triple& want) {
     uint32_t n = o->rtl_get_device_count();
     for (uint32_t i = 0; i < n && i <= (uint32_t)INT_MAX; i++) {
         triple t;
-        if (read_rtl_index(o, i, &t) != 0) {
+        const int rc = read_rtl_index(o, i, &t);
+        if (rc == RTL_USB_OP_ACCESS || rc == RTL_USB_OP_UNSUPPORTED) {
+            continue;
+        }
+        if (rc != RTL_USB_OP_OK) {
             r.unreadable++;
             continue;
         }

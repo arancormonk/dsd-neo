@@ -112,7 +112,7 @@ fake_rtl_count(void) {
 int
 fake_rtl_index_strings(uint32_t index, char* m, char* p, char* s) {
     if ((int)index >= g_usb.dev_count) {
-        return -1;
+        return RTL_USB_OP_ERROR;
     }
     fill_strings(g_usb.devs[index], m, p, s);
     return 0;

@@ -103,6 +103,7 @@ enum {
  */
 struct rtl_usb_driver_ops {
     uint32_t (*rtl_get_device_count)(void);
+    /* RTL_USB_OP_*: ACCESS or UNSUPPORTED when librtlsdr's libusb_open() of that index was refused. */
     int (*rtl_get_device_usb_strings)(uint32_t index, char* manufacturer, char* product, char* serial);
     int (*rtl_get_usb_strings)(rtlsdr_dev_t* dev, char* manufacturer, char* product, char* serial);
     int (*usb_open_session)(void** session, int* count);
