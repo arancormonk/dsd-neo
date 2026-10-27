@@ -5141,7 +5141,10 @@ Notes:
     Under a replay, a RESET with one of those reasons moves the count once it is applied on the idle pipeline
     (`rtl_replay_on_reset_event()`), and `demod_replay_batch_tag()` tags every batch with the count
     (`rtl_stream_replay_batch::boundary_seq`): the batches of chunks before the gap carry the old one, those after it
-    the new. The decoder side is in DSP (`dsd_symbol.c`, stream gaps) and Engine (`DSD_CARRIER_BOUNDARY_STREAM_GAP`).
+    the new. `dsd_rtl_stream_metrics_hook_read_discontinuity_seq()` checks the live count first; only a moved count
+    reaches the separate replay-tag path, so ordinary one-sample reads need no tag buffer or its stack frame.
+    `RUNTIME_RTL_STREAM_METRICS_HOOKS` pins both paths and the position of a gap behind an earlier replay batch.
+    The decoder side is in DSP (`dsd_symbol.c`, stream gaps) and Engine (`DSD_CARRIER_BOUNDARY_STREAM_GAP`).
     Tests: `IO_RTL_REPLAY_DETERMINISM` (recovery and reconnect events mark exactly the batches after them, a frequency
     RESET marks none, every batch read whole in order; a gap noted while a capture is written replays as the same gap).
   - Reads while the device has no stream (issue #518 D4, B3). `rtl_device_has_stream()` says whether the device has a

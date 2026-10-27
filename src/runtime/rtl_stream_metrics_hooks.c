@@ -13,6 +13,14 @@
 
 #include <stdint.h>
 
+#if defined(_MSC_VER)
+#define DSD_RTL_METRICS_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define DSD_RTL_METRICS_NOINLINE __attribute__((noinline))
+#else
+#define DSD_RTL_METRICS_NOINLINE
+#endif
+
 static dsd_rtl_stream_metrics_hooks g_rtl_stream_metrics_hooks = {0};
 static atomic_int g_rtl_symbol_cache_pending;
 
@@ -216,8 +224,8 @@ dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(uint32_t* center_hz_out)
     return 1;
 }
 
-uint64_t
-dsd_rtl_stream_metrics_hook_discontinuity_seq(void) {
+static inline uint64_t
+rtl_stream_discontinuity_seq(void) {
     if (g_rtl_stream_metrics_hooks.discontinuity_seq) {
         return g_rtl_stream_metrics_hooks.discontinuity_seq();
     }
@@ -225,11 +233,14 @@ dsd_rtl_stream_metrics_hook_discontinuity_seq(void) {
 }
 
 uint64_t
-dsd_rtl_stream_metrics_hook_read_discontinuity_seq(uint64_t consumed) {
-    const uint64_t stream_seq = dsd_rtl_stream_metrics_hook_discontinuity_seq();
-    if (stream_seq == consumed) {
-        return consumed;
-    }
+dsd_rtl_stream_metrics_hook_discontinuity_seq(void) {
+    return rtl_stream_discontinuity_seq();
+}
+
+/* A gap is rare; keep its replay-tag stack frame off the per-sample live check, including in builds without
+   LTO. The tag is needed only after the stream count moves. */
+static DSD_RTL_METRICS_NOINLINE uint64_t
+rtl_stream_read_gap_seq(uint64_t stream_seq) {
     /* A replay moves the count when it applies a recorded gap, on an idle pipeline: the samples read before it carry
        their batch's count, the gap reaches the decoder with the first batch after it. */
     dsd_rtl_stream_replay_batch batch;
@@ -237,6 +248,12 @@ dsd_rtl_stream_metrics_hook_read_discontinuity_seq(uint64_t consumed) {
         return batch.boundary_seq;
     }
     return stream_seq;
+}
+
+uint64_t
+dsd_rtl_stream_metrics_hook_read_discontinuity_seq(uint64_t consumed) {
+    const uint64_t stream_seq = rtl_stream_discontinuity_seq();
+    return stream_seq == consumed ? consumed : rtl_stream_read_gap_seq(stream_seq);
 }
 
 int
