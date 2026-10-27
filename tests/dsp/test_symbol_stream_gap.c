@@ -65,6 +65,11 @@ static int g_race_landed = 0;
 static uint32_t g_generation = 1U;
 /* An I/Q replay whose read of the first sample past a recorded gap began before the generation moved for it. */
 static int g_replay_gap_moves_generation = 0;
+/* A live generation advance (a queued retune, another reconnect) right after the reader's g_advance_armed-th next read
+   of the generation; g_advance_after_gap_read arms it for the first read after the one that returns the first sample
+   past the gap (the reader validating that sample). */
+static int g_advance_after_gap_read = 0;
+static int g_advance_armed = 0;
 
 /* Whether symbol @p got is sample @p want: the samples are whole numbers, so within a quarter. */
 static int
@@ -92,6 +97,9 @@ fake_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_g
     g_reads++;
     if (g_replay && g_replay_gap_moves_generation && g_next == g_gap_at) {
         g_generation++;
+    }
+    if (!g_replay && g_advance_after_gap_read && g_next == g_gap_at) {
+        g_advance_armed = 1;
     }
     const uint64_t batch_first = (g_next / g_batch) * g_batch;
     size_t n = (size_t)(batch_first + g_batch - g_next);
@@ -184,7 +192,14 @@ fake_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_p
 
 static uint32_t
 fake_generation(void) {
-    return g_generation;
+    const uint32_t generation = g_generation;
+    if (g_advance_armed > 0) {
+        g_advance_armed--;
+        if (g_advance_armed == 0) {
+            g_generation++;
+        }
+    }
+    return generation;
 }
 
 /* One sample a symbol on the monitor output as on the symbol output. */
@@ -232,6 +247,8 @@ reset_stream(dsd_opts* opts, dsd_state* state, int replay, int output_kind, uint
     g_race_landed = 0;
     g_generation = 1U;
     g_replay_gap_moves_generation = 0;
+    g_advance_after_gap_read = 0;
+    g_advance_armed = 0;
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_decode_clock_use_replay(1788245497LL);
 }
@@ -381,6 +398,52 @@ test_live_gap_after_one_sample_read_drops_pre_gap_sample(dsd_opts* opts, dsd_sta
     check("live race: the stream goes on in order past the gap", after);
 }
 
+/* A live gap, then the generation advances right after the reader validated the first sample past it against the
+   generation its read began under, before the sample is held. The sample is held under that validated generation, so
+   once the engine consumes the gap it is no longer current and is dropped: the first symbol is the next sample. */
+static void
+test_live_held_sample_keeps_validated_generation(dsd_opts* opts, dsd_state* state) {
+    reset_stream(opts, state, 0, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 64U, 100U);
+    g_advance_after_gap_read = 1;
+    int in_order = 1;
+    for (uint64_t want = 1U; want <= 100U; want++) {
+        in_order &= reads_sample(getSymbol(opts, state, 0), want) && state->input_interrupted == 0;
+    }
+    check("live advance at hold: the samples before the gap come out in order", in_order);
+    (void)getSymbol(opts, state, 0);
+    check("live advance at hold: the gap is raised",
+          state->input_interrupted == 1 && state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP);
+    check("live advance at hold: the generation advanced at the hold", g_generation == 2U);
+    engine_consumes(state);
+    const float first = getSymbol(opts, state, 0);
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "live advance at hold: the held sample is dropped (read %.0f)", (double)first);
+    check(label, reads_sample(first, 102U));
+}
+
+/* A live gap, its sample held, and the generation advances right after the reader validated the held sample at its
+   hand-out. The sample is handed out under the generation it was validated against, so the analog block it starts is
+   labelled with that one, not the one after the advance. */
+static void
+test_live_handed_out_sample_keeps_validated_generation(dsd_opts* opts, dsd_state* state) {
+    reset_stream(opts, state, 0, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 64U, 100U);
+    for (uint64_t want = 1U; want <= 100U; want++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    (void)getSymbol(opts, state, 0);
+    check("live advance at hand-out: the gap is raised", state->input_interrupted == 1);
+    engine_consumes(state);
+    /* A symbol read takes the stream's profile (its generation) first, then validates the held sample. */
+    g_advance_armed = 2;
+    const float first = getSymbol(opts, state, 0);
+    check("live advance at hand-out: the held sample comes out first", reads_sample(first, 101U));
+    check("live advance at hand-out: the generation advanced at the hand-out", g_generation == 2U);
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "live advance at hand-out: its block is labelled with generation 1 (got %u)",
+                 (unsigned)state->analog_block_rtl_gen);
+    check(label, state->analog_block_rtl_gen == 1U);
+}
+
 /* No gap: the stream's count never moves and nothing is raised. */
 static void
 test_no_gap_reads_through(dsd_opts* opts, dsd_state* state) {
@@ -426,6 +489,8 @@ main(void) {
     test_live_gap_checked_after_each_cached_read(opts, state);
     test_live_gap_checked_after_each_one_sample_read(opts, state);
     test_live_gap_after_one_sample_read_drops_pre_gap_sample(opts, state);
+    test_live_held_sample_keeps_validated_generation(opts, state);
+    test_live_handed_out_sample_keeps_validated_generation(opts, state);
 
     dsd_decode_clock_use_system();
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});

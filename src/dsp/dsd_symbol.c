@@ -2354,14 +2354,21 @@ symbol_rtl_stream_gap(dsd_state* state, uint64_t gap_seq) {
    reports the batch's count). A live stream's gap clears the output, moving the generation, before it moves the count,
    so a live sample is known past the gap only when its read began under the generation still current; one read before
    the clear, whose count check came after the gap was noted, is not. A read that waited through the clear loses its
-   first sample past the gap with it, which the decoder, reset at the gap, does not miss. */
+   first sample past the gap with it, which the decoder, reset at the gap, does not miss. Returns 1 with the generation
+   to hold the sample under in @p out_generation: a live sample's own, as validated here (a generation that moves after
+   this check, a queued retune or another reconnect, must find the sample stale), a replay's the one current now. */
 static int
-symbol_rtl_read_past_gap(uint32_t read_generation) {
+symbol_rtl_read_past_gap(uint32_t read_generation, uint32_t* out_generation) {
     dsd_rtl_stream_replay_batch batch;
     if (dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 1) {
+        *out_generation = dsd_rtl_stream_metrics_hook_stream_generation();
         return 1;
     }
-    return read_generation == dsd_rtl_stream_metrics_hook_stream_generation();
+    if (read_generation != dsd_rtl_stream_metrics_hook_stream_generation()) {
+        return 0;
+    }
+    *out_generation = read_generation;
+    return 1;
 }
 
 /* One sample of the stream for the one-sample reader: the sample a read past a gap held back, once the gap is
@@ -2369,14 +2376,17 @@ symbol_rtl_read_past_gap(uint32_t read_generation) {
    after every read, so the read that returns the first sample past a gap raises the gap and holds the sample back.
    A live gap can also complete between a read and that check (a recovery or reconnect finishing meanwhile); the
    read's sample then came off the stream before the gap and is dropped, not held (symbol_rtl_read_past_gap()).
-   Returns 1 with a sample, 0 with none. */
+   Returns 1 with a sample and the stream generation it belongs to in @p out_generation (a held sample's, as validated
+   at its hand-out; a read's, the one current after it, as before), 0 with none. */
 static int
-symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
+symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work,
+                    uint32_t* out_generation) {
     if (state->rtl_gap_held) {
         state->rtl_gap_held = 0U;
         if (state->rtl_gap_held_generation == dsd_rtl_stream_metrics_hook_stream_generation()) {
             *sample_out = state->rtl_gap_held_sample;
             work->sample_flag = state->rtl_gap_held_flag;
+            *out_generation = state->rtl_gap_held_generation;
             return 1;
         }
     }
@@ -2398,15 +2408,17 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
     }
     const uint64_t gap_seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(state->rtl_stream_gap_seq);
     if (gap_seq != state->rtl_stream_gap_seq) {
-        if (symbol_rtl_read_past_gap(read_generation)) {
+        uint32_t held_generation = 0U;
+        if (symbol_rtl_read_past_gap(read_generation, &held_generation)) {
             state->rtl_gap_held = 1U;
             state->rtl_gap_held_sample = *sample_out;
             state->rtl_gap_held_flag = work->sample_flag;
-            state->rtl_gap_held_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+            state->rtl_gap_held_generation = held_generation;
         }
         symbol_rtl_stream_gap(state, gap_seq);
         return 0;
     }
+    *out_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     return 1;
 }
 
@@ -2459,10 +2471,9 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
         return 1;
     }
-    if (!symbol_rtl_read_one(opts, state, sample_out, work)) {
+    if (!symbol_rtl_read_one(opts, state, sample_out, work, &work->rtl_sample_generation)) {
         return 0;
     }
-    work->rtl_sample_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     /* An I/Q replay's sample runs the decode clock to its capture time (issue #572) and notes the centre it was captured
        on (issue #575). */
     uint32_t replay_center_hz = 0U;
