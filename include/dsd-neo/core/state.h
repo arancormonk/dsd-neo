@@ -603,13 +603,23 @@ typedef struct {
 /** Capacity of the user-supplied P25 band plan: four systems' worth of 16 identifiers. */
 #define DSD_P25_BANDPLAN_MAX_ROWS 64
 
-/**
- * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
- *
- * `entry` is a ready-to-copy IDEN entry (trust 1, populated, rfss/site 0); `entry.wacn`/`sysid`
- * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
- * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
- */
+/* Why an input interruption stands (dsd_state::input_interrupt_reason). The values rank: a raise never lowers the
+   reason that stands (dsd_state_raise_input_interrupt()). */
+typedef enum {
+    /* None of its own: a hunt read left a silent input's wait for a queued command, or the input ended. The engine loop
+       clears it at its next pass. */
+    DSD_INTERRUPT_NONE = 0,
+    /* A Signal search left the frame, or a live read gave up on a stalled input during a search visit: getSymbol()
+       stands erasures in while the search runs. */
+    DSD_INTERRUPT_SEARCH,
+    /* A live read with no stream gave way to queued commands: sticky until the engine loop consumes it. */
+    DSD_INTERRUPT_YIELD,
+    /* The radio stream has a gap on the same carrier (a USB recovery, an rtl_tcp reconnect, or a capture's recorded
+       one): sticky until the engine loop consumes it and runs the stream-gap carrier boundary
+       (DSD_CARRIER_BOUNDARY_STREAM_GAP). */
+    DSD_INTERRUPT_STREAM_GAP,
+} dsd_input_interrupt_reason;
+
 /* NXDN trunking: where the receiver followed a call to (dsd_state::nxdn_follow). */
 typedef struct {
     long int freq_hz; /**< the voice channel's frequency; 0 none */
@@ -640,6 +650,13 @@ typedef struct {
     uint8_t gap;
 } dsd_nxdn_call_identity;
 
+/**
+ * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
+ *
+ * `entry` is a ready-to-copy IDEN entry (trust 1, populated, rfss/site 0); `entry.wacn`/`sysid`
+ * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
+ * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
+ */
 typedef struct p25_bandplan_row {
     uint8_t iden;    // identifier 0-15
     uint8_t is_tdma; // 1 seeds p25_iden_tdma, 0 seeds p25_iden_fdma
@@ -1117,6 +1134,10 @@ struct dsd_state {
     /* The centre in Hz that batch was captured on, which each sample the cache hands out publishes as
        dsd_opts::iq_replay_center_freq (issue #575); 0, as after a live read, publishes nothing. */
     uint32_t rtl_symbol_cache_center_hz;
+    /* The stream's discontinuity count the cached samples carry (D5): an I/Q replay batch's own, a live read's as read
+       after it. The cache hands none of them out while it is newer than the count the decoder has taken
+       (rtl_stream_gap_seq). */
+    uint64_t rtl_symbol_cache_boundary_seq;
     int rtl_fsk_sps_num;
     int rtl_fsk_sps_den;
     int rtl_fsk_sps_accum;
@@ -2008,13 +2029,38 @@ struct dsd_state {
        stream pause; getFrameSync() returns at once and the engine loop applies the command. A Signal search also sets
        it inside a frame, when it leaves the frame or a live read gives up on a stalled input: getSymbol() then stands
        erasures in for every symbol until the engine loop consumes it, and the frame decoders drop the frame
-       (dsd_state_frame_read_lost()).
+       (dsd_state_frame_read_lost()). So does a gap in the radio stream (DSD_INTERRUPT_STREAM_GAP), until the engine
+       loop has consumed it and reset the decoding the gap cut.
        input_boundary: the stream the decoder read was replaced (a switch, a rollback that restarted it, a loss, a
        fallback); the engine ends the reception (noCarrier() and an explicit end of every call) before it decodes the
        new stream.
        input_fallback_pending: the file or TCP input ended; the frame being decoded reads zeros until it ends, and the
        engine loop then switches to the Pulse input, unless a command replaced the ended input meanwhile. */
     int input_interrupted;
+    /* Why input_interrupted stands (dsd_input_interrupt_reason); the engine loop clears both. */
+    int input_interrupt_reason;
+    /* The radio stream's discontinuity count the decoder has taken up to (D5): the symbol reader raises a stream-gap
+       interruption when the samples a read returned carry a newer one, and the EDACS analog call loop and the M17
+       encoder, which read the stream themselves, take it up there. The engine sets it to the stream's count at each
+       stream start (dsd_engine_note_stream_source()). */
+    uint64_t rtl_stream_gap_seq;
+    /* A sample the one-sample RTL reader read past a stream gap, handed out once the engine has consumed the gap:
+       whether one is held, the sample, its squelch flag, and the stream generation it was read under (a sample held
+       across a generation change is dropped). */
+    uint8_t rtl_gap_held;
+    uint8_t rtl_gap_held_flag;
+    float rtl_gap_held_sample;
+    uint32_t rtl_gap_held_generation;
+    /* The EDACS analog call loop's reads while the RTL device has no stream (issue #518 D4: DSD_RTL_READ_NO_STREAM),
+       which it plays as closed squelch at the stream's rate for the time that passes: whether such a run is on (the
+       stream delivered nothing since it began), when it began (realtime ms), the silent samples that time has paid for
+       so far and those still owed, and whether the triplet being collected took any (it then has no RF power).
+       Decoder-thread owned. */
+    uint8_t edacs_no_stream_active;
+    uint8_t edacs_no_stream_seen;
+    uint64_t edacs_no_stream_since_ms;
+    uint64_t edacs_no_stream_paid;
+    uint64_t edacs_no_stream_owed;
     int input_boundary;
     /* The carrier boundary's count (issue #575): dsd_engine_carrier_boundary() bumps it whenever the receiver leaves a
        carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,
@@ -2468,6 +2514,16 @@ struct dsd_state {
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
+
+/* Raise an input interruption for @p reason (dsd_input_interrupt_reason). A reason already standing that ranks higher
+   is kept: a stream gap that cut a frame a Signal search then leaves still resets the decoding it cut. */
+static inline void
+dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
+    state->input_interrupted = 1;
+    if (reason > state->input_interrupt_reason) {
+        state->input_interrupt_reason = reason;
+    }
 }
 
 /* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an

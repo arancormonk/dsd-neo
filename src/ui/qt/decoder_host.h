@@ -17,12 +17,15 @@
 #ifndef DSD_NEO_SRC_UI_QT_DECODER_HOST_H_
 #define DSD_NEO_SRC_UI_QT_DECODER_HOST_H_
 
+#include <QMap>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
+#include <utility>
 
 namespace dsd_qt {
 

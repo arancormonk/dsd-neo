@@ -26,8 +26,25 @@
 
 #include <cmath>
 #include <stddef.h>
+#include "dsd-neo/core/safe_api.h"
 
 namespace dsd_io {
+
+/* The noise estimate excludes the peak and its two neighbours on either side. Copy the two remaining spans in
+ * their original order so the median sees exactly the same values without testing the exclusion for every bin.
+ * The caller supplies 0 <= lo <= peak <= hi and room for hi - lo + 1 output bins. */
+inline int
+spectrum_copy_noise_bins(const float* db, int lo, int hi, int peak, float* out) {
+    const int left = (peak - lo > 2) ? peak - lo - 2 : 0;
+    const int right = (hi - peak > 2) ? hi - peak - 2 : 0;
+    if (left > 0) {
+        DSD_MEMCPY(out, db + lo, (size_t)left * sizeof(float));
+    }
+    if (right > 0) {
+        DSD_MEMCPY(out + left, db + hi - right + 1, (size_t)right * sizeof(float));
+    }
+    return left + right;
+}
 
 /** @brief Mean I and Q of a block, the DC offset removed before windowing. */
 struct IqBlockMean {
@@ -89,8 +106,23 @@ iq_window_dc_removed(const float* iq_interleaved, int start, int n, const float*
     }
 }
 
+/* A contiguous half of the shifted spectrum. Keeping the wrap and seed decisions outside the per-bin loop leaves
+ * the same arithmetic on each bin, including on builds that preserve IEEE rounding. */
+template <bool Seed>
+inline void
+spectrum_fold_db_span(const float* z, int n, float new_weight, const float* prev_db, float* out_db) {
+    const float eps = 1e-12f;
+    const float old_weight = 1.0f - new_weight;
+    for (int k = 0; k < n; k++) {
+        const float re = z[static_cast<size_t>(k) << 1];
+        const float im = z[(static_cast<size_t>(k) << 1) + 1];
+        const float db = 10.0f * log10f(re * re + im * im + eps);
+        out_db[k] = Seed ? db : (new_weight * db + old_weight * prev_db[k]);
+    }
+}
+
 /**
- * @brief Fold an ordered transform into @p inout_db as smoothed dB, fftshifted.
+ * @brief Fold an ordered transform into @p out_db as smoothed dB, fftshifted.
  *
  * fftshift as it goes: bin 0 becomes center - rate/2 and bin n/2 becomes DC,
  * which is the order both taps' consumers expect of the arrays they read.
@@ -102,15 +134,17 @@ iq_window_dc_removed(const float* iq_interleaved, int start, int n, const float*
  * @param seed True to write the new frame outright instead of blending. The
  *             first frame has nothing to blend with, and after a retune the old
  *             band must not bleed into the new one.
- * @param inout_db Destination of @p n floats, read as the previous frame unless
- *                 @p seed is set.
+ * @param prev_db The previous frame, @p n floats, read unless @p seed is set.
+ * @param out_db Destination of @p n floats; may be @p prev_db (in place).
  */
 inline void
-spectrum_fold_db(const float* z, int n, float new_weight, bool seed, float* inout_db) {
-    if (z == nullptr || inout_db == nullptr) {
+spectrum_fold_db(const float* z, int n, float new_weight, bool seed, const float* prev_db, float* out_db) {
+    if (z == nullptr || prev_db == nullptr || out_db == nullptr || n <= 0) {
         return;
     }
-    /* Never zero: a bin with no energy would otherwise be log10(0). */
+#if defined(__FAST_MATH__) || defined(_MSC_VER)
+    /* Keep the vector-libm loop's shape under relaxed floating-point rules: splitting it changes contraction and
+       rounding on those builds. The strict-math path below keeps the same arithmetic without a wrap per bin. */
     const float eps = 1e-12f;
     const float old_weight = 1.0f - new_weight;
     for (int k = 0; k < n; k++) {
@@ -121,8 +155,19 @@ spectrum_fold_db(const float* z, int n, float new_weight, bool seed, float* inou
         const float re = z[static_cast<size_t>(kk) << 1];
         const float im = z[(static_cast<size_t>(kk) << 1) + 1];
         const float db = 10.0f * log10f(re * re + im * im + eps);
-        inout_db[k] = seed ? db : (new_weight * db + old_weight * inout_db[k]);
+        out_db[k] = seed ? db : (new_weight * db + old_weight * prev_db[k]);
     }
+#else
+    const int half = n >> 1;
+    const int first = n - half;
+    if (seed) {
+        spectrum_fold_db_span<true>(z + 2U * (size_t)half, first, new_weight, prev_db, out_db);
+        spectrum_fold_db_span<true>(z, half, new_weight, prev_db + first, out_db + first);
+    } else {
+        spectrum_fold_db_span<false>(z + 2U * (size_t)half, first, new_weight, prev_db, out_db);
+        spectrum_fold_db_span<false>(z, half, new_weight, prev_db + first, out_db + first);
+    }
+#endif
 }
 
 } // namespace dsd_io

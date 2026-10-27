@@ -85,6 +85,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -1934,6 +1935,16 @@ ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, 
 }
 
 /* The toast a frequency entry's tune leaves, from svc_rtl_set_freq()'s result. */
+static int
+ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
+    const char* unavailable = svc_radio_control_unavailable_text(rc);
+    if (!unavailable) {
+        return 0;
+    }
+    ui_set_toast(state, 4, "Failed: %s", unavailable);
+    return 1;
+}
+
 static void
 ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner) {
     if (rc == 0) {
@@ -1943,7 +1954,7 @@ ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner
                      stop_scanner ? " (scanner stopped)" : "");
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-    } else {
+    } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
         ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
     }
 }
@@ -2038,7 +2049,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         }
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-    } else {
+    } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
         ui_set_toast(state, 4, "Failed: tune -> %u Hz", v);
     }
     return result;
@@ -2059,7 +2070,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
             ui_set_toast(state, 3, "%s", notice);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
-        } else {
+        } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
             ui_set_toast(state, 4, "Failed: RTL gain -> %d", (int)v);
         }
     }
@@ -2071,6 +2082,13 @@ ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app
     int32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
+        /* The correction applies later, on the controller; a receiver that cannot take it now refuses it here, so the
+           toast never claims a change that will not land. */
+        const char* unavailable = svc_radio_control_unavailable_text(0);
+        if (unavailable) {
+            ui_set_toast(state, 4, "Failed: %s", unavailable);
+            return UI_CMD_APPLY_FAILED;
+        }
         int rc = rtl_stream_request_ppm(opts, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
@@ -2202,7 +2220,7 @@ ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct ds
             ui_set_toast(state, 3, "Applied: RTL bias tee -> %s", on ? "On" : "Off");
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: bias tee control not available on active backend");
-        } else {
+        } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
             ui_set_toast(state, 4, "Failed: RTL bias tee update");
         }
     }
@@ -4080,6 +4098,12 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     if (!g_session_open) {
         dsd_mutex_unlock(&g_mu);
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    /* The decoder thread may sit in a read that never returns, so the queue is not drained to apply a quit. Raised
+     * here, after admission, a late submission to a closed session has no effect, and an eviction below cannot take
+     * the quit back. The command is still queued: its handler stores the same flag. */
+    if (cmd_id == DSD_APP_CMD_QUIT && payload_sz == 0U) {
+        dsd_exitflag_store(1);
     }
     if (ui_cmd_is_coalescible_setter(cmd_id)) {
         struct dsd_app_command* pending = ui_cmd_find_pending_tail_unlocked(cmd_id);
@@ -7953,6 +7977,16 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 }
 
 static int
+ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+#ifdef USE_RADIO
+    if (c->id == DSD_APP_CMD_PPM_DELTA && ui_cmd_radio_unavailable_toast(state, 0)) {
+        return UI_CMD_APPLY_FAILED;
+    }
+#endif
+    return ui_cmd_dispatch(opts, state, c);
+}
+
+static int
 apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
         apply_cmd_basic_a,          apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
@@ -7970,7 +8004,7 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         }
         return UI_CMD_APPLY_UNSUPPORTED;
     }
-    int r = ui_cmd_dispatch(opts, state, c);
+    int r = ui_cmd_dispatch_available(opts, state, c);
     if (r) {
         return r;
     }
@@ -8818,10 +8852,38 @@ dsd_app_commands_pending(void) {
     return pending;
 }
 
+/* The stream notice the next drain shows (dsd_app_stream_notice_post()); DSD_STREAM_NOTICE_NONE for none. One slot: a
+   notice is a fact about the stream now, so a newer one replaces one not yet shown. */
+static atomic_int g_stream_notice = DSD_STREAM_NOTICE_NONE;
+
+void
+dsd_app_stream_notice_post(int kind) {
+    atomic_store(&g_stream_notice, kind);
+}
+
+void
+dsd_app_stream_notice_clear(void) {
+    atomic_store(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
+}
+
+/* Show a posted stream notice as a toast. It is news, not a failure: nothing is latched, and the session goes on. */
+static void
+ui_show_stream_notice(dsd_state* state) {
+    if (!state || atomic_load(&g_stream_notice) == DSD_STREAM_NOTICE_NONE) {
+        return;
+    }
+    const int kind = atomic_exchange(&g_stream_notice, DSD_STREAM_NOTICE_NONE);
+    if (kind == DSD_STREAM_NOTICE_USB_RECOVERED) {
+        ui_set_toast(state, 5, "%s", "RTL-SDR stopped sending samples; reset and reopened");
+        dsd_telemetry_publish_snapshot(state);
+    }
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
+    ui_show_stream_notice(state);
     for (;;) {
         /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between
            two commands, and a switch between analog kinds or onto the monitor keeps the baseline of one still armed

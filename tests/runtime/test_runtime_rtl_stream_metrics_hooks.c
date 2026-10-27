@@ -203,7 +203,7 @@ fake_input_level(dsd_input_level_snapshot* out) {
         out->peak_dbfs = -0.5;
         out->clip_pct = 0.0;
         out->sample_count = 4096U;
-        out->updated = 12345;
+        out->updated_ms = 12345U;
     }
     return -9;
 }
@@ -413,7 +413,44 @@ fake_replay_batch(dsd_rtl_stream_replay_batch* out) {
     out->output_count = 512U;
     out->first_index = g_replay_batch_first_index;
     out->center_frequency_hz = 851012500U;
+    out->boundary_seq = 4U;
     return g_replay_batch_result;
+}
+
+static int g_gap_seq_calls;
+
+static uint64_t
+fake_discontinuity_seq(void) {
+    ++g_gap_seq_calls;
+    return 5U;
+}
+
+/* An unchanged stream count never needs a replay tag. Once it moves, the batch the reader actually consumed decides
+ * where the gap belongs; a live read has no batch and takes the stream's count. */
+static void
+test_read_discontinuity_seq(void) {
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    uint64_t seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(7U);
+    assert(seq == 0U);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.discontinuity_seq = fake_discontinuity_seq;
+    hooks.replay_batch = fake_replay_batch;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_gap_seq_calls = 0;
+    g_replay_batch_calls = 0;
+    g_replay_batch_result = 1;
+    seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(5U);
+    assert(seq == 5U && g_gap_seq_calls == 1 && g_replay_batch_calls == 0);
+    seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(3U);
+    assert(seq == 4U && g_gap_seq_calls == 2 && g_replay_batch_calls == 1);
+    seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(4U);
+    assert(seq == 4U && g_gap_seq_calls == 3 && g_replay_batch_calls == 2);
+    g_replay_batch_result = 0;
+    seq = dsd_rtl_stream_metrics_hook_read_discontinuity_seq(4U);
+    assert(seq == 5U && g_gap_seq_calls == 4 && g_replay_batch_calls == 3);
+    g_replay_batch_calls = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
 /* The I/Q replay batch the decoder's last read took its samples from: none with no RTL front end installed, forwarded
@@ -436,7 +473,7 @@ test_replay_batch_hook(void) {
     assert(batch.symbol_rate_hz == 4800 && batch.levels == 4);
     assert(batch.media_start_ns == 9000000000ULL && batch.media_duration_ns == 21333333ULL);
     assert(batch.output_count == 512U && batch.first_index == 0U);
-    assert(batch.center_frequency_hz == 851012500U);
+    assert(batch.center_frequency_hz == 851012500U && batch.boundary_seq == 4U);
     const int results[] = {0, -1, 2};
     for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
         g_replay_batch_result = results[i];
@@ -445,6 +482,7 @@ test_replay_batch_hook(void) {
         assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
         assert(batch.media_start_ns == 0U && batch.media_duration_ns == 0U);
         assert(batch.output_count == 0U && batch.first_index == 0U && batch.center_frequency_hz == 0U);
+        assert(batch.boundary_seq == 0U);
     }
     /* A NULL output never reaches the hook. */
     assert(dsd_rtl_stream_metrics_hook_replay_batch(NULL) == 0);
@@ -509,6 +547,7 @@ main(void) {
     test_digital_family_landing_hook();
     test_replay_batch_hook();
     test_replay_advance_decode_clock();
+    test_read_discontinuity_seq();
 
     // Default behavior with hooks unset.
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -532,7 +571,7 @@ main(void) {
         .peak_dbfs = 0.0,
         .clip_pct = 50.0,
         .sample_count = 99U,
-        .updated = 77,
+        .updated_ms = 77U,
     };
     assert(dsd_rtl_stream_metrics_hook_input_level(&input_level) == 0);
     assert(input_level.status == DSD_INPUT_LEVEL_UNKNOWN);
@@ -645,7 +684,7 @@ main(void) {
     assert(input_level.status == DSD_INPUT_LEVEL_HOT);
     assert(input_level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(input_level.sample_count == 4096U);
-    assert(input_level.updated == 12345);
+    assert(input_level.updated_ms == 12345U);
 
     assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == 8);
     assert(g_apply_demod_profile_calls == 1);

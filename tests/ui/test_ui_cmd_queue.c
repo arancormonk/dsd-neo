@@ -7,6 +7,7 @@
  * Deterministic queue-level contracts for app-control commands.
  */
 
+#include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
@@ -43,6 +44,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/io/udp_input.h>
@@ -65,6 +67,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
@@ -75,6 +78,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -191,6 +195,11 @@ int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
+#ifdef USE_RADIO
+int __real_rtl_stream_set_bias_tee(int on);
+int __wrap_rtl_stream_set_bias_tee(int on);
+int __wrap_rtl_stream_control_unavailable(void);
+#endif
 void __real_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                                    const uint8_t* reliab98);
 void __wrap_dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
@@ -293,6 +302,34 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
     }
     return __real_dsd_audio_reconfigure_output_for_input_policy(opts);
 }
+
+#ifdef USE_RADIO
+/* Why the receiver cannot take a control (issue #518 D6), as the running stream would say; none unless a test
+ * sets it. */
+static int g_control_unavailable = 0;
+static int g_control_unavailable_once = 0;
+/* A live bias tee change's result while armed; the real stream's otherwise. */
+static int g_bias_tee_armed = 0;
+static int g_bias_tee_result = 0;
+
+int
+__wrap_rtl_stream_control_unavailable(void) {
+    const int result = g_control_unavailable;
+    if (g_control_unavailable_once) {
+        g_control_unavailable = 0;
+        g_control_unavailable_once = 0;
+    }
+    return result;
+}
+
+int
+__wrap_rtl_stream_set_bias_tee(int on) {
+    if (g_bias_tee_armed) {
+        return g_bias_tee_result;
+    }
+    return __real_rtl_stream_set_bias_tee(on);
+}
+#endif
 
 int
 __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
@@ -7173,6 +7210,273 @@ test_session_queue_cancellation(void) {
     return rc;
 }
 
+#if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) && defined(USE_RADIO)
+/* issue #518 D6: a radio control the receiver itself refused, because a USB RTL-SDR is being reset and reopened
+   (RTL_DEVICE_EBUSY) or an rtl_tcp input has no connection to its server (RTL_DEVICE_ENOTCONN), says so in its toast:
+   the bias tee from the device's own result, a frequency from the stream's state (a tune's result does not carry it),
+   and a PPM correction, which applies later on the controller, is refused up front. */
+static int
+test_radio_control_unavailable_toasts(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    init_test_context(opts, state);
+    int rc = 0;
+    static const char k_resetting[] = "Failed: the RTL-SDR is being reset; try again in a moment";
+    static const char k_not_connected[] = "Failed: the rtl_tcp server is not connected";
+    static int fake_rtl_context = 0;
+    state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+
+    g_bias_tee_armed = 1;
+    g_bias_tee_result = RTL_DEVICE_EBUSY;
+    rc |= expect_true("bias tee during a reset queued", post_i32(DSD_APP_CMD_RTL_SET_BIAS_TEE, 1) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("bias tee during a reset toast", state->ui_msg, k_resetting);
+    rc |= expect_int("refused bias tee leaves configuration unchanged", opts->rtl_bias_tee, 0);
+    g_bias_tee_result = RTL_DEVICE_ENOTCONN;
+    rc |= expect_true("bias tee without a server queued", post_i32(DSD_APP_CMD_RTL_SET_BIAS_TEE, 1) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("bias tee without a server toast", state->ui_msg, k_not_connected);
+    g_bias_tee_result = -1;
+    rc |= expect_true("bias tee failing otherwise queued", post_i32(DSD_APP_CMD_RTL_SET_BIAS_TEE, 1) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("bias tee failing otherwise toast", state->ui_msg, "Failed: RTL bias tee update");
+    g_bias_tee_armed = 0;
+
+    g_io_control_tune_result = RTL_STREAM_TUNE_FAILED;
+    g_control_unavailable = RTL_DEVICE_EBUSY;
+    rc |= expect_true("tune during a reset queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("tune during a reset toast", state->ui_msg, k_resetting);
+    g_control_unavailable = RTL_DEVICE_ENOTCONN;
+    rc |= expect_true("tune without a server queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("tune without a server toast", state->ui_msg, k_not_connected);
+    g_control_unavailable = RTL_DEVICE_ENOTCONN;
+    g_control_unavailable_once = 1;
+    rc |= expect_true("tune at reconnect queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("failure reason captured once at reconnect", state->ui_msg, k_not_connected);
+    g_control_unavailable = 0;
+    rc |= expect_true("tune failing otherwise queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("tune failing otherwise toast", state->ui_msg, "Failed: RTL frequency -> 851012500 Hz");
+    g_io_control_tune_result = RTL_STREAM_TUNE_OK;
+
+    const int ppm_before = opts->rtlsdr_ppm_error;
+    g_control_unavailable = RTL_DEVICE_ENOTCONN;
+    rc |= expect_true("ppm without a server queued", post_i32(DSD_APP_CMD_RTL_SET_PPM, ppm_before + 3) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("ppm without a server toast", state->ui_msg, k_not_connected);
+    rc |= expect_int("ppm without a server changes nothing", opts->rtlsdr_ppm_error, ppm_before);
+    g_control_unavailable = RTL_DEVICE_EBUSY;
+    rc |= expect_true("ppm during a reset queued", post_i32(DSD_APP_CMD_RTL_SET_PPM, ppm_before + 3) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("ppm during a reset toast", state->ui_msg, k_resetting);
+    rc |= expect_int("ppm during a reset changes nothing", opts->rtlsdr_ppm_error, ppm_before);
+    rc |= expect_true("ppm delta during reset queued", post_i32(DSD_APP_CMD_PPM_DELTA, 1) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("ppm delta during reset toast", state->ui_msg, k_resetting);
+    rc |= expect_int("ppm delta during reset changes nothing", opts->rtlsdr_ppm_error, ppm_before);
+    const int old_input = opts->audio_in_type;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    const int gain_before = opts->rtl_gain_value;
+    g_control_unavailable = RTL_DEVICE_ENOTCONN;
+    rc |= expect_true("gain without server queued", post_i32(DSD_APP_CMD_RTL_SET_GAIN, 29) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("gain without server toast", state->ui_msg, k_not_connected);
+    rc |= expect_int("gain without server changes nothing", opts->rtl_gain_value, gain_before);
+    opts->audio_in_type = old_input;
+    g_control_unavailable = 0;
+
+    state->rtl_ctx = NULL;
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    DSD_SECURE_ZERO(state, sizeof(*state));
+    free(state);
+    free(opts);
+    return rc;
+}
+#endif
+
+/* B2: a decoder blocked in a read never drains the queue, so an accepted QUIT raises the exit flag at submit. A
+   submission the closed session refuses has no such side effect, and an eviction cannot take the flag back. */
+static int
+test_quit_takes_effect_at_submit(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    init_test_context(opts, state);
+    int rc = 0;
+
+    dsd_app_frontend_runtime_stop(); // a late submission meets a closed session
+    dsd_exitflag_store(0);
+    rc |= expect_int("closed session rejects quit", dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("rejected quit leaves the flag down", (int)dsd_exitflag_load(), 0);
+
+    dsd_app_frontend_runtime_start(opts, state);
+    const int invalid_payload = 1;
+    (void)dsd_app_command_submit(DSD_APP_CMD_QUIT, &invalid_payload, sizeof invalid_payload);
+    rc |= expect_int("quit with a payload leaves the flag down", (int)dsd_exitflag_load(), 0);
+    dsd_exitflag_store(0);
+    (void)dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, sizeof invalid_payload);
+    rc |= expect_int("truncated quit leaves the flag down", (int)dsd_exitflag_load(), 0);
+    dsd_exitflag_store(0);
+    rc |= expect_true("quit queued", dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0) > 0);
+    rc |= expect_int("accepted quit raises the flag before any drain", (int)dsd_exitflag_load(), 1);
+    dsd_app_frontend_runtime_stop();
+
+    /* The flood evicts the QUIT; the flag raised at its submit is what keeps the exit. */
+    dsd_exitflag_store(0);
+    dsd_app_frontend_runtime_start(opts, state);
+    (void)dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0);
+    for (int i = 0; i < 200; i++) {
+        (void)dsd_app_command_submit(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0);
+    }
+    rc |= expect_int("evicted quit still exits", (int)dsd_exitflag_load(), 1);
+    dsd_app_frontend_runtime_stop();
+
+    dsd_exitflag_store(0);
+    freeState(state);
+    DSD_SECURE_ZERO(state, sizeof(*state));
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* A stream notice (a stalled RTL-SDR reset and reopened under the running stream, issue #518 B1) reaches the decoder at
+   its next drain as a toast and nothing else: no failure is latched and the session keeps running. It is shown once,
+   and one the session did not get to show is not the next session's. */
+static int
+test_notice_toast_without_failure_latch(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    init_test_context(opts, state);
+    int rc = 0;
+    dsd_input_failure_clear();
+    dsd_exitflag_store(0);
+    state->ui_msg[0] = '\0';
+
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    rc |= expect_int("a notice is no command", dsd_app_drain_cmds(opts, state), 0);
+    rc |= expect_str("notice toast", state->ui_msg, "RTL-SDR stopped sending samples; reset and reopened");
+    rc |= expect_true("notice toast shown for a while", state->ui_msg_expire > dsd_realtime_time());
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    rc |= expect_int("no failure latched", failure.kind, DSD_INPUT_FAILURE_NONE);
+    rc |= expect_int("no receiver ending", dsd_input_failure_receiver_ended(), 0);
+    rc |= expect_int("the session runs on", (int)dsd_exitflag_load(), 0);
+
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("a notice is shown once", state->ui_msg, "");
+
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    dsd_app_frontend_runtime_stop();
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    dsd_app_frontend_runtime_start(opts, state);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("a notice never reaches the next session", state->ui_msg, "");
+    dsd_app_frontend_runtime_stop();
+
+    freeState(state);
+    DSD_SECURE_ZERO(state, sizeof(*state));
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* A post that took the session's sink and was then held off the CPU, delivering only after the session ended: the
+   sink below stands in for app-control's (dsd_app_stream_notice_post()) and pauses where a preempted post would, after
+   it took the sink and before the notice lands. Its notice belongs to the ended session and never reaches the next. */
+struct stale_notice {
+    atomic_int posting;
+    atomic_int release;
+    atomic_int stopped;
+};
+
+static struct stale_notice g_stale_notice;
+
+static void
+paused_notice_sink(int kind) {
+    atomic_store(&g_stale_notice.posting, 1);
+    while (!atomic_load(&g_stale_notice.release)) {
+        dsd_sleep_ms(1);
+    }
+    dsd_app_stream_notice_post(kind);
+}
+
+static DSD_THREAD_RETURN_TYPE
+stale_notice_post(void* opaque) {
+    (void)opaque;
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    DSD_THREAD_RETURN;
+}
+
+static DSD_THREAD_RETURN_TYPE
+stale_notice_stop(void* opaque) {
+    (void)opaque;
+    dsd_app_frontend_runtime_stop();
+    atomic_store(&g_stale_notice.stopped, 1);
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_stale_notice_post_stays_in_its_session(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    init_test_context(opts, state);
+    int rc = 0;
+    atomic_init(&g_stale_notice.posting, 0);
+    atomic_init(&g_stale_notice.release, 0);
+    atomic_init(&g_stale_notice.stopped, 0);
+    dsd_runtime_stream_notice_set(paused_notice_sink);
+    dsd_thread_t poster;
+    dsd_thread_t stopper;
+    rc |= expect_true("poster started", dsd_thread_create(&poster, stale_notice_post, NULL) == 0);
+    for (int i = 0; i < 5000 && !atomic_load(&g_stale_notice.posting); ++i) {
+        dsd_sleep_ms(1);
+    }
+    rc |= expect_true("the post holds the sink", atomic_load(&g_stale_notice.posting));
+    /* The session ends while the post is held. A stop that does not wait for it is let finish before the post goes on;
+       one that waits is given a while, then the post goes on and the stop finishes after it. */
+    rc |= expect_true("stopper started", dsd_thread_create(&stopper, stale_notice_stop, NULL) == 0);
+    for (int i = 0; i < 300 && !atomic_load(&g_stale_notice.stopped); ++i) {
+        dsd_sleep_ms(1);
+    }
+    atomic_store(&g_stale_notice.release, 1);
+    dsd_thread_join(poster);
+    dsd_thread_join(stopper);
+
+    dsd_app_frontend_runtime_start(opts, state);
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("a notice posted for the ended session never reaches the next", state->ui_msg, "");
+
+    /* The new session's own notice still shows, once. */
+    dsd_runtime_stream_notice_post(DSD_STREAM_NOTICE_USB_RECOVERED);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |=
+        expect_str("the session's notice toast", state->ui_msg, "RTL-SDR stopped sending samples; reset and reopened");
+    state->ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("shown once", state->ui_msg, "");
+    dsd_app_frontend_runtime_stop();
+
+    freeState(state);
+    DSD_SECURE_ZERO(state, sizeof(*state));
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
    command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks); a command that mixes both
    is judged by its payload. Asked through the hook the session installs, over the real queue. */
@@ -7233,6 +7537,7 @@ test_commands_that_need_the_frame_loop(void) {
         }
         /* The session's stop discards the queue unapplied. */
         dsd_app_frontend_runtime_stop();
+        dsd_exitflag_store(0); // an accepted quit raises it at submit
         rc |= expect_int("stopped session needs no frame loop", dsd_runtime_controls_need_frame_loop(), 0);
     }
     freeState(&state);
@@ -19946,6 +20251,12 @@ main(void) {
     }
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
+    rc |= test_quit_takes_effect_at_submit();
+#if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) && defined(USE_RADIO)
+    rc |= test_radio_control_unavailable_toasts();
+#endif
+    rc |= test_notice_toast_without_failure_latch();
+    rc |= test_stale_notice_post_stays_in_its_session();
     rc |= test_commands_that_need_the_frame_loop();
     rc |= test_scan_row_edit_commands_without_a_scan();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)

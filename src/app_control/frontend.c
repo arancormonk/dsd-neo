@@ -5,9 +5,10 @@
 
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -107,6 +108,32 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->snr_gfsk_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
 }
 
+/*
+ * The receiver's level from the stream's own copy, which the producer publishes with every block it delivers (B6).
+ * The decoder's copy (state->input_level) refreshes only every 64 decoded symbols, so it holds its last reading
+ * whenever the decoder stops, and the stream's copy holds it when the receiver stops: only the measurement's age says
+ * which. The classification is the decoder's own, against the user's threshold, so the row and the warnings agree.
+ */
+int
+dsd_app_frontend_input_level(const dsd_opts* opts, dsd_input_level_snapshot* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!frontend_input_is_radio(opts)) {
+        return -1;
+    }
+    dsd_input_level_snapshot level;
+    DSD_MEMSET(&level, 0, sizeof(level));
+    if (dsd_rtl_stream_metrics_hook_input_level(&level) != 0
+        || dsd_input_level_is_stale(&level, dsd_realtime_mono_ms())) {
+        return 0;
+    }
+    dsd_input_level_classify(&level, opts->input_warn_db);
+    *out = level;
+    return 1;
+}
+
 static void
 frontend_metrics_add_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
     if ((snr_fallbacks & DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE) != 0u && !frontend_snr_value_is_valid(out->snr_c4fm_db)) {
@@ -122,8 +149,14 @@ frontend_metrics_add_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_f
 }
 
 #ifdef USE_RADIO
+/*
+ * Every reading here is a value the stream published (B15, B18): frontends poll from their own threads while the
+ * decoder thread soft-stops the stream or replaces the input, which frees the device, the stream internals and the
+ * stream context. A snapshot's state->rtl_ctx is a copy of that pointer, never dereferenced here; the output rate is
+ * the metrics hook's (frontend_metrics_from_runtime_hooks()).
+ */
 static void
-frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
+frontend_metrics_from_radio(const dsd_opts* opts, dsd_frontend_metrics* out) {
     int iq_dc_k = 0;
     out->iq_balance = rtl_stream_get_iq_balance();
     out->iq_dc_enabled = rtl_stream_get_iq_dc(&iq_dc_k);
@@ -179,9 +212,6 @@ frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_fr
         out->decode_health.p25p2_sacch_err = health.p25p2_sacch_err;
         out->decode_health.p25p2_voice_err = health.p25p2_voice_err;
     }
-    if (state && state->rtl_ctx) {
-        out->output_rate_hz = rtl_stream_output_rate(state->rtl_ctx);
-    }
 }
 #endif
 
@@ -200,10 +230,9 @@ frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_
     }
     frontend_metrics_from_runtime_hooks(out);
 #ifdef USE_RADIO
-    frontend_metrics_from_radio(opts, state, out);
-#else
-    (void)state;
+    frontend_metrics_from_radio(opts, out);
 #endif
+    (void)state;
     return 0;
 }
 

@@ -55,7 +55,10 @@ endif()
 # is here because its bounds must round like decode_clock.c, which divides
 # ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
 # audio2 test because its mono-mixer stub divides by a slot count, which Clang
-# turns into an approximate reciprocal under fast-math.
+# turns into an approximate reciprocal under fast-math. Production sources that
+# src/runtime builds with IEEE semantics keep them when a test compiles them
+# directly: a source property set there does not reach targets in this
+# directory.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         core/test_core_audio2_helpers.c
@@ -84,6 +87,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
@@ -115,6 +120,8 @@ elseif(MSVC)
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
@@ -2575,6 +2582,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
@@ -4854,6 +4862,9 @@ add_executable(
     dsd-neo_test_app_control_frontend_metrics
     ui/test_ui_frontend_metrics.c
     ${PROJECT_SOURCE_DIR}/src/app_control/frontend.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
     ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
 )
 target_include_directories(
@@ -5239,6 +5250,31 @@ target_link_libraries(
 add_test(
     NAME RUNTIME_RTL_STREAM_METRICS_HOOKS
     COMMAND dsd-neo_test_runtime_rtl_stream_metrics_hooks
+)
+
+add_executable(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    runtime/test_runtime_stream_notice_init_failure.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/stream_notice_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    PRIVATE
+        dsd_mutex_init=dsd_test_notice_mutex_init
+        dsd_mutex_lock=dsd_test_notice_mutex_lock
+        dsd_mutex_unlock=dsd_test_notice_mutex_unlock
+)
+target_link_libraries(
+    dsd-neo_test_runtime_stream_notice_init_failure
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_STREAM_NOTICE_INIT_FAILURE
+    COMMAND dsd-neo_test_runtime_stream_notice_init_failure
 )
 
 add_executable(
@@ -6957,6 +6993,32 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_INPUT_BOUNDARY
         COMMAND dsd-neo_test_engine_input_boundary
     )
+    # The engine loop's side of a gap in the radio stream (issue #518 D5): a frame it cuts
+    # unwinds, and the stream-gap carrier boundary resets the decoding and keeps the carrier.
+    # The gap reaches the decoder through the RTL symbol reader, which only a radio build has.
+    if(DSD_HAS_RADIO)
+        add_executable(
+            dsd-neo_test_engine_stream_gap
+            engine/test_engine_stream_gap.c
+        )
+        target_include_directories(
+            dsd-neo_test_engine_stream_gap
+            PRIVATE ${PROJECT_SOURCE_DIR}/include
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_stream_gap
+            PRIVATE
+                "-Wl,--wrap=getFrameSync"
+                "-Wl,--wrap=dsd_engine_channel_scan_pending"
+                "-Wl,--wrap=dmr_confidence_reset"
+                "-Wl,--start-group"
+                dsd-neo_engine
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+        add_test(NAME ENGINE_STREAM_GAP COMMAND dsd-neo_test_engine_stream_gap)
+    endif()
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick
         engine/test_engine_synced_trunk_scan_tick.c
@@ -7679,6 +7741,20 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
             "LINKER:--wrap=SetScanRowModulation"
             "LINKER:--wrap=SetModulationKind"
+    )
+endif()
+# The receiver's refusals (issue #518 D6) reach the command toasts through the stream; radio builds only.
+if(
+    DSD_HAS_RADIO
+    AND NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+)
+    target_link_options(
+        dsd-neo_test_app_command_queue
+        PRIVATE
+            "LINKER:--wrap=rtl_stream_control_unavailable"
+            "LINKER:--wrap=rtl_stream_set_bias_tee"
     )
 endif()
 if(
@@ -10570,6 +10646,50 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_rtl_symbol_replay_clock
     )
 
+    # Issue #518 (D5): a gap in the radio stream reaches the symbol reader in order,
+    # through the symbol cache and the one-sample reader, live and replayed.
+    add_executable(
+        dsd-neo_test_dsp_symbol_stream_gap
+        dsp/test_symbol_stream_gap.c
+        test_support/frame_sync_dsp_stubs.c
+    )
+    target_include_directories(
+        dsd-neo_test_dsp_symbol_stream_gap
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_dsp_symbol_stream_gap
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME DSP_SYMBOL_STREAM_GAP
+        COMMAND dsd-neo_test_dsp_symbol_stream_gap
+    )
+
+    # Issue #518 (D4): a live RTL read that gave way to a queued command (no stream)
+    # reaches the symbol readers as a sticky yield, never as a failure.
+    add_executable(
+        dsd-neo_test_dsp_symbol_rtl_yield
+        dsp/test_symbol_rtl_yield.c
+        test_support/frame_sync_dsp_stubs.c
+    )
+    target_include_directories(
+        dsd-neo_test_dsp_symbol_rtl_yield
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_dsp_symbol_rtl_yield
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME DSP_SYMBOL_RTL_YIELD
+        COMMAND dsd-neo_test_dsp_symbol_rtl_yield
+    )
+
     add_executable(
         dsd-neo_test_frame_sync_p25p2_rtl
         dsp/test_frame_sync_p25p2_rtl.c
@@ -12551,6 +12671,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=open_wav_file"
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_output_health_get"
+            "-Wl,--wrap=dsd_analog_audio_process_s"
+            "-Wl,--wrap=dsd_rate_converter_clear"
     )
     add_test(
         NAME EDACS_GRANT_TUNE_MATRIX
@@ -13959,6 +14081,54 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_retune_prepare
     )
 
+    add_executable(
+        dsd-neo_test_io_rtl_control_edges
+        io/test_io_rtl_control_edges.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_control_edges
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_control_edges
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_control_edges
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_CONTROL_EDGES
+        COMMAND dsd-neo_test_io_rtl_control_edges
+    )
+
+    # RTL-SDR hardware offset tuning from the real sample rate, the capture centre it gives,
+    # and the tuner bandwidth it needs at start and on retunes (B11, B14).
+    add_executable(
+        dsd-neo_test_io_rtl_offset_tuning
+        io/test_io_rtl_offset_tuning.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_offset_tuning
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_offset_tuning
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_offset_tuning
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_OFFSET_TUNING
+        COMMAND dsd-neo_test_io_rtl_offset_tuning
+    )
+
     # The auto squelch's plumbing in the RTL stream (issue #518 follow-up): setting, context,
     # flags through the output ring with the samples, status.
     add_executable(
@@ -14033,6 +14203,45 @@ if(DSD_HAS_RADIO)
         )
     endif()
     add_test(NAME IO_RTL_ANALOG_OPEN COMMAND dsd-neo_test_io_rtl_analog_open)
+
+    # Frontend telemetry polled from another thread across soft stops and input replacements (B15, B18): the
+    # frontend getter in app-control over the real stream, with the engine's metrics hooks installed.
+    add_executable(
+        dsd-neo_test_io_rtl_frontend_telemetry
+        io/test_io_rtl_frontend_telemetry.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_frontend_telemetry
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_io_rtl_frontend_telemetry
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_engine
+                dsd-neo_io_radio
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                dsd-neo_app_control
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_io_rtl_frontend_telemetry
+            PRIVATE
+                dsd-neo_engine
+                dsd-neo_app_control
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_FRONTEND_TELEMETRY
+        COMMAND dsd-neo_test_io_rtl_frontend_telemetry
+    )
+    set_tests_properties(IO_RTL_FRONTEND_TELEMETRY PROPERTIES TIMEOUT 120)
 
     add_executable(
         dsd-neo_test_io_rtl_retune_mute_window
@@ -14283,7 +14492,9 @@ if(DSD_HAS_RADIO)
         )
         target_link_options(
             dsd-neo_test_io_rtl_preopened_fd
-            PRIVATE "LINKER:--wrap=rtlsdr_open"
+            PRIVATE
+                "LINKER:--wrap=rtlsdr_open"
+                "LINKER:--wrap=rtlsdr_get_device_count"
         )
     endif()
     add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
@@ -14333,6 +14544,197 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_USB_PROGRESS_MONITOR PROPERTIES TIMEOUT 120)
 
+    # A SoapySDR receiver that stops delivering, or a reader that ends by itself,
+    # ends the session and is reported once; a stop is silent. The device's reader
+    # runs against a stand-in driver. Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_soapy_stream_loss
+        io/test_io_soapy_stream_loss.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_soapy_stream_loss
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_soapy_stream_loss
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_SOAPY_STREAM_LOSS
+        COMMAND dsd-neo_test_io_soapy_stream_loss
+    )
+    set_tests_properties(IO_SOAPY_STREAM_LOSS PROPERTIES TIMEOUT 120)
+
+    # The SoapySDR reader's CS16 conversion, grouped fs/4 rotation included, bit for
+    # bit against the per-sample rotation. Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_soapy_cs16_copy
+        io/test_io_soapy_cs16_copy.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_soapy_cs16_copy
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_soapy_cs16_copy
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_SOAPY_CS16_COPY COMMAND dsd-neo_test_io_soapy_cs16_copy)
+
+    # The narrow spectrum's frame buffers: the average carries across buffers, and a
+    # frame folded while readers hold every spare buffer reaches the next one.
+    add_executable(
+        dsd-neo_test_io_rtl_spectrum_frames
+        io/test_io_rtl_spectrum_frames.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_spectrum_frames
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_spectrum_frames
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_SPECTRUM_FRAMES
+        COMMAND dsd-neo_test_io_rtl_spectrum_frames
+    )
+
+    # Which USB device an RTL-SDR runs on and a reset of only that device, over a
+    # fake device list. Without libusb the unit is a stub and the test checks that;
+    # with it, the stub is also built from the same source and checked on its own.
+    add_executable(
+        dsd-neo_test_io_rtl_usb_identity
+        io/test_io_rtl_usb_identity.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_identity
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_identity
+        PRIVATE
+            DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+            $<$<BOOL:${DSD_HAVE_LIBUSB}>:DSD_HAVE_LIBUSB>
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_identity
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_IDENTITY COMMAND dsd-neo_test_io_rtl_usb_identity)
+    if(DSD_HAVE_LIBUSB)
+        add_executable(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            io/test_io_rtl_usb_identity.cpp
+            ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_usb_identity.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        )
+        target_link_libraries(
+            dsd-neo_test_io_rtl_usb_identity_stub
+            PRIVATE dsd-neo_runtime dsd-neo_platform dsd-neo_warnings
+        )
+        add_test(
+            NAME IO_RTL_USB_IDENTITY_STUB
+            COMMAND dsd-neo_test_io_rtl_usb_identity_stub
+        )
+    endif()
+
+    # Resetting and reopening a stalled RTL-SDR under a running device, over a fake
+    # dongle and a fake USB device list: the handle swap, the replay of the settings
+    # the dongle took, setters refused during the swap, and a stop at every step.
+    # Without libusb only the "recovery is off" report is checked.
+    add_executable(dsd-neo_test_io_rtl_usb_swap io/test_io_rtl_usb_swap.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_swap
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_swap
+        PRIVATE
+            DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+            $<$<BOOL:${DSD_HAVE_LIBUSB}>:DSD_HAVE_LIBUSB>
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_swap
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_SWAP COMMAND dsd-neo_test_io_rtl_usb_swap)
+    set_tests_properties(IO_RTL_USB_SWAP PROPERTIES TIMEOUT 120)
+
+    # A stalled RTL-SDR recovered in place over the fake dongle: the progress
+    # monitor's requests and budget, and the stream boundary the controller runs
+    # around the reset and reopen. Without libusb only the ineligible case runs.
+    add_executable(
+        dsd-neo_test_io_rtl_usb_recovery
+        io/test_io_rtl_usb_recovery.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_recovery
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_recovery
+        PRIVATE
+            DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+            $<$<BOOL:${DSD_HAVE_LIBUSB}>:DSD_HAVE_LIBUSB>
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_recovery
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_RECOVERY COMMAND dsd-neo_test_io_rtl_usb_recovery)
+    set_tests_properties(IO_RTL_USB_RECOVERY PROPERTIES TIMEOUT 120)
+
+    # rtl_tcp connection handling against a scripted fake rtl_tcp server on loopback:
+    # the exact header parser, bounded and cancellable connects, header reads and
+    # command sends, the reconnect handed to the stream's controller with the last
+    # effective settings and the gain policy replayed, the discard path's I/Q pairing,
+    # commands while the server is gone, and stops at every point of it.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            io/test_io_rtl_tcp_reconnect.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/src/io/radio
+                ${PROJECT_SOURCE_DIR}/tests/test_support
+        )
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        )
+        target_link_libraries(
+            dsd-neo_test_io_rtl_tcp_reconnect
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_io_iq
+                dsd-neo_core
+                dsd-neo_test_support
+                ${LIBS}
+        )
+        add_test(
+            NAME IO_RTL_TCP_RECONNECT
+            COMMAND dsd-neo_test_io_rtl_tcp_reconnect
+        )
+        set_tests_properties(IO_RTL_TCP_RECONNECT PROPERTIES TIMEOUT 180)
+    endif()
+
     # Paced USB ingest benchmark (not a test); run under perf stat.
     add_executable(
         dsd-neo_bench_usb_ingest
@@ -14345,6 +14747,55 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_bench_usb_ingest
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+
+    # The decoder's symbol reads through the production live reader of a running rtl_tcp stream (not a test).
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_bench_rtl_consumer
+            EXCLUDE_FROM_ALL
+            io/bench_rtl_consumer.cpp
+        )
+        target_include_directories(
+            dsd-neo_bench_rtl_consumer
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/engine
+        )
+        if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+            target_link_libraries(
+                dsd-neo_bench_rtl_consumer
+                PRIVATE
+                    "-Wl,--start-group"
+                    dsd-neo_engine
+                    dsd-neo_io_radio
+                    dsd-neo_io_iq
+                    "-Wl,--end-group"
+                    dsd-neo_app_control
+                    dsd-neo_core
+                    ${LIBS}
+            )
+        else()
+            target_link_libraries(
+                dsd-neo_bench_rtl_consumer
+                PRIVATE dsd-neo_engine dsd-neo_app_control dsd-neo_core ${LIBS}
+            )
+        endif()
+    endif()
+
+    # Paced SoapySDR ingest benchmark (not a test); run under perf stat.
+    add_executable(
+        dsd-neo_bench_soapy_ingest
+        EXCLUDE_FROM_ALL
+        io/bench_soapy_ingest.cpp
+    )
+    target_include_directories(
+        dsd-neo_bench_soapy_ingest
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_bench_soapy_ingest
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
 
@@ -14371,7 +14822,9 @@ if(DSD_HAS_RADIO)
         )
         target_link_options(
             dsd-neo_test_io_rtl_run_result
-            PRIVATE "LINKER:--wrap=rtlsdr_open"
+            PRIVATE
+                "LINKER:--wrap=rtlsdr_open"
+                "LINKER:--wrap=rtlsdr_get_device_count"
         )
         add_test(NAME IO_RTL_RUN_RESULT COMMAND dsd-neo_test_io_rtl_run_result)
     endif()

@@ -109,7 +109,7 @@ constexpr float kWbSpecEmaNewWeight = 0.6f;
  */
 void
 wb_fold_into_ema(const float* z, int n) {
-    dsd_io::spectrum_fold_db(z, n, kWbSpecEmaNewWeight, g_wb_ema_valid == 0, g_wb_ema);
+    dsd_io::spectrum_fold_db(z, n, kWbSpecEmaNewWeight, g_wb_ema_valid == 0, g_wb_ema, g_wb_ema);
     g_wb_ema_valid = 1;
 }
 

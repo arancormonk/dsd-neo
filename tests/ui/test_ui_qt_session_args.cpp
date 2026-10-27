@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QList>
 #include <QMap>
+#include <QObject>
 #include <QSettings>
 #include <QString>
 #include <QStringList>

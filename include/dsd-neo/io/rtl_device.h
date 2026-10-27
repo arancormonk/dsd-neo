@@ -16,6 +16,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
 #include <dsd-neo/core/airspy_config.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -148,9 +149,14 @@ uint32_t rtl_device_unplug_owner_grace_ms(void);
 /**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
  *
- * Connects to an rtl_tcp server (default port 1234) and configures the
- * receiver via protocol commands. Sample bytes from the TCP stream are
- * widened and pushed into the same input ring used by the USB backend.
+ * Connects to an rtl_tcp server (default port 1234) and reads its 12-byte header ("RTL0", tuner type, gain count;
+ * nothing follows it but I/Q). The connect and the header read are bounded and give up when the process is asked to
+ * exit. Sample bytes from the TCP stream are widened and pushed into the same input ring used by the USB backend.
+ *
+ * A lost connection is reconnected by the device's reader, which hands the new connection to the stream's controller
+ * through the recovery callback (rtl_device_set_recovery_callback(), rtl_device_tcp_handoff_take()); until the
+ * controller published it (rtl_device_tcp_publish_handoff()) the device has no stream and every setter returns
+ * RTL_DEVICE_ENOTCONN. Without a callback the reader publishes it itself.
  *
  * @param host Remote hostname or IP (e.g., "127.0.0.1").
  * @param port Remote TCP port (e.g., 1234).
@@ -241,6 +247,17 @@ int rtl_device_get_sample_rate(struct rtl_device* dev);
 /**
  * @brief Set tuner gain mode and value.
  *
+ * On USB a gain change is one transaction over the RTL digital AGC, the tuner's gain mode and its gain: a change that
+ * fails part way puts back the gain state the device last took, and when that fails too the gain reads as unknown
+ * (rtl_device_is_auto_gain() -1, no rtl_device_get_tuner_gain() reading) until a later change takes. Test mode, which
+ * shares a register with the digital AGC, stays on through gain changes.
+ *
+ * On rtl_tcp the same policy goes out as one unit of commands: manual gain is digital AGC off (0x08, skipped while test
+ * mode is on), manual mode (0x03) and the gain (0x04); automatic gain is automatic mode and the digital AGC as
+ * configured; test mode (0x07) is asserted again after either. The change is recorded only once every command went
+ * out on the still-published connection; a failed send loses the connection, and its reconnect restores the gain the
+ * server last took.
+ *
  * @param dev RTL-SDR device handle.
  * @param gain Gain in tenths of dB, or AUTO_GAIN for automatic.
  * @return 0 on success, negative on failure.
@@ -251,14 +268,18 @@ int rtl_device_set_gain(struct rtl_device* dev, int gain);
  * @brief Set tuner gain to the nearest supported value (manual mode).
  *
  * For USB (librtlsdr) backend, queries the list of supported gains and
- * applies the nearest value to the requested target. For rtl_tcp, sends
- * the target value directly and lets the server handle quantization.
+ * applies the nearest value to the requested target; a gain table that
+ * cannot be read is an error and changes nothing. For rtl_tcp, sends
+ * the target value directly as a manual gain change (rtl_device_set_gain()'s policy, digital AGC off) and lets the
+ * server handle quantization.
  *
  * @param dev RTL-SDR device handle.
  * @param target_tenth_db Target gain in tenths of dB (e.g., 180 for 18.0 dB).
+ * @param out_selected_tenth_db Optional: the gain applied, written on success. It may be negative (an E4K's lowest is
+ *        -10, an FC0012's -99), so only the return value says whether the change took.
  * @return 0 on success, negative on failure.
  */
-int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db);
+int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db);
 
 /**
  * @brief Get current tuner gain in tenths of dB as reported by the driver.
@@ -271,7 +292,8 @@ int rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db);
 int rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db);
 
 /**
- * @brief Return 1 if auto-gain is enabled (requested), 0 if manual.
+ * @brief Return 1 if auto-gain is enabled (requested), 0 if manual, -1 with no device or, on USB, while a failed gain
+ * change left the gain unknown.
  */
 int rtl_device_is_auto_gain(const struct rtl_device* dev);
 
@@ -315,12 +337,38 @@ int rtl_device_set_direct_sampling(struct rtl_device* dev, int on);
 int rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on);
 
 /**
+ * @brief Report whether hardware offset tuning took on the device.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return 1 when it took, 0 when it is off or was refused.
+ */
+int rtl_device_get_offset_tuning(const struct rtl_device* dev);
+
+/**
+ * @brief Report how far librtlsdr displaces the LO while hardware offset tuning is on.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return The offset in Hz, or 0 when offset tuning did not take or the backend does not report it.
+ */
+uint32_t rtl_device_get_offset_tuning_hz(const struct rtl_device* dev);
+
+/**
  * @brief Set tuner IF bandwidth if supported by the driver.
  * @param dev RTL-SDR device handle.
  * @param bw_hz Target bandwidth in Hz (e.g., 200000).
  * @return 0 on success, negative on failure.
  */
 int rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz);
+
+/**
+ * @brief The tuner bandwidth to request while hardware offset tuning may be active.
+ *
+ * @param wanted_hz Bandwidth the configuration asks for (0 = driver automatic).
+ * @param offset_active Whether hardware offset tuning is active.
+ * @param offs_freq_hz LO offset while it is active (rtl_device_get_offset_tuning_hz()).
+ * @return @p wanted_hz, or at least 2 * @p offs_freq_hz while offset tuning is active.
+ */
+uint32_t rtl_offset_aware_bandwidth_hz(uint32_t wanted_hz, int offset_active, uint32_t offs_freq_hz);
 
 /**
  * @brief Reset device buffer.
@@ -342,10 +390,163 @@ int rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len);
 /**
  * @brief Stop asynchronous reading and join the device thread.
  *
+ * On a USB device it first latches the stop (whether or not a reader runs), so a recovery in progress gives up and
+ * no reader starts afterwards (rtl_device_usb_resume_reader()); it then waits for that recovery to return.
+ *
  * @param dev RTL-SDR device handle.
  * @return 0 on success, negative on failure.
  */
 int rtl_device_stop_async(struct rtl_device* dev);
+
+/** A USB setter's result while the dongle is being reset and reopened (rtl_device_usb_recover_handle()): nothing was
+ * changed, and the setting is not remembered. */
+#define RTL_DEVICE_EBUSY    (-16)
+
+/** An rtl_tcp setter's result while the device has no published connection to its server (it was lost and is being
+ * reconnected), or when the connection the command went out on was lost or replaced before it took: nothing was
+ * recorded, so a reconnect does not replay it. */
+#define RTL_DEVICE_ENOTCONN (-107)
+
+/**
+ * @brief Whether a USB device can be reset and reopened when it stops delivering samples.
+ *
+ * Decided at open: the device's USB port was identified uniquely (no other device carries its manufacturer, product
+ * and serial strings, every candidate could be read, the build has libusb) and the opened handle carries them. When
+ * not, the open logged "RTL-SDR: stall recovery is off for this receiver: <reason>".
+ *
+ * @return 1 when eligible, 0 otherwise (including every non-USB device).
+ */
+int rtl_device_usb_recovery_eligible(const struct rtl_device* dev);
+
+/**
+ * @brief Reset and reopen a stalled USB dongle in place, and restore its settings.
+ *
+ * Stops the reader (its return is silent) and joins it, retires and closes the librtlsdr handle, resets the device's
+ * USB port, finds it again (exactly one device with its strings, or the recovery fails before any open and recovery
+ * stays off), reopens it, checks the reopened handle is the same device and replays the settings the
+ * dongle had taken, in order: crystal, direct sampling, frequency, sample rate, offset tuning, tuner bandwidth, PPM,
+ * frequency, gain (with test mode and digital AGC), IF gains, bias tee; then resets the FIFO. A control that never
+ * took is left at the fresh dongle's default; one that took and cannot be restored fails the recovery. Only then is
+ * the new handle published. The reader is not restarted (rtl_device_usb_resume_reader()). While it runs, setters
+ * return RTL_DEVICE_EBUSY and change nothing, and getters report no reading once the old handle is retired.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param why Receives the reason on failure (may be NULL).
+ * @param why_size Capacity of @p why.
+ * @return 0 on success; -ECANCELED when a stop came first (silent); -ENOTSUP when the device is not eligible
+ *         (nothing touched); another negative code on failure, with the device left without a handle.
+ */
+int rtl_device_usb_recover_handle(struct rtl_device* dev, char* why, size_t why_size);
+
+/**
+ * @brief Restart the USB reader after a successful recovery, unless a stop came first.
+ *
+ * Records the progress count as the restarted reader's baseline and bumps the progress monitor's rearm sequence
+ * before the reader thread starts.
+ *
+ * @return 0 when the reader started; -ECANCELED when the device was stopped; another negative code on failure.
+ */
+int rtl_device_usb_resume_reader(struct rtl_device* dev);
+
+/**
+ * @brief Asks a stream's controller to recover the device's stalled receiver; called on the progress monitor's thread.
+ *
+ * It only queues the work: the controller takes the request (rtl_device_usb_recovery_take()), runs the stream boundary
+ * and reports its result (rtl_device_usb_recovery_finish()).
+ */
+typedef void (*rtl_device_recovery_cb)(void* ctx);
+
+/**
+ * @brief Register (or, with NULL, clear) the stream's recovery callback.
+ *
+ * The progress monitor of an eligible USB receiver (rtl_device_usb_recovery_eligible()) posts a recovery request
+ * through it once the receiver has sent no samples for 5 s, at most once per stall and not within 60 s of the previous
+ * request. Without a callback the silence ends the session as before. An rtl_tcp reader posts through it each
+ * reconnected connection it hands to the controller (rtl_device_tcp_handoff_take()). Set before the stream starts and
+ * clear after it stopped.
+ */
+void rtl_device_set_recovery_callback(struct rtl_device* dev, rtl_device_recovery_cb cb, void* ctx);
+
+/**
+ * @brief Take the recovery request the progress monitor posted, on the controller's thread.
+ *
+ * Logs that the recovery starts. A request the monitor withdrew (not taken within 2 s; the session then ended) cannot
+ * be taken.
+ *
+ * @return 1 when the caller now owns the recovery and must finish it; 0 when there is nothing to take.
+ */
+int rtl_device_usb_recovery_take(struct rtl_device* dev);
+
+/**
+ * @brief Finish a recovery taken with rtl_device_usb_recovery_take().
+ *
+ * @p rc 0: the receiver was reset, reopened and its reader restarted; the progress monitor watches it afresh, unless
+ * the restarted reader already returned, which ends the session for the receiver as that reader's return would.
+ * -ECANCELED (or any result once the device was stopped): silent. Anything else ends the session for the receiver
+ * as a device failure, with @p why (the step that failed) in the logged cause.
+ *
+ * @return 1 when the stream resumed (the caller tells the decoder), else 0.
+ */
+int rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why);
+
+/**
+ * @brief Take the reconnected rtl_tcp connection the device's reader handed over, on the controller's thread.
+ *
+ * While the hand-off waits, the reader keeps draining the new connection into a discard path, so the server's I/Q from
+ * before the settings are restored builds no backlog. A hand-off a stop cancelled (or the reader withdrew) cannot be
+ * taken.
+ *
+ * @return 1 when the caller now owns the connection and must publish it (rtl_device_tcp_publish_handoff()); 0 when
+ *         there is nothing to take (or @p dev is not an rtl_tcp device).
+ */
+int rtl_device_tcp_handoff_take(struct rtl_device* dev);
+
+/**
+ * @brief Restore the settings the server had taken onto the connection taken with rtl_device_tcp_handoff_take(), then
+ * publish it.
+ *
+ * Replays the effective settings (every control that took, as last taken) with bounded, cancellable sends, applying
+ * the gain policy (digital AGC, test mode) as the setters do; only when every command went out is the connection
+ * published, so setters reach it and rtl_device_has_stream() reports a stream again. The reader keeps discarding until
+ * rtl_device_resume_stream() releases it. On failure the connection is closed and the reader reconnects again.
+ *
+ * @param dev rtl_tcp device.
+ * @param why Receives the reason on failure (may be NULL).
+ * @param why_size Capacity of @p why.
+ * @return 0 when published; -ECANCELED when a stop came first; another negative code when the replay failed.
+ */
+int rtl_device_tcp_publish_handoff(struct rtl_device* dev, char* why, size_t why_size);
+
+/**
+ * @brief Let the device's producer deliver again after a stream boundary (USB: restart the reader,
+ * rtl_device_usb_resume_reader(); rtl_tcp: release the reader from its discard path once the reconnected connection
+ * was published, and wait until it acknowledged: it dropped an odd byte left by the discard, so ingestion resumes on
+ * an I sample, and cleared its carry).
+ *
+ * @return 0 when it delivers again (or has nothing to resume); -ECANCELED when the device was stopped; another
+ *         negative code on failure.
+ */
+int rtl_device_resume_stream(struct rtl_device* dev);
+
+/**
+ * @brief Whether the device has a stream at all (issue #518 D4), as against one that is only delayed.
+ *
+ * A USB receiver has none from the moment its progress monitor asks for a stall recovery until that recovery finished
+ * (rtl_device_usb_recovery_take(), rtl_device_usb_recovery_finish()). rtl_tcp has none from the loss of its connection
+ * until a reconnected one is published (rtl_device_tcp_publish_handoff()). Every other backend reports one.
+ * Safe from any thread.
+ *
+ * @return 1 when the device has a stream, 0 when it has none or @p dev is NULL.
+ */
+int rtl_device_has_stream(const struct rtl_device* dev);
+
+/**
+ * @brief Why the device cannot take a control right now, when it has no stream (rtl_device_has_stream()).
+ *
+ * @return RTL_DEVICE_EBUSY for a USB receiver being reset and reopened, RTL_DEVICE_ENOTCONN for rtl_tcp without a
+ *         connection to its server, 0 when the device has a stream or @p dev is NULL.
+ */
+int rtl_device_control_unavailable(const struct rtl_device* dev);
 
 /**
  * @brief Mute the incoming raw USB/TCP byte stream for a short duration.
@@ -473,7 +674,9 @@ int rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint3
 /**
  * @brief Enable or disable librtlsdr test mode (ramp signal instead of I/Q samples).
  *
- * Applies to USB (rtlsdr_set_testmode) and rtl_tcp (protocol cmd 0x07).
+ * Applies to USB (rtlsdr_set_testmode) and rtl_tcp (protocol cmd 0x07). Test mode and the RTL digital AGC share demod
+ * register 0x19: test mode wins while on, and turning it off puts the digital AGC back as the gain mode wants it (on
+ * rtl_tcp with command 0x08 after 0x07).
  *
  * @param dev RTL-SDR device handle.
  * @param on Non-zero to enable test mode; zero to disable.

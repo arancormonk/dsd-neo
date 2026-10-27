@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_stream.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <memory>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -20,6 +21,7 @@ struct StubState {
     int read_rc;
     uint32_t output_generation;
     int invalidate_first_read;
+    int last_want_no_stream;
     int open_calls;
     int soft_stop_calls;
     int tune_calls;
@@ -98,11 +100,12 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 
 extern "C" int
 dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
-                       const dsd_state* state) {
+                       const dsd_state* state, int want_no_stream) {
     (void)out;
     (void)flags;
     (void)state;
     g_stub.read_calls++;
+    g_stub.last_want_no_stream = want_no_stream;
     g_stub.last_open_opts = opts;
     g_stub.last_live_opts = live_opts;
     g_stub.last_read_count = count;
@@ -268,6 +271,37 @@ test_tune_and_read_error_propagation(void) {
     return rc;
 }
 
+/* Issue #518 D4: a live read with no stream returns DSD_RTL_READ_YIELD (or, to a reader that asks for it,
+   DSD_RTL_READ_NO_STREAM). The orchestrator carries each as it is, distinct from a failure, without the stale-handoff
+   retry a generation move would otherwise cause, and passes the reader's ask down. */
+static int
+test_read_carries_yield_and_no_stream(void) {
+    reset_stubs();
+    std::unique_ptr<dsd_opts> opts = make_opts();
+    RtlSdrOrchestrator stream(*opts);
+    int rc = expect_int_eq("start succeeds", stream.start(), 0);
+    float samples[4] = {};
+    int got = 77;
+
+    g_stub.read_rc = DSD_RTL_READ_YIELD;
+    g_stub.invalidate_first_read = 1;
+    rc |= expect_int_eq("a yield is carried as it is", stream.read(samples, 4U, got), DSD_RTL_READ_YIELD);
+    rc |= expect_int_eq("a yield is not retried as a stale handoff", g_stub.read_calls, 1);
+    rc |= expect_int_eq("a yield leaves got unchanged", got, 77);
+    rc |= expect_int_eq("a plain read does not ask for no-stream reads", g_stub.last_want_no_stream, 0);
+    g_stub.invalidate_first_read = 0;
+
+    uint8_t flags[4] = {};
+    g_stub.read_rc = DSD_RTL_READ_NO_STREAM;
+    rc |= expect_int_eq("no stream is carried to the reader that asked", stream.read(samples, flags, 4U, got, 1),
+                        DSD_RTL_READ_NO_STREAM);
+    rc |= expect_int_eq("the asking reader's read asks the backend", g_stub.last_want_no_stream, 1);
+
+    g_stub.read_rc = -1;
+    rc |= expect_int_eq("a failure stays -1 for the asking reader", stream.read(samples, flags, 4U, got, 1), -1);
+    return rc;
+}
+
 static int
 test_airspy_start_publishes_actual_rate() {
     reset_stubs();
@@ -289,5 +323,6 @@ main(void) {
     rc |= test_start_stop_and_destructor_lifecycle();
     rc |= test_start_failure_and_prestart_errors();
     rc |= test_tune_and_read_error_propagation();
+    rc |= test_read_carries_yield_and_no_stream();
     return rc ? 1 : 0;
 }

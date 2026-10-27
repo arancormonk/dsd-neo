@@ -18,6 +18,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -96,9 +97,10 @@ remove_fixture_dirs(void) {
 namespace {
 /* An event a capture records (make_capture_with_events()). */
 struct CaptureEvent {
-    uint64_t offset; /* the capture bytes before it */
-    dsd_iq_event_kind kind;
-    uint64_t value; /* a RETUNE's or RESET's channel centre in Hz; a MUTE's omitted bytes */
+    uint64_t offset = 0U; /* the capture bytes before it */
+    dsd_iq_event_kind kind = DSD_IQ_EVENT_RETUNE;
+    uint64_t value = 0U;          /* a RETUNE's or RESET's channel centre in Hz; a MUTE's omitted bytes */
+    const char* reason = nullptr; /* a RETUNE's or RESET's reason; NULL: "frequency", a retune's */
 };
 } // namespace
 
@@ -119,27 +121,28 @@ record_capture_event(dsd_iq_capture_writer* writer, const CaptureEvent& event) {
         ev.center_frequency_hz = event.value;
         ev.capture_center_frequency_hz = event.value + kFs4OffsetHz;
         ev.sample_rate_hz = kCaptureRateHz;
-        DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "frequency");
+        DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", event.reason ? event.reason : "frequency");
     }
     return dsd_iq_capture_record_event(writer, &ev) == DSD_IQ_OK ? 0 : 1;
 }
 
-/* Write @p payload as a cu8 capture with its sidecar and @p events (sorted by offset); @p out_metadata_path receives the
- * sidecar's path. */
-static int
-make_capture_with_events(const std::vector<uint8_t>& payload, const std::vector<CaptureEvent>& events,
-                         char* out_metadata_path, size_t out_metadata_path_size) {
+/* Open a cu8 capture writer in a new fixture directory; @p out_metadata_path receives the sidecar's path. NULL on
+ * failure. */
+static dsd_iq_capture_writer*
+open_capture_writer(char* out_metadata_path, size_t out_metadata_path_size) {
     char temp_dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_determinism")) {
         DSD_FPRINTF(stderr, "FAIL: could not create a fixture directory\n");
-        return 1;
+        return NULL;
     }
     g_fixture_dirs.push_back(temp_dir);
     char data_path[DSD_TEST_PATH_MAX];
     char metadata_path[DSD_TEST_PATH_MAX];
     if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "capture.iq") != 0
-        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "capture.iq.json") != 0) {
-        return 1;
+        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "capture.iq.json") != 0
+        || DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path)
+               >= (int)out_metadata_path_size) {
+        return NULL;
     }
 
     dsd_iq_capture_config cfg;
@@ -166,6 +169,18 @@ make_capture_with_events(const std::vector<uint8_t>& payload, const std::vector<
     char err[256] = {0};
     if (dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)) != DSD_IQ_OK || !writer) {
         DSD_FPRINTF(stderr, "FAIL: could not open the capture writer: %s\n", err[0] ? err : "unknown");
+        return NULL;
+    }
+    return writer;
+}
+
+/* Write @p payload as a cu8 capture with its sidecar and @p events (sorted by offset); @p out_metadata_path receives
+ * the sidecar's path. */
+static int
+make_capture_with_events(const std::vector<uint8_t>& payload, const std::vector<CaptureEvent>& events,
+                         char* out_metadata_path, size_t out_metadata_path_size) {
+    dsd_iq_capture_writer* writer = open_capture_writer(out_metadata_path, out_metadata_path_size);
+    if (!writer) {
         return 1;
     }
     size_t written = 0U;
@@ -186,9 +201,6 @@ make_capture_with_events(const std::vector<uint8_t>& payload, const std::vector<
     dsd_iq_capture_final_stats stats;
     DSD_MEMSET(&stats, 0, sizeof(stats));
     dsd_iq_capture_close(writer, &stats);
-    if (DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
-        return 1;
-    }
     return 0;
 }
 
@@ -2051,6 +2063,189 @@ test_replay_event_boundary_waits_stop_in_bounded_time(void) {
     return rc;
 }
 
+/* ---------------- Stream gaps (issue #518 D5) ---------------- */
+
+/* Whether @p event is a gap on the same carrier the stream records (rtl_stream_note_discontinuity()): a RESET with the
+ * reason a USB recovery or an rtl_tcp reconnect gives it. */
+static int
+event_is_stream_gap(const CaptureEvent& event) {
+    return event.kind == DSD_IQ_EVENT_RESET && event.reason
+           && (std::strcmp(event.reason, "usb_recovery") == 0 || std::strcmp(event.reason, "tcp_reconnect") == 0);
+}
+
+/* Read the whole replay of @p metadata_path in one thread, with reads of 300 samples, and check what the stream-gap
+ * events of @p events do to the batches: every batch is read, in chunk order, each whole (the oracle's count); a batch
+ * carries the discontinuity count the stream had at the start plus the stream gaps recorded before its chunk, so a gap
+ * reaches the decoder at the first sample after it and never earlier; and the stream's count ends moved by those gaps
+ * alone, a frequency RESET moving nothing. */
+static int
+expect_gaps_mark_the_next_batch(const char* label, const char* metadata_path, size_t capture_bytes,
+                                const std::vector<CaptureEvent>& events) {
+    const std::vector<LayoutChunk> layout = capture_layout(capture_bytes, events);
+    const std::vector<uint64_t> outputs = oracle_chunk_outputs(layout);
+    /* Each chunk's first capture byte, and the stream gaps recorded at or before it. */
+    std::vector<uint64_t> gaps_before(layout.size(), 0U);
+    uint64_t chunk_offset = 0U;
+    uint64_t gap_total = 0U;
+    for (size_t i = 0; i < layout.size(); i++) {
+        uint64_t gaps = 0U;
+        for (const CaptureEvent& event : events) {
+            gaps += (event_is_stream_gap(event) && event.offset <= chunk_offset) ? 1U : 0U;
+        }
+        gaps_before[i] = gaps;
+        chunk_offset += layout[i].bytes;
+    }
+    for (const CaptureEvent& event : events) {
+        gap_total += event_is_stream_gap(event) ? 1U : 0U;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    const uint64_t seq_before = rtl_stream_discontinuity_seq();
+    if (start_replay(metadata_path, 0, &opts, &ctx) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    char what[256];
+    std::vector<float> buf(300U);
+    uint64_t samples = 0U;
+    uint64_t last_sequence = 0U;
+    uint64_t batch_taken = 0U;
+    size_t want_chunk = 0U;
+    const uint64_t deadline_ns = dsd_time_monotonic_ns() + 20000ULL * 1000000ULL;
+    for (;;) {
+        if (dsd_time_monotonic_ns() > deadline_ns) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: the replay ended within 20 s", label);
+            rc |= expect_true(what, 0);
+            break;
+        }
+        int got = 0;
+        if (rtl_stream_read(ctx, buf.data(), buf.size(), &got) != 0) {
+            break;
+        }
+        if (got <= 0) {
+            continue;
+        }
+        samples += (uint64_t)got;
+        rtl_stream_replay_batch tag;
+        if (rtl_stream_get_replay_batch(&tag) != 0) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: a read has its batch's tag", label);
+            rc |= expect_true(what, 0);
+            break;
+        }
+        if (tag.chunk_sequence == 0U || tag.chunk_sequence > outputs.size()
+            || tag.chunk_sequence > gaps_before.size()) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: the batch identifies a recorded chunk", label);
+            rc |= expect_true(what, 0);
+            break;
+        }
+        if (tag.chunk_sequence == last_sequence) {
+            batch_taken += (uint64_t)got;
+            continue;
+        }
+        /* A new batch: the previous one was read whole, and this is the next chunk that delivers anything. */
+        if (last_sequence != 0U) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: chunk %llu's batch was read whole", label,
+                         (unsigned long long)last_sequence);
+            rc |= expect_u64_eq(what, batch_taken, outputs[last_sequence - 1U]);
+        }
+        while (want_chunk < outputs.size() && outputs[want_chunk] == 0U) {
+            want_chunk++;
+        }
+        DSD_SNPRINTF(what, sizeof(what), "%s: the batches come in chunk order", label);
+        rc |= expect_u64_eq(what, tag.chunk_sequence, (uint64_t)want_chunk + 1U);
+        if (tag.chunk_sequence <= layout.size()) {
+            DSD_SNPRINTF(what, sizeof(what), "%s: chunk %llu's batch carries the gaps recorded before it", label,
+                         (unsigned long long)tag.chunk_sequence);
+            rc |= expect_u64_eq(what, tag.boundary_seq, seq_before + gaps_before[tag.chunk_sequence - 1U]);
+        }
+        want_chunk = (size_t)tag.chunk_sequence;
+        last_sequence = tag.chunk_sequence;
+        batch_taken = (uint64_t)got;
+    }
+    if (last_sequence != 0U) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: the last batch was read whole", label);
+        rc |= expect_u64_eq(what, batch_taken, outputs[last_sequence - 1U]);
+    }
+    (void)stop_replay(ctx);
+    DSD_SNPRINTF(what, sizeof(what), "%s: every sample was delivered", label);
+    rc |= expect_u64_eq(what, samples, oracle_output_count_of(layout));
+    DSD_SNPRINTF(what, sizeof(what), "%s: the stream's count moved by the recorded gaps alone", label);
+    rc |= expect_u64_eq(what, rtl_stream_discontinuity_seq() - seq_before, gap_total);
+    return rc;
+}
+
+/* A capture with a USB recovery and an rtl_tcp reconnect, each a RETUNE and a RESET on the same centre, cutting a chunk
+ * short, and a frequency RETUNE and RESET (a retune's, which is no gap) between them. */
+static int
+test_replay_recovery_events_mark_the_next_batch(void) {
+    const std::vector<uint8_t> payload = tone_and_noise_payload(8U * kChunkBytes / 2U);
+    const std::vector<CaptureEvent> events = {
+        {3U * kChunkBytes + 1000U, DSD_IQ_EVENT_RETUNE, kFirstCenterHz, "usb_recovery"},
+        {3U * kChunkBytes + 1000U, DSD_IQ_EVENT_RESET, kFirstCenterHz, "usb_recovery"},
+        {5U * kChunkBytes, DSD_IQ_EVENT_RETUNE, kFirstCenterHz},
+        {5U * kChunkBytes, DSD_IQ_EVENT_RESET, kFirstCenterHz},
+        {6U * kChunkBytes + 2048U, DSD_IQ_EVENT_RETUNE, kFirstCenterHz, "tcp_reconnect"},
+        {6U * kChunkBytes + 2048U, DSD_IQ_EVENT_RESET, kFirstCenterHz, "tcp_reconnect"},
+    };
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_capture_with_events(payload, events, metadata_path, sizeof(metadata_path)) != 0) {
+        return 1;
+    }
+    return expect_gaps_mark_the_next_batch("recovery events", metadata_path, payload.size(), events);
+}
+
+/* The live side of the same round trip: a gap the stream notes while its capture is written
+ * (rtl_stream_note_discontinuity(), which a USB recovery or rtl_tcp reconnect runs) moves the stream's count at once
+ * and records the RETUNE and RESET there, between the samples before and after it; the capture's replay then reaches
+ * the decoder with the gap at the first sample after it. */
+static int
+test_noted_discontinuity_replays_as_a_gap(void) {
+    const size_t first_bytes = 2U * kChunkBytes + 4000U;
+    const std::vector<uint8_t> payload = tone_and_noise_payload(5U * kChunkBytes / 2U);
+    char metadata_path[DSD_TEST_PATH_MAX];
+    dsd_iq_capture_writer* writer = open_capture_writer(metadata_path, sizeof(metadata_path));
+    if (!writer) {
+        return 1;
+    }
+    /* Heap-held: the device keeps the fake's address in a global while it is installed. */
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
+    DSD_MEMSET(&fake, 0, sizeof(fake));
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        dsd_iq_capture_abort(writer);
+        return expect_true("noted gap: a test device", 0);
+    }
+    rtl_device_set_iq_capture_writer(dev, writer);
+    int rc = 0;
+    rc |= expect_true("noted gap: the samples before it are captured",
+                      dsd_iq_capture_submit(writer, payload.data(), first_bytes) == DSD_IQ_OK);
+    const uint64_t seq_before = rtl_stream_discontinuity_seq();
+    rc |= expect_true("noted gap: the stream notes it",
+                      rtl_stream_test_note_discontinuity(dev, (uint32_t)kFirstCenterHz,
+                                                         (uint32_t)(kFirstCenterHz + kFs4OffsetHz), kCaptureRateHz,
+                                                         "usb_recovery")
+                          == 0);
+    rc |= expect_u64_eq("noted gap: the stream's count moved at once", rtl_stream_discontinuity_seq(), seq_before + 1U);
+    rc |= expect_true("noted gap: the samples after it are captured",
+                      dsd_iq_capture_submit(writer, payload.data() + first_bytes, payload.size() - first_bytes)
+                          == DSD_IQ_OK);
+    rtl_device_set_iq_capture_writer(dev, NULL);
+    rtl_device_test_usb_gain_device_free(dev);
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+    if (rc != 0) {
+        return rc;
+    }
+    const std::vector<CaptureEvent> events = {
+        {first_bytes, DSD_IQ_EVENT_RETUNE, kFirstCenterHz, "usb_recovery"},
+        {first_bytes, DSD_IQ_EVENT_RESET, kFirstCenterHz, "usb_recovery"},
+    };
+    return expect_gaps_mark_the_next_batch("noted gap", metadata_path, payload.size(), events);
+}
+
 int
 main(void) {
     if (dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, kCaptureRateHz) != kChunkBytes) {
@@ -2072,6 +2267,8 @@ main(void) {
     rc |= test_replay_purge_a_stop_left_does_not_reach_the_next_replay();
     rc |= test_replay_reset_after_a_retune_resets_from_the_old_centre();
     rc |= test_replay_event_boundary_waits_stop_in_bounded_time();
+    rc |= test_replay_recovery_events_mark_the_next_batch();
+    rc |= test_noted_discontinuity_replays_as_a_gap();
     rc |= remove_fixture_dirs();
     return rc ? 1 : 0;
 }

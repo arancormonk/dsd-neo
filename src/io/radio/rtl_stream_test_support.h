@@ -185,6 +185,19 @@ typedef struct {
 /* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */
 int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
                                       size_t* output_count, int* out_phase);
+/* The SoapySDR reader's CS16 conversion (soapy_copy_cs16_samples(), scale 1/32768): @p elem_count pairs into @p dst,
+ * each rotated at fs/4 phase *phase + i when @p apply_rot is set, *phase then moved on. Returns 1, and touches nothing,
+ * when the build has no SoapySDR. */
+int rtl_device_test_soapy_cs16_copy(float* dst, const int16_t* src_iq, size_t elem_count, int apply_rot, int* phase);
+
+/* The narrow spectrum's frame buffers (rtl_metrics.cpp): forget every frame, so the next one seeds the average; and,
+ * as readers do, hold (@p hold set) or let go of every buffer but the current one. Returns the buffers changed. Call
+ * with no other spectrum reader or writer running. */
+void rtl_metrics_test_spectrum_reset(void);
+/* Publish a competing frame after the getter pins its candidate, before it validates publication. */
+void rtl_metrics_test_spectrum_set_pin_hook(void (*hook)(void*), void* ctx);
+int rtl_metrics_test_spectrum_hold_count(void);
+int rtl_metrics_test_spectrum_hold_spares(int hold);
 
 struct input_ring_state;
 
@@ -216,7 +229,8 @@ void rtl_device_test_set_progress_period_ms(uint32_t period_ms);
 /* The next receiver verdict that passed its checks waits @p ms before it claims the report, so that a racing verdict
  * passes its own checks meanwhile. One-shot. */
 void rtl_device_test_pause_next_verdict_ms(uint32_t ms);
-/* While set, the RTL-SDR's progress monitor thread fails to start, as a refused thread creation does. */
+/* While set, the RTL-SDR's or SoapySDR device's progress monitor thread fails to start, as a refused thread creation
+ * does. */
 void rtl_device_test_refuse_progress_monitor(int refuse);
 /* How many receiver verdicts began waiting out the unplug-owner grace, ever: a test polls it to know a verdict is
  * pending. */
@@ -235,8 +249,361 @@ void rtl_device_test_usb_stream_deliver(struct rtl_device* dev, unsigned char* b
 void rtl_device_test_usb_stream_return(int rc);
 /* Whether the device's reader has returned: a cancel reached it, or it returned by itself. */
 int rtl_device_test_usb_stream_reader_exited(struct rtl_device* dev);
+/* How many USB reader returns the device has handled (reported, handed to a recovery or left alone), all devices. */
+unsigned int rtl_device_test_usb_reader_returns(void);
 /* Stop the device (rtl_device_stop_async()) and destroy it. */
 void rtl_device_test_usb_stream_stop(struct rtl_device* dev);
+
+/* SoapySDR's readStream() results the seam below returns, as SoapySDR/Errors.h numbers them. */
+enum {
+    RTL_DEVICE_TEST_SOAPY_TIMEOUT = -1,
+    RTL_DEVICE_TEST_SOAPY_STREAM_ERROR = -2,
+    RTL_DEVICE_TEST_SOAPY_OVERFLOW = -4,
+    /* Not SoapySDR's: the seam throws a std::runtime_error, as a driver's call can. */
+    RTL_DEVICE_TEST_SOAPY_THROW = -1000,
+};
+
+/* A SoapySDR driver's stream calls, in place of the device's (SoapySDR::Device). The device's own reader runs against
+ * them: its setup, its locked read loop and its read-result handling. Both are called under the device's soapy_lock. */
+typedef struct {
+    /* In place of setupStream(), getStreamMTU() and activateStream(): 0 when the stream runs (@p mtu_elems, preset to
+     * the reader's default, may be changed), a negative SoapySDR error code when activation failed, or
+     * RTL_DEVICE_TEST_SOAPY_THROW. */
+    int (*setup)(void* ctx, size_t* mtu_elems);
+    /* In place of readStream() into @p buff (@p elems complex samples of the stream's format): the elements read, a
+     * SoapySDR error code, or RTL_DEVICE_TEST_SOAPY_THROW. @p timeout_us is the reader's. */
+    int (*read)(void* ctx, void* buff, size_t elems, long timeout_us);
+    void* ctx;
+    int cs16; /* the stream's format: CS16 when set, else CF32 */
+} rtl_device_test_soapy_driver;
+
+/* A SoapySDR device into @p ring whose stream calls reach @p driver (kept by the caller until the device is freed), not
+ * started: rtl_device_start_async() starts it and rtl_device_stop_async() stops it as any SoapySDR device.
+ * rtl_device_test_soapy_device_free() ends it. One at a time; NULL when the build has no SoapySDR. */
+struct rtl_device* rtl_device_test_soapy_device(struct input_ring_state* ring,
+                                                const rtl_device_test_soapy_driver* driver);
+/* rtl_device_destroy() it, and detach the driver. */
+void rtl_device_test_soapy_device_free(struct rtl_device* dev);
+/* Run one control transaction on @p dev that holds its soapy_lock for @p ms, as a slow driver call does. 0 on
+ * success. */
+int rtl_device_test_soapy_control_hold(struct rtl_device* dev, unsigned int ms);
+
+/* A SoapySDR device's reader and monitor, and its stream. */
+typedef struct {
+    int reader_entered;         /* the reader's stream was activated */
+    int reader_exited;          /* the reader thread is done */
+    int monitor_started;        /* its progress monitor thread runs (or is not joined yet) */
+    int stream_open;            /* the stream is set up and not closed */
+    unsigned int stream_closes; /* streams the seam closed since the device was made */
+    uint64_t timeouts;
+    uint64_t overflows;
+} rtl_device_test_soapy_state;
+
+/* Faults in the host reader, separate from a driver failure. Restore after the device stops. */
+void rtl_device_test_soapy_internal_read_failure(int on);
+void rtl_device_test_soapy_refuse_reader(int on);
+
+/* The state of @p dev; read by the thread that starts and stops it. */
+void rtl_device_test_soapy_state_get(struct rtl_device* dev, rtl_device_test_soapy_state* out);
+
+/* A control of the fake dongle below that fails: every call from the fail_from_call-th on (0: never), and every write
+ * of fail_value while fail_value_set. */
+typedef struct {
+    int fail_from_call;
+    int fail_value_set;
+    int fail_value;
+} rtl_device_test_usb_gain_fault;
+
+/* An RTL-SDR's gain controls as the dongle holds them, in place of librtlsdr's. */
+typedef struct {
+    /* Demod register 0x19, which librtlsdr's test-mode and digital-AGC setters each write whole: 0x03 test mode, 0x25
+     * digital AGC, 0x05 neither. */
+    int reg19;
+    int manual;     /* tuner gain mode: 1 manual, 0 automatic */
+    int gain;       /* tuner gain in tenths of a dB as librtlsdr keeps it (0 after a refused write) */
+    int gains[32];  /* the tuner's gain table */
+    int gain_count; /* entries in gains; negative: the table lookup fails with this result */
+    rtl_device_test_usb_gain_fault reg19_fault;
+    rtl_device_test_usb_gain_fault mode_fault;
+    rtl_device_test_usb_gain_fault gain_fault;
+    int reg19_calls;
+    int mode_calls;
+    int gain_calls;
+} rtl_device_test_usb_gain_fake;
+
+/* A USB device, never opened, whose gain controls reach @p fake in place of librtlsdr until
+ * rtl_device_test_usb_gain_device_free(). The public gain, nearest-gain and test-mode setters and the gain getters
+ * work on it. One at a time; NULL on allocation failure. */
+struct rtl_device* rtl_device_test_usb_gain_device(rtl_device_test_usb_gain_fake* fake);
+void rtl_device_test_usb_gain_device_free(struct rtl_device* dev);
+/* Whether a gain change on @p dev failed and could not be rolled back, so the dongle holds neither gain state. */
+int rtl_device_test_usb_gain_unknown(const struct rtl_device* dev);
+
+/* An RTL-SDR's tuning controls as librtlsdr keeps them, in place of librtlsdr's. */
+typedef struct {
+    int tuner_type; /* an RTLSDR_TUNER_* value: R820T (5) and R828D (6) refuse offset tuning with -2 */
+    uint32_t rate;  /* sample rate, 0 on a fresh handle */
+    uint32_t freq;  /* centre frequency the samples are delivered around, 0 until set */
+    uint32_t
+        offs_freq; /* LO displacement while offset tuning is on: (rate / 2) * 170 / 100 at the time it is computed */
+    uint32_t bw;   /* bandwidth last set through rtlsdr_set_tuner_bandwidth() (0: automatic) */
+    uint32_t filter_bw;    /* bandwidth the tuner's filter was last set to */
+    int direct_sampling;   /* direct sampling mode: offset tuning is refused with -3 while it is on */
+    int rate_without_freq; /* a rate was set while no frequency was (an R82xx tuner then retunes to 0 Hz) */
+    int offset_result;     /* failure after librtlsdr changed its LO offset */
+    uint32_t actual_rate;  /* a nonzero sample-rate readback different from the requested rate */
+    int frequency_calls;
+    int fail_frequency_from_call;
+} rtl_device_test_usb_tuner_fake;
+
+/* A USB device, never opened, whose tuning controls (centre frequency, sample rate, direct sampling, offset tuning,
+ * tuner bandwidth) reach @p fake in place of librtlsdr until rtl_device_test_usb_tuner_device_free(). One at a time;
+ * NULL on allocation failure. */
+struct rtl_device* rtl_device_test_usb_tuner_device(rtl_device_test_usb_tuner_fake* fake);
+void rtl_device_test_usb_tuner_device_free(struct rtl_device* dev);
+
+/* What reaches a fake dongle (rtl_device_test_usb_dongle), in the order a USB recovery replays the controls. */
+enum {
+    RTL_TEST_DONGLE_OPEN,
+    RTL_TEST_DONGLE_CLOSE,
+    RTL_TEST_DONGLE_XTAL,
+    RTL_TEST_DONGLE_DIRECT_SAMPLING,
+    RTL_TEST_DONGLE_FREQ,
+    RTL_TEST_DONGLE_RATE,
+    RTL_TEST_DONGLE_OFFSET,
+    RTL_TEST_DONGLE_BANDWIDTH,
+    RTL_TEST_DONGLE_PPM,
+    RTL_TEST_DONGLE_REG19,
+    RTL_TEST_DONGLE_GAIN_MODE,
+    RTL_TEST_DONGLE_GAIN,
+    RTL_TEST_DONGLE_IF_GAIN,
+    RTL_TEST_DONGLE_BIAS_TEE,
+    RTL_TEST_DONGLE_RESET_BUFFER,
+    RTL_TEST_DONGLE_OP_COUNT
+};
+
+/* A whole RTL-SDR in place of librtlsdr: opened by rtlsdr_open() (one handle at a time), every control, the FIFO
+ * reset and the close. Opening it gives the power-on state (nothing tuned, register 0x19 0x05, automatic gain mode,
+ * no correction, bias tee off); the tuner type, gain table and faults stay. */
+typedef struct rtl_device_test_usb_dongle {
+    rtl_device_test_usb_gain_fake gain;   /* register 0x19 and the tuner gain; its own faults refuse those writes */
+    rtl_device_test_usb_tuner_fake tuner; /* frequency, rate, direct sampling, offset tuning, tuner bandwidth */
+    int ppm;
+    uint32_t rtl_xtal, tuner_xtal;
+    int bias_tee;
+
+    struct {
+        int stage;
+        int gain;
+    } if_gains[16];
+
+    int if_gain_count;
+    /* By RTL_TEST_DONGLE_*, for every op but the gain fake's three: a fault refuses the op, counted in calls. */
+    rtl_device_test_usb_gain_fault faults[RTL_TEST_DONGLE_OP_COUNT];
+    int calls[RTL_TEST_DONGLE_OP_COUNT];
+    int ops[128]; /* the ops since the last open, in order (the open first) */
+    int op_count;
+    int open_handles;        /* opened and not closed */
+    int stale_handle_calls;  /* ops that reached a handle already closed */
+    int calls_while_reading; /* ops that reached the dongle while its reader streamed */
+    /* Called first by every op, from the thread making it, before its fault is checked. */
+    void (*on_op)(void* ctx, int op);
+    void* on_op_ctx;
+} rtl_device_test_usb_dongle;
+
+/* Route rtlsdr_open() and every librtlsdr control to @p fake (NULL restores librtlsdr). Install while no device is
+ * open. */
+void rtl_device_test_usb_dongle_install(rtl_device_test_usb_dongle* fake);
+/* Arm the USB reader seam for the next rtl_device_start_async(): the reader streams, delivering nothing, until a cancel
+ * reaches it, as rtl_device_test_usb_stream_start()'s does, and a reader restarted by a recovery streams again. Detach
+ * after the device is destroyed. */
+void rtl_device_test_usb_stream_attach(void);
+void rtl_device_test_usb_stream_detach(void);
+
+/* A USB device's recovery state. */
+typedef struct {
+    int has_handle;     /* a librtlsdr handle is published */
+    int thread_started; /* a joinable reader thread exists */
+    int reader_running; /* the reader entered and has not returned */
+    int stop_requested; /* the stop latch */
+    int recovering;     /* a swap runs */
+    int recovery_on;    /* rtl_device_usb_recovery_eligible() */
+    uint64_t progress_baseline;
+    uint32_t watch_rearm_seq;
+    uint8_t identity_bus;
+    uint8_t identity_ports[8];
+    int identity_port_depth;
+} rtl_device_test_usb_swap_state;
+
+void rtl_device_test_usb_swap_state_get(struct rtl_device* dev, rtl_device_test_usb_swap_state* out);
+
+/* The capture an RTL stream left programmed (rtl_stream_test_program_initial_capture() and
+ * rtl_stream_test_program_retune_capture()). */
+typedef struct {
+    int rc;                   /* the programming's result: 0 when the device took it */
+    uint32_t capture_freq_hz; /* capture centre the stream asked the device for */
+    uint32_t capture_rate_hz; /* capture rate the stream runs at */
+    int offset_tuning;        /* whether the stream counts on the dongle's hardware offset tuning */
+    int fs4_rotation;         /* whether the stream shifts the capture by Fs/4 and rotates it back in software */
+} rtl_stream_test_capture_result;
+
+/* Run the stream start's device programming for @p center_hz with @p dev as the open device, @p direct_sampling the
+ * configured direct sampling mode and @p opts the session options; the stream's own state comes back afterwards. */
+int rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                            int direct_sampling, rtl_stream_test_capture_result* out);
+/* Run the start's programming as above, then a controller retune's to @p retune_center_hz; @p out holds the
+ * retune's. */
+int rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                           uint32_t retune_center_hz, int retune_rate_in_hz,
+                                           rtl_stream_test_capture_result* out);
+
+/* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
+enum {
+    RTL_STREAM_TEST_GAIN_RETUNE_AUTO = 0,   /* a retune profile's automatic gain */
+    RTL_STREAM_TEST_GAIN_RETUNE_MANUAL = 1, /* a retune profile's manual gain, nearest supported */
+    RTL_STREAM_TEST_GAIN_AUTOGAIN = 2,      /* the tuner autogain supervisor's nearest manual gain */
+};
+
+/* Run one supervisor decision (0: clipping probe, 1: bootstrap, 2: manual step on clipping, 3: manual step up on low
+ * input, past the spectral gate), from the manual target @p initial and the seed gain @p seed, preserving stream
+ * state. Returns the supervisor's manual target after it. */
+int rtl_stream_test_autogain_target(struct rtl_device* dev, int stage, int initial, int seed);
+
+typedef struct {
+    double gain_db;
+    double selected_db;
+    int writes;
+    int refuse;
+} rtl_device_test_soapy_gain_fake;
+/* A control-only Soapy driver with quantized gain readback. NULL without SoapySDR. */
+struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);
+void rtl_device_test_soapy_gain_device_free(struct rtl_device* dev);
+
+/* Run one of the stream's tuner-gain callers with @p dev as the open device and report the tuner gain it left
+ * published (rtl_stream_get_gain()'s result, value and auto flag); the previous device handle and its published gain
+ * come back afterwards. Returns the caller's result: 0 when the gain took. */
+int rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int* out_published_rc,
+                               int* out_published_gain, int* out_published_auto);
+
+/* Note a stream gap (rtl_stream_note_discontinuity(@p reason)) with @p dev as the open device, on channel centre
+ * @p center_hz, capture centre @p capture_hz and capture rate @p rate_hz; the stream's own state comes back afterwards.
+ * Returns 0, or -1 while a stream runs or for a NULL @p dev. */
+int rtl_stream_test_note_discontinuity(struct rtl_device* dev, uint32_t center_hz, uint32_t capture_hz,
+                                       uint32_t rate_hz, const char* reason);
+
+/* Exercise a boundary with no applied center; report whether the device step ran. */
+int rtl_stream_test_boundary_without_center(int* calls);
+/* Configure, clear and restore a simulated stream; bit 0 active, bit 1 cleared, bit 2 restored. */
+int rtl_stream_test_activity_swaps(void);
+
+/* The steps of a stream boundary (controller_stream_boundary()), in order; the last three run only after its device
+ * step succeeded. */
+enum {
+    RTL_STREAM_TEST_BOUNDARY_GATE = 1,          /* the reconfigure gate closed and the capture held */
+    RTL_STREAM_TEST_BOUNDARY_DEVICE_OP = 2,     /* the device step returned */
+    RTL_STREAM_TEST_BOUNDARY_TAIL = 3,          /* the retune tail ran: finalize, mutes, capture hold released */
+    RTL_STREAM_TEST_BOUNDARY_DISCONTINUITY = 4, /* the output moved on and the gap was noted */
+    RTL_STREAM_TEST_BOUNDARY_RESUME = 5,        /* the producer was let deliver again */
+    RTL_STREAM_TEST_BOUNDARY_END = 6,           /* the gate opened */
+};
+
+/* Call @p probe(step, @p ctx) on the controller thread at each step of every stream boundary; NULL removes it. Set
+ * while no boundary runs. */
+void rtl_stream_test_set_stream_boundary_probe(void (*probe)(int step, void* ctx), void* ctx);
+/* The device the running stream opened, NULL without one. */
+struct rtl_device* rtl_stream_test_device(void);
+/* Whether the controller's reconfigure gate is closed (the demod parked between blocks). */
+int rtl_stream_test_reconfigure_gate_closed(void);
+/* Whether @p dev holds its capture for a reconfiguration (rtl_device_begin_capture_reconfigure()). */
+int rtl_device_test_capture_reconfigure_held(const struct rtl_device* dev);
+/* rtl_device_test_set_progress_limit_ms()'s kin for the stall recovery budget: the cooldown after a request (60 s)
+ * and the time the controller has to take one (2 s); 0 restores the production value. */
+void rtl_device_test_set_recovery_cooldown_ms(uint32_t cooldown_ms);
+void rtl_device_test_set_recovery_take_ms(uint32_t take_ms);
+/* Call @p hook(dev, @p ctx) on the progress monitor's thread once it decided to post a recovery request, before it
+ * posts; NULL removes it. */
+void rtl_device_test_set_recovery_post_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+/* Call @p hook(dev, @p ctx) when rtl_device_usb_resume_reader() has taken the reader's baseline and is about to start
+ * its thread (under the device's lifecycle lock); NULL removes it. */
+/* Called after recovery_take claims the request, before its final teardown check. */
+void rtl_device_test_set_recovery_take_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+/* Call @p hook(dev, @p ctx) inside rtl_device_usb_recovery_finish(), between the request's move to idle and the close
+ * of the restarted reader's hand-off (on the controller's thread); NULL removes it. */
+void rtl_device_test_set_recovery_finish_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+
+/* ---- rtl_tcp (issue #518 WP3) ---- */
+
+/* rtl_tcp_read_header()'s results. */
+enum {
+    RTL_TEST_TCP_HEADER_SUCCESS = 0,
+    RTL_TEST_TCP_HEADER_EOF = 1,
+    RTL_TEST_TCP_HEADER_INVALID = 2,
+    RTL_TEST_TCP_HEADER_CANCELLED = 3,
+    RTL_TEST_TCP_HEADER_TIMEOUT = 4,
+};
+
+/* Read an rtl_tcp header from @p sock (a dsd_socket_t) as the device does, within @p budget_ms, cancelled once
+ * @p cancelled(@p ctx) is nonzero. Returns an RTL_TEST_TCP_HEADER_* result and, on success, the tuner type and gain
+ * count. */
+int rtl_device_test_tcp_read_header(intptr_t sock, unsigned int budget_ms, int (*cancelled)(void* ctx), void* ctx,
+                                    uint32_t* out_tuner, uint32_t* out_gain_count);
+/* The next command unit (a setter's, or a reconnect's replay) holding command @p cmd sends what comes before it and
+ * then fails there, as a connection that broke mid-unit does; -1 clears it. */
+void rtl_device_test_tcp_fail_command(int cmd);
+/* Each send call writes at most @p max_bytes (0: no limit), so every command goes out in partial writes. */
+void rtl_device_test_tcp_set_send_chunk(size_t max_bytes);
+/* SO_SNDBUF for each connection made from now on (0: the system's). */
+void rtl_device_test_tcp_set_sndbuf(int bytes);
+/* Call @p hook(generation, @p ctx) in every command send (a setter's, or a replay's), once it holds its connection and
+ * that connection's send lock, before anything goes out; NULL removes it. Set while no command is sent. */
+void rtl_device_test_tcp_set_send_hook(void (*hook)(uint64_t generation, void* ctx), void* ctx);
+/* After a complete setter send, before its connection is checked for commitment. */
+void rtl_device_test_tcp_set_commit_hook(void (*hook)(uint64_t generation, void* ctx), void* ctx);
+/* Refuse the TCP reader's receive-buffer allocation. */
+void rtl_device_test_tcp_refuse_read_buffer(int refuse);
+/* Fail the numbered common synchronization initializer (1..5); 0 restores platform initialization. */
+void rtl_device_test_refuse_common_sync(int step);
+/* Call @p hook(@p ctx) in the reader's discard path, right before each of its receives; NULL removes it. Set while
+ * no reader runs. */
+void rtl_device_test_tcp_set_discard_hook(void (*hook)(void* ctx), void* ctx);
+/* Call @p hook(@p ctx) in the reader's normal path, right before each of its receives; NULL removes it. Set while no
+ * reader runs. */
+void rtl_device_test_tcp_set_read_hook(void (*hook)(void* ctx), void* ctx);
+/* How many releases from the discard path left an odd byte for the reader to drop, process-wide. */
+uint64_t rtl_device_test_tcp_odd_drops(void);
+
+/* rtl_tcp hand-off states (rtl_device_test_tcp_state::handoff). */
+enum {
+    RTL_TEST_TCP_HANDOFF_NONE = 0,
+    RTL_TEST_TCP_HANDOFF_QUEUED = 1,
+    RTL_TEST_TCP_HANDOFF_CLAIMED = 2,
+    RTL_TEST_TCP_HANDOFF_RELEASED = 3,
+    RTL_TEST_TCP_HANDOFF_FAILED = 4,
+    RTL_TEST_TCP_HANDOFF_CANCELLED = 5,
+};
+
+typedef struct {
+    uint64_t generation; /* the published connection's identity; 0 with none */
+    int handoff;         /* RTL_TEST_TCP_HANDOFF_* */
+    int stop_requested;  /* the stop latch */
+    int gain_took;       /* the effective record holds a gain state */
+    int digital_agc;     /* the digital AGC the gain state wants */
+    int gain_unknown;    /* a failed gain unit may have reached a retired connection */
+} rtl_device_test_tcp_state;
+
+void rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state* out);
+
+/* The controller's work items (rtl_stream_test_set_controller_work_hook()). */
+enum {
+    RTL_STREAM_TEST_WORK_USB_RECOVERY = 1,
+    RTL_STREAM_TEST_WORK_TCP_HANDOFF = 2,
+    RTL_STREAM_TEST_WORK_RETUNE = 3,
+};
+
+/* Call @p hook(kind, @p ctx) on the controller thread once it took a work item, before it runs it; NULL removes it.
+ * Set while no stream runs. */
+void rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx), void* ctx);
 
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 /* The capture rate, half-band passes and demod rate an RTL-SDR plans for a DSP bandwidth of @p dsp_bw_hz, with no
@@ -577,6 +944,27 @@ int rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_r
  * (-1 for a search deadline, 0 for an idle monitor) and how long it waited. */
 int rtl_stream_test_search_live_read_bound(uint64_t search_owner, const dsd_opts* live_opts, int feed_after_ms,
                                            int* out_got, uint64_t* out_waited_ms);
+
+/* rtl_stream_test_search_live_read_bound()'s read (issue #518 D4) with @p dev as the open device, whose stream (or lack
+ * of one, rtl_device_has_stream()) it reads by, for a reader that does (@p want_no_stream) or does not take
+ * DSD_RTL_READ_NO_STREAM. After @p event_after_ms the producer calls @p event (when set), then delivers one sample when
+ * @p feed is set. */
+typedef struct {
+    struct rtl_device* dev;
+    uint64_t search_owner;
+    const dsd_opts* live_opts;
+    int want_no_stream;
+    int event_after_ms;
+    void (*event)(void* ctx);
+    void* event_ctx;
+    int feed;
+} rtl_stream_test_live_read_request;
+
+/* Reports what the read returned (a sample count, -1, 0 for an idle monitor, DSD_RTL_READ_YIELD or
+ * DSD_RTL_READ_NO_STREAM) and how long it waited; returns 0 when the read ran. */
+int rtl_stream_test_live_read(const rtl_stream_test_live_read_request* req, int* out_got, uint64_t* out_waited_ms);
+/* Set or clear a USB device's recovering state (the swap's), which rtl_device_has_stream() reads as no stream. */
+void rtl_device_test_set_recovering(struct rtl_device* dev, int on);
 
 typedef struct rtl_stream_test_digital_row_result {
     int open_rc;

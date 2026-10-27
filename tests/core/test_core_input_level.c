@@ -11,32 +11,44 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-static dsd_input_level_snapshot
-snapshot_for(dsd_input_level_source source, double rms_dbfs, double peak_dbfs, double clip_pct, time_t updated) {
-    dsd_input_level_snapshot snapshot = {
-        .status = DSD_INPUT_LEVEL_UNKNOWN,
-        .source = source,
-        .rms_dbfs = rms_dbfs,
-        .peak_dbfs = peak_dbfs,
-        .clip_pct = clip_pct,
-        .sample_count = 1000U,
-        .updated = updated,
+/* A level measured just now (a live publish of it is fresh: dsd_input_level_is_stale()), and the decode time these
+   cases publish it at. */
+typedef struct {
+    dsd_input_level_snapshot level;
+    time_t decode_s;
+} timed_level;
+
+static timed_level
+snapshot_for(dsd_input_level_source source, double rms_dbfs, double peak_dbfs, double clip_pct, time_t decode_s) {
+    timed_level snapshot = {
+        .level =
+            {
+                .status = DSD_INPUT_LEVEL_UNKNOWN,
+                .source = source,
+                .rms_dbfs = rms_dbfs,
+                .peak_dbfs = peak_dbfs,
+                .clip_pct = clip_pct,
+                .sample_count = 1000U,
+                .updated_ms = dsd_realtime_mono_ms(),
+            },
+        .decode_s = decode_s,
     };
     return snapshot;
 }
 
-/* Publish @p snapshot at decode time `snapshot->updated`. The warning cooldown runs on decode time, and these cases step
-   it with their snapshots, as a live run, whose decode time is the system's, would measure and publish them. */
+/* Publish @p snapshot at decode time `snapshot->decode_s`. The warning cooldown runs on decode time, and these cases
+   step it with their snapshots, as a live run, whose decode time is the system's, would measure and publish them. */
 static void
-publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot, unsigned int notify_mask) {
-    dsd_decode_clock_use_test((uint64_t)snapshot->updated * 1000000000ULL);
-    dsd_input_level_publish(opts, state, snapshot, notify_mask);
+publish(dsd_opts* opts, dsd_state* state, const timed_level* snapshot, unsigned int notify_mask) {
+    dsd_decode_clock_use_test((uint64_t)snapshot->decode_s * 1000000000ULL);
+    dsd_input_level_publish(opts, state, &snapshot->level, notify_mask);
     dsd_decode_clock_use_system();
 }
 
@@ -44,34 +56,34 @@ static void
 test_classifier_thresholds(void) {
     assert(strcmp(dsd_input_level_status_label(DSD_INPUT_LEVEL_OK), "OK") == 0);
 
-    dsd_input_level_snapshot low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 1);
-    dsd_input_level_classify(&low, -40.0);
-    assert(low.status == DSD_INPUT_LEVEL_LOW);
+    timed_level low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 1);
+    dsd_input_level_classify(&low.level, -40.0);
+    assert(low.level.status == DSD_INPUT_LEVEL_LOW);
 
-    dsd_input_level_snapshot hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.5, 0.0, 1);
-    dsd_input_level_classify(&hot, -40.0);
-    assert(hot.status == DSD_INPUT_LEVEL_HOT);
+    timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.5, 0.0, 1);
+    dsd_input_level_classify(&hot.level, -40.0);
+    assert(hot.level.status == DSD_INPUT_LEVEL_HOT);
 
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.5, 0.1, 1);
-    dsd_input_level_classify(&clip, -40.0);
-    assert(clip.status == DSD_INPUT_LEVEL_CLIPPING);
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.5, 0.1, 1);
+    dsd_input_level_classify(&clip.level, -40.0);
+    assert(clip.level.status == DSD_INPUT_LEVEL_CLIPPING);
 
-    dsd_input_level_snapshot ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -25.0, -3.0, 0.0, 1);
-    dsd_input_level_classify(&ok, -40.0);
-    assert(ok.status == DSD_INPUT_LEVEL_OK);
+    timed_level ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -25.0, -3.0, 0.0, 1);
+    dsd_input_level_classify(&ok.level, -40.0);
+    assert(ok.level.status == DSD_INPUT_LEVEL_OK);
 
     dsd_input_level_classify(NULL, -40.0);
 
-    dsd_input_level_snapshot empty = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -3.0, 0.0, 1);
-    empty.status = DSD_INPUT_LEVEL_HOT;
-    empty.sample_count = 0U;
-    dsd_input_level_classify(&empty, -40.0);
-    assert(empty.status == DSD_INPUT_LEVEL_UNKNOWN);
+    timed_level empty = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -3.0, 0.0, 1);
+    empty.level.status = DSD_INPUT_LEVEL_HOT;
+    empty.level.sample_count = 0U;
+    dsd_input_level_classify(&empty.level, -40.0);
+    assert(empty.level.status == DSD_INPUT_LEVEL_UNKNOWN);
 
-    dsd_input_level_snapshot unknown_source = snapshot_for(DSD_INPUT_LEVEL_SOURCE_UNKNOWN, -20.0, -3.0, 0.0, 1);
-    unknown_source.status = DSD_INPUT_LEVEL_HOT;
-    dsd_input_level_classify(&unknown_source, -40.0);
-    assert(unknown_source.status == DSD_INPUT_LEVEL_UNKNOWN);
+    timed_level unknown_source = snapshot_for(DSD_INPUT_LEVEL_SOURCE_UNKNOWN, -20.0, -3.0, 0.0, 1);
+    unknown_source.level.status = DSD_INPUT_LEVEL_HOT;
+    dsd_input_level_classify(&unknown_source.level, -40.0);
+    assert(unknown_source.level.status == DSD_INPUT_LEVEL_UNKNOWN);
 }
 
 static void
@@ -84,13 +96,13 @@ test_pcm_publish_backfills_rtl_power_but_rf_publish_does_not(void) {
     opts->input_warn_cooldown_sec = 10;
     opts->rtl_pwr = 0.125;
 
-    dsd_input_level_snapshot rf_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -6.0, -0.1, 0.2, 50);
+    timed_level rf_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -6.0, -0.1, 0.2, 50);
     publish(opts, state, &rf_clip, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(opts->rtl_pwr == 0.125);
     assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
 
-    dsd_input_level_snapshot pcm_ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -3.0, 0.0, 60);
+    timed_level pcm_ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -3.0, 0.0, 60);
     publish(opts, state, &pcm_ok, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(fabs(opts->rtl_pwr - 0.01) < 0.000001);
 
@@ -107,7 +119,7 @@ test_toast_throttle_and_transition(void) {
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
 
-    dsd_input_level_snapshot low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 100);
+    timed_level low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 100);
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
     assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
@@ -115,16 +127,16 @@ test_toast_throttle_and_transition(void) {
     assert(state->input_level_last_toast_time == 100);
 
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
-    low.updated = 105;
+    low.decode_s = 105;
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
 
-    low.updated = 111;
+    low.decode_s = 111;
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
     assert(state->input_level_last_toast_time == 111);
 
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.2, 0.2, 112);
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.2, 0.2, 112);
     publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strstr(state->ui_msg, "Input Level CLIP") != NULL);
     assert(state->input_level_last_toast_time == 112);
@@ -142,22 +154,22 @@ test_toast_cooldown_survives_ok_sample(void) {
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
 
-    dsd_input_level_snapshot low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 100);
+    timed_level low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 100);
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
     assert(state->input_level_last_toast_time == 100);
 
-    dsd_input_level_snapshot ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -30.0, -3.0, 0.0, 105);
+    timed_level ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -30.0, -3.0, 0.0, 105);
     publish(opts, state, &ok, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_OK);
 
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
-    low.updated = 106;
+    low.decode_s = 106;
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
     assert(state->input_level_last_toast_time == 100);
 
-    low.updated = 111;
+    low.decode_s = 111;
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
     assert(state->input_level_last_toast_time == 111);
@@ -175,16 +187,16 @@ test_toast_escalation_survives_ok_sample(void) {
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
 
-    dsd_input_level_snapshot low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 100);
+    timed_level low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 100);
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
     assert(state->input_level_last_toast_time == 100);
 
-    dsd_input_level_snapshot ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -30.0, -3.0, 0.0, 105);
+    timed_level ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -30.0, -3.0, 0.0, 105);
     publish(opts, state, &ok, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_OK);
 
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.2, 0.2, 106);
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -0.2, 0.2, 106);
     publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(strstr(state->ui_msg, "Input Level CLIP") != NULL);
     assert(state->input_level_last_toast_time == 106);
@@ -203,26 +215,26 @@ test_toast_cooldown_suppresses_hot_clip_oscillation(void) {
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
 
-    dsd_input_level_snapshot hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.5, 0.0, 200);
+    timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.5, 0.0, 200);
     publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(strstr(state->ui_msg, "RF Level HOT") != NULL);
     assert(state->input_level_last_toast_time == 200);
     assert(state->input_level_last_toast_status == DSD_INPUT_LEVEL_HOT);
 
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.1, 0.2, 201);
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.1, 0.2, 201);
     publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
     assert(state->input_level_last_toast_time == 201);
     assert(state->input_level_last_toast_status == DSD_INPUT_LEVEL_CLIPPING);
 
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
-    hot.updated = 202;
+    hot.decode_s = 202;
     publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(state->input_level.status == DSD_INPUT_LEVEL_HOT);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
     assert(state->input_level_last_toast_time == 201);
 
-    clip.updated = 203;
+    clip.decode_s = 203;
     publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
@@ -241,12 +253,12 @@ test_rf_low_suppressed_but_clip_notifies(void) {
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
 
-    dsd_input_level_snapshot low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -80.0, -20.0, 0.0, 200);
+    timed_level low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -80.0, -20.0, 0.0, 200);
     publish(opts, state, &low, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
     assert(state->ui_msg[0] == '\0');
 
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.1, 0.2, 201);
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.1, 0.2, 201);
     publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
     assert(strstr(state->ui_msg, "lower RF gain or add filtering/attenuation") != NULL);
@@ -267,21 +279,21 @@ test_tcp_pcm_idle_levels_update_state_without_toast(void) {
     state->carrier = 0;
 
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
-    dsd_input_level_snapshot silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 300);
+    timed_level silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 300);
     publish(opts, state, &silent, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
     assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
     assert(state->input_level_last_toast_time == 0);
 
-    dsd_input_level_snapshot hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.5, 0.0, 310);
+    timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.5, 0.0, 310);
     publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_HOT);
     assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
     assert(state->input_level_last_toast_time == 0);
 
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.2, 320);
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.2, 320);
     publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
@@ -303,14 +315,14 @@ test_tcp_pcm_active_decoder_levels_still_notify(void) {
     opts->input_warn_cooldown_sec = 10;
     state->carrier = 1;
 
-    dsd_input_level_snapshot quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -55.0, -30.0, 0.0, 325);
+    timed_level quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -55.0, -30.0, 0.0, 325);
     publish(opts, state, &quiet, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
     assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
     assert(strstr(state->ui_msg, "if signal is present") != NULL);
     assert(state->input_level_last_toast_time == 325);
 
-    dsd_input_level_snapshot hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.5, 0.0, 330);
+    timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.5, 0.0, 330);
     publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_HOT);
     assert(strstr(state->ui_msg, "Input Level HOT") != NULL);
@@ -332,7 +344,7 @@ test_tcp_pcm_silence_suppressed_before_carrier_reset(void) {
     state->carrier = 1;
 
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
-    dsd_input_level_snapshot silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 335);
+    timed_level silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 335);
     publish(opts, state, &silent, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
     assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
@@ -355,7 +367,7 @@ test_tcp_pcm_m17_encoder_levels_still_notify(void) {
     opts->input_warn_cooldown_sec = 10;
     state->carrier = 0;
 
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.1, 0.2, 340);
+    timed_level clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.1, 0.2, 340);
     publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(strstr(state->ui_msg, "Input Level CLIP") != NULL);
@@ -375,7 +387,7 @@ test_non_tcp_silence_low_still_notifies(void) {
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
 
-    dsd_input_level_snapshot silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 330);
+    timed_level silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 330);
     publish(opts, state, &silent, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
     assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
@@ -392,30 +404,30 @@ test_advisory_text_selection(void) {
     assert(dsd_input_level_format_advisory(&(dsd_input_level_snapshot){0}, NULL, sizeof(msg)) == -1);
     assert(dsd_input_level_format_advisory(&(dsd_input_level_snapshot){0}, msg, 0U) == -1);
 
-    dsd_input_level_snapshot pcm_low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -55.0, -30.0, 0.0, 1);
-    dsd_input_level_classify(&pcm_low, -40.0);
-    assert(dsd_input_level_format_advisory(&pcm_low, msg, sizeof(msg)) == 0);
+    timed_level pcm_low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -55.0, -30.0, 0.0, 1);
+    dsd_input_level_classify(&pcm_low.level, -40.0);
+    assert(dsd_input_level_format_advisory(&pcm_low.level, msg, sizeof(msg)) == 0);
     assert(strstr(msg, "raise source/input volume") != NULL);
 
-    dsd_input_level_snapshot rf_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, -5.0, -0.1, 0.2, 1);
-    dsd_input_level_classify(&rf_clip, -40.0);
-    assert(dsd_input_level_format_advisory(&rf_clip, msg, sizeof(msg)) == 0);
+    timed_level rf_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, -5.0, -0.1, 0.2, 1);
+    dsd_input_level_classify(&rf_clip.level, -40.0);
+    assert(dsd_input_level_format_advisory(&rf_clip.level, msg, sizeof(msg)) == 0);
     assert(strstr(msg, "lower RF gain or add filtering/attenuation") != NULL);
 
     /* A PCM peak of 32766/32768 is -0.0005 dBFS: it reads "peak 0.0 dBFS", never "-0.0" (issue #669). */
-    dsd_input_level_snapshot pcm_hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -3.0, -0.0005, 0.0, 1);
-    pcm_hot.status = DSD_INPUT_LEVEL_HOT;
-    assert(dsd_input_level_format_advisory(&pcm_hot, msg, sizeof(msg)) == 0);
+    timed_level pcm_hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -3.0, -0.0005, 0.0, 1);
+    pcm_hot.level.status = DSD_INPUT_LEVEL_HOT;
+    assert(dsd_input_level_format_advisory(&pcm_hot.level, msg, sizeof(msg)) == 0);
     assert(strstr(msg, "peak 0.0 dBFS") != NULL);
     assert(strstr(msg, "-0.0") == NULL);
-    dsd_input_level_snapshot pcm_quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -0.04, -0.01, 0.0, 1);
-    pcm_quiet.status = DSD_INPUT_LEVEL_LOW;
-    assert(dsd_input_level_format_advisory(&pcm_quiet, msg, sizeof(msg)) == 0);
+    timed_level pcm_quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -0.04, -0.01, 0.0, 1);
+    pcm_quiet.level.status = DSD_INPUT_LEVEL_LOW;
+    assert(dsd_input_level_format_advisory(&pcm_quiet.level, msg, sizeof(msg)) == 0);
     assert(strstr(msg, " 0.0 dBFS") != NULL && strstr(msg, "-0.0") == NULL);
     /* Control: the clip percentage is never negative, so it keeps printf's text. */
-    dsd_input_level_snapshot pcm_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -3.0, 0.0, 0.04, 1);
-    pcm_clip.status = DSD_INPUT_LEVEL_CLIPPING;
-    assert(dsd_input_level_format_advisory(&pcm_clip, msg, sizeof(msg)) == 0);
+    timed_level pcm_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -3.0, 0.0, 0.04, 1);
+    pcm_clip.level.status = DSD_INPUT_LEVEL_CLIPPING;
+    assert(dsd_input_level_format_advisory(&pcm_clip.level, msg, sizeof(msg)) == 0);
     assert(strstr(msg, " 0.0%") != NULL);
 }
 
@@ -430,11 +442,11 @@ test_publish_without_state_and_default_cooldown_paths(void) {
     dsd_input_level_publish(opts, NULL, NULL, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(opts->rtl_pwr == 0.25);
 
-    dsd_input_level_snapshot saturated = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, 0.0, -3.0, 0.0, 350);
+    timed_level saturated = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, 0.0, -3.0, 0.0, 350);
     publish(opts, NULL, &saturated, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(opts->rtl_pwr == 1.0);
 
-    dsd_input_level_snapshot clipped = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.1, 0.2, 360);
+    timed_level clipped = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.1, 0.2, 360);
     opts->input_warn_cooldown_sec = 0;
     state->input_level_last_toast_time = 355;
     state->input_level_last_toast_status = DSD_INPUT_LEVEL_UNKNOWN;
@@ -450,7 +462,7 @@ test_publish_without_state_and_default_cooldown_paths(void) {
 
 /* Issue #572: the decoder prints the warning among its own lines, so whether a repeat prints is decided on decode time,
    which a replay takes from the capture: every replay prints it at the same capture time, however fast it runs. The
-   level's measurement stamp (updated) and the toast's display lifetime (ui_msg_expire) stay on real time. */
+   level's measurement stamp (updated_ms) and the toast's display lifetime (ui_msg_expire) stay on real time. */
 static void
 test_warning_cooldown_runs_on_the_decode_clock(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -459,12 +471,16 @@ test_warning_cooldown_runs_on_the_decode_clock(void) {
     assert(state != NULL);
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
+    opts->iq_replay_active = 1;
     const time_t capture_s = 1262304000; /* 2010-01-01Z: a replay's decode time */
     dsd_decode_clock_use_test((uint64_t)capture_s * 1000000000ULL);
 
+    /* Measured 20 s of real time before the next one. */
+    const uint64_t measured_ms = dsd_realtime_mono_ms();
+    timed_level hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.5, 0.0, capture_s);
+    hot.level.updated_ms = measured_ms > 20000U ? measured_ms - 20000U : 0U;
     const time_t real_before = dsd_realtime_time();
-    dsd_input_level_snapshot hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -15.0, -0.5, 0.0, real_before);
-    dsd_input_level_publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_RF);
+    dsd_input_level_publish(opts, state, &hot.level, DSD_INPUT_LEVEL_NOTIFY_RF);
     const time_t real_after = dsd_realtime_time();
     assert(strstr(state->ui_msg, "RF Level HOT") != NULL);
     assert(state->input_level_last_toast_time == capture_s);
@@ -473,15 +489,14 @@ test_warning_cooldown_runs_on_the_decode_clock(void) {
 
     /* A slow replay: 20 s of real time, no decode time. The repeat waits. */
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
-    hot.updated = real_before + 20;
-    dsd_input_level_publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_RF);
+    hot.level.updated_ms = measured_ms;
+    dsd_input_level_publish(opts, state, &hot.level, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(strcmp(state->ui_msg, "sentinel") == 0);
     assert(state->input_level_last_toast_time == capture_s);
 
     /* A fast replay: 10 s of decode time, no real time. The repeat prints. */
     dsd_decode_clock_test_set_ns((uint64_t)(capture_s + 10) * 1000000000ULL);
-    hot.updated = real_before;
-    dsd_input_level_publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_RF);
+    dsd_input_level_publish(opts, state, &hot.level, DSD_INPUT_LEVEL_NOTIFY_RF);
     assert(strstr(state->ui_msg, "RF Level HOT") != NULL);
     assert(state->input_level_last_toast_time == capture_s + 10);
 
@@ -490,8 +505,53 @@ test_warning_cooldown_runs_on_the_decode_clock(void) {
     free(opts);
 }
 
+static dsd_input_level_snapshot g_producer_level;
+
+static int
+producer_level(dsd_input_level_snapshot* out) {
+    *out = g_producer_level;
+    return 0;
+}
+
+/* A backlog describes old samples; a live advisory must describe the receiver's current input. Replay stays tied
+   to the recorded sample even when a live producer hook happens to be installed. */
+static void
+test_lagging_decoder_uses_fresh_receiver_level(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->input_warn_db = -40.0;
+    const dsd_rtl_stream_metrics_hooks hooks = {.input_level = producer_level};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    const timed_level healthy = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -25.0, -3.0, 0.0, 100);
+    const timed_level clipped = snapshot_for(DSD_INPUT_LEVEL_SOURCE_RTL_CU8, -6.0, -0.1, 1.0, 101);
+    timed_level old = healthy;
+    old.level.updated_ms = 0U;
+    g_producer_level = clipped.level;
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "sentinel");
+    old = clipped;
+    old.level.updated_ms = 0U;
+    g_producer_level = healthy.level;
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_OK);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    opts->iq_replay_active = 1;
+    old.decode_s += 100;
+    publish(opts, state, &old, DSD_INPUT_LEVEL_NOTIFY_RF);
+    assert(strstr(state->ui_msg, "RF Level CLIP") != NULL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_lagging_decoder_uses_fresh_receiver_level();
     test_warning_cooldown_runs_on_the_decode_clock();
     test_classifier_thresholds();
     test_pcm_publish_backfills_rtl_power_but_rf_publish_does_not();

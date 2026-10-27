@@ -160,7 +160,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - The terminal input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
   `--input-level-warn-db`; `HOT` means peak at or above `-1.0 dBFS`; `CLIP` means at least `0.1%` clipped or near-rail
   samples. TCP PCM idle/search level advisories are status-only to avoid console spam. These advisories never adjust
-  gain automatically.
+  gain automatically. A radio input whose receiver has delivered no samples for 2 s reads `RF Level: No input`, and
+  its last level warns about nothing.
 - For RTL-family inputs, the optional DSP panel shows post-channel-filter `Squelch` power against the SQL threshold.
   This is separate from the raw receiver `RF Level` health line.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`
@@ -2027,16 +2028,71 @@ does.
 - External retune control (RTL/RTL‑TCP): `--rtl-udp-control <port>` listens on `127.0.0.1` by default. Use
   `--rtl-udp-control-bind <ipv4>` only when the unauthenticated listener must be reachable remotely.
 
+Stall recovery (`-i rtl`)
+
+- A dongle can stay plugged in and stop delivering samples with no error anywhere (its USB transfers all left pending;
+  closing and reopening it does not help, a USB port reset does). After 5 s with no samples DSD-neo resets that dongle's
+  USB device, reopens it, restores what it had taken (crystal, direct sampling, sample rate, offset tuning, tuner
+  bandwidth, PPM, frequency, gain mode and gain, test mode or the RTL AGC, IF gains, bias tee) and resumes on the same
+  channel. The log shows `RTL-SDR: the receiver sent no samples for <ms> ms; resetting the USB device`, where `<ms>` is
+  the silence the receiver accrued (about 5000; the measured value prints), and then `RTL-SDR: the USB device was reset
+  and reopened; the stream resumes`, and the terminal UI and the Qt app show the toast `RTL-SDR stopped sending samples;
+  reset and reopened`. Decoding picks up after the gap as after a fade: the frame or call it cut ends, while the control
+  channel, the voice channel being followed and trunk-scan ownership stay, and hangtime decides as usual. An
+  `--iq-capture` keeps recording across the reset and marks the gap (see IQ Capture And Replay).
+- One reset per stall: if the reopened dongle sends nothing either, or it stalls again within 60 s of the last reset, or
+  the reset or the restore fails, the session ends as it does when the receiver is unplugged, with the reason in the log
+  (`RTL-SDR: the receiver sent no samples for <ms> ms, none since it was reset and reopened; the stream stops`, `... ms
+  after it was last reset; the stream stops`, `... resetting it failed: <step>; the stream stops`). A dongle that only a
+  power cycle clears ends the session this way.
+- Recovery runs only when DSD-neo can tell which USB device the dongle is, so that a reset never reaches another
+  dongle (one another program may be streaming from): the dongle must report a nonempty serial, and its complete
+  manufacturer/product/serial triple must identify one readable device of the RTL-SDR's vendor-specific USB class
+  (whatever its VID:PID). Unreadable candidates refuse recovery, except devices this process cannot open for lack
+  of permission or a usable driver, as described in [the code map](code_map.md). The build needs libusb-1.0 (configure prints `libusb for RTL-SDR stall recovery: ON`). Otherwise the open logs
+  `RTL-SDR: stall recovery is off for this receiver: <reason>` (for example `another device has the same serial (set a
+  unique one with rtl_eeprom)`: many dongles ship with serial `00000001`; `rtl_eeprom -d <index> -s <serial>` gives
+  each its own) and a stall ends the session as before. The Android app never resets the dongle: a stalled receiver
+  ends the session there, and Reconnect starts it again (see `android/README.md`). On Windows a WinUSB reset may not
+  be a full port reset; whether it worked is judged by the samples that follow.
+- While the dongle is being reset, a frequency, gain, PPM or bias-tee change from a frontend or the control API is refused
+  with `Failed: the RTL-SDR is being reset; try again in a moment` and changes nothing; every other command (menus, an
+  input switch, quit) applies as soon as it is queued.
+- A receiver that has gone quiet but is not yet past the 5 s limit still counts as streaming, so a command queued then
+  waits for the samples or for the verdict, at most those 5 s.
+
+rtl_tcp connections (`-i rtltcp`)
+
+- The server must open with the standard 12-byte rtl_tcp header (`RTL0`, tuner type, gain count); everything after it
+  is I/Q, so no samples are lost after the header. A server that sends no valid header within 10 s fails the open
+  (`rtl_tcp: <host>:<port> sent no rtl_tcp header (...)`).
+- A connection is lost when the server closes it, a read fails, `DSD_NEO_TCP_MAX_TIMEOUTS` receive timeouts
+  (`DSD_NEO_TCP_RCVTIMEO` each, 3 × 2 s by default) pass in a row, the throughput watchdog trips, or a command to the
+  server fails. DSD-neo then logs `rtl_tcp: <reason>; attempting to reconnect to <host>:<port>...` and retries, backing
+  off 0.2 s more per attempt up to 2 s, until the server answers (`rtl_tcp: reconnected on attempt <n>.`) or the
+  session ends. A reconnected server gets every setting the session last had taken (crystal, direct sampling,
+  frequency, sample rate, offset tuning, PPM, gain and the RTL AGC or test mode, IF gains, bias tee), so a server that
+  restarted with other defaults ends up where the session was, and decoding resumes after the gap as after a fade. The
+  I/Q the server sends before it has taken those settings is dropped, and an `--iq-capture` marks the gap.
+- While no server is connected, queued commands still apply: menus, an input switch (from the menu or a loaded config)
+  and quit work at once. A frequency, PPM or bias-tee change is refused with `Failed: the rtl_tcp server is not
+  connected` and changes nothing; the reconnected server gets the last settings that took. Ctrl+C, `q` and the control
+  API's `quit` end the session at once, also while the reconnect waits or while a stalled USB dongle holds the decoder.
+
 Advanced (env)
 
 - `DSD_NEO_RTL_DIRECT=0|1|2|I|Q` — Direct sampling selection (0 off; 1 I‑ADC; 2 Q‑ADC).
-- `DSD_NEO_RTL_OFFSET_TUNING=0|1` — Disable/enable offset tuning (default is to try enabling).
+- `DSD_NEO_RTL_OFFSET_TUNING=0|1` — Disable/enable offset tuning (default is to try enabling). Tuners that support it
+  (E4000, FC0012/FC0013, FC2580) displace the LO and drop the Fs/4 shift; R820T/R828D and direct sampling refuse it
+  and keep the Fs/4 shift.
 - `DSD_NEO_RTL_XTAL_HZ` / `DSD_NEO_TUNER_XTAL_HZ` — Override crystal refs in Hz (optional).
 - `DSD_NEO_RTL_IF_GAINS="stage:gain[,stage:gain]..."` — Set IF gain(s); gain in dB (e.g., `10`) or 0.1 dB (`125`).
-- `DSD_NEO_RTL_TESTMODE=0|1` — Enable librtlsdr test mode (ramp) instead of I/Q (for diagnostics).
+- `DSD_NEO_RTL_TESTMODE=0|1` — Enable librtlsdr test mode (ramp) instead of I/Q (for diagnostics). On a USB dongle
+  and over rtl_tcp test mode stays on through gain changes (and through an rtl_tcp reconnect), and turning it off gives
+  the RTL AGC (`DSD_NEO_RTL_AGC`) back to automatic gain.
 - `DSD_NEO_RTL_VERIFY=0|1` — Retry and verify local USB RTL-SDR control applies (default on).
 - `DSD_NEO_RTL_VERIFY_ATTEMPTS=1..10` — Total local USB apply attempts when verification is enabled (default 10).
-- On rtl_tcp reconnects, these settings are automatically reapplied.
+- An rtl_tcp reconnect and a USB stall recovery reapply every one of these settings the dongle had taken.
 
 ## SoapySDR details (`-i soapy`)
 
@@ -2359,7 +2415,8 @@ RTL‑TCP networking
 - `DSD_NEO_TCP_WAITALL=0/1` — require full reads (default off)
 - `DSD_NEO_TCP_STATS=1` — print throughput/queue stats
 - `DSD_NEO_TCP_AUTOTUNE=1` — enable adaptive buffering/recv size for TCP links
-- `DSD_NEO_TCP_MAX_TIMEOUTS=<n>` — max consecutive timeouts before giving up
+- `DSD_NEO_TCP_MAX_TIMEOUTS=<n>` — consecutive receive timeouts (1–100, default 3) after which the connection counts as
+  lost and is reconnected
 
 RTL‑SDR driver options
 
@@ -2370,7 +2427,8 @@ RTL‑SDR driver options
 - `DSD_NEO_RTL_TESTMODE=0|1` — test mode (ramp source)
 - `DSD_NEO_RTL_AGC=0|1` — RTL2832U AGC enable/disable (default on)
 - `DSD_NEO_RTL_VERIFY=0|1`, `DSD_NEO_RTL_VERIFY_ATTEMPTS=1..10` — local USB apply verification/retry controls
-- `DSD_NEO_TUNER_BW_HZ=<Hz|auto>` — override tuner bandwidth (`auto` or `0` = driver automatic)
+- `DSD_NEO_TUNER_BW_HZ=<Hz|auto>` — override tuner bandwidth (`auto` or `0` = driver automatic). While hardware offset
+  tuning is on the bandwidth is at least twice the LO offset (1.7 × the sample rate); a smaller value is raised.
 
 Tuner autogain (experimental)
 

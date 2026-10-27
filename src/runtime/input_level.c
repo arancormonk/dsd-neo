@@ -13,7 +13,9 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/number_text.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <math.h>
+#include <time.h>
 
 enum {
     DSD_INPUT_LEVEL_TOAST_TTL_SEC = 4,
@@ -121,7 +123,7 @@ input_level_fill(dsd_input_level_snapshot* out, dsd_input_level_source source, d
     out->peak_dbfs = input_level_peak_to_dbfs(peak);
     out->clip_pct = (count > 0U) ? ((double)clipped * 100.0 / (double)count) : 0.0;
     out->sample_count = count;
-    out->updated = dsd_realtime_time();
+    out->updated_ms = dsd_realtime_mono_ms();
 }
 
 static int
@@ -150,6 +152,14 @@ dsd_input_level_classify(dsd_input_level_snapshot* snapshot, double low_warn_db)
         return;
     }
     snapshot->status = DSD_INPUT_LEVEL_OK;
+}
+
+int
+dsd_input_level_is_stale(const dsd_input_level_snapshot* snapshot, uint64_t now_ms) {
+    if (!snapshot || snapshot->sample_count == 0U) {
+        return 1;
+    }
+    return now_ms > snapshot->updated_ms && now_ms - snapshot->updated_ms > DSD_INPUT_LEVEL_STALE_MS;
 }
 
 int
@@ -296,17 +306,35 @@ dsd_input_level_cu8_moments_accumulate(dsd_input_level_cu8_moments* moments, con
     dsd_input_level_cu8_moments add;
     dsd_input_level_cu8_moments_reset(&add);
     add.count = (uint64_t)count;
-    for (size_t i = 0U; i < count; i++) {
-        const uint8_t sample = samples[i];
-        add.sum += (uint64_t)sample;
-        add.sum_sq += (uint64_t)sample * (uint64_t)sample;
-        add.clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
-        if (sample < add.min_sample) {
-            add.min_sample = sample;
+    /* 65536 * 255^2 fits in 32 bits. Bounded integer reductions let baseline CPUs accumulate several samples per
+       vector without widening every addition to 64 bits, while the public totals keep their full range. */
+    for (size_t offset = 0U; offset < count;) {
+        const size_t remaining = count - offset;
+        const size_t take = remaining < 65536U ? remaining : 65536U;
+        uint32_t sum = 0U, sum_sq = 0U, clipped = 0U;
+        uint8_t low = UINT8_MAX, high = 0U;
+        for (size_t i = 0U; i < take; i++) {
+            const uint8_t sample = samples[offset + i];
+            sum += sample;
+            sum_sq += (uint32_t)sample * (uint32_t)sample;
+            clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
+            if (sample < low) {
+                low = sample;
+            }
+            if (sample > high) {
+                high = sample;
+            }
         }
-        if (sample > add.max_sample) {
-            add.max_sample = sample;
+        add.sum += sum;
+        add.sum_sq += sum_sq;
+        add.clipped += clipped;
+        if (low < add.min_sample) {
+            add.min_sample = low;
         }
+        if (high > add.max_sample) {
+            add.max_sample = high;
+        }
+        offset += take;
     }
     return dsd_input_level_cu8_moments_merge(moments, &add);
 }
@@ -391,22 +419,25 @@ dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_input_
     }
     double p = 0.0;
     double t = 0.0;
-    double peak = 0.0;
+    float peak = 0.0f;
     uint64_t clipped = 0U;
     for (size_t i = 0U; i < count; i++) {
-        double s = (double)samples[i];
+        float s = samples[i];
         if (!isfinite(s)) {
-            s = (s < 0.0) ? -1.0 : 1.0;
+            s = (s < 0.0f) ? -1.0f : 1.0f;
         }
-        const double a = fabs(s);
+        const float a = fabsf(s);
         if (a > peak) {
             peak = a;
         }
-        if (a >= 0.98) {
+        /* 0.98f is the first float at or above 0.98; the comparison and peak need no promotion. Keep the sums
+           in double and in sample order, so the published values remain bit-identical. */
+        if (a >= 0.98f) {
             clipped++;
         }
-        t += s;
-        p += s * s;
+        const double value = (double)s;
+        t += value;
+        p += value * value;
     }
     double mean_power = p - ((t * t) / (double)count);
     if (mean_power < 0.0) {
@@ -531,6 +562,36 @@ input_level_should_notify(const dsd_opts* opts, const dsd_state* state, const ds
     return difftime(now, state->input_level_last_toast_time) >= (double)cooldown;
 }
 
+/* Whether the published @p next prints its warning at decode time @p decode_now. */
+static int
+input_level_publish_notifies(const dsd_opts* opts, const dsd_state* state, const dsd_input_level_snapshot* next,
+                             unsigned int notify_mask, time_t decode_now) {
+    if (input_level_should_suppress_tcp_pcm_toast(opts, state, next)
+        || !input_level_should_notify(opts, state, next, notify_mask, decode_now)) {
+        return 0;
+    }
+    /* A live receiver's level that real time has left behind is the last one of a receiver that stopped: no warning
+       about it. A replay's levels keep their warnings, which follow the capture: one that pauses (a slow decoder, a
+       jittered read) prints the same ones in every run. Read only when a warning would print. */
+    return (opts && opts->iq_replay_active) || !dsd_input_level_is_stale(next, dsd_realtime_mono_ms());
+}
+
+static void
+input_level_refresh_live(const dsd_opts* opts, dsd_input_level_snapshot* next) {
+    if (!opts || opts->iq_replay_active || !dsd_input_level_source_is_rf(next->source)) {
+        return;
+    }
+    const uint64_t now_ms = dsd_realtime_mono_ms();
+    if (dsd_input_level_is_stale(next, now_ms)) {
+        /* Backlogged demodulation does not describe the receiver's current level. */
+        dsd_input_level_snapshot live;
+        if (dsd_rtl_stream_metrics_hook_input_level(&live) == 0 && dsd_input_level_source_is_rf(live.source)
+            && !dsd_input_level_is_stale(&live, now_ms)) {
+            *next = live;
+        }
+    }
+}
+
 void
 dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                         unsigned int notify_mask) {
@@ -539,6 +600,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
 
     dsd_input_level_snapshot next = *snapshot;
+    input_level_refresh_live(opts, &next);
     double low_warn_db = opts ? opts->input_warn_db : -40.0;
     dsd_input_level_classify(&next, low_warn_db);
 
@@ -551,12 +613,10 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
 
     /* Whether the warning prints is a decode decision: the decoder prints it, among its own lines, so its cooldown
        runs on decode time, against the decode time of the last warning. A replay then prints it at the same capture
-       time in every run, however fast it runs; live, decode time is the system's. The snapshot's `updated` stays the
-       real time it was measured at, and the toast stays up for real time (ui_msg_expire below). */
+       time in every run, however fast it runs; live, decode time is the system's. The snapshot's `updated_ms` stays
+       the real time it was measured at, and the toast stays up for real time (ui_msg_expire below). */
     const time_t decode_now = dsd_decode_time();
-    int notify = input_level_should_suppress_tcp_pcm_toast(opts, state, &next)
-                     ? 0
-                     : input_level_should_notify(opts, state, &next, notify_mask, decode_now);
+    const int notify = input_level_publish_notifies(opts, state, &next, notify_mask, decode_now);
     state->input_level = next;
     if (!notify) {
         return;

@@ -230,7 +230,8 @@ int rtl_stream_get_requested_ppm(const dsd_opts* opts);
  * @param out Destination buffer for samples. Must not be NULL.
  * @param count Maximum number of samples to read.
  * @param out_got [out] Set to the number of samples actually read; 0 when a live NFM monitor yields on an idle input.
- * @return 0 on success; otherwise <0 on error (e.g., shutdown).
+ * @return 0 on success; DSD_RTL_READ_YIELD (<dsd-neo/runtime/rtl_stream_io_hooks.h>) when a live read found nothing
+ *         while the device has no stream and a command is queued; otherwise <0 on error (e.g., shutdown).
  */
 int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
 /**
@@ -239,6 +240,16 @@ int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
  * otherwise, and for every sample of any other setting), or NULL.
  */
 int rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got);
+/**
+ * @brief rtl_stream_read_ex() for a reader that takes DSD_RTL_READ_NO_STREAM (@p want_no_stream nonzero): a live read
+ * that found nothing for one wait slice while the device has no stream returns it, and never DSD_RTL_READ_YIELD.
+ */
+int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
+
+/** @brief Start of the last NO_STREAM wait slice on this reader thread, in real monotonic milliseconds.
+ * Read only after DSD_RTL_READ_NO_STREAM; 0 if no slice has been recorded. */
+uint64_t rtl_stream_no_stream_since_ms(void);
+
 /**
  * @brief Get the current output sample rate in Hz.
  * @param ctx Stream context.
@@ -253,6 +264,32 @@ uint32_t rtl_stream_output_rate(const RtlSdrContext* ctx);
  * explicit output clear.
  */
 uint32_t rtl_stream_output_generation(void);
+
+/**
+ * @brief Return the stream's discontinuity count (issue #518 D5): how many gaps on the same carrier it has had (a USB
+ * recovery, an rtl_tcp reconnect), and, under an I/Q replay, how many such gaps the capture recorded and the replay
+ * applied. It is process-wide and never goes back, so a value read on one stream compares with one read on the next.
+ */
+uint64_t rtl_stream_discontinuity_seq(void);
+
+/** The capture event reasons of the stream gaps rtl_stream_note_discontinuity() records, which an I/Q replay of the
+ *  capture applies as gaps again. */
+#define RTL_STREAM_GAP_REASON_USB_RECOVERY  "usb_recovery"
+#define RTL_STREAM_GAP_REASON_TCP_RECONNECT "tcp_reconnect"
+
+/**
+ * @brief Note a gap in the running stream on the same carrier (issue #518 D5): a USB recovery or an rtl_tcp reconnect.
+ *
+ * Records the gap in the I/Q capture, when one is being written, as a RETUNE and a RESET on the centre in force with
+ * @p reason, which a replay of the capture applies as the same gap, then moves the discontinuity count
+ * (rtl_stream_discontinuity_seq()), which every read the decoder makes checks. The caller is the stream's controller
+ * inside its boundary transaction, after the purge and before the producer resumes, so no sample past the gap can be
+ * read before the count moves, nor captured before the events.
+ *
+ * @param reason RTL_STREAM_GAP_REASON_USB_RECOVERY or RTL_STREAM_GAP_REASON_TCP_RECONNECT; NULL records a USB
+ *               recovery's.
+ */
+void rtl_stream_note_discontinuity(const char* reason);
 
 /**
  * @brief What one demod block of an I/Q replay ran on, and where its output sits in capture time.
@@ -280,6 +317,9 @@ typedef struct rtl_stream_replay_batch {
     /** Channel centre in Hz the chunk was captured on: the capture's opening centre, then each recorded RETUNE's, and
         the opening one again after a loop rewind. */
     uint32_t center_frequency_hz;
+    /** rtl_stream_discontinuity_seq() when the block was demodulated: a recorded USB recovery or rtl_tcp reconnect the
+        replay applied moves it for every batch after the event, never for one before it. */
+    uint64_t boundary_seq;
 } rtl_stream_replay_batch;
 
 /** What a run-time change of the decode mode or DSP bandwidth does to a running I/Q replay (issue #701). */
@@ -947,6 +987,16 @@ int rtl_stream_get_squelch_status(rtl_stream_squelch_status* out);
 int rtl_stream_set_bias_tee(int on);
 
 /**
+ * @brief Why the running stream's receiver cannot take a control right now, if the receiver itself is the cause.
+ *
+ * Decoder thread (where commands apply). See rtl_device_control_unavailable().
+ *
+ * @return RTL_DEVICE_EBUSY while a USB RTL-SDR is being reset and reopened (stall recovery), RTL_DEVICE_ENOTCONN while
+ *         an rtl_tcp input has no connection to its server, 0 otherwise (including with no stream).
+ */
+int rtl_stream_control_unavailable(void);
+
+/**
  * @brief Get the currently applied tuner gain.
  *
  * Returns the driver-reported tuner gain in tenths of a dB (e.g., 270 for
@@ -1291,7 +1341,8 @@ int rtl_stream_constellation_get(float* out_xy, int max_points);
  * Returns up to max_bins bins in out_db, equally spaced across the complex
  * baseband Nyquist span, with DC-centered ordering (i.e., out_db[0] ~ -Fs/2,
  * mid ~ DC, last ~ +Fs/2). Values are smoothed and approximately in dBFS.
- * Optionally returns the current demod output sample rate via out_rate.
+ * The count and out_rate belong to the published frame. After an FFT-size change, the previous frame
+ * and its bin count remain available until the next frame is published; max_bins may truncate that count.
  *
  * @param out_db Destination buffer for spectrum bins (float dB). Must not be NULL.
  * @param max_bins Maximum number of bins to write.

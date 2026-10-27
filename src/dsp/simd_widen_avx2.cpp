@@ -174,9 +174,10 @@ struct Cu8VectorMoments {
         const __m256i hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(bytes, 1));
         squares = _mm256_add_epi32(squares, _mm256_add_epi32(_mm256_madd_epi16(lo, lo), _mm256_madd_epi16(hi, hi)));
         const __m256i ones = _mm256_set1_epi8(1);
-        const __m256i low = _mm256_cmpeq_epi8(_mm256_min_epu8(bytes, ones), bytes);
-        const __m256i high = _mm256_cmpeq_epi8(_mm256_max_epu8(bytes, _mm256_set1_epi8(-2)), bytes);
-        const __m256i clipped = _mm256_and_si256(_mm256_or_si256(low, high), ones);
+        /* Wrapping by two maps both clipping edges (254, 255, 0, 1) to the contiguous unsigned interval 0..3. */
+        const __m256i shifted = _mm256_add_epi8(bytes, _mm256_set1_epi8(2));
+        const __m256i edge = _mm256_cmpeq_epi8(_mm256_min_epu8(shifted, _mm256_set1_epi8(3)), shifted);
+        const __m256i clipped = _mm256_and_si256(edge, ones);
         clips = _mm256_add_epi64(clips, _mm256_sad_epu8(clipped, zero));
     }
 
@@ -200,18 +201,20 @@ struct Cu8VectorMoments {
 
 static inline void
 merge_vector_extrema(__m256i min_bytes, __m256i max_bytes, dsd_input_level_cu8_moments* local) {
-    alignas(32) unsigned char mins[32];
-    alignas(32) unsigned char maxes[32];
-    _mm256_store_si256(reinterpret_cast<__m256i*>(mins), min_bytes);
-    _mm256_store_si256(reinterpret_cast<__m256i*>(maxes), max_bytes);
-    for (unsigned int lane = 0U; lane < 32U; lane++) {
-        if (mins[lane] < local->min_sample) {
-            local->min_sample = mins[lane];
-        }
-        if (maxes[lane] > local->max_sample) {
-            local->max_sample = maxes[lane];
-        }
-    }
+    /* Keep the reduction in registers. The scalar tail follows this vector prefix, so it has not contributed any
+       extrema to local yet. */
+    __m128i low = _mm_min_epu8(_mm256_castsi256_si128(min_bytes), _mm256_extracti128_si256(min_bytes, 1));
+    __m128i high = _mm_max_epu8(_mm256_castsi256_si128(max_bytes), _mm256_extracti128_si256(max_bytes, 1));
+    low = _mm_min_epu8(low, _mm_srli_si128(low, 8));
+    high = _mm_max_epu8(high, _mm_srli_si128(high, 8));
+    low = _mm_min_epu8(low, _mm_srli_si128(low, 4));
+    high = _mm_max_epu8(high, _mm_srli_si128(high, 4));
+    low = _mm_min_epu8(low, _mm_srli_si128(low, 2));
+    high = _mm_max_epu8(high, _mm_srli_si128(high, 2));
+    low = _mm_min_epu8(low, _mm_srli_si128(low, 1));
+    high = _mm_max_epu8(high, _mm_srli_si128(high, 1));
+    local->min_sample = (uint8_t)(_mm_cvtsi128_si32(low) & 255);
+    local->max_sample = (uint8_t)(_mm_cvtsi128_si32(high) & 255);
 }
 
 static inline void

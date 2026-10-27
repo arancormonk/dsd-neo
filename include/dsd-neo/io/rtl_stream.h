@@ -69,7 +69,8 @@ class RtlSdrOrchestrator {
      * @param out Destination buffer.
      * @param count Max samples to read.
      * @param out_got [out] Number of samples read.
-     * @return 0 on success, <0 on error (e.g., shutdown).
+     * @return 0 on success; DSD_RTL_READ_YIELD when a live read with no stream gave way to a queued command
+     *         (<dsd-neo/runtime/rtl_stream_io_hooks.h>); another value <0 on error (e.g., shutdown).
      */
     int read(float* out, size_t count, int& out_got);
 
@@ -78,6 +79,12 @@ class RtlSdrOrchestrator {
      * @param flags One byte per sample read (DSD_SQUELCH_FLAG_CLOSED or 0), or nullptr.
      */
     int read(float* out, uint8_t* flags, size_t count, int& out_got);
+
+    /**
+     * @brief read() with flags for a reader that takes DSD_RTL_READ_NO_STREAM (@p want_no_stream): returned for each
+     * wait slice a live read with no stream found nothing in, in place of DSD_RTL_READ_YIELD.
+     */
+    int read(float* out, uint8_t* flags, size_t count, int& out_got, int want_no_stream);
 
   private:
     // Non-copyable to avoid accidental shared lifecycle

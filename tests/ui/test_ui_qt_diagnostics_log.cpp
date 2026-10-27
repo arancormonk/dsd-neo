@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -35,6 +36,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
+#include <functional>
 #include <string.h>
 #include <thread>
 #include <utility>
@@ -672,7 +674,7 @@ legacyTailIsSplit() {
     QTemporaryDir dir;
     QByteArray legacy;
     QStringList lines;
-    for (int i = 0; legacy.size() < 250 * 1024; ++i) {
+    for (int i = 0; legacy.size() < 250LL * 1024; ++i) {
         const QString line = QStringLiteral("[host] [info] legacy %1 ").arg(i) + QString(200, QChar(0x03bb));
         lines.append(line);
         legacy += line.toUtf8() + '\n';
@@ -695,7 +697,7 @@ legacyTailIsSplit() {
         }
         check(log.flush(), "flush after legacy load");
     }
-    check(QFileInfo(dir.filePath("tail.log")).size() + QFileInfo(dir.filePath("tail.prev.log")).size() <= 256 * 1024,
+    check(QFileInfo(dir.filePath("tail.log")).size() + QFileInfo(dir.filePath("tail.prev.log")).size() <= 256LL * 1024,
           "legacy tail grew past the bound");
 }
 
@@ -1013,7 +1015,7 @@ interruptedLegacySplit() {
         legacy += QStringLiteral("[host] [info] legacy %1 ").arg(i).toUtf8() + QByteArray(400, 'l') + '\n';
     }
     writeFile(dir.filePath("tail.log"), legacy);
-    writeFile(dir.filePath("tail.prev.log"), legacy.left(legacy.indexOf('\n', 100 * 1024) + 1));
+    writeFile(dir.filePath("tail.prev.log"), legacy.left(legacy.indexOf('\n', 100LL * 1024) + 1));
     g_clock = 0;
     DiagnosticsLog log(dir.path(), manualOptions());
     const auto text = log.snapshot().join('\n');
@@ -1066,7 +1068,7 @@ lostSegmentDoesNotSpin() {
     }
     check(!log.flush(), "a lost segment reported durable");
     for (int i = 0; i < 5; ++i) {
-        g_clock += 10 * DiagnosticsLog::kSyncIntervalMs;
+        g_clock += 10ULL * DiagnosticsLog::kSyncIntervalMs;
         check(!log.pump(), "the writer stayed due with no segment to sync");
     }
 }
@@ -1264,7 +1266,7 @@ unicodeDirectory() {
     const QString path = root.filePath(QStringLiteral("диагностика-診断"));
     check(QDir().mkpath(path), "unicode directory");
     QByteArray legacy;
-    while (legacy.size() < 200 * 1024) {
+    while (legacy.size() < 200LL * 1024) {
         legacy += "[host] [info] legacy line with some length to it\n";
     }
     writeFile(path + QStringLiteral("/tail.log"), legacy);

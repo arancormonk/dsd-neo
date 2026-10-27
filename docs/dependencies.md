@@ -28,6 +28,13 @@ Optional compiled dependencies are:
   librtlsdr 2.0.3 or newer (older releases misdetect their R828D/R828S tuners
   as an R820T); the versions this project pins for CI, Windows and Android
   builds are 2.0.3
+- libusb-1.0 (headers, library and `libusb_reset_device`) for RTL-SDR stall
+  recovery: a dongle that stops delivering samples is reset and reopened in
+  place (see `docs/cli.md`, "Stall recovery"). Without it the build still works
+  and a stall ends the session. librtlsdr's development package usually brings
+  it (Windows gets it from the librtlsdr overlay's vcpkg dependency); configure
+  reports `libusb for RTL-SDR stall recovery: ON` or `OFF`. Android builds never
+  use it.
 - SoapySDR 0.8.1 or newer for non-RTL SDR devices; the CMake package must
   export an imported target (`SoapySDR` or `SoapySDR::SoapySDR`)
 - Codec2 for additional vocoder paths. On Windows and Android it comes from the

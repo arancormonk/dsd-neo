@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 
@@ -59,6 +60,24 @@ dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn) { // NOLINT(misc-us
 void
 dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn) { // NOLINT(misc-use-internal-linkage)
     g_controls_need_frame_loop = fn;
+}
+
+static dsd_stream_notice_fn g_stream_notice_sink;
+static int g_stream_notice_clears;
+
+void
+dsd_runtime_stream_notice_set(dsd_stream_notice_fn fn) { // NOLINT(misc-use-internal-linkage)
+    g_stream_notice_sink = fn;
+}
+
+void
+dsd_app_stream_notice_post(int kind) { // NOLINT(misc-use-internal-linkage)
+    (void)kind;
+}
+
+void
+dsd_app_stream_notice_clear(void) { // NOLINT(misc-use-internal-linkage)
+    g_stream_notice_clears++;
 }
 
 int
@@ -123,7 +142,14 @@ main(void) {
     /* A silent input's wait asks the queue whether a command waits (issue #634). */
     assert(g_controls_pending == dsd_app_commands_pending);
     assert(g_controls_need_frame_loop == dsd_app_commands_need_frame_loop);
+    /* The stream's notices (a stalled RTL-SDR recovered) reach the decoder's drain while the session runs, from an
+       empty slot: whatever an earlier session left there was cleared first. */
+    assert(g_stream_notice_sink == dsd_app_stream_notice_post);
+    assert(g_stream_notice_clears == 1);
     dsd_app_frontend_runtime_stop();
+    /* ... and none is left for the next session. */
+    assert(g_stream_notice_sink == NULL);
+    assert(g_stream_notice_clears == 2);
     assert(g_notification_resets == 1);
     /* So does a Signal search status a rejected start left with no coordinator to stop it. */
     assert(g_search_session_ends == 1);

@@ -20,6 +20,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <mutex>
+#include <numeric>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,12 +28,59 @@
 #include "rtl_finite.h"
 #include "rtl_spectrum_kernels.h"
 #include "rtl_stream_shared.hpp"
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include "rtl_stream_test_support.h"
+#include "rtl_test_hook.h"
+#endif
+
+#if defined(_MSC_VER)
+#define DSD_RTL_SPECTRUM_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define DSD_RTL_SPECTRUM_NOINLINE __attribute__((noinline))
+#else
+#define DSD_RTL_SPECTRUM_NOINLINE
+#endif
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
 static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
-static float g_spec_db[kSpecMaxN];
-static std::atomic<int> g_spec_rate_hz{0};
-static std::atomic<int> g_spec_ready{0};
+
+/* The smoothed bins, which rtl_stream_spectrum_get() hands out on any thread (the frontends' spectrum, the autogain
+ * gate). The demod thread, the only writer, folds each new frame out of place, from its last frame into a buffer no
+ * reader holds, then makes that buffer current (g_spec_cur); a reader holds the current buffer (g_spec_holds) while it
+ * copies it. So no buffer is written while it is read, and publishing a frame copies nothing. Should every buffer but
+ * the current one be held, the frame goes to the writer's own buffer and the next one is published. */
+namespace {
+struct rtl_spec_frame {
+    float db[kSpecMaxN];
+    int n;
+    int rate_hz;
+};
+} // namespace
+
+static const int kSpecFrames = 4;
+static rtl_spec_frame g_spec_frames[kSpecFrames];
+static std::atomic<int> g_spec_holds[kSpecFrames];
+static std::atomic<int> g_spec_cur{-1}; /* none yet */
+/* Demod thread only: its own buffer, and the frame it folded last (the one the next blends with, and the bins the
+ * peak search reads). */
+static rtl_spec_frame g_spec_writer;
+static const rtl_spec_frame* g_spec_last = &g_spec_writer;
+static bool g_spec_seed = true;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static RtlTestHook<> g_test_spectrum_pin_hook;
+
+extern "C" void
+rtl_metrics_test_spectrum_set_pin_hook(void (*hook)(void*), void* ctx) {
+    g_test_spectrum_pin_hook.set(hook, ctx);
+}
+
+extern "C" int
+rtl_metrics_test_spectrum_hold_count(void) {
+    return std::accumulate(g_spec_holds, g_spec_holds + kSpecFrames, 0, [](int holds, const std::atomic<int>& count) {
+        return holds + count.load(std::memory_order_seq_cst);
+    });
+}
+#endif
 static std::atomic<int> g_spec_N{256}; /* default N */
 std::atomic<double> g_spec_peak_db{-100.0};
 std::atomic<double> g_spec_snr_db{-100.0};
@@ -239,18 +287,47 @@ rtl_metrics_phase_cfo_hz(const float* iq_interleaved, const rtl_metrics_fft_fram
  * frame is a gain step taken for no reason. */
 static const float kSpecEmaNewWeight = 0.2f;
 
-static void
+/* A buffer to fold the next frame into: one that is not current and that no reader holds, else the writer's own. A
+ * reader that took a hold after this check also finds the buffer no longer current, and lets go without reading it
+ * (rtl_stream_spectrum_get()). */
+static rtl_spec_frame*
+rtl_metrics_spec_free_frame(void) {
+    const int cur = g_spec_cur.load(std::memory_order_relaxed);
+    /* Check the first noncurrent buffer directly before searching held spares. */
+    const int preferred = (cur == 0) ? 1 : 0;
+    if (g_spec_holds[preferred].load(std::memory_order_seq_cst) == 0) {
+        return &g_spec_frames[preferred];
+    }
+    for (int i = 0; i < kSpecFrames; i++) {
+        if (i != cur && i != preferred && g_spec_holds[i].load(std::memory_order_seq_cst) == 0) {
+            return &g_spec_frames[i];
+        }
+    }
+    return &g_spec_writer;
+}
+
+/* The FFT, CFO and fold all need vector temporaries. Keep this loop separate so LTO does not spill its state while
+ * combining it with the rest of the update. A frame of another size than the last seeds: the last one's bins are
+ * valid only up to its own n (the buffer's tail is whatever it last held), and a bin index names another frequency at
+ * another size anyway. */
+static DSD_RTL_SPECTRUM_NOINLINE void
 rtl_metrics_smooth_spectrum_bins(int N, int out_rate_hz, const float* z) {
-    const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
-    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, first, g_spec_db);
-    g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
-    g_spec_ready.store(1, std::memory_order_release);
+    rtl_spec_frame* out = rtl_metrics_spec_free_frame();
+    const bool seed = g_spec_seed || g_spec_last->n != N;
+    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, seed, g_spec_last->db, out->db);
+    out->n = N;
+    out->rate_hz = out_rate_hz;
+    g_spec_last = out;
+    g_spec_seed = false;
+    if (out != &g_spec_writer) {
+        g_spec_cur.store((int)(out - g_spec_frames), std::memory_order_seq_cst);
+    }
 }
 
 static void
 rtl_metrics_peak_search_bounds(int N, int* k_center_i, int* i_lo, int* i_hi) {
-    *k_center_i = N >> 1;
-    int W = N >> 2;
+    *k_center_i = N / 2;
+    int W = N / 4;
     if (W < 8) {
         W = 8;
     }
@@ -267,10 +344,11 @@ rtl_metrics_peak_search_bounds(int N, int* k_center_i, int* i_lo, int* i_hi) {
 static void
 rtl_metrics_peak_find_bin(int i_lo, int i_hi, int* i_max, float* p_max) {
     *i_max = i_lo;
-    *p_max = g_spec_db[i_lo];
+    const float* db = g_spec_last->db;
+    *p_max = db[i_lo];
     for (int k = i_lo + 1; k <= i_hi; k++) {
-        if (g_spec_db[k] > *p_max) {
-            *p_max = g_spec_db[k];
+        if (db[k] > *p_max) {
+            *p_max = db[k];
             *i_max = k;
         }
     }
@@ -279,12 +357,7 @@ rtl_metrics_peak_find_bin(int i_lo, int i_hi, int* i_max, float* p_max) {
 static float
 rtl_metrics_peak_noise_snr(int i_lo, int i_hi, int i_max, float p_max) {
     alignas(16) float noise_bins[kSpecMaxN];
-    int noise_count = 0;
-    for (int k = i_lo; k <= i_hi; k++) {
-        if (k < i_max - 2 || k > i_max + 2) {
-            noise_bins[noise_count++] = g_spec_db[k];
-        }
-    }
+    const int noise_count = dsd_io::spectrum_copy_noise_bins(g_spec_last->db, i_lo, i_hi, i_max, noise_bins);
     if (noise_count < 16) {
         return -100.0f;
     }
@@ -298,7 +371,8 @@ rtl_metrics_peak_center_tone_filter(int N, int k_center_i, int i_max, float p_ma
     if (N < 3 || i_max <= 0 || i_max + 1 >= N || i_max != k_center_i) {
         return spec_snr_db;
     }
-    float side_max = (g_spec_db[i_max - 1] > g_spec_db[i_max + 1]) ? g_spec_db[i_max - 1] : g_spec_db[i_max + 1];
+    const float* db = g_spec_last->db;
+    float side_max = (db[i_max - 1] > db[i_max + 1]) ? db[i_max - 1] : db[i_max + 1];
     if ((p_max - side_max) > 12.0f) {
         return -100.0f;
     }
@@ -401,11 +475,40 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
 }
 
 /* Spectrum and carrier diagnostics query helpers. */
+static int
+rtl_metrics_pin_spectrum_frame(void) {
+    unsigned int held = 0U;
+    int cur;
+    for (;;) {
+        cur = g_spec_cur.load(std::memory_order_seq_cst);
+        if (cur < 0 || (held & (1U << cur))) {
+            break;
+        }
+        g_spec_holds[cur].fetch_add(1, std::memory_order_seq_cst);
+        held |= 1U << cur;
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        g_test_spectrum_pin_hook.invoke();
+#endif
+        if (g_spec_cur.load(std::memory_order_seq_cst) == cur) {
+            break;
+        }
+        /* Keep raced candidates pinned. After at most four pins the writer must use its private scratch frame,
+         * so publication cannot starve this reader. Seeing a previously pinned frame current proves its write ended. */
+    }
+    for (int i = 0; i < kSpecFrames; i++) {
+        if (i != cur && (held & (1U << i))) {
+            g_spec_holds[i].fetch_sub(1, std::memory_order_seq_cst);
+        }
+    }
+    return cur;
+}
+
 /**
  * @brief Copy the smoothed spectrum into the caller's buffer.
  *
- * Returns the number of bins copied (clamped to both the configured FFT size
- * and `max_bins`). Optionally returns the current sample rate used for the FFT.
+ * Returns the number of bins copied (clamped to both the published frame's FFT
+ * size and `max_bins`). Optionally returns the sample rate that frame's FFT ran
+ * at. Any thread: the frame is copied whole while the writer folds into another buffer.
  *
  * @param out_db   [out] Destination buffer for power values in dB.
  * @param max_bins Maximum bins to copy.
@@ -417,23 +520,20 @@ rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     if (!out_db || max_bins <= 0) {
         return 0;
     }
-    if (g_spec_ready.load(std::memory_order_acquire) == 0) {
+    const int cur = rtl_metrics_pin_spectrum_frame();
+    if (cur < 0) {
         return 0;
     }
-    int N = g_spec_N.load(std::memory_order_relaxed);
-    if (N < 64) {
-        N = 64;
-    }
-    if (N > kSpecMaxN) {
-        N = kSpecMaxN;
-    }
-    int n = (max_bins < N) ? max_bins : N;
+    const rtl_spec_frame* frame = &g_spec_frames[cur];
+    const int N = (frame->n < 0) ? 0 : ((frame->n > kSpecMaxN) ? kSpecMaxN : frame->n);
+    const int n = (max_bins < N) ? max_bins : N;
     for (int i = 0; i < n; i++) {
-        out_db[i] = g_spec_db[i];
+        out_db[i] = frame->db[i];
     }
     if (out_rate) {
-        *out_rate = g_spec_rate_hz.load(std::memory_order_relaxed);
+        *out_rate = frame->rate_hz;
     }
+    g_spec_holds[cur].fetch_sub(1, std::memory_order_seq_cst);
     return n;
 }
 
@@ -708,3 +808,25 @@ rtl_stream_get_auto_ppm(void) {
     }
     return g_auto_ppm_enabled.load(std::memory_order_relaxed) ? 1 : 0;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" void
+rtl_metrics_test_spectrum_reset(void) {
+    g_spec_cur.store(-1, std::memory_order_seq_cst);
+    g_spec_last = &g_spec_writer;
+    g_spec_seed = true;
+}
+
+extern "C" int
+rtl_metrics_test_spectrum_hold_spares(int hold) {
+    const int cur = g_spec_cur.load(std::memory_order_seq_cst);
+    int held = 0;
+    for (int i = 0; i < kSpecFrames; i++) {
+        if (i != cur) {
+            g_spec_holds[i].fetch_add(hold ? 1 : -1, std::memory_order_seq_cst);
+            held++;
+        }
+    }
+    return held;
+}
+#endif

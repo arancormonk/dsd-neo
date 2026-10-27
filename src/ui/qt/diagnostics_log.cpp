@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <QByteArrayView>
 #include <QChar>
+#include <QFlags>
 #include <QHash>
 #include <QIODevice>
+#include <QLatin1String>
 #include <QVariant>
 #include <Qt>
+#include <stddef.h>
 #include <utility>
 #include "diagnostics_log.h"
 
@@ -23,7 +27,6 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
-#include <initializer_list>
 #include <limits>
 #include "realtime_clock.h"
 
@@ -37,8 +40,8 @@ constexpr int flushResultLimit = 64;
 constexpr int pinnedLimit = 8;
 const char kTailName[] = "tail.log";
 const char kPrevName[] = "tail.prev.log";
-const QByteArray kProcessPrefix = QByteArrayLiteral("[process] [info] pid ");
-const QByteArray kSessionPrefix = QByteArrayLiteral("[session] [info] --- session starting");
+constexpr QByteArrayView kProcessPrefix = "[process] [info] pid ";
+constexpr QByteArrayView kSessionPrefix = "[session] [info] --- session starting";
 
 struct HostDiagnostics {
     std::mutex mutex;
@@ -782,8 +785,8 @@ DiagnosticsLog::clearFiles() {
 }
 
 QByteArray
-DiagnosticsLog::headerExcluding(std::deque<QByteArray>::const_iterator from,
-                                std::deque<QByteArray>::const_iterator end) const {
+DiagnosticsLog::headerExcluding(const std::deque<QByteArray>::const_iterator& from,
+                                const std::deque<QByteArray>::const_iterator& end) const {
     // A context line still waiting in the batch (the process or session line itself) is written once, as the
     // record it is, not again in the header ahead of it.
     QByteArray header;

@@ -784,7 +784,10 @@ turns to `LOST` at once, while the session still saves and uploads its last call
 tapping it explains that the session is finishing and offers **Stop now**, which
 drops the uploads still waiting. On a short landscape Monitor, where the header
 scrolls away, a fixed `RTL-SDR LOST` line above Stop does the same. Nothing
-restarts during a session.
+restarts during a session: the desktop build resets and reopens a stalled
+RTL-SDR in place, once per stall (`docs/cli.md`, "Stall recovery"), but the
+app opens the dongle through Android's USB host and never resets it, so a
+stalled RTL-SDR ends the session here as before, and Reconnect starts it again.
 
 Once the session has ended, Listen shows a notice in place of the receiver card:
 "RTL-SDR was unplugged, so <system> stopped. Plug it back in, then tap Reconnect."

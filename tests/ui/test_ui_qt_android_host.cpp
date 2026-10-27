@@ -7,20 +7,25 @@
 #include <QIODevice>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
+#include <QMap>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QVariant>
+#include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
 #include <stdint.h>
 #include <utility>
 #include "../../android/decoder_host_android.h"
+#include "../../android/local_device_state.h"
 #include "../../android/run_status.h"
 #include "../../android/session_state_map.h"
 #include "decoder_host.h"
+#include "diagnostics_log.h"
 
 static QJsonObject&
 retained_record() {
@@ -740,7 +745,7 @@ check_receiver_health() {
     host.refresh();
     QJsonObject openFailed = lifecycle_record(90, "IDLE", kRunFailed, kEndNone, kReceiverRtl);
     openFailed.insert("lastError", "Radio open failed");
-    retained_record() = openFailed;
+    retained_record() = std::move(openFailed);
     running = false;
     host.refresh();
     host.requestLocalDeviceAccess();
@@ -772,7 +777,7 @@ check_claim_error_scope() {
     QJsonObject failed = lifecycle_record(91, "IDLE", kRunFailed, kEndNone, kReceiverAirspy);
     failed.insert("deviceError", -6);
     failed.insert("lastError", "Decoder run failed (1); USB open/claim error -6");
-    retained_record() = failed;
+    retained_record() = std::move(failed);
     running = false;
     host.refresh();
     check(host.localDeviceFailureKind() == DecoderHost::DeviceBusy
@@ -787,7 +792,7 @@ check_claim_error_scope() {
           "an Airspy session's claim error never shows for a later RTL-SDR");
     QJsonObject other = airspy;
     other.insert("serial", "A2");
-    usb_record() = other;
+    usb_record() = std::move(other);
     host.refresh();
     check(host.localDeviceFailureKind() == DecoderHost::NoDeviceFailure
               && host.localDeviceStatus() == QStringLiteral("Ready: Airspy"),

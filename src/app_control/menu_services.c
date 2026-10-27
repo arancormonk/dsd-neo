@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/analog_width_view.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_input_switch.h>
@@ -29,6 +30,7 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -2010,6 +2012,14 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     if (!opts || !state) {
         return -1;
     }
+    dsd_app_rtl_gain_view view;
+    (void)dsd_app_rtl_gain_view_get(opts, state, &view);
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && !view.row_override) {
+        const int unavailable = rtl_stream_control_unavailable();
+        if (unavailable != 0) {
+            return unavailable;
+        }
+    }
     if (value < 0) {
         value = 0;
     }
@@ -2213,12 +2223,31 @@ svc_rtl_set_bias_tee(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
-    opts->rtl_bias_tee = on ? 1 : 0;
+    const int requested = on ? 1 : 0;
     if (state && state->rtl_ctx) {
         /* Apply live when RTL stream is active */
-        return rtl_stream_set_bias_tee(opts->rtl_bias_tee);
+        const int rc = rtl_stream_set_bias_tee(requested);
+        if (rc != 0) {
+            return rc;
+        }
     }
+    opts->rtl_bias_tee = requested;
     return 0;
+}
+
+const char*
+svc_radio_control_unavailable_text(int device_rc) {
+    int code = device_rc;
+    if (code != RTL_DEVICE_EBUSY && code != RTL_DEVICE_ENOTCONN) {
+        code = rtl_stream_control_unavailable();
+    }
+    if (code == RTL_DEVICE_EBUSY) {
+        return "the RTL-SDR is being reset; try again in a moment";
+    }
+    if (code == RTL_DEVICE_ENOTCONN) {
+        return "the rtl_tcp server is not connected";
+    }
+    return NULL;
 }
 
 int

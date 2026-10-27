@@ -53,6 +53,21 @@ dsd_rtl_stream_io_hook_read_ex(dsd_state* state, float* out, uint8_t* flags, siz
     return rc;
 }
 
+int
+dsd_rtl_stream_io_hook_read_ex2(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got,
+                                int want_no_stream) {
+    if (!g_rtl_stream_io_hooks.read_ex2) {
+        return dsd_rtl_stream_io_hook_read_ex(state, out, flags, count, out_got);
+    }
+    int got_tmp = 0;
+    int* out_got_ptr = out_got ? out_got : &got_tmp;
+    *out_got_ptr = 0;
+    if (!state || !state->rtl_ctx || !out || count == 0) {
+        return -1;
+    }
+    return g_rtl_stream_io_hooks.read_ex2((void*)state->rtl_ctx, out, flags, count, out_got_ptr, want_no_stream);
+}
+
 double
 dsd_rtl_stream_io_hook_return_pwr(const dsd_state* state) {
     if (!state || !state->rtl_ctx) {
@@ -75,4 +90,9 @@ dsd_rtl_stream_io_hook_squelch_status(const dsd_state* state, dsd_rtl_squelch_st
         return -1;
     }
     return g_rtl_stream_io_hooks.squelch_status((const void*)state->rtl_ctx, out);
+}
+
+uint64_t
+dsd_rtl_stream_io_hook_no_stream_since_ms(void) {
+    return g_rtl_stream_io_hooks.no_stream_since_ms ? g_rtl_stream_io_hooks.no_stream_since_ms() : 0U;
 }

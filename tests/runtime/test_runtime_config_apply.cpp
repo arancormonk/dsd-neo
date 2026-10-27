@@ -1209,7 +1209,8 @@ test_ui_command_queue_overflow_drops_oldest(void) {
     dsd_state* state = runtime.state;
 
     dsd_exitflag_store(0);
-    dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0);
+    int32_t first = 5;
+    dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, &first, sizeof first);
     for (int i = 0; i < 127; i++) {
         dsd_app_command_submit(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0);
     }
@@ -1218,7 +1219,16 @@ test_ui_command_queue_overflow_drops_oldest(void) {
 
     int rc = 0;
     rc |= expect_int_eq("overflow keeps bounded queue depth", applied, 127);
-    rc |= expect_int_eq("overflow drops oldest quit command", (int)dsd_exitflag_load(), 0);
+    rc |= expect_int_eq("overflow of other commands does not exit", (int)dsd_exitflag_load(), 0);
+
+    /* An accepted quit raises the flag at submit, so evicting it from the queue does not cancel it. */
+    dsd_app_command_submit(DSD_APP_CMD_QUIT, NULL, 0);
+    for (int i = 0; i < 127; i++) {
+        dsd_app_command_submit(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0);
+    }
+    rc |= expect_int_eq("accepted quit exits before the drain", (int)dsd_exitflag_load(), 1);
+    rc |= expect_int_eq("evicted quit leaves the bounded depth", dsd_app_drain_cmds(opts, state), 127);
+    rc |= expect_int_eq("evicted quit still exits", (int)dsd_exitflag_load(), 1);
 
     dsd_exitflag_store(0);
     free_test_runtime(&runtime);

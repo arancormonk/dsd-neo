@@ -1208,6 +1208,7 @@ if(DSD_HAS_SOAPYSDR)
     endif()
 endif()
 
+set(DSD_HAVE_LIBUSB OFF)
 if(DSD_HAS_RTLSDR)
     find_package(Threads)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
@@ -1280,10 +1281,40 @@ if(DSD_HAS_RTLSDR)
             "with -DDSD_ENABLE_RTLSDR=OFF (rtl_tcp still works via -DDSD_FORCE_RADIO_PIPELINE=ON)."
         )
     endif()
+
+    # libusb for the USB identity and reset of a stalled dongle
+    # (src/io/radio/rtl_usb_identity.cpp, private to dsd-neo_io_radio and its test
+    # mirror): header, library and a link check for libusb_reset_device. Never on
+    # Android, where the receiver is opened from a USB descriptor and the vendored
+    # tree carries its own libusb; without it the unit is a stub (no recovery).
+    if(NOT ANDROID AND NOT DSD_ANDROID_VENDORED_RTLSDR)
+        find_package(Libusb)
+        if(LIBUSB_FOUND)
+            include(CheckSymbolExists)
+            set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
+            set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+            set(CMAKE_REQUIRED_INCLUDES ${LIBUSB_INCLUDE_DIR})
+            set(CMAKE_REQUIRED_LIBRARIES ${LIBUSB_LIBRARY})
+            unset(HAVE_LIBUSB_RESET_DEVICE CACHE)
+            check_symbol_exists(
+                libusb_reset_device
+                "libusb.h"
+                HAVE_LIBUSB_RESET_DEVICE
+            )
+            set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
+            set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
+            unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
+            unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+            if(HAVE_LIBUSB_RESET_DEVICE)
+                set(DSD_HAVE_LIBUSB ON)
+            endif()
+        endif()
+    endif()
 else()
     # Provide a stub interface target so linking remains unconditional upstream
     add_library(dsd-neo_feature_rtlsdr INTERFACE)
 endif()
+message(STATUS "libusb for RTL-SDR stall recovery: ${DSD_HAVE_LIBUSB}")
 
 if(DSD_HAS_CODEC2)
     list(APPEND LIBS ${CODEC2_LIBRARIES})

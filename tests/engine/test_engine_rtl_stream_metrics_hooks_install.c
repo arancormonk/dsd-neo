@@ -320,12 +320,21 @@ rtl_stream_get_replay_batch(rtl_stream_replay_batch* out) {
     out->output_count = 99U;
     out->first_index = 17U;
     out->center_frequency_hz = 851012500U;
+    out->boundary_seq = 0x123456789ULL;
     return g_replay_batch_result;
 }
 
+static int g_discontinuity_calls;
+
+uint64_t
+rtl_stream_discontinuity_seq(void) {
+    ++g_discontinuity_calls;
+    return 0xABCDEF012ULL;
+}
+
 /* The replay batch the decoder's last read took its samples from reaches DSP with the fields it labels a symbol cache
- * with, the media span it runs the decode clock on and the centre it was captured on (issue #575); no replay batch is
- * none. Called with the engine's table installed. */
+ * with, the media span it runs the decode clock on, the centre it was captured on (issue #575) and the stream gaps
+ * recorded before it (issue #518); no replay batch is none. Called with the engine's table installed. */
 static void
 test_replay_batch_hook(void) {
     dsd_rtl_stream_replay_batch batch = {0};
@@ -342,13 +351,14 @@ test_replay_batch_hook(void) {
     assert(batch.output_count == 99U);
     assert(batch.first_index == 17U);
     assert(batch.center_frequency_hz == 851012500U);
+    assert(batch.boundary_seq == 0x123456789ULL);
     g_replay_batch_result = -1;
     assert(dsd_rtl_stream_metrics_hook_replay_batch(&batch) == 0);
     assert(g_replay_batch_calls == 2);
     assert(batch.generation == 0U && batch.output_kind == 0 && batch.channel_profile == 0);
     assert(batch.symbol_rate_hz == 0 && batch.levels == 0);
     assert(batch.media_start_ns == 0U && batch.media_duration_ns == 0U && batch.output_count == 0U);
-    assert(batch.first_index == 0U && batch.center_frequency_hz == 0U);
+    assert(batch.first_index == 0U && batch.center_frequency_hz == 0U && batch.boundary_seq == 0U);
 }
 
 int
@@ -496,6 +506,8 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(NULL) == -1);
 
     test_replay_batch_hook();
+    /* The stream's discontinuity count reaches DSP through the table (issue #518). */
+    assert(dsd_rtl_stream_metrics_hook_discontinuity_seq() == 0xABCDEF012ULL && g_discontinuity_calls == 1);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     return 0;

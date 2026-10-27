@@ -21,6 +21,10 @@ int dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state);
 int dsd_app_commands_pending(void);
 /* Whether a queued command needs the frame loop (dsd_runtime_controls_need_frame_loop(), issue #637). */
 int dsd_app_commands_need_frame_loop(void);
+/* The stream notice sink app-control installs (dsd_runtime_stream_notice_set()): any thread posts, the next drain
+   shows it as a toast. Cleared at the end of a session, so a notice is never the next session's. */
+void dsd_app_stream_notice_post(int kind);
+void dsd_app_stream_notice_clear(void);
 #ifdef DSD_NEO_TEST_HOOKS
 /* Counts contended policy transactions; relaxed, so observing it adds no synchronization. */
 int dsd_app_command_test_policy_guard_waits(void);

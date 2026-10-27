@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/control_pump.h>
+#include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 
@@ -55,6 +56,9 @@ dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* in
     dsd_runtime_set_control_pump(dsd_app_frontend_control_pump);
     dsd_runtime_set_controls_pending(dsd_app_commands_pending);
     dsd_runtime_set_controls_need_frame_loop(dsd_app_commands_need_frame_loop);
+    /* Whatever an earlier session left in the slot is not this session's; cleared before the sink can fill it. */
+    dsd_app_stream_notice_clear();
+    dsd_runtime_stream_notice_set(dsd_app_stream_notice_post);
 }
 
 void
@@ -63,6 +67,10 @@ dsd_app_frontend_runtime_stop(void) {
     dsd_runtime_set_control_pump(NULL);
     dsd_runtime_set_controls_pending(NULL);
     dsd_runtime_set_controls_need_frame_loop(NULL);
+    /* A notice the session did not get to show is not the next session's. The sink is removed first: a post still
+       delivering to it finishes before the removal returns, so the clear after it is the last word. */
+    dsd_runtime_stream_notice_set(NULL);
+    dsd_app_stream_notice_clear();
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
     /* Clearing the hooks stops the feed but leaves the last record behind, and that
        record is a module static that outlives the session. On Android the service starts

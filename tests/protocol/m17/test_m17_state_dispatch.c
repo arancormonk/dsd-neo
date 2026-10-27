@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
@@ -2914,6 +2915,150 @@ test_encoder_rtl_input_reaches_pcm_scale(void) {
     }
     return expect_int("encoder RTL input reaches PCM scale, anti-aliased, saturating", ok, 1);
 }
+
+/* Issue #518 D5: the stream the encoder reads, sample @p n of it a function of n alone; the gap sits before sample
+   g_gap_at, and the stream's count moves before that sample can be read. */
+static uint64_t g_gap_next = 0U;
+static uint64_t g_gap_at = UINT64_MAX;
+
+static int
+fake_rtl_gap_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    (void)rtl_ctx;
+    if (out == NULL || out_got == NULL || count != 1U) {
+        return -1;
+    }
+    out[0] = 0.1f * (float)sin(0.05 * (double)g_gap_next) + 0.02f * (float)(g_gap_next % 7U);
+    g_gap_next++;
+    *out_got = 1;
+    return 0;
+}
+
+static uint64_t
+fake_rtl_gap_seq(void) {
+    return g_gap_next > g_gap_at ? 1U : 0U;
+}
+
+/* A gap in the stream the M17 encoder reads (a USB recovery, an rtl_tcp reconnect): the encoder reads the stream
+   itself, so it takes the gap up there. The 40 ms block it was filling is dropped (M17_STR_READ_AGAIN, nothing
+   encoded from it) and its input filter starts over: the next block is exactly what a fresh input reads from the
+   samples after the gap. The symbol reader is left nothing to raise. */
+static int
+test_m17_encoder_gap_drops_partial_block(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    dsd_state* fresh_state = calloc(1, sizeof(*fresh_state));
+    assert(fresh_state != NULL);
+    static int token;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_volume_multiplier = 1;
+    state->rtl_ctx = (struct RtlSdrContext*)&token;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_rtl_gap_read,
+        .return_pwr = fake_rtl_return_pwr,
+    });
+    static const dsd_rtl_stream_metrics_hooks hooks = {.discontinuity_seq = fake_rtl_gap_seq};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_gap_next = 0U;
+    g_gap_at = UINT64_MAX;
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 48000);
+    short out[160];
+    int rc = 0;
+    rc |= expect_int("gap: a block before the gap reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
+    /* The gap, part way into the next block. */
+    g_gap_at = g_gap_next + 300U;
+    rc |= expect_int("gap: the block the gap cuts is given up", m17_encoder_read_block(opts, state, &in, out, 160U), 2);
+    rc |= expect_int("gap: the read that met it was the last", (int)(g_gap_next - g_gap_at), 1);
+    rc |= expect_int("gap: the encoder took the gap up", (int)state->rtl_stream_gap_seq, 1);
+    rc |= expect_int("gap: no interruption is left for the symbol reader", state->input_interrupted, 0);
+    const uint64_t resume_at = g_gap_next;
+    rc |= expect_int("gap: the next block reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
+
+    /* A fresh input over the same samples after the gap. */
+    DSD_MEMSET(fresh_state, 0, sizeof(*fresh_state));
+    fresh_state->rtl_ctx = (struct RtlSdrContext*)&token;
+    fresh_state->rtl_stream_gap_seq = 1U;
+    m17_encoder_input fresh;
+    m17_encoder_input_init(&fresh, 48000);
+    short want[160];
+    g_gap_next = resume_at;
+    rc |= expect_int("gap: the fresh input reads", m17_encoder_read_block(opts, fresh_state, &fresh, want, 160U), 1);
+    rc |= expect_int("gap: the block after the gap starts from a fresh filter", memcmp(out, want, sizeof out) == 0, 1);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    free(fresh_state);
+    free(state);
+    free(opts);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* Issue #518 D4: the stream yields (DSD_RTL_READ_YIELD) at read g_yield_at, as a live read with no stream does when a
+   command is queued; a read that yields hands out no sample. */
+static uint64_t g_yield_at = UINT64_MAX;
+static int g_yield_reads = 0;
+
+static int
+fake_rtl_yield_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    if (out_got != NULL) {
+        *out_got = 0;
+    }
+    if (g_yield_reads++ == (int)g_yield_at) {
+        return DSD_RTL_READ_YIELD;
+    }
+    return fake_rtl_gap_read(rtl_ctx, out, count, out_got);
+}
+
+/* m17_encoder_survives_yield: the M17 encoder reads the stream itself, so a yield reaches it directly. It is no
+   failure: the encoder asks for no shutdown, gives the block up as on a gap (M17_STR_READ_AGAIN), so its loop pumps the
+   command before it reads again, and reads on from the next sample. */
+static int
+test_m17_encoder_survives_yield(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    static int token;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_volume_multiplier = 1;
+    state->rtl_ctx = (struct RtlSdrContext*)&token;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_rtl_yield_read,
+        .return_pwr = fake_rtl_return_pwr,
+    });
+    g_gap_next = 0U;
+    g_gap_at = UINT64_MAX;
+    g_yield_reads = 0;
+    g_yield_at = 960U + 300U;
+    dsd_exitflag_store(0);
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 48000);
+    short out[160];
+    int rc = 0;
+    rc |= expect_int("yield: a block before it reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
+    rc |= expect_int("yield: the block it cuts is given up for the command",
+                     m17_encoder_read_block(opts, state, &in, out, 160U), 2);
+    rc |= expect_int("yield: no shutdown", dsd_exitflag_load(), 0);
+    rc |= expect_int("yield: no interruption is left for the symbol reader", state->input_interrupted, 0);
+    const uint64_t next = g_gap_next;
+    rc |= expect_int("yield: the next block reads", m17_encoder_read_block(opts, state, &in, out, 160U), 1);
+    rc |= expect_int("yield: it reads on from the next sample", (int)(g_gap_next - next), 960);
+    rc |= expect_int("yield: still no shutdown", dsd_exitflag_load(), 0);
+    g_yield_at = UINT64_MAX;
+    dsd_exitflag_store(0);
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    free(state);
+    free(opts);
+    return rc;
+}
 #endif
 
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
@@ -4096,6 +4241,8 @@ main(void) {
     err |= test_encoder_pcm_input_is_anti_aliased();
 #ifdef USE_RADIO
     err |= test_encoder_rtl_input_reaches_pcm_scale();
+    err |= test_m17_encoder_gap_drops_partial_block();
+    err |= test_m17_encoder_survives_yield();
 #endif
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();

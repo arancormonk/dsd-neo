@@ -626,14 +626,27 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
 }
 
 /* Input level health: the status word and the three readings at fixed widths, then the advice, which changes only
-   with the status. */
+   with the status. A radio input shows the level app-control presents from the receiver's live copy, and "No input"
+   with no readings once the receiver delivers none (B6); a PCM input shows the decoder's, measured as it reads. */
 static void
-ui_render_input_level_status(const dsd_state* state) {
-    if (!state || state->input_level.source == DSD_INPUT_LEVEL_SOURCE_UNKNOWN
-        || state->input_level.sample_count == 0U) {
+ui_render_input_level_status(const dsd_opts* opts, const dsd_state* state) {
+    dsd_input_level_snapshot presented;
+    const dsd_input_level_snapshot* level = NULL;
+    if (dsd_opts_input_is_radio(opts)) {
+        if (dsd_app_frontend_input_level(opts, &presented) != 1) {
+            ui_row row;
+            ui_io_row_begin(&row);
+            ui_row_field(&row, "| RF Level: No input");
+            ui_row_end(&row);
+            return;
+        }
+        level = &presented;
+    } else if (state && state->input_level.source != DSD_INPUT_LEVEL_SOURCE_UNKNOWN
+               && state->input_level.sample_count != 0U) {
+        level = &state->input_level;
+    } else {
         return;
     }
-    const dsd_input_level_snapshot* level = &state->input_level;
     char rms[16];
     char peak[16];
     char clip[16];
@@ -660,7 +673,7 @@ static void
 ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
     ui_render_basic_input_sources(opts, state);
     ui_render_rtl_input_source(opts, state);
-    ui_render_input_level_status(state);
+    ui_render_input_level_status(opts, state);
 }
 
 /* A digital output's gains (0..100 %) in three places, then its mode word. */

@@ -77,6 +77,7 @@ expect_u64_ge(const char* label, uint64_t got, uint64_t want_min) {
 enum : uint8_t {
     kReplayResetReasonFrequency = 0,
     kReplayResetReasonPpmCorrection = 2,
+    kReplayResetReasonStreamGap = 5,
 };
 
 namespace {
@@ -1064,6 +1065,16 @@ test_replay_eof_partial_block_drains_before_exit(void) {
     return rc;
 }
 
+/* Hold the demod between publishing a block's output and deciding the drain, as a loaded host may deschedule it. */
+static void
+delay_drain_decision_stage(int stage, size_t count, void* ctx) {
+    (void)count;
+    (void)ctx;
+    if (stage == RTL_STREAM_TEST_REPLAY_DEMOD_DRAIN_DECISION) {
+        dsd_sleep_ms(100U);
+    }
+}
+
 static int
 test_replay_output_tail_available_after_demod_drain(void) {
     int rc = 0;
@@ -1077,15 +1088,21 @@ test_replay_output_tail_available_after_demod_drain(void) {
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
+    rtl_stream_test_set_replay_stage_hook(delay_drain_decision_stage, NULL);
     rc |= start_replay_stream(metadata_path, &opts, &ctx);
     if (rc != 0) {
         stop_and_destroy_stream(ctx);
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
         return 1;
     }
 
     /* The decoder paces the replay: read a sample at a time until the demod has drained the input with the last
-       block's output still in the ring. */
+       block's output still in the ring. The demod publishes a block's output before it decides the drain, so once the
+       input is at EOF and empty the batch in the ring is the last one (pacing starts no block while output is queued):
+       wait for the decision there instead of reading, or a demod descheduled after publishing lets the reads empty the
+       ring first. */
     int saw_tail_window = 0;
+    int waited_for_drain = 0;
     uint64_t wait_start_ns = dsd_time_monotonic_ns();
     while (dsd_time_monotonic_ns() - wait_start_ns < 5000ULL * 1000000ULL) {
         rtl_stream_test_replay_state state;
@@ -1097,6 +1114,20 @@ test_replay_output_tail_available_after_demod_drain(void) {
         if (state.replay_demod_drained && state.output_ring_used > 0U && !state.should_exit) {
             saw_tail_window = 1;
             break;
+        }
+        if (!waited_for_drain && !state.replay_demod_drained && state.replay_input_eof && state.input_ring_used == 0U
+            && state.output_ring_used > 0U) {
+            waited_for_drain = 1;
+            const uint64_t drain_wait_ns = dsd_time_monotonic_ns();
+            while (dsd_time_monotonic_ns() - drain_wait_ns < 2000ULL * 1000000ULL) {
+                rtl_stream_test_replay_state now;
+                DSD_MEMSET(&now, 0, sizeof(now));
+                if (dsd_rtl_stream_test_get_replay_state(&now) != 0 || now.replay_demod_drained) {
+                    break;
+                }
+                dsd_sleep_ms(1U);
+            }
+            continue;
         }
         float sample = 0.0f;
         int got_one = 0;
@@ -1118,6 +1149,7 @@ test_replay_output_tail_available_after_demod_drain(void) {
     rc |= expect_true("drained remaining replay output", drained_samples > 0U);
 
     stop_and_destroy_stream(ctx);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
     return rc;
 }
 
@@ -1284,6 +1316,40 @@ test_eventful_replay_preserves_ppm_reset_reason(void) {
     rc |= expect_true("ppm scheduled reset made exactly one purge request",
                       state.replay_event_last_reset_purge_requests == 1ULL);
     rc |= expect_int_eq("ppm scheduled reset purge mismatches", (int)state.replay_event_reset_purge_mismatch_count, 0);
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+/* A recorded USB recovery or rtl_tcp reconnect replays as the stream gap it was (issue #518 D1), not as a retune. */
+static int
+test_eventful_replay_maps_stream_gap_reset_reason(const char* reason) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_eventful_replay_fixture_with_reset_reason(metadata_path, sizeof(metadata_path), 131072U, reason);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream(metadata_path, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    uint64_t drained_samples = 0;
+    rc |= drain_stream_to_eof(ctx, 5000U, &drained_samples);
+
+    rtl_stream_test_replay_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int_eq("stream gap replay state", dsd_rtl_stream_test_get_replay_state(&state), 0);
+    rc |= expect_int_eq("stream gap scheduled reset count", (int)state.replay_event_reset_count, 1);
+    rc |= expect_int_eq("stream gap scheduled reset reason", state.replay_event_last_reset_reason,
+                        kReplayResetReasonStreamGap);
+    rc |= expect_true("stream gap scheduled reset made exactly one purge request",
+                      state.replay_event_last_reset_purge_requests == 1ULL);
 
     stop_and_destroy_stream(ctx);
     return rc;
@@ -3662,6 +3728,8 @@ main(void) {
     rc |= test_replay_last_read_leaves_stream_open();
     rc |= test_eventful_replay_applies_scheduled_events();
     rc |= test_eventful_replay_preserves_ppm_reset_reason();
+    rc |= test_eventful_replay_maps_stream_gap_reset_reason(RTL_STREAM_GAP_REASON_USB_RECOVERY);
+    rc |= test_eventful_replay_maps_stream_gap_reset_reason(RTL_STREAM_GAP_REASON_TCP_RECONNECT);
     rc |= test_loop_replay_reapplies_event_timeline();
     rc |= test_realtime_loop_waits_for_terminal_mute_before_rewind();
     rc |= test_cf32_replay_fs4_policy_changes_output();

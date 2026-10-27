@@ -166,6 +166,39 @@ test_rtl_steady_stream_never_trips(input_ring_state* ring) {
     assert(failure.kind == DSD_INPUT_FAILURE_NONE);
 }
 
+/* A stalled transfer can still return callbacks with no bytes: those are not samples and do not end the silence. Zero
+ * length buffers every 50 ms for longer than the limit end the session once; nonempty buffers among them keep it
+ * running, since the silence counts from the last one. */
+void
+test_rtl_zero_length_callbacks_do_not_count_as_progress(input_ring_state* ring) {
+    rtl_device_test_set_progress_limit_ms(kLimitMs);
+    reset_session();
+    const unsigned int generation = dsd_input_failure_generation();
+    rtl_device* dev = rtl_device_test_usb_stream_start(ring);
+    assert(dev);
+    for (int i = 0; i < 20 && !dsd_input_failure_receiver_ended(); ++i) {
+        rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, 0U);
+        dsd_sleep_ms(50U);
+    }
+    assert(dsd_input_failure_receiver_ended() == 1);
+    expect_receiver_ending(-ETIMEDOUT);
+    assert(dsd_input_failure_generation() == generation + 1U);
+    rtl_device_test_usb_stream_stop(dev);
+    assert(dsd_input_failure_generation() == generation + 1U);
+
+    rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
+    reset_session();
+    dev = rtl_device_test_usb_stream_start(ring);
+    assert(dev);
+    for (int i = 0; i < (int)(kOutlastMs / 50U); ++i) {
+        rtl_device_test_usb_stream_deliver(dev, g_rtl_buffer, (i & 1) ? 0U : (uint32_t)sizeof g_rtl_buffer);
+        dsd_sleep_ms(50U);
+    }
+    expect_running();
+    rtl_device_test_usb_stream_stop(dev);
+    expect_running();
+}
+
 /* The monitor's verdict waits out the unplug-owner grace like the reader's: a stop inside it (the detach broadcast's)
  * keeps the session silent and joins the monitor while it waits. */
 void
@@ -234,6 +267,33 @@ test_rtl_racing_verdicts_report_once(input_ring_state* ring) {
     expect_receiver_ending(-1);
     rtl_device_test_usb_stream_stop(dev);
     assert(dsd_input_failure_generation() == generation + 1U);
+}
+
+/* A stall recovery is only for a receiver identified at open (issue #518 D2): this one was not, so with a recovery
+ * callback registered all the same, the silence ends the session as before and the callback is never asked. */
+int g_recovery_requests = 0;
+
+void
+count_recovery_request(void* ctx) {
+    (void)ctx;
+    g_recovery_requests++;
+}
+
+void
+test_rtl_ineligible_receiver_ends_as_before(input_ring_state* ring) {
+    rtl_device_test_set_progress_limit_ms(kLimitMs);
+    reset_session();
+    g_recovery_requests = 0;
+    rtl_device* dev = rtl_device_test_usb_stream_start(ring);
+    assert(dev);
+    assert(rtl_device_usb_recovery_eligible(dev) == 0);
+    rtl_device_set_recovery_callback(dev, count_recovery_request, nullptr);
+    assert(wait_receiver_ended(3000U) != 0U);
+    expect_receiver_ending(-ETIMEDOUT);
+    assert(g_recovery_requests == 0);
+    assert(rtl_device_usb_recovery_take(dev) == 0);
+    rtl_device_test_usb_stream_stop(dev);
+    expect_receiver_ending(-ETIMEDOUT);
 }
 
 /* A monitor thread that cannot start fails the start: the reader is stopped and joined, and nothing is reported. */
@@ -466,10 +526,12 @@ main(void) {
     test_rtl_starvation_from_start(ring.get());
     test_rtl_silence_after_progress(ring.get());
     test_rtl_steady_stream_never_trips(ring.get());
+    test_rtl_zero_length_callbacks_do_not_count_as_progress(ring.get());
     test_rtl_stop_inside_grace(ring.get());
     test_rtl_reader_exit_inside_monitor_grace(ring.get());
     test_rtl_racing_verdicts_report_once(ring.get());
     test_rtl_monitor_start_refused(ring.get());
+    test_rtl_ineligible_receiver_ends_as_before(ring.get());
 
 #ifdef DSD_TEST_USB_PROGRESS_AIRSPY
     test_airspy_retune_storm_healthy(ring.get());

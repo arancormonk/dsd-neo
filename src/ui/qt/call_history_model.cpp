@@ -4,6 +4,7 @@
  */
 
 #include <QChar>
+#include <QDebug>
 #include <dsd-neo/core/receive_types.h>
 #include "call_history_model.h"
 
@@ -72,7 +73,7 @@ constexpr int kSaveDelayMs = 3000;
  * delay rewrites that every few seconds, about a gigabyte of flash an hour. The delay after a save
  * therefore stretches to what writing its bytes at this rate takes: a full log saves about once a
  * minute, while a small one keeps kSaveDelayMs. */
-constexpr qint64 kSaveBudgetBytesPerSec = 16 * 1024;
+constexpr qint64 kSaveBudgetBytesPerSec = 16LL * 1024;
 /* How far down the log a live fragment looks for the call it continues: fragments arrive while
  * their call is among the newest rows. */
 constexpr int kMergeScanRows = 32;

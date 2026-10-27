@@ -2,12 +2,26 @@
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <memory>
+#include <stdint.h>
 
 struct rtl_device;
 
 // input_ring_state contains C++ atomics. Keep the existing C API test in C,
 // and supply a real ring here so the open reaches the wrapped driver call.
 extern "C" int dsd_test_rtl_open_failure(void);
+
+// The open first identifies the receiver's USB device; with no device listed it
+// stops there, so the probe never enumerates (or opens) the host's dongles.
+// GNU ld --wrap requires external linkage and the reserved symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier, misc-use-internal-linkage)
+extern "C" uint32_t __wrap_rtlsdr_get_device_count(void);
+
+uint32_t
+__wrap_rtlsdr_get_device_count(void) {
+    return 0U;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, misc-use-internal-linkage)
 
 int
 dsd_test_rtl_open_failure(void) {

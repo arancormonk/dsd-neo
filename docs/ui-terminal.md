@@ -8,7 +8,8 @@ For CLI flags and inputs/outputs, see `docs/cli.md`.
 ## Start the UI
 
 - Enable UI: `dsd-neo --frontend terminal ...`
-- Quit: `q`
+- Quit: `q` (takes effect at once, also while the decoder waits on a receiver that stopped delivering samples or an
+  rtl_tcp server it is reconnecting to)
 - Open the menu overlay: `Enter`
 
 Tip: Many screens print a short hotkey hint line in the footer while you’re running.
@@ -501,6 +502,11 @@ The input section shows a persistent advisory line when recent input-level metri
 `Input Level` is used for PCM-like audio inputs. `RF Level` is used for RTL-SDR, rtl_tcp, and SoapySDR receiver
 samples measured before demodulation. The line is advisory only; DSD-neo never changes input volume, RF gain, AGC, or
 filtering automatically.
+
+On a radio input the line follows the receiver's samples, not the decoder: when no samples have arrived for 2 seconds
+(a stalled dongle, an rtl_tcp server that went quiet) or none have arrived yet, it reads `| RF Level: No input` with no
+readings instead of the last level. A live receiver's stale level prints no warning either; an I/Q replay prints the
+warnings its capture calls for, however long it pauses.
 
 The channel row under the RTL input and the audio inputs (Pulse, TCP, UDP, WAV and stdin) shows the SQL setting,
 reading `off` when the squelch is disabled, but does not duplicate channel power. Under the auto squelch the row shows

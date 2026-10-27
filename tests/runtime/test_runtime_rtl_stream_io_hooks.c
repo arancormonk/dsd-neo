@@ -38,6 +38,7 @@ fake_return_pwr(const void* rtl_ctx) {
 int
 main(void) {
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    assert(dsd_rtl_stream_io_hook_no_stream_since_ms() == 0U);
 
     dsd_state* state = calloc(1, sizeof(*state));
     assert(state != NULL);

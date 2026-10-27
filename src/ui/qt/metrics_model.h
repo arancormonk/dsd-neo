@@ -34,6 +34,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <stdint.h>
 
 namespace dsd_qt {
 
@@ -2055,14 +2056,6 @@ class MetricsModel : public QObject {
     struct View {
         QVariantMap airspy;
         QVariantMap radio_source;
-        SiteView site;
-        dsd_app_p25_quality quality{};
-        dsd_app_voice_errs voice_errs{};
-        dsd_app_frame_errs last_frame{};
-
-        bool operator==(const View& other) const;
-        bool qualityEquals(const View& other) const;
-
         /* Group equally aligned fields; this private value is copied on each
          * refresh and is never serialized or initialized by member position. */
         double snr_db = 0.0;
@@ -2074,6 +2067,8 @@ class MetricsModel : public QObject {
         qulonglong held_tg = 0;
         qulonglong temporary_tg_avoid_count = 0;
         qulonglong call_skip_count = 0;
+        quint64 key_epoch = 0;
+        dsd_app_voice_errs voice_errs{};
         QString tg_policy_context;
         QString tuner_gain_text;
         QString sync_label;
@@ -2081,65 +2076,19 @@ class MetricsModel : public QObject {
         QString ui_message;
         QString squelch_readout;
         QString squelch_auto_status;
-        /* Slot views and lead ranking share the canonical slot count. */
-        SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
-        int lead_slot = -1;
-        bool two_slot_carrier = false;
-        int channel_bandwidth_hz = 0;
-        int analog_bandwidth_hz = 0;
-        int analog_bandwidth_configured_hz = 0;
-        int analog_bandwidth_setting_hz = 0;
-        int nfm_bandwidth_configured_hz = 0;
-        int am_bandwidth_configured_hz = 0;
-        int analog_bandwidth_max_hz = 0;
-        /* Issue #621: the width an unset setting of each kind stands for, and how the session spells it. */
-        int nfm_bandwidth_unset_hz = 0;
-        int am_bandwidth_unset_hz = 0;
         QString analog_bandwidth_reading;
         QString nfm_bandwidth_unset_text;
         QString am_bandwidth_unset_text;
-        int decode_mode = 0;
-        int configured_force = 0;
-        int effective_force = 0;
         QString key_profile_ref;
-        quint64 key_epoch = 0;
         QVariantList decryption_slots;
-        int modulation = 0;
-        int tuner_gain_db = 0;
-        int tuner_gain_configured_db = 0;
-        int configured_squelch_margin_db = 0;
-        int effective_squelch_margin_db = 0;
-        int ppm = 0;
-        int enc_lockout_count = 0;
-        int scan_avoid_count = 0;
         QString scan_target_id;
-        int scan_target_ordinal = 0;
-        int scan_target_count = 0;
         /* #508: the stay reason and the live window, copied from the app-control view. */
         QString scan_stay_phrase;
-        int scan_stay_reason = 0;
-        int scan_timer_remaining_ds = 0;
-        quint32 scan_timer_span_ms = 0;
-        int scan_dwell_ms = 0;
-        int scan_dwell_state = 0;
-        int scan_hold_ms = 0;
-        quint32 scan_hang_ms = 0;
-        /* #507: the per-visit cap for the row on air, and whether it is counting. */
-        int scan_visit_ms = 0;
-        int scan_visit_remaining_ds = 0;
         /* #522/#523: the received tone or code and, separately, the configured policy. */
         QString rx_tone_text;
         QString rx_tone_configured_text;
-        int rx_tone_status = 0;
-        int rx_tone_kind = 0;
-        int rx_tone_tenths_hz = 0;
-        int rx_tone_dcs_code = 0;
-        int rx_tone_dcs_alias_code = 0;
         /* #527: the Tone filter row's visibility and the policy's verdict on the carrier on air. */
         QString tone_filter_status_text;
-        int tone_filter_gate = 0;
-        /* #527: the live editor -- reachable, shadowed by a row -- and the configured policy it opens on. */
-        int tone_filter_configured_mode = 0;
         QString tone_filter_configured_list;
         /* The TETRA rows, copied from the app-control view. */
         QString tetra_mode_text;
@@ -2153,10 +2102,58 @@ class MetricsModel : public QObject {
         /* #518: the scan row on air for the "this channel" editors. */
         QString scan_row_label;
         QString scan_row_key;
+        QString receive_status;
+        dsd_app_p25_quality quality{};
+        /* Slot views and lead ranking share the canonical slot count. */
+        SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
+        SiteView site;
+        int lead_slot = -1;
+        int channel_bandwidth_hz = 0;
+        int analog_bandwidth_hz = 0;
+        int analog_bandwidth_configured_hz = 0;
+        int analog_bandwidth_setting_hz = 0;
+        int nfm_bandwidth_configured_hz = 0;
+        int am_bandwidth_configured_hz = 0;
+        int analog_bandwidth_max_hz = 0;
+        /* Issue #621: the width an unset setting of each kind stands for, and how the session spells it. */
+        int nfm_bandwidth_unset_hz = 0;
+        int am_bandwidth_unset_hz = 0;
+        int decode_mode = 0;
+        int configured_force = 0;
+        int effective_force = 0;
+        int modulation = 0;
+        int tuner_gain_db = 0;
+        int tuner_gain_configured_db = 0;
+        int configured_squelch_margin_db = 0;
+        int effective_squelch_margin_db = 0;
+        int ppm = 0;
+        int enc_lockout_count = 0;
+        int scan_avoid_count = 0;
+        int scan_target_ordinal = 0;
+        int scan_target_count = 0;
+        int scan_stay_reason = 0;
+        int scan_timer_remaining_ds = 0;
+        quint32 scan_timer_span_ms = 0;
+        int scan_dwell_ms = 0;
+        int scan_dwell_state = 0;
+        int scan_hold_ms = 0;
+        quint32 scan_hang_ms = 0;
+        /* #507: the per-visit cap for the row on air, and whether it is counting. */
+        int scan_visit_ms = 0;
+        int scan_visit_remaining_ds = 0;
+        int rx_tone_status = 0;
+        int rx_tone_kind = 0;
+        int rx_tone_tenths_hz = 0;
+        int rx_tone_dcs_code = 0;
+        int rx_tone_dcs_alias_code = 0;
+        int tone_filter_gate = 0;
+        /* #527: the live editor -- reachable, shadowed by a row -- and the configured policy it opens on. */
+        int tone_filter_configured_mode = 0;
         int scan_row_editable = 0;
         int scan_row_edited = 0;
         int scan_row_listed = 0;
-
+        dsd_app_frame_errs last_frame{};
+        bool two_slot_carrier = false;
         /* Keep flags together so additions do not leave padding between the larger fields. */
         bool automatic_keys = false;
         bool direct_keys = false;
@@ -2206,7 +2203,6 @@ class MetricsModel : public QObject {
         bool tone_filter_visible = false;
         bool tone_filter_editable = false;
         bool tone_filter_row_override = false;
-        QString receive_status;
         bool scan_row_active = false;
         bool scan_row_synced = false;
         bool relaxed_crc_configured = false;
@@ -2216,6 +2212,9 @@ class MetricsModel : public QObject {
         bool tetra_encrypted = false;
         bool tetra_on_traffic = false;
         bool tetra_codec_fault = false;
+
+        bool operator==(const View& other) const;
+        bool qualityEquals(const View& other) const;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical

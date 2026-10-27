@@ -4718,7 +4718,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if ((rt.t % 300) == 0) {
             frame_sync_publish_ui_throttled(opts, state);
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
-                state->input_interrupted = 1;
+                dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;
             }
@@ -4726,9 +4726,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         rt.symbol = getSymbol(opts, state, 0);
         if (state->input_interrupted) {
-            /* The read left a silent input's wait for a queued command, or the input ended (issue #634): no symbol
-               came and no pass ran, so nothing of it is counted. The engine loop applies the command or switches
-               the input, and the next call hunts afresh. */
+            /* The read left a silent input's wait for a queued command, the input ended (issue #634) or the read
+               met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
+               loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
