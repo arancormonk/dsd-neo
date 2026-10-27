@@ -74,7 +74,7 @@ jobs:
         with:
           # run-vcpkg v11.6 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
-          vcpkgGitCommitId: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+          vcpkgGitCommitId: "9eec002df1cd109f8f104cd966a763daf9751489"
 
       - name: Configure vcpkg binary cache
         shell: pwsh
@@ -180,7 +180,7 @@ jobs:
         with:
           # run-vcpkg v11.6 requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
-          vcpkgGitCommitId: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+          vcpkgGitCommitId: "9eec002df1cd109f8f104cd966a763daf9751489"
 
       - name: Configure vcpkg binary cache
         shell: pwsh

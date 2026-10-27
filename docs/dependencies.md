@@ -57,7 +57,7 @@ Vendored code and embedded upstream-derived snippets retain upstream notices.
 License and attribution details are in `THIRD_PARTY.md`.
 
 Registry-managed vcpkg dependencies are pinned by the manifest
-`builtin-baseline` (`9e593bb18ea69cc5095e012465dcd675a822ed0d` in the current
+`builtin-baseline` (`9eec002df1cd109f8f104cd966a763daf9751489` in the current
 manifest). The baseline, overlay ports, and triplets are the source of truth
 for exact registry versions; system-package builds enforce the OpenSSL
 requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
