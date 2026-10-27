@@ -275,7 +275,7 @@ DecoderHostAndroid::requestNotificationPermission() {
 
 void
 DecoderHostAndroid::hostDiagnostic(const QString& line) {
-    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("host"), QStringLiteral("info"), line);
+    dsd_qt::DiagnosticsLog::submitHostDiagnostic(line);
 }
 
 // WP-F5: share content only, never a caller-selected file path.
@@ -560,7 +560,8 @@ JNIEXPORT void JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeArmStartupDiagnostics(JNIEnv* env, jclass clazz) {
     (void)env;
     (void)clazz;
-    dsd_qt::DiagnosticsLog::instance().armStartupWindow();
+    // Called on the main thread, before the service's nativeInit: never waits for the log's construction.
+    dsd_qt::DiagnosticsLog::armStartupDiagnostics();
 }
 
 /** @brief Bounded flush of the persistent diagnostics before the process may go (Activity teardown). */
@@ -568,7 +569,7 @@ JNIEXPORT void JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeFlushDiagnostics(JNIEnv* env, jclass clazz) {
     (void)env;
     (void)clazz;
-    (void)dsd_qt::DiagnosticsLog::instance().flush(dsd_qt::DiagnosticsLog::kShutdownFlushMs);
+    (void)dsd_qt::DiagnosticsLog::flushDiagnostics(dsd_qt::DiagnosticsLog::kShutdownFlushMs);
 }
 
 /**

@@ -8013,10 +8013,17 @@ Qt Quick frontend (`src/ui/qt`):
   rotates, clears and loads by the same rules, so a change to those rules applies to both. `ioStats()` counts the main
   tail only. `hostSnapshot()` returns the host ring, the previous run's records first under their divider.
   `DiagnosticsLogModel::allText()` (Copy and Share) emits it under `--- host and session records ---`, then the ring
-  under `--- all records ---`; the screen shows only the ring. `installTap()` constructs the singleton, which creates the
-  directory and loads both stores, before it takes the host lock. It then installs the tap and drains the pending
-  buffer under that lock, so a host record submitted during the load (Android's main thread) only waits for the
-  bounded pending buffer. `setLoadHookForTest()` lets `UI_QT_DIAGNOSTICS_LOG` hold a load open to prove it.
+  under `--- all records ---`; the screen shows only the ring. `installTap()` installs the runtime tap and returns at once:
+  a detached thread constructs the singleton (directory, both loads) outside the host lock, then publishes it under that
+  lock (process line, pending records, a pending startup-window request, `ready`). On Android the caller can be the
+  main thread (the service's `nativeInit`). Until the publish, the tap, `submitHostDiagnostic()` and
+  `armStartupDiagnostics()` only touch the bounded pending state, and `flushDiagnostics()` waits for the publish within
+  its own bound. Android's main-thread entry points (`nativeHostDiagnostic`, `nativeArmStartupDiagnostics`,
+  `nativeFlushDiagnostics`) and `DecoderHostAndroid::hostDiagnostic` use these. The remaining direct `instance()` users
+  run on the Qt thread (`DiagnosticsLogModel`, `noteAttempt`, the desktop install) or the stderr pump's thread, and
+  can wait for the construction there. `setLoadHookForTest()` lets `UI_QT_DIAGNOSTICS_LOG` hold a load open to prove it.
+  A host pair's rotation failure is noted in the host ring as well as the main ring. Reloading the host pair skips the
+  current segment's header lines where the previous segment already holds them.
 
   `installTap()` records the run's `process:` line (pid, OS, app version, plus Android's boot count, device and recent
   `exit:` lines from the platform facts provider). Each new segment starts with that line and the current

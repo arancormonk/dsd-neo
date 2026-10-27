@@ -1740,6 +1740,10 @@ hostStoreKeepsItsBounds() {
     check(rows.size() <= DiagnosticsLog::kHostRingLimit && rows.value(0) == QLatin1String("--- previous run ---")
               && rows.last().contains(QStringLiteral("seq 699 ")),
           "the reloaded host records lost the newest");
+    // The current segment's header repeats the process and session lines the previous segment holds.
+    check(rows.join('\n').count(QStringLiteral("pid 1, test os, boot 7")) == 1
+              && rows.join('\n').count(QStringLiteral("--- session starting: rtltcp ---")) == 1,
+          "a segment header was reloaded as a record");
     int last = -1;
     static const QRegularExpression seq(QStringLiteral("seq (\\d+) "));
     for (const auto& row : rows) {
@@ -1818,29 +1822,70 @@ blockedLoad() {
     g_loadDone = true;
 }
 
+// installTap() runs on Android's main thread (the service's nativeInit), as do the host records, the startup-window
+// arming and the teardown flush. None of them waits for the log's construction: the tap returns at once, the records
+// and the arming are held and applied at the publish, and a flush waits for the publish only within its own bound.
 static void
 installTapDoesNotWaitForTheLoad() {
     DiagnosticsLog::setLoadHookForTest(blockedLoad);
-    std::thread installer([] { DiagnosticsLog::installTap(); });
+    DiagnosticsLog::installTap();
+    {
+        std::lock_guard<std::mutex> lock(g_loadMutex);
+        check(!g_loadDone, "installTap() waited for the saved records to load");
+    }
     bool entered = false;
     {
         std::unique_lock<std::mutex> lock(g_loadMutex);
         entered = g_loadChanged.wait_for(lock, std::chrono::seconds(10), [] { return g_loadEntered; });
     }
-    check(entered, "the tap's load did not start");
+    check(entered, "the log's load did not start");
+    check(!DiagnosticsLog::installedForTest(), "the log was published before its load finished");
     DiagnosticsLog::submitHostDiagnostic(QStringLiteral("usb: reported during the load"));
+    DiagnosticsLog::armStartupDiagnostics();
+    dsd_neo_log_write(LOG_LEVEL_INFO, "decoder line during the load\n");
+    check(!DiagnosticsLog::flushDiagnostics(50), "a flush reported durable before the log was published");
+    // A flush asked for before the publish is honoured once it happens, within its bound.
+    bool flushed = false;
+    std::thread flusher([&flushed] { flushed = DiagnosticsLog::flushDiagnostics(10000); });
     {
         std::lock_guard<std::mutex> lock(g_loadMutex);
-        check(!g_loadDone, "a host record waited for the saved records to load");
+        check(!g_loadDone, "a host record, startup-window request or flush waited for the saved records to load");
         g_loadReleased = true;
     }
     g_loadChanged.notify_all();
-    installer.join();
+    flusher.join();
+    check(flushed, "a flush asked for during the load was not honoured");
     DiagnosticsLog::setLoadHookForTest(nullptr);
-    const auto& log = DiagnosticsLog::instance();
-    check(log.snapshot().join('\n').count(QStringLiteral("usb: reported during the load")) == 1
-              && log.hostSnapshot().join('\n').count(QStringLiteral("usb: reported during the load")) == 1,
+    check(DiagnosticsLog::installedForTest(), "the log was not published");
+    auto& log = DiagnosticsLog::instance();
+    const auto ring = log.snapshot().join('\n');
+    const auto host = log.hostSnapshot().join('\n');
+    check(ring.count(QStringLiteral("usb: reported during the load")) == 1
+              && host.count(QStringLiteral("usb: reported during the load")) == 1,
           "a host record that arrived during the load was not kept once");
+    check(ring.count(QStringLiteral("[decoder] [info] decoder line during the load")) == 1
+              && !host.contains(QStringLiteral("decoder line during the load")),
+          "a decoder record that arrived during the load was not kept once");
+    check(log.startupWindowOpenForTest(), "a startup-window request made during the load was lost");
+}
+
+// A host pair that cannot rotate notes it where the host records are read, so decoder output cannot evict the note.
+static void
+hostRotationFailureIsNoted() {
+    QTemporaryDir dir;
+    check(QDir(dir.path()).mkpath(QStringLiteral("host.prev.log/inner")), "fixture directory");
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    for (int i = 0; i < 400; ++i) {
+        log.submit("host", "info", QStringLiteral("seq %1 ").arg(i) + QString(100, QLatin1Char('r')));
+    }
+    log.flush();
+    for (int i = 0; i < 2100; ++i) {
+        log.submit("decoder", "info", QStringLiteral("decoder %1").arg(i));
+    }
+    check(QFileInfo(dir.filePath("host.log")).size() <= DiagnosticsLog::kHostSegmentLimit, "host segment past its cap");
+    check(log.hostSnapshot().join('\n').count(QStringLiteral("saved host and session log could not be rotated")) == 1,
+          "a host rotation failure is not in the host records");
 }
 
 int
@@ -1897,6 +1942,7 @@ main(int argc, char** argv) {
     hostStoreKeepsItsBounds();
     hostStoreExpiryAndReload();
     clearRemovesTheHostRecords();
+    hostRotationFailureIsNoted();
     {
         DiagnosticsLog log(dir.path());
         DiagnosticsLogModel model(&log);

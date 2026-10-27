@@ -1272,7 +1272,11 @@ Starting/Idle/Failed transitions.
 
 Host records arriving before the first decode start do not depend on the runtime sink or
 stderr pump. Tap installation drains their bounded buffer to the ring and the tail at
-Qt's initialized application-data location.
+Qt's initialized application-data location. The log itself (its directory and both saved
+stores) is loaded on a thread of its own, so the service's `nativeInit` on the main thread
+does not wait for flash. Until it is ready, host and decoder records wait in that bounded
+buffer, a startup-window request is applied when it is ready, and the teardown flush waits
+for it only within its own 500 ms bound.
 
 A process-lifetime runtime log tap, the stderr pump, and host messages all enter
 `DiagnosticsLog::submit()`. It filters sensitive records before ring insertion and

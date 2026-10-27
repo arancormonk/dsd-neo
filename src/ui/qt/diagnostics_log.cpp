@@ -25,10 +25,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <limits>
+#include <system_error>
+#include <thread>
 #include "realtime_clock.h"
 
 namespace dsd_qt {
@@ -47,10 +50,21 @@ std::atomic<DiagnosticsLog::LoadHook> g_loadHook{nullptr};
 constexpr QByteArrayView kProcessPrefix = "[process] [info] pid ";
 constexpr QByteArrayView kSessionPrefix = "[session] [info] --- session starting";
 
+// A record that arrived before installTap() published the log: already redacted and bounded.
+struct PendingRecord {
+    QString source;
+    QString level;
+    QString text;
+};
+
 struct HostDiagnostics {
     std::mutex mutex;
-    QStringList pending;
-    bool ready = false;
+    std::condition_variable published;
+    QList<PendingRecord> pending;
+    // A startup-window request that arrived before the publish.
+    bool armPending = false;
+    // Set once, under the mutex, after the pending records are in; read without it on the fast path.
+    std::atomic<bool> ready{false};
     DiagnosticsLog::PlatformFactsProvider provider = nullptr;
 };
 
@@ -362,12 +376,60 @@ droppedContext(const QList<QByteArray>& lines, std::initializer_list<qsizetype> 
     }
 }
 
+/**
+ * @brief Until installTap() has published the log, keeps a bounded, redacted copy of the record and returns true.
+ *
+ * Do not resolve AppDataLocation before Qt has its application identity, and do not wait for the log's construction:
+ * only bounded, redacted records survive until the publish.
+ */
+bool
+holdUntilPublished(const QString& source, const QString& level, const QString& text) {
+    auto& host = hostDiagnostics();
+    if (host.ready.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(host.mutex);
+    if (host.ready.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    host.pending.append({source, level, DiagnosticsLog::redact(text).left(512)});
+    if (host.pending.size() > 2000) {
+        host.pending.removeFirst();
+    }
+    return true;
+}
+
 void
 capture(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)ctx;
     static const char* levels[] = {"error", "warn", "info", "debug"};
-    static_cast<DiagnosticsLog*>(ctx)->submit(QStringLiteral("decoder"),
-                                              QString::fromLatin1(levels[std::min(static_cast<int>(level), 3)]),
-                                              QString::fromUtf8(text));
+    const QString source = QStringLiteral("decoder");
+    const QString levelName = QString::fromLatin1(levels[std::min(static_cast<int>(level), 3)]);
+    const QString body = QString::fromUtf8(text);
+    if (!holdUntilPublished(source, levelName, body)) {
+        DiagnosticsLog::instance().submit(source, levelName, body);
+    }
+}
+
+/** @brief Builds the log (directory, saved records), then makes it the destination of everything held for it. */
+void
+publish(const QString& facts, const QStringList& following) {
+    auto& host = hostDiagnostics();
+    // Outside the host lock: the construction is file I/O, and records arriving meanwhile only need the lock.
+    auto& log = DiagnosticsLog::instance();
+    std::lock_guard<std::mutex> lock(host.mutex);
+    // The process line first: it is where this run starts in the saved tail.
+    log.noteProcess(facts, following);
+    for (const auto& record : host.pending) {
+        log.submit(record.source, record.level, record.text);
+    }
+    host.pending.clear();
+    if (host.armPending) {
+        host.armPending = false;
+        log.armStartupWindow();
+    }
+    host.ready.store(true, std::memory_order_release);
+    host.published.notify_all();
 }
 } // namespace
 
@@ -406,38 +468,66 @@ DiagnosticsLog::installTap() {
             }
             following = std::move(extra.second);
         }
-        // Built outside the host lock too: creating the directory and loading the saved records is file I/O, and a host
-        // record arriving meanwhile (Android's main thread, through nativeHostDiagnostic) only needs the pending buffer.
-        auto& log = instance();
-        std::lock_guard<std::mutex> lock(host.mutex);
-        dsd_neo_log_set_tap(capture, &log);
-        // The process line first: it is where this run starts in the saved tail.
-        log.noteProcess(facts, following);
-        for (const auto& text : host.pending) {
-            log.submit(QStringLiteral("host"), QStringLiteral("info"), text);
+        // From here LOG_* records are captured: held until the publish, then submitted.
+        dsd_neo_log_set_tap(capture, nullptr);
+        // The log is built on a thread of its own. Creating the directory and loading the saved records is file I/O,
+        // and on Android the caller can be the main thread (the service's nativeInit). Until the publish, records,
+        // startup-window requests and flushes wait in the host state, bounded.
+        try {
+            std::thread(publish, facts, following).detach();
+        } catch (const std::system_error&) {
+            publish(facts, following);
         }
-        host.pending.clear();
-        host.ready = true;
     });
 }
 
 void
 DiagnosticsLog::submitHostDiagnostic(const QString& text) {
+    const QString source = QStringLiteral("host");
+    const QString level = QStringLiteral("info");
+    if (!holdUntilPublished(source, level, text)) {
+        // Published means the pending records are already in, so this one follows them.
+        instance().submit(source, level, text);
+    }
+}
+
+void
+DiagnosticsLog::armStartupDiagnostics() {
     auto& host = hostDiagnostics();
-    {
+    if (!host.ready.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(host.mutex);
-        if (!host.ready) {
-            // Do not resolve AppDataLocation before Qt has its application identity.
-            // Only bounded, redacted records can survive until tap installation.
-            host.pending.append(redact(text).left(512));
-            if (host.pending.size() > 2000) {
-                host.pending.removeFirst();
-            }
+        if (!host.ready.load(std::memory_order_relaxed)) {
+            // Applied by the publish.
+            host.armPending = true;
             return;
         }
     }
-    // Ready means the pending records are already in, so this one follows them.
-    instance().submit(QStringLiteral("host"), QStringLiteral("info"), text);
+    instance().armStartupWindow();
+}
+
+bool
+DiagnosticsLog::flushDiagnostics(int timeoutMs) {
+    auto& host = hostDiagnostics();
+    if (!host.ready.load(std::memory_order_acquire)) {
+        // The bound covers the wait for the publish too.
+        const quint64 start = static_cast<quint64>(dsd_realtime_mono_ms());
+        std::unique_lock<std::mutex> lock(host.mutex);
+        const auto ready = [&host] { return host.ready.load(std::memory_order_relaxed); };
+        if (timeoutMs < 0) {
+            host.published.wait(lock, ready);
+        } else if (!host.published.wait_for(lock, std::chrono::milliseconds(timeoutMs), ready)) {
+            return false;
+        } else {
+            const quint64 waited = static_cast<quint64>(dsd_realtime_mono_ms()) - start;
+            timeoutMs = waited >= static_cast<quint64>(timeoutMs) ? 0 : timeoutMs - static_cast<int>(waited);
+        }
+    }
+    return instance().flush(timeoutMs);
+}
+
+bool
+DiagnosticsLog::installedForTest() {
+    return hostDiagnostics().ready.load(std::memory_order_acquire);
 }
 
 QString
@@ -504,6 +594,12 @@ DiagnosticsLog::inStartupWindow(quint64 now) const {
     return now < m_startupUntil;
 }
 
+bool
+DiagnosticsLog::startupWindowOpenForTest() {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    return inStartupWindow(nowMs());
+}
+
 void
 DiagnosticsLog::setLoadHookForTest(LoadHook hook) {
     g_loadHook.store(hook);
@@ -516,7 +612,9 @@ DiagnosticsLog::load() {
     }
     cleanDirectory();
     seedRing(loadSegments(m_tail));
-    seedHostRing(loadSegments(m_host));
+    qsizetype hostCurrentAt = 0;
+    const QByteArray host = loadSegments(m_host, &hostCurrentAt);
+    seedHostRing(host, hostCurrentAt);
 }
 
 void
@@ -539,7 +637,7 @@ DiagnosticsLog::cleanDirectory() const {
 }
 
 QByteArray
-DiagnosticsLog::loadSegments(const Segments& segments) const {
+DiagnosticsLog::loadSegments(const Segments& segments, qsizetype* currentAt) const {
     const QString tailPath = filePath(segments.current);
     const QString prevPath = filePath(segments.previous);
     const qint64 limit = segments.limit;
@@ -562,7 +660,13 @@ DiagnosticsLog::loadSegments(const Segments& segments) const {
             (void)replaceFile(tailPath, tail);
         }
     }
-    return lineAlignedTail(prev + tail, total);
+    const QByteArray all = prev + tail;
+    QByteArray bounded = lineAlignedTail(all, total);
+    if (currentAt) {
+        // Where the current segment starts in what is returned.
+        *currentAt = std::max<qsizetype>(0, prev.size() - (all.size() - bounded.size()));
+    }
+    return bounded;
 }
 
 void
@@ -614,12 +718,37 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
 }
 
 void
-DiagnosticsLog::seedHostRing(const QByteArray& text) {
+DiagnosticsLog::seedHostRing(const QByteArray& text, qsizetype currentAt) {
     QStringList lines;
+    // The current segment starts with the process and session lines in force when it rotated (its header). Where the
+    // previous segment already holds those very lines they are repeats, not records, and are skipped. A new start of
+    // the same source as the first record after a rotation reads exactly like its header, and is skipped with it.
+    QByteArray lastProcess;
+    QByteArray lastSession;
+    bool inHeader = false;
+    qsizetype at = 0;
     for (const auto& line : text.split('\n')) {
-        if (!line.isEmpty() && !line.contains('\0')) {
-            lines.append(redact(QString::fromUtf8(line)));
+        const qsizetype lineAt = at;
+        at += line.size() + 1;
+        if (line.isEmpty() || line.contains('\0')) {
+            continue;
         }
+        if (lineAt == currentAt && lineAt > 0) {
+            inHeader = true;
+        }
+        if (inHeader
+            && ((line.startsWith(kProcessPrefix) && line == lastProcess)
+                || (line.startsWith(kSessionPrefix) && line == lastSession))) {
+            continue;
+        }
+        inHeader = false;
+        if (line.startsWith(kProcessPrefix)) {
+            lastProcess = line;
+            lastSession.clear();
+        } else if (line.startsWith(kSessionPrefix)) {
+            lastSession = line;
+        }
+        lines.append(redact(QString::fromUtf8(line)));
     }
     // The newest records that fit beside the divider.
     lines = lines.mid(std::max<qsizetype>(0, lines.size() - (kHostRingLimit - 1)));
@@ -658,9 +787,13 @@ DiagnosticsLog::enqueue(const QByteArray& record, bool host, Pin pin) {
 }
 
 void
-DiagnosticsLog::ringNote(const QString& line) {
+DiagnosticsLog::ringNote(const QString& line, bool host) {
     std::lock_guard<std::mutex> ringLock(m_ringMutex);
     appendRingLocked(line);
+    if (host) {
+        // Also where the host records are read, so decoder output cannot evict it.
+        appendHostRingLocked(line);
+    }
 }
 
 quint64
@@ -1105,7 +1238,8 @@ DiagnosticsLog::rotate(Segments& segments, const QByteArray& header) {
             segments.rotationFailureNoted = true;
             ringNote(QStringLiteral("[host] [warn] diagnostics: the %1 could not be rotated; its older lines "
                                     "were dropped")
-                         .arg(QLatin1String(segments.label)));
+                         .arg(QLatin1String(segments.label)),
+                     &segments == &m_host);
         }
     }
     dsd_fsync_parent_dir(QFile::encodeName(tailPath).constData());

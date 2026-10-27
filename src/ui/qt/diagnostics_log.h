@@ -74,10 +74,20 @@ class DiagnosticsLog {
     using PlatformFactsProvider = std::pair<QString, QStringList> (*)();
 
     static DiagnosticsLog& instance();
+    // Installs the runtime log tap and returns at once: the log itself (its directory and saved records) is built on
+    // a thread of its own and then published. Until then records wait, bounded and redacted.
     static void installTap();
     static void setPlatformFactsProvider(PlatformFactsProvider provider);
-    // Safe before Qt/nativeInit: bounded redacted records wait for installTap().
+    // These three never wait for the log's construction, so they are safe from Android's main thread, and before
+    // Qt/nativeInit: bounded redacted records wait for installTap()'s publish.
     static void submitHostDiagnostic(const QString& text);
+    // Opens the startup window, at once or as soon as the log is published.
+    static void armStartupDiagnostics();
+    // flush() of the published log; a negative timeout waits without bound, otherwise the timeout also bounds the wait
+    // for the publish. False if the log was not published in time.
+    static bool flushDiagnostics(int timeoutMs);
+    // Test seam: whether installTap()'s publish has happened.
+    static bool installedForTest();
     // Explicit directory supports isolated stores in restart/retention tests.
     explicit DiagnosticsLog(const QString& directory);
     DiagnosticsLog(const QString& directory, TestOptions options);
@@ -109,6 +119,9 @@ class DiagnosticsLog {
     static QString redact(QString text);
     // Test seam: how many producer error lines are listed, and how many have only %d and %u conversions and so count.
     static std::pair<int, int> producerLineCountsForTest();
+
+    // Test seam: whether the startup window is open now.
+    bool startupWindowOpenForTest();
 
     // Splits a captured byte stream (Android's redirected stdout and stderr) into records of one source. A key value
     // can run on past the line that names its option, so after a dropped record the lines that could still be that
@@ -160,9 +173,9 @@ class DiagnosticsLog {
 
     void load();
     void cleanDirectory() const;
-    QByteArray loadSegments(const Segments& segments) const;
+    QByteArray loadSegments(const Segments& segments, qsizetype* currentAt = nullptr) const;
     void seedRing(const QByteArray& text);
-    void seedHostRing(const QByteArray& text);
+    void seedHostRing(const QByteArray& text, qsizetype currentAt);
     void openCurrent(Segments& segments);
     void closeCurrent(Segments& segments);
     bool appendBytes(Segments& segments, const QByteArray& bytes);
@@ -178,7 +191,7 @@ class DiagnosticsLog {
     enum class Pin { None, Process, Session };
 
     void enqueue(const QByteArray& record, bool host, Pin pin = Pin::None);
-    void ringNote(const QString& line);
+    void ringNote(const QString& line, bool host = false);
     quint64 pushRingLocked(const QString& line);
     void appendRingLocked(const QString& line, Pin pin = Pin::None);
     void appendHostRingLocked(const QString& line);

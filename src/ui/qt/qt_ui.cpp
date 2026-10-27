@@ -200,7 +200,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     DiagnosticsLog::installTap();
     // The log is process-lifetime and never destroyed, so its last records are made durable here.
     QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
-                     [] { (void)DiagnosticsLog::instance().flush(DiagnosticsLog::kShutdownFlushMs); });
+                     [] { (void)DiagnosticsLog::flushDiagnostics(DiagnosticsLog::kShutdownFlushMs); });
     auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
     auto* prefs = new AppPrefs(&engine);
     auto* backupModel = new BackupModel(host, restoreOutcome, &engine);
