@@ -8354,6 +8354,8 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
         if (r < 0) {
             g_last_usb_open_error.store(r, std::memory_order_release);
             g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
+            /* The session's failure, as Airspy's open reports its own: the UI words a device failure from it (#782). */
+            dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
             DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
             rtl_device_cleanup_common_state(dev);
             free(dev);
@@ -8369,6 +8371,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     r = rtl_usb_open_index(&dev->dev, (uint32_t)dev_index);
     if (r < 0) {
         g_last_usb_open_error.store(r, std::memory_order_release);
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
         rtl_device_cleanup_common_state(dev);
         free(dev);

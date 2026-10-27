@@ -14500,6 +14500,10 @@ if(DSD_HAS_RADIO)
     add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
 
     add_executable(dsd-neo_test_io_rtl_fd_failure io/test_io_rtl_fd_failure.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_fd_failure
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
     target_link_libraries(
         dsd-neo_test_io_rtl_fd_failure
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
