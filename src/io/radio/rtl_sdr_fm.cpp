@@ -3268,9 +3268,13 @@ demod_autogain_spectral_gate_ok(DemodAutogainState* st, const struct demod_state
     return (st->spec_pass >= st->up_persist) ? 1 : 0;
 }
 
-/* Set the supported tuner gain nearest @p target_tenth_db and note the one that took. A change the device refused
- * leaves the gain it reports published: the earlier one, rolled back, or no reading when that failed too. Returns
- * whether the change took. */
+/* Set the supported tuner gain nearest @p target_tenth_db and note the one that took (published as the tuner's gain).
+ * A change the device refused leaves the gain it reports published: the earlier one, rolled back, or no reading when
+ * that failed too. Returns whether the change took, with the gain that took in @p applied_target.
+ *
+ * The supervisor's manual_target accumulates the targets it requested, not the gains that took, and moves only when a
+ * change took: on a coarse gain table (E4000 34 -> 42 dB, FC0012 7.1 -> 17.9 dB) a single step rounds back to the gain
+ * already set, and only the accumulating target reaches the next entry. */
 static int
 demod_autogain_set_gain(int target_tenth_db, int* applied_target = nullptr) {
     int selected = 0;
@@ -3292,11 +3296,12 @@ demod_autogain_probe_handle(DemodAutogainState* st, uint64_t now_ns) {
     }
     int seed = demod_autogain_clamp_db10(st->seed_gain_db10);
     const int target = demod_autogain_clamp_db10(seed - 50);
-    const int took = demod_autogain_set_gain(target, &st->manual_target);
+    int applied = 0;
+    const int took = demod_autogain_set_gain(target, &applied);
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     if (took) {
-        LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", st->manual_target / 10,
-                 st->manual_target % 10);
+        st->manual_target = target;
+        LOG_INFO("AUTOGAIN: exiting probe due to clipping; set ~%d.%d dB.\n", applied / 10, applied % 10);
     }
 }
 
@@ -3306,11 +3311,33 @@ demod_autogain_bootstrap_if_low(DemodAutogainState* st, int is_auto, uint64_t no
         return;
     }
     int kick = demod_autogain_clamp_db10(st->seed_gain_db10);
-    const int took = demod_autogain_set_gain(kick, &st->manual_target);
+    int applied = 0;
+    const int took = demod_autogain_set_gain(kick, &applied);
     st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
     if (took) {
-        LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n",
-                 st->manual_target / 10, st->manual_target % 10);
+        st->manual_target = kick;
+        LOG_INFO("AUTOGAIN: bootstrapping from device auto to ~%d.%d dB due to low input level.\n", applied / 10,
+                 applied % 10);
+    }
+}
+
+/* One manual step of the supervisor: the accumulated target moved by @p step_db10 (down 5 dB on clipping, up the
+ * configured step on low input), the gain nearest it set, and the target kept once the change took. */
+static void
+demod_autogain_step_manual(DemodAutogainState* st, int step_db10, int is_auto, uint64_t now_ns) {
+    const int target = demod_autogain_clamp_db10(st->manual_target + step_db10);
+    int applied = 0;
+    const int took = demod_autogain_set_gain(target, &applied);
+    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
+    st->spec_pass = 0;
+    if (!took) {
+        return;
+    }
+    st->manual_target = target;
+    if (is_auto > 0) {
+        LOG_INFO("AUTOGAIN: threshold hit; exiting device auto and setting ~%d.%d dB.\n", applied / 10, applied % 10);
+    } else {
+        LOG_INFO("AUTOGAIN: adjusting manual gain to ~%d.%d dB.\n", applied / 10, applied % 10);
     }
 }
 
@@ -3320,30 +3347,11 @@ demod_autogain_adjust_manual(DemodAutogainState* st, const struct demod_state* d
         return;
     }
     int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
-    bool changed = false;
     demod_autogain_bootstrap_if_low(st, is_auto, now_ns);
-    int target = st->manual_target;
     if (st->high >= 3) {
-        target = demod_autogain_clamp_db10(st->manual_target - 50);
-        changed = true;
+        demod_autogain_step_manual(st, -50, is_auto, now_ns);
     } else if (demod_autogain_spectral_gate_ok(st, d) && st->low >= (st->blocks * 3) / 4) {
-        target = demod_autogain_clamp_db10(st->manual_target + st->up_step_db10);
-        changed = true;
-    }
-    if (!changed) {
-        return;
-    }
-    const int took = demod_autogain_set_gain(target, &st->manual_target);
-    st->next_allowed_ns = now_ns + 1500ULL * 1000000ULL;
-    st->spec_pass = 0;
-    if (!took) {
-        return;
-    }
-    if (is_auto > 0) {
-        LOG_INFO("AUTOGAIN: threshold hit; exiting device auto and setting ~%d.%d dB.\n", st->manual_target / 10,
-                 st->manual_target % 10);
-    } else {
-        LOG_INFO("AUTOGAIN: adjusting manual gain to ~%d.%d dB.\n", st->manual_target / 10, st->manual_target % 10);
+        demod_autogain_step_manual(st, st->up_step_db10, is_auto, now_ns);
     }
 }
 
@@ -11218,8 +11226,11 @@ rtl_stream_test_autogain_target(struct rtl_device* dev, int stage, int initial, 
         demod_autogain_probe_handle(&st, now);
     } else if (stage == 1) {
         demod_autogain_bootstrap_if_low(&st, 1, now);
-    } else {
+    } else if (stage == 2) {
         demod_autogain_adjust_manual(&st, &demod, now);
+    } else {
+        /* The low-input step the spectral gate lets through. */
+        demod_autogain_step_manual(&st, st.up_step_db10, rtl_device_is_auto_gain(dev), now);
     }
     rtl_device_handle = saved_handle;
     dongle.gain = saved_gain;

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
@@ -1764,6 +1765,7 @@ static const int kReg19TestMode = 0x03;
 static const int kR82xxGains[] = {0,   9,   14,  27,  37,  77,  87,  125, 144, 157, 166, 197, 207, 229, 254,
                                   280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496};
 static const int kE4000Gains[] = {-10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340, 420};
+static const int kFc0012Gains[] = {-99, -40, 71, 179, 192};
 
 /* A dongle fresh from librtlsdr's baseband init (register 0x19 plain, tuner automatic) with @p gains as its table. */
 static void
@@ -2189,10 +2191,90 @@ test_autogain_target_commits_applied_gain(void) {
         failed |= expect_int_eq("refused supervisor gain keeps target",
                                 rtl_stream_test_autogain_target(dev, stage, initial, seed), initial);
         fake.gain_fault.fail_value_set = 0;
-        failed |= expect_int_eq("supervisor target uses quantized gain",
-                                rtl_stream_test_autogain_target(dev, stage, 250, stage == 1 ? 200 : 250), 197);
+        failed |= expect_int_eq("supervisor keeps the target it requested",
+                                rtl_stream_test_autogain_target(dev, stage, 250, stage == 1 ? 200 : 250), 200);
+        int gain = 0;
+        failed |= expect_int_eq("supervisor gain reading", rtl_device_get_tuner_gain(dev, &gain), 0);
+        failed |= expect_int_eq("supervisor applies the quantized gain", gain, 197);
     }
     rtl_device_test_usb_gain_device_free(dev);
+    return failed;
+}
+
+/* The gain in @p gains nearest @p target, as the device picks it (the first of two equally near). */
+static int
+nearest_table_gain(const int* gains, size_t count, int target) {
+    int nearest = gains[0];
+    for (size_t i = 1; i < count; i++) {
+        if (llabs((long long)target - gains[i]) < llabs((long long)target - nearest)) {
+            nearest = gains[i];
+        }
+    }
+    return nearest;
+}
+
+/* The supervisor's manual steps on a tuner with @p gains, from manual gain @p start: @p steps of them on clipping
+ * (stage 2, 5 dB down) or on low input (stage 3, 3 dB up), each from the target the one before left. Each step's gain
+ * must be main's: the supervisor's target accumulates the requested steps, clamped to 0..49 dB, and the device sets
+ * the gain nearest it. Returns the gain after the last step (-1000 without a device); a step off main's fails *failed. */
+static int
+autogain_steps(const char* name, const int* gains, size_t count, int start, int stage, int steps, int* failed) {
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
+    usb_gain_fake_init(&fake, gains, count);
+    struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
+    if (!dev) {
+        *failed |= expect_int_eq(name, 0, 1);
+        return -1000;
+    }
+    int selected = 0;
+    int gain = -1000;
+    *failed |= expect_int_eq(name, rtl_device_set_gain_nearest(dev, start, &selected), 0);
+    int target = start;
+    int model = start;
+    for (int i = 0; i < steps; i++) {
+        model += stage == 2 ? -50 : 30;
+        model = model < 0 ? 0 : (model > 490 ? 490 : model);
+        target = rtl_stream_test_autogain_target(dev, stage, target, 300);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s: step %d target", name, i + 1);
+        *failed |= expect_int_eq(label, target, model);
+        DSD_SNPRINTF(label, sizeof label, "%s: step %d gain", name, i + 1);
+        *failed |= expect_int_eq(label, rtl_device_get_tuner_gain(dev, &gain), 0);
+        *failed |= expect_int_eq(label, gain, nearest_table_gain(gains, count, model));
+    }
+    rtl_device_test_usb_gain_device_free(dev);
+    return gain;
+}
+
+/* A coarse gain table rounds a single step back to the gain already set; the supervisor's accumulating target still
+ * reaches the next entry, both ways, as on main. A fine table (R820T) steps exactly as on main. */
+static int
+test_autogain_steps_reach_coarse_entries(void) {
+    usb_gain_set_digital_agc(1);
+    const size_t e4000 = sizeof kE4000Gains / sizeof kE4000Gains[0];
+    const size_t fc0012 = sizeof kFc0012Gains / sizeof kFc0012Gains[0];
+    const size_t r82xx = sizeof kR82xxGains / sizeof kR82xxGains[0];
+    int failed = 0;
+    /* E4000, low input at 34 dB: 37 rounds to 34, 40 reaches 42. */
+    failed |=
+        expect_int_eq("E4000 rises to 42 dB", autogain_steps("E4000 up", kE4000Gains, e4000, 340, 3, 2, &failed), 420);
+    /* E4000, clipping at 42 dB: 37 rounds to 34. */
+    failed |= expect_int_eq("E4000 falls to 34 dB",
+                            autogain_steps("E4000 down", kE4000Gains, e4000, 420, 2, 1, &failed), 340);
+    /* FC0012, clipping at 17.9 dB: 12.9 rounds to 17.9, 7.9 reaches 7.1. */
+    failed |= expect_int_eq("FC0012 falls to 7.1 dB",
+                            autogain_steps("FC0012 down", kFc0012Gains, fc0012, 179, 2, 2, &failed), 71);
+    /* FC0012, low input at 7.1 dB: 10.1 rounds to 7.1, 13.1 reaches 17.9. */
+    failed |= expect_int_eq("FC0012 rises to 17.9 dB",
+                            autogain_steps("FC0012 up", kFc0012Gains, fc0012, 71, 3, 2, &failed), 179);
+    /* R820T: every step lands where main's does. */
+    failed |=
+        expect_int_eq("R820T rises as on main", autogain_steps("R820T up", kR82xxGains, r82xx, 197, 3, 8, &failed),
+                      nearest_table_gain(kR82xxGains, r82xx, 197 + (8 * 30)));
+    failed |=
+        expect_int_eq("R820T falls as on main", autogain_steps("R820T down", kR82xxGains, r82xx, 480, 2, 8, &failed),
+                      nearest_table_gain(kR82xxGains, r82xx, 480 - (8 * 50)));
     return failed;
 }
 
@@ -2248,7 +2330,8 @@ main(void) {
      */
     int rc = rtl_stream_test_prepare_reconfigure_input(8U, &used_after, &generation_before, &generation_after);
 
-    int failed = test_autogain_target_commits_applied_gain() | test_soapy_gain_readback();
+    int failed = test_autogain_target_commits_applied_gain() | test_autogain_steps_reach_coarse_entries()
+                 | test_soapy_gain_readback();
     failed |= expect_int_eq("prepare reconfigure input rc", rc, 0);
     failed |= expect_size_eq("retune gate clears queued output", used_after, 0U);
     failed |= expect_generation_changed("retune gate bumps output generation", generation_before, generation_after);

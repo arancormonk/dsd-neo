@@ -464,7 +464,9 @@ enum {
     RTL_STREAM_TEST_GAIN_AUTOGAIN = 2,      /* the tuner autogain supervisor's nearest manual gain */
 };
 
-/* Run one supervisor decision (0: clipping probe, 1: bootstrap, 2: manual step), preserving stream state. */
+/* Run one supervisor decision (0: clipping probe, 1: bootstrap, 2: manual step on clipping, 3: manual step up on low
+ * input, past the spectral gate), from the manual target @p initial and the seed gain @p seed, preserving stream
+ * state. Returns the supervisor's manual target after it. */
 int rtl_stream_test_autogain_target(struct rtl_device* dev, int stage, int initial, int seed);
 
 typedef struct {

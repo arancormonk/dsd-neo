@@ -4449,8 +4449,10 @@ Key public headers:
     first change has none) `gain_state_unknown` makes the gain getters report no mode and no reading until a change
     takes. The nearest-gain lookup returns a status apart from the value (gains reach below zero), and an unreadable
     table is an error. The stream's gain callers (retune profile, autogain supervisor) note the gain that took and
-    otherwise republish what the device reports. The supervisor keeps its prior target on failure and commits the
-    selected gain on success. SoapySDR gain callers read back aggregate gain, including a preserved named-stage
+    otherwise republish what the device reports. The supervisor's `manual_target` accumulates the targets it
+    requested (as on main), moving only when a change took, while the gain that took is what it publishes and logs: on a
+    coarse table (E4000, FC0012) a single step rounds back to the gain already set, and only the accumulated target
+    reaches the next entry. SoapySDR gain callers read back aggregate gain, including a preserved named-stage
     override. Test: `IO_RTL_RETUNE_PREPARE` (an effective-state fake dongle,
     `rtl_device_test_usb_gain_device()`).
   - USB offset tuning (`rtl_sdr_fm.cpp` `controller_program_initial_capture_settings()`): librtlsdr computes the LO
