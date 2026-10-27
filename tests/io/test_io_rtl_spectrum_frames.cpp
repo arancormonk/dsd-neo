@@ -13,6 +13,7 @@
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <math.h>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <vector>
@@ -233,7 +234,9 @@ void
 test_competing_publications_keep_a_frame(const std::vector<float>& iq, const std::vector<float>& raw) {
     rtl_metrics_test_spectrum_reset();
     rtl_metrics_update_spectrum_from_iq(iq.data(), (int)iq.size(), kRateHz);
-    competing_frames frames{&iq};
+    /* Heap-held: the hook keeps its context in a global while it is set. */
+    const auto frames_owner = std::make_unique<competing_frames>(competing_frames{&iq});
+    competing_frames& frames = *frames_owner;
     rtl_metrics_test_spectrum_set_pin_hook(publish_after_pin, &frames);
     const std::vector<float> bins = read_bins("competing: always returns the published frame");
     rtl_metrics_test_spectrum_set_pin_hook(nullptr, nullptr);

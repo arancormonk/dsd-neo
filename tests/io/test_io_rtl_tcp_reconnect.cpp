@@ -502,6 +502,8 @@ server_params(size_t idx, uint8_t id) {
 
 /* ---- A device on its own, the test playing its controller ---- */
 
+/* Each test holds its rig on the heap (r_owner): the device, the controller's threads and the hooks keep its address
+ * in globals. */
 struct dev_rig {
     input_ring_state ring{};
     rtl_device* dev = nullptr;
@@ -781,7 +783,8 @@ test_header_has_no_gain_table(void) {
     sc.gain_count = 29U;
     sc.first_bytes = (size_t)29U * 4U;
     server_reset(sc);
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 1, 1);
     rig_start(r);
     assert(wait_until([&] { return r.floats.load() >= 65536U; }, kWaitMs));
@@ -847,7 +850,8 @@ test_header_fragmented_across_timeouts(void) {
     sc.header_gap_ms = kRcvTimeoMs + 150U;
     sc.first_bytes = 64U;
     server_reset(sc);
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 1, 1);
     rig_start(r);
     assert(wait_until([&] { return r.floats.load() >= 16384U; }, kWaitMs));
@@ -863,7 +867,8 @@ test_header_fragmented_across_timeouts(void) {
     conn_script bad;
     bad.magic_ok = 0;
     server_reset(bad);
-    input_ring_state ring{};
+    const auto ring_owner = std::make_unique<input_ring_state>();
+    input_ring_state& ring = *ring_owner;
     assert(input_ring_init(&ring, 4096U) == 0);
     assert(rtl_device_create_tcp("127.0.0.1", g_srv.port, &ring, 0) == nullptr);
     /* The connection ends inside the header. */
@@ -905,7 +910,8 @@ test_header_fragmented_across_timeouts(void) {
 void
 test_initial_open_succeeds_and_cancelled_initial_open_stops(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     assert(rtl_device_has_stream(r.dev) == 1);
     assert(rig_generation(r) == 1U);
@@ -915,7 +921,8 @@ test_initial_open_succeeds_and_cancelled_initial_open_stops(void) {
     silent.send_header = 0;
     silent.stream = 0;
     server_reset(silent);
-    input_ring_state ring{};
+    const auto ring_owner = std::make_unique<input_ring_state>();
+    input_ring_state& ring = *ring_owner;
     assert(input_ring_init(&ring, 4096U) == 0);
     dsd_thread_t quitter{};
     start_thread(&quitter, exit_when_served, nullptr);
@@ -933,7 +940,8 @@ test_initial_open_succeeds_and_cancelled_initial_open_stops(void) {
 void
 test_stop_before_successful_connect(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     rig_start(r);
     g_srv.up.store(0);
@@ -955,7 +963,8 @@ test_stop_during_silent_header(void) {
     silent.send_header = 0;
     silent.stream = 0;
     silent.read_commands = 1;
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     rig_start(r);
     server_queue(silent);
@@ -974,7 +983,8 @@ test_stop_during_silent_header(void) {
 void
 test_read_buffer_failure_ends_session(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     dsd_input_failure_clear();
     rtl_device_test_tcp_refuse_read_buffer(1);
@@ -1006,7 +1016,8 @@ configure(rtl_device* dev) {
 void
 test_setting_change_while_disconnected_fails(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);
@@ -1032,7 +1043,8 @@ test_setting_change_while_disconnected_fails(void) {
 void
 test_latest_effective_settings_replayed(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     assert(rtl_device_set_ppm(r.dev, 5) == 0);
@@ -1065,7 +1077,8 @@ test_latest_effective_settings_replayed(void) {
 void
 test_replay_failure_not_published(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);
@@ -1112,7 +1125,8 @@ sender_main(void* arg) {
 void
 test_concurrent_partial_writes_never_interleave(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     rig_start(r);
     const size_t before = server_conn_get(0).cmds.size();
@@ -1170,7 +1184,8 @@ hold_first_generation(uint64_t generation, void* ctx) {
 void
 test_old_sender_does_not_touch_replacement(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);
@@ -1204,7 +1219,8 @@ test_old_sender_does_not_touch_replacement(void) {
 void
 test_gain_send_replaced_before_commit(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     rig_start(r);
     g_old.rig = &r;
@@ -1246,10 +1262,16 @@ read_hook_two(void* ctx) {
 void
 test_concurrent_hook_replacement(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
-    hook_context one{1};
-    hook_context two{2};
+    /* Heap-held: the hook keeps its context in a global while it is set. */
+    const auto one_owner = std::make_unique<hook_context>();
+    const auto two_owner = std::make_unique<hook_context>();
+    hook_context& one = *one_owner;
+    hook_context& two = *two_owner;
+    one.id = 1;
+    two.id = 2;
     rtl_device_test_tcp_set_read_hook(read_hook_one, &one);
     rig_start(r);
     assert(wait_until([&] { return one.calls.load() > 0; }, kWaitMs));
@@ -1304,7 +1326,8 @@ stop_at_replay(uint64_t generation, void* ctx) {
 void
 test_stop_during_replay(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);
@@ -1367,7 +1390,8 @@ test_stop_during_backpressured_send(void) {
     sc.rcvbuf = 4096;
     server_reset(sc);
     rtl_device_test_tcp_set_sndbuf(4096);
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     rig_start(r);
     rtl_device_test_tcp_set_send_hook(count_sends, nullptr);
@@ -1424,7 +1448,8 @@ hold_while_queued(void* ctx) {
 void
 test_stop_cancels_queued_handoff(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     g_queued_rig = &r;
     g_discard_entered.store(0);
     rig_open(r, 0, 0);
@@ -1462,7 +1487,8 @@ hold_reader(void* ctx) {
 void
 test_lost_connection_bytes_never_reach_ring(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 1);
     rtl_device_test_tcp_set_read_hook(hold_reader, nullptr);
     rig_start(r);
@@ -1518,7 +1544,8 @@ test_discard_release_keeps_pair_alignment(void) {
     odd.chunk_gap_ms = 20U;
     server_queue(conn_script{});
     server_queue(odd);
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     g_discard_rig = &r;
     rig_open(r, 1, 1);
     configure(r.dev);
@@ -1561,7 +1588,8 @@ test_retune_keeps_pair_alignment(void) {
     odd.chunks = {4095U, 3U, 1001U, 7U, 2049U};
     odd.chunk_gap_ms = 1U;
     server_reset(odd);
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 1, 1);
     rig_start(r);
     assert(wait_until([&] { return r.floats.load() >= 16384U; }, kWaitMs));
@@ -1587,7 +1615,8 @@ test_retune_keeps_pair_alignment(void) {
 void
 test_nearest_manual_gain_sends_agc_off_and_survives_reconnect(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);
@@ -1616,7 +1645,8 @@ test_nearest_manual_gain_sends_agc_off_and_survives_reconnect(void) {
 void
 test_testmode_wins_over_gain_over_tcp(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);
@@ -1679,7 +1709,8 @@ gain_failure_case(const dev_rig& r, int from_auto, int fail_cmd, uint64_t* gen) 
 void
 test_partial_gain_unit_reasserted_on_reconnect(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     rig_start(r);
     rtl_device_test_tcp_fail_command(0x04);
@@ -1702,7 +1733,8 @@ test_partial_gain_unit_reasserted_on_reconnect(void) {
 void
 test_each_gain_command_failure_propagates(void) {
     server_reset(default_script());
-    dev_rig r;
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
     rig_open(r, 0, 0);
     configure(r.dev);
     rig_start(r);

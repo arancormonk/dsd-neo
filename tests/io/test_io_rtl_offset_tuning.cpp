@@ -22,6 +22,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <memory>
 #include <string>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -119,14 +120,17 @@ Run
 run_start(int tuner_type, int direct_sampling, uint32_t retune_center_hz, uint32_t actual_rate = 0U,
           int offset_result = 0, int fail_frequency = 0, int retune_rate = 48000) {
     Run run;
-    run.fake.tuner_type = tuner_type;
-    run.fake.actual_rate = actual_rate;
-    run.fake.offset_result = offset_result;
-    run.fake.fail_frequency_from_call = fail_frequency;
+    /* Heap-held while installed (the device keeps its address in a global); the run keeps a copy once it is removed. */
+    const auto fake = std::make_unique<rtl_device_test_usb_tuner_fake>();
+    fake->tuner_type = tuner_type;
+    fake->actual_rate = actual_rate;
+    fake->offset_result = offset_result;
+    fake->fail_frequency_from_call = fail_frequency;
     dsd_opts* opts = make_rtl_opts();
-    struct rtl_device* dev = opts ? rtl_device_test_usb_tuner_device(&run.fake) : NULL;
+    struct rtl_device* dev = opts ? rtl_device_test_usb_tuner_device(fake.get()) : NULL;
     if (!dev) {
         free(opts);
+        run.fake = *fake;
         return run;
     }
     run.hook_rc =
@@ -137,6 +141,7 @@ run_start(int tuner_type, int direct_sampling, uint32_t retune_center_hz, uint32
     run.device_offset_hz = rtl_device_get_offset_tuning_hz(dev);
     rtl_device_test_usb_tuner_device_free(dev);
     free(opts);
+    run.fake = *fake;
     return run;
 }
 
@@ -338,7 +343,9 @@ test_late_offset_failure_uses_actual_lo(void) {
     set_runtime_env(NULL, "1");
     const Run run = run_start(kTunerE4000, 0, 0U, 0U, -1);
     int failed = expect_hardware_offset("late enable error", run, kCenterHz);
-    rtl_device_test_usb_tuner_fake fake{};
+    /* Heap-held: the device keeps the fake's address in a global while it is installed. */
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_tuner_fake>();
+    rtl_device_test_usb_tuner_fake& fake = *fake_owner;
     fake.tuner_type = kTunerE4000;
     rtl_device* dev = rtl_device_test_usb_tuner_device(&fake);
     if (!dev) {

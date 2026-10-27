@@ -327,7 +327,8 @@ int g_bias_api = 1;
 
 struct rig {
     std::unique_ptr<input_ring_state> ring;
-    rtl_device_test_usb_dongle dongle{};
+    /* Heap-held: the device keeps its address in a global while it is installed. */
+    std::unique_ptr<rtl_device_test_usb_dongle> dongle = std::make_unique<rtl_device_test_usb_dongle>();
     rtl_device* dev = nullptr;
     int reader_attached = 0;
 };
@@ -338,11 +339,11 @@ void
 rig_open(rig& r, int tuner_type) {
     r.ring = std::make_unique<input_ring_state>();
     assert(input_ring_init(r.ring.get(), 1U << 16) == 0);
-    DSD_MEMSET(&r.dongle, 0, sizeof r.dongle);
-    r.dongle.tuner.tuner_type = tuner_type;
-    r.dongle.gain.gain_count = (int)(sizeof k_gains / sizeof k_gains[0]);
-    DSD_MEMCPY(r.dongle.gain.gains, k_gains, sizeof k_gains);
-    rtl_device_test_usb_dongle_install(&r.dongle);
+    DSD_MEMSET(r.dongle.get(), 0, sizeof *r.dongle);
+    r.dongle->tuner.tuner_type = tuner_type;
+    r.dongle->gain.gain_count = (int)(sizeof k_gains / sizeof k_gains[0]);
+    DSD_MEMCPY(r.dongle->gain.gains, k_gains, sizeof k_gains);
+    rtl_device_test_usb_dongle_install(r.dongle.get());
     r.dev = rtl_device_create(0, r.ring.get());
     assert(r.dev != nullptr);
 }
@@ -416,8 +417,8 @@ rig_close(rig& r) {
         r.reader_attached = 0;
     }
     rtl_device_test_usb_dongle_install(nullptr);
-    assert(r.dongle.open_handles == 0);
-    assert(r.dongle.stale_handle_calls == 0);
+    assert(r.dongle->open_handles == 0);
+    assert(r.dongle->stale_handle_calls == 0);
     input_ring_destroy(r.ring.get());
 }
 
@@ -435,7 +436,7 @@ recover(const rig& r, std::string* why = nullptr) {
  * as it is, so it would stay on after the session. */
 bool
 bias_tee_left_on(const rig& r) {
-    return g_bias_api != 0 && r.dongle.bias_tee != 0;
+    return g_bias_api != 0 && r.dongle->bias_tee != 0;
 }
 
 /* The settings a failure test starts from: the bias tee on. */
@@ -509,14 +510,14 @@ test_required_synchronization_failure_refuses_open(void) {
     auto ring = std::make_unique<input_ring_state>();
     const int ring_rc = input_ring_init(ring.get(), 4096U);
     assert(ring_rc == 0);
-    rtl_device_test_usb_dongle dongle{};
-    rtl_device_test_usb_dongle_install(&dongle);
+    const auto dongle = std::make_unique<rtl_device_test_usb_dongle>();
+    rtl_device_test_usb_dongle_install(dongle.get());
     for (int step = 1; step <= 5; step++) {
         rtl_device_test_refuse_common_sync(step);
         rtl_device* dev = rtl_device_create(0, ring.get());
         assert(dev == nullptr);
-        assert(dongle.calls[RTL_TEST_DONGLE_OPEN] == 0);
-        assert(dongle.open_handles == 0);
+        assert(dongle->calls[RTL_TEST_DONGLE_OPEN] == 0);
+        assert(dongle->open_handles == 0);
     }
     rtl_device_test_refuse_common_sync(0);
     rtl_device_test_usb_dongle_install(nullptr);
@@ -555,17 +556,19 @@ test_retired_fifo_released_before_usb_reset(void) {
         rig_open(r, 5);
         rig_configure(r, settings{});
         rig_start(r);
-        fifo_close_probe probe{&r.dongle};
-        r.dongle.on_op = note_retired_fifo;
-        r.dongle.on_op_ctx = &probe;
-        r.dongle.faults[RTL_TEST_DONGLE_RESET_BUFFER].fail_from_call = refuse ? 1 : 0;
+        /* Heap-held, as the dongle it is set on. */
+        const auto probe_owner = std::make_unique<fifo_close_probe>(fifo_close_probe{r.dongle.get()});
+        fifo_close_probe& probe = *probe_owner;
+        r.dongle->on_op = note_retired_fifo;
+        r.dongle->on_op_ctx = &probe;
+        r.dongle->faults[RTL_TEST_DONGLE_RESET_BUFFER].fail_from_call = refuse ? 1 : 0;
         const int rc = recover(r);
         assert(rc == 0);
         assert(probe.retired_closed && probe.fifo_before_close);
         assert(g_usb.devs[0].resets.load() == 1);
-        assert(r.dongle.calls_while_reading == 0);
-        r.dongle.on_op = nullptr;
-        r.dongle.on_op_ctx = nullptr;
+        assert(r.dongle->calls_while_reading == 0);
+        r.dongle->on_op = nullptr;
+        r.dongle->on_op_ctx = nullptr;
         rig_close(r);
     }
 }
@@ -583,25 +586,25 @@ test_swap_configures_before_reader_runs(void) {
     rig_configure(r, s);
     rig_start(r);
     const rtl_device_test_usb_swap_state before = swap_state(r);
-    r.dongle.calls_while_reading = 0;
-    const int opens = r.dongle.calls[RTL_TEST_DONGLE_OPEN];
+    r.dongle->calls_while_reading = 0;
+    const int opens = r.dongle->calls[RTL_TEST_DONGLE_OPEN];
     std::string why;
     assert(recover(r, &why) == 0);
-    assert(r.dongle.calls_while_reading == 0);
-    assert(r.dongle.calls[RTL_TEST_DONGLE_OPEN] == opens + 1);
-    assert(r.dongle.calls[RTL_TEST_DONGLE_RESET_BUFFER] >= 1);
+    assert(r.dongle->calls_while_reading == 0);
+    assert(r.dongle->calls[RTL_TEST_DONGLE_OPEN] == opens + 1);
+    assert(r.dongle->calls[RTL_TEST_DONGLE_RESET_BUFFER] >= 1);
     assert(g_usb.devs[0].resets.load() == 1);
     rtl_device_test_usb_swap_state st = swap_state(r);
     assert(st.has_handle && !st.thread_started && !st.reader_running && !st.recovering);
     /* The FIFO reset is the last thing the swap does. */
-    assert(r.dongle.ops[r.dongle.op_count - 1] == RTL_TEST_DONGLE_RESET_BUFFER);
+    assert(r.dongle->ops[r.dongle->op_count - 1] == RTL_TEST_DONGLE_RESET_BUFFER);
     assert(rtl_device_usb_resume_reader(r.dev) == 0);
     wait_reader_running(r);
     st = swap_state(r);
     assert(st.thread_started);
     assert(st.watch_rearm_seq == before.watch_rearm_seq + 1U);
-    assert(r.dongle.calls_while_reading == 0);
-    expect_dongle_holds(r.dongle, s, 0);
+    assert(r.dongle->calls_while_reading == 0);
+    expect_dongle_holds(*r.dongle, s, 0);
     rig_close(r);
 }
 
@@ -640,9 +643,9 @@ test_replay_restores_effective_not_initial(void) {
     s.testmode = 1;
     assert(rtl_device_set_testmode(r.dev, 1) == 0);
     assert(recover(r) == 0);
-    expect_dongle_holds(r.dongle, s, 1);
+    expect_dongle_holds(*r.dongle, s, 1);
     /* Replay order on the reopened dongle. */
-    const rtl_device_test_usb_dongle& d = r.dongle;
+    const rtl_device_test_usb_dongle& d = *r.dongle;
     assert(d.ops[0] == RTL_TEST_DONGLE_OPEN);
     const int xtal = op_index(d, RTL_TEST_DONGLE_XTAL, 0);
     const int freq1 = op_index(d, RTL_TEST_DONGLE_FREQ, 0);
@@ -678,10 +681,10 @@ test_replay_direct_sampling_r820t(void) {
     rig_configure(r, s);
     rig_start(r);
     assert(recover(r) == 0);
-    expect_dongle_holds(r.dongle, s, 0);
-    assert(op_index(r.dongle, RTL_TEST_DONGLE_OFFSET, 0) < 0);
-    const int ds = op_index(r.dongle, RTL_TEST_DONGLE_DIRECT_SAMPLING, 0);
-    assert(ds > 0 && ds < op_index(r.dongle, RTL_TEST_DONGLE_FREQ, 0));
+    expect_dongle_holds(*r.dongle, s, 0);
+    assert(op_index(*r.dongle, RTL_TEST_DONGLE_OFFSET, 0) < 0);
+    const int ds = op_index(*r.dongle, RTL_TEST_DONGLE_DIRECT_SAMPLING, 0);
+    assert(ds > 0 && ds < op_index(*r.dongle, RTL_TEST_DONGLE_FREQ, 0));
     rig_close(r);
 }
 
@@ -693,17 +696,17 @@ test_failed_retune_not_replayed(void) {
     const settings s;
     rig_configure(r, s);
     rig_start(r);
-    r.dongle.faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
-    r.dongle.faults[RTL_TEST_DONGLE_FREQ].fail_value = 857000000;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = 857000000;
     assert(rtl_device_set_frequency(r.dev, 857000000U) != 0);
-    r.dongle.faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 0;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 0;
     /* So is a gain the tuner refused (rolled back). */
-    r.dongle.gain.gain_fault.fail_value_set = 1;
-    r.dongle.gain.gain_fault.fail_value = 420;
+    r.dongle->gain.gain_fault.fail_value_set = 1;
+    r.dongle->gain.gain_fault.fail_value = 420;
     assert(rtl_device_set_gain(r.dev, 420) != 0);
-    r.dongle.gain.gain_fault.fail_value_set = 0;
+    r.dongle->gain.gain_fault.fail_value_set = 0;
     assert(recover(r) == 0);
-    expect_dongle_holds(r.dongle, s, 0);
+    expect_dongle_holds(*r.dongle, s, 0);
     rig_close(r);
 }
 
@@ -793,12 +796,12 @@ test_setter_during_swap_returns_busy(void) {
         rig_start(r);
         g_busy = busy_probe{};
         g_busy.dev = r.dev;
-        g_busy.dongle = &r.dongle;
+        g_busy.dongle = r.dongle.get();
         g_busy_at = point;
         g_busy_ran = 0;
-        r.dongle.on_op = busy_on_op;
+        r.dongle->on_op = busy_on_op;
         assert(recover(r) == 0);
-        r.dongle.on_op = nullptr;
+        r.dongle->on_op = nullptr;
         assert(g_busy_ran);
         for (int i = 0; i < g_busy.count; i++) {
             if (g_busy.results[i] != RTL_DEVICE_EBUSY) {
@@ -810,7 +813,7 @@ test_setter_during_swap_returns_busy(void) {
         assert(g_busy.calls_after == g_busy.calls_before);
         assert(g_busy.getter_rc != 0);
         /* And nothing was remembered: the dongle holds the settings from before, and so does the record. */
-        expect_dongle_holds(r.dongle, s, 1);
+        expect_dongle_holds(*r.dongle, s, 1);
         assert(rtl_device_get_offset_tuning(r.dev) == 1);
         assert(rtl_device_is_auto_gain(r.dev) == 0);
         int tenth_db = 0;
@@ -882,7 +885,7 @@ test_setter_before_retire_is_replayed(void) {
         s.gain = 165;
         assert(rtl_device_set_gain(r.dev, s.gain) == 0);
         assert(recover(r) == 0);
-        expect_dongle_holds(r.dongle, s, 0);
+        expect_dongle_holds(*r.dongle, s, 0);
         rig_close(r);
     }
     /* A setter inside its gain write when the recovery begins: the swap waits for it, and replays what it set. */
@@ -895,7 +898,7 @@ test_setter_before_retire_is_replayed(void) {
     g_held.inside.store(0);
     g_held.release.store(0);
     g_held.rc = -99;
-    r.dongle.on_op = hold_gain_write;
+    r.dongle->on_op = hold_gain_write;
     dsd_thread_t setter;
     start_thread(&setter, held_setter_thread, &g_held);
     for (int i = 0; i < 2000 && (g_held.inside.load() == 0); i++) {
@@ -912,11 +915,11 @@ test_setter_before_retire_is_replayed(void) {
     g_held.release.store(1);
     dsd_thread_join(setter);
     dsd_thread_join(recovery);
-    r.dongle.on_op = nullptr;
+    r.dongle->on_op = nullptr;
     assert(g_held.rc == 0);
     assert(call.rc == 0);
     s.gain = 290;
-    expect_dongle_holds(r.dongle, s, 0);
+    expect_dongle_holds(*r.dongle, s, 0);
     rig_close(r);
 }
 
@@ -1010,11 +1013,11 @@ test_getter_and_setter_in_flight_during_retire(void) {
     }
     assert(h.bad.load() == 0);
     assert(h.took.load() > 0);
-    assert(r.dongle.stale_handle_calls == 0);
+    assert(r.dongle->stale_handle_calls == 0);
     /* Hardware and record agree after the last swap. */
     int tenth_db = 0;
     assert(rtl_device_get_tuner_gain(r.dev, &tenth_db) == 0);
-    assert(tenth_db == r.dongle.gain.gain);
+    assert(tenth_db == r.dongle->gain.gain);
     rig_close(r);
 }
 
@@ -1106,11 +1109,11 @@ test_stop_at_each_swap_step(void) {
         g_steps_seen.clear();
         g_recording_steps = 1;
         g_usb.on_step = stop_on_step;
-        r.dongle.on_op = stop_on_op;
+        r.dongle->on_op = stop_on_op;
         assert(recover(r) == 0);
         g_recording_steps = 0;
         g_usb.on_step = nullptr;
-        r.dongle.on_op = nullptr;
+        r.dongle->on_op = nullptr;
         rig_close(r);
     }
     assert(g_steps_seen.size() >= 10U);
@@ -1136,7 +1139,7 @@ test_stop_at_each_swap_step(void) {
             g_stop_at = step;
             g_stop_fired = 0;
             g_usb.on_step = stop_on_step;
-            r.dongle.on_op = stop_on_op;
+            r.dongle->on_op = stop_on_op;
             const uint64_t t0 = dsd_realtime_mono_ms();
             std::string why;
             const int rc = recover(r, &why);
@@ -1153,11 +1156,11 @@ test_stop_at_each_swap_step(void) {
             if (use_destroy != 0) {
                 r.dev = nullptr;
             } else {
-                r.dongle.on_op = nullptr;
+                r.dongle->on_op = nullptr;
                 const rtl_device_test_usb_swap_state st = swap_state(r);
                 assert(st.stop_requested && !st.thread_started && !st.reader_running && !st.recovering);
                 assert(!st.has_handle);
-                assert(r.dongle.open_handles == 0);
+                assert(r.dongle->open_handles == 0);
                 assert(rtl_device_usb_resume_reader(r.dev) == -ECANCELED);
                 assert(!swap_state(r).thread_started);
             }
@@ -1261,7 +1264,7 @@ test_previously_effective_control_restore_failure_fails(void) {
         s.bias = 1;
         rig_configure(r, s);
         rig_start(r);
-        rtl_device_test_usb_dongle& d = r.dongle;
+        rtl_device_test_usb_dongle& d = *r.dongle;
         switch (c) {
             case RESTORE_BIAS: d.faults[RTL_TEST_DONGLE_BIAS_TEE].fail_from_call = 1; break;
             case RESTORE_GAIN:
@@ -1368,14 +1371,14 @@ test_reopen_with_duplicate_triple_fails_recovery(void) {
         (void)log_take();
         g_usb.twin_on_reset = 1;
         g_usb.twin_in_librtlsdr = in_librtlsdr;
-        const int opens = r.dongle.calls[RTL_TEST_DONGLE_OPEN];
+        const int opens = r.dongle->calls[RTL_TEST_DONGLE_OPEN];
         std::string why;
         const int rc = recover(r, &why);
         assert(rc < 0 && rc != -ECANCELED);
         assert(g_usb.devs[0].resets.load() == 1 && g_usb.devs[1].resets.load() == 0);
         /* No rtlsdr_open() of any index. */
-        assert(r.dongle.calls[RTL_TEST_DONGLE_OPEN] == opens);
-        assert(r.dongle.open_handles == 0);
+        assert(r.dongle->calls[RTL_TEST_DONGLE_OPEN] == opens);
+        assert(r.dongle->open_handles == 0);
         assert(!bias_tee_left_on(r));
         const char* cause = (in_librtlsdr != 0)
                                 ? "no single receiver carries its USB strings"
@@ -1461,7 +1464,7 @@ test_ineligible_recovery_off_reason_logged(void) {
     assert(why.find(reason) != std::string::npos);
     /* Nothing was touched: no reset, the handle and reader still there. */
     assert(g_usb.devs[0].resets.load() == 0 && g_usb.devs[1].resets.load() == 0);
-    assert(r.dongle.calls[RTL_TEST_DONGLE_CLOSE] == 0);
+    assert(r.dongle->calls[RTL_TEST_DONGLE_CLOSE] == 0);
     const rtl_device_test_usb_swap_state st = swap_state(r);
     assert(st.has_handle && st.thread_started && st.reader_running);
     rig_close(r);

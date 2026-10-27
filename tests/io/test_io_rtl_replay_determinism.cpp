@@ -2208,7 +2208,9 @@ test_noted_discontinuity_replays_as_a_gap(void) {
     if (!writer) {
         return 1;
     }
-    rtl_device_test_usb_gain_fake fake;
+    /* Heap-held: the device keeps the fake's address in a global while it is installed. */
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     DSD_MEMSET(&fake, 0, sizeof(fake));
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {

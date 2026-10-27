@@ -2,6 +2,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <errno.h>
+#include <memory>
 #include <stdio.h>
 #include "rtl_stream_test_support.h"
 
@@ -20,7 +21,9 @@ main(void) {
     int failed = check("uninitialized center refuses boundary", boundary == -EINVAL && calls == 0);
     const int activity = rtl_stream_test_activity_swaps();
     failed |= check("test stream swaps publish activity", activity == 7);
-    rtl_device_test_usb_gain_fake gain{};
+    /* Heap-held: the device keeps the fake's address in a global while it is installed. */
+    const auto gain_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& gain = *gain_owner;
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&gain);
     if (!dev) {
         return 1;
@@ -28,7 +31,8 @@ main(void) {
     const int frequency = rtl_device_set_frequency(dev, 851012500U);
     failed |= check("gain fake refuses unsupported tuning", frequency < 0);
     rtl_device_test_usb_gain_device_free(dev);
-    rtl_device_test_usb_tuner_fake tuner{};
+    const auto tuner_owner = std::make_unique<rtl_device_test_usb_tuner_fake>();
+    rtl_device_test_usb_tuner_fake& tuner = *tuner_owner;
     dev = rtl_device_test_usb_tuner_device(&tuner);
     if (!dev) {
         return 1;

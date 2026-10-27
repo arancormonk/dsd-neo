@@ -350,7 +350,8 @@ note_post(void* ctx) {
 
 struct rig {
     std::unique_ptr<input_ring_state> ring;
-    rtl_device_test_usb_dongle dongle{};
+    /* Heap-held: the device keeps its address in a global while it is installed. */
+    std::unique_ptr<rtl_device_test_usb_dongle> dongle = std::make_unique<rtl_device_test_usb_dongle>();
     rtl_device* dev = nullptr;
     posts posted;
 };
@@ -359,8 +360,8 @@ void
 rig_open(rig& r, int with_callback) {
     r.ring = std::make_unique<input_ring_state>();
     assert(input_ring_init(r.ring.get(), 1U << 18) == 0);
-    dongle_init(&r.dongle);
-    rtl_device_test_usb_dongle_install(&r.dongle);
+    dongle_init(r.dongle.get());
+    rtl_device_test_usb_dongle_install(r.dongle.get());
     r.dev = rtl_device_create(0, r.ring.get());
     assert(r.dev != nullptr);
     assert(rtl_device_set_frequency(r.dev, 851012500U) == 0);
@@ -380,8 +381,8 @@ rig_close(rig& r) {
     r.dev = nullptr;
     rtl_device_test_usb_stream_detach();
     rtl_device_test_usb_dongle_install(nullptr);
-    assert(r.dongle.open_handles == 0);
-    assert(r.dongle.stale_handle_calls == 0);
+    assert(r.dongle->open_handles == 0);
+    assert(r.dongle->stale_handle_calls == 0);
     input_ring_destroy(r.ring.get());
     reset_session();
 }
@@ -753,7 +754,8 @@ read_output(void* arg) {
 }
 
 struct stream_rig {
-    rtl_device_test_usb_dongle dongle{};
+    /* Heap-held: the device keeps its address in a global while it is installed. */
+    std::unique_ptr<rtl_device_test_usb_dongle> dongle = std::make_unique<rtl_device_test_usb_dongle>();
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = nullptr;
     rtl_device* dev = nullptr;
@@ -766,8 +768,8 @@ const char* const kCaptureFiles[] = {"capture.iq", "capture.iq.json", nullptr};
 
 void
 stream_open(stream_rig& r, int capture, int reader) {
-    dongle_init(&r.dongle);
-    rtl_device_test_usb_dongle_install(&r.dongle);
+    dongle_init(r.dongle.get());
+    rtl_device_test_usb_dongle_install(r.dongle.get());
     rtl_device_test_usb_stream_attach();
     r.opts = std::make_unique<dsd_opts>();
     dsd_opts* opts = r.opts.get();
@@ -831,8 +833,8 @@ stream_close(stream_rig& r) {
     r.dev = nullptr;
     rtl_device_test_usb_stream_detach();
     rtl_device_test_usb_dongle_install(nullptr);
-    assert(r.dongle.open_handles == 0);
-    assert(r.dongle.stale_handle_calls == 0);
+    assert(r.dongle->open_handles == 0);
+    assert(r.dongle->stale_handle_calls == 0);
 }
 
 void
@@ -1250,7 +1252,9 @@ test_yield_reaches_decoder_during_recovery(void) {
     dsd_runtime_set_controls_pending(command_queued);
     stream_rig r;
     stream_open(r, 0, 0);
-    recording_reader reader;
+    /* Heap-held: the probe reaches it through a global. */
+    const auto reader_owner = std::make_unique<recording_reader>();
+    recording_reader& reader = *reader_owner;
     g_yield_reader = &reader;
     rtl_stream_test_set_stream_boundary_probe(probe_yield, nullptr);
     recording_start(reader, r.ctx);

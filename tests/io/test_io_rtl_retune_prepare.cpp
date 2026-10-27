@@ -1651,7 +1651,9 @@ test_live_read_without_stream(void) {
     nfm.analog_only = 1;
     nfm.monitor_input_audio = 1;
     nfm.analog_demod = DSD_ANALOG_DEMOD_FM;
-    rtl_device_test_usb_gain_fake fake = {};
+    /* Heap-held: the device keeps the fake's address in a global while it is installed. */
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     int failed = expect_int_eq("no-stream device", dev != nullptr ? 1 : 0, 1);
     if (dev == nullptr) {
@@ -1836,7 +1838,8 @@ expect_published_gain(const char* label, int published_rc, int published_gain, i
 static int
 test_usb_testmode_survives_gain_writes(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
@@ -1859,7 +1862,8 @@ test_usb_testmode_survives_gain_writes(void) {
 static int
 test_usb_testmode_off_keeps_digital_agc(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
@@ -1888,7 +1892,8 @@ test_usb_testmode_off_keeps_digital_agc(void) {
 static int
 test_usb_testmode_turned_off_restores_agc(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
@@ -1922,7 +1927,8 @@ test_usb_testmode_turned_off_restores_agc(void) {
 static int
 test_usb_nearest_gain_accepts_negative_e4000_gain(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kE4000Gains, sizeof kE4000Gains / sizeof kE4000Gains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
@@ -1963,7 +1969,8 @@ test_usb_nearest_gain_accepts_negative_e4000_gain(void) {
 static int
 test_usb_nearest_gain_lookup_failure_is_error(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
@@ -2015,7 +2022,8 @@ test_usb_nearest_gain_lookup_failure_is_error(void) {
 static int
 test_usb_manual_gain_partial_failure_rolls_back(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
@@ -2101,7 +2109,8 @@ test_usb_manual_gain_partial_failure_rolls_back(void) {
 static int
 test_usb_rollback_failure_marks_unknown(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake;
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
@@ -2164,7 +2173,8 @@ test_usb_rollback_failure_marks_unknown(void) {
 static int
 test_autogain_target_commits_applied_gain(void) {
     usb_gain_set_digital_agc(1);
-    rtl_device_test_usb_gain_fake fake{};
+    const auto fake_owner = std::make_unique<rtl_device_test_usb_gain_fake>();
+    rtl_device_test_usb_gain_fake& fake = *fake_owner;
     usb_gain_fake_init(&fake, kR82xxGains, sizeof kR82xxGains / sizeof kR82xxGains[0]);
     struct rtl_device* dev = rtl_device_test_usb_gain_device(&fake);
     if (!dev) {
