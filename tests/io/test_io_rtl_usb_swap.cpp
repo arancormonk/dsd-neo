@@ -503,6 +503,53 @@ expect_dongle_holds(const rtl_device_test_usb_dongle& d, const settings& s, int 
 
 /* ---- Tests ---- */
 
+struct fifo_close_probe {
+    rtl_device_test_usb_dongle* dongle = nullptr;
+    bool retired_closed = false;
+    bool fifo_before_close = false;
+};
+
+void
+note_retired_fifo(void* ctx, int op) {
+    auto* probe = static_cast<fifo_close_probe*>(ctx);
+    if (!probe->retired_closed && op == RTL_TEST_DONGLE_RESET_BUFFER) {
+        probe->fifo_before_close = true;
+    }
+    if (op == RTL_TEST_DONGLE_CLOSE) {
+        probe->retired_closed = true;
+    }
+    if (op == RTL_TEST_DONGLE_OPEN && probe->retired_closed) {
+        /* Only the retired handle refuses the clear; the new handle must still be configured. */
+        probe->dongle->faults[RTL_TEST_DONGLE_RESET_BUFFER] = {};
+    }
+}
+
+/* Resetting an RTL2832U with its endpoint FIFO held in reset can leave it repeating stale samples after reopen.
+ * Release that FIFO before closing the retired handle, as normal destruction does; a wedged handle may refuse,
+ * so this remains best effort and never prevents the USB reset. */
+void
+test_retired_fifo_released_before_usb_reset(void) {
+    for (int refuse = 0; refuse < 2; refuse++) {
+        usb_world_reset(0);
+        rig r;
+        rig_open(r, 5);
+        rig_configure(r, settings{});
+        rig_start(r);
+        fifo_close_probe probe{&r.dongle};
+        r.dongle.on_op = note_retired_fifo;
+        r.dongle.on_op_ctx = &probe;
+        r.dongle.faults[RTL_TEST_DONGLE_RESET_BUFFER].fail_from_call = refuse ? 1 : 0;
+        const int rc = recover(r);
+        assert(rc == 0);
+        assert(probe.retired_closed && probe.fifo_before_close);
+        assert(g_usb.devs[0].resets.load() == 1);
+        assert(r.dongle.calls_while_reading == 0);
+        r.dongle.on_op = nullptr;
+        r.dongle.on_op_ctx = nullptr;
+        rig_close(r);
+    }
+}
+
 /* The swap touches the dongle only once the reader returned, and the reader restarts only on request. */
 void
 test_swap_configures_before_reader_runs(void) {
@@ -1429,6 +1476,7 @@ main(void) {
 #endif
     /* Without libusb no receiver is eligible; the report above is all there is. */
     if (have_libusb != 0) {
+        test_retired_fifo_released_before_usb_reset();
         test_swap_configures_before_reader_runs();
         test_replay_restores_effective_not_initial();
         test_replay_direct_sampling_r820t();

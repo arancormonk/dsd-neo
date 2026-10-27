@@ -10468,6 +10468,9 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
     }
     rtlsdr_dev_t* retired = rtl_usb_retire_handle(dev);
     if (retired) {
+        /* Release the endpoint FIFO before the USB reset, as normal destruction does. Leaving it held in reset can
+         * make an RTL2832U repeat stale samples after reopening. A wedged handle may refuse; still reset the device. */
+        (void)rtl_usb_ctl_reset_buffer(retired);
         rtl_usb_close_swapped(dev, retired);
     }
     if (rtl_usb_stop_latched(dev)) {

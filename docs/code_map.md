@@ -4518,8 +4518,11 @@ Key public headers:
     changes only under `usb_lifecycle_lock`. Each USB setter records in `usb_eff` (`struct rtl_usb_effective`) what the
     dongle took, with a took flag per control, only on success. `rtl_device_usb_recover_handle()` holds
     `usb_lifecycle_lock` throughout: sets `recovering` (setters then return `RTL_DEVICE_EBUSY` and change nothing,
-    getters still lock), cancels and joins the reader (its return is silent while `recovering`), unpublishes and closes
-    the handle, `rtl_usb_identity_reset()`, re-resolves and reopens by `rtl_usb_identity_index()`, verifies, and replays
+    getters still lock), cancels and joins the reader (its return is silent while `recovering`), unpublishes the handle,
+    attempts its FIFO reset, closes it, then calls `rtl_usb_identity_reset()`. The FIFO clear is best effort, as in normal
+    destruction: resetting an RTL2832U with its endpoint FIFO held in reset can leave it repeating stale samples after
+    reopening, but a wedged handle's refusal must not prevent the USB reset. Recovery re-resolves and reopens by
+    `rtl_usb_identity_index()`, verifies, and replays
     `usb_eff` onto the unpublished handle (crystal, direct sampling, frequency, rate, offset tuning only if it took,
     bandwidth through `rtl_offset_aware_bandwidth_hz()`, PPM if nonzero, frequency, gain mode + gain if a gain took,
     register 0x19, IF gains, bias tee, FIFO reset; the frequency precedes the rate so an R82xx never tunes to 0 Hz). A
