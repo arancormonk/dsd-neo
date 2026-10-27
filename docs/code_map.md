@@ -8003,9 +8003,20 @@ Qt Quick frontend (`src/ui/qt`):
   every 250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything
   before it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
   - drops a crash's unterminated last record;
-  - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log`;
+  - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log` (and of the host pair below);
   - expires each segment after seven days;
   - splits an older build's single tail at line starts.
+
+  Host, session and process records (issue #782) also go to a store of their own, so decoder output cannot push them
+  out: `m_hostRing` (`kHostRingLimit`, 500) and the segment pair `host.prev.log`/`host.log`, each at most
+  `kHostSegmentLimit` (32 KiB). Both segment pairs are `Segments` values that the one writer step drains, syncs,
+  rotates, clears and loads by the same rules, so a change to those rules applies to both. `ioStats()` counts the main
+  tail only. `hostSnapshot()` returns the host ring, the previous run's records first under their divider.
+  `DiagnosticsLogModel::allText()` (Copy and Share) emits it under `--- host and session records ---`, then the ring
+  under `--- all records ---`; the screen shows only the ring. `installTap()` constructs the singleton, which creates the
+  directory and loads both stores, before it takes the host lock. It then installs the tap and drains the pending
+  buffer under that lock, so a host record submitted during the load (Android's main thread) only waits for the
+  bounded pending buffer. `setLoadHookForTest()` lets `UI_QT_DIAGNOSTICS_LOG` hold a load open to prove it.
 
   `installTap()` records the run's `process:` line (pid, OS, app version, plus Android's boot count, device and recent
   `exit:` lines from the platform facts provider). Each new segment starts with that line and the current

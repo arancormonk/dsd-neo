@@ -23,6 +23,7 @@
 #include <QStandardPaths>
 #include <QSysInfo>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -32,7 +33,6 @@
 
 namespace dsd_qt {
 namespace {
-constexpr int tailLimit = 256 * 1024;
 constexpr int ringLimit = 2000;
 constexpr int queueLimit = 2000;
 constexpr int flushResultLimit = 64;
@@ -40,6 +40,10 @@ constexpr int flushResultLimit = 64;
 constexpr int pinnedLimit = 8;
 const char kTailName[] = "tail.log";
 const char kPrevName[] = "tail.prev.log";
+const char kHostName[] = "host.log";
+const char kHostPrevName[] = "host.prev.log";
+const char kPreviousRun[] = "--- previous run ---";
+std::atomic<DiagnosticsLog::LoadHook> g_loadHook{nullptr};
 constexpr QByteArrayView kProcessPrefix = "[process] [info] pid ";
 constexpr QByteArrayView kSessionPrefix = "[session] [info] --- session starting";
 
@@ -65,11 +69,6 @@ lineAlignedTail(QByteArray text, qint64 limit) {
         text.remove(0, text.indexOf('\n') + 1);
     }
     return text;
-}
-
-QByteArray
-boundedTail(QByteArray text) {
-    return lineAlignedTail(std::move(text), tailLimit);
 }
 
 /** @brief Drops an unterminated last record: what a crash part-way through an append leaves. */
@@ -322,6 +321,12 @@ formatRecord(const QString& source, const QString& level, const QString& text) {
     return line;
 }
 
+/** @brief Whether records from @p source are host lifecycle records, kept in the host store as well. */
+bool
+isHostSource(const QString& source) {
+    return source == QLatin1String("host") || source == QLatin1String("session") || source == QLatin1String("process");
+}
+
 QString
 baseProcessFacts() {
     QString facts = QStringLiteral("%1, %2 (%3)")
@@ -401,8 +406,10 @@ DiagnosticsLog::installTap() {
             }
             following = std::move(extra.second);
         }
-        std::lock_guard<std::mutex> lock(host.mutex);
+        // Built outside the host lock too: creating the directory and loading the saved records is file I/O, and a host
+        // record arriving meanwhile (Android's main thread, through nativeHostDiagnostic) only needs the pending buffer.
         auto& log = instance();
+        std::lock_guard<std::mutex> lock(host.mutex);
         dsd_neo_log_set_tap(capture, &log);
         // The process line first: it is where this run starts in the saved tail.
         log.noteProcess(facts, following);
@@ -417,16 +424,19 @@ DiagnosticsLog::installTap() {
 void
 DiagnosticsLog::submitHostDiagnostic(const QString& text) {
     auto& host = hostDiagnostics();
-    std::lock_guard<std::mutex> lock(host.mutex);
-    if (!host.ready) {
-        // Do not resolve AppDataLocation before Qt has its application identity.
-        // Only bounded, redacted records can survive until tap installation.
-        host.pending.append(redact(text).left(512));
-        if (host.pending.size() > 2000) {
-            host.pending.removeFirst();
+    {
+        std::lock_guard<std::mutex> lock(host.mutex);
+        if (!host.ready) {
+            // Do not resolve AppDataLocation before Qt has its application identity.
+            // Only bounded, redacted records can survive until tap installation.
+            host.pending.append(redact(text).left(512));
+            if (host.pending.size() > 2000) {
+                host.pending.removeFirst();
+            }
+            return;
         }
-        return;
     }
+    // Ready means the pending records are already in, so this one follows them.
     instance().submit(QStringLiteral("host"), QStringLiteral("info"), text);
 }
 
@@ -450,10 +460,16 @@ DiagnosticsLog::producerLineCountsForTest() {
     return {producerTemplates().listed, producerTemplates().accepted};
 }
 
+DiagnosticsLog::Segments::Segments(const char* currentName, const char* previousName, qint64 segmentLimit,
+                                   const char* what)
+    : current(currentName), previous(previousName), limit(segmentLimit), label(what) {}
+
 DiagnosticsLog::DiagnosticsLog(const QString& directory) : DiagnosticsLog(directory, TestOptions{}) {}
 
 DiagnosticsLog::DiagnosticsLog(const QString& directory, TestOptions options)
-    : m_directory(directory), m_options(std::move(options)) {
+    : m_tail(kTailName, kPrevName, kSegmentLimit, "saved log"),
+      m_host(kHostName, kHostPrevName, kHostSegmentLimit, "saved host and session log"), m_directory(directory),
+      m_options(std::move(options)) {
     QDir().mkpath(directory);
     load();
     if (!m_options.manualDrain) {
@@ -489,9 +505,18 @@ DiagnosticsLog::inStartupWindow(quint64 now) const {
 }
 
 void
+DiagnosticsLog::setLoadHookForTest(LoadHook hook) {
+    g_loadHook.store(hook);
+}
+
+void
 DiagnosticsLog::load() {
+    if (const LoadHook hook = g_loadHook.load()) {
+        hook();
+    }
     cleanDirectory();
-    seedRing(loadSegments());
+    seedRing(loadSegments(m_tail));
+    seedHostRing(loadSegments(m_host));
 }
 
 void
@@ -499,13 +524,13 @@ DiagnosticsLog::cleanDirectory() const {
     QDir dir(m_directory);
     // Temporaries a kill or crash left behind: QSaveFile's from older builds' whole-tail rewrites and from
     // normalization below. Nothing else in the directory is touched.
-    static const QRegularExpression orphan(QStringLiteral("^tail(\\.prev)?\\.log\\.[A-Za-z0-9]{6}$"));
+    static const QRegularExpression orphan(QStringLiteral("^(tail|host)(\\.prev)?\\.log\\.[A-Za-z0-9]{6}$"));
     for (const auto& name : dir.entryList(QDir::Files | QDir::Hidden)) {
         if (orphan.match(name).hasMatch()) {
             dir.remove(name);
         }
     }
-    for (const auto& path : {filePath(kPrevName), filePath(kTailName)}) {
+    for (const auto& path : {filePath(kPrevName), filePath(kTailName), filePath(kHostPrevName), filePath(kHostName)}) {
         QFileInfo info(path);
         if (info.exists() && info.lastModified().secsTo(realtimeCurrentDateTime()) > 7LL * 24 * 3600) {
             QFile::remove(path);
@@ -514,19 +539,21 @@ DiagnosticsLog::cleanDirectory() const {
 }
 
 QByteArray
-DiagnosticsLog::loadSegments() const {
-    const QString tailPath = filePath(kTailName);
-    const QString prevPath = filePath(kPrevName);
-    QByteArray prev = withoutFragment(readTail(prevPath, 2LL * tailLimit));
-    QByteArray tail = withoutFragment(readTail(tailPath, 2LL * tailLimit));
-    if (prev.size() > kSegmentLimit || tail.size() > kSegmentLimit) {
+DiagnosticsLog::loadSegments(const Segments& segments) const {
+    const QString tailPath = filePath(segments.current);
+    const QString prevPath = filePath(segments.previous);
+    const qint64 limit = segments.limit;
+    const qint64 total = 2 * limit;
+    QByteArray prev = withoutFragment(readTail(prevPath, 2 * total));
+    QByteArray tail = withoutFragment(readTail(tailPath, 2 * total));
+    if (prev.size() > limit || tail.size() > limit) {
         // An older build's single tail (up to 256 KiB), or anything else over a segment: split at line starts
         // into the two bounded segments, keeping no more than before. A current segment over the cap is an
         // older build's tail that was never split (this writer rotates first), so it alone is the record: a
         // previous segment beside it can only be the prefix a split interrupted by a crash already wrote.
-        const QByteArray all = boundedTail(tail.size() > kSegmentLimit ? tail : prev + tail);
-        tail = lineAlignedTail(all, kSegmentLimit);
-        prev = lineAlignedTail(all.left(all.size() - tail.size()), kSegmentLimit);
+        const QByteArray all = lineAlignedTail(tail.size() > limit ? tail : prev + tail, total);
+        tail = lineAlignedTail(all, limit);
+        prev = lineAlignedTail(all.left(all.size() - tail.size()), limit);
         // The current segment is rewritten only once the previous one holds its prefix: until then the unsplit tail
         // stays the record, and the next load splits it again.
         const bool prevWritten =
@@ -535,7 +562,7 @@ DiagnosticsLog::loadSegments() const {
             (void)replaceFile(tailPath, tail);
         }
     }
-    return boundedTail(prev + tail);
+    return lineAlignedTail(prev + tail, total);
 }
 
 void
@@ -572,7 +599,7 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
     const QStringList context = droppedContext(lines, {lastProcessAt, lastSessionAt}, &keepFrom);
     // The divider and the previous run's identity (those very lines, wherever they sit) stay at the front while this
     // run's records arrive.
-    m_protectedPrevious.append(pushRingLocked(QStringLiteral("--- previous run ---")));
+    m_protectedPrevious.append(pushRingLocked(QLatin1String(kPreviousRun)));
     for (const auto& line : context) {
         m_protectedPrevious.append(pushRingLocked(line));
     }
@@ -587,18 +614,46 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
 }
 
 void
-DiagnosticsLog::enqueue(const QByteArray& record, Pin pin) {
+DiagnosticsLog::seedHostRing(const QByteArray& text) {
+    QStringList lines;
+    for (const auto& line : text.split('\n')) {
+        if (!line.isEmpty() && !line.contains('\0')) {
+            lines.append(redact(QString::fromUtf8(line)));
+        }
+    }
+    // The newest records that fit beside the divider.
+    lines = lines.mid(std::max<qsizetype>(0, lines.size() - (kHostRingLimit - 1)));
+    if (lines.isEmpty()) {
+        return;
+    }
+    m_hostRing.append(QLatin1String(kPreviousRun));
+    m_hostRing.append(lines);
+    m_hostPrevious = static_cast<int>(lines.size());
+}
+
+void
+DiagnosticsLog::enqueue(const QByteArray& record, bool host, Pin pin) {
     // Queue lock orders concurrent submit operations, but no I/O holds it.
     std::lock_guard<std::mutex> queueLock(m_queueMutex);
     {
+        const QString line = QString::fromUtf8(record);
         std::lock_guard<std::mutex> ringLock(m_ringMutex);
-        appendRingLocked(QString::fromUtf8(record), pin);
+        appendRingLocked(line, pin);
+        if (host) {
+            appendHostRingLocked(line);
+        }
     }
     // Bounded backpressure: retaining newest queued records matches ring semantics.
     if (m_queue.size() >= queueLimit) {
         m_queue.pop_front();
     }
     m_queue.push_back(record + '\n');
+    if (host) {
+        if (m_hostQueue.size() >= static_cast<size_t>(kHostRingLimit)) {
+            m_hostQueue.pop_front();
+        }
+        m_hostQueue.push_back(record + '\n');
+    }
     m_ready.notify_one();
 }
 
@@ -652,6 +707,22 @@ DiagnosticsLog::appendRingLocked(const QString& line, Pin pin) {
     ++m_generation;
 }
 
+void
+DiagnosticsLog::appendHostRingLocked(const QString& line) {
+    m_hostRing.append(line);
+    while (m_hostRing.size() > kHostRingLimit) {
+        if (m_hostPrevious == 0) {
+            m_hostRing.removeFirst();
+            continue;
+        }
+        // The previous run's oldest record, and its divider with the last of them.
+        m_hostRing.removeAt(1);
+        if (--m_hostPrevious == 0) {
+            m_hostRing.removeFirst();
+        }
+    }
+}
+
 bool
 DiagnosticsLog::isProtectedLocked(int index) const {
     const quint64 id = m_ringIds.at(index);
@@ -660,7 +731,7 @@ DiagnosticsLog::isProtectedLocked(int index) const {
 
 void
 DiagnosticsLog::submit(const QString& source, const QString& level, const QString& text) {
-    enqueue(formatRecord(source, level, text));
+    enqueue(formatRecord(source, level, text), isHostSource(source));
 }
 
 DiagnosticsLog::StreamCapture::StreamCapture(DiagnosticsLog& log, QString source)
@@ -716,7 +787,7 @@ DiagnosticsLog::StreamCapture::emitLine() {
     } else {
         m_afterDropped = false;
     }
-    m_log.enqueue(record);
+    m_log.enqueue(record, isHostSource(m_source));
 }
 
 bool
@@ -756,7 +827,7 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
         m_processLine = record;
         previous = m_previousProcessLine;
     }
-    enqueue(record, Pin::Process);
+    enqueue(record, true, Pin::Process);
     for (const auto& line : followingLines) {
         submit(QStringLiteral("process"), QStringLiteral("info"), line);
     }
@@ -802,7 +873,7 @@ DiagnosticsLog::noteSessionAttempt(const QString& context, AttemptStage stage) {
             std::lock_guard<std::mutex> lock(m_queueMutex);
             m_sessionLine = record;
         }
-        enqueue(record, Pin::Session);
+        enqueue(record, true, Pin::Session);
     }
     // Best effort: a slow or failing store must never hold up listening.
     (void)flush(kAttemptFlushMs);
@@ -824,6 +895,12 @@ DiagnosticsLog::snapshot(quint64* generation) const {
     return m_ring;
 }
 
+QStringList
+DiagnosticsLog::hostSnapshot() const {
+    std::lock_guard<std::mutex> lock(m_ringMutex);
+    return m_hostRing;
+}
+
 quint64
 DiagnosticsLog::clear() {
     // Use submit's lock order. The clear precedes every subsequently queued
@@ -831,12 +908,15 @@ DiagnosticsLog::clear() {
     std::lock_guard<std::mutex> queueLock(m_queueMutex);
     std::lock_guard<std::mutex> ringLock(m_ringMutex);
     m_queue.clear();
+    m_hostQueue.clear();
     m_clearPending = true;
     // The cleared session's marker must not come back as a later segment's header.
     m_sessionLine.clear();
     m_ring.clear();
     m_ringIds.clear();
     m_pinned = 0;
+    m_hostRing.clear();
+    m_hostPrevious = 0;
     m_ready.notify_one();
     return ++m_generation;
 }
@@ -880,7 +960,7 @@ DiagnosticsLog::completeFlushes(quint64 through, bool ok) {
 DiagnosticsLog::IoStats
 DiagnosticsLog::ioStats() const {
     std::lock_guard<std::mutex> lock(m_statsMutex);
-    return m_stats;
+    return m_tail.stats;
 }
 
 void
@@ -890,10 +970,15 @@ DiagnosticsLog::setIoFaultForTest(IoFault fault) {
 }
 
 bool
+DiagnosticsLog::syncDue(const Segments& segments, quint64 now) const {
+    return segments.dirtyBytes > 0 && now - segments.lastSync >= kSyncIntervalMs && now >= segments.syncRetryAt;
+}
+
+bool
 DiagnosticsLog::dueLocked(quint64 now) const {
-    const bool drainDue = !m_queue.empty() && (inStartupWindow(now) || now - m_lastDrain >= kWriteIntervalMs);
-    const bool syncDue = m_dirtyBytes > 0 && now - m_lastSync >= kSyncIntervalMs && now >= m_syncRetryAt;
-    return m_clearPending || m_flushRequested > m_flushDone || drainDue || syncDue;
+    const bool drainDue =
+        (!m_queue.empty() || !m_hostQueue.empty()) && (inStartupWindow(now) || now - m_lastDrain >= kWriteIntervalMs);
+    return m_clearPending || m_flushRequested > m_flushDone || drainDue || syncDue(m_tail, now) || syncDue(m_host, now);
 }
 
 bool
@@ -924,22 +1009,22 @@ DiagnosticsLog::trimFragment(const QString& path) {
 }
 
 void
-DiagnosticsLog::closeCurrent() {
+DiagnosticsLog::closeCurrent(Segments& segments) {
     // Bytes still unsynced in a file being given up on are past syncing: the failure, not a retry, is what the next
     // flush reports. Without this, a dirty count with no file kept the writer due forever.
-    if (m_dirtyBytes > 0) {
-        m_ioFailed = true;
-        m_dirtyBytes = 0;
+    if (segments.dirtyBytes > 0) {
+        segments.ioFailed = true;
+        segments.dirtyBytes = 0;
     }
-    m_file.reset();
+    segments.file.reset();
 }
 
 void
-DiagnosticsLog::openCurrent() {
-    if (m_file) {
+DiagnosticsLog::openCurrent(Segments& segments) {
+    if (segments.file) {
         return;
     }
-    const QString path = filePath(kTailName);
+    const QString path = filePath(segments.current);
     const bool existed = QFile::exists(path);
     if (existed) {
         trimFragment(path);
@@ -948,67 +1033,67 @@ DiagnosticsLog::openCurrent() {
     // Unbuffered: a sync must cover every byte written, with nothing left in a userspace buffer.
     if (m_fault == IoFault::SyncAndOpen
         || !file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Unbuffered)) {
-        m_ioFailed = true;
+        segments.ioFailed = true;
         return;
     }
-    m_fileSize = file->size();
-    m_file = std::move(file);
+    segments.fileSize = file->size();
+    segments.file = std::move(file);
     if (!existed) {
         dsd_fsync_parent_dir(QFile::encodeName(path).constData());
     }
 }
 
 bool
-DiagnosticsLog::appendBytes(const QByteArray& bytes) {
-    if (!m_file) {
+DiagnosticsLog::appendBytes(Segments& segments, const QByteArray& bytes) {
+    if (!segments.file) {
         return false;
     }
-    if (m_fault == IoFault::Write || m_file->write(bytes) != bytes.size()) {
+    if (m_fault == IoFault::Write || segments.file->write(bytes) != bytes.size()) {
         // Reopened (and any partial record trimmed) on the next append.
-        m_ioFailed = true;
-        closeCurrent();
+        segments.ioFailed = true;
+        closeCurrent(segments);
         return false;
     }
-    m_fileSize += bytes.size();
-    m_dirtyBytes += static_cast<quint64>(bytes.size());
+    segments.fileSize += bytes.size();
+    segments.dirtyBytes += static_cast<quint64>(bytes.size());
     std::lock_guard<std::mutex> lock(m_statsMutex);
-    ++m_stats.appends;
-    m_stats.bytes += static_cast<quint64>(bytes.size());
+    ++segments.stats.appends;
+    segments.stats.bytes += static_cast<quint64>(bytes.size());
     return true;
 }
 
 bool
-DiagnosticsLog::syncCurrent() {
-    if (!m_file) {
+DiagnosticsLog::syncCurrent(Segments& segments) {
+    if (!segments.file) {
         return false;
     }
     // On Windows QFile's handle() is a C runtime descriptor over the file, so this is _commit(), a real flush to disk.
-    if (m_fault == IoFault::Sync || m_fault == IoFault::SyncAndOpen || dsd_fsync(m_file->handle()) != 0) {
-        m_ioFailed = true;
+    if (m_fault == IoFault::Sync || m_fault == IoFault::SyncAndOpen || dsd_fsync(segments.file->handle()) != 0) {
+        segments.ioFailed = true;
         // Retried after an interval, never in a loop: a store that keeps failing must not spin the writer.
-        m_syncRetryAt = nowMs() + kSyncIntervalMs;
+        segments.syncRetryAt = nowMs() + kSyncIntervalMs;
         std::lock_guard<std::mutex> lock(m_statsMutex);
-        ++m_stats.syncFailures;
+        ++segments.stats.syncFailures;
         return false;
     }
-    m_dirtyBytes = 0;
-    m_lastSync = nowMs();
+    segments.dirtyBytes = 0;
+    segments.lastSync = nowMs();
     // Storage recovered: the startup window's per-append syncs must not wait out an earlier failure's backoff.
-    m_syncRetryAt = 0;
+    segments.syncRetryAt = 0;
     std::lock_guard<std::mutex> lock(m_statsMutex);
-    ++m_stats.syncs;
+    ++segments.stats.syncs;
     return true;
 }
 
 void
-DiagnosticsLog::rotate(const QByteArray& header) {
+DiagnosticsLog::rotate(Segments& segments, const QByteArray& header) {
     // The current segment's data must be on disk before it becomes the previous segment.
-    if (m_dirtyBytes > 0) {
-        (void)syncCurrent();
+    if (segments.dirtyBytes > 0) {
+        (void)syncCurrent(segments);
     }
-    closeCurrent();
-    const QString tailPath = filePath(kTailName);
-    const QString prevPath = filePath(kPrevName);
+    closeCurrent(segments);
+    const QString tailPath = filePath(segments.current);
+    const QString prevPath = filePath(segments.previous);
     QFile::remove(prevPath);
     if (!QFile::rename(tailPath, prevPath)) {
         // Keep the bound: start the current segment over rather than let it grow.
@@ -1016,31 +1101,32 @@ DiagnosticsLog::rotate(const QByteArray& header) {
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             (void)dsd_fsync(file.handle());
         }
-        if (!m_rotationFailureNoted) {
-            m_rotationFailureNoted = true;
-            ringNote(QStringLiteral("[host] [warn] diagnostics: the saved log could not be rotated; its older lines "
-                                    "were dropped"));
+        if (!segments.rotationFailureNoted) {
+            segments.rotationFailureNoted = true;
+            ringNote(QStringLiteral("[host] [warn] diagnostics: the %1 could not be rotated; its older lines "
+                                    "were dropped")
+                         .arg(QLatin1String(segments.label)));
         }
     }
     dsd_fsync_parent_dir(QFile::encodeName(tailPath).constData());
     {
         std::lock_guard<std::mutex> lock(m_statsMutex);
-        ++m_stats.rotations;
+        ++segments.stats.rotations;
     }
-    openCurrent();
+    openCurrent(segments);
     // Each segment starts with the process and session it belongs to.
-    if (m_file && !header.isEmpty()) {
-        (void)appendBytes(header);
+    if (segments.file && !header.isEmpty()) {
+        (void)appendBytes(segments, header);
     }
 }
 
 bool
-DiagnosticsLog::clearFiles() {
+DiagnosticsLog::clearFiles(Segments& segments) {
     // What the cleared file held unsynced no longer matters: Clear removes it.
-    m_dirtyBytes = 0;
-    m_file.reset();
-    const QString tailPath = filePath(kTailName);
-    const QString prevPath = filePath(kPrevName);
+    segments.dirtyBytes = 0;
+    segments.file.reset();
+    const QString tailPath = filePath(segments.current);
+    const QString prevPath = filePath(segments.previous);
     bool ok = !QFile::exists(prevPath) || QFile::remove(prevPath);
     QFile file(tailPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || m_fault == IoFault::Sync
@@ -1048,11 +1134,11 @@ DiagnosticsLog::clearFiles() {
         ok = false;
     }
     dsd_fsync_parent_dir(QFile::encodeName(tailPath).constData());
-    m_fileSize = 0;
-    m_dirtyBytes = 0;
+    segments.fileSize = 0;
+    segments.dirtyBytes = 0;
     if (!ok) {
         // A clear that did not reach the disk is not durable, and the next flush says so.
-        m_ioFailed = true;
+        segments.ioFailed = true;
     }
     return ok;
 }
@@ -1073,37 +1159,39 @@ DiagnosticsLog::headerExcluding(const std::deque<QByteArray>::const_iterator& fr
 }
 
 bool
-DiagnosticsLog::writeBatch(const std::deque<QByteArray>& batch) {
-    openCurrent();
-    if (!m_file) {
+DiagnosticsLog::writeBatch(Segments& segments, const std::deque<QByteArray>& batch) {
+    openCurrent(segments);
+    if (!segments.file) {
         return false;
     }
     QByteArray pending;
     // An empty segment (a new tail, or the first one after Clear) starts with its context like a rotated one.
-    if (m_fileSize == 0) {
+    if (segments.fileSize == 0) {
         pending = headerExcluding(batch.cbegin(), batch.cend());
     }
     for (auto it = batch.cbegin(); it != batch.cend(); ++it) {
         const QByteArray& record = *it;
-        if (m_fileSize + pending.size() + record.size() > kSegmentLimit && m_fileSize + pending.size() > 0) {
-            if (!pending.isEmpty() && !appendBytes(pending)) {
+        if (segments.fileSize + pending.size() + record.size() > segments.limit
+            && segments.fileSize + pending.size() > 0) {
+            if (!pending.isEmpty() && !appendBytes(segments, pending)) {
                 return false;
             }
             pending.clear();
-            rotate(headerExcluding(it, batch.cend()));
-            if (!m_file) {
+            rotate(segments, headerExcluding(it, batch.cend()));
+            if (!segments.file) {
                 return false;
             }
         }
         pending += record;
     }
-    return pending.isEmpty() || appendBytes(pending);
+    return pending.isEmpty() || appendBytes(segments, pending);
 }
 
 void
 DiagnosticsLog::step(std::unique_lock<std::mutex>& lock, bool forceSync) {
     StepWork work;
     work.batch.swap(m_queue);
+    work.hostBatch.swap(m_hostQueue);
     work.clear = m_clearPending;
     m_clearPending = false;
     const quint64 through = m_flushRequested;
@@ -1128,44 +1216,59 @@ bool
 DiagnosticsLog::writeStep(const StepWork& work, bool forceSync) {
     std::lock_guard<std::mutex> stepLock(m_stepMutex);
     m_header = work.header;
-    bool ok = !work.clear || clearFiles();
-    if (!work.batch.empty()) {
-        ok = writeBatch(work.batch) && ok;
+    bool ok = true;
+    if (work.clear) {
+        ok = clearFiles(m_tail);
+        ok = clearFiles(m_host) && ok;
     }
-    const bool syncDue = forceSync || work.window || work.clear || work.now - m_lastSync >= kSyncIntervalMs;
-    if (m_dirtyBytes > 0 && syncDue && (forceSync || work.now >= m_syncRetryAt)) {
-        ok = syncCurrent() && ok;
+    if (!work.batch.empty()) {
+        ok = writeBatch(m_tail, work.batch) && ok;
+    }
+    if (!work.hostBatch.empty()) {
+        ok = writeBatch(m_host, work.hostBatch) && ok;
+    }
+    for (Segments* segments : {&m_tail, &m_host}) {
+        const bool due = forceSync || work.window || work.clear || work.now - segments->lastSync >= kSyncIntervalMs;
+        if (segments->dirtyBytes > 0 && due && (forceSync || work.now >= segments->syncRetryAt)) {
+            ok = syncCurrent(*segments) && ok;
+        }
     }
     if (!work.flushing) {
         return ok;
     }
     // A flush is durable only if nothing failed since the last one completed.
-    ok = ok && !m_ioFailed && m_dirtyBytes == 0;
-    m_ioFailed = false;
+    for (Segments* segments : {&m_tail, &m_host}) {
+        ok = ok && !segments->ioFailed && segments->dirtyBytes == 0;
+    }
+    m_tail.ioFailed = false;
+    m_host.ioFailed = false;
     return ok;
 }
 
 void
 DiagnosticsLog::writeLoop() {
-    // Only this thread writes the persistent tail (outside manual-drain tests).
+    // Only this thread writes the persistent segments (outside manual-drain tests).
     std::unique_lock<std::mutex> lock(m_queueMutex);
     for (;;) {
         const quint64 now = nowMs();
         if (m_stop || dueLocked(now)) {
             const bool stopping = m_stop;
             step(lock, stopping || m_flushRequested > m_flushDone);
-            if (stopping && m_queue.empty() && !m_clearPending && m_flushRequested == m_flushDone) {
+            if (stopping && m_queue.empty() && m_hostQueue.empty() && !m_clearPending
+                && m_flushRequested == m_flushDone) {
                 break;
             }
             continue;
         }
         quint64 waitMs = std::numeric_limits<quint64>::max();
-        if (!m_queue.empty()) {
+        if (!m_queue.empty() || !m_hostQueue.empty()) {
             waitMs = kWriteIntervalMs - (now - m_lastDrain);
         }
-        if (m_dirtyBytes > 0) {
-            const quint64 due = std::max<quint64>(m_lastSync + kSyncIntervalMs, m_syncRetryAt);
-            waitMs = std::min<quint64>(waitMs, due > now ? due - now : 0U);
+        for (const Segments* segments : {&m_tail, &m_host}) {
+            if (segments->dirtyBytes > 0) {
+                const quint64 due = std::max<quint64>(segments->lastSync + kSyncIntervalMs, segments->syncRetryAt);
+                waitMs = std::min<quint64>(waitMs, due > now ? due - now : 0U);
+            }
         }
         if (waitMs == std::numeric_limits<quint64>::max()) {
             m_ready.wait(lock);
@@ -1269,7 +1372,14 @@ DiagnosticsLogModel::refresh() {
 
 QString
 DiagnosticsLogModel::allText() const {
-    return m_log->snapshot().join(QLatin1Char('\n'));
+    // The host records first: what explains a failure, however much decoder output the full log below lost them to.
+    QStringList rows = m_log->hostSnapshot();
+    if (!rows.isEmpty()) {
+        rows.prepend(QStringLiteral("--- host and session records ---"));
+        rows.append(QStringLiteral("--- all records ---"));
+    }
+    rows.append(m_log->snapshot());
+    return rows.join(QLatin1Char('\n'));
 }
 
 void

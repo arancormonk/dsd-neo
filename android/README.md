@@ -1265,9 +1265,10 @@ Settings → Diagnostics shows current-process decoder and host diagnostics plus
 bounded redacted persistent tail from previous runs, including how Android says
 recent app processes ended. It captures no crash stacks or tombstones. The process
 ring holds at most 2000 entries, each at most 512 UTF-8 bytes. Pause freezes the displayed list while capture continues; Copy and Share
-include the current ring. Clear removes the ring, pending earlier records and the persistent
-tail; records captured after Clear remain available, and the saved tail starts again with the
-running process's `process:` line (never the cleared session's). Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
+include the current ring, after the host records (see below). Clear removes the ring, the host records, pending earlier
+records and both persistent stores; records captured after Clear remain available, and each saved store starts again
+with the running process's `process:` line (never the cleared session's). Diagnostics deliberately survive decoder
+Starting/Idle/Failed transitions.
 
 Host records arriving before the first decode start do not depend on the runtime sink or
 stderr pump. Tap installation drains their bounded buffer to the ring and the tail at
@@ -1300,6 +1301,26 @@ The writer keeps the newest 256 KiB as two append-only segments in
 - **Recovery at load:** the loader drops a record a crash left half-written,
   deletes temporaries a kill left behind, and splits an older build's single
   `tail.log` at line starts.
+
+### Host and session records
+
+A fast trunk scan prints hundreds of decoder lines a minute, which push the
+`[host]`, `[session]` and `[process]` records out of the 2000-entry ring within
+about 90 seconds and out of the persistent tail soon after (issue #782). Those
+records, the service's lifecycle, the USB steps and how the previous run ended, are
+what explains a failure, so they are also kept in a store of their own:
+- **Live:** a ring of at most 500 records, each at most 512 bytes and redacted like
+  every other record.
+- **Saved:** `host.prev.log`, then `host.log`, in `files/diagnostics/`, at most
+  32 KiB each (64 KiB together). The same writer appends them on the same drain and
+  sync cadence. They rotate, start each segment with the `process:` and
+  `session starting:` lines, recover at load and expire after seven days exactly as
+  the tail's segments do.
+
+Copy and Share start with these records under `--- host and session records ---`,
+the previous run's first under `--- previous run ---`, then give the full log under
+`--- all records ---`. The records therefore appear twice when the ring still holds
+them. The screen shows the full log only. Clear removes this store with the rest.
 
 **Durable start.** A phone that restarts while listening loses whatever was not
 yet on flash. So a start records itself before it touches the device:

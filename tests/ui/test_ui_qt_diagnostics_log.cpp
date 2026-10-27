@@ -24,6 +24,8 @@
 #include <QtEnvironmentVariables>
 #include <QtGlobal>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/init.h>
@@ -37,6 +39,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
 #include <functional>
+#include <mutex>
 #include <string.h>
 #include <thread>
 #include <utility>
@@ -166,6 +169,21 @@ checkMutePolicy(const dsd_opts* opts, int muteLeft, int muteRight) {
     check(opts->unmute_encrypted_p25 == 0, "key loading did not mute undecodable P25 audio");
 }
 
+static const char kHostHeading[] = "--- host and session records ---";
+static const char kAllHeading[] = "--- all records ---";
+
+// What Copy and Share export: the host records under their heading, when there are any, then the ring.
+static QByteArray
+exportOf(const DiagnosticsLog& log) {
+    QStringList rows = log.hostSnapshot();
+    if (!rows.isEmpty()) {
+        rows.prepend(QLatin1String(kHostHeading));
+        rows.append(QLatin1String(kAllHeading));
+    }
+    rows.append(log.snapshot());
+    return rows.join(QLatin1Char('\n')).toUtf8();
+}
+
 static void
 checkStoredDiagnostics(DiagnosticsLog& log, DiagnosticsLogModel& model, const QString& directory,
                        const QList<QByteArray>& representations, const QByteArray& marker) {
@@ -181,7 +199,7 @@ checkStoredDiagnostics(DiagnosticsLog& log, DiagnosticsLogModel& model, const QS
     check(displayed.join(QLatin1Char('\n')).toUtf8() == ring, "model rows do not show the captured ring");
     checkAbsent(displayed.join(QLatin1Char('\n')).toUtf8(), representations, "model rows contain a key representation");
     const auto text = model.allText().toUtf8();
-    check(text == ring, "allText does not contain the captured ring");
+    check(text == exportOf(log) && text.endsWith(ring), "allText does not contain the captured ring");
     checkAbsent(text, representations, "allText contains a key representation");
     QFile exported(directory + "/export.txt");
     check(exported.open(QIODevice::WriteOnly), "export open failed");
@@ -307,7 +325,8 @@ realKeySources() {
     checkStoredDiagnostics(log, model, directory, representations, "--- session starting ---");
     check(model.allText().contains("decoder restart marker") && model.allText().contains("host restart marker")
               && model.allText().contains("stderr restart marker")
-              && model.allText().count("--- session starting ---") == 1,
+              && log.snapshot().join('\n').count("--- session starting ---") == 1
+              && log.hostSnapshot().join('\n').count("--- session starting ---") == 1,
           "session divider must retain preceding diagnostics");
     {
         DiagnosticsLog restarted(directory);
@@ -448,7 +467,9 @@ earlyHostCaptureAndBridge() {
         auto& log = DiagnosticsLog::instance();
         DiagnosticsLogModel model(&log);
         model.refresh();
-        check(model.allText().count("usb: permission pending before init") == 1, "pre-init USB status captured once");
+        check(log.snapshot().join('\n').count("usb: permission pending before init") == 1
+                  && log.hostSnapshot().join('\n').count("usb: permission pending before init") == 1,
+              "pre-init USB status captured once");
         log.flush();
         QFile tail(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/diagnostics/tail.log");
         check(tail.open(QIODevice::ReadOnly), "pre-init USB tail uses initialized app location");
@@ -1607,6 +1628,221 @@ streamCaptureLineRules() {
     check(records == expected, "stream capture line rules changed");
 }
 
+// --- Host records (issue #782) ---
+
+// The host section of an export: the rows between its heading and the full log's.
+static QStringList
+hostSection(const QString& text) {
+    const auto rows = text.split('\n');
+    const auto end = rows.indexOf(QLatin1String(kAllHeading));
+    if (rows.value(0) != QLatin1String(kHostHeading) || end < 1) {
+        return {};
+    }
+    return rows.mid(1, end - 1);
+}
+
+// A fast scan's decoder output pushed every host and session line out of the 2000-line ring and the saved tail, so the
+// export that should have explained a failure had none of them, live or after a restart.
+static void
+hostRecordsOutliveABusySession() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    QStringList expected;
+    for (int i = 0; i < 10; ++i) {
+        expected.append(QStringLiteral("[host] [info] service: lifecycle step %1").arg(i));
+    }
+    // A session record the ring does not pin at its front.
+    expected.append(QStringLiteral("[session] [info] usb access requested: usb, boot 3"));
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        DiagnosticsLogModel model(&log);
+        for (int i = 0; i < 10; ++i) {
+            log.submit("host", "info", QStringLiteral("service: lifecycle step %1").arg(i));
+        }
+        log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess);
+        for (int i = 0; i < 3000; ++i) {
+            log.submit("decoder", "info",
+                       QStringLiteral("Sync: +P25p1 hop %1 ").arg(i) + QString(150, QLatin1Char('q')));
+            if (i % 100 == 99) {
+                g_clock += DiagnosticsLog::kWriteIntervalMs;
+                log.pump();
+            }
+        }
+        check(!log.snapshot().join('\n').contains(QStringLiteral("lifecycle step 9")),
+              "the fixture did not push the host records out of the ring");
+        const auto live = hostSection(model.allText());
+        for (const auto& line : expected) {
+            check(live.contains(line), "a host record is missing from the live export's host section");
+        }
+        check(model.allText().endsWith(log.snapshot().join('\n')), "the full log does not follow the host records");
+        // Share redacts the export line by line again.
+        for (const char* heading : {kHostHeading, kAllHeading}) {
+            check(DiagnosticsLog::redact(QLatin1String(heading)) == QLatin1String(heading),
+                  "Share's redaction drops an export heading");
+        }
+        check(log.flush(), "busy session flush");
+        check(log.ioStats().rotations >= 2, "the fixture did not rotate the main tail");
+    }
+    check(!(readFile(dir.filePath("tail.prev.log")) + readFile(dir.filePath("tail.log"))).contains("lifecycle step 9"),
+          "the fixture did not push the host records out of the main tail");
+    DiagnosticsLog reloaded(dir.path(), manualOptions());
+    DiagnosticsLogModel model(&reloaded);
+    model.refresh();
+    const auto previous = hostSection(model.allText());
+    check(previous.value(0) == QLatin1String("--- previous run ---"), "the previous run's host records are not marked");
+    for (const auto& line : expected) {
+        check(previous.contains(line), "a host record is missing from the previous-run export");
+    }
+}
+
+// The host store keeps the main tail's rules at its own sizes: 500 records of at most 512 bytes, redacted, in two
+// segments of at most 32 KiB that each start with their process and session lines.
+static void
+hostStoreKeepsItsBounds() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    const QString secret = QString(16, QLatin1Char('A')) + QString(16, QLatin1Char('B'));
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        log.noteProcess(QStringLiteral("1, test os, boot 7"));
+        log.noteSessionAttempt(QStringLiteral("rtltcp"));
+        log.submit("host", "info", QString(600, QChar(0x03bb)));
+        log.submit("host", "error", "Invalid key: " + secret);
+        auto rows = log.hostSnapshot();
+        check(rows.size() == 4 && rows.at(2).toUtf8().size() <= 512
+                  && !rows.at(2).contains(QChar::ReplacementCharacter),
+              "a host record over 512 bytes");
+        check(rows.value(3) == QLatin1String(kDropped), "a key-bearing host record was kept");
+        for (int i = 0; i < 700; ++i) {
+            log.submit("session", "info", QStringLiteral("seq %1 ").arg(i) + QString(300, QLatin1Char('h')));
+            if (i % 50 == 49) {
+                g_clock += DiagnosticsLog::kWriteIntervalMs;
+                log.pump();
+            }
+        }
+        rows = log.hostSnapshot();
+        check(rows.size() == DiagnosticsLog::kHostRingLimit && rows.first().contains(QStringLiteral("seq 200 "))
+                  && rows.last().contains(QStringLiteral("seq 699 ")),
+              "the host ring is not the newest 500 records");
+        check(log.flush(), "host store flush");
+    }
+    for (const char* name : {"host.log", "host.prev.log"}) {
+        const auto bytes = readFile(dir.filePath(QLatin1String(name)));
+        const auto lines = bytes.split('\n');
+        check(bytes.size() <= DiagnosticsLog::kHostSegmentLimit, "a host segment over its cap");
+        check(lines.size() > 2 && lines.at(0).startsWith("[process] [info] pid 1, test os, boot 7")
+                  && lines.at(1).contains("--- session starting: rtltcp ---"),
+              "a host segment does not start with its process and session");
+        checkAbsent(bytes, hexRepresentations(secret.toUtf8()), "a host segment contains a key representation");
+    }
+    DiagnosticsLog reloaded(dir.path(), manualOptions());
+    const auto rows = reloaded.hostSnapshot();
+    check(rows.size() <= DiagnosticsLog::kHostRingLimit && rows.value(0) == QLatin1String("--- previous run ---")
+              && rows.last().contains(QStringLiteral("seq 699 ")),
+          "the reloaded host records lost the newest");
+    int last = -1;
+    static const QRegularExpression seq(QStringLiteral("seq (\\d+) "));
+    for (const auto& row : rows) {
+        const auto match = seq.match(row);
+        if (match.hasMatch()) {
+            check(match.captured(1).toInt() > last, "reloaded host records out of order");
+            last = match.captured(1).toInt();
+        }
+    }
+}
+
+// A segment untouched for seven days expires, a kill's temporaries go, and a reloaded record is redacted again.
+static void
+hostStoreExpiryAndReload() {
+    QTemporaryDir dir;
+    writeFile(dir.filePath("host.log.AbC123"), "orphan");
+    writeFile(dir.filePath("host.prev.log"), "[host] [info] stale host record\n");
+    QFile stale(dir.filePath("host.prev.log"));
+    check(stale.open(QIODevice::ReadWrite)
+          && stale.setFileTime(QDateTime::currentDateTimeUtc().addDays(-8), QFileDevice::FileModificationTime));
+    stale.close();
+    writeFile(dir.filePath("host.log"), "[host] [info] fresh host record\n[host] [info] -1 1A2B\n");
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    check(!QFile::exists(dir.filePath("host.log.AbC123")), "an orphaned host temporary kept");
+    check(!QFile::exists(dir.filePath("host.prev.log")), "an expired host segment kept");
+    const QStringList expected = {QStringLiteral("--- previous run ---"),
+                                  QStringLiteral("[host] [info] fresh host record"), QLatin1String(kDropped)};
+    check(log.hostSnapshot() == expected, "the saved host records did not reload, redacted");
+}
+
+// Clear removes the host records with the rest: from the ring, the queue and both host segments.
+static void
+clearRemovesTheHostRecords() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        DiagnosticsLogModel model(&log);
+        log.submit("host", "info", "cleared host record");
+        check(log.flush(), "pre-clear flush");
+        check(readFile(dir.filePath("host.log")).contains("cleared host record"), "the host record was not saved");
+        log.submit("session", "info", "queued host record");
+        model.clear();
+        check(log.hostSnapshot().isEmpty() && !model.allText().contains("cleared host record"),
+              "Clear kept the host records");
+        log.submit("host", "info", "kept host record");
+        check(log.flush(), "post-clear flush");
+        const auto saved = readFile(dir.filePath("host.prev.log")) + readFile(dir.filePath("host.log"));
+        check(!saved.contains("cleared host record") && !saved.contains("queued host record")
+                  && saved.contains("kept host record"),
+              "Clear did not remove the saved host records");
+    }
+    DiagnosticsLog reopened(dir.path(), manualOptions());
+    const auto text = exportOf(reopened);
+    check(!text.contains("cleared host record") && !text.contains("queued host record")
+              && text.contains("kept host record"),
+          "cleared host records came back after a restart");
+}
+
+// A slow load of the saved records must not hold up a host record from another thread: Android's main thread submits
+// them through nativeHostDiagnostic, and the tap's install used to load under the lock that guards them.
+static std::mutex g_loadMutex;
+static std::condition_variable g_loadChanged;
+static bool g_loadEntered = false;
+static bool g_loadReleased = false;
+static bool g_loadDone = false;
+
+static void
+blockedLoad() {
+    std::unique_lock<std::mutex> lock(g_loadMutex);
+    g_loadEntered = true;
+    g_loadChanged.notify_all();
+    // Bounded: where the submit below waits for the load, the load ends after this and the check reports it.
+    g_loadChanged.wait_for(lock, std::chrono::seconds(3), [] { return g_loadReleased; });
+    g_loadDone = true;
+}
+
+static void
+installTapDoesNotWaitForTheLoad() {
+    DiagnosticsLog::setLoadHookForTest(blockedLoad);
+    std::thread installer([] { DiagnosticsLog::installTap(); });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(g_loadMutex);
+        entered = g_loadChanged.wait_for(lock, std::chrono::seconds(10), [] { return g_loadEntered; });
+    }
+    check(entered, "the tap's load did not start");
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("usb: reported during the load"));
+    {
+        std::lock_guard<std::mutex> lock(g_loadMutex);
+        check(!g_loadDone, "a host record waited for the saved records to load");
+        g_loadReleased = true;
+    }
+    g_loadChanged.notify_all();
+    installer.join();
+    DiagnosticsLog::setLoadHookForTest(nullptr);
+    const auto& log = DiagnosticsLog::instance();
+    check(log.snapshot().join('\n').count(QStringLiteral("usb: reported during the load")) == 1
+              && log.hostSnapshot().join('\n').count(QStringLiteral("usb: reported during the load")) == 1,
+          "a host record that arrived during the load was not kept once");
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir earlyDir;
@@ -1618,7 +1854,7 @@ main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     QTemporaryDir dir;
     qputenv("XDG_DATA_HOME", dir.path().toUtf8());
-    DiagnosticsLog::installTap();
+    installTapDoesNotWaitForTheLoad();
     earlyHostCaptureAndBridge();
     clearWithConcurrentSubmit();
     inactiveModelDefersResets();
@@ -1657,6 +1893,10 @@ main(int argc, char** argv) {
     unicodeDirectory();
     orphansAndExpiry();
     rotationFailureKeepsTheBound();
+    hostRecordsOutliveABusySession();
+    hostStoreKeepsItsBounds();
+    hostStoreExpiryAndReload();
+    clearRemovesTheHostRecords();
     {
         DiagnosticsLog log(dir.path());
         DiagnosticsLogModel model(&log);
@@ -1708,7 +1948,10 @@ main(int argc, char** argv) {
         check(model.rowCount() == 0);
         log.submit("host", "info", QString(600, QChar(0x03bb)));
         model.refresh();
-        check(model.allText().toUtf8().size() <= 512 && !model.allText().contains(QChar::ReplacementCharacter));
+        for (const auto& rows : {log.snapshot(), log.hostSnapshot()}) {
+            check(rows.size() == 1 && rows.first().toUtf8().size() <= 512
+                  && !rows.first().contains(QChar::ReplacementCharacter));
+        }
     }
     QFile expired(dir.filePath("tail.log"));
     check(expired.open(QIODevice::ReadWrite));

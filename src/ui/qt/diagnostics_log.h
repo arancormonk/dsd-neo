@@ -29,9 +29,16 @@ namespace dsd_qt {
 // most kSegmentLimit bytes. Records are appended, never rewritten, and synced at most once a
 // second, except during the startup window after a session attempt, when every append is
 // synced so a phone that falls over seconds after Play keeps its start sequence (issue #745).
+//
+// Host, session and process records are also kept apart from the decoder's output, in a ring of their own and their own
+// segment pair (host.prev.log, then host.log, each at most kHostSegmentLimit bytes) written the same way: a fast scan
+// fills the main ring and tail with decoder lines within minutes, and the lifecycle lines that explain a failure must
+// outlive them (issue #782). Copy and Share put them first.
 class DiagnosticsLog {
   public:
     static constexpr qint64 kSegmentLimit = 128LL * 1024;
+    static constexpr qint64 kHostSegmentLimit = 32LL * 1024;
+    static constexpr int kHostRingLimit = 500;
     static constexpr int kWriteIntervalMs = 250;
     static constexpr int kSyncIntervalMs = 1000;
     static constexpr int kStartupSyncWindowMs = 10000;
@@ -59,6 +66,9 @@ class DiagnosticsLog {
     // or the start itself. Only the start records a session marker.
     enum class AttemptStage { UsbAccess, Start };
 
+    // Test seam: runs at the start of every load of the saved records, on the constructing thread.
+    using LoadHook = void (*)();
+
     // Extra platform facts for the process line (Android: boot count, device) and any lines that
     // follow it (Android: recent app exits). Registered before installTap().
     using PlatformFactsProvider = std::pair<QString, QStringList> (*)();
@@ -74,6 +84,8 @@ class DiagnosticsLog {
     ~DiagnosticsLog();
     void submit(const QString& source, const QString& level, const QString& text);
     QStringList snapshot(quint64* generation = nullptr) const;
+    // The host, session and process records, oldest first, after the previous run's under a divider.
+    QStringList hostSnapshot() const;
     // Return the generation of the cleared ring while still holding its lock.
     quint64 clear();
     // True once everything submitted before the call is appended and synced. A negative timeout
@@ -87,11 +99,13 @@ class DiagnosticsLog {
     void noteSessionAttempt(const QString& context, AttemptStage stage = AttemptStage::Start);
     // Re-arms the startup window at a device boundary without a new marker.
     void armStartupWindow();
+    // The main tail's writes.
     IoStats ioStats() const;
     // Manual-drain mode only: run one writer step now if the writer thread would at this clock reading, and say
     // whether it did.
     bool pump();
     void setIoFaultForTest(IoFault fault);
+    static void setLoadHookForTest(LoadHook hook);
     static QString redact(QString text);
     // Test seam: how many producer error lines are listed, and how many have only %d and %u conversions and so count.
     static std::pair<int, int> producerLineCountsForTest();
@@ -123,32 +137,57 @@ class DiagnosticsLog {
   private:
     static constexpr int kAttemptDedupeMs = 60000;
 
+    // One append-only segment pair (previous, then current) and its writer state: the main tail, or the host records'
+    // own pair. Only the writer step touches it, except stats, which are under m_statsMutex.
+    struct Segments {
+        Segments(const char* currentName, const char* previousName, qint64 segmentLimit, const char* what);
+
+        const char* current;
+        const char* previous;
+        qint64 limit;
+        // What the rotation-failure note calls the pair.
+        const char* label;
+        std::unique_ptr<QFile> file;
+        qint64 fileSize = 0;
+        quint64 dirtyBytes = 0;
+        quint64 lastSync = 0;
+        // After a failed sync, the next attempt waits until here rather than retrying at once.
+        quint64 syncRetryAt = 0;
+        bool ioFailed = false;
+        bool rotationFailureNoted = false;
+        IoStats stats;
+    };
+
     void load();
     void cleanDirectory() const;
-    QByteArray loadSegments() const;
+    QByteArray loadSegments(const Segments& segments) const;
     void seedRing(const QByteArray& text);
-    void openCurrent();
-    void closeCurrent();
-    bool appendBytes(const QByteArray& bytes);
-    bool syncCurrent();
-    void rotate(const QByteArray& header);
-    bool clearFiles();
+    void seedHostRing(const QByteArray& text);
+    void openCurrent(Segments& segments);
+    void closeCurrent(Segments& segments);
+    bool appendBytes(Segments& segments, const QByteArray& bytes);
+    bool syncCurrent(Segments& segments);
+    void rotate(Segments& segments, const QByteArray& header);
+    bool clearFiles(Segments& segments);
     static void trimFragment(const QString& path);
-    bool writeBatch(const std::deque<QByteArray>& batch);
+    bool writeBatch(Segments& segments, const std::deque<QByteArray>& batch);
+    bool syncDue(const Segments& segments, quint64 now) const;
     QByteArray headerExcluding(const std::deque<QByteArray>::const_iterator& from,
                                const std::deque<QByteArray>::const_iterator& end) const;
     // Which of this run's identity lines a record is, if any: the ring pins that very line, not its text.
     enum class Pin { None, Process, Session };
 
-    void enqueue(const QByteArray& record, Pin pin = Pin::None);
+    void enqueue(const QByteArray& record, bool host, Pin pin = Pin::None);
     void ringNote(const QString& line);
     quint64 pushRingLocked(const QString& line);
     void appendRingLocked(const QString& line, Pin pin = Pin::None);
+    void appendHostRingLocked(const QString& line);
     bool isProtectedLocked(int index) const;
 
     // What one writer step takes from the queue state, so its I/O runs without the queue lock.
     struct StepWork {
         std::deque<QByteArray> batch;
+        std::deque<QByteArray> hostBatch;
         QByteArray header;
         quint64 now = 0;
         bool clear = false;
@@ -173,11 +212,16 @@ class DiagnosticsLog {
     QList<quint64> m_ringIds;
     quint64 m_lastRingId = 0;
     quint64 m_generation = 0;
+    // The host ring, also under m_ringMutex: the previous run's divider and records (m_hostPrevious of them, 0 when
+    // there is no divider), then this run's.
+    QStringList m_hostRing;
+    int m_hostPrevious = 0;
 
     // Queue state, under m_queueMutex.
     std::mutex m_queueMutex;
     std::condition_variable m_ready, m_flushed;
     std::deque<QByteArray> m_queue;
+    std::deque<QByteArray> m_hostQueue;
     bool m_stop = false;
     bool m_clearPending = false;
     quint64 m_flushRequested = 0;
@@ -202,19 +246,12 @@ class DiagnosticsLog {
 
     // Writer state: touched only by the writer step, which runs on one thread at a time.
     std::mutex m_stepMutex;
-    std::unique_ptr<QFile> m_file;
-    qint64 m_fileSize = 0;
-    quint64 m_dirtyBytes = 0;
-    quint64 m_lastSync = 0;
-    // After a failed sync, the next attempt waits until here rather than retrying at once.
-    quint64 m_syncRetryAt = 0;
-    bool m_ioFailed = false;
-    bool m_rotationFailureNoted = false;
+    Segments m_tail;
+    Segments m_host;
     QByteArray m_header;
     IoFault m_fault = IoFault::None;
 
     mutable std::mutex m_statsMutex;
-    IoStats m_stats;
 
     QString m_directory;
     TestOptions m_options;
