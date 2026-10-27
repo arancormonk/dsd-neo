@@ -94,6 +94,16 @@ wait_verdict_in_grace(unsigned int in_grace) {
     assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
 }
 
+/* Wait until the verdict after @p paused began the pause rtl_device_test_pause_next_verdict_ms() set, however late its
+ * thread runs. */
+void
+wait_verdict_paused(unsigned int paused) {
+    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_paused() == paused; ++waited_ms) {
+        dsd_sleep_ms(1);
+    }
+    assert(rtl_device_test_verdicts_paused() == paused + 1U);
+}
+
 /* ---- RTL-SDR ---- */
 
 unsigned char g_rtl_buffer[512];
@@ -249,16 +259,19 @@ test_rtl_reader_exit_inside_monitor_grace(input_ring_state* ring) {
 }
 
 /* The monitor's verdict and a reader exit (-1) both pass their checks together: the monitor's is held between its
- * checks and the report while the reader returns. Only the first to claim it, the reader's, reports. */
+ * checks and the report while the reader returns. Only the first to claim it, the reader's, reports. The reader
+ * returns only once the monitor's verdict holds the pause, however late the monitor runs: a reader that returned
+ * first would stop the monitor's watch and take the pause itself. */
 void
 test_rtl_racing_verdicts_report_once(input_ring_state* ring) {
     rtl_device_test_set_progress_limit_ms(kLimitMs);
     reset_session();
     const unsigned int generation = dsd_input_failure_generation();
+    const unsigned int paused = rtl_device_test_verdicts_paused();
     rtl_device_test_pause_next_verdict_ms(kSteadyLimitMs);
     rtl_device* dev = rtl_device_test_usb_stream_start(ring);
     assert(dev);
-    dsd_sleep_ms(kLimitMs + 100U);
+    wait_verdict_paused(paused);
     expect_running();
     rtl_device_test_usb_stream_return(-1);
     assert(wait_receiver_ended(2000U) != 0U);

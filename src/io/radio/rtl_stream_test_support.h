@@ -229,6 +229,8 @@ void rtl_device_test_set_progress_period_ms(uint32_t period_ms);
 /* The next receiver verdict that passed its checks waits @p ms before it claims the report, so that a racing verdict
  * passes its own checks meanwhile. One-shot. */
 void rtl_device_test_pause_next_verdict_ms(uint32_t ms);
+/* How many receiver verdicts began that pause, ever: a test polls it to know which verdict took it. */
+unsigned int rtl_device_test_verdicts_paused(void);
 /* While set, the RTL-SDR's or SoapySDR device's progress monitor thread fails to start, as a refused thread creation
  * does. */
 void rtl_device_test_refuse_progress_monitor(int refuse);

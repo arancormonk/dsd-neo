@@ -3213,6 +3213,8 @@ static std::atomic<int> g_test_refuse_progress_monitor{0};
 /* rtl_device_test_pause_next_verdict_ms(): one verdict, past its checks, waits this long before it claims the
  * report. */
 static std::atomic<uint32_t> g_test_verdict_pause_ms{0U};
+/* rtl_device_test_verdicts_paused(): verdicts that began the pause rtl_device_test_pause_next_verdict_ms() set. */
+static std::atomic<unsigned int> g_test_verdicts_paused{0U};
 /* rtl_device_test_verdicts_in_grace(): verdicts that began waiting out the unplug-owner grace. */
 static std::atomic<unsigned int> g_test_verdicts_in_grace{0U};
 
@@ -3264,6 +3266,11 @@ rtl_device_test_pause_next_verdict_ms(uint32_t ms) {
 extern "C" void
 rtl_device_test_refuse_progress_monitor(int refuse) {
     g_test_refuse_progress_monitor.store(refuse ? 1 : 0, std::memory_order_release);
+}
+
+extern "C" unsigned int
+rtl_device_test_verdicts_paused(void) {
+    return g_test_verdicts_paused.load(std::memory_order_acquire);
 }
 
 extern "C" unsigned int
@@ -3481,6 +3488,7 @@ rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verd
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     const uint32_t pause_ms = g_test_verdict_pause_ms.exchange(0U, std::memory_order_acq_rel);
     if (pause_ms > 0U) {
+        g_test_verdicts_paused.fetch_add(1U, std::memory_order_acq_rel);
         dsd_sleep_ms(pause_ms);
     }
 #endif
