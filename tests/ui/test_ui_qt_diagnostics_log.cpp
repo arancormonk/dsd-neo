@@ -1318,6 +1318,238 @@ rotationFailureKeepsTheBound() {
     check(readFile(dir.filePath("tail.log")).contains("seq 2999 "), "newest record lost after a failed rotation");
 }
 
+static const char kDropped[] = "[redacted sensitive diagnostic]";
+
+static void
+checkLabelled(bool ok, const QByteArray& reason) {
+    // Labels name the template or the option and form, never a value.
+    check(ok, reason.constData());
+}
+
+static QStringList
+streamRecords(const QByteArray& bytes, const QString& directory) {
+    DiagnosticsLog log(directory, manualOptions());
+    DiagnosticsLog::StreamCapture capture(log, QStringLiteral("stderr"));
+    capture.feed(bytes.constData(), static_cast<size_t>(bytes.size()));
+    capture.finish();
+    return log.snapshot();
+}
+
+/* The records that say why a USB receiver failed, as each producer writes them: librtlsdr through the stderr pump,
+ * dsd-neo's own rtl/usb lines through the runtime log, and libusb's log lines (forwarded to the runtime log with
+ * their own "libusb: " header). Each keeps its negative code verbatim, live and again when a saved tail is reloaded
+ * or shared. */
+static void
+producerErrorLinesSurvive() {
+    const QStringList stderrLines = {
+        QStringLiteral("usb_claim_interface error -1"),
+        QStringLiteral("usb_open error -3"),
+        QStringLiteral("libusb_set_option error -12"),
+        QStringLiteral("libusb_wrap_sys_device error -1"),
+        QStringLiteral("rtlsdr_read_array failed with -1"),
+        QStringLiteral("rtlsdr_write_array failed with -9"),
+        QStringLiteral("rtlsdr_read_reg failed with -7"),
+        QStringLiteral("rtlsdr_write_reg failed with -4"),
+        QStringLiteral("rtlsdr_demod_read_reg failed with -1"),
+        QStringLiteral("rtlsdr_demod_write_reg failed with -99"),
+        QStringLiteral("WARNING: Failed to read the tuner's gain table (rc=-5); gain unchanged."),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        for (const auto& line : stderrLines) {
+            bytes += line.toUtf8() + '\n';
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records.size() == stderrLines.size(), "stderr template records lost or split");
+        for (qsizetype i = 0; i < std::min(records.size(), stderrLines.size()); ++i) {
+            const QString expected = QStringLiteral("[stderr] [info] ") + stderrLines.at(i);
+            checkLabelled(records.at(i) == expected, "stderr template not verbatim: " + stderrLines.at(i).toUtf8());
+            checkLabelled(DiagnosticsLog::redact(records.at(i)) == expected,
+                          "stored stderr template not verbatim: " + stderrLines.at(i).toUtf8());
+        }
+    }
+    {
+        DiagnosticsLog reloaded(dir.path());
+        const auto previous = reloaded.snapshot();
+        for (const auto& line : stderrLines) {
+            checkLabelled(previous.contains(QStringLiteral("[stderr] [info] ") + line),
+                          "reloaded stderr template not verbatim: " + line.toUtf8());
+        }
+    }
+
+    struct DecoderLine {
+        dsd_neo_log_level_t level;
+        const char* levelName;
+        QByteArray text;
+    };
+
+    const DecoderLine decoderLines[] = {
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Failed to adjust fs/4 capture center for actual device rate: center=465975000, capture=1536000 Hz "
+         "(rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: PPM correction request -12 failed (rc=-1); keeping applied value -2."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply RTL-SDR center frequency 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply RTL-SDR sample rate 1536000 Hz (rc=-9)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to return the RTL-SDR to center frequency 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to return the RTL-SDR to sample rate 1536000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error",
+         "The RTL-SDR could not be put back on 465975000 Hz after a retune refused for the analog channel width "
+         "(rc=-1); the stream stops."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply initial RTL-SDR center frequency 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply initial RTL-SDR sample rate 1536000 Hz (rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Retune applied with warning: 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Retune failed: 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: PPM correction applied but reconfigure to 465975000 Hz failed (rc=-1)."},
+        {LOG_LEVEL_WARN, "warn", "WARNING: Retune tuner gain apply failed (rc=-1); continuing retune"},
+        {LOG_LEVEL_ERROR, "error", "RTL-SDR: could not allocate USB transfer buffers (rc=-1)"},
+        {LOG_LEVEL_ERROR, "error",
+         "RTL-SDR: could not start the sample-progress monitor (rc=-1); the stream does not start"},
+        {LOG_LEVEL_ERROR, "error", "libusb: error [op_claim_interface] claim interface failed, errno=16"},
+        {LOG_LEVEL_ERROR, "error", "libusb: error [handle_events] backend handle_events failed with error -1"},
+        {LOG_LEVEL_WARN, "warn", "libusb: warning [do_close] cancel transfer failed error -5"},
+        {LOG_LEVEL_ERROR, "error",
+         "libusb: error [op_open] libusb couldn't open USB device /dev/bus/usb/001/002, errno=13"},
+    };
+    auto& log = DiagnosticsLog::instance();
+    for (const auto& line : decoderLines) {
+        dsd_neo_log_write(line.level, "%s\n", line.text.constData());
+        const auto ring = log.snapshot();
+        // The runtime log ends each record with its newline, which every record keeps as a space.
+        const QString expected =
+            QStringLiteral("[decoder] [%1] ").arg(QLatin1String(line.levelName)) + QString::fromUtf8(line.text) + ' ';
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "decoder template not verbatim: " + line.text);
+        checkLabelled(DiagnosticsLog::redact(expected) == expected,
+                      "stored decoder template not verbatim: " + line.text);
+    }
+}
+
+/* Only a whole producer record is exempt: anything around or inside it, or the same text from another producer,
+ * keeps the key rule. */
+static void
+producerErrorLinesDoNotCarryKeys() {
+    const QStringList records = {
+        QStringLiteral("[stderr] [info] -b197 usb_claim_interface error -1"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1 -b197"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1-b197"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1\n-b197"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1 key"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -91234"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] failed with error -91234\n"),
+        QStringLiteral("[stderr] [info] rtlsdr_i2c_write_reg failed with -1"),
+        QStringLiteral("[host] [info] usb_claim_interface error -1"),
+        QStringLiteral("[stderr] [error] usb_claim_interface error -1"),
+        QStringLiteral("[decoder] [error] usb_claim_interface error -1\n"),
+        QStringLiteral("[decoder] [error] Failed to apply RTL-SDR center frequency 465975000 Hz (rc=-1). -b197\n"),
+        QStringLiteral("[decoder] [error] Failed to apply RTL-SDR center frequency -1A2B Hz (rc=-1).\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] -b197 failed, errno=13\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] key 1A2B failed with error -1\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] failed -2 1A2B error -1\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] failed\n-b197 error -1\n"),
+        QStringLiteral("[decoder] [error] libusb: libusb: error [op_open] failed with error -1\n"),
+        QStringLiteral("[decoder] [info] libusb: error [op_open] failed with error -1\n"),
+        QStringLiteral("[stderr] [info] libusb: error [op_open] failed with error -1"),
+    };
+    for (const auto& record : records) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped, "mixed producer record kept: " + record.toUtf8());
+    }
+}
+
+/* Every key-taking option of src/runtime/cli/args.c, in each form getopt and the long-option pass accept, and as a
+ * host could echo an argument list. The values are short enough that the hex rule cannot hide a miss. */
+static void
+everyKeyOptionFormIsDropped() {
+    const QStringList shortOptions = {"1", "2", "!", "@", "5", "9", "A", "S", "H", "R", "b"};
+    const QStringList longOptions = {"--dmr-baofeng-pc5",   "--dmr-csi-ee72", "--tetra-key",   "--m17-aes-key",
+                                     "--m17-scrambler-key", "--api-token",    "--rdio-api-key"};
+    const QString first = QStringLiteral("1A2B");
+    const QString second = QStringLiteral("3C4D");
+
+    struct Form {
+        const char* name;
+        QString text;
+    };
+
+    QTemporaryDir dir;
+    auto& log = DiagnosticsLog::instance();
+    const auto checkForms = [&](const QString& option, const QList<Form>& forms) {
+        for (const auto& form : forms) {
+            const QByteArray label = "key form kept: " + option.toUtf8() + " " + form.name;
+            for (const auto& context : {QString(), QStringLiteral("args: ")}) {
+                checkLabelled(DiagnosticsLog::redact(QStringLiteral("[stderr] [info] ") + context + form.text)
+                                  == kDropped,
+                              label);
+                checkLabelled(DiagnosticsLog::redact(QStringLiteral("[decoder] [error] ") + context + form.text + '\n')
+                                  == kDropped,
+                              label + " (runtime log)");
+            }
+            // The runtime log keeps a logical message whole, whatever lines it spans.
+            dsd_neo_log_write(LOG_LEVEL_ERROR, "%s\n", form.text.toUtf8().constData());
+            const auto ring = log.snapshot();
+            checkLabelled(!ring.isEmpty() && ring.last() == kDropped, label + " (through the log tap)");
+            // The stderr pump splits the stream into lines before redaction, so a value may continue on a later line.
+            QDir(dir.path()).removeRecursively();
+            const auto records = streamRecords(form.text.toUtf8() + '\n', dir.path());
+            check(!records.isEmpty(), "stream capture produced no record");
+            for (const auto& record : records) {
+                checkLabelled(record == kDropped, label + " (through the stream capture)");
+            }
+        }
+    };
+    for (const auto& option : shortOptions) {
+        const QString flag = QStringLiteral("-") + option;
+        checkForms(flag, {
+                             {"attached", flag + first},
+                             {"separated", flag + ' ' + first},
+                             {"quoted multi-word", flag + QStringLiteral(" '") + first + ' ' + second + '\''},
+                             {"bundled", QStringLiteral("-ZT") + option + first},
+                             {"bundled separated", QStringLiteral("-Z") + option + ' ' + first},
+                             {"shell-quoted", '\'' + flag + QStringLiteral("' '") + first + '\''},
+                             {"JSON list", QStringLiteral("[\"") + flag + QStringLiteral("\",\"") + first + "\"]"},
+                             {"list", '[' + flag + QStringLiteral(", ") + first + ']'},
+                             {"multiline", flag + ' ' + first + '\n' + second},
+                             {"multiline CRLF", flag + ' ' + first + QStringLiteral("\r\n") + second},
+                             {"value on the next line", flag + '\n' + first + ' ' + second},
+                         });
+    }
+    for (const auto& option : longOptions) {
+        checkForms(option, {
+                               {"attached", option + '=' + first},
+                               {"separated", option + ' ' + first},
+                               {"quoted multi-word", option + QStringLiteral(" '") + first + ' ' + second + '\''},
+                               {"list", '[' + option + QStringLiteral(", ") + first + ']'},
+                               {"multiline", option + ' ' + first + '\n' + second},
+                               {"value on the next line", option + '\n' + first + ' ' + second},
+                           });
+    }
+}
+
+/* The stream capture keeps the pump's line rules, and the continuation rule ends at the first line that is not a
+ * key value. */
+static void
+streamCaptureLineRules() {
+    QTemporaryDir dir;
+    QByteArray bytes = "first\r\nsecond\n\nthird\r";
+    bytes += QByteArray(1100, 'x') + "\n" + "3C4D\n";
+    bytes += "-2 1A2B\n3C4D 5E6F\n0x 11, 22\n\x1b[1m3C4D\x1b[0m\tAB\nTuner gain set to 30 dB.\n5E6F\nlast";
+    const auto records = streamRecords(bytes, dir.path());
+    const QStringList expected = {
+        QStringLiteral("[stderr] [info] first"),
+        QStringLiteral("[stderr] [info] second"),
+        QStringLiteral("[stderr] [info] third"),
+        QStringLiteral("[stderr] [info] [oversized diagnostic omitted]"),
+        kDropped,
+        kDropped,
+        kDropped,
+        kDropped,
+        kDropped,
+        QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
+        QStringLiteral("[stderr] [info] 5E6F"),
+        QStringLiteral("[stderr] [info] last"),
+    };
+    check(records == expected, "stream capture line rules changed");
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir earlyDir;
@@ -1336,6 +1568,10 @@ main(int argc, char** argv) {
     clearAndReopen();
     test_live_formatted_keys();
     realKeySources();
+    producerErrorLinesSurvive();
+    producerErrorLinesDoNotCarryKeys();
+    everyKeyOptionFormIsDropped();
+    streamCaptureLineRules();
     appendKeepsTheFile();
     writeVolumeIsTheLogItself();
     rotationKeepsTheBound();

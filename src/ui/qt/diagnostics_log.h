@@ -13,6 +13,8 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stddef.h>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -91,6 +93,26 @@ class DiagnosticsLog {
     bool pump();
     void setIoFaultForTest(IoFault fault);
     static QString redact(QString text);
+
+    // Splits a captured byte stream (Android's redirected stdout and stderr) into records of one source. A key value
+    // can run on past the line that names its option, so after a dropped record the lines that hold only key
+    // characters are dropped too.
+    class StreamCapture {
+      public:
+        StreamCapture(DiagnosticsLog& log, QString source);
+        void feed(const char* data, size_t size);
+        // The end of the stream: an unterminated last line is still a record.
+        void finish();
+
+      private:
+        void emitLine();
+
+        DiagnosticsLog& m_log;
+        QString m_source;
+        std::string m_line;
+        bool m_oversized = false;
+        bool m_afterDropped = false;
+    };
 
   private:
     static constexpr int kAttemptDedupeMs = 60000;

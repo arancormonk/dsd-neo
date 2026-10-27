@@ -7988,6 +7988,12 @@ Qt Quick frontend (`src/ui/qt`):
   the pause.
   Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
   platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
+  Android's stderr pump splits its stream with `DiagnosticsLog::StreamCapture`, which drops the key-value-only lines
+  that follow a dropped record (a value split at a newline). `redact()` drops a whole record that carries a key word
+  or any key-taking CLI option, attached, separate or bundled. The one exemption is a record that is wholly one
+  producer's error line: the librtlsdr and dsd-neo rtl/usb lines in `kProducerLines`, or a libusb log line
+  (`libusb: ` header) whose text before its code has no key label. Keep `kProducerLines` in step with those producers'
+  format strings and the key-option pattern in step with `src/runtime/cli/args.c`.
   The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains
   every 250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything

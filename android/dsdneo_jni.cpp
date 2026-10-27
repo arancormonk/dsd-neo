@@ -96,8 +96,7 @@ void*
 // cppcheck-suppress constParameterCallback -- pthread_create entry point signature
 log_pump_thread(void* arg) {
     const int read_fd = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-    std::string line;
-    bool oversized = false;
+    dsd_qt::DiagnosticsLog::StreamCapture records(dsd_qt::DiagnosticsLog::instance(), QStringLiteral("stderr"));
     char buf[512];
 
     for (;;) {
@@ -108,37 +107,10 @@ log_pump_thread(void* arg) {
             }
             break;
         }
-        for (ssize_t i = 0; i < n; i++) {
-            const char c = buf[i];
-            if (c == '\n' || c == '\r') {
-                if (oversized) {
-                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
-                                                              QStringLiteral("[oversized diagnostic omitted]"));
-                    oversized = false;
-                }
-                if (!line.empty()) {
-                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
-                                                              QString::fromUtf8(line.c_str()));
-                    line.clear();
-                }
-                continue;
-            }
-            if (oversized) {
-                continue;
-            }
-            line.push_back(c);
-            if (line.size() >= 1024U) {
-                // Do not split a secret-bearing record into unlabelled fragments.
-                oversized = true;
-                line.clear();
-            }
-        }
+        records.feed(buf, static_cast<size_t>(n));
     }
 
-    if (!line.empty()) {
-        dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
-                                                  QString::fromUtf8(line.c_str()));
-    }
+    records.finish();
     (void)close(read_fd);
     return nullptr;
 }

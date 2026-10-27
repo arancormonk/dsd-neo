@@ -117,6 +117,129 @@ bootOf(const QByteArray& record) {
     return match.hasMatch() ? match.captured(1).toLongLong() : -1;
 }
 
+const char kDroppedRecord[] = "[redacted sensitive diagnostic]";
+
+/**
+ * @brief What marks a record as key-bearing: a key word, or a key-taking CLI option.
+ *
+ * getopt takes a short option's value attached or as the next argument, and bundles it behind options that take none
+ * (`-ZT1F`), so any dash-led token holding a key option's letter counts. A host may echo arguments as a list or quoted,
+ * so a quote, `[` or `,` can lead the token too. The long options without a key word in their name are listed.
+ */
+const QRegularExpression&
+keyLabel() {
+    static const QRegularExpression labelled(QStringLiteral(
+        "(?i)(key|secret|password|token|\\b(?:K[1-4]|RC4|AES|Hytera|scrambler)\\b|(?:^|\\s)-(?:H|b|R|1|!)\\S*"
+        "|--dmr-(?:baofeng-pc5|csi-ee72)"
+        "|(?-i:(?:^|[\\s\"'\\[,])-(?!-)\\S*?[12!@59ASHRb]))"));
+    return labelled;
+}
+
+/*
+ * Lines that name why a USB receiver failed, which the key rule would drop for their negative code (" error -1"
+ * reads as option -1). Each is one producer's fixed text, whole: the source and level formatRecord() gives it, then
+ * the producer's format, in which only the numeric fields (%d, %u) vary. A record matching one cannot carry a key.
+ */
+struct ProducerLine {
+    const char* record;
+    const char* format;
+};
+
+const ProducerLine kProducerLines[] = {
+    // librtlsdr (android/third_party/librtlsdr/src/librtlsdr.c), through the stderr pump. Its register helpers print
+    // "%s failed with %d" with their own __FUNCTION__.
+    {"[stderr] [info] ", "usb_claim_interface error %d"},
+    {"[stderr] [info] ", "usb_open error %d"},
+    {"[stderr] [info] ", "libusb_set_option error %d"},
+    {"[stderr] [info] ", "libusb_wrap_sys_device error %d"},
+    {"[stderr] [info] ", "rtlsdr_read_array failed with %d"},
+    {"[stderr] [info] ", "rtlsdr_write_array failed with %d"},
+    {"[stderr] [info] ", "rtlsdr_read_reg failed with %d"},
+    {"[stderr] [info] ", "rtlsdr_write_reg failed with %d"},
+    {"[stderr] [info] ", "rtlsdr_demod_read_reg failed with %d"},
+    {"[stderr] [info] ", "rtlsdr_demod_write_reg failed with %d"},
+    // dsd-neo's rtl/usb lines with an rc field (src/io/radio), through the runtime log or stderr.
+    {"[decoder] [warn] ",
+     "WARNING: Failed to adjust fs/4 capture center for actual device rate: center=%u, capture=%u Hz (rc=%d)."},
+    {"[decoder] [info] ", "NOTICE: PPM correction request %d failed (rc=%d); keeping applied value %d."},
+    {"[decoder] [error] ", "Failed to apply RTL-SDR center frequency %u Hz (rc=%d)."},
+    {"[decoder] [error] ", "Failed to apply RTL-SDR sample rate %u Hz (rc=%d)."},
+    {"[decoder] [error] ", "Failed to return the RTL-SDR to center frequency %u Hz (rc=%d)."},
+    {"[decoder] [error] ", "Failed to return the RTL-SDR to sample rate %u Hz (rc=%d)."},
+    {"[decoder] [error] ", "The RTL-SDR could not be put back on %u Hz after a retune refused for the analog channel "
+                           "width (rc=%d); the stream stops."},
+    {"[decoder] [error] ", "Failed to apply initial RTL-SDR center frequency %u Hz (rc=%d)."},
+    {"[decoder] [error] ", "Failed to apply initial RTL-SDR sample rate %u Hz (rc=%d)."},
+    {"[decoder] [info] ", "NOTICE: Retune applied with warning: %u Hz (rc=%d)."},
+    {"[decoder] [info] ", "NOTICE: Retune failed: %u Hz (rc=%d)."},
+    {"[decoder] [info] ", "NOTICE: PPM correction applied but reconfigure to %u Hz failed (rc=%d)."},
+    {"[decoder] [warn] ", "WARNING: Retune tuner gain apply failed (rc=%d); continuing retune"},
+    {"[decoder] [error] ", "RTL-SDR: could not allocate USB transfer buffers (rc=%d)"},
+    {"[stderr] [info] ", "WARNING: Failed to read the tuner's gain table (rc=%d); gain unchanged."},
+    {"[decoder] [error] ", "RTL-SDR: could not start the sample-progress monitor (rc=%d); the stream does not start"},
+};
+
+/*
+ * libusb's own log lines, which the USB receiver's log callback forwards to the runtime log unchanged: they start with
+ * libusb's header, "libusb: <level> [<function>] ". The message after it is libusb's usbi_err/usbi_warn text, and only
+ * one ending in its code (", errno=%d" or a negative "%d") is exempt, and then only if the text before the code is
+ * itself free of key labels.
+ */
+constexpr char kLibusbRecordPrefix[] = "libusb: ";
+
+/** @brief Whether @p text is one whole producer error line (see kProducerLines and kLibusbRecordPrefix). */
+bool
+isProducerErrorLine(const QString& text) {
+    // The runtime log's newline ends a fresh record; a saved one has it as the space redact() makes of it.
+    static const QString end = QStringLiteral("(?:\\n| )?\\z");
+    // Error codes, errno values and PPM corrections fit in four digits. The bound keeps a signed field from passing
+    // for a short option with a long digit-only value attached ("-91234").
+    static const QString signedField = QStringLiteral("-?[0-9]{1,4}");
+    static const QRegularExpression fixed([] {
+        QStringList alternatives;
+        for (const auto& line : kProducerLines) {
+            QString pattern = QRegularExpression::escape(QLatin1String(line.record));
+            const QString format = QLatin1String(line.format);
+            qsizetype literal = 0;
+            for (qsizetype at = format.indexOf(QLatin1Char('%')); at >= 0;
+                 at = format.indexOf(QLatin1Char('%'), literal)) {
+                pattern += QRegularExpression::escape(format.mid(literal, at - literal));
+                pattern += format.at(at + 1) == QLatin1Char('d') ? signedField : QStringLiteral("[0-9]{1,10}");
+                literal = at + 2;
+            }
+            alternatives.append(pattern + QRegularExpression::escape(format.mid(literal)));
+        }
+        return QRegularExpression(QStringLiteral("\\A(?:") + alternatives.join(QLatin1Char('|')) + QStringLiteral(")")
+                                  + end);
+    }());
+    if (fixed.match(text).hasMatch()) {
+        return true;
+    }
+    static const QRegularExpression libusb(QStringLiteral("\\A\\[decoder\\] \\[(?:error|warn)\\] ")
+                                           + QRegularExpression::escape(QLatin1String(kLibusbRecordPrefix))
+                                           + QStringLiteral("(?:error|warning) \\[[A-Za-z_][A-Za-z0-9_]*\\] "
+                                                            "(.*?)(?:errno=|(?=-))")
+                                           + signedField + end);
+    const auto match = libusb.match(text);
+    return match.hasMatch() && !match.captured(1).contains(keyLabel());
+}
+
+QString
+withoutAnsi(QString text) {
+    static const QRegularExpression ansi(QStringLiteral("\\x1b\\[[0-?]*[ -/]*[@-~]"));
+    return text.remove(ansi);
+}
+
+/**
+ * @brief Whether a captured line holds nothing but what a key value is written with: hex digits, separators and
+ * control characters.
+ */
+bool
+isKeyContinuation(const QString& text) {
+    static const QRegularExpression continuation(QStringLiteral("\\A[\\s\\p{Cc}0-9A-Fa-fxX,:;._'\"()\\[\\]-]*\\z"));
+    return continuation.match(withoutAnsi(text)).hasMatch();
+}
+
 QByteArray
 formatRecord(const QString& source, const QString& level, const QString& text) {
     auto line = DiagnosticsLog::redact(QStringLiteral("[%1] [%2] %3").arg(source, level, text)).toUtf8();
@@ -242,12 +365,9 @@ QString
 DiagnosticsLog::redact(QString text) {
     // Drop whole key-bearing records, including malformed values and labelled
     // short decimal/basic keys. Strip ANSI before matching to prevent evasion.
-    static const QRegularExpression ansi(QStringLiteral("\\x1b\\[[0-?]*[ -/]*[@-~]"));
-    text.remove(ansi);
-    static const QRegularExpression labelled(QStringLiteral(
-        "(?i)(key|secret|password|token|\\b(?:K[1-4]|RC4|AES|Hytera|scrambler)\\b|(?:^|\\s)-(?:H|b|R|1|!)\\S*)"));
-    if (text.contains(labelled)) {
-        return QStringLiteral("[redacted sensitive diagnostic]");
+    text = withoutAnsi(std::move(text));
+    if (text.contains(keyLabel()) && !isProducerErrorLine(text)) {
+        return QLatin1String(kDroppedRecord);
     }
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));
     text.replace(hex, QStringLiteral("[redacted]"));
@@ -467,6 +587,60 @@ DiagnosticsLog::isProtectedLocked(int index) const {
 void
 DiagnosticsLog::submit(const QString& source, const QString& level, const QString& text) {
     enqueue(formatRecord(source, level, text));
+}
+
+DiagnosticsLog::StreamCapture::StreamCapture(DiagnosticsLog& log, QString source)
+    : m_log(log), m_source(std::move(source)) {}
+
+void
+DiagnosticsLog::StreamCapture::feed(const char* data, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+        const char c = data[i];
+        if (c == '\n' || c == '\r') {
+            if (m_oversized) {
+                m_log.submit(m_source, QStringLiteral("info"), QStringLiteral("[oversized diagnostic omitted]"));
+                m_oversized = false;
+                // Omitted unread, it may have named a key option.
+                m_afterDropped = true;
+            }
+            if (!m_line.empty()) {
+                emitLine();
+            }
+            continue;
+        }
+        if (m_oversized) {
+            continue;
+        }
+        m_line.push_back(c);
+        if (m_line.size() >= 1024U) {
+            // Do not split a secret-bearing record into unlabelled fragments.
+            m_oversized = true;
+            m_line.clear();
+        }
+    }
+}
+
+void
+DiagnosticsLog::StreamCapture::finish() {
+    if (!m_line.empty()) {
+        emitLine();
+    }
+}
+
+void
+DiagnosticsLog::StreamCapture::emitLine() {
+    const QString text = QString::fromUtf8(m_line.c_str());
+    m_line.clear();
+    QByteArray record = formatRecord(m_source, QStringLiteral("info"), text);
+    if (record == kDroppedRecord) {
+        m_afterDropped = true;
+    } else if (m_afterDropped && isKeyContinuation(text)) {
+        // The rest of the dropped record's value, split off at a newline before redaction could see it whole.
+        record = kDroppedRecord;
+    } else {
+        m_afterDropped = false;
+    }
+    m_log.enqueue(record);
 }
 
 void
