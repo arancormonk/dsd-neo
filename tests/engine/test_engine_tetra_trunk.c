@@ -7,6 +7,7 @@
  * forgets the carrier's evidence.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -158,6 +159,7 @@ test_tick_settles_tunes(void) {
     /* Not a TETRA session, or trunk scan owns the tuner: the engine leaves the state machine alone. */
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     const tetra_state_t* const ts = tetra_st_existing(s.state);
+    assert(ts != NULL);
     s.opts->frame_tetra = 0;
     engine_tick(&s);
     expect(ts->sm.pending_request_id == request, "no tick outside a TETRA session");
@@ -214,6 +216,7 @@ test_carrier_boundary_abandons(void) {
     session s = session_open();
     expect(follow_grant(&s) == 1, "grant followed before the boundary");
     tetra_state_t* const ts = tetra_st_existing(s.state);
+    assert(ts != NULL);
     tetra_confirm_note_signalling(s.state);
     ts->tdma_valid = 1;
     ts->mac_frag[1].active = 1;
@@ -408,6 +411,7 @@ static void
 test_no_carrier_forgets_evidence(void) {
     session s = session_open();
     tetra_state_t* const ts = tetra_st_existing(s.state);
+    assert(ts != NULL);
     ts->tdma_valid = 1;
     ts->mac_frag[0].active = 1;
     expect(tetra_confirm_carrier_proven(s.state), "evidence before the pass");
