@@ -198,15 +198,29 @@ note_receiver_fact(RunStatus& status) {
     status.note_end(kEndNone, dsd_input_failure_receiver_ended() != 0);
 }
 
+/** The open/claim error of the session's own receiver (#782): the RTL-SDR's or the Airspy's latch, none for any other
+ * input. Each is latched apart from device ownership and cleared by the next configure. */
+inline int
+receiver_open_error(ReceiverSource source) {
+#ifdef USE_RADIO
+    if (source == kReceiverRtl) {
+        return rtl_device_last_open_error();
+    }
+    if (source == kReceiverAirspy) {
+        return rtl_device_airspy_last_open_error();
+    }
+#else
+    (void)source;
+#endif
+    return 0;
+}
+
 /** Collect the engine's terminal result after its input cleanup. The device
  * error is latched separately from device ownership and must be copied before
  * the next configure clears it. The caller holds the lifecycle-status lock. */
 inline void
 collect_run_result(RunStatus& status, int code, bool cancelled) {
-    int device_error = 0;
-#ifdef USE_RADIO
-    device_error = rtl_device_last_open_error();
-#endif
+    const int device_error = receiver_open_error(status.receiver_source);
     // An ending no poll saw is still this run's.
     note_receiver_fact(status);
     status.finish(code, cancelled, device_error);

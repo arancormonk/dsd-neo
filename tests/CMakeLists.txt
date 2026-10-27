@@ -14510,6 +14510,31 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
 
+    # #782: which Android descriptor the engine holds, through the open, a
+    # replacement in the slot and the close; and the "reset first" request.
+    add_executable(dsd-neo_test_io_rtl_fd_held io/test_io_rtl_fd_held.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_fd_held
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_fd_held
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_FD_HELD COMMAND dsd-neo_test_io_rtl_fd_held)
+
+    # #782: libusb's own log lines reach the runtime log once, with one header.
+    add_executable(dsd-neo_test_io_rtl_usb_log io/test_io_rtl_usb_log.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_log
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_log
+        PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_LOG COMMAND dsd-neo_test_io_rtl_usb_log)
+
     # The USB reader's return code: any return nobody asked for ends the session as a
     # device failure (after the unplug-owner grace); a stop in flight does not, and a
     # stop or destroy while the reader starts still ends and joins it.

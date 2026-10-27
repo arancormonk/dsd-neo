@@ -27,5 +27,10 @@ int airspy_source_info(airspy_source* s, dsd_airspy_info* info);
 /* Descriptor remains owned by the platform host. Clear before waiting for in_use. */
 int airspy_source_set_fd(int fd);
 int airspy_source_fd_in_use(void);
+/* The descriptor the open path holds, or -1 (#782). */
+int airspy_source_fd_held(void);
+/* The last open/claim error (0: none), latched by a failed airspy_source_open(); the host clears it per session. */
+int airspy_source_last_open_error(void);
+void airspy_source_clear_open_error(void);
 int airspy_source_list(uint64_t* serials, int capacity);
 #endif

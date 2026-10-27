@@ -444,6 +444,7 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
 #ifdef USE_RADIO
     rtl_device_clear_open_error();
+    rtl_device_airspy_clear_open_error();
 #endif
     cli_argv cli = {};
     if (!build_argv(env, args, &cli)) {
@@ -675,6 +676,50 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetAirspyUsbFd(JNIEnv* env, jc
 #else
     return fd < 0 ? kStatusOk : kStatusError;
 #endif
+}
+
+/**
+ * @brief Whether the next RTL-SDR open from the descriptor resets the device first (#782).
+ *
+ * UsbSourceManager hands this with each descriptor it publishes; recorded for the open path that honours it.
+ */
+JNIEXPORT void JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbResetFirst(JNIEnv* env, jclass clazz, jboolean reset_first) {
+    (void)env;
+    (void)clazz;
+#ifdef USE_RADIO
+    rtl_device_set_preopened_fd_reset_first(reset_first == JNI_TRUE ? 1 : 0);
+#else
+    (void)reset_first;
+#endif
+}
+
+/**
+ * @brief The descriptors the engine holds: { RTL-SDR, Airspy }, each -1 when none (#782).
+ *
+ * UsbSourceManager closes a retired connection once its own descriptor is no longer held. Lock-free reads, so the
+ * closer's poll never waits behind a configure.
+ */
+JNIEXPORT jintArray JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeHeldUsbFds(JNIEnv* env, jclass clazz) {
+    (void)clazz;
+#ifdef USE_RADIO
+    const jint fields[] = {rtl_device_preopened_fd_held(), rtl_device_airspy_preopened_fd_held()};
+#else
+    const jint fields[] = {-1, -1};
+#endif
+    constexpr jsize kFieldCount = static_cast<jsize>(sizeof(fields) / sizeof(fields[0]));
+    jintArray out = env->NewIntArray(kFieldCount);
+    if (!out) {
+        clear_pending_exception(env);
+        return nullptr;
+    }
+    env->SetIntArrayRegion(out, 0, kFieldCount, fields);
+    if (clear_pending_exception(env)) {
+        env->DeleteLocalRef(out);
+        return nullptr;
+    }
+    return out;
 }
 
 JNIEXPORT jboolean JNICALL

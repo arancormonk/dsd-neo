@@ -113,6 +113,32 @@ int rtl_device_preopened_fd_is_set(void);
 int rtl_device_preopened_fd_in_use(void);
 
 /**
+ * @brief The pre-opened descriptor the engine holds, or -1 when it holds none (#782).
+ *
+ * The descriptor rtl_device_preopened_fd_in_use() is about: taken from the slot in
+ * the same step that marks it held, so once rtl_device_set_preopened_fd() has
+ * returned, a descriptor it replaced is either reported here or can no longer be
+ * taken. An owner that retired a connection waits only while its own descriptor is
+ * held, never on a later session's.
+ *
+ * @return The held descriptor, or -1.
+ */
+int rtl_device_preopened_fd_held(void);
+
+/**
+ * @brief Ask that the next open from the pre-opened descriptor resets the device first (#782).
+ *
+ * The Android host hands this with each new descriptor (false unless the attachment
+ * owes a reset). Recorded only: the open path that honours it consumes it.
+ *
+ * @param reset_first Nonzero to reset before the next open.
+ */
+void rtl_device_set_preopened_fd_reset_first(int reset_first);
+
+/** @brief The request rtl_device_set_preopened_fd_reset_first() recorded: 1 or 0. */
+int rtl_device_preopened_fd_reset_first(void);
+
+/**
  * @brief Whether this build can open a device from a pre-opened descriptor.
  *
  * Requires Android and a librtlsdr providing `rtlsdr_open_fd()`. Where this is 0,
@@ -175,6 +201,11 @@ int rtl_device_airspy_controls(struct rtl_device* dev, const dsd_airspy_config* 
 int rtl_device_airspy_list(uint64_t* serials, int capacity);
 int rtl_device_airspy_set_preopened_fd(int fd);
 int rtl_device_airspy_preopened_fd_in_use(void);
+/** The descriptor the Airspy holds, or -1; as rtl_device_preopened_fd_held() is for the RTL-SDR (#782). */
+int rtl_device_airspy_preopened_fd_held(void);
+/** The Airspy's last open/claim error, as rtl_device_last_open_error() is the RTL-SDR's; cleared at session start. */
+int rtl_device_airspy_last_open_error(void);
+void rtl_device_airspy_clear_open_error(void);
 
 /**
  * @brief Create and initialize an RX source through SoapySDR.

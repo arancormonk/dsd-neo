@@ -8194,14 +8194,26 @@ rtl_device_clear_open_error(void) {
 static std::atomic<int> g_preopened_usb_fd{-1};
 
 /*
- * Whether the descriptor is currently wrapped by libusb, as opposed to merely
- * recorded. Its owner (the Android app) has to close the connection eventually and
- * needs to know when that is safe; "is the engine running" is a poor proxy, because
- * the descriptor is taken and released well inside a run. Raised before the wrap is
- * attempted and lowered once the device is closed, so it is never clear while a
- * transfer could still be in flight.
+ * The descriptor libusb has wrapped, or is about to wrap, as opposed to merely
+ * recorded; -1 when none. Its owner (the Android app) has to close each connection
+ * eventually and needs to know when that is safe for that one descriptor: "is the
+ * engine running" is a poor proxy, because the descriptor is taken and released well
+ * inside a run, and a later session holds a different descriptor (#782). Set before
+ * the wrap is attempted and cleared once the device is closed, so it never stops
+ * naming a descriptor while a transfer could still be in flight.
  */
-static std::atomic<int> g_preopened_usb_fd_in_use{0};
+static std::atomic<int> g_preopened_usb_fd_held{-1};
+
+/*
+ * Taking the descriptor (reading the slot, then marking it held) and replacing the
+ * slot are one step each under this lock. Once rtl_device_set_preopened_fd() has
+ * returned, either the engine holds the old descriptor (and says so) or it can no
+ * longer take it, so an owner that cleared the slot can trust the held query.
+ */
+static std::mutex g_preopened_usb_fd_lock;
+
+/* The host's "reset this descriptor before opening it" request for the next open (#782); see the header. */
+static std::atomic<int> g_preopened_usb_fd_reset_first{0};
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 static std::atomic<int (*)(int)> g_open_fd_failure_hook{nullptr};
@@ -8214,6 +8226,7 @@ rtl_device_test_set_open_fd_failure_hook(int (*hook)(int)) {
 
 void
 rtl_device_set_preopened_fd(int sys_fd) {
+    const std::lock_guard<std::mutex> guard(g_preopened_usb_fd_lock);
     g_preopened_usb_fd.store((sys_fd < 0) ? -1 : sys_fd, std::memory_order_release);
 }
 
@@ -8224,8 +8237,37 @@ rtl_device_preopened_fd_is_set(void) {
 
 int
 rtl_device_preopened_fd_in_use(void) {
-    return g_preopened_usb_fd_in_use.load(std::memory_order_acquire);
+    return (g_preopened_usb_fd_held.load(std::memory_order_acquire) >= 0) ? 1 : 0;
 }
+
+int
+rtl_device_preopened_fd_held(void) {
+    return g_preopened_usb_fd_held.load(std::memory_order_acquire);
+}
+
+void
+rtl_device_set_preopened_fd_reset_first(int reset_first) {
+    g_preopened_usb_fd_reset_first.store(reset_first ? 1 : 0, std::memory_order_release);
+}
+
+int
+rtl_device_preopened_fd_reset_first(void) {
+    return g_preopened_usb_fd_reset_first.load(std::memory_order_acquire);
+}
+
+#if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
+    || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The slot's descriptor, now marked held, or -1 when none is set. One step with rtl_device_set_preopened_fd(). */
+static int
+rtl_preopened_fd_take(void) {
+    const std::lock_guard<std::mutex> guard(g_preopened_usb_fd_lock);
+    const int fd = g_preopened_usb_fd.load(std::memory_order_acquire);
+    if (fd >= 0) {
+        g_preopened_usb_fd_held.store(fd, std::memory_order_release);
+    }
+    return fd;
+}
+#endif
 
 int
 rtl_device_preopened_fd_supported(void) {
@@ -8287,7 +8329,9 @@ static int
 rtl_usb_open_preopened_fd(rtlsdr_dev_t** out, int fd) {
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     if (const auto hook = g_open_fd_failure_hook.load(std::memory_order_acquire)) {
-        return hook(fd);
+        /* A positive answer opens the installed test dongle as the device behind the descriptor. */
+        const int r = hook(fd);
+        return r > 0 ? rtl_usb_ctl_open(out, 0U) : r;
     }
 #endif
 #if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
@@ -8344,16 +8388,17 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     /* An injected descriptor means the app already picked and opened the device and
      * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
      * project patch on the vendored tree; the configure step proves it is there. */
-    const int preopened_fd = g_preopened_usb_fd.load(std::memory_order_acquire);
     // cppcheck-suppress knownConditionTrueFalse -- Native Android supports this; the desktop test seam can disable it.
-    if (preopened_fd >= 0 && rtl_device_preopened_fd_supported()) {
-        /* Claimed before the wrap, not after: the owner must not be told the
-         * descriptor is free while libusb is part way through taking it. */
-        g_preopened_usb_fd_in_use.store(1, std::memory_order_release);
+    const int preopened_fd = rtl_device_preopened_fd_supported() ? rtl_preopened_fd_take() : -1;
+    if (preopened_fd >= 0) {
+        /* Claimed (held) before the wrap, not after: the owner must not be told the
+         * descriptor is free while libusb is part way through taking it. libusb's own
+         * error text reaches the diagnostics from here on (#782). */
+        rtl_usb_log_install();
         r = rtl_usb_open_preopened_fd(&dev->dev, preopened_fd);
         if (r < 0) {
             g_last_usb_open_error.store(r, std::memory_order_release);
-            g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
+            g_preopened_usb_fd_held.store(-1, std::memory_order_release);
             /* The session's failure, as Airspy's open reports its own: the UI words a device failure from it (#782). */
             dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
             DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
@@ -8563,6 +8608,21 @@ rtl_device_airspy_set_preopened_fd(int fd) {
 int
 rtl_device_airspy_preopened_fd_in_use(void) {
     return airspy_source_fd_in_use();
+}
+
+int
+rtl_device_airspy_preopened_fd_held(void) {
+    return airspy_source_fd_held();
+}
+
+int
+rtl_device_airspy_last_open_error(void) {
+    return airspy_source_last_open_error();
+}
+
+void
+rtl_device_airspy_clear_open_error(void) {
+    airspy_source_clear_open_error();
 }
 
 struct rtl_device*
@@ -9006,7 +9066,7 @@ rtl_usb_close_retired(struct rtl_device* dev, rtlsdr_dev_t* handle) {
         /* Released only now that libusb is done with it: the owner polls this to
          * decide when closing the underlying connection is safe. */
         dev->owns_preopened_fd = 0;
-        g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
+        g_preopened_usb_fd_held.store(-1, std::memory_order_release);
     }
 }
 

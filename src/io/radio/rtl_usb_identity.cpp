@@ -7,7 +7,8 @@
  * @file
  * @brief RTL-SDR USB identity, and a USB reset of exactly that device (see rtl_usb_identity.h).
  *
- * The only translation unit that includes libusb.h. Cold path: open, recovery and their tests.
+ * The only translation unit that includes libusb.h: for the identity and reset, and on Android for libusb's log
+ * callback (rtl_usb_log_install()). Cold path: open, recovery and their tests.
  */
 
 #include "rtl_usb_identity.h"
@@ -29,6 +30,13 @@
 #include <sys/types.h>
 #else
 #define RTL_USB_IDENTITY_REAL 0
+#endif
+
+#include <dsd-neo/runtime/log.h>
+#include <string>
+#if defined(DSD_HAVE_LIBUSB_LOG) && !RTL_USB_IDENTITY_REAL
+/* Android's vendored libusb, for its log callback only. */
+#include <libusb.h>
 #endif
 
 namespace {
@@ -617,6 +625,57 @@ rtl_usb_identity_off_reason(rtl_usb_id_result r) {
         case RTL_USB_ID_FAILED: break;
     }
     return "USB enumeration failed";
+}
+
+void
+rtl_usb_log_forward(int error, const char* text) {
+    static const char kHeader[] = "libusb: ";
+    std::string line = (text != nullptr) ? text : "";
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+        line.pop_back();
+    }
+    if (line.empty()) {
+        return;
+    }
+    if (line.compare(0, sizeof(kHeader) - 1, kHeader) != 0) {
+        line.insert(0, kHeader);
+    }
+    if (error) {
+        LOG_ERROR("%s\n", line.c_str());
+    } else {
+        LOG_WARN("%s\n", line.c_str());
+    }
+}
+
+#if defined(DSD_HAVE_LIBUSB_LOG)
+namespace {
+void LIBUSB_CALL
+forward_libusb_line(libusb_context* ctx, enum libusb_log_level level, const char* text) {
+    (void)ctx;
+    if (level == LIBUSB_LOG_LEVEL_ERROR || level == LIBUSB_LOG_LEVEL_WARNING) {
+        rtl_usb_log_forward(level == LIBUSB_LOG_LEVEL_ERROR, text);
+    }
+}
+
+std::atomic<int> g_log_installed{0};
+} // namespace
+#endif
+
+void
+rtl_usb_log_install(void) {
+#if defined(DSD_HAVE_LIBUSB_LOG)
+    if (g_log_installed.exchange(1, std::memory_order_acq_rel) != 0) {
+        return;
+    }
+    /* With no context these are the defaults every later libusb_init() applies; the vendored build logs to the system
+     * log as well, and with USE_SYSTEM_LOGGING_FACILITY only a context's own callback is ever called. */
+    const int level_rc = libusb_set_option(nullptr, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_WARNING);
+    const int cb_rc = libusb_set_option(nullptr, LIBUSB_OPTION_LOG_CB, forward_libusb_line);
+    if (level_rc != LIBUSB_SUCCESS || cb_rc != LIBUSB_SUCCESS) {
+        LOG_WARN("USB: libusb's own messages will not reach the diagnostics (level rc=%d, callback rc=%d).\n", level_rc,
+                 cb_rc);
+    }
+#endif
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS

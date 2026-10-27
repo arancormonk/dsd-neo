@@ -8,6 +8,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -143,10 +144,36 @@ expect_receiver_sources(void) {
     return rc;
 }
 
+/* #782: the run record reads the open error of the session's own receiver: an RTL-SDR's claim error is never an
+ * Airspy session's, nor an rtl_tcp session's. */
+static int
+expect_receiver_open_error(void) {
+    using namespace dsd_android;
+    int rc = 0;
+    rtl_device_clear_open_error();
+    rtl_device_airspy_clear_open_error();
+    (void)dsd_test_rtl_open_failure();
+    rc |= expect("the RTL-SDR latch holds the claim error", rtl_device_last_open_error() == -6);
+    for (const ReceiverSource source : {kReceiverAirspy, kReceiverNone}) {
+        RunStatus status = running_session(80);
+        status.note_configured(source);
+        collect_run_result(status, 1, false);
+        rc |= expect("another receiver's session never takes the RTL-SDR's claim error", status.device_error == 0);
+    }
+    RunStatus rtl = running_session(81);
+    collect_run_result(rtl, 1, false);
+    rc |= expect("the RTL-SDR session takes it", rtl.device_error == -6);
+    rtl_device_clear_open_error();
+    dsd_input_failure_clear();
+    return rc;
+}
+
 int
 main(void) {
     dsd_android::RunStatus result;
     result.begin(42);
+    // An RTL-SDR session: the run record reads its own receiver's open error (#782).
+    result.note_configured(dsd_android::kReceiverRtl);
     rtl_device_clear_open_error();
 
     // The real rtl_device_create failure path frees the device before returning.
@@ -172,6 +199,7 @@ main(void) {
                                                                   && result.reason == dsd_android::kRunCompleted
                                                                   && result.run_code == 0 && result.session_id == 43);
 
+    rc |= expect_receiver_open_error();
     rc |= expect_end_causes();
     rc |= expect_receiver_sources();
 
