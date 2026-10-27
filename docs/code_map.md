@@ -4218,6 +4218,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   SPS, output rate and channel profile, and returns exactly a fresh estimate's answer; a read a batch raced is answered
   (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
   `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
+- CF32 input levels (`runtime/input_level.c`): finite checks, peak and clipping stay in the input's float precision;
+  `0.98f` is the first float at or above the double clipping threshold. Ordered double sums retain the original
+  variance calculation. `IO_INPUT_LEVEL_METRICS` checks exact output bits against a scalar double reference across
+  threshold neighbors, non-finite inputs, DC and mixed-exponent blocks.
 - Automatic PPM (`radio/rtl_sdr_fm.cpp`, `radio/rtl_auto_ppm.cpp`): each live read synchronizes the applied PPM and
   frequency. While disabled, the controller only clears training and publishes its status; the reader skips the
   unused clock, signal estimates, configuration and request-lock snapshots. Enabled updates gather the full inputs.

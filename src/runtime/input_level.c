@@ -418,22 +418,25 @@ dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_input_
     }
     double p = 0.0;
     double t = 0.0;
-    double peak = 0.0;
+    float peak = 0.0f;
     uint64_t clipped = 0U;
     for (size_t i = 0U; i < count; i++) {
-        double s = (double)samples[i];
+        float s = samples[i];
         if (!isfinite(s)) {
-            s = (s < 0.0) ? -1.0 : 1.0;
+            s = (s < 0.0f) ? -1.0f : 1.0f;
         }
-        const double a = fabs(s);
+        const float a = fabsf(s);
         if (a > peak) {
             peak = a;
         }
-        if (a >= 0.98) {
+        /* 0.98f is the first float at or above 0.98; the comparison and peak need no promotion. Keep the sums
+           in double and in sample order, so the published values remain bit-identical. */
+        if (a >= 0.98f) {
             clipped++;
         }
-        t += s;
-        p += s * s;
+        const double value = (double)s;
+        t += value;
+        p += value * value;
     }
     double mean_power = p - ((t * t) / (double)count);
     if (mean_power < 0.0) {
