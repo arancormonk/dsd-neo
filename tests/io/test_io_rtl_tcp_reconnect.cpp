@@ -1873,6 +1873,51 @@ stream_lose_connection(const stream_rig& r) {
     assert(wait_until([&] { return rtl_device_has_stream(r.dev) == 0; }, kWaitMs));
 }
 
+/* One window of a connected stream that only pauses: the server stops sending, a command is queued 50 ms in, and the
+ * decoder's read is watched until kPauseWindowMs after the pause began, on the realtime clock. The stall rule ends a
+ * connection after kRcvTimeoMs times DSD_NEO_TCP_MAX_TIMEOUTS of silence counted from its last receive, which can
+ * begin before the pause; a runner that overslept the window, or kept a thread off the CPU, can reach it, and then the
+ * reader reconnects, has no stream and rightly yields. So the window says something only when the device kept the
+ * connection it had throughout (the same published generation, no other accepted, a stream at every look); then the
+ * command must still be waiting. Returns whether the window said something. */
+constexpr uint64_t kPauseWindowMs = 250U;
+
+int
+paused_stream_keeps_command_waiting(const stream_rig& r) {
+    rtl_device_test_tcp_state before{};
+    rtl_device_test_tcp_state_get(r.dev, &before);
+    const size_t conns = server_conn_count();
+    const int yields = r.reader.yields.load();
+    g_srv.paused.store(1);
+    const uint64_t t0 = now_ms();
+    (void)wait_until([&] { return now_ms() - t0 >= 50U; }, kWaitMs);
+    g_command_queued.store(1);
+    int kept_stream = 1;
+    while (now_ms() - t0 < kPauseWindowMs) {
+        kept_stream &= rtl_device_has_stream(r.dev);
+        dsd_sleep_ms(5U);
+    }
+    /* The yield count first: a reconnect that let a yield through has moved the generation by the looks after it. */
+    const int yielded = r.reader.yields.load() != yields;
+    rtl_device_test_tcp_state after{};
+    rtl_device_test_tcp_state_get(r.dev, &after);
+    const int same_connection = kept_stream && rtl_device_has_stream(r.dev) && after.generation == before.generation
+                                && server_conn_count() == conns;
+    const uint64_t window_ms = now_ms() - t0;
+    g_command_queued.store(0);
+    g_srv.paused.store(0);
+    if (!same_connection) {
+        DSD_FPRINTF(stderr, "paused window of %llu ms reached the stall rule; repeating it\n",
+                    (unsigned long long)window_ms);
+        assert(wait_until([&] { return rtl_device_has_stream(r.dev) == 1; }, kWaitMs));
+        const uint64_t samples = r.reader.samples.load();
+        assert(wait_until([&] { return r.reader.samples.load() > samples + 4096U; }, kWaitMs));
+        return 0;
+    }
+    assert(!yielded);
+    return 1;
+}
+
 /* unavailable_server_command_applies (B3): while the server is gone the decoder's read gives way to a queued command
  * at once, and a connected stream that only pauses never does. */
 void
@@ -1883,19 +1928,19 @@ test_unavailable_server_command_applies(void) {
     stream_rig r;
     stream_open(r, 0, 1);
     assert(wait_until([&] { return r.reader.samples.load() > 4096U; }, kWaitMs));
-    /* Connected but paused (well inside the stall rule): a queued command waits. */
-    g_srv.paused.store(1);
-    dsd_sleep_ms(100U);
-    g_command_queued.store(1);
-    dsd_sleep_ms(150U);
-    assert(r.reader.yields.load() == 0);
-    g_command_queued.store(0);
-    g_srv.paused.store(0);
-    /* Gone: it applies within a few read slices. */
+    /* Connected but paused: a queued command waits. Repeated while a slow runner pushes the window into the stall
+     * rule, as many times as it takes for one to hold, within a bound. */
+    int held = 0;
+    for (int attempt = 0; attempt < 5 && !held; ++attempt) {
+        held = paused_stream_keeps_command_waiting(r);
+    }
+    assert(held);
+    /* Gone: it applies at once (a read that waited for the stream would wait until the server is back). */
+    const int yields_before = r.reader.yields.load();
     g_srv.up.store(0);
     stream_lose_connection(r);
     g_command_queued.store(1);
-    assert(wait_until([&] { return r.reader.yields.load() >= 1; }, 300U));
+    assert(wait_until([&] { return r.reader.yields.load() > yields_before; }, kPromptMs));
     assert(g_command_queued.load() == 0);
     g_srv.up.store(1);
     const uint64_t before = r.reader.samples.load();

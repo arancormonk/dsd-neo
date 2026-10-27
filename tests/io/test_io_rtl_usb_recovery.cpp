@@ -391,6 +391,32 @@ deliver(const rig& r, int callbacks, unsigned int period_ms) {
     }
 }
 
+/* As deliver(), on the realtime clock: the time of the last callback in *@p last_ms (also the time from which the first
+ * gap counts), and the longest gap between two callbacks, the first included, raised into *@p max_gap_ms. A case whose
+ * samples must keep the silence rule from tripping holds only while every gap stayed well under kLimitMs; a runner
+ * that kept the feeding thread off the CPU longer makes the attempt say nothing, as the monitor then rightly trips. */
+void
+deliver_timed(const rig& r, int callbacks, unsigned int period_ms, uint64_t* last_ms, uint64_t* max_gap_ms) {
+    for (int i = 0; i < callbacks; ++i) {
+        if (i > 0) {
+            dsd_sleep_ms(period_ms);
+        }
+        rtl_device_test_usb_stream_deliver(r.dev, g_buffer, 512U);
+        const uint64_t now = dsd_realtime_mono_ms();
+        if (now - *last_ms > *max_gap_ms) {
+            *max_gap_ms = now - *last_ms;
+        }
+        *last_ms = now;
+    }
+}
+
+/* Whether a feeding whose longest gap was @p max_gap_ms stayed inside the silence rule with room to spare: the monitor
+ * measures silence in steps of kPeriodMs. */
+bool
+gaps_inside_limit(uint64_t max_gap_ms) {
+    return max_gap_ms + (2ULL * kPeriodMs) < kLimitMs;
+}
+
 /* Wait until the device posted its @p n-th request; the time it did. */
 uint64_t
 wait_posted(const rig& r, int n) {
@@ -499,9 +525,41 @@ test_second_stall_without_samples_ends_session(void) {
 
 /* The cooldown, on both sides: a new stall (samples came after the reset) inside it ends the session; one after it is
  * recovered again. */
+constexpr uint32_t kCooldownMs = 1500U;
+
+/* Outside: samples until the cooldown has run out, then silence: a second recovery. The samples must keep the session
+ * from stalling for the whole cooldown; returns whether they did with room to spare (else the attempt says nothing). */
+bool
+cooldown_outside_attempt(void) {
+    usb_world_reset(0);
+    rig outside;
+    rig_open(outside, 1);
+    deliver(outside, 5, 10U);
+    const uint64_t posted_ms = wait_posted(outside, 1);
+    uint64_t last_ms = dsd_realtime_mono_ms();
+    uint64_t max_gap_ms = 0U;
+    assert(play_controller(outside) == 0);
+    while (dsd_realtime_mono_ms() - posted_ms < kCooldownMs + 100U) {
+        deliver_timed(outside, 1, 0U, &last_ms, &max_gap_ms);
+        dsd_sleep_ms(10U);
+    }
+    if (!gaps_inside_limit(max_gap_ms)) {
+        DSD_FPRINTF(stderr, "cooldown: a %llu ms gap in the samples; repeating\n", (unsigned long long)max_gap_ms);
+        rig_close(outside);
+        return false;
+    }
+    const uint64_t second_ms = wait_posted(outside, 2);
+    assert(second_ms - posted_ms >= kCooldownMs);
+    expect_running();
+    assert(play_controller(outside) == 0);
+    expect_running();
+    assert(g_usb.devs[0].resets.load() == 2);
+    rig_close(outside);
+    return true;
+}
+
 void
 test_cooldown_both_sides(void) {
-    constexpr uint32_t kCooldownMs = 1500U;
     rtl_device_test_set_recovery_cooldown_ms(kCooldownMs);
 
     /* Inside: samples for 100 ms after the reset, then silence. */
@@ -521,31 +579,21 @@ test_cooldown_both_sides(void) {
     assert(inside.posted.count.load() == 1);
     rig_close(inside);
 
-    /* Outside: samples until the cooldown has run out, then silence: a second recovery. */
-    usb_world_reset(0);
-    rig outside;
-    rig_open(outside, 1);
-    deliver(outside, 5, 10U);
-    const uint64_t posted_ms = wait_posted(outside, 1);
-    assert(play_controller(outside) == 0);
-    while (dsd_realtime_mono_ms() - posted_ms < kCooldownMs + 100U) {
-        deliver(outside, 1, 0U);
-        dsd_sleep_ms(10U);
+    bool held = false;
+    for (int attempt = 0; attempt < 5 && !held; ++attempt) {
+        held = cooldown_outside_attempt();
     }
-    const uint64_t second_ms = wait_posted(outside, 2);
-    assert(second_ms - posted_ms >= kCooldownMs);
-    expect_running();
-    assert(play_controller(outside) == 0);
-    expect_running();
-    assert(g_usb.devs[0].resets.load() == 2);
-    rig_close(outside);
+    assert(held);
     rtl_device_test_set_recovery_cooldown_ms(0U);
 }
 
 /* The watch pauses while the request runs (here three limits: no verdict is made) and restarts with nothing accrued:
- * first samples that come two thirds of a limit after the reader restarted keep the session running. */
-void
-test_rearm_with_delayed_first_samples(void) {
+ * first samples that come half a limit after the reader restarted keep the session running (with the silence before
+ * the request still counted they would come a whole limit late). The delay is measured on the realtime clock from just
+ * before the restart; a runner that overslept it into the limit makes the attempt say nothing (the silence then rightly
+ * trips), and it is repeated. Returns whether it held. */
+bool
+rearm_attempt(void) {
     usb_world_reset(0);
     rig r;
     rig_open(r, 1);
@@ -561,13 +609,31 @@ test_rearm_with_delayed_first_samples(void) {
     expect_running();
     char why[256] = {};
     assert(rtl_device_usb_recover_handle(r.dev, why, sizeof why) == 0);
+    uint64_t last_ms = dsd_realtime_mono_ms();
+    uint64_t max_gap_ms = 0U;
     assert(rtl_device_usb_resume_reader(r.dev) == 0);
     rtl_device_usb_recovery_finish(r.dev, 0, why);
-    dsd_sleep_ms(2U * kLimitMs / 3U);
-    deliver(r, 3U * kLimitMs / 10U, 10U);
+    dsd_sleep_ms(kLimitMs / 2U);
+    deliver_timed(r, 3U * kLimitMs / 10U, 10U, &last_ms, &max_gap_ms);
+    if (!gaps_inside_limit(max_gap_ms)) {
+        DSD_FPRINTF(stderr, "rearm: the first samples came %llu ms after the restart; repeating\n",
+                    (unsigned long long)max_gap_ms);
+        rig_close(r);
+        return false;
+    }
     expect_running();
     assert(r.posted.count.load() == 1);
     rig_close(r);
+    return true;
+}
+
+void
+test_rearm_with_delayed_first_samples(void) {
+    bool held = false;
+    for (int attempt = 0; attempt < 5 && !held; ++attempt) {
+        held = rearm_attempt();
+    }
+    assert(held);
 }
 
 /* Callbacks between the restarted reader's baseline and its thread start are samples since the reset: the silence
@@ -678,9 +744,17 @@ struct boundary_log {
 
 boundary_log g_boundary;
 
+/* Set by a test that feeds the stream at its own pace after the recovery: the probe lifts the silence limit at the
+ * boundary's discontinuity step, before the reader restarts, so a runner slow to reach the test's next step cannot let
+ * the restarted reader's silence pass for a second stall. */
+std::atomic<int> g_steady_after_restart{0};
+
 void
 probe_boundary(int step, void* ctx) {
     (void)ctx;
+    if (step == RTL_STREAM_TEST_BOUNDARY_DISCONTINUITY && g_steady_after_restart.load() != 0) {
+        rtl_device_test_set_progress_limit_ms(60000U);
+    }
     step_view v{};
     v.step = step;
     v.gate_closed = rtl_stream_test_reconfigure_gate_closed();
@@ -937,13 +1011,14 @@ test_silence_posts_recovery_and_reader_return_is_silent(void) {
     (void)log_take();
     g_notices.store(0);
     (void)boundary_take();
+    /* No second stall after the recovery: the test feeds the stream at its own pace. */
+    g_steady_after_restart.store(1);
     stream_rig r;
     stream_open(r, 1, 1);
     stream_deliver(r, 40, 5U);
     const uint64_t gap_before = rtl_stream_discontinuity_seq();
     wait_step(RTL_STREAM_TEST_BOUNDARY_END);
-    /* No second stall from here: the test feeds the stream at its own pace. */
-    rtl_device_test_set_progress_limit_ms(60000U);
+    g_steady_after_restart.store(0);
     wait_notices(1);
     expect_running();
     assert(g_usb.devs[0].resets.load() == 1);
@@ -1335,10 +1410,11 @@ test_yield_reaches_decoder_during_recovery(void) {
     recording_reader& reader = *reader_owner;
     g_yield_reader = &reader;
     rtl_stream_test_set_stream_boundary_probe(probe_yield, nullptr);
+    g_steady_after_restart.store(1);
     recording_start(reader, r.ctx);
     stream_deliver(r, 20, 5U);
     wait_step(RTL_STREAM_TEST_BOUNDARY_END);
-    rtl_device_test_set_progress_limit_ms(60000U);
+    g_steady_after_restart.store(0);
     expect_running();
     assert(reader.yields.load() >= 1);
     assert(reader.yields_outside_recovery.load() == 0);
