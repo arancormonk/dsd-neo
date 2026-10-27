@@ -26,8 +26,25 @@
 
 #include <cmath>
 #include <stddef.h>
+#include "dsd-neo/core/safe_api.h"
 
 namespace dsd_io {
+
+/* The noise estimate excludes the peak and its two neighbours on either side. Copy the two remaining spans in
+ * their original order so the median sees exactly the same values without testing the exclusion for every bin.
+ * The caller supplies 0 <= lo <= peak <= hi and room for hi - lo + 1 output bins. */
+inline int
+spectrum_copy_noise_bins(const float* db, int lo, int hi, int peak, float* out) {
+    const int left = (peak - lo > 2) ? peak - lo - 2 : 0;
+    const int right = (hi - peak > 2) ? hi - peak - 2 : 0;
+    if (left > 0) {
+        DSD_MEMCPY(out, db + lo, (size_t)left * sizeof(float));
+    }
+    if (right > 0) {
+        DSD_MEMCPY(out + left, db + hi - right + 1, (size_t)right * sizeof(float));
+    }
+    return left + right;
+}
 
 /** @brief Mean I and Q of a block, the DC offset removed before windowing. */
 struct IqBlockMean {

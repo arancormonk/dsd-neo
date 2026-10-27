@@ -4466,8 +4466,10 @@ Key public headers:
     so nothing is copied to publish) and the output rate (the metrics hook's; the snapshot's `rtl_ctx` is never
     dereferenced). `rtl_device_handle` and `g_stream` are cleared before the objects they point at are destroyed. Test:
     `IO_RTL_FRONTEND_TELEMETRY` (ASan/TSan). The spectrum fold walks contiguous halves under strict floating-point
-    rules; fast-math builds keep the original vector-libm loop to preserve its rounding. `IO_RTL_SPECTRUM_FRAMES`
-    compares both in-place and out-of-place folds bit for bit with the original walk.
+    rules; fast-math builds keep the original vector-libm loop to preserve its rounding. The published index also marks
+    readiness; the demod alone owns the averaging seed. `IO_RTL_SPECTRUM_FRAMES`
+    compares both in-place and out-of-place folds bit for bit with the original walk, and pins the order and bits of
+    the two noise-bin spans copied around the excluded peak before the median search.
   - Input level freshness (B6): the producer stamps every level it measures on the real-time monotonic clock
     (`updated_ms`, in place of the wall read moments finalization used to take, so no new clock read on the sample
     path). `dsd_input_level_is_stale()` (`runtime/input_level.c`, `DSD_INPUT_LEVEL_STALE_MS` = 2 s) is the one rule:

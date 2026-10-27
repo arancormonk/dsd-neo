@@ -38,6 +38,36 @@ check(const char* label, int cond) {
     }
 }
 
+void
+test_noise_bin_copy_is_bit_exact(void) {
+    for (int n : {3, 7, 64, 256, 1024}) {
+        std::vector<float> bins((size_t)n), want((size_t)n), got((size_t)n);
+        uint32_t random = 19U;
+        for (float& value : bins) {
+            random = random * 1664525U + 1013904223U;
+            DSD_MEMCPY(&value, &random, sizeof value);
+        }
+        for (int lo : {0, n / 2}) {
+            for (int peak = lo; peak < n; peak++) {
+                int count = 0;
+                for (int k = lo; k < n; k++) {
+                    if (k < peak - 2 || k > peak + 2) {
+                        want[(size_t)count++] = bins[(size_t)k];
+                    }
+                }
+                const int copied = dsd_io::spectrum_copy_noise_bins(bins.data(), lo, n - 1, peak, got.data());
+                check("noise bins: count", copied == count);
+                for (int k = 0; k < count; k++) {
+                    uint32_t want_bits = 0U, got_bits = 0U;
+                    DSD_MEMCPY(&want_bits, &want[(size_t)k], sizeof want_bits);
+                    DSD_MEMCPY(&got_bits, &got[(size_t)k], sizeof got_bits);
+                    check("noise bins: order and bits", want_bits == got_bits);
+                }
+            }
+        }
+    }
+}
+
 /* The original bin walk, kept separate from the span implementation so its wrap and smoothing order are pinned. */
 void
 fold_reference(const float* z, int n, float weight, bool seed, const float* prev, float* out) {
@@ -170,10 +200,28 @@ test_held_spares_fold_into_the_writers_own(const std::vector<float>& x, const st
     check("held: the next frame blends with the unpublished one", same_bins(read_bins("held: read"), want));
 }
 
+void
+test_unpublished_first_frame_still_seeds(const std::vector<float>& x, const std::vector<float>& y,
+                                         const std::vector<float>& raw_x, const std::vector<float>& raw_y) {
+    rtl_metrics_test_spectrum_reset();
+    check("unpublished: all buffers held", rtl_metrics_test_spectrum_hold_spares(1) == 4);
+    rtl_metrics_update_spectrum_from_iq(x.data(), (int)x.size(), kRateHz);
+    rtl_metrics_update_spectrum_from_iq(y.data(), (int)y.size(), kRateHz);
+    float bins[kBins];
+    check("unpublished: no frame yet", rtl_stream_spectrum_get(bins, kBins, NULL) == 0);
+    std::vector<float> want = raw_x;
+    blend(&want, raw_y);
+    check("unpublished: all buffers released", rtl_metrics_test_spectrum_hold_spares(0) == 4);
+    rtl_metrics_update_spectrum_from_iq(x.data(), (int)x.size(), kRateHz);
+    blend(&want, raw_x);
+    check("unpublished: first publication carries the average", same_bins(read_bins("unpublished: read"), want));
+}
+
 } // namespace
 
 int
 main(void) {
+    test_noise_bin_copy_is_bit_exact();
     test_fold_is_bit_exact();
     (void)rtl_stream_spectrum_set_size(kBins);
     const std::vector<float> x = make_iq(37.0, 1U);
@@ -183,6 +231,7 @@ main(void) {
     check("raw frames differ", !same_bins(raw_x, raw_y));
     test_average_carries_across_buffers(x, y, raw_x, raw_y);
     test_held_spares_fold_into_the_writers_own(x, y, raw_x, raw_y);
+    test_unpublished_first_frame_still_seeds(x, y, raw_x, raw_y);
     rtl_metrics_test_spectrum_reset();
     if (g_failures != 0) {
         return 1;

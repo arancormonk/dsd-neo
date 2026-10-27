@@ -31,6 +31,14 @@
 #include "rtl_stream_test_support.h"
 #endif
 
+#if defined(_MSC_VER)
+#define DSD_RTL_SPECTRUM_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define DSD_RTL_SPECTRUM_NOINLINE __attribute__((noinline))
+#else
+#define DSD_RTL_SPECTRUM_NOINLINE
+#endif
+
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
 static const int kSpecMaxN = 1024; /* Max FFT size (power of two) */
 
@@ -55,9 +63,9 @@ static std::atomic<int> g_spec_cur{-1}; /* none yet */
  * peak search reads). */
 static rtl_spec_frame g_spec_writer;
 static const rtl_spec_frame* g_spec_last = &g_spec_writer;
+static bool g_spec_seed = true;
 /* A reader that keeps losing the current buffer to the writer reports no frame. */
 static const int kSpecReadAttempts = 4;
-static std::atomic<int> g_spec_ready{0};
 static std::atomic<int> g_spec_N{256}; /* default N */
 std::atomic<double> g_spec_peak_db{-100.0};
 std::atomic<double> g_spec_snr_db{-100.0};
@@ -270,32 +278,38 @@ static const float kSpecEmaNewWeight = 0.2f;
 static rtl_spec_frame*
 rtl_metrics_spec_free_frame(void) {
     const int cur = g_spec_cur.load(std::memory_order_relaxed);
+    /* Check the first noncurrent buffer directly before searching held spares. */
+    const int preferred = (cur == 0) ? 1 : 0;
+    if (g_spec_holds[preferred].load(std::memory_order_seq_cst) == 0) {
+        return &g_spec_frames[preferred];
+    }
     for (int i = 0; i < kSpecFrames; i++) {
-        if (i != cur && g_spec_holds[i].load(std::memory_order_seq_cst) == 0) {
+        if (i != cur && i != preferred && g_spec_holds[i].load(std::memory_order_seq_cst) == 0) {
             return &g_spec_frames[i];
         }
     }
     return &g_spec_writer;
 }
 
-static void
+/* The FFT, CFO and fold all need vector temporaries. Keep this loop separate so LTO does not spill its state while
+ * combining it with the rest of the update. */
+static DSD_RTL_SPECTRUM_NOINLINE void
 rtl_metrics_smooth_spectrum_bins(int N, int out_rate_hz, const float* z) {
-    const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
     rtl_spec_frame* out = rtl_metrics_spec_free_frame();
-    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, first, g_spec_last->db, out->db);
+    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, g_spec_seed, g_spec_last->db, out->db);
     out->n = N;
     out->rate_hz = out_rate_hz;
     g_spec_last = out;
+    g_spec_seed = false;
     if (out != &g_spec_writer) {
         g_spec_cur.store((int)(out - g_spec_frames), std::memory_order_seq_cst);
     }
-    g_spec_ready.store(1, std::memory_order_release);
 }
 
 static void
 rtl_metrics_peak_search_bounds(int N, int* k_center_i, int* i_lo, int* i_hi) {
-    *k_center_i = N >> 1;
-    int W = N >> 2;
+    *k_center_i = N / 2;
+    int W = N / 4;
     if (W < 8) {
         W = 8;
     }
@@ -325,12 +339,7 @@ rtl_metrics_peak_find_bin(int i_lo, int i_hi, int* i_max, float* p_max) {
 static float
 rtl_metrics_peak_noise_snr(int i_lo, int i_hi, int i_max, float p_max) {
     alignas(16) float noise_bins[kSpecMaxN];
-    int noise_count = 0;
-    for (int k = i_lo; k <= i_hi; k++) {
-        if (k < i_max - 2 || k > i_max + 2) {
-            noise_bins[noise_count++] = g_spec_last->db[k];
-        }
-    }
+    const int noise_count = dsd_io::spectrum_copy_noise_bins(g_spec_last->db, i_lo, i_hi, i_max, noise_bins);
     if (noise_count < 16) {
         return -100.0f;
     }
@@ -463,9 +472,6 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
 extern "C" int
 rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     if (!out_db || max_bins <= 0) {
-        return 0;
-    }
-    if (g_spec_ready.load(std::memory_order_acquire) == 0) {
         return 0;
     }
     for (int attempt = 0; attempt < kSpecReadAttempts; attempt++) {
@@ -769,9 +775,9 @@ rtl_stream_get_auto_ppm(void) {
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 extern "C" void
 rtl_metrics_test_spectrum_reset(void) {
-    g_spec_ready.store(0, std::memory_order_release);
     g_spec_cur.store(-1, std::memory_order_seq_cst);
     g_spec_last = &g_spec_writer;
+    g_spec_seed = true;
 }
 
 extern "C" int
