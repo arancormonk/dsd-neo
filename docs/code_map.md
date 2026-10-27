@@ -4479,7 +4479,8 @@ Key public headers:
     readiness; the demod alone owns the averaging seed. A reader keeps raced candidate frames pinned until it
     acquires a stable publication, bounded by the four shared buffers and private writer scratch. This prevents an
     empty-frame flash under repeated publication. The getter returns the published frame's bin count and rate,
-    clamped to the caller's capacity; a size change affects the next published frame. `IO_RTL_SPECTRUM_FRAMES`
+    clamped to the caller's capacity; a size change affects the next published frame, which seeds the average
+    rather than blending bins the last frame's size never wrote. `IO_RTL_SPECTRUM_FRAMES`
     compares both in-place and out-of-place folds bit for bit with the original walk, and pins the order and bits of
     the two noise-bin spans copied around the excluded peak before the median search.
   - Input level freshness (B6): the producer stamps every level it measures on the real-time monotonic clock

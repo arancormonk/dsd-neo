@@ -185,6 +185,29 @@ test_average_carries_across_buffers(const std::vector<float>& x, const std::vect
     }
 }
 
+/* size_change_reseeds: a frame never blends bins another FFT size wrote or left unwritten. Silence published at 1024,
+ * then 64, then 1024 bins reads -120 dB (the floor of a zero frame) in every bin of each frame. */
+void
+test_size_change_reseeds(void) {
+    rtl_metrics_test_spectrum_reset();
+    const std::vector<float> silence(static_cast<size_t>(2U) * 1024U, 0.0f);
+    for (int n : {1024, 64, 1024}) {
+        check("size change: size set", rtl_stream_spectrum_set_size(n) == n);
+        rtl_metrics_update_spectrum_from_iq(silence.data(), (int)silence.size(), kRateHz);
+        std::vector<float> bins((size_t)n, 0.0f);
+        check("size change: published at the new size", rtl_stream_spectrum_get(bins.data(), n, NULL) == n);
+        int floor_bins = 0;
+        for (float db : bins) {
+            floor_bins += (fabsf(db + 120.0f) <= kTolDb) ? 1 : 0;
+        }
+        char label[64];
+        DSD_SNPRINTF(label, sizeof label, "size change: %d bins all at -120 dB", n);
+        check(label, floor_bins == n);
+    }
+    (void)rtl_stream_spectrum_set_size(kBins);
+    rtl_metrics_test_spectrum_reset();
+}
+
 void
 test_held_spares_fold_into_the_writers_own(const std::vector<float>& x, const std::vector<float>& y,
                                            const std::vector<float>& raw_x, const std::vector<float>& raw_y) {
@@ -268,6 +291,7 @@ main(void) {
     test_average_carries_across_buffers(x, y, raw_x, raw_y);
     test_held_spares_fold_into_the_writers_own(x, y, raw_x, raw_y);
     test_unpublished_first_frame_still_seeds(x, y, raw_x, raw_y);
+    test_size_change_reseeds();
     rtl_metrics_test_spectrum_reset();
     if (g_failures != 0) {
         return 1;

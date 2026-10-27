@@ -307,11 +307,14 @@ rtl_metrics_spec_free_frame(void) {
 }
 
 /* The FFT, CFO and fold all need vector temporaries. Keep this loop separate so LTO does not spill its state while
- * combining it with the rest of the update. */
+ * combining it with the rest of the update. A frame of another size than the last seeds: the last one's bins are
+ * valid only up to its own n (the buffer's tail is whatever it last held), and a bin index names another frequency at
+ * another size anyway. */
 static DSD_RTL_SPECTRUM_NOINLINE void
 rtl_metrics_smooth_spectrum_bins(int N, int out_rate_hz, const float* z) {
     rtl_spec_frame* out = rtl_metrics_spec_free_frame();
-    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, g_spec_seed, g_spec_last->db, out->db);
+    const bool seed = g_spec_seed || g_spec_last->n != N;
+    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, seed, g_spec_last->db, out->db);
     out->n = N;
     out->rate_hz = out_rate_hz;
     g_spec_last = out;
