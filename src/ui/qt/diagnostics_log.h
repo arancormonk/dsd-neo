@@ -30,7 +30,7 @@ namespace dsd_qt {
 // synced so a phone that falls over seconds after Play keeps its start sequence (issue #745).
 class DiagnosticsLog {
   public:
-    static constexpr qint64 kSegmentLimit = 128 * 1024;
+    static constexpr qint64 kSegmentLimit = 128LL * 1024;
     static constexpr int kWriteIntervalMs = 250;
     static constexpr int kSyncIntervalMs = 1000;
     static constexpr int kStartupSyncWindowMs = 10000;
